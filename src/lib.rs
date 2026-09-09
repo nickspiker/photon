@@ -110,24 +110,67 @@ pub const DOZENAL_NAMES: [&str; 12] = [
     "Stelor",
 ];
 
-/// Session mirror of the fleet-wide `display.dozenal` setting (the About-page toggle) — a static so render-edge formatters read the base without threading `&self` everywhere. Synced wherever fleet_settings loads or the toggle flips. Default TRUE: dozenal is the house base (binary at rest, base chosen at the render edge; arabic never by preference).
-pub static DOZENAL_UI: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
-pub fn dozenal_ui() -> bool {
-    DOZENAL_UI.load(std::sync::atomic::Ordering::Relaxed)
+/// The numeral base every number on screen renders in (binary at rest; the base is chosen at the render edge). Three choices (Nick 2026-09-09): dozenal is the house base, hexadecimal is the machine's, arabic decimal is the anatomical accident. Stored fleet-wide as `display.base` = the radix.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum NumBase {
+    Arabic = 10,
+    Dozenal = 12,
+    Hex = 16,
 }
 
-pub fn set_dozenal_ui(on: bool) {
-    DOZENAL_UI.store(on, std::sync::atomic::Ordering::Relaxed);
-}
-
-/// Base-aware integer render for the UI: dozenal glyphs (Oxanium `+glyphs` face REQUIRED at the draw site) or arabic decimal, per the toggle.
-pub fn fmt_num(n: u32) -> String {
-    if dozenal_ui() {
-        dozenal_glyphs(n)
-    } else {
-        n.to_string()
+impl NumBase {
+    pub fn from_radix(n: u64) -> Option<NumBase> {
+        match n {
+            10 => Some(NumBase::Arabic),
+            12 => Some(NumBase::Dozenal),
+            16 => Some(NumBase::Hex),
+            _ => None,
+        }
     }
+    pub fn radix(self) -> u32 {
+        self as u8 as u32
+    }
+}
+
+/// Session mirror of the fleet-wide `display.base` setting (the Dozenal-page pills) — a static so render-edge formatters read the base without threading `&self` everywhere. Synced wherever fleet_settings loads or a pill flips it. Default dozenal.
+pub static NUM_BASE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(NumBase::Dozenal as u8);
+
+pub fn num_base() -> NumBase {
+    NumBase::from_radix(NUM_BASE.load(std::sync::atomic::Ordering::Relaxed) as u64).unwrap_or(NumBase::Dozenal)
+}
+
+pub fn set_num_base(b: NumBase) {
+    NUM_BASE.store(b as u8, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Is the base dozenal? The sites that are TWELVE-shaped (the clutch ladder's radix-point step, the zoom-per-gross, the digit cheat sheet, spelled digit names) key on this; everything merely numeric goes thru [`fmt_num`].
+pub fn dozenal_ui() -> bool {
+    num_base() == NumBase::Dozenal
+}
+
+/// Hexadecimal render: plain uppercase 0-9 A-F — the machine's own digits, no house glyphs.
+pub fn hex_glyphs(n: u32) -> String {
+    format!("{n:X}")
+}
+
+/// Base-aware integer render for the UI: dozenal glyphs (Oxanium `+glyphs` face REQUIRED at the draw site), hex digits, or arabic decimal, per the base setting.
+pub fn fmt_num(n: u32) -> String {
+    match num_base() {
+        NumBase::Dozenal => dozenal_glyphs(n),
+        NumBase::Hex => hex_glyphs(n),
+        NumBase::Arabic => n.to_string(),
+    }
+}
+
+/// DMS — the dozenal age (Nick 2026-09-09): how many times a second has doubled since the event, i.e. the BIT LENGTH of the seconds count. 0 = now, 1 = a second, 2 = two or three seconds, 3 = four to seven, … 11 = half an hour, 12 (Zila Zil) = an hour, 17 = a day, 22 = a month, 25 = a year; the age of the universe is 58 (Tera Stela), so all of time fits in two dozenal digits. Rendered as glyphs by [`dms_age`]; the About-side legend uses [`dozenal_spell`] on the same value.
+pub fn dms_bits(secs: i64) -> u32 {
+    u64::BITS - (secs.max(0) as u64).leading_zeros()
+}
+
+/// The DMS age as dozenal glyphs (Oxanium `+glyphs` face at the draw site).
+pub fn dms_age(secs: i64) -> String {
+    dozenal_glyphs(dms_bits(secs))
 }
 
 /// Render `n` in dozenal as reserved control-code bytes 0x10+digit — the Oxanium `+glyphs` face draws them as the dozenal digits. UI-only: terminals show garbage, so LOG paths use [`dozenal_words`] instead.

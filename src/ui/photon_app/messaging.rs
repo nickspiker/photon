@@ -7,7 +7,7 @@ impl PhotonApp {
     pub(super) fn compose_bare_urls(&self) -> Vec<(usize, usize)> {
         let Some(tb) = self.message_textbox.as_ref() else { return Vec::new() };
         let text: String = tb.chars.iter().collect();
-        // Byte offset → char index, for every char boundary (the detector speaks bytes, the box speaks chars).
+        // Byte offset → char index (the detector speaks bytes, the box speaks chars).
         let mut char_at_byte = vec![0usize; text.len() + 1];
         for (ci, (b, _)) in text.char_indices().enumerate() {
             char_at_byte[b] = ci;
@@ -33,11 +33,7 @@ impl PhotonApp {
         let cursor = tb.cursor;
         let Some(&(start, end)) = bare.iter().find(|(s, e)| *s <= cursor && cursor <= *e).or_else(|| bare.last()) else { return };
         let url: String = tb.chars[start..end].iter().collect();
-        let label = url
-            .trim_start_matches("https://")
-            .trim_start_matches("http://")
-            .trim_end_matches('/')
-            .to_string();
+        let label = url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/').to_string();
         if label.is_empty() {
             return;
         }

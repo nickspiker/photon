@@ -9,7 +9,7 @@ pub mod seed;
 pub mod shard;
 
 pub use contact::*;
-pub use conversation::{Conversation, ConversationId, PartyId};
+pub use conversation::{merge_wave_fields, Conversation, ConversationId, PartyId};
 pub use device::*;
 pub use friendship::*;
 pub use handle::*;

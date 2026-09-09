@@ -72,6 +72,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Updates) => "Settings:Updates",
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
+                AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::ContactPanel(_) => "ContactPanel",
             },
@@ -192,11 +193,7 @@ impl PhotonApp {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
             } else if page == SettingsPage::About {
                 // Logo(4) + gap + killswitch + passless + link + no-servers prose(8×0.8) + consent block + TOKEN block + version + toggle + why-dozenal rant ≈ 37 rows collapsed (each prose line 0.8, three 1-row section headers, inter-block gaps); the version reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
-                let rows = 37.0
-                    + if self.about_version_spelled { 1.4 } else { 0.0 }
-                    // The index (header + six cheat rows) whenever the base is dozenal or the version is spelled, plus the riddle beneath it once found.
-                    + if self.about_version_spelled || crate::dozenal_ui() { 7.0 + if self.about_riddle_revealed { 7.0 } else { 0.0 } } else { 0.0 }
-                    + if !crate::dozenal_ui() { 1.8 } else { 0.0 };
+                let rows = 26.0 + if self.about_version_spelled { 1.4 } else { 0.0 };
                 sl.content_line_h() * rows
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
                 let n = match &self.diag_log_inspect {
@@ -404,10 +401,11 @@ impl PhotonApp {
         // Zoom watermark, top-centre: current `ru` zoom factor as a decimal percentage ("100%", "103%"), twice the version size, at 1/4 opacity. Mirrors the version's bottom-centre placement (one font-size in from the edge). Integer percent — the ~3%/step zoom granularity makes decimals noise.
         let zoom_size = version_size * 2.0;
         // Dozenal zoom is per-GROSS, not per-cent: no ×100, just base convert — 1.0× renders as dozenal 100 ("zila", = ×144), 2.0× as dozenal 200 ("zilor"). No % sign (percent is a decimal concept). Decimal mode keeps the familiar NN%.
-        let zoom_text = if crate::dozenal_ui() {
-            crate::dozenal_glyphs((ctx.viewport.ru * 144.0).round().max(0.0) as u32)
-        } else {
-            format!("{}%", crate::fmt_num((ctx.viewport.ru * 100.0).round().max(0.0) as u32))
+        let zoom_text = match crate::num_base() {
+            crate::NumBase::Dozenal => crate::dozenal_glyphs((ctx.viewport.ru * 144.0).round().max(0.0) as u32),
+            // Hex zoom is per-256 by the same logic: 1.0× renders as hex 100.
+            crate::NumBase::Hex => crate::hex_glyphs((ctx.viewport.ru * 256.0).round().max(0.0) as u32),
+            crate::NumBase::Arabic => format!("{}%", (ctx.viewport.ru * 100.0).round().max(0.0) as u32),
         };
         let zoom_cx = buf_w as f32 * 0.5;
         let zoom_cy = zoom_size;
@@ -2413,6 +2411,28 @@ impl PhotonApp {
                             HIT_NONE
                         },
                     );
+                    // STREAM FILTER PILL — centred in the top bar between the back arrow and the ☎ pill, riding the same slide-off. One pill that cycles all → waves → text (Nick 2026-09-09: "just calls or just messages, maybe a toggle") — one predicate in chat_row_visible does the filtering, so the render and the jump walk can never disagree.
+                    if topbar_visible {
+                        let f_label = tr(match self.conv_filter {
+                            ChatFilter::All => Msg::FilterAll,
+                            ChatFilter::Waves => Msg::FilterWaves,
+                            ChatFilter::Text => Msg::FilterText,
+                        });
+                        let f_h = unit * 1.4;
+                        let f_w = unit * 3.4;
+                        let f_rect = fluor::region::Region::new(buf_w as f32 * 0.5 - f_w * 0.5, back_y - f_h * 0.5, f_w, f_h);
+                        super::draw_stub_pill(
+                            &mut canvas,
+                            ctx.text,
+                            &mut chrome.hit_test_map,
+                            buf_w,
+                            buf_h,
+                            f_rect,
+                            &f_label,
+                            self.conv_filter_hit,
+                            ctx.pressed_hit,
+                        );
+                    }
 
                     // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + name (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
@@ -2709,11 +2729,21 @@ impl PhotonApp {
                             }
                             display_content(&m.content)
                         };
+                        let conv_filter = self.conv_filter;
                         let visible: Vec<&crate::types::ChatMessage> = raw_msgs
                             .iter()
-                            .filter(|m| chat_row_visible(raw_msgs, m))
+                            .filter(|m| chat_row_visible(raw_msgs, m, conv_filter))
                             .collect();
                         let n = visible.len();
+                        // The recording that folds into each wave row's card: wave row ts → the live call.audio row referencing it (RefKind::Wave).
+                        let rec_over: std::collections::HashMap<i64, &crate::types::ChatMessage> = raw_msgs
+                            .iter()
+                            .filter(|m| !m.deleted && crate::types::is_call_recording(&m.content))
+                            .filter_map(|m| match m.reference {
+                                Some((crate::types::RefKind::Wave, t)) => Some((t, m)),
+                                _ => None,
+                            })
+                            .collect();
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
                         let header_block_h = avatar_r * 2.0
                             + unit * 3.0
@@ -2737,7 +2767,7 @@ impl PhotonApp {
                         let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
                         let intra = msg_size * 1.25;
                         let wrap_key =
-                            (ci, n, raw_msgs.len(), avail_w.to_bits(), msg_size.to_bits());
+                            (ci, n, raw_msgs.len(), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
@@ -2748,8 +2778,16 @@ impl PhotonApp {
                                 } else {
                                     wrap_style.clone()
                                 };
-                                let lines =
-                                    wrap_text_lines(ctx.text, &body_of(m), &row_wrap, avail_w);
+                                // A wave row's one line is its header (outcome + duration, base-aware); a LIVE wave reserves two more for the waveform band beneath it.
+                                let lines = match m.wave {
+                                    Some(w) => {
+                                        if w.outcome.was_live() {
+                                            total += 2;
+                                        }
+                                        vec![super::call_ui::wave_header(w)]
+                                    }
+                                    None => wrap_text_lines(ctx.text, &body_of(m), &row_wrap, avail_w),
+                                };
                                 total += lines.len();
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
@@ -2779,6 +2817,8 @@ impl PhotonApp {
                             .clamp(0.0, max_scroll);
                         self.msg_hit_rows.clear();
                         self.msg_hit_rows.resize(super::MSG_HIT_SPAN as usize, None);
+                        self.msg_wave_bands.clear();
+                        self.msg_wave_bands.resize(super::MSG_HIT_SPAN as usize, None);
                         self.msg_link_hits.clear();
                         // ── LINK CONSENT PANEL ── painted BEFORE the message walk (earliest paint wins under-blend), hit-stamped AFTER it (latest stamp wins the map). A tapped link never opens silently: the full destination shows verbatim — punycode/homograph honesty — with Open / Copy / Cancel (Nick 2026-09-04).
                         let mut consent_stamp: Option<([fluor::region::Region; 3], f32)> = None;
@@ -2839,9 +2879,12 @@ impl PhotonApp {
                             });
                             let reactions = react_line(msg.timestamp);
                             let react_off = if reactions.is_some() { intra } else { 0.0 };
+                            // A live wave's card carries its waveform band under the header (two lines, matching the wrap total above).
+                            let wave_band_h = if msg.wave.is_some_and(|w| w.outcome.was_live()) { 2.0 * intra } else { 0.0 };
                             let block_extra = (lines.len() as f32 - 1.0) * intra
                                 + if reply_target.is_some() { intra } else { 0.0 }
-                                + react_off;
+                                + react_off
+                                + wave_band_h;
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&msg.content)
@@ -2901,16 +2944,21 @@ impl PhotonApp {
                                 let secs = ((vsf::eagle_time_oscillations() - msg.timestamp)
                                     / crate::OSC_PER_SEC)
                                     .max(0);
-                                // Base-aware count (dozenal glyphs or decimal per the About toggle) — the detail style is Oxanium, so the glyphs resolve.
-                                let age = tr(if secs >= 86400 {
-                                    Msg::AgoDays((secs / 86400) as u32)
-                                } else if secs >= 3600 {
-                                    Msg::AgoHours((secs / 3600) as u32)
-                                } else if secs >= 60 {
-                                    Msg::AgoMinutes((secs / 60) as u32)
+                                // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve.
+                                let dms = crate::dms_age(secs);
+                                let age = if crate::dozenal_ui() {
+                                    tr(Msg::AgoDms(&dms))
                                 } else {
-                                    Msg::AgoSeconds(secs as u32)
-                                });
+                                    tr(if secs >= 86400 {
+                                        Msg::AgoDays((secs / 86400) as u32)
+                                    } else if secs >= 3600 {
+                                        Msg::AgoHours((secs / 3600) as u32)
+                                    } else if secs >= 60 {
+                                        Msg::AgoMinutes((secs / 60) as u32)
+                                    } else {
+                                        Msg::AgoSeconds(secs as u32)
+                                    })
+                                };
                                 // The delivery ladder (sending → replicated ∥ delivered): "delivered" = the friend's fleet ACKed (the line — nothing beyond it exists, ever; "seen" is only a human's explicit reaction); "replicated" = our own fleet holds it but their ACK hasn't landed yet.
                                 let mut detail = if msg.is_outgoing {
                                     let state = tr(if msg.delivered {
@@ -3233,7 +3281,107 @@ impl PhotonApp {
                             } else {
                                 None
                             };
-                            for (k, line) in lines.iter().enumerate() {
+                            // ── WAVE CARD ── one event per wave: the header line, then (for a live wave) the waveform band that IS the seek bar. The recording row referencing this wave folds in here; until it lands the band says so.
+                            let wave_slot = vi % super::MSG_HIT_SPAN as usize;
+                            if let Some(w) = msg.wave {
+                                let right_aligned = msg.is_outgoing || is_self_contact;
+                                let hy = y - react_off - wave_band_h;
+                                let head_style = TextStyle::new(msg_size, colour).weight(500).font("Oxanium");
+                                let head = lines.first().cloned().unwrap_or_default();
+                                if right_aligned {
+                                    ctx.text.draw_text_right(&mut canvas, &head, buf_w as f32 - pad_x, hy, &head_style, Some(list_clip), None);
+                                } else {
+                                    ctx.text.draw_text_left(&mut canvas, &head, pad_x, hy, &head_style, Some(list_clip), None);
+                                }
+                                if wave_band_h > 0.0 {
+                                    let bx0 = pad_x;
+                                    let bx1 = buf_w as f32 - pad_x;
+                                    let by0 = hy + msg_size * 0.7;
+                                    let by1 = y - react_off + msg_size * 0.5;
+                                    let glyph_x1 = bx0 + msg_size * 1.5;
+                                    let bcy = (by0 + by1) * 0.5;
+                                    let half = (by1 - by0) * 0.5;
+                                    let hair = ctx.viewport.ru.max(1.0);
+                                    let dim = theme::dim_colour(colour);
+                                    let small = TextStyle::new(msg_size * 0.8, dim).weight(500).font("Oxanium");
+                                    match rec_over.get(&msg.timestamp).copied() {
+                                        None => {
+                                            // The keep transcode is still running (or the recording never reached this device): say so where the waveform will be.
+                                            ctx.text.draw_text_left(&mut canvas, &tr(Msg::WaveKeeping), glyph_x1, bcy + msg_size * 0.35, &small, Some(list_clip), None);
+                                        }
+                                        Some(rec) => {
+                                            let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
+                                            let held = crate::storage::blob_present(&hash);
+                                            let playing = self.call_playback.is_some() && self.call_playback_hash == Some(hash);
+                                            // Envelope source: the container's fine envelope while a handle is live, the row thumbnail otherwise. Channel-major, eighth-stops below full scale.
+                                            let (env, nchan): (&[u8], usize) = match (playing, self.call_playback.as_ref()) {
+                                                (true, Some(h)) if !h.envelope.is_empty() => (&h.envelope, h.nchan.max(1)),
+                                                _ => (&rec.envelope, if rec.envelope.is_empty() { 1 } else { (rec.envelope.len() / crate::types::WAVE_THUMB_BUCKETS).max(1) }),
+                                            };
+                                            let env_len = if nchan > 0 { env.len() / nchan } else { 0 };
+                                            let total_slots = if playing { self.call_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
+                                            let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
+                                            let frac: Option<f32> = scrub.or_else(|| {
+                                                playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
+                                            });
+                                            // The waveform: one column per pixel, ch0 (you) up from the centreline in your colour, ch1 (them) down in theirs; played columns bright, the rest dim (all dim until the blob is held). Eight stops of range: full scale fills the half, eight stops down is the line.
+                                            let wx0 = glyph_x1;
+                                            let cols = ((bx1 - wx0).max(1.0)) as usize;
+                                            let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
+                                            let ch_colour = |ch: usize| -> u32 {
+                                                if ch == 0 { our_colour } else { their_colour }
+                                            };
+                                            if env_len > 0 {
+                                                for px in 0..cols {
+                                                    let b = px * env_len / cols;
+                                                    let bright = held && frac.is_some() && px < played_cols;
+                                                    for ch in 0..nchan.min(2) {
+                                                        let stops = env[ch * env_len + b] as f32 / 8.0;
+                                                        let hgt = ((1.0 - stops / 8.0).clamp(0.0, 1.0) * half * 0.92).max(hair * 0.5);
+                                                        let c = if bright { ch_colour(ch) } else { theme::dim_colour(ch_colour(ch)) };
+                                                        let (ty, th) = if ch == 0 { (bcy - hgt, hgt) } else { (bcy, hgt) };
+                                                        if ty + th > list_top && ty < list_bottom {
+                                                            paint::fill_rect(&mut canvas, (wx0 + px as f32) as isize, ty.max(list_top) as isize, 1, (th.min(list_bottom - ty.max(list_top))) as isize, c, None, None);
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            // Centreline hairline, then the playhead.
+                                            if bcy > list_top && bcy < list_bottom {
+                                                paint::fill_rect(&mut canvas, wx0 as isize, bcy as isize, (bx1 - wx0) as isize, hair as isize, dim, None, None);
+                                            }
+                                            if let Some(f) = frac {
+                                                let px = wx0 + f * (bx1 - wx0);
+                                                let (py0, py1) = (by0.max(list_top), by1.min(list_bottom));
+                                                if py1 > py0 {
+                                                    paint::fill_rect(&mut canvas, px as isize, py0 as isize, hair.ceil() as isize, (py1 - py0) as isize, *theme::CONTACT_NAME_COLOUR, None, None);
+                                                }
+                                                // Elapsed / total beside the header, on the side the header left free.
+                                                let pos_secs = (f * total_slots as f32 / 100.0) as i64;
+                                                let pos_s = super::call_ui::fmt_duration_secs(pos_secs);
+                                                let tot_s = super::call_ui::fmt_duration_secs((total_slots / 100) as i64);
+                                                let pos_label = tr(Msg::WavePos { pos: &pos_s, total: &tot_s });
+                                                if right_aligned {
+                                                    ctx.text.draw_text_left(&mut canvas, &pos_label, pad_x, hy, &small, Some(list_clip), None);
+                                                } else {
+                                                    ctx.text.draw_text_right(&mut canvas, &pos_label, buf_w as f32 - pad_x, hy, &small, Some(list_clip), None);
+                                                }
+                                            }
+                                            // The glyph: ▶ to play, ■ while playing, the hourglass colour's ▶ until the blob is held (a tap fetches).
+                                            let glyph = if playing { "\u{25A0}" } else { "\u{25B6}\u{FE0E}" };
+                                            let glyph_style = TextStyle::new(msg_size, if held { colour } else { *theme::HOURGLASS_COLOUR }).weight(500).font("Oxanium");
+                                            ctx.text.draw_text_left(&mut canvas, glyph, bx0, bcy + msg_size * 0.35, &glyph_style, Some(list_clip), None);
+                                            // Hand the band to the input path (slot-indexed beside the row hit).
+                                            if wave_slot < self.msg_wave_bands.len() {
+                                                self.msg_wave_bands[wave_slot] = Some(super::WaveBand { hash, held, x0: bx0, glyph_x1, x1: bx1, y0: by0.max(list_top), y1: by1.min(list_bottom), total: total_slots });
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            static NO_LINES: Vec<String> = Vec::new();
+                            let body_lines: &Vec<String> = if msg.wave.is_some() { &NO_LINES } else { lines };
+                            for (k, line) in body_lines.iter().enumerate() {
                                 let ly = y - react_off - (lines.len() - 1 - k) as f32 * intra;
                                 let right_aligned = msg.is_outgoing || is_self_contact;
                                 // Which marks intersect this line's source range?
@@ -5053,6 +5201,108 @@ impl PhotonApp {
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
                 }
+                SettingsPage::Dozenal => {
+                    // THE BASE PAGE (Nick 2026-09-09: "a distinct dozenal tab that reads Dozenal or Arabic depending on their choice"): the fleet-wide toggle, why (or the tin-foil answer in arabic mode), the digit cheat sheet with the custodian riddle behind it, and the DMS time-ago legend. A centred card like About, manual cursor, measured extent.
+                    let inset = layout.content_inset();
+                    let line_h = layout.content_line_h();
+                    let cx = inset.x + inset.w * 0.5;
+                    let wrap_w = inset.w - line_h;
+                    let page_clip = Some(fluor::paint::Clip::new(
+                        inset.x.max(0.0) as usize,
+                        inset.y.max(0.0) as usize,
+                        (inset.x + inset.w).max(0.0) as usize,
+                        (inset.y + inset.h).max(0.0) as usize,
+                    ));
+                    let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
+                    let head_style = TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
+                    let cell_style = TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
+                    let mut y = inset.y - settings_content_scroll;
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h * 1.4;
+                    // Fleet-wide base pills (display.base — linked, so a preference follows the identity): dozenal, hexadecimal, arabic, the chosen one filled. Dozenal and hex fill green; arabic fills the shame red — the disapproval rides the pill, no scold line needed.
+                    let base = crate::num_base();
+                    {
+                        let pill_h = line_h * 1.1;
+                        let gap = hspan2 * 0.6;
+                        let labels = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
+                        let widths: Vec<f32> = labels.iter().map(|l| ctx.text.measure_text(l, &TextStyle::new(pill_h * 0.5, 0)) + pill_h * 0.9).collect();
+                        let total_w: f32 = widths.iter().sum::<f32>() + gap * 2.0;
+                        let mut px = cx - total_w * 0.5;
+                        for (i, l) in labels.iter().enumerate() {
+                            let this = match i { 0 => crate::NumBase::Dozenal, 1 => crate::NumBase::Hex, _ => crate::NumBase::Arabic };
+                            let fill = if this != base {
+                                None
+                            } else if this == crate::NumBase::Arabic {
+                                Some((*theme::DOZENAL_SCOLD_BOX, *theme::DOZENAL_SCOLD_BOX))
+                            } else {
+                                Some(*theme::PILL_GREEN)
+                            };
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(px, y, widths[i], pill_h), l, btn_base.wrapping_add(i as HitId), ctx.pressed_hit, true, fill, "Oxanium");
+                            px += widths[i] + gap;
+                        }
+                        y += pill_h;
+                    }
+                    y += line_h * 0.8;
+                    // Why dozenal — or, in arabic mode, why YOU dozenal: the unit-of-account answer. Hex gets the plain case: the machine's base is at least a base with a reason.
+                    let (head, rant) = if base == crate::NumBase::Arabic {
+                        (tr(Msg::WhyYouDozenal), tr(Msg::WhyYouDozenalProse))
+                    } else {
+                        (tr(Msg::WhyDozenal), tr(Msg::WhyDozenalProse))
+                    };
+                    ctx.text.draw_text_center(&mut canvas, &head, cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                    y += line_h;
+                    for line in rant.lines() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                        y += line_h * 0.3;
+                    }
+                    y += line_h * 0.6;
+                    // The digit cheat sheet: GLYPH  name  value, two columns of six. The value is the ONE deliberate arabic numeral on the page: a cheat sheet is a translation table, and a table with one side missing is not one. The whole index is one tap target (slot 5) — a tap within it reveals the custodian riddle beneath.
+                    let index_top = y;
+                    if base == crate::NumBase::Dozenal {
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::AboutDozenalHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                        y += line_h;
+                        let col_l = inset.x + inset.w * 0.32;
+                        let col_r = inset.x + inset.w * 0.68;
+                        for d in 0..6usize {
+                            let cell = |digit: usize| format!("{}  {}  {}", char::from(0x10 + digit as u8), crate::DOZENAL_NAMES[digit], digit);
+                            ctx.text.draw_text_center(&mut canvas, &cell(d), col_l, y + line_h * 0.5, &cell_style, page_clip, None);
+                            ctx.text.draw_text_center(&mut canvas, &cell(d + 6), col_r, y + line_h * 0.5, &cell_style, page_clip, None);
+                            y += line_h;
+                        }
+                        restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base.wrapping_add(5));
+                    }
+                    if self.about_riddle_revealed && base == crate::NumBase::Dozenal {
+                        y += line_h * 0.4;
+                        ctx.text.draw_text_center(&mut canvas, &crate::fmt_num(42), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(400).font("Oxanium"), page_clip, None);
+                        y += line_h;
+                        let s = tr(Msg::AboutRiddle);
+                        for line in s.lines() {
+                            ctx.text.draw_text_center(&mut canvas, line, cx, y + line_h * 0.4, &prose_style, page_clip, None);
+                            y += line_h * 0.8;
+                        }
+                    }
+                    y += line_h * 0.6;
+                    // DMS — the time-ago legend: the age is the bit length of the seconds count, so each row is a doubling. The single digits, then the landmarks (an hour, a day, a month, a year) where the second digit has taken over.
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h;
+                    for line in tr(Msg::DmsIntro).lines() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                        y += line_h * 0.3;
+                    }
+                    y += line_h * 0.3;
+                    for bits in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 17, 22, 25] {
+                        // Glyphs in the current base; the spelled digit names only where they exist (dozenal).
+                        let row = if base == crate::NumBase::Dozenal {
+                            format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsReading(bits)))
+                        } else {
+                            format!("{}  {}", crate::fmt_num(bits), tr(Msg::DmsReading(bits)))
+                        };
+                        ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                        y += line_h * 0.9;
+                    }
+                    measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
+                    let _ = tspan;
+                }
                 SettingsPage::About => {
                     // An About CARD, not a settings list: the Photon wordmark over its chromatic wave up top, then the two headline properties (killswitch-ready, passless), then the version — tap it to reveal both the spelled-out form AND the dozenal cheat sheet. No feedback line — photon is owned by everyone. All centred under the logo; a manual vertical cursor (elements are variable-height, not equal rows).
                     let inset = layout.content_inset();
@@ -5246,10 +5496,8 @@ impl PhotonApp {
                         None,
                     );
                     y += line_h;
-                    // The dozenal cheat sheet stands on its own whenever the base is dozenal (Nick 2026-09-09): the glyphs are everywhere in the interface, so the key to them lives here, no tap needed. In decimal mode the version tap still reveals it.
-                    let show_index = self.about_version_spelled || crate::dozenal_ui();
+                    // Version, spelled out (voca words) on tap. The base toggle, the digit cheat sheet, and the time-ago legend live on the Dozenal page now (Nick 2026-09-09) — About keeps the pitch and the version.
                     if self.about_version_spelled {
-                        // Spelled-out (voca words) version line.
                         let main = crate::dozenal_spell(deploy_version());
                         let patch = (dev_patch() > 0).then(|| crate::dozenal_spell(dev_patch()));
                         let spelled = tr(Msg::AboutVersionSpelled { main: &main, patch: patch.as_deref() });
@@ -5265,140 +5513,6 @@ impl PhotonApp {
                             None,
                         );
                         y += line_h * 1.4;
-                    }
-                    if show_index {
-                        // All twelve digits as GLYPH  name  value, two columns of six. The value is the ONE deliberate arabic numeral on the page: a cheat sheet is a translation table, and a table with one side missing is not one.
-                        let index_top = y;
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &tr(Msg::AboutDozenalHead),
-                            cx,
-                            y + line_h * 0.5,
-                            &TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR)
-                                .weight(600)
-                                .font("Oxanium"),
-                            about_clip,
-                            None,
-                        );
-                        y += line_h;
-                        let col_l = inset.x + inset.w * 0.32;
-                        let col_r = inset.x + inset.w * 0.68;
-                        for d in 0..6usize {
-                            let cell = |digit: usize| {
-                                format!(
-                                    "{}  {}  {}",
-                                    char::from(0x10 + digit as u8),
-                                    crate::DOZENAL_NAMES[digit],
-                                    digit
-                                )
-                            };
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                &cell(d),
-                                col_l,
-                                y + line_h * 0.5,
-                                &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR)
-                                    .weight(400)
-                                    .font("Oxanium"),
-                                None,
-                                None,
-                            );
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                &cell(d + 6),
-                                col_r,
-                                y + line_h * 0.5,
-                                &TextStyle::new(hspan2 * 0.85, *theme::LABEL_COLOUR)
-                                    .weight(400)
-                                    .font("Oxanium"),
-                                None,
-                                None,
-                            );
-                            y += line_h;
-                        }
-                        // The whole index (header + twelve digit cells) is one tap target — a single tap within it reveals the custodian riddle below (slot 5).
-                        restamp_hit_rect(
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            inset.x as isize,
-                            index_top as isize,
-                            (inset.x + inset.w) as isize,
-                            y as isize,
-                            btn_base.wrapping_add(5),
-                        );
-                        // The easter egg — one tap within the dozenal index above and the custodian riddle appears: undecidability as the load-bearing defense (nobody can establish whether key material exists, so there is no answer to rubber-hose out of anyone). Session-permanent once found; collapses with the index.
-                        if self.about_riddle_revealed {
-                            y += line_h * 0.4;
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                &crate::fmt_num(42),
-                                cx,
-                                y + line_h * 0.5,
-                                &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
-                                    .weight(400)
-                                    .font("Oxanium"),
-                                None,
-                                None,
-                            );
-                            y += line_h;
-                            let s = tr(Msg::AboutRiddle);
-                            for line in s.lines() {
-                                ctx.text.draw_text_center(
-                                    &mut canvas,
-                                    line,
-                                    cx,
-                                    y + line_h * 0.4,
-                                    &prose_style,
-                                    None,
-                                    None,
-                                );
-                                y += line_h * 0.8;
-                            }
-                        }
-                    }
-                    // Fleet-wide base toggle (display.dozenal — linked, so a preference follows the identity). Rect set inline off the same y cursor (this page is a card, not equal rows).
-                    y += line_h * 0.4;
-                    let mut decimal_mode = false;
-                    if let Some(cb) = self.settings_dozenal_check.as_mut() {
-                        decimal_mode = !cb.is_checked();
-                        // The shame fill: untick dozenal and the empty box turns Zil.lun red (half-intensity, dozenal 0;6). Cleared the moment the user repents.
-                        cb.set_empty_fill(decimal_mode.then(|| *theme::DOZENAL_SCOLD_BOX));
-                        // CENTRED under cx: the widget's width is the measured box+gap+label, not a pane fraction — a wide rect left the box+label reading left-aligned (Nick 2026-09-02).
-                        let cb_h = line_h * 0.9;
-                        cb.set_font_size(hspan2);
-                        let label_w = ctx.text.measure_text(&tr(Msg::Dozenal), &TextStyle::new(hspan2, 0));
-                        cb.set_rect(cx, y + line_h * 0.5, cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3, cb_h);
-                        cb.render_content_into(
-                            &mut canvas,
-                            ctx.text,
-                            None,
-                            Some(&mut chrome.hit_test_map),
-                        );
-                    }
-                    y += line_h * 1.4;
-                    // The dozenal rant — why the toggle above defaults ON. Kept playful on purpose: decimal is an anatomical accident, not a design, and the page should own that opinion out loud.
-                    // DECIMAL MODE swaps the whole stanza for the tin-foil answer (Nick 2026-09-09): no orange scold line, the red box carries the disapproval on its own. The heading turns the question round ("why you dozenal?") and the prose ties the base to the unit of account, the absent middleman, and reputation graded Zil to Stelor on consent.
-                    let (head, rant) = if decimal_mode {
-                        (tr(Msg::WhyYouDozenal), tr(Msg::WhyYouDozenalProse))
-                    } else {
-                        (tr(Msg::WhyDozenal), tr(Msg::WhyDozenalProse))
-                    };
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        &head,
-                        cx,
-                        y + line_h * 0.5,
-                        &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
-                            .weight(600)
-                            .font("Oxanium"),
-                        about_clip,
-                        None,
-                    );
-                    y += line_h;
-                    for line in rant.lines() {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
-                        y += line_h * 0.3;
                     }
                     // MEASURED extent (Flow doctrine): the card's true height from the final cursor — retires the hand-counted row arithmetic next frame.
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));

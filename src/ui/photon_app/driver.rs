@@ -308,6 +308,8 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(8); // reply/edit/resend/delete + room
         self.react_strip_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
+        self.conv_filter_hit = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(1); // the conversation stream filter pill
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -379,18 +381,6 @@ impl FluorApp for PhotonApp {
         self.settings_chime_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::ChimeNewMessage),
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            true,
-        ));
-        // Dozenal is the house base — default ON; the About-page toggle flips to decimal for the arabic-inclined. Initial state re-syncs from `display.dozenal` when fleet settings load.
-        self.settings_dozenal_check = Some(fluor::widgets::Checkbox::new(
-            &mut self.hit_counter,
-            // "Dozenal", not "Dozenal numbers" — dozenal IS a numeral system, like saying "metric units" (Nick 2026-09-02). Unchecked = decimal.
-            tr(Msg::Dozenal),
             0.,
             0.,
             1.,
@@ -1131,8 +1121,25 @@ impl FluorApp for PhotonApp {
                         // The passless weblink → system browser, every platform thru the one opener (Android rides the Kotlin Intent bridge now).
                         open_url_in_browser("https://passless.org/");
                         crate::log("ABOUT: passless.org link tapped");
-                    } else if slot == 5 {
-                        // A tap anywhere within the revealed dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
+                    }
+                } else if page == SettingsPage::Dozenal {
+                    // The base pills (slots 0..=2): the render-edge static flips NOW so every number on screen switches base this frame, and the fleet-wide linked write follows the identity to every device.
+                    let pick = match slot {
+                        0 => Some(crate::NumBase::Dozenal),
+                        1 => Some(crate::NumBase::Hex),
+                        2 => Some(crate::NumBase::Arabic),
+                        _ => None,
+                    };
+                    if let Some(b) = pick {
+                        if b != crate::num_base() {
+                            crate::set_num_base(b);
+                            if self.settings_set("display.base", vsf::VsfType::u(b.radix() as usize, false)) {
+                                crate::logf!("SETTINGS: display.base = {} (linked write)", b.radix());
+                            }
+                        }
+                    }
+                    if slot == 5 {
+                        // A tap anywhere within the dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
                         self.about_riddle_revealed = true;
                     }
                 } else {
@@ -1423,8 +1430,32 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
             }
+            // The stream filter pill cycles all → waves → text. The wrap cache keys on the filter, so the list rebuilds itself.
+            if hit_id != HIT_NONE && hit_id == self.conv_filter_hit {
+                self.conv_filter = self.conv_filter.next();
+                self.selected_msg = None;
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
+                // A tap inside a wave card's band: the glyph toggles play/stop (or fetches the blob); the waveform itself was handled as a scrub on the release edge — never a row select either way.
+                if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
+                    let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
+                    if band.contains(px, py) {
+                        if px < band.glyph_x1 {
+                            if band.held {
+                                self.toggle_recording_playback(band.hash);
+                            } else if let Some(ci) = self.active_contact() {
+                                self.attach_fetch(ci, &band.hash);
+                                self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
+                            }
+                        }
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                }
                 if let (Some(ci), Some((ts, out, ref_band))) =
                     (self.active_contact(), self.msg_hit_rows.get(vis).copied().flatten())
                 {
@@ -1525,6 +1556,15 @@ impl FluorApp for PhotonApp {
                 // Chrome tracks its OWN hover (title-bar controls); the app widgets are flipped in ONE walk below.
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(new_hit);
+                }
+                // A live waveform scrub follows the pointer (x only; the band is the whole track) — the card redraws the playhead at the new fraction.
+                if let Some(s) = self.wave_scrub.as_mut() {
+                    let f = s.band.frac_at(ctx.cursor_x as f32);
+                    if f != s.frac {
+                        s.frac = f;
+                        self.scene_dirty = true;
+                        changed = true;
+                    }
                 }
                 // Pointer-down over a textbox → this move pans its TEXT with the pointer (the caret rides the grabbed character), and while panning the hover doesn't matter. Handled first so a drag reads as a gesture, not a hover.
                 if self.pointer_down && self.drag_select_hit != HIT_NONE {
@@ -1814,6 +1854,20 @@ impl FluorApp for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
+                // WAVEFORM SCRUB: a press on a held recording's waveform picks the playhead up; moves carry it (drawn live), the release seeks. The glyph zone is a plain tap (on_activate).
+                if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
+                    let vis = (hit_id - self.msg_hit_base) as usize;
+                    if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
+                        let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
+                        if band.held && band.contains(px, py) && px >= band.glyph_x1 {
+                            self.wave_scrub = Some(WaveScrub { band, frac: band.frac_at(px) });
+                            self.scene_dirty = true;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                    }
+                }
+
                 // Permanence interstitial ("Yes — forever"): a press ANYWHERE other than the attest button cancels back to the pre-proof Fresh state. Editing the handle already cancels; this makes a tap on empty space, the field, the orb — anything else — cancel too, so a stray tap can never corner the user into the forever-claim (on Android "click elsewhere" was otherwise swipe-up → home → long-press → switch away). The attest button press itself is the deliberate confirm, so it's excluded; we fall thru afterwards so the tap still does its normal thing (focus the field, start a drag, open settings, …).
                 if matches!(self.state, AppState::Launch(LaunchState::Confirm)) {
                     let attest_hit = self
@@ -1936,6 +1990,12 @@ impl FluorApp for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // Waveform scrub release = THE seek edge: play from the carried fraction (a release anywhere lands where the playhead was carried to — no timer, no debounce).
+                if let Some(s) = self.wave_scrub.take() {
+                    let slot = (s.frac * s.band.total as f32) as usize;
+                    self.play_recording_from(s.band.hash, slot);
+                    ctx.window.request_redraw();
+                }
                 // End any textbox drag-select and finalize the caret/selection (fires on EVERY release, so a drag-off outside the box clears the state too).
                 if self.pointer_down {
                     self.textbox_release();
@@ -2483,7 +2543,10 @@ impl FluorApp for PhotonApp {
         if let Some(((sci, ts, out), true)) = self.pending_delete {
             self.pending_delete = None;
             let mut tombstoned: Option<ChatMessage> = None;
+            // Deleting a wave card deletes the wave: the recording row that references it goes too (its blob is shredded below like any attachment).
+            let mut cascade: Vec<ChatMessage> = Vec::new();
             if let Some(conv) = self.conv_mut_of(sci) {
+                let is_wave = conv.messages.iter().any(|m| m.timestamp == ts && m.is_outgoing == out && m.wave.is_some());
                 if let Some(m) = conv
                     .messages
                     .iter_mut()
@@ -2494,9 +2557,23 @@ impl FluorApp for PhotonApp {
                         tombstoned = Some(m.clone());
                     }
                 }
-                if tombstoned.is_some() {
+                if is_wave {
+                    for m in conv.messages.iter_mut().filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts)) {
+                        m.deleted = true;
+                        cascade.push(m.clone());
+                    }
+                }
+                if tombstoned.is_some() || !cascade.is_empty() {
                     conv.invalidate_digest(); // a tombstone drops a row from the syncable set
                 }
+            }
+            for row in &cascade {
+                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
+                    crate::storage::blob_delete(&hash);
+                }
+            }
+            if !cascade.is_empty() {
+                self.push_rows_to_siblings(sci, &cascade, None);
             }
             if tombstoned.is_some() {
                 // OFF-THREAD (ticket 2026-09-02): this was the last save_messages call still running synchronously on the UI thread — a delete froze the frame behind an encrypted table write (the delta gate shrank it, but the vault commit is still milliseconds the render loop doesn't have). The async writer's coalescing + quit drain cover it like any other persist.

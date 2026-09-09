@@ -25,6 +25,10 @@ pub struct HistoryRow {
     pub notified: bool,
     /// Typed content marks (links) — page COLUMNS beside the content, never string-encoded into it. Absent on pre-feature pages ⇒ empty; every consumer re-validates against the row's content.
     pub marks: Vec<crate::types::MessageMark>,
+    /// Wave row payload as page COLUMNS (raw wire outcome, live seconds) — absent on pre-feature pages ⇒ None.
+    pub wave: Option<(u8, u32)>,
+    /// Recording row envelope thumbnail as a native multi-value column — absent ⇒ empty.
+    pub envelope: Vec<u8>,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -102,7 +106,19 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             )
             .map_err(|e| e.to_string())?
             .append_multi("m_mn", vec![VsfType::u(row.marks.len(), false)])
+            .map_err(|e| e.to_string())?
+            // Wave card columns (2026-09-09): outcome 0 = not a wave row; the envelope rides as ONE native multi-value field per row that has one (count column keeps the rows aligned, the marks idiom).
+            .append_multi("m_wvo", vec![VsfType::u(row.wave.map(|(o, _)| o).unwrap_or(0) as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_wvs", vec![VsfType::u(row.wave.map(|(_, s)| s).unwrap_or(0) as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_wvn", vec![VsfType::u(row.envelope.len(), false)])
             .map_err(|e| e.to_string())?;
+        if !row.envelope.is_empty() {
+            builder = builder
+                .append_multi("m_wve", row.envelope.iter().map(|&b| VsfType::u(b as usize, false)).collect())
+                .map_err(|e| e.to_string())?;
+        }
         for m in &row.marks {
             builder = builder
                 .append_multi("m_mk", vec![VsfType::u(m.kind as usize, false)])
@@ -236,6 +252,15 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             _ => None,
         })
         .collect();
+    // Wave columns: per-row outcome/seconds, and the envelope thumbnails — a per-row byte count plus one multi-value field per row that carries one, consumed in row order.
+    let wave_outs = flat_u("m_wvo");
+    let wave_secs = flat_u("m_wvs");
+    let env_counts = flat_u("m_wvn");
+    let env_fields: Vec<Vec<u8>> = section
+        .get_fields("m_wve")
+        .iter()
+        .map(|f| f.values.iter().filter_map(|v| v.as_u64()).map(|n| n.min(255) as u8).collect())
+        .collect();
     let flat_total: usize = mark_counts.iter().sum();
     let marks_ok = flat_total == mk.len() && flat_total == ms.len() && flat_total == ml.len() && flat_total == md.len();
 
@@ -243,7 +268,16 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
     let n = times.len().min(texts.len()).min(outs.len()).min(dels.len());
     let mut rows = Vec::with_capacity(n);
     let mut mcur = 0usize;
+    let mut ecur = 0usize;
     for i in 0..n {
+        let row_env = match env_counts.get(i).copied().unwrap_or(0) {
+            0 => Vec::new(),
+            cnt => {
+                let e = env_fields.get(ecur).cloned().unwrap_or_default();
+                ecur += 1;
+                if e.len() == cnt as usize { e } else { Vec::new() }
+            }
+        };
         let row_marks = if marks_ok {
             let cnt = mark_counts.get(i).copied().unwrap_or(0);
             let out: Vec<crate::types::MessageMark> = (mcur..mcur + cnt)
@@ -273,6 +307,11 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
                 k => Some((k, ref_targets.get(i).copied().unwrap_or(0))),
             },
             marks: row_marks,
+            wave: match wave_outs.get(i).copied().unwrap_or(0) {
+                0 => None,
+                o => Some((o as u8, wave_secs.get(i).copied().unwrap_or(0) as u32)),
+            },
+            envelope: row_env,
         });
     }
     Ok(HistoryPagePlain {
@@ -306,6 +345,8 @@ mod tests {
                     reference: None,
                     // A link mark rides the page: range covers "oldest " — validation checks bounds + dest scheme, and the round trip must return it intact.
                     marks: vec![crate::types::MessageMark { kind: 1, start: 0, len: 7, dest: "https://x.example/".into() }],
+                    wave: Some((4, 61)),
+                    envelope: (0..288u32).map(|b| (b % 256) as u8).collect(),
                     notified: true,
                 },
                 HistoryRow {
@@ -316,6 +357,8 @@ mod tests {
                     deleted: false,
                     reference: Some((1, 1_000)), // a reply column rides the page
                     marks: Vec::new(),
+                    wave: None,
+                    envelope: Vec::new(),
                     notified: true,
                 },
                 HistoryRow {
@@ -326,6 +369,8 @@ mod tests {
                     deleted: false,
                     reference: None,
                     marks: Vec::new(),
+                    wave: None,
+                    envelope: Vec::new(),
                     notified: true,
                 },
             ],
@@ -376,6 +421,8 @@ mod tests {
                 deleted: false,
                 reference: None,
                 marks: Vec::new(),
+                wave: None,
+                envelope: Vec::new(),
                 notified: true,
             }],
             oldest_osc: 7,

@@ -425,21 +425,26 @@ impl PhotonApp {
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
             cb.set_checked(auto);
         }
-        // Dozenal base (About toggle, fleet-wide): checkbox + the render-edge static both track the stored value. Absent = house default TRUE.
-        let dozenal = self
+        // Numeral base (the Dozenal page's pills, fleet-wide): `display.base` = the radix; a pre-base-key fleet's `display.dozenal` bool still reads (true → dozenal, false → arabic). Absent = house default dozenal.
+        let base = self
             .fleet_settings
             .as_ref()
-            .and_then(|fs| fs.effective("display.dozenal"))
-            .and_then(crate::storage::fleet_settings::as_bool)
-            .unwrap_or(true);
+            .and_then(|fs| {
+                fs.effective("display.base")
+                    .and_then(|v| v.as_u64())
+                    .and_then(crate::NumBase::from_radix)
+                    .or_else(|| {
+                        fs.effective("display.dozenal")
+                            .and_then(crate::storage::fleet_settings::as_bool)
+                            .map(|d| if d { crate::NumBase::Dozenal } else { crate::NumBase::Arabic })
+                    })
+            })
+            .unwrap_or(crate::NumBase::Dozenal);
         // Adoption edge made LOUD (field 2026-09-02: "not sure why that checkbox isn't synchronizing fleetwide") — if this line never fires on the other device, the merge/event path lost the write (LWW clock skew or a dropped fstate event), not this mirror.
-        if crate::dozenal_ui() != dozenal {
-            crate::logf!("SETTINGS: dozenal → {} (fleet adopt)", dozenal);
+        if crate::num_base() != base {
+            crate::logf!("SETTINGS: base → {} (fleet adopt)", base.radix());
         }
-        crate::set_dozenal_ui(dozenal);
-        if let Some(cb) = self.settings_dozenal_check.as_mut() {
-            cb.set_checked(dozenal);
-        }
+        crate::set_num_base(base);
         // UI language (docs/languages.md): fleet-LINKED typed string code — a language picked anywhere follows the identity to every device. Absent = first launch → seed ONCE from the OS locale, then the value is the user's and never live-follows the host. `effective` also swallows the pre-2026-09-04 device-local entries (an unlinked local wins until the owner re-picks, which re-links).
         let stored_lang = self
             .fleet_settings

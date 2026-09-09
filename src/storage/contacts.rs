@@ -990,6 +990,7 @@ pub fn save_messages(
         if !msg.marks.is_empty() {
             rec = rec.set("marks", Value::Bytes(crate::types::encode_marks(&msg.marks)));
         }
+        rec = set_wave_fields(rec, msg);
         let row_key = message_row_key(msg.timestamp, &msg.content);
         // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
         if db
@@ -1101,6 +1102,8 @@ pub fn load_messages(
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             marks: record_marks(&rec, content),
+            wave: record_wave(&rec),
+            envelope: record_envelope(&rec),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -1145,6 +1148,26 @@ fn record_marks(rec: &Record, content: &str) -> Vec<crate::types::MessageMark> {
 fn record_reference(rec: &Record) -> Option<(crate::types::RefKind, i64)> {
     let kind = crate::types::RefKind::from_wire(rec.uint("ref_kind")? as u8)?;
     Some((kind, rec.time("ref_ts")?))
+}
+
+/// Wave-card fields (2026-09-09), written only when present: a wave row's typed outcome + live seconds, a recording row's envelope thumbnail bytes. Binary at rest like everything else in the record.
+fn set_wave_fields(mut rec: Record, msg: &ChatMessage) -> Record {
+    if let Some(w) = msg.wave {
+        rec = rec.set("wave_out", w.outcome as u64).set("wave_secs", w.secs as u64);
+    }
+    if !msg.envelope.is_empty() {
+        rec = rec.set("wave_env", Value::Bytes(msg.envelope.clone()));
+    }
+    rec
+}
+
+fn record_wave(rec: &Record) -> Option<crate::types::WaveInfo> {
+    let outcome = crate::types::WaveOutcome::from_wire(rec.uint("wave_out")? as u8)?;
+    Some(crate::types::WaveInfo { outcome, secs: rec.uint("wave_secs").unwrap_or(0) as u32 })
+}
+
+fn record_envelope(rec: &Record) -> Vec<u8> {
+    rec.bytes("wave_env").map(|b| b.to_vec()).unwrap_or_default()
 }
 
 /// Persist the conversation-scoped durable bits — unread count and the history-recovery cursor — under the conversation id. These historically rode the contact record; a conversation is not a contact, so they get their own tiny record.
@@ -1256,6 +1279,7 @@ pub fn save_messages_page(
                 .set("ref_kind", kind as u64)
                 .set("ref_ts", Value::Time(target));
         }
+        rec = set_wave_fields(rec, msg);
         let row_key = message_row_key(msg.timestamp, &msg.content);
         // Same delta gate as save_messages: history pages routinely re-deliver rows the vault already holds verbatim — skip the durable transaction for identical rows (a read error falls thru to the put).
         if db
@@ -1341,6 +1365,8 @@ pub fn load_message_page_before(
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             marks: record_marks(&rec, content),
+            wave: record_wave(&rec),
+            envelope: record_envelope(&rec),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -1496,6 +1522,8 @@ mod tests {
                 deleted: false,
                 reference: None,
                 notified: true,
+                wave: None,
+                envelope: Vec::new(),
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
@@ -1511,6 +1539,8 @@ mod tests {
                 deleted: false,
                 reference: None,
                 notified: true,
+                wave: None,
+                envelope: Vec::new(),
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
@@ -1526,6 +1556,8 @@ mod tests {
                 deleted: false,
                 reference: None,
                 notified: true,
+                wave: None,
+                envelope: Vec::new(),
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
@@ -1812,6 +1844,8 @@ mod tests {
             deleted: false,
             reference: None,
             notified: true,
+            wave: None,
+            envelope: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,

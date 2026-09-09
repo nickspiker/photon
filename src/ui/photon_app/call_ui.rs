@@ -8,29 +8,50 @@
 use super::*;
 use crate::call::signal::CallSignal;
 use crate::call::{ActiveCall, CallPhase};
+use crate::types::{WaveInfo, WaveOutcome};
 
 /// A finished keep-transcode, posted from the worker thread back to the UI thread to mint the `call.audio` row. `result` is `None` when the recording was empty or the transcode failed (treated as delete).
 pub(super) struct CallKeepResult {
     peer: [u8; 32],
     offer_osc: i64,
     call_id8: [u8; 8],
-    result: Option<([u8; 32], u64)>,
+    result: Option<crate::call::record::Kept>,
 }
 
-impl PhotonApp {
-    /// Format a call duration as `M:SS`, base-aware (the About-page dozenal toggle). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
-    pub(super) fn fmt_duration(&self, secs: i64) -> String {
-        let secs = secs.max(0);
-        let (m, s) = ((secs / 60) as u32, (secs % 60) as u32);
-        if crate::dozenal_ui() {
+/// Format a duration as `M:SS`, base-aware (the About-page dozenal toggle). A free function so the render can call it under its chrome borrow (the method form reads `&self`). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
+pub(super) fn fmt_duration_secs(secs: i64) -> String {
+    let secs = secs.max(0);
+    let (m, s) = ((secs / 60) as u32, (secs % 60) as u32);
+    match crate::num_base() {
+        crate::NumBase::Dozenal => {
             let mut ss = crate::dozenal_glyphs(s);
             if s < 12 {
                 ss = format!("{}{}", char::from(0x10), ss); // two-digit pad, dozenal zero
             }
             format!("{}:{}", crate::dozenal_glyphs(m), ss)
-        } else {
-            format!("{}:{:02}", m, s)
         }
+        crate::NumBase::Hex => format!("{m:X}:{s:02X}"),
+        crate::NumBase::Arabic => format!("{}:{:02}", m, s),
+    }
+}
+
+/// The wave card's header line for a wave row: outcome word + live duration, in the current language and base.
+pub(super) fn wave_header(w: crate::types::WaveInfo) -> String {
+    use crate::types::WaveOutcome as O;
+    let dur = fmt_duration_secs(w.secs as i64);
+    match w.outcome {
+        O::Answered => tr(Msg::CallEndedDur(&dur)).into_owned(),
+        O::Dropped => tr(Msg::CallDroppedDur(&dur)).into_owned(),
+        O::Missed => tr(Msg::MissedCallRow).into_owned(),
+        O::Declined => tr(Msg::CallDeclinedRow).into_owned(),
+        O::Busy => tr(Msg::BusyRow).into_owned(),
+    }
+}
+
+impl PhotonApp {
+    /// Format a call duration as `M:SS`, base-aware (the About-page dozenal toggle). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
+    pub(super) fn fmt_duration(&self, secs: i64) -> String {
+        fmt_duration_secs(secs)
     }
 
     /// Poll the retained call Buttons' rising-edge clicks (docs/calls.md) — mirrors the attest/+/send pattern: `dispatch_release` (or a focused-key activation) fired `on_click`; we observe the edge here and run the phase's action. Called from BOTH the Released arm and the key path so pointer taps and Enter/Space on a focused call button both fire exactly once. The verb is phase-driven: action = Answer/Keep/Hang up, decline = Decline/Delete, start = place the call.
@@ -154,18 +175,20 @@ impl PhotonApp {
             self.scene_dirty = true;
             return;
         }
+        self.play_recording_from(blob, 0);
+    }
+
+    /// Start (or restart) playback of a kept recording at archive slot `slot` — the wave card's tap-to-seek and scrub-release edge. Any prior playback stops (the handle drop). The card itself is the feedback; the only toast is the refusal (a wave is live and owns the audio session).
+    pub(super) fn play_recording_from(&mut self, blob: [u8; 32], slot: usize) {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
-        self.call_playback = crate::call::playback::play_blob(&seed, &blob); // drops any prior handle = stops it
+        self.call_playback = None;
+        self.call_playback = crate::call::playback::play_blob_from(&seed, &blob, slot);
         self.call_playback_hash = self.call_playback.as_ref().map(|_| blob);
-        self.ready_toast = Some(
-            if self.call_playback.is_some() {
-                tr(Msg::PlayingRecording).into_owned()
-            } else {
-                tr(Msg::CantPlayNow).into_owned()
-            },
-        );
+        if self.call_playback.is_none() {
+            self.ready_toast = Some(tr(Msg::CantPlayNow).into_owned());
+        }
         self.scene_dirty = true;
     }
 
@@ -326,7 +349,7 @@ impl PhotonApp {
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
             let _ = self.send_call_signal(ci, CallSignal::Decline { call_id });
         }
-        self.end_call(&tr(Msg::CallDeclinedRow), offer_osc);
+        self.end_call(WaveOutcome::Declined, offer_osc);
     }
 
     /// Hang up — covers the caller abandoning an unanswered ring (the human timeout) AND either side ending an active call.
@@ -346,15 +369,15 @@ impl PhotonApp {
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
             let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
         }
-        let summary = match phase {
-            CallPhase::Outgoing if we_are_caller => tr(Msg::MissedCallRow),
-            CallPhase::Active => {
-                let _ = phase_osc; // duration rendering rides the summary-row polish (dozenal digits at the edge)
-                tr(Msg::CallRow)
-            }
-            _ => tr(Msg::CallRow),
+        let _ = phase_osc; // the wave row's seconds come from the phase base inside end_call
+        let outcome = match phase {
+            CallPhase::Outgoing if we_are_caller => WaveOutcome::Missed,
+            CallPhase::Active => WaveOutcome::Answered,
+            // Hanging up a ringing call IS declining it.
+            CallPhase::Ringing => WaveOutcome::Declined,
+            _ => WaveOutcome::Answered,
         };
-        self.end_call(&summary, offer_osc);
+        self.end_call(outcome, offer_osc);
     }
 
     /// Launch-time wave recovery (record-by-default durability): finish any keep a crash/battery-death interrupted. Once per session, after the vault + session are up — orphaned spool files with surviving registers re-enter the NORMAL keep-transcode path and the wave appears in its conversation as if the hangup had completed.
@@ -450,7 +473,7 @@ impl PhotonApp {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
                 let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
             }
-            self.end_call(&tr(Msg::CallDroppedRow), offer_osc);
+            self.end_call(WaveOutcome::Dropped, offer_osc);
             return;
         }
         if drought >= reconnect_after {
@@ -737,12 +760,12 @@ impl PhotonApp {
                 }
                 if call.we_are_caller {
                     let offer_osc = call.offer_osc;
-                    let text = if matches!(sig, CallSignal::Busy { .. }) {
-                        tr(Msg::BusyRow)
+                    let outcome = if matches!(sig, CallSignal::Busy { .. }) {
+                        WaveOutcome::Busy
                     } else {
-                        tr(Msg::CallDeclinedRow)
+                        WaveOutcome::Declined
                     };
-                    self.end_call(&text, offer_osc);
+                    self.end_call(outcome, offer_osc);
                 }
             }
             CallSignal::Hangup { call_id } => {
@@ -756,16 +779,16 @@ impl PhotonApp {
                     (call.phase, call.offer_osc, call.we_are_caller);
                 match phase {
                     CallPhase::Ringing => {
-                        // Caller gave up before we answered — the missed-call row, on every device that was ringing (same stamp, merge-folds to one).
-                        self.end_call(&tr(Msg::MissedCallRow), offer_osc);
+                        // Caller gave up before we answered — the missed wave, on every device that was ringing (same stamp, merge-folds to one; a sibling that answered outranks it by outcome).
+                        self.end_call(WaveOutcome::Missed, offer_osc);
                     }
                     CallPhase::Active => {
-                        self.end_call(&tr(Msg::CallRow), offer_osc);
+                        self.end_call(WaveOutcome::Answered, offer_osc);
                     }
                     CallPhase::Outgoing if !we_are_caller => {}
                     CallPhase::Outgoing => {
                         // Friend-side auto-hangup (e.g. answer hit their dead call) — treat as declined-ish end.
-                        self.end_call(&tr(Msg::CallRow), offer_osc);
+                        self.end_call(WaveOutcome::Declined, offer_osc);
                     }
                 }
             }
@@ -987,17 +1010,24 @@ impl PhotonApp {
         ))
     }
 
-    /// Mint the visible summary row (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row), stop the engine, and either clear the call or park it in Ended for the keep/delete decision (recording by default — an Active call with a spool always gets the choice).
-    fn end_call(&mut self, summary: &str, offer_osc: i64) {
-        // WHO tore the call down (field 2026-09-02: Brittany's active call died at ~3s the instant an inbound text landed, no call signal from Nick — the trigger wasn't in any obvious path, so every teardown now names itself). `summary` is the visible row text and doubles as the reason tag here.
+    /// Mint THE WAVE ROW (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row) with its typed outcome on EVERY end edge, stop the engine, and hand a live call's spool to the keep transcode. The wave card (2026-09-09): one row per wave; the recording, when it lands, REFERENCES this row and folds into its card — so the card exists at hangup, before the transcode finishes, and a sibling that only rang still shows the same event.
+    fn end_call(&mut self, outcome: WaveOutcome, offer_osc: i64) {
+        // WHO tore the call down (field 2026-09-02: Brittany's active call died at ~3s the instant an inbound text landed, no call signal from Nick — the trigger wasn't in any obvious path, so every teardown now names itself). The outcome doubles as the reason tag here.
         if let Some(call) = &self.active_call {
             crate::logf!(
-                "CALL: end_call — phase {}, reason \"{}\" (id {})",
+                "CALL: end_call — phase {}, outcome {} (id {})",
                 format!("{:?}", call.phase),
-                summary,
+                format!("{:?}", outcome),
                 hex::encode(&call.call_id[..4])
             );
         }
+        // Live seconds from the Active phase base — the keep's slot count refines it when the recording lands (merge = max).
+        let secs: u32 = self
+            .active_call
+            .as_ref()
+            .filter(|c| c.phase == CallPhase::Active)
+            .map(|c| ((vsf::eagle_time_oscillations() - c.phase_osc).max(0) / vsf::OSCILLATIONS_PER_SECOND as i64) as u32)
+            .unwrap_or(0);
         if let Some(call) = &self.active_call {
             if let Some(e) = &call.engine {
                 e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio
@@ -1021,22 +1051,20 @@ impl PhotonApp {
         let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap_or([0u8; 32]);
         if let Some(peer) = peer {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-                match ticket {
-                    Some(ticket) => {
-                        // Auto-keep: the recording IS the record — no duplicate text summary. Land the user in the conversation so the wave shows up where it lives.
-                        self.spawn_keep_transcode(ticket, peer, offer_osc, seed, call_id8);
-                        self.open_conversation_with(ci);
-                    }
-                    None => {
-                        let mut row = ChatMessage::new_with_timestamp(summary.to_string(), was_caller, offer_osc + 1);
-                        row.notified = true;
-                        row.delivered = true;
-                        if let Some(conv) = self.conv_mut_of(ci) {
-                            conv.insert_message_sorted(row.clone());
-                        }
-                        self.persist_messages_async(ci);
-                        self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
-                    }
+                // The wave row, always: empty content, typed payload. Same stamp on every device that lived any part of the call → one row fleet-wide, outcome folded by rank.
+                let mut row = ChatMessage::new_with_timestamp(String::new(), was_caller, offer_osc + 1);
+                row.wave = Some(WaveInfo { outcome, secs });
+                row.notified = true;
+                row.delivered = true;
+                if let Some(conv) = self.conv_mut_of(ci) {
+                    conv.insert_message_sorted(row.clone());
+                }
+                self.persist_messages_async(ci);
+                self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
+                if let Some(ticket) = ticket {
+                    // Recorded by default: the transcode lands the recording row against this wave row. Land the user in the conversation so the card shows up where it lives.
+                    self.spawn_keep_transcode(ticket, peer, offer_osc, seed, call_id8);
+                    self.open_conversation_with(ci);
                 }
             }
         }
@@ -1166,25 +1194,36 @@ impl PhotonApp {
         }
         for r in pending {
             match r.result {
-                Some((hash, size)) => {
+                Some(kept) => {
                     // Keep completed (blob stored) → the durable spool register has done its job; a crash from here on has nothing to recover.
                     crate::call::spool::drop_register(&r.call_id8);
                     if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
-                        // "call.audio" (video calls will mint "call.video") — no POTS in Photon, so nothing here is a "phone call".
-                        let content = crate::types::attachment_content(&hash, "call.audio", size);
-                        let mut row =
-                            ChatMessage::new_with_timestamp(content, true, r.offer_osc + 2);
+                        // "call.audio" (video calls will mint "call.video") — no POTS in Photon, so nothing here is a "phone call". The row REFERENCES the wave row (offer_osc+1) and carries the envelope thumbnail, so every sibling folds it into the card and draws the shape before it holds the blob.
+                        let content = crate::types::attachment_content(&kept.hash, "call.audio", kept.size);
+                        let mut row = ChatMessage::new_with_timestamp(content, true, r.offer_osc + 2)
+                            .with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
                         row.notified = true;
                         row.delivered = true;
+                        row.envelope = kept.thumb.clone();
+                        // The wave row's seconds refine to the recording's length (merge = max); push the upgraded copy too.
+                        let mut pushed = vec![row.clone()];
                         if let Some(conv) = self.conv_mut_of(ci) {
                             conv.insert_message_sorted(row.clone());
+                            if let Some(w) = conv.messages.iter_mut().find(|m| m.timestamp == r.offer_osc + 1 && m.wave.is_some()) {
+                                let before = w.wave;
+                                crate::types::merge_wave_fields(w, Some(WaveInfo { outcome: WaveOutcome::Answered, secs: kept.secs }), &[]);
+                                if w.wave != before {
+                                    pushed.push(w.clone());
+                                }
+                            }
                         }
                         self.persist_messages_async(ci);
-                        self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
+                        self.push_rows_to_siblings(ci, &pushed, None);
                         crate::logf!(
-                            "CALL: recording kept — {} bytes as blob {}…",
-                            size,
-                            hex::encode(&hash[..4])
+                            "CALL: recording kept — {} bytes as blob {}…, {} s",
+                            kept.size,
+                            hex::encode(&kept.hash[..4]),
+                            kept.secs
                         );
                     }
                 }

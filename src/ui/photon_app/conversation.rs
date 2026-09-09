@@ -252,6 +252,9 @@ impl PhotonApp {
         self.compose_reply_to = None;
         self.compose_edit_of = None;
         self.compose_react_to = None;
+        // The stream filter and any waveform scrub belong to the conversation they were set in.
+        self.conv_filter = ChatFilter::All;
+        self.wave_scrub = None;
         // The open IS the fleet-wide claim edge: this device is now the conversation's active clearer, and every sibling learns it before the next friend message can ding them.
         self.broadcast_focus_claim(true);
     }
@@ -780,7 +783,7 @@ impl PhotonApp {
         };
         let raw: &[crate::types::ChatMessage] = &conv.messages;
         let visible: Vec<&crate::types::ChatMessage> =
-            raw.iter().filter(|m| chat_row_visible(raw, m)).collect();
+            raw.iter().filter(|m| chat_row_visible(raw, m, self.conv_filter)).collect();
         let Some((_, wrap_lines, _)) = self.msg_wrap.as_ref() else {
             return;
         };
@@ -811,6 +814,10 @@ impl PhotonApp {
             }
             if row_has_reaction(&react_over, m.timestamp) {
                 block += intra;
+            }
+            // A live wave's card carries its waveform band (the render reserves the same two lines).
+            if m.wave.is_some_and(|w| w.outcome.was_live()) {
+                block += 2.0 * intra;
             }
             if sel_key.is_some_and(|(ts, out)| m.timestamp == ts && m.is_outgoing == out) {
                 block += line_h * 3.0; // the open details strip occupies its slot
@@ -2101,6 +2108,18 @@ impl PhotonApp {
                                 upgraded = true;
                             }
                         }
+                        // Wave fields fold by rank / max / adopt-once — the same rule the live insert path applies.
+                        {
+                            let before = (existing.wave, existing.envelope.len());
+                            crate::types::merge_wave_fields(
+                                existing,
+                                row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
+                                &row.envelope,
+                            );
+                            if (existing.wave, existing.envelope.len()) != before {
+                                upgraded = true;
+                            }
+                        }
                         if upgraded {
                             fresh.push(existing.clone());
                         }
@@ -2121,6 +2140,8 @@ impl PhotonApp {
                             .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),
                         replicated: from_sibling && row.sender_outgoing,
                         marks: crate::types::valid_marks(&row.content, &row.marks),
+                        wave: row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
+                        envelope: row.envelope.clone(),
                         bridge_seq: 0,
                         bridge_exit: None,
                     });

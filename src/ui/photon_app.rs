@@ -716,9 +716,24 @@ fn display_content(content: &str) -> String {
 }
 
 /// Is this row a BUBBLE in the stream? One source of truth for the renderer's visible-list filter AND the tap-to-jump scroll walk — the two must count identically or a jump lands off-target. Control rows and tombstones never draw; reaction rows resolve onto their target; an edit row hides while its target exists (renders standalone only when the target never synced).
-fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMessage) -> bool {
+fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMessage, filter: ChatFilter) -> bool {
     if crate::types::is_control_content(&m.content) || m.deleted {
         return false;
+    }
+    // A kept recording FOLDS into its wave row's card (RefKind::Wave → offer_osc+1); it draws standalone only when the wave row never reached this device.
+    let is_recording = crate::types::is_call_recording(&m.content);
+    if let Some((crate::types::RefKind::Wave, t)) = m.reference {
+        if raw.iter().any(|x| x.timestamp == t && x.wave.is_some() && !x.deleted) {
+            return false;
+        }
+    }
+    // The stream filter (the top-bar pill): waves = wave rows (and orphan recordings), text = everything else.
+    let is_wave = m.wave.is_some() || is_recording;
+    match filter {
+        ChatFilter::All => {}
+        ChatFilter::Waves if !is_wave => return false,
+        ChatFilter::Text if is_wave => return false,
+        _ => {}
     }
     if matches!(m.reference, Some((crate::types::RefKind::React, _))) {
         return false;
@@ -742,6 +757,55 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
         });
     }
     true
+}
+
+/// The conversation stream filter — the cycling pill in the top bar (all → waves → text → all). Session state, never persisted; resets to All on every conversation open.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum ChatFilter {
+    #[default]
+    All,
+    Waves,
+    Text,
+}
+
+impl ChatFilter {
+    fn next(self) -> ChatFilter {
+        match self {
+            ChatFilter::All => ChatFilter::Waves,
+            ChatFilter::Waves => ChatFilter::Text,
+            ChatFilter::Text => ChatFilter::All,
+        }
+    }
+}
+
+/// A wave card's waveform band as drawn this frame, slot-indexed beside [`PhotonApp::msg_hit_rows`]: the tap/press/drag geometry the input path resolves against. `x0..glyph_x1` is the play/stop glyph; `glyph_x1..x1` the seekable waveform; `total` the slot count a fraction maps onto.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WaveBand {
+    pub hash: [u8; 32],
+    pub held: bool,
+    pub x0: f32,
+    pub glyph_x1: f32,
+    pub x1: f32,
+    pub y0: f32,
+    pub y1: f32,
+    pub total: usize,
+}
+
+impl WaveBand {
+    fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x0 && x <= self.x1 && y >= self.y0 && y <= self.y1
+    }
+    /// Playhead fraction for a pointer x over the waveform part.
+    fn frac_at(&self, x: f32) -> f32 {
+        ((x - self.glyph_x1) / (self.x1 - self.glyph_x1).max(1.0)).clamp(0.0, 1.0)
+    }
+}
+
+/// A live scrub: the pointer went down on a waveform and is carrying the playhead. The release is the seek edge (edges, not timers); the card draws the playhead at `frac` meanwhile.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct WaveScrub {
+    pub band: WaveBand,
+    pub frac: f32,
 }
 
 /// Current reaction per target per direction — newest live wins, empty glyph = retracted. [0]=theirs, [1]=ours. Shared by the renderer and the scroll walk (a reacted row is one line taller).
@@ -1423,6 +1487,14 @@ pub struct PhotonApp {
     call_playback: Option<crate::call::playback::PlaybackHandle>,
     /// Which kept-recording blob the live playback belongs to — so its conversation bubble renders ■ + progress and a re-tap stops IT (not restart). None when nothing plays.
     call_playback_hash: Option<[u8; 32]>,
+    /// The conversation stream filter (top-bar pill). Session state.
+    conv_filter: ChatFilter,
+    /// Hit id of the filter pill.
+    conv_filter_hit: HitId,
+    /// Wave cards' waveform bands as drawn this frame, slot-indexed like `msg_hit_rows` (`visible_index % MSG_HIT_SPAN`).
+    msg_wave_bands: Vec<Option<WaveBand>>,
+    /// A waveform scrub in progress (pointer down on a card's waveform); release seeks.
+    wave_scrub: Option<WaveScrub>,
     /// One-shot launch sweep for waves whose keep a crash interrupted (spool.rs recover_orphans).
     orphan_waves_swept: bool,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
@@ -1664,7 +1736,7 @@ pub struct PhotonApp {
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
     /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
-    msg_wrap: Option<((usize, usize, usize, u32, u32), Vec<Vec<String>>, usize)>,
+    msg_wrap: Option<((usize, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -1721,8 +1793,6 @@ pub struct PhotonApp {
     settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
     settings_chime_check: Option<fluor::widgets::Checkbox>,
-    /// About-page "Dozenal numbers" toggle — fleet-wide (`display.dozenal`, linked). Mirrors into the render-edge `crate::DOZENAL_UI` static on flip + settings load.
-    settings_dozenal_check: Option<fluor::widgets::Checkbox>,
     /// Notifications: vibrate on new message (`notify.vibrate_msg`) + the call pair (`notify.ring_call` / `notify.vibrate_call`). Persisted fleet-wide; enforcement is the alert paths' to honor (Android vibration rides Kotlin — follow-up).
     settings_vibrate_msg_check: Option<fluor::widgets::Checkbox>,
     settings_ring_call_check: Option<fluor::widgets::Checkbox>,
@@ -2150,6 +2220,10 @@ impl PhotonApp {
             call_speaker_on: false,
             call_playback: None,
             call_playback_hash: None,
+            conv_filter: ChatFilter::All,
+            conv_filter_hit: HIT_NONE,
+            msg_wave_bands: Vec::new(),
+            wave_scrub: None,
             orphan_waves_swept: false,
             lane_rearm_cycles: std::collections::HashMap::new(),
             lane_reserved_rows: std::collections::HashSet::new(),
@@ -2263,7 +2337,6 @@ impl PhotonApp {
             bridge_int: None,
             settings_custodian_check: None,
             settings_chime_check: None,
-            settings_dozenal_check: None,
             settings_vibrate_msg_check: None,
             settings_ring_call_check: None,
             settings_vibrate_call_check: None,
@@ -2911,11 +2984,6 @@ impl PhotonApp {
                     }
                     if let Some(tb) = self.you_add_textbox.as_mut() {
                         f(tb);
-                    }
-                }
-                SettingsPage::About => {
-                    if let Some(cb) = self.settings_dozenal_check.as_mut() {
-                        f(cb);
                     }
                 }
                 _ => {}

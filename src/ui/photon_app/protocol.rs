@@ -442,19 +442,6 @@ impl PhotonApp {
             }
         }
 
-        // Dozenal toggle (About page): fleet-wide linked write + the render-edge static mirror flips NOW so every number on screen switches base this frame.
-        let dozenal_toggle = self
-            .settings_dozenal_check
-            .as_mut()
-            .map(|cb| (cb.take_toggle(), cb.is_checked()));
-        if let Some((true, checked)) = dozenal_toggle {
-            crate::set_dozenal_ui(checked);
-            if self.settings_set("display.dozenal", vsf::VsfType::u0(checked)) {
-                crate::logf!("SETTINGS: display.dozenal = {} (linked write)", checked);
-            }
-            self.scene_dirty = true;
-            needs_redraw = true;
-        }
 
         // Hard-logs toggle: arm THIS device for 24h (the value stored is the arm time; the sink self-expires) — device-local via unlink, mirroring the display.zoom pattern. Arming flips the sink NOW (a flush edge).
         let hardlogs_toggle = self
@@ -1067,9 +1054,6 @@ impl PhotonApp {
         }
         if let Some(cb) = self.settings_chime_check.as_mut() {
             cb.set_label(tr(Msg::ChimeNewMessage));
-        }
-        if let Some(cb) = self.settings_dozenal_check.as_mut() {
-            cb.set_label(tr(Msg::Dozenal));
         }
         if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
             cb.set_label(tr(Msg::VibrateNewMessage));

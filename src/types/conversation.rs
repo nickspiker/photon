@@ -173,6 +173,8 @@ impl Conversation {
             }
             // A row witnessed live on the wire supersedes a friend-attested recovered copy.
             existing.recovered = existing.recovered && msg.recovered;
+            // Wave rows fold by OUTCOME RANK (the most-informed copy wins) and max seconds; a recording row's envelope thumbnail is adopted once, never cleared.
+            merge_wave_fields(existing, msg.wave, &msg.envelope);
             return;
         }
         // A recovered PLACEHOLDER at this timestamp yields to an authoritative (live/witnessed) row even if the text differs — what we saw on the wire outranks friend-attested content.
@@ -454,5 +456,18 @@ mod tests {
             "a new message invalidates the cache"
         );
         assert_eq!(a.anti_entropy_digest().0, 4);
+    }
+}
+
+/// Fold a wave row / recording row's typed fields into an existing copy of the same row (same stamp + content): outcome by rank (a still-ringing sibling's Missed yields to the answerer's Answered), seconds by max (the keep's slot count refines the hangup estimate), envelope adopted when ours is empty. Monotone — nothing here ever un-sets.
+pub fn merge_wave_fields(existing: &mut ChatMessage, wave: Option<crate::types::WaveInfo>, envelope: &[u8]) {
+    if let Some(w) = wave {
+        existing.wave = Some(match existing.wave {
+            Some(e) => crate::types::WaveInfo { outcome: e.outcome.max(w.outcome), secs: e.secs.max(w.secs) },
+            None => w,
+        });
+    }
+    if existing.envelope.is_empty() && !envelope.is_empty() {
+        existing.envelope = envelope.to_vec();
     }
 }

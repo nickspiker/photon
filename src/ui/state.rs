@@ -57,13 +57,15 @@ pub enum SettingsPage {
     Diagnostics,
     /// UI-language picker — one button per language, labelled in itself (autonyms).
     Language,
+    /// The number base: the dozenal toggle, why, the digit cheat sheet, and the DMS time-ago legend. Its rail label reads "Dozenal" or "Arabic" per the current choice (Nick 2026-09-09).
+    Dozenal,
     /// Explainer / philosophy / version / feedback / credits.
     About,
 }
 
 impl SettingsPage {
     /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every call start, so there is no ritual for a page to hold.
-    pub const ALL: [SettingsPage; 9] = [
+    pub const ALL: [SettingsPage; 10] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
@@ -73,6 +75,7 @@ impl SettingsPage {
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
         SettingsPage::Language,
+        SettingsPage::Dozenal,
         SettingsPage::About,
     ];
 
@@ -88,6 +91,12 @@ impl SettingsPage {
             SettingsPage::Updates => "Updates",
             SettingsPage::Diagnostics => "Diagnostics",
             SettingsPage::Language => "Language",
+            // The base page is named for the base in force — the rail row itself shows the choice.
+            SettingsPage::Dozenal => match crate::num_base() {
+                crate::NumBase::Dozenal => "Dozenal",
+                crate::NumBase::Hex => "Hexadecimal",
+                crate::NumBase::Arabic => "Arabic",
+            },
             SettingsPage::About => "About",
         }
     }

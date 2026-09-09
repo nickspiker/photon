@@ -3202,8 +3202,10 @@ impl PhotonApp {
                                                 deleted: m.deleted,
                                                 reference: m.reference.map(|(k, t)| (k as u8, t)),
                                                 notified: m.notified,
-                                    marks: m.marks.clone(),
-                                })
+                                                marks: m.marks.clone(),
+                                                wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
+                                                envelope: m.envelope.clone(),
+                                            })
                                             .collect();
                                         let page = HistoryPagePlain {
                                             rows: hist_rows,

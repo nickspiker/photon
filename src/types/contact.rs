@@ -58,6 +58,8 @@ pub enum RefKind {
     BridgeCmd = 6,
     /// BRIDGE INTERRUPT — the operator's stop lever (Ctrl+K / the Stop pill), targeting the command row's eagle_time. The signal number rides the typed `bsig` wire field; the host signals the command's own process group, never bash. Hidden control row; late arrival after completion is a natural no-op.
     BridgeCtl = 7,
+    /// WAVE RECORDING → its wave row (docs/calls.md, the wave card 2026-09-09). The kept `call.audio` attachment row targets the wave row's eagle_time (offer_osc+1); the renderer FOLDS the recording into that row's card (the edit-target pattern), so a wave is ONE event in the stream however many devices minted its pieces. Fleet-internal, never chain-transmitted.
+    Wave = 8,
 }
 
 impl RefKind {
@@ -70,12 +72,53 @@ impl RefKind {
             5 => Some(RefKind::BridgeReset),
             6 => Some(RefKind::BridgeCmd),
             7 => Some(RefKind::BridgeCtl),
+            8 => Some(RefKind::Wave),
             _ => None,
         }
     }
 }
 
 /// One typed content ELEMENT annotating a byte range of a message's plaintext (Nick 2026-09-04: "the plaintext should contain the full message… fancification on top so it's searchable and contributes to the weave"). The content string stays the complete readable message — search, logs, history pages, and the braid weave all ride it untouched; marks are display affordances layered beside it. Kind-tagged so the vocabulary extends (link today; future kinds render as plain text on builds that predate them).
+/// How a wave ENDED — the wave row's typed outcome (never a language string: the catalog renders it at the edge). Ordered by how much of the call the minting device lived, so the sibling merge keeps the most-informed copy: a still-ringing sibling mints Missed on the caller's final hangup while the answering device mints Answered for the same stamp — Answered wins.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[repr(u8)]
+pub enum WaveOutcome {
+    Missed = 1,
+    Busy = 2,
+    Declined = 3,
+    Answered = 4,
+    /// Answered, then the media path died past the drop line — carries strictly more than Answered.
+    Dropped = 5,
+}
+
+impl WaveOutcome {
+    pub fn from_wire(v: u8) -> Option<WaveOutcome> {
+        match v {
+            1 => Some(WaveOutcome::Missed),
+            2 => Some(WaveOutcome::Busy),
+            3 => Some(WaveOutcome::Declined),
+            4 => Some(WaveOutcome::Answered),
+            5 => Some(WaveOutcome::Dropped),
+            _ => None,
+        }
+    }
+    /// A recording can only exist for a wave that was live.
+    pub fn was_live(self) -> bool {
+        matches!(self, WaveOutcome::Answered | WaveOutcome::Dropped)
+    }
+}
+
+/// The wave row's payload: ONE row per wave, stamped offer_osc+1 on every device that lived any part of it (the shared stamp folds the copies). `content` is EMPTY on a wave row — everything the card shows is typed here or folded in from the recording row that references it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaveInfo {
+    pub outcome: WaveOutcome,
+    /// Live seconds (Active phase only; 0 for missed/declined/busy). The recording's slot count refines it when the keep lands.
+    pub secs: u32,
+}
+
+/// Envelope thumbnail buckets per channel on a recording row — one GROSS. Small enough to ride the row fleet-wide (a sibling draws the shape without the blob), coarse enough that the fine envelope in the container is worth opening when the blob is held.
+pub const WAVE_THUMB_BUCKETS: usize = 144;
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct MessageMark {
     /// Wire kind: 1 = link (`dest` is the destination URL). 0 is reserved as "none"; unknown kinds are dropped at validation.
@@ -205,6 +248,10 @@ pub struct ChatMessage {
     pub replicated: bool,
     /// Typed content elements beside the plaintext (links today) — validated against `content` at every ingress; empty = plain message. Persisted, synced, and carried on the wire as FIELDS (the attachment content-string record is the anti-pattern this replaces going forward).
     pub marks: Vec<MessageMark>,
+    /// WAVE ROW payload (the wave card, 2026-09-09): `Some` = this row IS a wave (content empty). Persisted, fleet-synced as typed page columns, merged by outcome rank + max seconds. Never on the friend wire — each fleet keeps its own record of a wave.
+    pub wave: Option<WaveInfo>,
+    /// RECORDING ROW envelope thumbnail: `nchan × WAVE_THUMB_BUCKETS` bytes, channel-major, each bucket the channel's loudness in eighth-STOPS below full scale (0 = full scale, 255 = silence floor). Empty on every other row. Persisted + fleet-synced so any sibling draws the waveform before it holds the blob.
+    pub envelope: Vec<u8>,
     /// BRIDGE runtime only (never persisted — bridge rows are ephemeral): the newest streamed snapshot's sequence on a BridgeOut row, so an out-of-order or duplicated partial can never regress the display.
     pub bridge_seq: u64,
     /// BRIDGE runtime only: the exit code once this BridgeOut row's command completed — present = FINAL frame arrived, the in-flight predicate's other half.
@@ -224,6 +271,8 @@ impl ChatMessage {
             reference: None,
             notified: is_outgoing,
             marks: Vec::new(),
+            wave: None,
+            envelope: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -243,6 +292,8 @@ impl ChatMessage {
             reference: None,
             notified: is_outgoing,
             marks: Vec::new(),
+            wave: None,
+            envelope: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,

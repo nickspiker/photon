@@ -23,6 +23,10 @@ pub struct PlaybackHandle {
     pos: Arc<std::sync::atomic::AtomicUsize>,
     /// Total frames in the stream — the denominator.
     pub total: usize,
+    /// The container's fine envelope (`nchan × env_len`, eighth-stops) — the card draws this instead of the row thumbnail while the handle lives.
+    pub envelope: Vec<u8>,
+    pub env_per_sec: u8,
+    pub nchan: usize,
 }
 
 impl PlaybackHandle {
@@ -48,13 +52,18 @@ impl Drop for PlaybackHandle {
 
 /// Play a KEPT recording blob thru the speaker (downmixed to mono). `None` if a call is active, the blob is missing/unreadable, or there's no audio device.
 pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<PlaybackHandle> {
+    play_blob_from(identity_seed, content_hash, 0)
+}
+
+/// Play a kept recording from archive slot `slot` (10 ms units) — the wave card's tap-to-seek. The stream seeks by walking packet lengths, so a far target costs a byte scan plus a few priming decodes.
+pub fn play_blob_from(identity_seed: &[u8; 32], content_hash: &[u8; 32], slot: usize) -> Option<PlaybackHandle> {
     if crate::platform::audio::is_active() {
         crate::log("CALL playback: audio busy (call active) — refused");
         return None;
     }
     let bytes = crate::storage::blob_load(identity_seed, content_hash)?;
     let stream = crate::call::record::open_blob(&bytes)?;
-    spawn(stream, 0)
+    spawn(stream, slot)
 }
 
 fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
@@ -62,6 +71,9 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let done = Arc::new(AtomicBool::new(false));
     let pos = Arc::new(std::sync::atomic::AtomicUsize::new(skip.min(stream.total)));
     let total = stream.total;
+    let envelope = stream.envelope.clone();
+    let env_per_sec = stream.env_per_sec;
+    let nchan = stream.nchan;
     let flag = stop.clone();
     let done_flag = done.clone();
     let pos_w = pos.clone();
@@ -84,16 +96,14 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
         crate::platform::audio::stop();
         return None;
     }
-    Some(PlaybackHandle { stop, done, pos, total })
+    Some(PlaybackHandle { stop, done, pos, total, envelope, env_per_sec, nchan })
 }
 
 fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize) {
     let nchan = stream.nchan.max(1);
-    // Seek = decode-and-discard to the mark (stateful codec; ~thousands of tiny decodes, far under a second).
-    for _ in 0..skip {
-        if stop.load(Ordering::Relaxed) || stream.next_frame().is_none() {
-            break;
-        }
+    // Seek = a length-prefix walk to just before the mark plus a few priming decodes (KeptStream::seek) — never a decode of everything before it.
+    if skip > 0 {
+        stream.seek(skip);
     }
     while !stop.load(Ordering::Relaxed) {
         // Backpressure = the pacing clock: wait until the DAC has drained below the target, then decode+queue the next frame. The output callback pops one frame per 10 ms of hardware time; we poll depth on a 1 ms granularity, never sleeping to a wall time.

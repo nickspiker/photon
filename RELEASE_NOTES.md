@@ -14,7 +14,13 @@ One sentence per line, however long; plain language for the person who installs 
 - Alerts at the bottom of the contact and attest screens now stack, and the update notice stays until the update is on.
 - The update notice only appears while automatic checking is enabled.
 - Settings rows wrap at the pane edge under a large font instead of running off it.
-- The About page shows the dozenal cheat sheet, each glyph with its name and its value, whenever the base is dozenal.
+- A wave is one entry in the conversation, not two: the outcome and length show at once, and the recording folds into the same card when it is kept.
+- A kept wave shows its sound as a two-sided waveform, yours above and theirs below: tap it to play from there, drag to scrub, tap the glyph to stop.
+- A pill in the conversation's top bar filters the stream to all, waves only, or text only.
+- Zooming holds the content under the pointer still instead of anchoring the page at its top.
+- A Dozenal page joins settings, named Dozenal, Hexadecimal, or Arabic for whichever base is on: three pills to pick the base, the why, the digit cheat sheet, and a legend for how long ago things were.
+- Hexadecimal is a third base for every number on screen, with plain 0 to F digits.
+- In dozenal mode a message's age is one number, how many times a second has doubled since it: Zila Zil ago is an hour, and the Dozenal page lists the rest.
 
 ## v87
 

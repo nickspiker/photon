@@ -115,6 +115,8 @@ pub enum Msg<'a> {
     /// Answer tapped but no frame could go out (the friendship is mid-ceremony) — the ring keeps going, the person needs to know why nothing happened.
     AnswerFailedReconnecting(&'a str),
     CallDroppedRow,
+    /// A dropped wave with its live duration — the wave card header.
+    CallDroppedDur(&'a str),
     CallChipElsewhere(&'a str),
     CallChipElsewhereUnknown,
     StopPlayback,
@@ -186,6 +188,13 @@ pub enum Msg<'a> {
     AgoHours(u32),
     AgoMinutes(u32),
     AgoSeconds(u32),
+    /// DMS age (dozenal mode): the pre-rendered glyph string.
+    AgoDms(&'a str),
+    // ---- the Dozenal page ----
+    DmsHead,
+    DmsIntro,
+    /// Plain reading of a DMS value (bit length of seconds ago) — the legend's third column; empty for values the legend doesn't list.
+    DmsReading(u32),
     ConversationTitle,
     BackToContacts,
     NameReclaimed,
@@ -489,8 +498,15 @@ pub enum Msg<'a> {
     ResentOnChain,
     RepushedFleet,
     FetchingFromDevices,
-    PlayingRecording,
     CantPlayNow,
+    // ---- wave card + stream filter ----
+    /// The waveform band while the keep transcode runs (the card exists from hangup; the audio lands after).
+    WaveKeeping,
+    /// Elapsed / total while a recording plays or is scrubbed — both already base-formatted `M:SS`.
+    WavePos { pos: &'a str, total: &'a str },
+    FilterAll,
+    FilterWaves,
+    FilterText,
     SavedTo(&'a str),
     SaveFailed,
     // ---- secured-elsewhere status ----
@@ -543,4 +559,6 @@ pub enum Msg<'a> {
     SettingsTitle,
     SettingsBack,
     Dozenal,
+    Hexadecimal,
+    Arabic,
 }

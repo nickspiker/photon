@@ -72,6 +72,7 @@
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
 - [project_incall_learner.md](project_incall_learner.md) — in-call learner + V-CHIRP probe SHIPPED; field rounds 1-5 logged; 2x-TX double capture FIXED 2026-09-08
 - [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: exhaustive-match Msg enum (en+es+mi), every numeral thru fmt_num, You-page picker
+- [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs (ZilaZil ≈ an hour); Dozenal settings page (rail reads Dozenal/Hexadecimal/Arabic) holds 3 base pills+why+cheat sheet+legend; NumBase/display.base
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila)
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp
 - [project_update_flow.md](project_update_flow.md) — self-update + release-notice push BUILT; RELEASE_NOTES.md (Upcoming → vN at deploy) compiled into the Updates page and rendered onto the website
@@ -157,6 +158,7 @@
 - [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect + once-per-gesture settle hook
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD (2026-09-09): one row per wave + recording folds in; waveform IS the seek bar; stops envelope; all/waves/text pill; flag-day licensed
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; 2026-09-09 Android audio = Rust-owned AAudio exclusive, HAL-stamped frames (floor 20.6 ms); docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
