@@ -63,6 +63,11 @@ fn page_schema() -> SectionSchema {
         .field("m_ms", TypeConstraint::AnyUnsigned) // flat mark byte starts
         .field("m_ml", TypeConstraint::AnyUnsigned) // flat mark byte lens
         .field("m_md", TypeConstraint::Utf8Text) // flat mark dests
+        // Wave card columns (2026-09-09). MISSING from this schema at v88: the builder refused every page (validation), so sibling pushes and history pages silently failed until the four lines below landed.
+        .field("m_wvo", TypeConstraint::AnyUnsigned) // wave outcome, one per row: 0 = not a wave row
+        .field("m_wvs", TypeConstraint::AnyUnsigned) // wave live seconds, one per row
+        .field("m_wvn", TypeConstraint::AnyUnsigned) // envelope byte COUNT, one per row (0 = none)
+        .field("m_wve", TypeConstraint::AnyUnsigned) // envelope bytes as one multi-value field per row that has one, consumed in row order
 }
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
