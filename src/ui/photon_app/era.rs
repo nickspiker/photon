@@ -73,9 +73,14 @@ pub(crate) fn friendship_repair(i: &RepairInput) -> RepairVerdict {
                     if i.we_own { mint(i.peer_era_capable) } else { Hold("not the era owner") }
                 }
             },
-            PeerEra::Foreign => {
-                if i.we_own { ConsentFresh } else { Hold("not the era owner") }
-            }
+            // A channel we cannot order against ours: ask the fleet FIRST — a sibling may hold the era the peer is on (two ceremonies out of one fleet, the 2026-09-09 phone/desktop split) — and only then is it a stranger's channel for consent.
+            PeerEra::Foreign => match i.siblings {
+                SiblingVerdict::Unasked => PullFleet,
+                SiblingVerdict::Asked => Hold("era_pull in flight"),
+                SiblingVerdict::NoSiblings | SiblingVerdict::AllMissed => {
+                    if i.we_own { ConsentFresh } else { Hold("not the era owner") }
+                }
+            },
         },
         RepairTrigger::FleetAllMissed => {
             if i.we_own { mint(i.peer_era_capable) } else { Hold("not the era owner") }
@@ -154,11 +159,9 @@ impl PhotonApp {
                 c.discard_clutch_round();
                 discarded += 1;
             }
+            // DERIVED STATE, never written here: the owner is recomputed on every edge and at the keygen pickup after a load, so persisting it bought nothing — and 13 synchronous vault writes on a presence verdict were two 1.8 s UI hangs in the middle of a call (Nick's phone 2026-09-09 01:55, 46 windows lost).
             c.ceremony_owner = Some(owner);
             moved += 1;
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(c, storage);
-            }
         }
         if moved > 0 {
             crate::logf!(
@@ -409,16 +412,16 @@ impl PhotonApp {
     pub(super) fn arm_heavy_weaves(&mut self, why: &str) {
         let due = self.fleet_epoch.map(|(e, _)| e).unwrap_or(0) + 1;
         let mut armed = 0usize;
+        let mut dirty: Vec<crate::types::Contact> = Vec::new();
         for c in self.contacts.iter_mut().filter(|c| !c.is_sibling && c.consent_mutual && c.friendship_id.is_some() && !c.locked_out) {
             if c.era_weave_due >= due {
                 continue;
             }
             c.era_weave_due = due;
             armed += 1;
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(c, storage);
-            }
+            dirty.push(c.clone());
         }
+        self.save_contacts_off_thread(dirty);
         crate::logf!("ERA: heavy weave armed for {} friendship(s) at epoch ≥ {} — {}", armed, due, why);
     }
 
@@ -431,10 +434,24 @@ impl PhotonApp {
         if c.era_weave_due == 0 {
             c.era_weave_due = 1;
             crate::logf!("ERA: heavy weave armed for {} — {}", crate::fp(&c.handle_proof), why);
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(c, storage);
-            }
+            let snapshot = c.clone();
+            self.save_contacts_off_thread(vec![snapshot]);
         }
+    }
+
+    /// Persist contact rows off the UI thread (the vault commit is ~0.7 s under load; one per contact on this thread was a multi-second hang). Snapshots ride the worker; a later edit simply re-saves.
+    pub(super) fn save_contacts_off_thread(&self, contacts: Vec<crate::types::Contact>) {
+        if contacts.is_empty() {
+            return;
+        }
+        let Some(storage) = self.storage.clone() else { return };
+        let _ = std::thread::Builder::new().name("contacts-save".into()).spawn(move || {
+            for c in &contacts {
+                if let Err(e) = crate::storage::contacts::save_contact(c, &storage) {
+                    crate::logf!("ERA: contact save failed off-thread: {}", e);
+                }
+            }
+        });
     }
 
     /// After a cutover: persist the blob (the replication sweep pushes it on the mutated_osc edge) and re-serve undelivered rows on the fresh lane — the rotated_flush shape.
@@ -473,7 +490,10 @@ mod tests {
                         if peer == PeerEra::Ahead && sib == SiblingVerdict::AllMissed && own {
                             assert_eq!(v, if cap { RepairVerdict::LightRatchet } else { RepairVerdict::HeavyWeave });
                         }
-                        if peer == PeerEra::Foreign && own {
+                        if peer == PeerEra::Foreign && sib == SiblingVerdict::Unasked {
+                            assert_eq!(v, RepairVerdict::PullFleet, "a foreign era asks the fleet before consent");
+                        }
+                        if peer == PeerEra::Foreign && own && matches!(sib, SiblingVerdict::NoSiblings | SiblingVerdict::AllMissed) {
                             assert_eq!(v, RepairVerdict::ConsentFresh);
                         }
                     }

@@ -574,6 +574,8 @@ impl PhotonApp {
         if self.session.is_none() {
             return false;
         }
+        // The computed owner is derived state (never persisted): re-derive it here so a freshly loaded roster reads right before any pickup, and every later edge keeps it current. Cheap (one scan), logs only on change.
+        self.recompute_ceremony_owners("keygen pickup");
         // One keygen at a time.
         if self.contacts.iter().any(|c| c.clutch_keygen_in_progress) {
             return false;

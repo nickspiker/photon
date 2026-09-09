@@ -244,15 +244,32 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let ops = vsf::OSCILLATIONS_PER_SECOND as f64;
         let lag_osc = cap_anchor_osc as f64 + f.delay_samples as f64 * ops / SAMPLE_RATE as f64
             - render_start_osc as f64;
-        let delay_bins = ((lag_osc / ops * 100.0).round().max(0.0) as usize).min(150);
+        let anchor_ms = (cap_anchor_osc - render_start_osc) as f64 / ops * 1000.0;
+        let acoustic_ms = f.delay_samples as f64 * 1000.0 / SAMPLE_RATE as f64;
+        let delay_bins_raw = (lag_osc / ops * 100.0).round().max(0.0) as usize;
+        // A delay AT the grid's bound is not a room, it is the two clock anchors disagreeing (Brittany 2026-09-09: 1500 ms with a 1.4 s capture-anchor offset — the duck then muted her 1.5 s after every phrase of Nick's). No seed, nothing persisted; the reactive duck and the learner carry the call.
+        if delay_bins_raw >= 150 {
+            crate::logf!(
+                "CALL: v-chirp reject — delay {}ms at the grid bound (capture anchor {}ms after render start, acoustic lag {}ms, legs g {} / {}): clock anchors disagree, no seed",
+                delay_bins_raw * 10,
+                format!("{anchor_ms:.0}"),
+                format!("{acoustic_ms:.1}"),
+                format!("{:.4}", f.g_up),
+                format!("{:.4}", f.g_down)
+            );
+            return;
+        }
+        let delay_bins = delay_bins_raw;
         // Divide out the digital probe boost (the fit correlates against the unscaled template) and the stream volume — g publishes at unit volume, unit scale.
         let scale = emit_scale.max(1e-6);
         let g_norm = if vol_lin > 0.0 { f.g / scale / vol_lin } else { f.g / scale };
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         crate::logf!(
-            "CALL: v-chirp — g {} delay {}ms skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms",
+            "CALL: v-chirp — g {} delay {}ms (anchor {}ms + acoustic {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms",
             format!("{g_norm:.4}"),
             delay_bins * 10,
+            format!("{anchor_ms:.0}"),
+            format!("{acoustic_ms:.1}"),
             f.skew_samples,
             format!("{:.4}", f.g_up),
             format!("{:.4}", f.g_down),

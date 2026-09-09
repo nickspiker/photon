@@ -4821,7 +4821,7 @@ impl PhotonApp {
             let have_fid = self
                 .friendship_chains
                 .iter()
-                .find(|(_, c)| c.conversation_token == token && held_era.map_or(true, |h| c.era_index > h))
+                .find(|(_, c)| c.conversation_token == token && held_era.map_or(true, |h| c.era_index >= h))
                 .map(|(id, _)| *id);
             if let Some(fid) = have_fid {
                 let fb = *fid.as_bytes();
