@@ -599,9 +599,21 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     // === History key (v6) — optional; absent (pre-v6 file) leaves None ===
     let history_key: Option<[u8; 32]> = section.get_value::<[u8; 32]>("history_key").ok();
 
+    // The writer stamps every eagle-time and era numeral as `e6`; `get_value::<i64>` does not read that type back (it returned 0 for every one of them — genesis_osc lost on every load, so two fresh eras compared 0 vs 0 and refused each other forever, field 2026-09-09). Read the typed value explicitly, widening any plain integer a future writer might use.
+    let e6_i64 = |name: &str| -> Result<i64, ()> {
+        section
+            .get_fields(name)
+            .first()
+            .and_then(|f| f.values.first())
+            .and_then(|v| match v {
+                VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
+                other => other.as_i64(),
+            })
+            .ok_or(())
+    };
     // === Mutation stamp (v7) — optional; absent (pre-v7 file) = 0, so any stamped replica beats it ===
-    let mutated_osc: i64 = section.get_value::<i64>("mutated_osc").unwrap_or(0);
-    let genesis_osc: i64 = section.get_value::<i64>("genesis_osc").unwrap_or(0);
+    let mutated_osc: i64 = e6_i64("mutated_osc").unwrap_or(0);
+    let genesis_osc: i64 = e6_i64("genesis_osc").unwrap_or(0);
 
     // The id rides IN the bytes (the encoder always writes it), so the decoder is self-contained — required by the replication path, where the bytes arrive off the wire with no vault address.
     let fid_bytes: [u8; 32] = section
@@ -637,29 +649,29 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     chains.set_lane_root(lane_root);
     chains.genesis_osc = genesis_osc;
     // Era state: absent = a pre-era blob — era 0 of the lineage its own root names, every lane in it.
-    chains.era_index = section.get_value::<i64>("era_index").map(|v| v.max(0) as u64).unwrap_or(0);
+    chains.era_index = e6_i64("era_index").map(|v| v.max(0) as u64).unwrap_or(0);
     chains.era_lineage = section
         .get_value::<[u8; 32]>("era_lineage")
         .ok()
         .or_else(|| lane_root.as_ref().map(crate::crypto::clutch::era_lineage))
         .unwrap_or([0u8; 32]);
-    chains.rows_since_ratchet = section.get_value::<i64>("rows_since_ratchet").map(|v| v.max(0) as u32).unwrap_or(0);
-    if let (Ok(idx), Ok(root)) = (section.get_value::<i64>("retired_index"), section.get_value::<[u8; 32]>("retired_root")) {
+    chains.rows_since_ratchet = e6_i64("rows_since_ratchet").map(|v| v.max(0) as u32).unwrap_or(0);
+    if let (Ok(idx), Ok(root)) = (e6_i64("retired_index"), section.get_value::<[u8; 32]>("retired_root")) {
         chains.set_retired_era(crate::types::friendship::RetiredEra {
             era_index: idx.max(0) as u64,
             lane_root: root,
             history_key: section.get_value::<[u8; 32]>("retired_history_key").ok(),
             tag: crate::crypto::clutch::era_tag(&root),
-            grace_left: section.get_value::<i64>("retired_grace").map(|v| v.max(0) as u32).unwrap_or(0),
+            grace_left: e6_i64("retired_grace").map(|v| v.max(0) as u32).unwrap_or(0),
         });
     }
-    if let (Ok(idx), Ok(root)) = (section.get_value::<i64>("pending_index"), section.get_value::<[u8; 32]>("pending_root")) {
+    if let (Ok(idx), Ok(root)) = (e6_i64("pending_index"), section.get_value::<[u8; 32]>("pending_root")) {
         chains.install_pending(crate::types::friendship::PendingEra {
             era_index: idx.max(0) as u64,
             lane_root: root,
             history_key: section.get_value::<[u8; 32]>("pending_history_key").ok(),
             tag: crate::crypto::clutch::era_tag(&root),
-            resp_osc: section.get_value::<i64>("pending_resp_osc").ok(),
+            resp_osc: e6_i64("pending_resp_osc").ok(),
         });
     }
     if has_lanes {
@@ -766,6 +778,32 @@ mod tests {
     }
 
     /// Pending attempts SURVIVE the round trip: exhaustion is cumulative lane evidence (the anchor-wedge arming gate), and a restart resetting it meant a dead lane could never be diagnosed inside short sessions. Real encode→decode, so the width-agnostic read is exercised too.
+    /// FIELD 2026-09-09: every eagle-time and era numeral the writer stamps as `e6` must read back — `genesis_osc` came back 0 on every load, so two fresh eras of one friendship compared genesis 0 vs 0 and each side refused the other forever (the phone kept a dead era with Emma while the desktop rang).
+    #[test]
+    fn era_and_stamp_numerals_survive_the_round_trip() {
+        let a = [1u8; 32];
+        let b = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = crate::types::friendship::FriendshipChains::from_clutch(&[a, b], &eggs);
+        chains.genesis_osc = 2_561_124_741_904_843_776;
+        chains.mutated_osc = 2_561_124_741_904_843_777;
+        chains.era_index = 3;
+        chains.rows_since_ratchet = 7;
+        let old_root = *chains.lane_root().unwrap();
+        chains.install_pending(crate::types::friendship::PendingEra { era_index: 4, lane_root: [9u8; 32], history_key: Some([8u8; 32]), tag: crate::crypto::clutch::era_tag(&[9u8; 32]), resp_osc: Some(4242) });
+        chains.cut_over_to_pending().unwrap();
+        assert_eq!(chains.era_index, 4);
+        let bytes = super::chains_to_vsf_bytes(&chains).unwrap();
+        let back = super::chains_from_vsf_bytes(&bytes).unwrap();
+        assert_eq!(back.genesis_osc, chains.genesis_osc, "genesis_osc");
+        assert_eq!(back.mutated_osc, chains.mutated_osc, "mutated_osc");
+        assert_eq!(back.era_index, 4, "era_index");
+        assert_eq!(back.era_lineage, chains.era_lineage);
+        assert_eq!(back.rows_since_ratchet, 0, "cutover reset it");
+        let r = back.retired_era().expect("the retired era loads");
+        assert_eq!((r.era_index, r.lane_root, r.tag), (3, old_root, crate::crypto::clutch::era_tag(&old_root)));
+        assert_eq!(r.grace_left, crate::types::friendship::RETIRED_ERA_GRACE_ROWS);
+    }
     #[test]
     fn pending_attempts_survive_the_round_trip() {
         let alice = [1u8; 32];

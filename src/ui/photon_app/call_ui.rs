@@ -1213,6 +1213,9 @@ impl PhotonApp {
             crate::log("CALL: no secret — media engine not started");
             return (None, None);
         };
+        // DROUGHT BASELINE ON THIS THREAD, before the engine exists (field 2026-09-08 22:56, "dropped — no authenticated media for 1970s"): the engine thread re-baselines these at its own start, but call_drought_tick can run between `call.engine = Some` and that start and read the PREVIOUS call's clocks — 33 minutes of "drought" on a call that was 1 ms old.
+        crate::call::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), std::sync::atomic::Ordering::Relaxed);
+        crate::call::LAST_MEDIA_RX_OSC.store(0, std::sync::atomic::Ordering::Relaxed);
         // No validated direct address is NOT no engine (field 2026-08-20, the "stuck call": Emma's validated path to Nick expired mid-session, this bail left her engine down, and the call sat Active-and-silent BOTH ways even tho Nick held a valid path and its media was arriving — with no engine there was no sink to decode it and no TX to answer with). Start on the RELAY_ADDR sentinel instead: RX needs no address at all (the engine installs the sink), sends to the sentinel are swallowed harmlessly, and the peer's FIRST authenticated packet re-points TX at its real source (address-follows-auth). Media stays dead only when NEITHER side holds an address.
         let addr = self
             .contacts
