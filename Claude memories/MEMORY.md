@@ -155,7 +155,7 @@
 - [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect one placement path + once-per-gesture settle hook
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
-- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING 2026-08-19: channel-aware CBR ladder 16k→128k (VBR banned), soft duck, MEDIA fast-mixer out, adaptive jitter; docs/calls.md
+- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; 2026-09-09 Android audio moved to Rust-owned AAudio exclusive low-latency with HAL-stamped frames (OboeTester baseline 20.6 ms); docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
 - [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd, bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0

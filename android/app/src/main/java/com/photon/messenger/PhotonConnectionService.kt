@@ -829,30 +829,16 @@ class PhotonConnectionService : Service() {
     // ------------------------------------------------------------------
     // Voice-call audio (docs/calls.md): Kotlin owns the device loops, Rust owns the queues.
     // AudioRecord uses VOICE_COMMUNICATION — that source selection is what engages the vendor
-    // acoustic echo canceller (echo layer 1); AudioTrack mirrors it with USAGE_VOICE_COMMUNICATION.
-    // 48kHz mono PCM16 in 240-sample (5ms) frames both directions, matching Rust's FRAME_SAMPLES (the 2026-09-08 latency flag day).
+    // The device loops moved to Rust on 2026-09-09 (platform/audio_aaudio.rs: AAudio exclusive low-latency, HAL-stamped frames) — Kotlin keeps the permission, the FGS type and the proximity lock.
     // ------------------------------------------------------------------
 
-    private external fun nativeAudioCaptured(samples: ShortArray)
-    private external fun nativeAudioNextFrame(): ShortArray
+    private external fun nativeMicGranted()  // RECORD_AUDIO landed mid-call: Rust opens the AAudio input leg it could not open at start.
 
     @Volatile private var callAudioRunning = false
-    // Generation of the live audio session. A stop followed by a start within one read (~5ms: the answer edge stops the ringback probe and starts the call engine) flipped the flag false→true before the old capture thread ever saw it, so TWO AudioRecords fed the encoder — tx at 390 fps against a nominal 200 (Nick's phone, 2026-09-08 17:22). Each thread carries the generation it was born under and exits the moment it is not the current one.
-    @Volatile private var audioGen = 0
-    private var captureThread: Thread? = null
-    private var renderThread: Thread? = null
 
-    /** Start (or, when the mic permission lands mid-call, RE-start) the capture leg. Idempotent: no-op
-     *  if no call is live or capture is already running. Missing permission → ask the Activity to
-     *  prompt at THIS call (PhotonActivity.requestMicPermission), whose grant callback calls back here
-     *  so the prompting call goes hot rather than staying mute until the next one. Public so the
-     *  Activity's permission-result callback can invoke it. */
+    /** The capture leg's Android half (2026-09-09, AAudio move): the device loop lives in Rust now (platform/audio_aaudio.rs, exclusive low-latency streams with HAL timestamps). Kotlin's part is the permission and the foreground-service microphone type: missing permission → prompt at THIS call (PhotonActivity.requestMicPermission), whose grant callback re-enters here so the prompting call goes hot. Public for that callback. */
     fun startCapture() {
         if (!callAudioRunning) return
-        if (captureThread?.isAlive == true) return
-        val gen = audioGen
-        val sampleRate = 48000
-        val frameSamples = 240
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (!hasMic) {
@@ -860,116 +846,33 @@ class PhotonConnectionService : Service() {
             PhotonActivity.live?.requestMicPermission()
             return
         }
-        // Android 14 FGS discipline: the microphone type is added to the foreground service ONLY now — at an actual call, with the permission granted and the app foreground (the user just tapped answer/call). Launch-time mic-typed startForeground is what crashed Android 14 devices.
+        // Android 14 FGS discipline: the microphone type is added to the foreground service ONLY now — at an actual call, with the permission granted and the app foreground.
         promoteForeground(true)
-        captureThread = Thread({
-            try {
-                val minBuf = android.media.AudioRecord.getMinBufferSize(
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT
-                ).coerceAtLeast(frameSamples * 4)
-                // VOICE_RECOGNITION, not VOICE_COMMUNICATION (Nick 2026-08-20, latency-first): the communication source routes thru the vendor voice pipeline — its NS/AGC/AEC chain AND its slow path (~30-40ms in), the largest remaining latency term now that output rides the fast mixer. VOICE_RECOGNITION is the canonical raw fast-track-eligible source: minimal processing, low latency. The trade, taken knowingly: vendor mic-side echo help is GONE, so speakerphone echo gets more audible until our own subtractive canceller (RENDER_REF is the reference, zero added delay) lands. Do NOT attach AcousticEchoCanceler here as a stopgap — effects kick capture off the fast path, un-doing this exact win.
-                val rec = android.media.AudioRecord(
-                    android.media.MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                    sampleRate,
-                    AudioFormat.CHANNEL_IN_MONO,
-                    AudioFormat.ENCODING_PCM_16BIT,
-                    minBuf
-                )
-                rec.startRecording()
-                // The device's ACTUAL capture rate — if a phone silently gives 24kHz for a 48kHz VOICE_RECOGNITION ask, every 240-sample read is 10ms of audio pushed as a 5ms frame → 2x frame rate, the peer trims half at playout (field 2026-09-08: Brittany's phone TX ran 2x realtime = the scratchy). audioFormat.sampleRate is what the HAL really gave us.
-                PhotonLog.i(TAG, "callAudio: capture up (VOICE_RECOGNITION raw fast-path, buf=$minBuf, granted=${rec.bufferSizeInFrames}fr, hwRate=${rec.sampleRate} askRate=$sampleRate)")
-                val buf = ShortArray(frameSamples)
-                while (callAudioRunning && gen == audioGen) {
-                    var off = 0
-                    while (off < frameSamples && callAudioRunning && gen == audioGen) {
-                        val n = rec.read(buf, off, frameSamples - off)
-                        if (n <= 0) break
-                        off += n
-                    }
-                    if (off == frameSamples) nativeAudioCaptured(buf.copyOf())
-                }
-                rec.stop(); rec.release()
-            } catch (e: Exception) {
-                PhotonLog.w(TAG, "callAudio capture failed", e)
-            }
-        }, "call-capture").also { it.start() }
+        try { nativeMicGranted() } catch (e: Throwable) { PhotonLog.w(TAG, "callAudio: nativeMicGranted failed", e) }
     }
 
-    /** Called from Rust (call_service_void) when a call goes active — for BOTH an outgoing call's
-     *  answer and an incoming answer. Starts playback always and mic capture if permitted; a missing
-     *  mic permission is prompted HERE (at the call, not at launch) via startCapture, and the grant
-     *  re-runs capture so this very call goes hot. */
+    /** Called from Rust (call_service_void) as a call goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
     fun startCallAudio() {
         if (callAudioRunning) return
-        audioGen += 1
-        val gen = audioGen
         callAudioRunning = true
         try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
-        val sampleRate = 48000
-        val frameSamples = 240
-
-        startCapture()
-
-        renderThread = Thread({
-            try {
-                // LOW-LATENCY OUTPUT (Nick's call 2026-08-19): VOICE_COMMUNICATION forced the vendor voice pipeline — hardware AEC, but an 80ms buffer floor and no fast mixer (measured: lowLatency=false, granted=80ms), which is the whole of the Nick→Emma delay.
-                // Trade the vendor echo canceller for latency: USAGE_MEDIA rides the fast-mixer path and echo is left to our software suppression duck.
-                // The buffer is sized to a few NATIVE bursts (PROPERTY_OUTPUT_FRAMES_PER_BUFFER), NOT getMinBufferSize — a small burst-aligned buffer is what actually lets the fast track engage; the 80ms minBuf disqualified it — with a floor of two 10ms write chunks so a write always fits.
-                // The fast path also needs our 48k stream to match the device's native output rate, so nativeRate is logged: a mismatch is the usual reason lowLatency comes back false.
-                val am = applicationContext.getSystemService(android.content.Context.AUDIO_SERVICE) as android.media.AudioManager
-                val nativeBurst = am.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_FRAMES_PER_BUFFER)?.toIntOrNull() ?: frameSamples
-                val nativeRate = am.getProperty(android.media.AudioManager.PROPERTY_OUTPUT_SAMPLE_RATE)?.toIntOrNull() ?: sampleRate
-                // 3 native bursts (was 4, flag day 2026-09-08): ~12ms on a 192-frame burst device — the per-call underruns= log is the safety monitor; a device that can't hold it will say so in the first field pull.
-                val bufFrames = maxOf(nativeBurst * 3, frameSamples * 2)
-                val track = AudioTrack.Builder()
-                    .setAudioAttributes(
-                        AudioAttributes.Builder()
-                            .setUsage(AudioAttributes.USAGE_MEDIA)
-                            .setContentType(AudioAttributes.CONTENT_TYPE_SPEECH)
-                            .build()
-                    )
-                    .setAudioFormat(
-                        AudioFormat.Builder()
-                            .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
-                            .setSampleRate(sampleRate)
-                            .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
-                            .build()
-                    )
-                    .setBufferSizeInBytes(bufFrames * 2)
-                    .setPerformanceMode(AudioTrack.PERFORMANCE_MODE_LOW_LATENCY)
-                    .setTransferMode(AudioTrack.MODE_STREAM)
-                    .build()
-                track.play()
-                // MEASURED, not estimated: getBufferSizeInFrames is what the track ACTUALLY granted (the framework can clamp a too-small ask up, or fall off the fast path) and getPerformanceMode says whether the fast mixer really engaged.
-                val gotFrames = track.bufferSizeInFrames
-                val fast = track.performanceMode == AudioTrack.PERFORMANCE_MODE_LOW_LATENCY
-                PhotonLog.i(TAG, "callAudio: render up (MEDIA, req=${bufFrames}fr granted=${gotFrames}fr=${gotFrames * 1000 / sampleRate}ms lowLatency=$fast burst=$nativeBurst nativeRate=$nativeRate)")
-                while (callAudioRunning && gen == audioGen) {
-                    // Rust hands back 10ms of decoded far-end (silence when the jitter buffer is dry) —
-                    // the blocking write paces this loop at the device's real drain rate.
-                    val frame = nativeAudioNextFrame()
-                    if (frame.isNotEmpty()) track.write(frame, 0, frame.size)
-                }
-                // Underrun count = how often we starved the device buffer over the whole call: 0 means the shallow buffer + adaptive jitter held, a climbing count says the floor is too low for this path and the jitter buffer should rest deeper.
-                PhotonLog.i(TAG, "callAudio: render down (underruns=${track.underrunCount})")
-                track.stop(); track.release()
-            } catch (e: Exception) {
-                PhotonLog.w(TAG, "callAudio render failed", e)
-            }
-        }, "call-render").also { it.start() }
+        val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
+            android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (hasMic) {
+            promoteForeground(true)
+        } else {
+            PhotonLog.w(TAG, "callAudio: RECORD_AUDIO not granted — prompting at the call; listen-only until granted")
+            PhotonActivity.live?.requestMicPermission()
+        }
+        PhotonLog.i(TAG, "callAudio: chores up (proximity lock, FGS mic type=$hasMic) — streams are Rust's")
     }
 
-    /** Called from Rust at hangup — loops observe the flag and tear their devices down. */
+    /** Called from Rust at hangup, after its streams are closed. */
     fun stopCallAudio() {
         callAudioRunning = false
-        audioGen += 1
         try { proximityLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
         // The call surface no longer needs to sit over the keyguard.
         PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }
-        captureThread = null
-        renderThread = null
         // Drop the microphone FGS type the moment the call ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).
         promoteForeground(false)
         PhotonLog.i(TAG, "callAudio: stopped")

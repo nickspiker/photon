@@ -298,41 +298,11 @@ pub fn open_url(url: &str) -> bool {
     }
 }
 
-/// One mic frame from Kotlin's AudioRecord loop (VOICE_COMMUNICATION source — the vendor AEC path). 480 samples of 48kHz mono PCM16 per call; anything else is queued as-is and the engine's chunker copes.
+/// The RECORD_AUDIO grant landed mid-call (PhotonActivity's permission launcher → Service.startCapture): open the AAudio input leg the missing permission skipped.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioCaptured(
-    env: JNIEnv<'_>,
-    _class: JClass<'_>,
-    samples: jni::objects::JShortArray<'_>,
-) {
-    let len = env.get_array_length(&samples).unwrap_or(0) as usize;
-    if len == 0 {
-        return;
-    }
-    let mut buf = vec![0i16; len];
-    if env.get_short_array_region(&samples, 0, &mut buf).is_ok() {
-        crate::platform::audio::on_captured(buf);
-    }
-}
-
-/// Next render frame for Kotlin's AudioTrack loop — 480 samples of 48kHz mono PCM16, silence when the jitter buffer runs dry (no PLC guesswork). Every frame handed out lands in the AEC reference ring on the Rust side first.
-#[cfg(target_os = "android")]
-#[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioNextFrame<'a>(
-    env: JNIEnv<'a>,
-    _class: JClass<'a>,
-) -> jni::objects::JShortArray<'a> {
-    let frame = crate::platform::audio::pull_render();
-    match env.new_short_array(frame.len() as i32) {
-        Ok(arr) => {
-            let _ = env.set_short_array_region(&arr, 0, &frame);
-            arr
-        }
-        Err(_) => env
-            .new_short_array(0)
-            .unwrap_or_else(|_| panic!("JNI short array alloc failed twice")),
-    }
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeMicGranted(_env: JNIEnv<'_>, _class: JClass<'_>) {
+    crate::platform::audio::on_mic_granted();
 }
 
 /// Poke the foreground service to run a headless protocol tick. Called from the status RX worker (`send_status_update`) whenever ANY inbound `StatusUpdate` lands, so a CLUTCH offer/KEM/complete or a chat/ACK advances the ceremony + chain even while the Activity is backgrounded and its Choreographer (and thus `tick`) has stopped. Reuses the `MESSAGE_NOTIFIER` service global-ref: calls Kotlin `requestServiceTick()`, which grabs a brief wakelock and calls `nativeServiceTick(activityPtr)`. The wakelock lives on the Kotlin side because it needs the service `Context`/`PowerManager`. No-op if the service never registered or the Activity context ptr isn't set (Kotlin guards that). Callable from any thread — attaches to the JVM as needed. See docs/background-tick.md.

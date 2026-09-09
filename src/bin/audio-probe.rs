@@ -16,7 +16,7 @@ fn main() {
     let mut captured = 0usize;
     let mut peak: i16 = 0;
     while started.elapsed() < std::time::Duration::from_secs(10) {
-        for frame in audio::captured_frames() {
+        for (_, frame) in audio::captured_frames() {
             captured += 1;
             peak = peak.max(frame.iter().map(|s| s.saturating_abs()).max().unwrap_or(0));
             delay.push_back(frame);

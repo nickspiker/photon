@@ -17,8 +17,8 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// 5ms @ 48kHz mono — the CELT frame the engine encodes (the 2026-09-08 flag day: halving the frame halves the fill wait, the window batch, AND the jitter quantum in one move).
 pub const FRAME_SAMPLES: usize = 240;
 
-/// Mic frames waiting for the engine (drop-oldest past ~500ms).
-static CAPTURE_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
+/// Mic frames waiting for the engine (drop-oldest past ~500ms), each stamped with the eagle time its FIRST sample left the ADC — the HAL's clock on Android (audio_aaudio), the capture callback on desktop.
+static CAPTURE_Q: Mutex<VecDeque<(i64, Vec<i16>)>> = Mutex::new(VecDeque::new());
 /// Decoded far-end frames waiting for the device (drop-oldest past ~1s).
 static PLAYBACK_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
 /// The AEC far-end reference: (eagle osc at enqueue-to-device, samples) per frame, last ~500ms. The canceller/duck reads this; nothing else does.
@@ -184,7 +184,7 @@ pub(crate) fn set_volume_db(db: Option<f32>) {
 }
 
 /// Drain every captured frame since the last call (5ms 48kHz mono each). Engine-side, any thread.
-pub fn captured_frames() -> Vec<Vec<i16>> {
+pub fn captured_frames() -> Vec<(i64, Vec<i16>)> {
     let mut q = CAPTURE_Q.lock().unwrap();
     q.drain(..).collect()
 }
@@ -218,12 +218,12 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-fn push_captured(frame: Vec<i16>) {
+pub(crate) fn push_captured(at_osc: i64, frame: Vec<i16>) {
     let mut q = CAPTURE_Q.lock().unwrap();
     if q.len() >= CAPTURE_Q_MAX {
         q.pop_front();
     }
-    q.push_back(frame);
+    q.push_back((at_osc, frame));
 }
 
 /// LOCAL-SOURCE playback (v-chirp probe, ringback, ended-screen preview): the queue is fed by a paced LOCAL source, not the network, so the whole adaptive apparatus must stand down — no priming, no target growth on dry (the source ENDING is dry), no standing-depth trims, no clock splice (there is no second clock to null). Field 2026-09-08, the conviction that unified three bugs: the engine dumps the 200-frame chirp into the queue at once and the hard ceiling TRIMMED IT FROM THE FRONT down to ~9 frames — the up-leg's low-frequency head never left the speaker (both field rejects: down-leg strong at a plausible lag, up-leg weak and late); the same splice/trim path made the ended-screen preview choppy and pitch-warped, and rode the ringback too.
@@ -234,7 +234,13 @@ pub fn set_local_source(on: bool) {
 }
 
 /// Pop the next render frame thru the adaptive jitter buffer (silence when priming or dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring. Single-consumer (the one render loop), so the jitter atomics need no CAS.
+/// Pop the next render frame, stamped with NOW (desktop: the device callback is the DAC moment within a burst).
 fn next_render_frame() -> Vec<i16> {
+    next_render_frame_at(vsf::eagle_time_oscillations())
+}
+
+/// Pop the next render frame and stamp its reference-ring and envelope entries with `at_osc` — the eagle time its first sample hits the DAC, which Android reads from the HAL (audio_aaudio).
+pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     let silence = || vec![0i16; FRAME_SAMPLES];
     let frame = {
         let mut q = PLAYBACK_Q.lock().unwrap();
@@ -323,7 +329,7 @@ fn next_render_frame() -> Vec<i16> {
         if r.len() >= RENDER_REF_MAX {
             r.pop_front();
         }
-        r.push_back((vsf::eagle_time_oscillations(), frame.clone()));
+        r.push_back((at_osc, frame.clone()));
         RENDER_REF_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
     // The learner's envelope tap — reuses `lvl` computed above (zero new arithmetic).
@@ -332,7 +338,7 @@ fn next_render_frame() -> Vec<i16> {
         if r.len() >= RENDER_ENV_MAX {
             r.pop_front();
         }
-        r.push_back((vsf::eagle_time_oscillations(), lvl as f32));
+        r.push_back((at_osc, lvl as f32));
         RENDER_ENV_TOTAL.fetch_add(1, Ordering::Relaxed);
     }
     frame
@@ -514,7 +520,7 @@ mod desktop {
                             .drain(..FRAME_SAMPLES)
                             .map(|s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
                             .collect();
-                        push_captured(frame);
+                        push_captured(vsf::eagle_time_oscillations(), frame);
                     }
                 },
                 |e| crate::logf!("AUDIO: capture stream error: {}", e),
@@ -659,14 +665,17 @@ mod android {
     use super::*;
 
     /// Start: flip the flag, clear the queues, and ask the service to spin up AudioRecord/AudioTrack (VOICE_COMMUNICATION). Returns false when the service ref isn't up or the call fails — mic permission handling is Kotlin's side of the line.
+    /// Start: flip the flag, clear the queues, let Kotlin do the Android-only chores (proximity lock, foreground microphone type, lock-screen flags, the RECORD_AUDIO prompt), then open the AAudio streams from Rust (audio_aaudio). False when the output stream cannot open.
     pub fn start() -> bool {
         if ACTIVE.swap(true, Ordering::SeqCst) {
             return true;
         }
         clear_queues();
-        if crate::platform::jni_android::call_service_void("startCallAudio") {
+        let _ = crate::platform::jni_android::call_service_void("startCallAudio");
+        if crate::platform::audio_aaudio::start() {
             true
         } else {
+            let _ = crate::platform::jni_android::call_service_void("stopCallAudio");
             ACTIVE.store(false, Ordering::SeqCst);
             false
         }
@@ -674,8 +683,16 @@ mod android {
 
     pub fn stop() {
         if ACTIVE.swap(false, Ordering::SeqCst) {
+            crate::platform::audio_aaudio::stop();
             let _ = crate::platform::jni_android::call_service_void("stopCallAudio");
             clear_queues();
+        }
+    }
+
+    /// JNI ingress (PhotonConnectionService.nativeMicGranted): the RECORD_AUDIO grant landed mid-call — open the input leg.
+    pub(crate) fn on_mic_granted() {
+        if ACTIVE.load(Ordering::Relaxed) {
+            crate::platform::audio_aaudio::ensure_input();
         }
     }
 
@@ -709,24 +726,13 @@ mod android {
         crate::logf!("AUDIO: mic mirror — {}", id);
         super::set_mic_identity(id);
     }
-
-    /// JNI ingress: one mic frame from Kotlin's AudioRecord loop.
-    pub(crate) fn on_captured(frame: Vec<i16>) {
-        if ACTIVE.load(Ordering::Relaxed) {
-            push_captured(frame);
-        }
-    }
-
-    /// JNI egress: next frame for Kotlin's AudioTrack loop (silence when dry).
-    pub(crate) fn pull_render() -> Vec<i16> {
-        next_render_frame()
-    }
 }
+
 
 #[cfg(target_os = "android")]
 pub use android::{route, start, stop};
 #[cfg(target_os = "android")]
-pub(crate) use android::{on_captured, on_mic_mirror, on_route_mirror, on_volume_mirror, pull_render};
+pub(crate) use android::{on_mic_granted, on_mic_mirror, on_route_mirror, on_volume_mirror};
 
 // Redox: no audio backend yet — calls are signaling-only there.
 #[cfg(target_os = "redox")]
@@ -750,12 +756,12 @@ mod tests {
         // Bounded drop-oldest capture.
         clear_queues();
         for i in 0..(CAPTURE_Q_MAX + 10) {
-            push_captured(vec![i as i16; FRAME_SAMPLES]);
+            push_captured(0, vec![i as i16; FRAME_SAMPLES]);
         }
         let drained = captured_frames();
         assert_eq!(drained.len(), CAPTURE_Q_MAX);
         // Oldest were dropped: the first surviving frame is #10.
-        assert_eq!(drained[0][0], 10);
+        assert_eq!(drained[0].1[0], 10);
 
         // Adaptive jitter buffer: renders silence while PRIMING (queue below the floor), drains real frames once the floor is reached, and a dry queue underruns to silence (never PLC guesswork). Every rendered frame — silence or real — feeds the AEC reference.
         clear_queues(); // resets the jitter state: priming, target = JITTER_FLOOR

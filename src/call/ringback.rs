@@ -137,7 +137,7 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
                 Some((o, e0)) => learner.push_far(o, (e0 + e) * 0.5),
             }
         }
-        for frame in audio::captured_frames() {
+        for (_, frame) in audio::captured_frames() {
             let mean = if frame.is_empty() {
                 0.0
             } else {

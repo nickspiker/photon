@@ -217,8 +217,6 @@ fn run(
     let mut ref_anchor_osc: Option<i64> = None;
     let mut mic_abs: u64 = 0;
     let mut mic_anchor_osc: Option<i64> = None;
-    let frame_osc: i64 = vsf::OSCILLATIONS_PER_SECOND as i64 * FRAME_SAMPLES as i64
-        / crate::call::vchirp::SAMPLE_RATE as i64;
     // LEARNER CADENCE ADAPTER (flag day 2026-09-08): the learner's KAT-locked contract is ONE envelope per 10ms bin (its stamp regularizer advances a bin per push — two 5ms pushes would run its lattice at 2× time and re-anchor forever). The engine pairs adjacent 5ms envelopes: (osc of the first half, mean env) per 10ms.
     let mut far_pair: Option<(i64, f32)> = None;
     let mut mic_pair: Option<(i64, f32)> = None;
@@ -331,27 +329,26 @@ fn run(
             ref_cursor = cur;
             for (osc, f) in frames {
                 if ref_anchor_osc.is_none() {
-                    ref_anchor_osc = Some(osc - frame_osc);
+                    ref_anchor_osc = Some(osc);
                 }
                 ref_ring.push(&f);
             }
         }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
-        for frame in crate::platform::audio::captured_frames() {
+        // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
+        for (cap_osc, frame) in crate::platform::audio::captured_frames() {
             // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows). Paired to the learner's 10ms cadence (see far_pair).
             {
                 let e = crate::call::calibrate::env(&frame);
                 match mic_pair.take() {
-                    None => mic_pair = Some((vsf::eagle_time_oscillations(), e)),
+                    None => mic_pair = Some((cap_osc, e)),
                     Some((o, e0)) => learner.push_mic(o, (e0 + e) * 0.5),
                 }
             }
             // Probe capture: raw samples into the fit buffer, and NO voice TX until the window closes. The anchor marks the first frame's start (drain stamp minus one frame); later frames extend the lattice by index — drain wobble is ±ms against a 10ms-bin consumer.
             if probing {
                 if probe_anchor_osc.is_none() {
-                    let frame_osc = vsf::OSCILLATIONS_PER_SECOND as i64 * FRAME_SAMPLES as i64
-                        / crate::call::vchirp::SAMPLE_RATE as i64;
-                    probe_anchor_osc = Some(vsf::eagle_time_oscillations() - frame_osc);
+                    probe_anchor_osc = Some(cap_osc);
                 }
                 probe_cap.extend_from_slice(&frame);
                 continue;
@@ -366,7 +363,7 @@ fn run(
             }
             // NLMS SUBTRACT — before the tally and the duck, so both see the residual (the duck is the RESIDUAL suppressor once a filter is armed). Mic timeline: pure frame count from a one-time anchor.
             if mic_anchor_osc.is_none() {
-                mic_anchor_osc = Some(vsf::eagle_time_oscillations() - frame_osc);
+                mic_anchor_osc = Some(cap_osc);
             }
             let this_mic_abs = mic_abs;
             mic_abs += frame.len() as u64;
