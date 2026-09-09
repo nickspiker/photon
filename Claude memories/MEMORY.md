@@ -94,6 +94,7 @@
 - [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev-log output (double-click selects the value)
 - [feedback_script_timestamps.md](feedback_script_timestamps.md) — every build/deploy script ends with `completed $(date)` on each success exit
 - [feedback_voca_camelcase.md](feedback_voca_camelcase.md) — Default voca-encoded values to camelCase concatenation; space-separated form is opt-in for read-aloud
+- [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify a grep-derived line number is non-empty before ANY sed address op; an empty address applies to every line (lib.rs ×1271, pushed, 2026-09-09)
 - [feedback_no_comment_wraps.md](feedback_no_comment_wraps.md) — never hard-wrap comments/docstrings/markdown; one sentence per line however long (RECURRING "line wrap virus"
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is DIRECT PIXEL ACCESS ONLY; no GPU shaders/vertex triangles/float pipeline ("no floaters")
 - [project_textbox_one_registry.md](project_textbox_one_registry.md) — adding a textbox = register in TWO walks only (visit_app_widgets + textboxes_mut)
