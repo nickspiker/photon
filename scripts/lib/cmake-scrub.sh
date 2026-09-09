@@ -12,9 +12,11 @@ scrub_divergent_cmake_caches() {
     [ -d "$root" ] || return 0
     while IFS= read -r cache; do
         cc="$(sed -n 's/^CMAKE_C_COMPILER:[^=]*=//p' "$cache" | head -1)"
+        prefix="$(sed -n 's/^CMAKE_INSTALL_PREFIX:[^=]*=//p' "$cache" | head -1)"
         dir="${cache%/out/build/CMakeCache.txt}"
-        if [ -z "$cc" ] || [ ! -e "$cc" ] || { [ -n "$expect" ] && [ "${cc#*"$expect"}" = "$cc" ]; }; then
-            echo "cmake-scrub: divergent cache (compiler: ${cc:-unrecorded}) — scrubbing ${dir#"$PWD"/} (a re-configure mid-build loses the install prefix and aims at /usr/local)"
+        # A cache whose prefix ALREADY reads /usr/local has been thru the mid-build re-configure once (2026-09-09: the compiler matched, the prefix was gone, the install step hit Permission denied) — it is poison whatever its compiler says.
+        if [ -z "$cc" ] || [ ! -e "$cc" ] || { [ -n "$expect" ] && [ "${cc#*"$expect"}" = "$cc" ]; } || [ "$prefix" = "/usr/local" ]; then
+            echo "cmake-scrub: divergent cache (compiler: ${cc:-unrecorded}, prefix: ${prefix:-unrecorded}) — scrubbing ${dir#"$PWD"/} (a re-configure mid-build loses the install prefix and aims at /usr/local)"
             rm -rf "$dir"
         fi
     done < <(find "$root" -maxdepth 8 -path "*/build/*/out/build/CMakeCache.txt" 2>/dev/null)
