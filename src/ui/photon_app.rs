@@ -1354,6 +1354,8 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
     message_textbox: Option<fluor::widgets::MultiTextbox>,
+    /// Compose-box FLING velocity in pixels per frame (Nick 2026-09-09): a finger drag on the box scrolls its text and each move overwrites this with the frame's delta; the release leaves it running and every tick applies it, then decays it — magnitude right-shifted by one and minus one, so it reaches exactly zero and zero means done. Wheel notches scroll but never fling. Runtime only.
+    compose_fling: i32,
     /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
     message_send_btn: Option<Button>,
     /// The purple chain-link button beside send: turns the detected URL into a tagged link with a trimmed label (messaging::compose_link_click). Shown only while a bare URL sits in the box.
@@ -1473,6 +1475,8 @@ pub struct PhotonApp {
     call_start_btn: Option<Button>,
     /// Beam (video) — a stub button, rendered disabled beside the Wave button until video lands. Never dispatches.
     call_beam_btn: Option<Button>,
+    /// Beam back / Beam toggle — the ring panel's video answer and the active panel's video switch, both STUBS rendered disabled until video lands (Nick 2026-09-09: choose audio-only while they beam, switchable in-call). Never dispatches.
+    call_beam_back_btn: Option<Button>,
     call_action_btn: Option<Button>,
     call_decline_btn: Option<Button>,
     /// In-call full-screen (Active) controls — same retained-Button pattern as the four above. `call_speaker_btn` = speaker toggle (stubbed route intent); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"). (The Ended keep/delete panel + its play button died with record-by-default, 2026-09-08 — playback lives on the recording bubble.)
@@ -1653,6 +1657,8 @@ pub struct PhotonApp {
     join_words_copied: bool,
     /// Two-tap arm for "Start fresh" on the JOIN screen (destructive → confirm).
     join_startfresh_armed: bool,
+    /// Per-contact wrapped NAME lines for the contact list, indexed by contact index and rebuilt every Ready frame before the chrome borrow (Nick 2026-09-09: preferred names wrap, the row grows, the avatar centres on the block). The extent clamp and the row walk both read this, so their row heights can never disagree.
+    contact_row_lines: Vec<Vec<String>>,
     /// Contact-list scroll offset in pixels (Ready screen). 0 = top; grows as the user scrolls down. The user section (avatar/search) stays fixed; only the rows below the separator scroll. Re-clamped to the list extent each render.
     contacts_scroll: isize,
     /// Settings nav-rail vertical scroll (pixels, ≥0). The rail lists Back + 9 pages at NATURAL (unzoomed-consistent) row height — no clamp-to-fit — so at high zoom they overflow and this scrolls them. Re-clamped to the rail extent each frame.
@@ -1889,6 +1895,8 @@ pub struct PhotonApp {
     /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
     update_release: ChannelCheck,
     update_dev: ChannelCheck,
+    /// The published RELEASE_NOTES.md as last fetched (release check) — what's new in the release the green button offers, which the compiled-in copy can't know.
+    update_notes: Option<String>,
     /// True once the current Updates-page visit kicked its auto-check (reset on page-enter, like `you_fields_loaded`).
     update_checked: bool,
     /// Latest APPLY outcome (download/install) for the status line — event-shown, interaction-cleared.
@@ -2156,6 +2164,7 @@ impl PhotonApp {
             orb_had_avatar: false,
             contacts_textbox: None,
             message_textbox: None,
+            compose_fling: 0,
             contacts_plus_btn: None,
             message_send_btn: None,
             compose_link_btn: None,
@@ -2211,6 +2220,7 @@ impl PhotonApp {
             call_status_btn: None,
             call_start_btn: None,
             call_beam_btn: None,
+            call_beam_back_btn: None,
             call_action_btn: None,
             call_decline_btn: None,
             call_speaker_btn: None,
@@ -2265,6 +2275,7 @@ impl PhotonApp {
             pending_picker_request: false,
             pending_broadcast_signal: 0,
             next_session_broadcast: None,
+            contact_row_lines: Vec::new(),
             contacts_scroll: 0,
             settings_rail_scroll: 0.0,
             settings_content_scroll: 0.0,
@@ -2373,6 +2384,7 @@ impl PhotonApp {
             call_keep_tx: None,
             update_release: ChannelCheck::Idle,
             update_dev: ChannelCheck::Idle,
+            update_notes: None,
             update_checked: false,
             update_status: None,
             update_busy: false,
@@ -3079,6 +3091,8 @@ enum UpdateEvent {
         crate::network::updates::Channel,
         Result<Option<crate::network::updates::ManifestRow>, String>,
     ),
+    /// The published release notes arrived (fetched beside the release manifest check) — the Updates page reads the offered release's section out of them.
+    Notes(String),
     /// The AUTOMATIC release-channel check finished: the signed manifest's creation stamp (the window's `t`) + our platform's row. Errors land as a log line in the worker, not here — the cadence just retries later.
     AutoChecked(i64, Option<crate::network::updates::ManifestRow>),
     /// Download progress for the in-flight apply: (bytes done, total bytes; total 0 = length unknown). Throttled to whole-percent changes by the sender.

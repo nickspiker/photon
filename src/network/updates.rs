@@ -180,6 +180,27 @@ pub fn fetch_manifest_stamped_blocking(
     parse_manifest_stamped(&bytes, channel)
 }
 
+/// The published copy of RELEASE_NOTES.md as rolled by the deploy (its top shipped section is the release the manifest offers). Plain text, unsigned: it only ever feeds the Updates page's "what's new" list, never a decision.
+pub const RELEASE_NOTES_URL: &str = "https://brobdingnagian.holdmyoscilloscope.com/photon/release-notes.md";
+
+/// Fetch the published release notes (cache-busted like the manifest). Errors are the caller's to log; the page simply shows nothing for a release it can't describe.
+pub fn fetch_release_notes_blocking() -> Result<String, String> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(20))
+        .build()
+        .map_err(|e| format!("http client: {e}"))?;
+    let url = format!("{}?v={}", RELEASE_NOTES_URL, rand::random::<u64>());
+    client
+        .get(&url)
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
+        .send()
+        .map_err(|e| format!("notes fetch: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("notes fetch: {e}"))?
+        .text()
+        .map_err(|e| format!("notes read: {e}"))
+}
+
 /// Parse + signature-gate manifest bytes: every section named `manifest.photon.<channel>` is one artefact, fields matched by NAME + TYPE (never position). Public for the manifest tool's merge path + tests.
 pub fn parse_manifest(bytes: &[u8], channel: Channel) -> Result<Vec<ManifestRow>, String> {
     parse_manifest_stamped(bytes, channel).map(|(_, rows)| rows)

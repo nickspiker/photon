@@ -353,8 +353,11 @@ r2_put "$R2_BUCKET/$R2_PATH/install-release.ps1" \
 # Manifest LAST: publish it only after every binary it references is live, so a client that polls the fresh manifest never fetches a URL that isn't up yet.
 r2_put "$R2_BUCKET/$R2_PATH/manifest-release.vsf" \
     --file /tmp/manifest-release.vsf --content-type application/octet-stream --remote
+# The ROLLED release notes ride beside the manifest (Nick 2026-09-09): the Updates page shows what's new in the release the green button offers, which a running build can't know from its own compiled-in copy.
+r2_put "$R2_BUCKET/$R2_PATH/release-notes.md" \
+    --file "${SNAP_DIR:-.}/RELEASE_NOTES.md" --content-type "text/markdown; charset=utf-8" --remote
 
-note_time "R2 upload (9 artefacts)" $((SECONDS - PHASE_T0))
+note_time "R2 upload (10 artefacts)" $((SECONDS - PHASE_T0))
 echo ""
 echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"

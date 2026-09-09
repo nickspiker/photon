@@ -136,9 +136,18 @@ impl PhotonApp {
             *slot = ChannelCheck::Checking;
             let tx = self.update_sender();
             std::thread::spawn(move || {
-                use crate::network::updates::{fetch_manifest_blocking, our_row};
+                use crate::network::updates::{fetch_manifest_blocking, fetch_release_notes_blocking, our_row};
                 let result = fetch_manifest_blocking(channel).map(|rows| our_row(&rows));
                 let _ = tx.send(UpdateEvent::Checked(channel, result));
+                // The release check also brings the published notes, so the page can say what's new in the release it offers.
+                if channel == Channel::Release {
+                    match fetch_release_notes_blocking() {
+                        Ok(text) => {
+                            let _ = tx.send(UpdateEvent::Notes(text));
+                        }
+                        Err(e) => crate::logf!("UPDATE: release notes fetch failed: {}", e),
+                    }
+                }
             });
         }
     }
@@ -226,6 +235,9 @@ impl PhotonApp {
         while let Ok(ev) = rx.try_recv() {
             changed = true;
             match ev {
+                UpdateEvent::Notes(text) => {
+                    self.update_notes = Some(text);
+                }
                 UpdateEvent::Checked(channel, result) => {
                     let state = match result {
                         Ok(row) => ChannelCheck::Ready(row),

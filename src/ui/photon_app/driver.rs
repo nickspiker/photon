@@ -353,6 +353,7 @@ impl FluorApp for PhotonApp {
         self.call_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
         // Beam (video) — a STUB: rendered disabled beside the Wave button until video lands; constructed LAST so the status/start/action/decline contiguous-id contract holds.
         self.call_beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
+        self.call_beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
         for b in [
             self.call_status_btn.as_mut(),
             self.call_start_btn.as_mut(),
@@ -362,6 +363,7 @@ impl FluorApp for PhotonApp {
             self.call_addhandle_btn.as_mut(),
             self.call_back_btn.as_mut(),
             self.call_beam_btn.as_mut(),
+            self.call_beam_back_btn.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -1391,6 +1393,12 @@ impl FluorApp for PhotonApp {
                         3 => {
                             self.pending_delete = Some(((sci, ts, out), false));
                         }
+                        // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
+                        6 => {
+                            self.selected_msg = None;
+                            self.start_call(sci);
+                            self.scene_dirty = true;
+                        }
                         _ => {}
                     }
                     self.scene_dirty = true;
@@ -1731,6 +1739,23 @@ impl FluorApp for PhotonApp {
                     MouseScrollDelta::Pixels(_, y) => (*y as isize, true),
                 };
                 if dy != 0 {
+                    // COMPOSE BOX SCROLL (Nick 2026-09-09): a wheel or finger over the multi-line box moves its TEXT when there is more than fits; the pane behind stays put. Wheel down (negative dy) reveals the lines below → the band offset grows. A finger drag (a live press on the box, Android's synthesized pixel deltas) also carries a fling velocity for the release.
+                    if matches!(self.state, AppState::Conversation) {
+                        let compose_id = self.message_textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
+                        let over_compose = compose_id != HIT_NONE
+                            && (self.hover_hit == compose_id || (self.pointer_down && self.drag_select_hit == compose_id))
+                            && self.message_textbox.as_ref().is_some_and(|t| t.max_scroll() > 0.0);
+                        if over_compose {
+                            let px = -(dy as f32) * if is_pixel_delta { 1.0 } else { 8.0 };
+                            if let Some(tb) = self.message_textbox.as_mut() {
+                                tb.scroll_by(px);
+                            }
+                            self.compose_fling = if self.pointer_down && self.drag_select_hit == compose_id { px.round() as i32 } else { 0 };
+                            self.scene_dirty = true;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                    }
                     // A live textbox pan owns the gesture: the finger is carrying the TEXT, so the pane must not also scroll under it (Android's touch-drag synthesizes wheel events alongside the CursorMoved the pan rides).
                     if self.pointer_down && self.drag_select_hit != HIT_NONE {
                         return EventResponse::Handled;
@@ -2898,6 +2923,15 @@ impl FluorApp for PhotonApp {
                     chrome.invalidate_bg();
                     chrome.invalidate_chrome();
                 }
+            }
+            // Compose-box fling: apply this frame's velocity, then decay it — magnitude >> 1, minus one — so it lands on exactly zero (zero = done, no timer). Hitting either end of the band ends it early.
+            if self.compose_fling != 0 && !self.pointer_down {
+                let v = self.compose_fling;
+                let moved = self.message_textbox.as_mut().is_some_and(|tb| tb.scroll_by(v as f32));
+                let m = (v.abs() >> 1) - 1;
+                self.compose_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
+                self.scene_dirty = true;
+                needs_redraw = true;
             }
             // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
             let panning = if self.pointer_down {

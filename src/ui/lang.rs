@@ -108,6 +108,12 @@ pub enum Msg<'a> {
     CallStart,
     // Beam = video (wave's sibling) — stubbed, unwired; the label ships so the button can exist before the feature.
     BeamStart,
+    /// The ring panel's audio answer (and the wave card's option): answering is choosing audio.
+    WaveBack,
+    /// The video answer / the wave card's option — a stub until video lands.
+    BeamBack,
+    /// The in-call video switch — a stub until video lands.
+    BeamToggle,
     IncomingCall,
     IncomingCallNoPath,
     CallActiveNoPath(&'a str),
@@ -195,6 +201,11 @@ pub enum Msg<'a> {
     DmsIntro,
     /// Plain reading of a DMS value (bit length of seconds ago) — the legend's third column; empty for values the legend doesn't list.
     DmsReading(u32),
+    /// The size legend on the Dozenal page: sizes count doublings of a BIT, so a byte is four.
+    DmsSizeHead,
+    DmsSizeIntro,
+    /// Plain reading of a DMS size value (bit length of the size in bits); empty for values the legend doesn't list.
+    DmsSizeReading(u32),
     ConversationTitle,
     BackToContacts,
     NameReclaimed,
@@ -405,6 +416,8 @@ pub enum Msg<'a> {
     WhatsNew(&'a str),
     /// Heading for the not-yet-shipped changes a dev build carries.
     UpcomingChanges,
+    /// Under the dev pill on the Updates page.
+    DevChannelHint,
     PhotonVersion(&'a str),
     AutoUpdateCheck,
     AutoUpdateInstall,

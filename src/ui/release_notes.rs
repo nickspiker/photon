@@ -7,6 +7,11 @@ pub fn section(name: &str) -> Vec<String> {
     section_in(NOTES, name)
 }
 
+/// The same reader over a fetched copy of the file (the published notes for a release newer than this build).
+pub fn section_of(text: &str, name: &str) -> Vec<String> {
+    section_in(text, name)
+}
+
 fn section_in(text: &str, name: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut inside = false;

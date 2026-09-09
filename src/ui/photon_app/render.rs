@@ -159,16 +159,39 @@ impl PhotonApp {
                 .as_ref()
                 .map(|t| t.chars.iter().collect::<String>().to_lowercase())
                 .unwrap_or_default();
-            let n_matching = self
+            // Wrap every listed contact's name at the row's text width (measured at the hover weight, so a hovered row never re-wraps) and sum the resulting row heights — one line = the layout row, each extra line adds a line step. The row walk below reads the same lines.
+            let avatar_r = rl.contact_avatar_diameter as f32 * 0.5;
+            let text_x = rl.rows.x0 as f32 + avatar_r * 3.0;
+            let name_w = (rl.rows.x1 as f32 - text_x - avatar_r * 0.5).max(row_h as f32);
+            let text_size = row_h as f32 * 0.5;
+            let wrap_style = TextStyle::new(text_size, 0).weight(700).font("Oxanium");
+            let seed = self.session.as_ref().map(|se| se.identity_seed);
+            let mut lines_by_ci: Vec<Vec<String>> = Vec::with_capacity(self.contacts.len());
+            for c in &self.contacts {
+                if c.is_sibling {
+                    lines_by_ci.push(Vec::new());
+                    continue;
+                }
+                let name = super::contact_visible_name(c, seed.as_ref(), self.fleet_settings.as_ref());
+                let mut lines = wrap_text_lines(ctx.text, &name, &wrap_style, name_w);
+                if lines.is_empty() {
+                    lines.push(String::new());
+                }
+                lines_by_ci.push(lines);
+            }
+            let block_h: isize = self
                 .contacts
                 .iter()
-                .filter(|c| {
+                .enumerate()
+                .filter(|(_, c)| {
                     // Must mirror the render pass's `matching` filter exactly (siblings hidden) or the two clamps disagree within a frame.
                     !c.is_sibling
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
-                .count();
-            let block_bottom_at_zero = rl.rows.y0 as isize + n_matching as isize * row_h;
+                .map(|(ci, _)| contact_row_height(row_h, lines_by_ci[ci].len()))
+                .sum();
+            self.contact_row_lines = lines_by_ci;
+            let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
             let max_scroll = (block_end - buf_h as isize).max(0);
@@ -653,11 +676,21 @@ impl PhotonApp {
                         if let Some(b) = self.call_action_btn.as_mut() {
                             b.set_rect(w * 0.5 + bw * 0.5 + unit * 0.75, by, bw, bh);
                             b.set_font_size(bfont);
-                            b.set_label(tr(Msg::Answer));
+                            // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO — the beam answer sits above as its own choice, so the callee picks audio-only even when the caller beams.
+                            b.set_label(tr(Msg::WaveBack));
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::CALL_ACCEPT_FILL));
                             b.set_hover_fill(Some(*theme::CALL_ACCEPT_HOVER));
                             b.set_held_fill(Some(*theme::CALL_ACCEPT_HOVER));
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        // Beam back — the video answer, a STUB greyed out until video lands; centred above the decline/answer pair.
+                        if let Some(b) = self.call_beam_back_btn.as_mut() {
+                            b.set_rect(w * 0.5, by - bh - unit * 0.6, bw, bh * 0.85);
+                            b.set_font_size(bfont * 0.9);
+                            b.set_label(tr(Msg::BeamBack));
+                            b.set_enabled(false);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -676,6 +709,15 @@ impl PhotonApp {
                         //     let id = b.hit_id();
                         //     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         // }
+                        // Beam toggle — switch this side to video mid-wave; a STUB greyed out until video lands, one row above the secondary pair.
+                        if let Some(b) = self.call_beam_back_btn.as_mut() {
+                            b.set_rect(w * 0.5, sy - sh - unit * 0.4, sw, sh);
+                            b.set_font_size(sfont);
+                            b.set_label(tr(Msg::BeamToggle));
+                            b.set_enabled(false);
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
                         if let Some(b) = self.call_addhandle_btn.as_mut() {
                             b.set_rect(w * 0.5 - sw - unit * 0.2, sy, sw, sh);
                             b.set_font_size(sfont);
@@ -1570,7 +1612,11 @@ impl PhotonApp {
             });
 
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
-            let block_bottom_at_zero = rows.y0 as isize + matching.len() as isize * row_h;
+            let block_h: isize = matching
+                .iter()
+                .map(|&ci| contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())))
+                .sum();
+            let block_bottom_at_zero = rows.y0 as isize + block_h;
             let block_end = block_bottom_at_zero + row_h * 2;
             let max_scroll = (block_end - buf_h as isize).max(0);
             if self.contacts_scroll > max_scroll {
@@ -1584,10 +1630,16 @@ impl PhotonApp {
             // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
             let ring_thickness = (avatar_r * 0.0375).max(1.0) + 1.0;
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
-            for (vis, &ci) in matching.iter().enumerate() {
+            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero.
+            let mut row_cursor = rows.y0 as isize;
+            for &ci in matching.iter() {
+                let name_lines: Vec<String> = self.contact_row_lines.get(ci).cloned().unwrap_or_default();
+                let rh = contact_row_height(row_h, name_lines.len().max(1));
+                let row_top_at_zero = row_cursor;
+                row_cursor += rh;
                 // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but the names sat still (they read the post-clamp value). One block, one offset.
-                let row_top = rows.y0 as isize + vis as isize * row_h - scroll as isize;
-                if row_top + row_h <= 0 || row_top >= buf_h as isize {
+                let row_top = row_top_at_zero - scroll as isize;
+                if row_top + rh <= 0 || row_top >= buf_h as isize {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
                 // Hover/press vocabulary (block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
@@ -1596,7 +1648,8 @@ impl PhotonApp {
                     ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
                 let row_hovered = row_pressed
                     || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
-                let cy = (row_top + row_h / 2) as f32;
+                // The avatar centres on the WHOLE row block, so a wrapped name sits balanced beside it (Nick 2026-09-09).
+                let cy = (row_top + rh / 2) as f32;
 
                 // Build/refresh the contact's scaled-avatar cache at the row diameter.
                 let has_avatar = self.contacts[ci].avatar_pixels.is_some();
@@ -1691,36 +1744,42 @@ impl PhotonApp {
                         .font("Oxanium")
                         .shear(0.2126)
                 };
-                let row_name = super::contact_visible_name(&self.contacts[ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
-                ctx.text.draw_text_left(
-                    &mut canvas,
-                    &row_name,
-                    text_x,
-                    cy,
-                    &row_style,
-                    Some(rows_clip),
-                    None,
-                );
+                // The wrapped name lines (from the pre-borrow wrap), stacked about the row centre at the line step.
+                let line_step = contact_line_step(row_h);
+                let line_cy = |k: usize| cy - (name_lines.len() as f32 - 1.0) * 0.5 * line_step + k as f32 * line_step;
+                for (k, line) in name_lines.iter().enumerate() {
+                    ctx.text.draw_text_left(
+                        &mut canvas,
+                        line,
+                        text_x,
+                        line_cy(k),
+                        &row_style,
+                        Some(rows_clip),
+                        None,
+                    );
+                }
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
                     let band_top = row_top.max(0) as usize;
                     let band_h =
-                        ((row_top + row_h).min(buf_h as isize) as usize).saturating_sub(band_top);
+                        ((row_top + rh).min(buf_h as isize) as usize).saturating_sub(band_top);
                     if band_h >= 2 {
                         let mut scratch = vec![0u8; buf_w * band_h];
-                        ctx.text.draw_text_left_legacy(
-                            &mut scratch,
-                            buf_w as u32,
-                            band_h as u32,
-                            &row_name,
-                            text_x,
-                            cy - band_top as f32,
-                            text_size,
-                            row_weight,
-                            vec![0xB0],
-                            0,
-                            "Oxanium",
-                        );
+                        for (k, line) in name_lines.iter().enumerate() {
+                            ctx.text.draw_text_left_legacy(
+                                &mut scratch,
+                                buf_w as u32,
+                                band_h as u32,
+                                line,
+                                text_x,
+                                line_cy(k) - band_top as f32,
+                                text_size,
+                                row_weight,
+                                vec![0xB0],
+                                0,
+                                "Oxanium",
+                            );
+                        }
                         crate::ui::photon_logo::blur_horizontal_soft(&mut scratch);
                         crate::ui::photon_logo::blur_vertical_soft(&mut scratch, buf_w, band_h);
                         crate::ui::photon_logo::composite_glow_white(
@@ -1744,7 +1803,7 @@ impl PhotonApp {
                         rows.x0 as isize,
                         row_top.max(0),
                         rows.x1 as isize,
-                        (row_top + row_h).min(buf_h as isize),
+                        (row_top + rh).min(buf_h as isize),
                         row_hit,
                     );
                 }
@@ -1807,17 +1866,23 @@ impl PhotonApp {
                 } else {
                     party_colour(&relationship_digest(&contact.handle_hash, &our_hh))
                 };
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()),
-                    layout.content.x,
-                    layout.header.center_y(),
-                    &TextStyle::new(hspan, name_colour)
-                        .weight(600)
-                        .font("Oxanium"),
-                    None,
-                    None,
-                );
+                // A chosen name's line returns are honoured (Nathan's has one on purpose): the lines stack centred on the header row.
+                let panel_name = super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
+                let panel_lines: Vec<&str> = panel_name.split('\n').collect();
+                let panel_step = hspan * 1.15;
+                for (k, line) in panel_lines.iter().enumerate() {
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        line,
+                        layout.content.x,
+                        layout.header.center_y() - (panel_lines.len() as f32 - 1.0) * 0.5 * panel_step + k as f32 * panel_step,
+                        &TextStyle::new(hspan, name_colour)
+                            .weight(600)
+                            .font("Oxanium"),
+                        None,
+                        None,
+                    );
+                }
 
                 // --- Nav rail: pinned Back (returns to the conversation), then the page rows scrolling below — the settings rail verbatim. ---
                 let rail_inset = layout.rail_inset();
@@ -2745,8 +2810,13 @@ impl PhotonApp {
                             })
                             .collect();
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
+                        // The contact's chosen name may carry line returns — each extra line adds a pitch to entry #0 (the avatar above rides up by the same).
+                        let header_name = super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
+                        let header_name_lines: Vec<String> = header_name.split('\n').map(|s| s.to_string()).collect();
+                        let header_name_extra = unit * 0.9 * (header_name_lines.len().saturating_sub(1)) as f32;
                         let header_block_h = avatar_r * 2.0
                             + unit * 3.0
+                            + header_name_extra
                             + status_wrapped
                                 .as_ref()
                                 .map(|(lines, _)| unit * 0.25 + unit * 0.75 * lines.len() as f32)
@@ -3030,9 +3100,18 @@ impl PhotonApp {
                                 } else {
                                     (tr(Msg::CopyPill), *theme::COPY_PILL_COLOUR)
                                 };
-                                let mut pills: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> =
-                                    vec![(tr(Msg::ReplyPill), *theme::COPY_PILL_COLOUR, self.msg_action_base)];
-                                if msg.is_outgoing
+                                // A WAVE CARD's options (Nick 2026-09-09): wave back (place a wave to this contact) and beam back (a stub, greyed until video lands), then delete — reply/edit/copy make no sense on a wave.
+                                let is_wave_row = msg.wave.is_some();
+                                let mut pills: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = if is_wave_row {
+                                    vec![
+                                        (tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)),
+                                        (tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE),
+                                    ]
+                                } else {
+                                    vec![(tr(Msg::ReplyPill), *theme::COPY_PILL_COLOUR, self.msg_action_base)]
+                                };
+                                if !is_wave_row
+                                    && msg.is_outgoing
                                     && crate::types::parse_attachment_content(&msg.content)
                                         .is_none()
                                 {
@@ -3042,7 +3121,9 @@ impl PhotonApp {
                                         self.msg_action_base.wrapping_add(1),
                                     ));
                                 }
-                                pills.push((copy_label, copy_colour, self.msg_copy_id));
+                                if !is_wave_row {
+                                    pills.push((copy_label, copy_colour, self.msg_copy_id));
+                                }
                                 if msg.is_outgoing && !msg.delivered {
                                     pills.push((
                                         tr(Msg::ResendPill),
@@ -3590,17 +3671,20 @@ impl PhotonApp {
                                 None => (None, 0.0),
                             };
                             let block_name_y = y - unit * 0.2 - status_h;
-                            let block_avatar_cy = block_name_y - unit * 1.2 - avatar_r;
+                            let block_avatar_cy = block_name_y - header_name_extra - unit * 1.2 - avatar_r;
                             draw_conv_avatar(&mut canvas, block_avatar_cy, Some(list_clip));
-                            ctx.text.draw_text_center(
-                                &mut canvas,
-                                &super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()),
-                                buf_w as f32 * 0.5,
-                                block_name_y,
-                                &header_style,
-                                Some(list_clip),
-                                None,
-                            );
+                            // Bottom-anchored like the status: the LAST name line sits at block_name_y, earlier lines stack upward at the name pitch.
+                            for (k, line) in header_name_lines.iter().enumerate() {
+                                ctx.text.draw_text_center(
+                                    &mut canvas,
+                                    line,
+                                    buf_w as f32 * 0.5,
+                                    block_name_y - unit * 0.9 * (header_name_lines.len() - 1 - k) as f32,
+                                    &header_style,
+                                    Some(list_clip),
+                                    None,
+                                );
+                            }
                             if let Some((lines, colour)) = block_status {
                                 // Bottom-anchored: the LAST wrapped line sits where the old single line sat; extra lines stack upward (the name above already yielded via status_h).
                                 let pitch = unit * 0.75;
@@ -4947,35 +5031,8 @@ impl PhotonApp {
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::UpdatesTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::PhotonVersion(&version_dozenal_glyphs())), hspan2, *theme::CONTACT_NAME_COLOUR, 400);
-                    // WHAT'S NEW (Nick 2026-09-09): the running version's release notes, compiled in; a dev build also lists what is coming.
-                    {
-                        let ver = format!("v{}", deploy_version());
-                        let shipped = crate::ui::release_notes::section(&ver);
-                        if !shipped.is_empty() {
-                            flow.gap(hspan2 * 0.5);
-                            flow.line(&mut canvas, ctx.text, &tr(Msg::WhatsNew(&crate::fmt_num(deploy_version()))), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                            for item in &shipped {
-                                flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                            }
-                        }
-                        if dev_patch() > 0 {
-                            let upcoming = crate::ui::release_notes::section("Upcoming");
-                            if !upcoming.is_empty() {
-                                flow.gap(hspan2 * 0.5);
-                                flow.line(&mut canvas, ctx.text, &tr(Msg::UpcomingChanges), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                                for item in &upcoming {
-                                    flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                                }
-                            }
-                        }
-                    }
-                    flow.gap(hspan2 * 0.4);
-                    if let Some(cb) = self.settings_autoupdate_check.as_mut() {
-                        let label = cb.label().to_string();
-                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
-                    }
-                    flow.gap(hspan2 * 0.4);
-                    // One pill per channel: label + colour driven by the check state. Release = green when an update is available, Dev = amber; either goes inert dark grey ("Already on …", "Checking…", "No build").
+                    flow.gap(hspan2 * 0.5);
+                    // ORDER (Nick 2026-09-09): version, then the GREEN release pill with what's new IN THAT RELEASE beneath it (the offered version's notes, fetched beside the manifest — not the running build's), then the AMBER dev pill with its beta invitation (and, on a dev build, what is coming). Each pill sizes to its label and wraps onto its own line when the pane is narrow.
                     let ours = crate::network::updates::our_version();
                     let pill_state = |kind: &str, avail_fill: (u32, u32), state: &ChannelCheck, busy: bool| -> (String, (u32, u32), bool) {
                         match state {
@@ -4994,11 +5051,56 @@ impl PhotonApp {
                         }
                     };
                     let (rl, rf, re) = pill_state("release", *theme::PILL_GREEN, &self.update_release, self.update_busy);
-                    let (dl, df, de) = pill_state("dev", *theme::PILL_AMBER, &self.update_dev, self.update_busy);
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&rl, btn_base.wrapping_add(1), re, Some(rf)),
+                    ], "Oxanium");
+                    {
+                        // The release the green pill names: its minor is the notes section. Fetched notes first (they describe releases newer than this build); the compiled-in copy covers the case where the offered release IS this build (or the fetch hasn't landed).
+                        let offered_minor: Option<usize> = match &self.update_release {
+                            ChannelCheck::Ready(Some(row)) => Some(row.version.1),
+                            _ => None,
+                        };
+                        if let Some(minor) = offered_minor {
+                            let sect = format!("v{minor}");
+                            let mut items = self
+                                .update_notes
+                                .as_deref()
+                                .map(|t| crate::ui::release_notes::section_of(t, &sect))
+                                .unwrap_or_default();
+                            if items.is_empty() {
+                                items = crate::ui::release_notes::section(&sect);
+                            }
+                            if !items.is_empty() {
+                                flow.gap(hspan2 * 0.3);
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::WhatsNew(&crate::fmt_num(minor as u32))), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                                for item in &items {
+                                    flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                                }
+                            }
+                        }
+                    }
+                    flow.gap(hspan2 * 0.6);
+                    let (dl, df, de) = pill_state("dev", *theme::PILL_AMBER, &self.update_dev, self.update_busy);
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&dl, btn_base.wrapping_add(2), de, Some(df)),
                     ], "Oxanium");
+                    flow.gap(hspan2 * 0.3);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::DevChannelHint), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    if dev_patch() > 0 {
+                        let upcoming = crate::ui::release_notes::section("Upcoming");
+                        if !upcoming.is_empty() {
+                            flow.gap(hspan2 * 0.3);
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::UpcomingChanges), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                            for item in &upcoming {
+                                flow.prose(&mut canvas, ctx.text, &format!("• {item}"), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            }
+                        }
+                    }
+                    flow.gap(hspan2 * 0.6);
+                    if let Some(cb) = self.settings_autoupdate_check.as_mut() {
+                        let label = cb.label().to_string();
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
+                    }
                     flow.gap(hspan2 * 0.4);
                     // Status: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome.
                     if let Some((done, total)) = self.update_progress {
@@ -5222,27 +5324,28 @@ impl PhotonApp {
                     // Fleet-wide base pills (display.base — linked, so a preference follows the identity): dozenal, hexadecimal, arabic, the chosen one filled. Dozenal and hex fill green; arabic fills the shame red — the disapproval rides the pill, no scold line needed.
                     let base = crate::num_base();
                     {
-                        let pill_h = line_h * 1.1;
-                        let gap = hspan2 * 0.6;
-                        let labels = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
-                        let widths: Vec<f32> = labels.iter().map(|l| ctx.text.measure_text(l, &TextStyle::new(pill_h * 0.5, 0)) + pill_h * 0.9).collect();
-                        let total_w: f32 = widths.iter().sum::<f32>() + gap * 2.0;
-                        let mut px = cx - total_w * 0.5;
-                        for (i, l) in labels.iter().enumerate() {
-                            let this = match i { 0 => crate::NumBase::Dozenal, 1 => crate::NumBase::Hex, _ => crate::NumBase::Arabic };
-                            let fill = if this != base {
+                        // Flow-aware pills (the Security-page helper): each sizes to its label and they wrap onto further lines when the pane is narrow or the zoom is big (Nick 2026-09-09: "base choice buttons don't wrap upon scale").
+                        let fill_for = |this: crate::NumBase| -> Option<(u32, u32)> {
+                            if this != base {
                                 None
                             } else if this == crate::NumBase::Arabic {
                                 Some((*theme::DOZENAL_SCOLD_BOX, *theme::DOZENAL_SCOLD_BOX))
                             } else {
                                 Some(*theme::PILL_GREEN)
-                            };
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(px, y, widths[i], pill_h), l, btn_base.wrapping_add(i as HitId), ctx.pressed_hit, true, fill, "Oxanium");
-                            px += widths[i] + gap;
-                        }
-                        y += pill_h;
+                            }
+                        };
+                        let labels = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
+                        let pills = [
+                            (labels[0].as_ref(), btn_base, true, fill_for(crate::NumBase::Dozenal)),
+                            (labels[1].as_ref(), btn_base.wrapping_add(1), true, fill_for(crate::NumBase::Hex)),
+                            (labels[2].as_ref(), btn_base.wrapping_add(2), true, fill_for(crate::NumBase::Arabic)),
+                        ];
+                        // A local Flow anchored at the current cursor (its inset.y is pre-scrolled so the flow's y lands exactly at `y`).
+                        let mut flow = Flow::new(fluor::region::Region::new(inset.x, y + settings_content_scroll, inset.w, inset.h), settings_content_scroll);
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &pills, "Oxanium");
+                        y += flow.used();
                     }
-                    y += line_h * 0.8;
+                    y += line_h * 0.4;
                     // Why dozenal — or, in arabic mode, why YOU dozenal: the unit-of-account answer. Hex gets the plain case: the machine's base is at least a base with a reason.
                     let (head, rant) = if base == crate::NumBase::Arabic {
                         (tr(Msg::WhyYouDozenal), tr(Msg::WhyYouDozenalProse))
@@ -5296,6 +5399,24 @@ impl PhotonApp {
                             format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsReading(bits)))
                         } else {
                             format!("{}  {}", crate::fmt_num(bits), tr(Msg::DmsReading(bits)))
+                        };
+                        ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                        y += line_h * 0.9;
+                    }
+                    // SIZE legend — the same doubling rule with a bit in place of a second (sizes are DMS in dozenal and hex too): a byte is four, a kilobyte Zila Zilor, a megabyte Zilor Zil, a gigabyte Zilor Stela.
+                    y += line_h * 0.6;
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsSizeHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h;
+                    for line in tr(Msg::DmsSizeIntro).lines() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                        y += line_h * 0.3;
+                    }
+                    y += line_h * 0.3;
+                    for bits in [1u32, 4, 8, 11, 14, 17, 20, 24, 27, 30, 34, 44] {
+                        let row = if base == crate::NumBase::Dozenal {
+                            format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsSizeReading(bits)))
+                        } else {
+                            format!("{}  {}", crate::fmt_num(bits), tr(Msg::DmsSizeReading(bits)))
                         };
                         ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
                         y += line_h * 0.9;
@@ -5688,12 +5809,31 @@ impl PhotonApp {
 
 }
 
-/// Paint the standing bands stacked up from the screen bottom, `band_h` each — the span-based unit of the page that calls (zoom-aware, no pixel floor).
+/// A contact row's line step for a wrapped name: the name size is half the layout row, and lines stack at a quarter more than that.
+fn contact_line_step(row_h: isize) -> f32 {
+    row_h as f32 * 0.5 * 1.25
+}
+
+/// A contact row's height: the layout row for a one-line name, plus one line step per extra wrapped line. The extent clamp and the row walk share it.
+fn contact_row_height(row_h: isize, lines: usize) -> isize {
+    row_h + (lines.saturating_sub(1) as f32 * contact_line_step(row_h)).round() as isize
+}
+
+/// Paint the standing bands stacked up from the screen bottom — `band_h` per LINE, the span-based unit of the page that calls (zoom-aware, no pixel floor). A long band word-wraps at the window width and takes as many lines as it needs (Nick 2026-09-09), so the bands above it ride up by the same amount.
 fn draw_standing_bands(bands: &[(String, u32)], canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, buf_w: usize, buf_h: usize, band_h: f32) {
     let cx = buf_w as f32 * 0.5;
     let font_size = band_h * 0.6;
-    for (i, (label, colour)) in bands.iter().enumerate() {
-        let cy = buf_h as f32 - band_h * (0.5 + i as f32);
-        text.draw_text_center(canvas, label, cx, cy, &TextStyle::new(font_size, *colour).weight(600).font("Oxanium"), None, None);
+    let style_of = |colour: u32| TextStyle::new(font_size, colour).weight(600).font("Oxanium");
+    let max_w = (buf_w as f32 - band_h * 2.0).max(band_h);
+    let mut bottom = buf_h as f32;
+    for (label, colour) in bands.iter() {
+        let lines = wrap_text_lines(text, label, &style_of(*colour), max_w);
+        let n = lines.len().max(1);
+        // Lines stack top-down within the band; the band's bottom sits on the previous band's top.
+        for (k, line) in lines.iter().enumerate() {
+            let cy = bottom - band_h * (n as f32 - k as f32 - 0.5);
+            text.draw_text_center(canvas, line, cx, cy, &style_of(*colour), None, None);
+        }
+        bottom -= band_h * n as f32;
     }
 }

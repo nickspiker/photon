@@ -735,10 +735,18 @@ impl PhotonApp {
         if self.click_streak >= 2 {
             return false;
         }
-        // Compose drag = SELECTION (the multi-line box selects like an editor, it doesn't pan).
+        // Compose drag = SELECTION on desktop (the multi-line box selects like an editor). On Android a finger drag SCROLLS the text instead — the scroll rides the touch-synthesized wheel deltas in the wheel arm, so the drag must not also grow a selection under the finger.
         if let Some(tb) = self.message_textbox.as_mut().filter(|t| t.hit_id() == id) {
-            tb.pointer_drag(x, y);
-            return true;
+            #[cfg(target_os = "android")]
+            {
+                let _ = (tb, x, y);
+                return true;
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                tb.pointer_drag(x, y);
+                return true;
+            }
         }
         let offset = self.pan_grab_scroll + (x - self.pan_grab_x);
         match self.textbox_by_hit_mut(id) {
@@ -749,6 +757,11 @@ impl PhotonApp {
 
     /// Pointer release: end the pan (the spring pass in `tick()` takes over easing any overshoot home).
     pub(super) fn textbox_release(&mut self) {
+        // A release off the compose box drops any fling it never started; a release ON it leaves the last frame's delta running (the fling — decayed to zero by the tick).
+        let compose_id = self.message_textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
+        if self.drag_select_hit != compose_id {
+            self.compose_fling = 0;
+        }
         self.pointer_down = false;
         self.drag_select_hit = HIT_NONE;
     }
