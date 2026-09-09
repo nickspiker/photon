@@ -31,15 +31,14 @@ if [ -z "$NDK_BIN" ]; then
 fi
 export PATH="$NDK_BIN:$PATH"
 
-# The ring crate expects `aarch64-linux-android-clang` without the API-level suffix.
-if [ ! -f "$NDK_BIN/aarch64-linux-android-clang" ]; then
-    ln -sf aarch64-linux-android21-clang "$NDK_BIN/aarch64-linux-android-clang"
-    ln -sf aarch64-linux-android21-clang++ "$NDK_BIN/aarch64-linux-android-clang++"
-fi
+# API 26 = minSdk (android/app/build.gradle) and the level libaaudio first exists at in the NDK sysroot (2026-09-09: the API-21 clang linked fine until the AAudio move, then "unable to find library -laaudio"). The ring crate expects `aarch64-linux-android-clang` without the suffix; re-point it every time so a stale 21 link never survives.
+ANDROID_API=26
+ln -sf "aarch64-linux-android${ANDROID_API}-clang" "$NDK_BIN/aarch64-linux-android-clang"
+ln -sf "aarch64-linux-android${ANDROID_API}-clang++" "$NDK_BIN/aarch64-linux-android-clang++"
 
 # Android ARM64 target (the only Android target).
-export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android21-clang"
-export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android21-clang"
+export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android${ANDROID_API}-clang"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android${ANDROID_API}-clang"
 
 # Host build flags so the build.rs / proc-macro compiles use the fast local toolchain.
 # Host-specific: the mold linker flags are x86_64-Linux only — setting CC/CXX to a bare `clang` on macOS would shadow the NDK wrappers' own host compiler resolution, and mold isn't there at all. On macOS the system clang from the Command Line Tools is already the right host compiler, so leave CC/CXX unset and let cargo/cc-rs find it.
