@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v88
+
 - Nothing you type becomes a link on its own: a web address stays plain text until you press the purple link button beside send.
 - On desktop, pasting a web address onto selected text turns that text into a link.
 - The link button shortens the address to its plain name, keeps the full address behind it, and hands the name back selected: type a name of your own over it, or press space to keep it; backspace puts the plain address back.
