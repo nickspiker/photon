@@ -73,6 +73,8 @@ pub static SEARCH_FOUND_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_40_E0_40
 pub static SEARCH_FAIL_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_E0_40_40));
 /// Hyperlink text — the primary VSF blue (the 462nm monochromatic AGB primary, authored as pure B in VSF RGB; same primary the WFD ring wears).
 pub static LINK_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_FF));
+/// Message links (Nick 2026-09-09): purple, in the compose box, on the link button, on the caret while typing a link, and bold in every bubble.
+pub static LINK_PURPLE: LazyLock<u32> = LazyLock::new(|| c(0x00_A0_50_FF));
 /// The unticked dozenal checkbox's shame fill — Zil.lun red (half-intensity, dozenal 0;6): red enough to disapprove, dark enough to stay a box.
 pub static DOZENAL_SCOLD_BOX: LazyLock<u32> = LazyLock::new(|| c(0x00_80_00_00));
 /// Transport tier of a live path, shown as a dot beside a device or contact — SAME semantics as the presence ring above (one language: cyan = LAN/same room, green = direct WAN, orange = relay). The dot and ring shipped INVERTED for weeks (dot green=LAN/cyan=WAN) and the field caught it as "fleet page cyan, bridge green, same peer, same moment" (2026-08-30).

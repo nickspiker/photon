@@ -82,6 +82,7 @@ impl PhotonApp {
                 ctx.text,
             );
         }
+        let link_visible = self.compose_link_available();
         if let Some(btn) = self.message_send_btn.as_mut() {
             let send_size = compose_h * 7.0 / 8.0;
             let send_inset = compose_h / 16.0;
@@ -89,6 +90,16 @@ impl PhotonApp {
             let send_cx = box_right - send_inset - send_size * 0.5;
             btn.set_rect(send_cx, compose_cy, send_size, send_size);
             btn.set_font_size(font_size);
+            // The link button sits one slot left of send, same size; the text area yields to both while it shows.
+            if let Some(lb) = self.compose_link_btn.as_mut() {
+                lb.set_rect(send_cx - send_size - send_inset, compose_cy, send_size, send_size);
+                lb.set_font_size(font_size * 0.9);
+            }
+            if link_visible {
+                if let Some(tb) = self.message_textbox.as_mut() {
+                    tb.set_right_inset((send_size + send_inset) * 2.0);
+                }
+            }
         }
 
         // Settings panel (STUB): position the stateful widgets on the selected page. Content-body rows give each control a slot; a control's rect is a portion of its row so the label can sit beside / above it. Only the active page's widgets are repositioned — the others keep their placeholder geometry off-screen, and `visit` gates them out anyway.

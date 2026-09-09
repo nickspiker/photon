@@ -25,9 +25,35 @@ impl PhotonApp {
             if tagged.iter().any(|t| t.start < e && s < t.end) {
                 continue;
             }
-            spans.push(fluor::widgets::Span { start: s, end: e, colour: *theme::LINK_COLOUR, dest: None });
+            spans.push(fluor::widgets::Span { start: s, end: e, colour: *theme::LINK_PURPLE, dest: None });
         }
         tb.set_spans(spans);
+    }
+
+    /// Is there a bare URL in the compose box to turn into a link? Drives the link button beside send (hidden while a relabel is pending — the button's job is done then).
+    pub(super) fn compose_link_available(&self) -> bool {
+        self.message_textbox.as_ref().is_some_and(|tb| !tb.relabel_pending() && tb.spans().iter().any(|s| s.dest.is_none()))
+    }
+
+    /// THE LINK BUTTON (Nick 2026-09-09): the detected URL under the caret (else the last one) becomes a tagged link whose text is the LITERAL TRIM — scheme off, trailing slash off — so "https://passless.org/photon/" shows as "passless.org/photon" and opens the full address. The caret lands purple at its end; the next typed URL char replaces the label.
+    pub(super) fn compose_link_click(&mut self, text: &mut fluor::text::TextRenderer) {
+        let Some(tb) = self.message_textbox.as_mut() else { return };
+        let cursor = tb.cursor;
+        let bare: Vec<(usize, usize)> = tb.spans().iter().filter(|s| s.dest.is_none()).map(|s| (s.start, s.end)).collect();
+        let Some(&(start, end)) = bare.iter().find(|(s, e)| *s <= cursor && cursor <= *e).or_else(|| bare.last()) else { return };
+        let url: String = tb.chars[start..end].iter().collect();
+        let label = url
+            .trim_start_matches("https://")
+            .trim_start_matches("http://")
+            .trim_end_matches('/')
+            .to_string();
+        if label.is_empty() {
+            return;
+        }
+        tb.relabel_span(start, end, &label, url.clone(), *theme::LINK_PURPLE, text);
+        crate::logf!("COMPOSE: link button — {} shown as {}", url, label);
+        self.compose_spans_seq = self.message_textbox.as_ref().map_or(0, |t| t.edit_seq());
+        self.scene_dirty = true;
     }
 
     /// The compose box's tagged links as wire marks (byte offsets over the box's text), taken at submit before the box clears.

@@ -6,18 +6,18 @@
 
 - [project_fleet_key_redesign.md](project_fleet_key_redesign.md) — fleet-key REDESIGN spec'd (docs/fleet-key.md): ira-wrapped, revision-published, shrink-only mint
 
-- [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP: Phases 1-6 ALL SHIPPED 2026-08-20 (device vault+migration, self-honest rings, fleet-first rejoin, JPEG gate, LAN add)
+- [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP Phases 1-6 ALL SHIPPED 2026-08-20
 
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor (draw_pill_immediate + retained Button); photon never hand-rolls squircles
 
-- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET (plan: logical-brewing-creek.md): stages 1-4 SHIPPED 2026-09-08 (light hybrid-KEM ratchet, computed owner, woven CLUTCH on shrink); NEXT stage 5 consent, 6 soak
+- [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED 2026-09-08 (light KEM ratchet, computed owner, woven CLUTCH on shrink); NEXT stage 5 consent, 6 soak
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% CPU = wake_at returns past Instant (animating flags / add_in_flight stuck / Android presence guard
 - [project_render_storm_lag.md](project_render_storm_lag.md) — ROOT-CAUSED 2026-08-15: lag = VAULT MUTEX contention (UI-tick avatar probe read vs background persist writers)
 
 - [project_settings_typed_values.md](project_settings_typed_values.md) — fstate v7 SHIPPED 2026-08-16: every settings value natively typed VSF + v6 compat window
 - [project_fgtw_key_desync.md](project_fgtw_key_desync.md) — CLOSED 2026-08-14: rollback un-bricked, guard SHIPPED bcb830d
 
-- [project_lifecycle_flows.md](project_lifecycle_flows.md) — identity/device lifecycle DESIGNED (docs/lifecycle.md): D1 collision=KnownHandle, D2 double-attest=binding marker; D3 LastRites SUPERSEDED
+- [project_lifecycle_flows.md](project_lifecycle_flows.md) — identity/device lifecycle DESIGNED (docs/lifecycle.md): D1 collision=KnownHandle, D2 double-attest=binding marker
 - [project_identity_never_dies.md](project_identity_never_dies.md) — IDENTITY NEVER DIES SHIPPED 2026-07-17: no terminal op, brands survive departure, two-signature retire
 - [succession-emit-side-unwired.md](succession-emit-side-unwired.md) — identity succession primitive + worker slot + contact RECEIVE path SHIPPED (05f7d27)
 
@@ -31,20 +31,20 @@
 - [project_manifestus_plow_reloc_refusal.md](project_manifestus_plow_reloc_refusal.md) — CLOSED 2026-09-08: 'storage degraded' = LiveSet::apply order bug (manifestus f28e851 + KATs)
 - [project_manifestus_tombstone_bug.md](project_manifestus_tombstone_bug.md) — vault corruption = fast-delete left committed pointer; FIXED @ manifestus 56bde9a
 - [project_storage_layering.md](project_storage_layering.md) — 3 storage layers (vault/chain-state/rārangi conversation DB); file-tree paths half-assed into flat vault
-- [project_reserve_delivery.md](project_reserve_delivery.md) — RE-SERVE SHIPPED 97e2bcc 2026-08-20: durable store outranks pending list (sealed tip + row deficit → re-serve non-pending rows
+- [project_reserve_delivery.md](project_reserve_delivery.md) — RE-SERVE SHIPPED 97e2bcc 2026-08-20: durable store outranks pending list (sealed tip + row deficit → re-serve)
 - [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — message rows: table=friendship_id bytes, pk=monotonic u64 counter; fleet=a conversation
 - [project_self_message_vanish.md](project_self_message_vanish.md) — self-msg vanish ROOT-CAUSED (save amplification + quit ate writes); delta gate + quit drain SHIPPED 68b1912
 - [project_fleet_routing_scale.md](project_fleet_routing_scale.md) — fleet invariants: any size (12+, no 2-device shortcuts) in eggs/braid/fan-out
 - [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 CUTOVER CLOSED 2026-08-18 @ 2adff1d: spine built, durability = docs/durability.md (FLEET-HOLDS-HISTORY)
 - [project_fleet_unification_v1.md](project_fleet_unification_v1.md) — unification v1 SHIPPED @ b231592: compose ANYWHERE (fleet-forward → chain owner transmits)
 - [project_attachments.md](project_attachments.md) — attachments v1+v2 SHIPPED (e8baa81+cd3aa3f): row/blob split, PT blobs no-cloud, true-shred, Android picker, resample card
-- [project_links.md](project_links.md) — message links = typed marks beside the text; live link colouring in the compose box on the edit edge + paste-onto-selection tagging (2026-09-09); previews deliberately absent
+- [project_links.md](project_links.md) — message links = typed marks; live purple spans, chain-link button relabels to the literal trim, label editable (2026-09-09)
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot SHIPPED (tohu d26a8d8 + photon 23e13f5): off-by-default Security toggle, device-bound reboot capsule
 - [project_bridge.md](project_bridge.md) — BRIDGE = passless remote shell between fleet siblings over PT (rustdesk/SSH replacement)
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable
 - [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23)
 - [project_clutch_token_asymmetry.md](project_clutch_token_asymmetry.md) — "unknown conversation_token" = §4.2 competing ceremony instances
-- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — no-ring CONVICTED (identity-era split); GLARE fixed 328bc7d; 2026-09-08 instant-drop = drought tick vs previous call clocks, FIXED; two-live-eras = e6 reader bug, FIXED
+- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — no-ring CONVICTED (identity-era split); GLARE fixed; 2026-09-08 instant-drop + two-live-eras both FIXED
 - [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock FIXED @7d5e356 (retries=no-progress, path-up/stall re-fire, pong-drop torches)
 - [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub)
@@ -60,17 +60,17 @@
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session (own machine) or --handle <LEFT-column map bytes>; map = 'handle = petname' (LEFT secret); pull to a file first
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — 13:17Z ate a fresh submission, 14:17Z instrumented cron kept all bait (unconvicted)
 - [project_vault_op_latency.md](project_vault_op_latency.md) — CONVICTED + FIXED 2026-08-21: ~900ms/put → group commit (manifestus put_batch + kete batch drain) + five UI-thread writes
-- [project_android_session_capsule.md](project_android_session_capsule.md) — Android de-attest-on-restart fix: boot-locked session capsule (spaghettify(boot_id) wairua, kete AEAD
+- [project_android_session_capsule.md](project_android_session_capsule.md) — Android de-attest-on-restart fix: boot-locked session capsule (spaghettify(boot_id) wairua)
 - [project_vsf_canonical_signing.md](project_vsf_canonical_signing.md) — ONE canonical VSF signing scheme (ge over BLAKE3(file, ge zeroed)); hp-value signing retired 2026-07-06
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — CLUTCH completes crypto-correct but rebroadcasts its proof forever (ceremony decoupled from data plane)
 - [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — FGTW substrate extracted into the fgtw crate through M3 (keys/fleet/fanout/fstate/pair/client)
 - [project_fgtw_nostd_deferred.md](project_fgtw_nostd_deferred.md) — fgtw crate stays std until ferros; move code verbatim (no alloc::/no_std refactors)
-- [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: fgtw.org retires, peers = the trust web; MUTUAL-CONSENT clutch SHIPPED f33ebec 2026-08-25 (knock replaces
-- [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT 2026-08-30 (LAN→WAN→WFD→relay, BLE=pairing-only, never drop infra WiFi); field test + Linux rung PENDING
+- [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: peers = the trust web; MUTUAL-CONSENT clutch SHIPPED f33ebec 2026-08-25
+- [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT 2026-08-30 (LAN→WAN→WFD→relay, BLE=pairing-only); field test PENDING
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — Conversation party colours are placeholder; swap to perceptual L≈50% via vsf spectral/LMS
 - [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online (online = avatar ring, always); "show my presence" = busy/song/mood broadcast, DEFAULTS OFF
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
-- [project_incall_learner.md](project_incall_learner.md) — in-call learner + V-CHIRP connect probe SHIPPED; field rounds 1-5 logged (2x-TX = double capture thread, FIXED 2026-09-08 via audioGen token)
+- [project_incall_learner.md](project_incall_learner.md) — in-call learner + V-CHIRP probe SHIPPED; field rounds 1-5 logged; 2x-TX double capture FIXED 2026-09-08
 - [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: exhaustive-match Msg enum (en+es+mi), every numeral thru fmt_num, You-page picker
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila)
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp
@@ -95,7 +95,7 @@
 - [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev-log output (double-click selects the value)
 - [feedback_script_timestamps.md](feedback_script_timestamps.md) — every build/deploy script ends with `completed $(date)` on each success exit
 - [feedback_voca_camelcase.md](feedback_voca_camelcase.md) — Default voca-encoded values to camelCase concatenation; space-separated form is opt-in for read-aloud
-- [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify a grep-derived line number is non-empty before ANY sed address op; an empty address applies to every line (lib.rs ×1271, pushed, 2026-09-09)
+- [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify a grep-derived line number is non-empty before ANY sed address op (empty address = every line; lib.rs ×1271)
 - [feedback_no_comment_wraps.md](feedback_no_comment_wraps.md) — never hard-wrap comments/docstrings/markdown; one sentence per line however long (RECURRING "line wrap virus"
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is DIRECT PIXEL ACCESS ONLY; no GPU shaders/vertex triangles/float pipeline ("no floaters")
 - [project_textbox_one_registry.md](project_textbox_one_registry.md) — adding a textbox = register in TWO walks only (visit_app_widgets + textboxes_mut)
@@ -118,7 +118,7 @@
 - [project_secret_memory_hygiene.md](project_secret_memory_hygiene.md) — hot-secret RAM handling: do-now = zeroize + mlock + no-core-dumps + copy discipline
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — VSF readers MUST use VsfHeader::primary_section (near-form names are TOC-only, header-only sections have no body)
 - [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard FORCE-opens Claude Code's Edit read guard (patches Bun binaries)
-- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF integers: writers auto-size (VsfType::u/i, never hand widths), readers widen (as_u64/as_i64, never exact-match)
+- [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF integers: writers auto-size (VsfType::u/i), readers widen (as_u64/as_i64), never exact-match
 - [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — THE number doctrine: binary at rest (wire/vault/log)
 - [feedback_answer_dont_act.md](feedback_answer_dont_act.md) — user asks a QUESTION → answer and stop; never take action (esp. destructive) on a verification question; do ONLY what's asked
 - [project_two_machine_git_divergence.md](project_two_machine_git_divergence.md) — after ANY commit verify HEAD == ls-remote; "missing fgtw/fluor symbol" = stale sibling, fast-forward first
@@ -141,7 +141,7 @@
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits with "Built with Claude Fable 5"
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only, check only when warranted
 - [No private handles](no-private-handles.md) — everything is public EXCEPT signing keys + handles (keys/ only); handles are keys, never in ANY repo; prose uses the map's petnames
-- [Bilateral removal](self-only-removal.md) — SHIPPED 2026-08-31: departure = leaver's signed request + surviving member's countersign (mirror of add); expulsion never; stolen = lockout, never removal
+- [Bilateral removal](self-only-removal.md) — SHIPPED 2026-08-31: departure = leaver's signed request + survivor's countersign; expulsion never; stolen = lockout
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when absolutely required
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A + B4 done (2026-08-09, locks commute per-key); flag-day APPROVED for B2's chain op; next: B1→B3 fleet chain+eggs arc
 - [Persist findings early](persist-findings-early.md) — Nick undoes via message edits (truncates context): write load-bearing findings to memory/docs as they land
@@ -154,10 +154,10 @@
 - [project_lockout_enforcement.md](project_lockout_enforcement.md) — lock @b75cc0e + UNLOCK @0f76044/fa9e765: handle-confirmed reversal, typed tombstone
 - [project_fleet_epoch_arc_closed.md](project_fleet_epoch_arc_closed.md) — epoch arc CLOSED @ fa3a9c0: hist_page+pong epoch re-seal, row-cadence mint
 - [project_wiped_device_roster_clobber.md](project_wiped_device_roster_clobber.md) — 2026-08-16 wiped-mac contactless: stale oracle fleet key + aead breaker clobbered roster slot
-- [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect one placement path + once-per-gesture settle hook
+- [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect + once-per-gesture settle hook
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
-- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; 2026-09-09 Android audio moved to Rust-owned AAudio exclusive low-latency with HAL-stamped frames (OboeTester baseline 20.6 ms); docs/calls.md
+- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; 2026-09-09 Android audio = Rust-owned AAudio exclusive, HAL-stamped frames (floor 20.6 ms); docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
 - [project-ferros-exec-naming.md](project-ferros-exec-naming.md) — ferros exec design: no ambient cwd, bind-dont-search (petname→blake3 + sig at spawn), VSF headers not #!, package roots not $0

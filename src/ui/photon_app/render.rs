@@ -193,12 +193,9 @@ impl PhotonApp {
             } else if page == SettingsPage::About {
                 // Logo(4) + gap + killswitch + passless + link + no-servers prose(8×0.8) + consent block + TOKEN block + version + toggle + why-dozenal rant ≈ 37 rows collapsed (each prose line 0.8, three 1-row section headers, inter-block gaps); the version reveal adds the spelled line + "dozenal" header + 6 cheat rows ≈ 8.4.
                 let rows = 37.0
-                    + if self.about_version_spelled {
-                        // The reveal (spelled line + index) plus, once found, the riddle beneath the index.
-                        8.4 + if self.about_riddle_revealed { 7.0 } else { 0.0 }
-                    } else {
-                        0.0
-                    }
+                    + if self.about_version_spelled { 1.4 } else { 0.0 }
+                    // The index (header + six cheat rows) whenever the base is dozenal or the version is spelled, plus the riddle beneath it once found.
+                    + if self.about_version_spelled || crate::dozenal_ui() { 7.0 + if self.about_riddle_revealed { 7.0 } else { 0.0 } } else { 0.0 }
                     + if !crate::dozenal_ui() { 1.8 } else { 0.0 };
                 sl.content_line_h() * rows
             } else if page == SettingsPage::Diagnostics && self.diag_log_view {
@@ -361,6 +358,7 @@ impl PhotonApp {
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
         let standing_bands = self.standing_bands();
         self.sync_compose_link_spans();
+        let link_btn_visible = self.compose_link_available();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -3294,7 +3292,7 @@ impl PhotonApp {
                                     continue;
                                 }
                                 // Segmented draw: link runs in LINK_COLOUR with an underline hairline + a tap rect; plain runs in the bubble style. Right-aligned lines anchor at (right − full width) so segments flow left→right identically.
-                                let link_style = TextStyle::new(msg_size, *theme::LINK_COLOUR).weight(500);
+                                let link_style = TextStyle::new(msg_size, *theme::LINK_PURPLE).weight(700);
                                 let mut x = if right_aligned {
                                     buf_w as f32 - pad_x - ctx.text.measure_text(line, &msg_style)
                                 } else {
@@ -3322,7 +3320,7 @@ impl PhotonApp {
                                                 uy as isize,
                                                 w as isize,
                                                 ctx.viewport.ru.max(1.0) as isize,
-                                                *theme::LINK_COLOUR,
+                                                *theme::LINK_PURPLE,
                                                 None,
                                                 None,
                                             );
@@ -3573,6 +3571,13 @@ impl PhotonApp {
 
                         // ── Compose box (pinned bottom) ──────────────────────────── Shown when THIS device can dispatch — the pre-chrome `compose_ready` snapshot, the same one definition the focus walk reads. No placeholder text: the box's position says what it's for (Nick, 2026-08-09 — the hint lingered after sends and earned nothing).
                         if compose_ready {
+                            // LINK BUTTON (purple, chain link) beside send, only while the box holds a bare URL to convert.
+                            if link_btn_visible {
+                                if let Some(btn) = self.compose_link_btn.as_mut() {
+                                    let id = btn.hit_id();
+                                    btn.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map), id);
+                                }
+                            }
                             // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
@@ -5236,8 +5241,10 @@ impl PhotonApp {
                         None,
                     );
                     y += line_h;
+                    // The dozenal cheat sheet stands on its own whenever the base is dozenal (Nick 2026-09-09): the glyphs are everywhere in the interface, so the key to them lives here, no tap needed. In decimal mode the version tap still reveals it.
+                    let show_index = self.about_version_spelled || crate::dozenal_ui();
                     if self.about_version_spelled {
-                        // Spelled-out (voca words), then the dozenal cheat sheet: all twelve digits as GLYPH = name, two columns of six.
+                        // Spelled-out (voca words) version line.
                         let main = crate::dozenal_spell(deploy_version());
                         let patch = (dev_patch() > 0).then(|| crate::dozenal_spell(dev_patch()));
                         let spelled = tr(Msg::AboutVersionSpelled { main: &main, patch: patch.as_deref() });
@@ -5253,6 +5260,9 @@ impl PhotonApp {
                             None,
                         );
                         y += line_h * 1.4;
+                    }
+                    if show_index {
+                        // All twelve digits as GLYPH  name  value, two columns of six. The value is the ONE deliberate arabic numeral on the page: a cheat sheet is a translation table, and a table with one side missing is not one.
                         let index_top = y;
                         ctx.text.draw_text_center(
                             &mut canvas,
@@ -5271,9 +5281,10 @@ impl PhotonApp {
                         for d in 0..6usize {
                             let cell = |digit: usize| {
                                 format!(
-                                    "{}  {}",
+                                    "{}  {}  {}",
                                     char::from(0x10 + digit as u8),
-                                    crate::DOZENAL_NAMES[digit]
+                                    crate::DOZENAL_NAMES[digit],
+                                    digit
                                 )
                             };
                             ctx.text.draw_text_center(
