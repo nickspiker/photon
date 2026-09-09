@@ -431,7 +431,7 @@ impl PhotonApp {
                         let tb = self.message_textbox.as_mut().unwrap();
                         match (tb.selection_range(), url) {
                             (Some((a, b)), Some(dest)) => {
-                                tb.tag_link(a, b, dest, *theme::LINK_COLOUR);
+                                tb.tag_link(a, b, dest, *theme::LINK_PURPLE);
                                 crate::log("COMPOSE: selection tagged as a link");
                             }
                             _ => tb.insert_str(&s, text),

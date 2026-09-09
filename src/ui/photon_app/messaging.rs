@@ -3,14 +3,9 @@
 use super::*;
 
 impl PhotonApp {
-    /// Textbox front-end for the open conversation: pull + trim the compose text, hand it to [`Self::send_chain_message`] for the active contact (bubble shown), then clear the box.
-    /// LIVE LINKS IN THE COMPOSE BOX (Nick 2026-09-09: "I don't like pressing send and Gone!"): on every edit edge, run the SAME detector the send path runs over the box's text and paint what it finds in the link colour — a bare URL turns into a link the moment it is one, and back if it is broken. Tagged phrases (a pasted destination) are kept; a detected URL never overrides one.
-    pub(super) fn sync_compose_link_spans(&mut self) {
-        let Some(tb) = self.message_textbox.as_mut() else { return };
-        if tb.edit_seq() == self.compose_spans_seq {
-            return;
-        }
-        self.compose_spans_seq = tb.edit_seq();
+    /// The web addresses in the compose box that are NOT yet links, as char ranges. Nothing is coloured or tagged here — this only decides whether the link button shows and what it acts on. CONSENT (Nick 2026-09-09): text becomes a link on the button press alone, never by detection.
+    pub(super) fn compose_bare_urls(&self) -> Vec<(usize, usize)> {
+        let Some(tb) = self.message_textbox.as_ref() else { return Vec::new() };
         let text: String = tb.chars.iter().collect();
         // Byte offset → char index, for every char boundary (the detector speaks bytes, the box speaks chars).
         let mut char_at_byte = vec![0usize; text.len() + 1];
@@ -18,28 +13,24 @@ impl PhotonApp {
             char_at_byte[b] = ci;
         }
         char_at_byte[text.len()] = tb.chars.len();
-        let tagged: Vec<fluor::widgets::Span> = tb.spans().iter().filter(|s| s.dest.is_some()).cloned().collect();
-        let mut spans = tagged.clone();
-        for m in crate::types::detect_url_marks(&text) {
-            let (s, e) = (char_at_byte[m.start], char_at_byte[m.start + m.len]);
-            if tagged.iter().any(|t| t.start < e && s < t.end) {
-                continue;
-            }
-            spans.push(fluor::widgets::Span { start: s, end: e, colour: *theme::LINK_PURPLE, dest: None });
-        }
-        tb.set_spans(spans);
+        let tagged: Vec<(usize, usize)> = tb.spans().iter().filter(|s| s.dest.is_some()).map(|s| (s.start, s.end)).collect();
+        crate::types::detect_url_marks(&text)
+            .into_iter()
+            .map(|m| (char_at_byte[m.start], char_at_byte[m.start + m.len]))
+            .filter(|(s, e)| !tagged.iter().any(|(ts, te)| ts < e && s < te))
+            .collect()
     }
 
-    /// Is there a bare URL in the compose box to turn into a link? Drives the link button beside send (hidden while a relabel is pending — the button's job is done then).
+    /// Does the link button show? A bare web address in the box and no label edit in progress (the button's job is done while one is).
     pub(super) fn compose_link_available(&self) -> bool {
-        self.message_textbox.as_ref().is_some_and(|tb| !tb.relabel_pending() && tb.spans().iter().any(|s| s.dest.is_none()))
+        self.message_textbox.as_ref().is_some_and(|tb| !tb.relabel_pending()) && !self.compose_bare_urls().is_empty()
     }
 
-    /// THE LINK BUTTON (Nick 2026-09-09): the detected URL under the caret (else the last one) becomes a tagged link whose text is the LITERAL TRIM — scheme off, trailing slash off — so "https://passless.org/photon/" shows as "passless.org/photon" and opens the full address. The caret lands purple at its end; the next typed URL char replaces the label.
+    /// THE LINK BUTTON: the address under the caret (else the last one) becomes a tagged link whose text is the LITERAL TRIM — scheme off, trailing slash off — so "https://passless.org/photon/" shows as "passless.org/photon" and opens the full address. The label comes back selected in purple: typing replaces it, space / right arrow / a click accept it, backspace on the selection puts the plain address back.
     pub(super) fn compose_link_click(&mut self, text: &mut fluor::text::TextRenderer) {
+        let bare = self.compose_bare_urls();
         let Some(tb) = self.message_textbox.as_mut() else { return };
         let cursor = tb.cursor;
-        let bare: Vec<(usize, usize)> = tb.spans().iter().filter(|s| s.dest.is_none()).map(|s| (s.start, s.end)).collect();
         let Some(&(start, end)) = bare.iter().find(|(s, e)| *s <= cursor && cursor <= *e).or_else(|| bare.last()) else { return };
         let url: String = tb.chars[start..end].iter().collect();
         let label = url
@@ -52,7 +43,6 @@ impl PhotonApp {
         }
         tb.relabel_span(start, end, &label, url.clone(), *theme::LINK_PURPLE, text);
         crate::logf!("COMPOSE: link button — {} shown as {}", url, label);
-        self.compose_spans_seq = self.message_textbox.as_ref().map_or(0, |t| t.edit_seq());
         self.scene_dirty = true;
     }
 

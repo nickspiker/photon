@@ -357,7 +357,6 @@ impl PhotonApp {
         let has_sibling_device = self.has_usable_sibling();
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
         let standing_bands = self.standing_bands();
-        self.sync_compose_link_spans();
         let link_btn_visible = self.compose_link_available();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
