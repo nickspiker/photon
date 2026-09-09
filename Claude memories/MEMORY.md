@@ -38,6 +38,7 @@
 - [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 CUTOVER CLOSED 2026-08-18 @ 2adff1d: spine built, durability = docs/durability.md (FLEET-HOLDS-HISTORY)
 - [project_fleet_unification_v1.md](project_fleet_unification_v1.md) — unification v1 SHIPPED @ b231592: compose ANYWHERE (fleet-forward → chain owner transmits)
 - [project_attachments.md](project_attachments.md) — attachments v1+v2 SHIPPED (e8baa81+cd3aa3f): row/blob split, PT blobs no-cloud, true-shred, Android picker, resample card
+- [project_links.md](project_links.md) — message links = typed marks beside the text; live link colouring in the compose box on the edit edge + paste-onto-selection tagging (2026-09-09); previews deliberately absent
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot SHIPPED (tohu d26a8d8 + photon 23e13f5): off-by-default Security toggle, device-bound reboot capsule
 - [project_bridge.md](project_bridge.md) — BRIDGE = passless remote shell between fleet siblings over PT (rustdesk/SSH replacement)
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable

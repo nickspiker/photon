@@ -526,6 +526,29 @@ impl FluorApp for PhotonApp {
         self.update_widget_layout(ctx);
     }
 
+    // Zoom about the ANCHOR (the pointer, or the window centre when no pointer is in the window), never about the pane top: the content under the pointer holds still while everything scales around it (Nick 2026-09-09 — "it locks from top"). Every pane inset is span-relative, so it scales by the same factor as the content and cancels out of the math; the anchor is measured from whichever WINDOW edge the pane hangs from. Top-hung panes (contacts block, settings rail + content): the content under the anchor sits `scroll + ay` below the top and `(scroll + ay) × f` after the zoom, so the new scroll is that minus `ay`. The conversation hangs from the BOTTOM (offset 0 = newest at the bottom, positive = older revealed above), so it measures from the bottom edge. Only the on-screen panes move — an off-screen pane has no anchor to hold. The 0 end clamps hard (a zoom-out at the top must not bounce off the rubber band); the far end is re-measured by the next render and settles like any other overshoot.
+    fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
+        let h = ctx.viewport.height_px as f32;
+        let ay = anchor_y as f32;
+        let top_hung = |s: f32| ((s + ay) * factor - ay).max(0.0);
+        let bottom_hung = |s: f32| ((s + h - ay) * factor - (h - ay)).max(0.0);
+        match self.state {
+            AppState::Ready => {
+                self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
+            }
+            AppState::Settings(_) | AppState::ContactPanel(_) => {
+                self.settings_rail_scroll = top_hung(self.settings_rail_scroll);
+                self.settings_content_scroll = top_hung(self.settings_content_scroll);
+            }
+            AppState::Conversation => {
+                if let Some(conv) = self.active_conv_mut() {
+                    conv.scroll_offset = bottom_hung(conv.scroll_offset);
+                }
+            }
+            _ => {}
+        }
+    }
+
     // A clickable element was ACTIVATED — pointer went DOWN on `hit_id` and released over the SAME `hit_id`, no drag-off (press-hold-release, arbitrated by fluor's PointerArbiter). Every ACTION lives here so a mis-touch dragged off before release fires NOTHING. Press-time concerns (focus, textbox cursor, drag-select, window drag) stay in `on_event`'s Pressed arm; the raw press/release still arrive there.
     fn on_activate(
         &mut self,

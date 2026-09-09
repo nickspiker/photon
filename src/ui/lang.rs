@@ -531,8 +531,11 @@ pub enum Msg<'a> {
     AboutVersionSpelled { main: &'a str, patch: Option<&'a str> },
     AboutDozenalHead,
     AboutRiddle,
-    WhyDecimalScold,
     WhyDozenal,
+    // The decimal-mode swap: the question turned round. Shown INSTEAD of WhyDozenal/WhyDozenalProse while the toggle is off — no scold line, the red box carries the disapproval.
+    WhyYouDozenal,
+    // '\n'-joined paragraphs like WhyDozenalProse. Dozenal glyph control codes (0x10..0x1B) ride inline; the font chain draws them from any family.
+    WhyYouDozenalProse,
     // '\n'-joined paragraphs; the About card iterates .lines() and wraps each as its own stanza.
     WhyDozenalProse,
     // ---- settings misc ----

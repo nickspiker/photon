@@ -360,6 +360,7 @@ impl PhotonApp {
         let has_sibling_device = self.has_usable_sibling();
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.
         let standing_bands = self.standing_bands();
+        self.sync_compose_link_spans();
         let Some(chrome) = self.chrome.as_mut() else {
             return;
         };
@@ -5359,26 +5360,17 @@ impl PhotonApp {
                             Some(&mut chrome.hit_test_map),
                         );
                     }
-                    if decimal_mode {
-                        // The scold — in the primary VSF orange (Zila red, Zil.lun green, Zil blue).
-                        y += line_h;
-                        ctx.text.draw_text_center(
-                            &mut canvas,
-                            &tr(Msg::WhyDecimalScold),
-                            cx,
-                            y + line_h * 0.5,
-                            &TextStyle::new(hspan2 * 0.85, *theme::DOZENAL_SCOLD_COLOUR)
-                                .weight(600)
-                                .font("Oxanium"),
-                            about_clip,
-                            None,
-                        );
-                    }
                     y += line_h * 1.4;
                     // The dozenal rant — why the toggle above defaults ON. Kept playful on purpose: decimal is an anatomical accident, not a design, and the page should own that opinion out loud.
+                    // DECIMAL MODE swaps the whole stanza for the tin-foil answer (Nick 2026-09-09): no orange scold line, the red box carries the disapproval on its own. The heading turns the question round ("why you dozenal?") and the prose ties the base to the unit of account, the absent middleman, and reputation graded Zil to Stelor on consent.
+                    let (head, rant) = if decimal_mode {
+                        (tr(Msg::WhyYouDozenal), tr(Msg::WhyYouDozenalProse))
+                    } else {
+                        (tr(Msg::WhyDozenal), tr(Msg::WhyDozenalProse))
+                    };
                     ctx.text.draw_text_center(
                         &mut canvas,
-                        &tr(Msg::WhyDozenal),
+                        &head,
                         cx,
                         y + line_h * 0.5,
                         &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR)
@@ -5388,7 +5380,6 @@ impl PhotonApp {
                         None,
                     );
                     y += line_h;
-                    let rant = tr(Msg::WhyDozenalProse);
                     for line in rant.lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, about_clip);
                         y += line_h * 0.3;

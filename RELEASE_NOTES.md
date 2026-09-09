@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A web address turns into a link while you type it, not only after you send.
+- On desktop, pasting a web address onto selected text turns that text into a link.
 - Alerts at the bottom of the contact and attest screens now stack, and the update notice stays until the update is on.
 - The update notice only appears while automatic checking is enabled.
 - Settings rows wrap at the pane edge under a large font instead of running off it.

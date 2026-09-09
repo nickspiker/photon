@@ -1623,6 +1623,10 @@ pub struct PhotonApp {
     msg_hit_base: HitId,
     /// Per-frame link-span hit rects in the conversation: (x0, y0, x1, y1, dest). A tap inside one opens the consent dialog instead of the row strip.
     msg_link_hits: Vec<(f32, f32, f32, f32, String)>,
+    /// The compose box's edit sequence the link spans were last computed for (the change EDGE: detection re-runs on every edit, never per frame or on a timer).
+    compose_spans_seq: u64,
+    /// Tagged links (a phrase with a pasted destination) captured from the compose box at submit, consumed by the send that follows — the box is cleared before the row exists.
+    compose_tagged_marks: Vec<crate::types::MessageMark>,
     /// The link consent dialog: Some(destination) while open — a message link NEVER opens without showing the full destination and asking (Nick 2026-09-04).
     link_consent: Option<String>,
     /// Hit base for the consent pills: +0 Open, +1 Copy, +2 Cancel.
@@ -2208,6 +2212,8 @@ impl PhotonApp {
             shift_held: false,
             msg_hit_base: HIT_NONE,
             msg_link_hits: Vec::new(),
+            compose_spans_seq: 0,
+            compose_tagged_marks: Vec::new(),
             link_consent: None,
             link_consent_base: HIT_NONE,
             fleet_tip_pursuit: std::collections::HashMap::new(),

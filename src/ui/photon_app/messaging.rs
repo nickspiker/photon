@@ -4,6 +4,60 @@ use super::*;
 
 impl PhotonApp {
     /// Textbox front-end for the open conversation: pull + trim the compose text, hand it to [`Self::send_chain_message`] for the active contact (bubble shown), then clear the box.
+    /// LIVE LINKS IN THE COMPOSE BOX (Nick 2026-09-09: "I don't like pressing send and Gone!"): on every edit edge, run the SAME detector the send path runs over the box's text and paint what it finds in the link colour — a bare URL turns into a link the moment it is one, and back if it is broken. Tagged phrases (a pasted destination) are kept; a detected URL never overrides one.
+    pub(super) fn sync_compose_link_spans(&mut self) {
+        let Some(tb) = self.message_textbox.as_mut() else { return };
+        if tb.edit_seq() == self.compose_spans_seq {
+            return;
+        }
+        self.compose_spans_seq = tb.edit_seq();
+        let text: String = tb.chars.iter().collect();
+        // Byte offset → char index, for every char boundary (the detector speaks bytes, the box speaks chars).
+        let mut char_at_byte = vec![0usize; text.len() + 1];
+        for (ci, (b, _)) in text.char_indices().enumerate() {
+            char_at_byte[b] = ci;
+        }
+        char_at_byte[text.len()] = tb.chars.len();
+        let tagged: Vec<fluor::widgets::Span> = tb.spans().iter().filter(|s| s.dest.is_some()).cloned().collect();
+        let mut spans = tagged.clone();
+        for m in crate::types::detect_url_marks(&text) {
+            let (s, e) = (char_at_byte[m.start], char_at_byte[m.start + m.len]);
+            if tagged.iter().any(|t| t.start < e && s < t.end) {
+                continue;
+            }
+            spans.push(fluor::widgets::Span { start: s, end: e, colour: *theme::LINK_COLOUR, dest: None });
+        }
+        tb.set_spans(spans);
+    }
+
+    /// The compose box's tagged links as wire marks (byte offsets over the box's text), taken at submit before the box clears.
+    fn take_compose_tagged_marks(&mut self) -> Vec<crate::types::MessageMark> {
+        let Some(tb) = self.message_textbox.as_ref() else { return Vec::new() };
+        let byte_at_char = |idx: usize| -> usize { tb.chars[..idx.min(tb.chars.len())].iter().map(|c| c.len_utf8()).sum() };
+        tb.spans()
+            .iter()
+            .filter_map(|s| {
+                let dest = s.dest.clone()?;
+                let start = byte_at_char(s.start);
+                let end = byte_at_char(s.end);
+                (end > start).then(|| crate::types::MessageMark { kind: crate::types::MARK_KIND_LINK, start, len: end - start, dest })
+            })
+            .collect()
+    }
+
+    /// A message's marks at send: the tagged links stashed from the compose box (if this send is the compose send) plus every detected bare URL that does not overlap one, validated against the text.
+    fn marks_for_send(&mut self, text: &str) -> Vec<crate::types::MessageMark> {
+        let mut marks = std::mem::take(&mut self.compose_tagged_marks);
+        for m in crate::types::detect_url_marks(text) {
+            if marks.iter().any(|t| t.start < m.start + m.len && m.start < t.start + t.len) {
+                continue;
+            }
+            marks.push(m);
+        }
+        marks.sort_by_key(|m| m.start);
+        crate::types::valid_marks(text, &marks)
+    }
+
     pub(super) fn submit_message(&mut self) {
         let Some(ci) = self.active_contact() else {
             return;
@@ -90,7 +144,10 @@ impl PhotonApp {
                     .filter(|c| c.is_sibling)
                     .map(|_| (crate::types::RefKind::BridgeCmd, 0))
             });
+        // Tagged links leave with the text: captured from the box BEFORE it clears, consumed by marks_for_send inside the send below.
+        self.compose_tagged_marks = self.take_compose_tagged_marks();
         self.send_chain_message(ci, &text, false, reference, None);
+        self.compose_tagged_marks.clear();
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.clear();
         }
@@ -134,7 +191,7 @@ impl PhotonApp {
             let mut msg =
                 // CORRECTED time, not the system clock: this stamp is the row's identity AND its sort key on every device that will ever hold it (see network::time_base). The system clock may be deliberately wrong — that is the human's business, not the conversation's.
                 ChatMessage::new_with_timestamp(text, true, crate::network::time_base::stamp_osc());
-            msg.marks = crate::types::detect_url_marks(&msg.content);
+            msg.marks = self.marks_for_send(&msg.content);
             msg.reference = reference;
             let ts = msg.timestamp;
             let Some(conv) = self.conv_mut_of(ci) else {
@@ -156,7 +213,7 @@ impl PhotonApp {
 
         // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
         let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
-        msg.marks = crate::types::detect_url_marks(&text);
+        msg.marks = self.marks_for_send(&text);
         msg.reference = reference;
         // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on ("output row: present, exit: -" — the prompt held forever). Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
         if let Some(bw) = bridge.as_ref() {
@@ -747,6 +804,12 @@ impl PhotonApp {
         bridge: Option<&crate::network::message_package::BridgeWire>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
     ) -> bool {
+        // Read before any chains borrow: the row's own marks (a tagged phrase carries a destination the text cannot rebuild — a re-serve reads the row, 2026-09-09).
+        let row_marks: Vec<crate::types::MessageMark> = self
+            .conv_of(ci)
+            .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
+            .map(|m| m.marks.clone())
+            .unwrap_or_default();
         // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded thru it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
@@ -900,8 +963,9 @@ impl PhotonApp {
                 .min(rand::random::<u8>())
                 .min(rand::random::<u8>()) as usize;
             let pad: Vec<u8> = (0..pad_len).map(|_| rand::random()).collect();
-            // Marks are a pure function of the text (v1: verbatim URL tokens), so every re-serve site rebuilds identical wire marks with no threading.
-            let wire_marks: Vec<(u8, usize, usize, String)> = crate::types::detect_url_marks(text)
+            // THE ROW'S marks when it has any (a tagged phrase carries a destination the text alone cannot rebuild — so a re-serve reads the row, 2026-09-09), else the detector — the pure function of the text every re-serve site agrees on.
+            let marks = if row_marks.is_empty() { crate::types::detect_url_marks(text) } else { row_marks };
+            let wire_marks: Vec<(u8, usize, usize, String)> = marks
                 .into_iter()
                 .map(|m| (m.kind, m.start, m.len, m.dest))
                 .collect();

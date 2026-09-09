@@ -411,7 +411,20 @@ impl PhotonApp {
                 }
                 "v" => {
                     if let Some(s) = self.clipboard_get() {
-                        self.message_textbox.as_mut().unwrap().insert_str(&s, text);
+                        // PASTE ONTO A SELECTION (2026-09-09): a URL pasted while text is selected TAGS the selection as a link to it — the phrase stays, the destination rides as a mark. Any other paste, or no selection, is the ordinary insert.
+                        let trimmed = s.trim();
+                        let url = crate::types::detect_url_marks(trimmed)
+                            .into_iter()
+                            .find(|m| m.start == 0 && m.len == trimmed.len())
+                            .map(|m| m.dest);
+                        let tb = self.message_textbox.as_mut().unwrap();
+                        match (tb.selection_range(), url) {
+                            (Some((a, b)), Some(dest)) => {
+                                tb.tag_link(a, b, dest, *theme::LINK_COLOUR);
+                                crate::log("COMPOSE: selection tagged as a link");
+                            }
+                            _ => tb.insert_str(&s, text),
+                        }
                         edited = true;
                     }
                 }
