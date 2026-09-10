@@ -1428,6 +1428,8 @@ pub struct PhotonApp {
     tick_stat_dirty: u32,
     /// Per-section tick cost since the last report (label, summed ms) — the idle screen's 3 ms tick on a phone (2026-09-10) had to be named section by section.
     tick_prof: Vec<(&'static str, f32)>,
+    /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
+    last_keygen_pickup: Option<std::time::Instant>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -2286,6 +2288,7 @@ impl PhotonApp {
             tick_stat_n: 0,
             tick_stat_dirty: 0,
             tick_prof: Vec::new(),
+            last_keygen_pickup: None,
             storage: None,
             contacts: Vec::new(),
             conversations: Vec::new(),

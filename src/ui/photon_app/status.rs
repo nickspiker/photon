@@ -24,6 +24,7 @@ impl PhotonApp {
         }
         // Region attribution (2026-08-15 field log): the OUTER timer showed 400-1794ms while the pass profile (>200ms) stayed SILENT — the cost lives outside the arm loop, in the pre-loop drains or the post-loop deferred section, which nothing named. Two coarse region timers pin the side; the guilty region gets fine-grained timers next round.
         let preloop_t = std::time::Instant::now();
+        let preloop_ms_f: f32;
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
         // Express call signals FIRST — a doorbell outranks every other drain on the tick (rare + tiny; empty = one mutex).
         timed_drain!("call_express", self.drain_express_signals());
@@ -341,10 +342,12 @@ impl PhotonApp {
             }
         }
         {
-            let ms = preloop_t.elapsed().as_millis();
+            let el = preloop_t.elapsed();
+            let ms = el.as_millis();
             if ms > 100 {
                 crate::logf!("PERF: status pre-loop took {}ms (UI thread)", ms as u64);
             }
+            preloop_ms_f = el.as_secs_f32() * 1000.0;
         }
         let mut arm_timer: Option<(&'static str, std::time::Instant)> = None;
         // Per-PASS accounting beside the per-arm timer: the 2026-08-11 desktop showed 1.8s passes with ZERO arms over 100ms — death by hundreds of moderate updates, invisible to a threshold that only names single offenders. The profile line names the cumulative eaters; the budget below bounds the stall.
@@ -4846,6 +4849,7 @@ impl PhotonApp {
         }
         // The pass profile — logged for any heavy pass so the field log names the CUMULATIVE eaters, not just single >100ms offenders.
         let pass_ms = pass_start.elapsed().as_millis();
+        self.tick_prof_add("status: contact pass", pass_start.elapsed().as_secs_f32() * 1000.0);
         if pass_ms > 200 {
             let mut top: Vec<(&'static str, (u32, u128))> = pass_profile.into_iter().collect();
             top.sort_by_key(|&(_, (_, ms))| std::cmp::Reverse(ms));
@@ -5402,10 +5406,13 @@ impl PhotonApp {
         // Content marks the scene dirty HERE, not via the caller's return: the Android foreground SERVICE also runs this drain headless (nativeServiceTick → advance_protocol) and drops the returned bool — so a presence flip or name/pin adoption that landed while backgrounded painted nothing on resume (the field "online ring is stale until you click thru", 2026-08-08). scene_dirty is app state, so marking it at the mutation site survives the headless window and the first visible frame repaints.
         self.scene_dirty |= changed;
         {
-            let ms = deferred_t.elapsed().as_millis();
+            let el = deferred_t.elapsed();
+            let ms = el.as_millis();
             if ms > 100 {
                 crate::logf!("PERF: status deferred took {}ms (UI thread)", ms as u64);
             }
+            self.tick_prof_add("status: deferred", el.as_secs_f32() * 1000.0);
+            self.tick_prof_add("status: pre-loop", preloop_ms_f);
         }
         changed
     }

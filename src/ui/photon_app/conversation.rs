@@ -577,6 +577,12 @@ impl PhotonApp {
         if self.session.is_none() {
             return false;
         }
+        // A pickup scan, not a latency path: at every vsync it recomputed the ceremony owners 117 times a second on an idle phone (0.4 ms a tick, 2026-09-10 profile). Four times a second is more than a keygen's own seconds-long cadence needs.
+        let now = std::time::Instant::now();
+        if self.last_keygen_pickup.is_some_and(|t| now.duration_since(t) < std::time::Duration::from_millis(250)) {
+            return false;
+        }
+        self.last_keygen_pickup = Some(now);
         // The computed owner is derived state (never persisted): re-derive it here so a freshly loaded roster reads right before any pickup, and every later edge keeps it current. Cheap (one scan), logs only on change.
         self.recompute_ceremony_owners("keygen pickup");
         // One keygen at a time.
