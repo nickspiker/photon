@@ -12,18 +12,22 @@
 
 pub const SAMPLE_RATE: usize = 48_000;
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
+/// Sweep length: HALF a second (Nick 2026-09-10: "same length but the duration half"), padded to the same one-second emission by a quarter second of silence at each end — the leading silence hands the fit a clean room-floor pre-roll, the trailing one gives the echo tail room, and the shorter sweep halves the anchor drift a short-running capture clock (Nick's phone: 175-193 fps) accumulates across the measurement. Processing gain drops 3 dB from the 1 s sweep; the V's self-validation stands.
+pub const PAD_SAMPLES: usize = SAMPLE_RATE / 4;
 /// Sweep length: 1s (Nick 2026-09-08 — only the middle of the 200Hz→20kHz span is audible thru a phone transducer, so the perceived sound is well under the full second). 4× the original 250ms: +6dB processing gain (TB ≈ 19.8k ≈ 43dB), 100 envelope bins for the g median instead of 25, and far better leg-agreement statistics — both first field calls rejected on legs disagreeing at 250ms.
-pub const CHIRP_SAMPLES: usize = SAMPLE_RATE;
+pub const CHIRP_SAMPLES: usize = SAMPLE_RATE / 2;
 const F0: f64 = 200.0;
 const F1: f64 = 20_000.0;
 /// Peak of the summed legs: -9dB FS — the same loudness law as the old ritual prompt (full scale at media volume is DEAFENING, field 2026-09-02); measurement-neutral since g is a ratio.
 const PEAK_TARGET: f64 = 11_585.0;
-/// Delay scan: 500ms past the chirp — generously beyond any wired/builtin render→capture path (bt scans live in the learner, which refines delay in-call anyway).
-pub const MAX_LAG_SAMPLES: usize = SAMPLE_RATE / 2;
+/// Delay scan: one second of capture positions — the leading pad (250 ms) plus 750 ms of render→capture path, generously beyond any wired/builtin route (bt scans live in the learner, which refines delay in-call anyway).
+pub const MAX_LAG_SAMPLES: usize = SAMPLE_RATE;
 /// Post-scan tail: 100ms of room after the last scannable echo position.
 const TAIL_SAMPLES: usize = SAMPLE_RATE / 10;
-/// The mic capture the fit wants: chirp + scan window + tail (~1.6s).
+/// The mic capture the fit wants: chirp + scan window + tail — 1.6 s, the same window the one-second sweep used.
 pub const CAPTURE_SAMPLES: usize = CHIRP_SAMPLES + MAX_LAG_SAMPLES + TAIL_SAMPLES;
+/// Rough spectral bands over the sweep's log-frequency axis (Nick 2026-09-10: "device specific latency, rough spectral"): edges 200 / 500 / 1.2k / 3k / 8k / 20k Hz.
+pub const SPECTRAL_BAND_EDGES_HZ: [f64; 6] = [200.0, 500.0, 1200.0, 3000.0, 8000.0, 20000.0];
 /// Envelope bin width for the g fit — the learner/duck's 10ms grid.
 const BIN: usize = FRAME_SAMPLES;
 /// A template envelope bin below this can't excite a measurable echo ratio (mirrors learn::FAR_ACT's intent at the template's own scale).
@@ -73,9 +77,36 @@ fn up_leg() -> Vec<f64> {
         .collect()
 }
 
-/// The chirp as 10ms frames for `queue_playback` — UNPADDED like the old ritual prompts (it measures the path, so it must not sit under the wave's 4-stop pad).
+/// The probe as 5 ms frames for `queue_playback`: a quarter second of silence, the half-second V, a quarter second of silence — one second emitted, UNPADDED in level like the old ritual prompts (it measures the path, so it must not sit under the wave's 4-stop pad).
 pub fn frames() -> Vec<Vec<i16>> {
-    template().chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect()
+    let mut out: Vec<i16> = Vec::with_capacity(PAD_SAMPLES * 2 + CHIRP_SAMPLES);
+    out.resize(PAD_SAMPLES, 0);
+    out.extend_from_slice(template());
+    out.resize(PAD_SAMPLES * 2 + CHIRP_SAMPLES, 0);
+    out.chunks(FRAME_SAMPLES).map(|c| c.to_vec()).collect()
+}
+
+/// The sweep's per-band coupling from the per-bin envelope ratios (bin j of the log sweep sits at 200·100^(j/N) Hz): the median ratio inside each SPECTRAL_BAND_EDGES_HZ band, NaN-free (an empty band reads 0).
+pub fn spectral_bands(ratios_by_bin: &[(usize, f32)]) -> [f32; 5] {
+    let n_bins = (CHIRP_SAMPLES / BIN).max(1) as f64;
+    let mut bands = [0f32; 5];
+    for b in 0..5 {
+        let (lo, hi) = (SPECTRAL_BAND_EDGES_HZ[b], SPECTRAL_BAND_EDGES_HZ[b + 1]);
+        let mut v: Vec<f32> = ratios_by_bin
+            .iter()
+            .filter(|(j, _)| {
+                let f = F0 * (F1 / F0).powf(*j as f64 / n_bins);
+                f >= lo && f < hi
+            })
+            .map(|(_, r)| *r)
+            .collect();
+        if v.is_empty() {
+            continue;
+        }
+        v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        bands[b] = v[v.len() / 2];
+    }
+    bands
 }
 
 /// A finished probe fit. `delay_samples` is the echo's offset WITHIN the capture buffer (the caller anchors it to the render timeline); `skew_samples` = up-leg lag − down-leg lag, the clock-skew diagnostic.
@@ -95,6 +126,8 @@ pub struct Fit {
     /// The measured impulse response: taps[k] = IR at lag (ir_start + k), fitted against the SUM template — the NLMS canceller's seed (born converged; see call/nlms.rs).
     pub ir_start: usize,
     pub taps: Vec<f32>,
+    /// Rough spectral coupling per band (SPECTRAL_BAND_EDGES_HZ), the same envelope-ratio unit as `g`.
+    pub bands: [f32; 5],
 }
 
 /// Matched-filter one leg over the capture: (best lag, least-squares gain at the peak, peak-to-median-|corr| ratio). Polarity-blind (|dot| — speaker/mic chains can invert), integer MACs so the 2 × ~24k-lag × 12k-sample scan stays a fraction of a second off-thread.
@@ -139,7 +172,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     let (lag_down, g_down, psr_down) = leg_corr(cap, &ref_down, max_lag);
     // No peak above the noise on either leg = clean route: legal (headset), floor is still a measurement.
     if psr_up < PSR_MIN || psr_down < PSR_MIN {
-        return Some(Fit { g: 0.0, delay_samples: 0, skew_samples: 0, g_up, g_down, floor, coupled: false, ir_start: 0, taps: Vec::new() });
+        return Some(Fit { g: 0.0, delay_samples: 0, skew_samples: 0, g_up, g_down, floor, coupled: false, ir_start: 0, taps: Vec::new(), bands: [0.0; 5] });
     }
     // Corruption gates: the two legs measured the same physics or the run is garbage. Reject details logged — two field calls said only "legs disagreed" and left nothing to diagnose which gate or by how much.
     let skew = lag_up as i64 - lag_down as i64;
@@ -177,12 +210,15 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     let tpl_env: Vec<f32> = template().chunks(BIN).map(env_i16).collect();
     let off = delay / BIN;
     let mut ratios: Vec<f32> = Vec::with_capacity(tpl_env.len());
+    let mut by_bin: Vec<(usize, f32)> = Vec::with_capacity(tpl_env.len());
     for (j, &te) in tpl_env.iter().enumerate() {
         if te < TPL_ACT {
             continue;
         }
         if let Some(&ce) = cap_env.get(j + off) {
-            ratios.push(((ce - floor).max(0.0)) / te);
+            let r = ((ce - floor).max(0.0)) / te;
+            ratios.push(r);
+            by_bin.push((j, r));
         }
     }
     if ratios.is_empty() {
@@ -190,6 +226,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     }
     ratios.sort_by(|a, b| a.partial_cmp(b).unwrap());
     let g = ratios[ratios.len() / 2];
+    let bands = spectral_bands(&by_bin);
     // IR export for the NLMS seed: cross-correlate the capture against the SUM template (what actually played) over the tap window around the matched delay. h[k] = <cap(lag), tpl>/|tpl|² — the least-squares IR at each lag, band-limited to the sweep (which is the whole audible path; fine, that's the band echo lives in).
     let tpl = template();
     let tpl_energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9);
@@ -204,7 +241,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
         };
         taps.push((dot as f64 / tpl_energy) as f32);
     }
-    Some(Fit { g, delay_samples: delay, skew_samples: skew, g_up, g_down, floor, coupled: true, ir_start, taps })
+    Some(Fit { g, delay_samples: delay, skew_samples: skew, g_up, g_down, floor, coupled: true, ir_start, taps, bands })
 }
 
 /// The fit's answer for the LIVE engine, posted from the fit thread and drained by the engine loop (the persisted profile rides `calibrate::post_learned` separately).
@@ -265,7 +302,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let g_norm = if vol_lin > 0.0 { f.g / scale / vol_lin } else { f.g / scale };
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         crate::logf!(
-            "CALL: v-chirp — g {} delay {}ms (anchor {}ms + acoustic {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms",
+            "CALL: v-chirp — g {} delay {}ms (anchor {}ms + acoustic {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",
             format!("{g_norm:.4}"),
             delay_bins * 10,
             format!("{anchor_ms:.0}"),
@@ -275,7 +312,12 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
             format!("{:.4}", f.g_down),
             format!("{:.0}", f.floor),
             route,
-            t0.elapsed().as_millis()
+            t0.elapsed().as_millis(),
+            format!("{:.3}", f.bands[0] / scale),
+            format!("{:.3}", f.bands[1] / scale),
+            format!("{:.3}", f.bands[2] / scale),
+            format!("{:.3}", f.bands[3] / scale),
+            format!("{:.3}", f.bands[4] / scale)
         );
         // Persist thru the learned-profile drain (same blend as the in-call learner, solid tier — a fresh direct measurement of THIS route).
         crate::call::calibrate::post_learned(vec![crate::call::calibrate::LearnedResult {
@@ -331,6 +373,27 @@ mod tests {
             cap[delay + i] = (cap[delay + i] as f32 + s as f32 * gain).clamp(-32768.0, 32767.0) as i16;
         }
         cap
+    }
+
+    #[test]
+    fn probe_is_one_second_with_the_sweep_in_the_middle() {
+        let fr = frames();
+        let total: usize = fr.iter().map(|f| f.len()).sum();
+        assert_eq!(total, SAMPLE_RATE, "one second emitted");
+        let flat: Vec<i16> = fr.concat();
+        assert!(flat[..PAD_SAMPLES].iter().all(|&v| v == 0), "leading pad silent");
+        assert!(flat[PAD_SAMPLES + CHIRP_SAMPLES..].iter().all(|&v| v == 0), "trailing pad silent");
+        assert_eq!(&flat[PAD_SAMPLES..PAD_SAMPLES + CHIRP_SAMPLES], template());
+        assert_eq!(CHIRP_SAMPLES * 2, SAMPLE_RATE);
+    }
+
+    #[test]
+    fn spectral_bands_take_the_median_per_band() {
+        let n = CHIRP_SAMPLES / BIN;
+        let by_bin: Vec<(usize, f32)> = (0..n).map(|j| (j, j as f32)).collect();
+        let b = spectral_bands(&by_bin);
+        assert!(b[0] < b[1] && b[1] < b[2] && b[2] < b[3] && b[3] < b[4], "rising sweep index per band: {b:?}");
+        assert_eq!(spectral_bands(&[]), [0.0; 5]);
     }
 
     #[test]

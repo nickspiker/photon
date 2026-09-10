@@ -38,6 +38,8 @@ const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
 const PLAID_LOSSES_TO_DROP: usize = 20;
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
 const LOSS_RING: usize = 256;
+/// A learner coupling at or below this (volume-normalized envelope ratio) is a CLEAN route: the duck retires to its floor and the canceller is dropped (engine 1 s control plane).
+const CLEAN_G_NORM: f32 = 0.02;
 const LOSS_SETPOINT: f32 = 1.0 / 256.0;
 const LOSS_KP: f32 = 1.0; // frames per stop of error, immediately
 const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
@@ -261,6 +263,7 @@ fn run(
     let fixed_mic_gain: Option<f32> = params.cal.as_ref().and_then(|c| c.mic_gain);
     let mut live_floor: f32 = params.cal.as_ref().map_or(40.0, |c| c.floor);
     let mut pred_gate = crate::call::learn::PredGate::new();
+    let mut clean_declared = false;
     let mut live_route = start_route.clone();
     let mut last_est = std::time::Instant::now();
     // Echo stats cadence: a line every ten seconds while a filter is armed (recent + lifetime ERLE, adapt ratio) — the field's view of the whitener at work.
@@ -961,7 +964,19 @@ fn run(
             let est = learner.estimate();
             live_floor = est.floor;
             // A Usable-or-better estimate refines (or ARMS) the predictive duck: slew g (τ≈2s at this cadence), step delay only between far bursts — a mid-burst delay step misaligns the prediction and mis-gates real speech.
+            // ACTIVE PROFILING → CLEAN (Nick 2026-09-10): a confident in-call estimate that finds no coupling worth a duck retires the predictive duck to its clean floor and drops the canceller — the route IS clean, whatever the chirp said (or failed to say).
             if est.confidence >= crate::call::learn::Confidence::Usable {
+                if let Some(g) = est.g_norm {
+                    if g <= CLEAN_G_NORM && est.windows >= 3 && !clean_declared {
+                        clean_declared = true;
+                        crate::logf!("CALL: learner reads the route CLEAN (g {} over {} windows) — duck to floor, canceller off", format!("{g:.4}"), est.windows);
+                        applied = Some((0.0, est.delay_bins.unwrap_or(1)));
+                        nlms = None;
+                    } else if g > CLEAN_G_NORM * 2.0 && clean_declared {
+                        clean_declared = false;
+                        crate::logf!("CALL: learner sees coupling again (g {}) — duck back on its estimate", format!("{g:.4}"));
+                    }
+                }
                 if let (Some(g), Some(d)) = (est.g_norm, est.delay_bins) {
                     match &mut applied {
                         Some((ag, ad)) => {
