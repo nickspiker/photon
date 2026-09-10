@@ -82,9 +82,15 @@ pub(crate) fn friendship_repair(i: &RepairInput) -> RepairVerdict {
                 }
             },
         },
-        RepairTrigger::FleetAllMissed => {
-            if i.we_own { mint(i.peer_era_capable) } else { Hold("not the era owner") }
-        }
+        // The fleet holds nothing newer. A peer AHEAD of us takes a ratchet from our era; a FOREIGN peer (a channel we cannot order — the same index under a different root) cannot decapsulate anything we mint from ours, so only a fresh channel reaches it (2026-09-10, Esme/Nick: the light ratchet here would have been sealed to an era Esme no longer held).
+        RepairTrigger::FleetAllMissed => match i.peer {
+            PeerEra::Foreign => {
+                if i.we_own { ConsentFresh } else { Hold("not the era owner") }
+            }
+            _ => {
+                if i.we_own { mint(i.peer_era_capable) } else { Hold("not the era owner") }
+            }
+        },
         // The standing cadence and a nudge both ask for the LIGHT ratchet and nothing heavier: a peer that cannot ratchet in band simply keeps its era (the cadence is hygiene, not a repair).
         RepairTrigger::CadenceReached | RepairTrigger::NudgeReceived => {
             if !i.we_own {
@@ -180,20 +186,26 @@ impl PhotonApp {
         let Some(contact) = self.contacts.get(ci) else { return };
         let Some(fid) = contact.friendship_id else { return };
         let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) else { return };
+        let classify = |peer_index: u64, peer_tag: u32| classify_peer_era(
+            chains.era_index,
+            chains.era_tag(),
+            peer_index,
+            peer_tag,
+            chains.retired_era().map(|r| r.tag),
+            chains.pending_era().map(|p| p.tag),
+        );
+        let token = chains.conversation_token;
         let peer = match trigger {
-            RepairTrigger::StaleEraObserved { peer_index, peer_tag } => classify_peer_era(
-                chains.era_index,
-                chains.era_tag(),
-                peer_index,
-                peer_tag,
-                chains.retired_era().map(|r| r.tag),
-                chains.pending_era().map(|p| p.tag),
-            ),
-            RepairTrigger::FleetAllMissed => PeerEra::Ahead,
+            RepairTrigger::StaleEraObserved { peer_index, peer_tag } => classify(peer_index, peer_tag),
+            // The fleet's answer arrives long after the observation that asked — classify against the era the peer LAST advertised, not a blanket "ahead" (a foreign era needs the fresh channel, never a ratchet from ours).
+            RepairTrigger::FleetAllMissed => self.era_peer_seen.get(&token).map_or(PeerEra::Ahead, |(idx, tag)| classify(*idx, *tag)),
             RepairTrigger::CadenceReached | RepairTrigger::NudgeReceived => PeerEra::Same,
         };
-        let token = chains.conversation_token;
         let held = chains.era_index;
+        let held_tag = chains.era_tag();
+        if let RepairTrigger::StaleEraObserved { peer_index, peer_tag } = trigger {
+            self.era_peer_seen.insert(token, (peer_index, peer_tag));
+        }
         let has_siblings = self.contacts.iter().any(|c| c.is_sibling && !c.locked_out);
         let siblings = if !has_siblings {
             SiblingVerdict::NoSiblings
@@ -215,7 +227,7 @@ impl PhotonApp {
         match verdict {
             RepairVerdict::PullFleet => {
                 if let Some(kp) = self.device_keypair.as_ref() {
-                    if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_vsf(&token, kp.public.as_bytes(), kp.secret.as_bytes(), Some(held)) {
+                    if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_vsf(&token, kp.public.as_bytes(), kp.secret.as_bytes(), Some(held), held_tag) {
                         self.era_pull_sent.insert(token, held);
                         self.dispatch_frame_to_siblings(frame);
                         crate::logf!("ERA: era_pull for {} — asking the fleet for an era newer than #{}", fp, held);
@@ -229,7 +241,15 @@ impl PhotonApp {
             RepairVerdict::HeavyWeave => {
                 self.arm_heavy_weave_for(ci, "repair verdict");
             }
-            RepairVerdict::ConsentFresh => crate::logf!("ERA: {} is on a channel we cannot order against ours — the consent-gated fresh channel is not built yet (stage 5); nothing done", fp),
+            // FRESH CHANNEL (2026-09-10): the peer is on an era neither we nor any live sibling hold, so nothing minted from ours can reach it — the owner re-runs the CLUTCH (the heavy-weave pickup, whose prior claim will not match the peer's, so it completes as a fresh channel). The stage-5 consent gate is still to come; today a restart already re-runs ceremonies unasked, so this adds no new consent surface, only a repair that ends instead of holding forever. One round at a time: a friendship mid-ceremony is left to finish.
+            RepairVerdict::ConsentFresh => {
+                let mid_round = self.contacts.get(ci).is_some_and(|c| c.clutch_state != crate::types::ClutchState::Complete || c.clutch_ceremony_in_progress || c.clutch_keygen_in_progress);
+                if mid_round {
+                    crate::logf!("ERA: {} is on a channel we cannot order against ours — a ceremony is already running, leaving it to finish", fp);
+                } else {
+                    self.arm_heavy_weave_for(ci, "peer on a channel we cannot order and no live sibling holds it — fresh channel (consent gate not yet built)");
+                }
+            }
         }
     }
 
@@ -454,6 +474,30 @@ impl PhotonApp {
         });
     }
 
+    /// One sibling's era_pull answer was a MISS (an explicit chain_pull_miss, or a served blob that did not move our era — 2026-09-10). When every LIVE sibling has missed, the pull concludes and the repair table decides from FleetAllMissed.
+    pub(super) fn era_pull_miss_from(&mut self, token: [u8; 32], sender_key: [u8; 32]) {
+        let Some(&held) = self.era_pull_sent.get(&token) else { return };
+        let all_missed = {
+            let set = self.chain_pull_misses.entry(token).or_default();
+            set.insert(sender_key);
+            // The quorum is the LIVE fleet: a sibling probed offline (a phone in a desk for a week, or a wiped device never released) cannot answer and needs nothing from this answer — replication carries the era to it on its return. Counting it froze every repair on "era_pull in flight" for as long as it stayed dark (2026-09-09).
+            self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online)).all(|c| set.iter().any(|d| c.knows_device(d)))
+        };
+        if !all_missed {
+            return;
+        }
+        self.chain_pull_misses.remove(&token);
+        self.era_pull_sent.remove(&token);
+        crate::logf!("ERA: every live sibling answered the era_pull with a miss — no era newer than #{} in the fleet", held);
+        let ci = self.contacts.iter().position(|c| {
+            !c.is_sibling
+                && c.friendship_id.is_some_and(|fid| self.friendship_chains.iter().any(|(id, ch)| *id == fid && ch.conversation_token == token))
+        });
+        if let Some(ci) = ci {
+            self.repair_dispatch(ci, RepairTrigger::FleetAllMissed);
+        }
+    }
+
     /// After a cutover: persist the blob (the replication sweep pushes it on the mutated_osc edge) and re-serve undelivered rows on the fresh lane — the rotated_flush shape.
     pub(super) fn era_cutover_flush(&mut self, ci: usize, fid: &crate::types::friendship::FriendshipId) {
         self.persist_chains_async(fid);
@@ -502,6 +546,9 @@ mod tests {
         }
         assert_eq!(friendship_repair(&input(RepairTrigger::FleetAllMissed, PeerEra::Ahead, SiblingVerdict::AllMissed, true, true)), RepairVerdict::LightRatchet);
         assert!(matches!(friendship_repair(&input(RepairTrigger::FleetAllMissed, PeerEra::Ahead, SiblingVerdict::AllMissed, false, true)), RepairVerdict::Hold(_)));
+        // A foreign peer after the fleet missed: nothing minted from our era can reach it — the fresh channel, owner only.
+        assert_eq!(friendship_repair(&input(RepairTrigger::FleetAllMissed, PeerEra::Foreign, SiblingVerdict::AllMissed, true, true)), RepairVerdict::ConsentFresh);
+        assert!(matches!(friendship_repair(&input(RepairTrigger::FleetAllMissed, PeerEra::Foreign, SiblingVerdict::AllMissed, false, true)), RepairVerdict::Hold(_)));
     }
 
     /// The cadence and a nudge ask for the light ratchet only: owner + capable ⇒ LightRatchet, anything else holds, and neither ever escalates to a heavy weave.

@@ -2233,6 +2233,7 @@ pub fn build_chain_pull_vsf(
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
     held_era: Option<u64>,
+    held_tag: Option<u32>,
 ) -> Result<Vec<u8>, String> {
     use vsf::file_format::VsfSection;
     use vsf::VsfBuilder;
@@ -2241,6 +2242,10 @@ pub fn build_chain_pull_vsf(
     // era_pull (2026-09-08): the requester HOLDS chains at this era and asks whether a sibling holds a NEWER one. Absent = the legacy ask (no chains at all).
     if let Some(e) = held_era {
         section.add_field("era", VsfType::u(e as usize, false));
+    }
+    // The asker's era TAG (2026-09-10): fresh ceremonies all mint index 0, so the index alone cannot tell "the same era" from "a different era at the same index" — a sibling that holds the asker's own tag answers miss instead of serving it back (the Esme/Nick "era_pull in flight" forever).
+    if let Some(t) = held_tag {
+        section.add_field("tag", VsfType::u(t as usize, false));
     }
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -2252,7 +2257,7 @@ pub fn build_chain_pull_vsf(
 }
 
 /// Parse + verify a `chain_pull`. Returns (conversation token, sender device pubkey). The receiver authorizes by sibling membership (knows_device), exactly like ckpt_req.
-pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Option<u64>), String> {
+pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Option<u64>, Option<u32>), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("chain_pull verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2263,7 +2268,8 @@ pub fn parse_chain_pull_vsf(vsf_bytes: &[u8]) -> Result<([u8; 32], [u8; 32], Opt
     let token = field_hash32(&section.fields, "tok", |v| matches!(v, VsfType::hg(_)))
         .ok_or("chain_pull missing tok")?;
     let held_era = field_u64(&section.fields, "era");
-    Ok((token, sender_pubkey, held_era))
+    let held_tag = field_u64(&section.fields, "tag").map(|t| t as u32);
+    Ok((token, sender_pubkey, held_era, held_tag))
 }
 
 /// Build a `depart_req` — the LEAVING device's sibling-to-sibling removal request (bilateral removal, the mirror of the add ceremony). Carries the departure stamp `t` and the device's signature over `fgtw::fleet::departreq_signing_bytes(hp, device, t)`; the frame itself is signed by the same device key, so the receiver's sibling gate + the consent verify both pin the same identity. A surviving member's user approves on their screen; that device countersigns and publishes the consented Remove chain op.
@@ -3803,12 +3809,12 @@ mod pong_seal_tests {
         let signing = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
         let (pk, sk) = (signing.verifying_key().to_bytes(), signing.to_bytes());
         let tok = [0x42u8; 32];
-        let with = build_chain_pull_vsf(&tok, &pk, &sk, Some(5)).unwrap();
-        let without = build_chain_pull_vsf(&tok, &pk, &sk, None).unwrap();
-        let (t1, p1, e1) = parse_chain_pull_vsf(&with).unwrap();
-        assert_eq!((t1, p1, e1), (tok, pk, Some(5)));
-        let (_, _, e0) = parse_chain_pull_vsf(&without).unwrap();
-        assert_eq!(e0, None, "the legacy ask carries no era");
+        let with = build_chain_pull_vsf(&tok, &pk, &sk, Some(5), Some(0xdead_beef)).unwrap();
+        let without = build_chain_pull_vsf(&tok, &pk, &sk, None, None).unwrap();
+        let (t1, p1, e1, g1) = parse_chain_pull_vsf(&with).unwrap();
+        assert_eq!((t1, p1, e1, g1), (tok, pk, Some(5), Some(0xdead_beef)));
+        let (_, _, e0, g0) = parse_chain_pull_vsf(&without).unwrap();
+        assert_eq!((e0, g0), (None, None), "the legacy ask carries no era and no tag");
     }
 
     #[test]

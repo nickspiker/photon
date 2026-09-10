@@ -1768,6 +1768,8 @@ pub struct PhotonApp {
     peer_era_seen: std::collections::HashMap<(crate::types::friendship::FriendshipId, [u8; 32]), (u64, u32)>,
     /// era_pull asks sent this session: token → the era index we held when we asked. A miss verdict for one of these is "no sibling holds a newer era", never a reason to re-key.
     era_pull_sent: std::collections::HashMap<[u8; 32], u64>,
+    /// The era each peer LAST advertised for a friendship (token → (index, tag)): the fleet's era_pull answer is classified against this, not a blanket "ahead".
+    era_peer_seen: std::collections::HashMap<[u8; 32], (u64, u32)>,
     /// Per-LANE replication bookkeeping: (friendship_id ‖ lane_label) → the lane position we last pushed to siblings. `drive_chain_replication` sends ONLY the lanes whose position advanced past this, as a per-lane checkpoint subset — so a mutation on one lane no longer re-transmits every other lane's 16KB chain (the 85KB whole-blob frame that stalled the render thread every tick).
     lane_pushed_pos: std::collections::HashMap<[u8; 64], u64>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
@@ -2348,6 +2350,7 @@ impl PhotonApp {
             chain_pull_misses: std::collections::HashMap::new(),
             peer_era_seen: std::collections::HashMap::new(),
             era_pull_sent: std::collections::HashMap::new(),
+            era_peer_seen: std::collections::HashMap::new(),
             lane_pushed_pos: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
             settings_theme_dropdown: None,

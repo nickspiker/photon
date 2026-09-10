@@ -380,7 +380,7 @@ impl PhotonApp {
         // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
         let stale_fold_claims = self.fleet_tip_pursuit.clone();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
-        let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32], Option<u64>)> = Vec::new();
+        let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32], Option<u64>, Option<u32>)> = Vec::new();
         // Era observations from the pong loop (which holds the chains borrow) — dispatched after it (era ratchet stage 2).
         let mut era_triggers_after: Vec<(crate::types::friendship::FriendshipId, super::era::RepairTrigger)> = Vec::new();
         // A sibling's presence VERDICT changed (first probe, or online↔offline): the computed ceremony owner may have moved — recomputed after the drain (era.rs).
@@ -3703,12 +3703,13 @@ impl PhotonApp {
                     conversation_token,
                     sender_pubkey,
                     held_era,
+                    held_tag,
                 } => {
                     // Sibling authorization, exactly the ckpt_req gate; the serve/miss work mutates watermarks so it defers past the checker borrow.
                     if self.contacts.iter().any(|c| {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     }) {
-                        chain_pull_reqs_after.push((conversation_token, sender_pubkey.key, held_era));
+                        chain_pull_reqs_after.push((conversation_token, sender_pubkey.key, held_era, held_tag));
                     }
                 }
                 StatusUpdate::ChainPullMissReceived {
@@ -4803,7 +4804,7 @@ impl PhotonApp {
                         crate::fp(&self.contacts[ci].handle_proof)
                     );
                     if let Some(kp) = self.device_keypair.as_ref() {
-                        if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_vsf(&token, kp.public.as_bytes(), kp.secret.as_bytes(), None) {
+                        if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_vsf(&token, kp.public.as_bytes(), kp.secret.as_bytes(), None, None) {
                             self.dispatch_frame_to_siblings(frame);
                         }
                     }
@@ -4818,7 +4819,20 @@ impl PhotonApp {
         }
 
         // chain_pull serves (deferred past the checker borrow): a sibling asked for chains it lacks. Holding them = clear this friendship's push watermarks so drive_chain_replication re-pushes every lane checkpoint fleet-wide (the asker adopts, everyone else no-ops). Not holding them = answer miss.
-        for (token, sender_key, held_era) in chain_pull_reqs_after {
+        for (token, sender_key, held_era, held_tag) in chain_pull_reqs_after {
+            // SAME ERA = MISS (2026-09-10): fresh ceremonies all mint index 0, so "era_index >= held" served the asker its OWN era back and the pull never concluded ("era_pull in flight" for the rest of the session on Nick's phone). The asker's tag settles it: same index and same tag is the era it already holds.
+            let same_era_as_asker = held_era.is_some_and(|h| {
+                self.friendship_chains.iter().any(|(_, c)| c.conversation_token == token && c.era_index == h && held_tag.is_some_and(|t| c.era_tag() == Some(t)))
+            });
+            if same_era_as_asker {
+                crate::logf!("CHAIN-PULL: era_pull from {} names the era we hold too (#{} {:08x}) — miss", crate::fp(&sender_key), held_era.unwrap_or(0), held_tag.unwrap_or(0));
+                if let Some(kp) = self.device_keypair.as_ref() {
+                    if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_miss_vsf(&token, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                        self.dispatch_frame_to_siblings(frame);
+                    }
+                }
+                continue;
+            }
             // TOKEN-matched (same 2026-09-01 rule as the heal): serve iff we hold a chain FOR THIS TOKEN — a stale-era chain under the same contact must answer miss, or the asking sibling re-keys against a chain we can't actually give it. An era_pull (held_era set) additionally requires OURS to be a newer era than the one they hold: same era = miss, so a fleet at one era never re-pushes to itself.
             let have_fid = self
                 .friendship_chains
@@ -4855,25 +4869,8 @@ impl PhotonApp {
         }
         for (token, sender_key) in chain_pull_misses_after {
             // A miss answering an era_pull means "no sibling holds a newer era" — a repair-decision input, never the wipe-debris re-key below.
-            if let Some(&held) = self.era_pull_sent.get(&token) {
-                let all_missed = {
-                    let set = self.chain_pull_misses.entry(token).or_default();
-                    set.insert(sender_key);
-                    // The quorum is the LIVE fleet: a sibling probed offline (a phone in a desk for a week, or a wiped device never released) cannot answer and needs nothing from this answer — replication carries the era to it on its return. Counting it froze every repair on "era_pull in flight" for as long as it stayed dark (2026-09-09).
-                    self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online)).all(|c| set.iter().any(|d| c.knows_device(d)))
-                };
-                if all_missed {
-                    self.chain_pull_misses.remove(&token);
-                    self.era_pull_sent.remove(&token);
-                    crate::logf!("ERA: every live sibling answered the era_pull with a miss — no era newer than #{} in the fleet", held);
-                    let ci = self.contacts.iter().position(|c| {
-                        !c.is_sibling
-                            && c.friendship_id.is_some_and(|fid| self.friendship_chains.iter().any(|(id, ch)| *id == fid && ch.conversation_token == token))
-                    });
-                    if let Some(ci) = ci {
-                        self.repair_dispatch(ci, super::era::RepairTrigger::FleetAllMissed);
-                    }
-                }
+            if self.era_pull_sent.contains_key(&token) {
+                self.era_pull_miss_from(token, sender_key);
                 continue;
             }
             // Only meaningful if WE asked (the miss broadcast reaches every sibling; non-askers drop here).

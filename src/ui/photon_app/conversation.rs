@@ -1837,12 +1837,14 @@ impl PhotonApp {
                 incoming.genesis_osc
             );
             let mut incoming = incoming;
+            let mut era_moved = false;
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
                     if local.era_superseded_by(&incoming) {
                         incoming.sanitize_replicated();
                         *local = incoming;
+                        era_moved = true;
                         crate::logf!("CHAIN-SYNC: superseded chain era for fid {} — re-keyed root adopted wholesale", crate::fp(&fid.0));
                         true
                     } else {
@@ -1864,6 +1866,16 @@ impl PhotonApp {
                     true
                 }
             };
+            // THE SERVE IS THE ANSWER (2026-09-10): while our era_pull for this token is open, a sibling's push either moved our era (the pull is answered — clear it) or did not (that sibling holds nothing newer for us — it counts as its miss). Without this a sibling that served our own era back left the pull "in flight" for the rest of the session.
+            if self.era_pull_sent.contains_key(&conversation_token) {
+                if era_moved {
+                    self.era_pull_sent.remove(&conversation_token);
+                    self.chain_pull_misses.remove(&conversation_token);
+                    crate::log("ERA: era_pull answered — a sibling's push moved our era");
+                } else {
+                    self.era_pull_miss_from(conversation_token, sender_pubkey.key);
+                }
+            }
             if !adopted {
                 continue;
             }

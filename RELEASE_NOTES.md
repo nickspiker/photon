@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Two phones that ended up on different friendship keys after a re-pair no longer stay silent at each other: the one whose fleet holds nothing newer now runs a fresh pairing itself instead of waiting forever, and messages resume once it completes.
 - On a home network a wave now climbs past the top compressed rate to plain uncompressed audio: no codec in the path, a lost packet is a five-millisecond blip rather than added delay, and the recording keeps the full audio.
 - A wave answered by a phone that re-keyed the friendship moments earlier now connects: the answer travels under the same key the ring arrived on, so a one-step key mismatch between two phones no longer strands it.
 - Dialing right as the offer commits no longer leaves the ring without its keep-alive, which made the other phone stop ringing after three seconds.
