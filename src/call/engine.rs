@@ -246,6 +246,8 @@ fn run(
     let mut pred_gate = crate::call::learn::PredGate::new();
     let mut live_route = start_route.clone();
     let mut last_est = std::time::Instant::now();
+    // Echo stats cadence: a line every ten seconds while a filter is armed (recent + lifetime ERLE, adapt ratio) — the field's view of the whitener at work.
+    let mut last_echo_stats = std::time::Instant::now();
     let mut vol_lin_now: f32 = crate::platform::audio::current_volume_db()
         .map_or(1.0, |db| 10f32.powf(db / 20.0));
 
@@ -739,6 +741,22 @@ fn run(
                 probe_cap = Vec::new();
             }
         }
+        // Periodic echo stats (10s cadence on the engine loop — a measurement cadence, not UI timing).
+        if last_echo_stats.elapsed() >= std::time::Duration::from_secs(10) {
+            last_echo_stats = std::time::Instant::now();
+            if let Some(c) = nlms.as_ref() {
+                crate::logf!(
+                    "CALL: echo — filter recent {}dB lifetime {}dB, adapted {} of {} frames; gated {} ducked {} far-active {}",
+                    c.erle_recent_db().map_or("?".to_string(), |e| format!("{e:.1}")),
+                    c.erle_db().map_or("?".to_string(), |e| format!("{e:.1}")),
+                    c.adapted_frames,
+                    c.run_frames,
+                    gated_frames,
+                    ducked_frames,
+                    far_active_frames
+                );
+            }
+        }
         // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
         if nlms.as_ref().is_some_and(|c| c.is_net_harmful()) {
             let erle = nlms.as_ref().and_then(|c| c.erle_db()).unwrap_or(0.0);
@@ -896,6 +914,13 @@ fn run(
         );
         // The canceller's report card: honest ERLE measured only over far-talks-alone frames (where echo dominates the mic).
         if let Some(c) = &nlms {
+            crate::logf!(
+                "CALL: nlms — recent {}dB over {} adapted of {} frames; whitener scales {}",
+                c.erle_recent_db().map_or("?".to_string(), |e| format!("{e:.1}")),
+                c.adapted_frames,
+                c.run_frames,
+                format!("{:?}", crate::call::nlms::WHITEN_SCALES)
+            );
             crate::logf!(
                 "CALL: nlms — erle {} over {} adapted frame(s)",
                 c.erle_db().map_or("?".into(), |d| format!("{d:.1}dB")),

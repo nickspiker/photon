@@ -3416,37 +3416,64 @@ impl PhotonApp {
                                             let frac: Option<f32> = scrub.or_else(|| {
                                                 playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
                                             });
-                                            // THE WAVEFORM (Nick 2026-09-09): one column per pixel, ch0 (you) up from the centreline, ch1 (them) down. Height = amplitude (eight stops of range); colour = the three high-pass bands, each brightness relative to the amplitude and the triple normalised so every bar is fully saturated — the hue says what the sound was made of. Oversampled like the lumis histogram: a column averages every bucket it spans by fractional coverage in energy space, and the bar's tip pixel takes a coverage alpha (√ of the fraction).
+                                            // THE WAVEFORM (Nick 2026-09-09): one column per pixel, ch0 (you) up from the centreline, ch1 (them) down. Height = amplitude (eight stops of range); colour = the three high-pass bands. NORMALISED per recording (Nick 2026-09-10: "normalise the colours"): each band's brightness relative to the amplitude is stretched over the recording's own range before the triple is saturated, so the hue moves across the wave instead of sitting near one tint. SMOOTH: a column reads the envelope by linear interpolation between bucket centres rather than the nearest bucket ("it still looks blocky"), and a column that spans more than one bucket averages them in energy space like the lumis histogram; the bar's tip pixel takes a coverage alpha (√ of the fraction).
                                             let wx0 = glyph_x1;
                                             let cols = ((bx1 - wx0).max(1.0)) as usize;
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
-                                            let bright = |stops8: u8, rel: u8| -> f32 { (1.0 - (stops8 as f32 - rel as f32) / 64.0).clamp(0.1, 1.0) };
+                                            // Band brightness relative to the amplitude (eight stops of range), then the per-recording stretch: min..max of that relative value across every bucket of this channel set.
+                                            let rel = |stops8: u8, amp8: u8| -> f32 { (1.0 - (stops8 as f32 - amp8 as f32) / 64.0).clamp(0.0, 1.0) };
+                                            let mut lo = [1f32; 3];
+                                            let mut hi = [0f32; 3];
+                                            for i in 0..env_len * nchan.min(2) {
+                                                let e = &env[i * K..i * K + K];
+                                                if e[0] >= 250 {
+                                                    continue; // silence: no colour information
+                                                }
+                                                for c in 0..3 {
+                                                    let v = rel(e[1 + c], e[0]);
+                                                    lo[c] = lo[c].min(v);
+                                                    hi[c] = hi[c].max(v);
+                                                }
+                                            }
+                                            let stretch = |v: f32, c: usize| -> f32 {
+                                                let span = hi[c] - lo[c];
+                                                if span > 0.05 { ((v - lo[c]) / span).clamp(0.0, 1.0) } else { v }
+                                            };
+                                            // Sample the envelope at a fractional bucket position: linear interpolation between the two nearest bucket centres, in the (amp, r, g, b) brightness domain.
+                                            let sample_at = |ch: usize, pos: f32| -> [f32; 4] {
+                                                let p = pos.clamp(0.0, env_len as f32 - 1.0);
+                                                let i0 = p.floor() as usize;
+                                                let i1 = (i0 + 1).min(env_len - 1);
+                                                let t = p - i0 as f32;
+                                                let e0 = &env[(ch * env_len + i0) * K..(ch * env_len + i0) * K + K];
+                                                let e1 = &env[(ch * env_len + i1) * K..(ch * env_len + i1) * K + K];
+                                                let v = |e: &[u8], c: usize| -> f32 {
+                                                    if c == 0 { (1.0 - e[0] as f32 / 64.0).clamp(0.0, 1.0) } else { stretch(rel(e[c], e[0]), c - 1) }
+                                                };
+                                                let mut out = [0f32; 4];
+                                                for c in 0..4 {
+                                                    out[c] = v(e0, c) * (1.0 - t) + v(e1, c) * t;
+                                                }
+                                                out
+                                            };
                                             if env_len > 0 {
+                                                let per_col = env_len as f32 / cols as f32;
+                                                // Sub-samples per column: enough to average every bucket a wide column spans, at least two so narrow columns interpolate.
+                                                let sub = (per_col.ceil() as usize * 2).clamp(2, 32);
                                                 for px in 0..cols {
-                                                    let b0 = px as f32 * env_len as f32 / cols as f32;
-                                                    let b1 = (px + 1) as f32 * env_len as f32 / cols as f32;
                                                     let lit = held && frac.is_some() && px < played_cols;
                                                     for ch in 0..nchan.min(2) {
-                                                        // Coverage-weighted energy means over the buckets this column spans.
-                                                        let (mut h2, mut r2, mut g2, mut bl2, mut cov) = (0f32, 0f32, 0f32, 0f32, 0f32);
-                                                        let mut i = b0.floor() as usize;
-                                                        while (i as f32) < b1 && i < env_len {
-                                                            let c = (b1.min(i as f32 + 1.0) - b0.max(i as f32)).max(0.0);
-                                                            let e = &env[(ch * env_len + i) * K..(ch * env_len + i) * K + K];
-                                                            let hv = (1.0 - e[0] as f32 / 64.0).clamp(0.0, 1.0);
-                                                            h2 += hv * hv * c;
-                                                            let (rv, gv, bv) = (bright(e[1], e[0]), bright(e[2], e[0]), bright(e[3], e[0]));
-                                                            r2 += rv * rv * c;
-                                                            g2 += gv * gv * c;
-                                                            bl2 += bv * bv * c;
-                                                            cov += c;
-                                                            i += 1;
+                                                        let mut acc = [0f32; 4];
+                                                        for k in 0..sub {
+                                                            let pos = (px as f32 + (k as f32 + 0.5) / sub as f32) * per_col - 0.5;
+                                                            let v = sample_at(ch, pos);
+                                                            for c in 0..4 {
+                                                                acc[c] += v[c] * v[c];
+                                                            }
                                                         }
-                                                        if cov <= 0.0 {
-                                                            continue;
-                                                        }
-                                                        let hgt = (h2 / cov).sqrt() * half * 0.92;
-                                                        let (rv, gv, bv) = ((r2 / cov).sqrt(), (g2 / cov).sqrt(), (bl2 / cov).sqrt());
+                                                        let mean = |c: usize| (acc[c] / sub as f32).sqrt();
+                                                        let hgt = mean(0) * half * 0.92;
+                                                        let (rv, gv, bv) = (mean(1), mean(2), mean(3));
                                                         let m = rv.max(gv).max(bv).max(0.001);
                                                         let base_c = theme::rgb_colour((rv / m * 255.0) as u8, (gv / m * 255.0) as u8, (bv / m * 255.0) as u8);
                                                         let c = if lit { base_c } else { theme::dim_colour(base_c) };
@@ -3454,7 +3481,6 @@ impl PhotonApp {
                                                         let tip_a = ((hgt - full).sqrt() * (((c >> 24) & 0xFF) as f32)) as u32;
                                                         let tip_c = (tip_a << 24) | (c & 0x00FF_FFFF);
                                                         let x = (wx0 + px as f32) as isize;
-                                                        // Solid run from the centreline, then the fractional tip one pixel beyond it.
                                                         let (ty, th, tip_y) = if ch == 0 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
                                                         let run_top = ty.max(list_top);
                                                         let run_bot = (ty + th).min(list_bottom);

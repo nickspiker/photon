@@ -9,7 +9,19 @@ pub const TAPS: usize = 2048;
 /// Taps AHEAD of the measured anchor: absorbs anchor wobble (±ms of drain-stamp jitter folded into the one-time alignment) and slow clock skew.
 pub const PRE: usize = 512;
 /// NLMS step size — conservative; the seed does the converging, this tracks drift.
-const MU: f32 = 0.5; // 2026-09-09: was 0.25 — the field's echo was audible with the filter barely moving; NLMS is stable below 2, and the per-sample update is what tracks a drifting path
+const MU: f32 = 0.5;
+/// PRE-WHITENING (Nick 2026-09-10: "the half, quarter, eighth… filter from 512Hz up and flatten out the profile"). NLMS converges at the rate of the WEAKEST band, and speech falls ~6dB/octave above ~500Hz, so the taps learn the bass echo and never the top — the 8dB ERLE ceiling of the field. The whitener is a sum of dyadic differences x[n] − x[n−s] at these sample scales, equal weight: a comb of high-passes that flattens speech from ~500Hz up while leaving the bass its share. Cheap because the whitener is LTI and commutes with the echo path: the whitened error EQUALS the whitening of the raw error, so the one convolution stays on raw audio (that residual is what plays out) and only the tap UPDATE sees whitened signals — a whitened reference window (computed per frame from the same ring, a few adds per sample) and a whitened error (a 16-sample history). Filtered-error NLMS, no second convolution, no latency.
+pub const WHITEN_SCALES: [usize; 3] = [1, 4, 16];
+/// Longest whitener lag — the history the reference window and the error keep.
+const WHITEN_SPAN: usize = 16;
+
+/// The whitener over a contiguous signal: y[i] = mean over scales of (x[i] − x[i−s]); `x` carries WHITEN_SPAN samples of pre-history, so the output has `x.len() − WHITEN_SPAN` samples.
+fn whiten(x: &[f32]) -> Vec<f32> {
+    let k = WHITEN_SCALES.len() as f32;
+    (WHITEN_SPAN..x.len())
+        .map(|i| WHITEN_SCALES.iter().map(|&s| x[i] - x[i - s]).sum::<f32>() / k)
+        .collect()
+} // 2026-09-09: was 0.25 — the field's echo was audible with the filter barely moving; NLMS is stable below 2, and the per-sample update is what tracks a drifting path
 const EPS: f32 = 1e3;
 
 /// Flat reference ring over what the DAC actually rendered, indexed by ABSOLUTE sample position (never wraps indices — the buffer slides).
@@ -62,11 +74,15 @@ pub struct Nlms {
     /// RECENT ERLE (exponential, ~100 adapted frames): the self-check judges the filter on what it is doing NOW, not its lifetime — a blunt seed that starts harmful and converges must not be shot for its first second.
     recent_pre: f64,
     recent_post: f64,
+    /// The last WHITEN_SPAN raw errors (oldest first) — the whitened error's history across frame edges.
+    err_hist: [f32; WHITEN_SPAN],
+    /// Frames the filter ran on at all (adapted or frozen) — with `adapted_frames`, the adapt ratio the stats print.
+    pub run_frames: u64,
 }
 
 impl Nlms {
     pub fn new(ir_start: usize, taps: Vec<f32>) -> Self {
-        Self { h: taps, ir_start: ir_start as i64, pre_e: 0.0, post_e: 0.0, adapted_frames: 0, recent_pre: 0.0, recent_post: 0.0 }
+        Self { h: taps, ir_start: ir_start as i64, pre_e: 0.0, post_e: 0.0, adapted_frames: 0, recent_pre: 0.0, recent_post: 0.0, err_hist: [0.0; WHITEN_SPAN], run_frames: 0 }
     }
 
     /// ERLE in dB over the adapted stretches; None until any frame adapted.
@@ -89,37 +105,51 @@ impl Nlms {
     /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. `ref_gain` = vol_lin_now ÷ vol_lin_at_seed — the taps are measured at the probe's volume, and the DAC gain sits between the reference and the room, so a mid-call volume change scales the echo without touching h; folding the ratio into the reference keeps the filter honest instantly (adaptation then refines in seed-volume units). Frames whose reference window isn't fully resident pass thru untouched.
     pub fn cancel_frame(&mut self, mic: &mut [i16], ring: &RefRing, frame_pos: i64, adapt: bool, ref_gain: f32) {
         let n = self.h.len();
-        // The whole frame's reference span: oldest sample needed is (frame_pos − ir_start − n + 1), newest is (frame_pos + mic.len() − 1 − ir_start).
+        let len = mic.len();
+        // The whole frame's reference span plus the whitener's pre-history: oldest sample needed is (frame_pos − ir_start − n + 1 − WHITEN_SPAN), newest is (frame_pos + len − 1 − ir_start).
         let from = frame_pos - self.ir_start - n as i64 + 1;
-        let Some(win) = ring.window(from, n + mic.len() - 1) else {
+        let Some(win_ext) = ring.window(from - WHITEN_SPAN as i64, n + len - 1 + WHITEN_SPAN) else {
             return;
         };
+        let win = &win_ext[WHITEN_SPAN..];
+        self.run_frames += 1;
+        // ---- Estimate + residual on RAW audio (this is what plays out and what the tally measures). ----
+        let mut errs = vec![0f32; len];
         let mut pre = 0f64;
         let mut post = 0f64;
-        // The reference window slides one sample per output sample, so its power is a running sum: seed it once, then add the incoming sample and drop the outgoing one — O(1) per sample where the old per-sample rescan was O(taps), half the filter's cost.
-        let g2 = ref_gain * ref_gain;
-        let mut power: f32 = win[..n].iter().map(|&r| r * r).sum();
         for (j, m) in mic.iter_mut().enumerate() {
             // ref[frame_pos + j − ir_start − k] = win[j + n − 1 − k]: h ascending pairs with the window reversed.
             let x = &win[j..j + n];
-            if j > 0 {
-                power += win[j + n - 1] * win[j + n - 1] - win[j - 1] * win[j - 1];
-            }
             let est: f32 = self.h.iter().rev().zip(x).map(|(&h, &r)| h * r).sum::<f32>() * ref_gain;
             let raw = *m as f32;
             let e = raw - est;
             pre += (raw * raw) as f64;
             post += (e * e) as f64;
+            errs[j] = e;
             *m = e.clamp(-32768.0, 32767.0) as i16;
-            if adapt {
+        }
+        // ---- Tap update on WHITENED signals (filtered-error NLMS): the whitened reference window and the whitened error, sharing the raw taps. ----
+        if adapt {
+            let xw = whiten(win_ext); // len == n + len − 1, aligned with `win`
+            // Whitened error with history across the frame edge.
+            let mut e_ext = Vec::with_capacity(WHITEN_SPAN + len);
+            e_ext.extend_from_slice(&self.err_hist);
+            e_ext.extend_from_slice(&errs);
+            let ew = whiten(&e_ext);
+            // The whitened window's power slides one sample per output sample — a running sum, O(1) per sample.
+            let g2 = ref_gain * ref_gain;
+            let mut power: f32 = xw[..n].iter().map(|&r| r * r).sum();
+            for j in 0..len {
+                let x = &xw[j..j + n];
+                if j > 0 {
+                    power += xw[j + n - 1] * xw[j + n - 1] - xw[j - 1] * xw[j - 1];
+                }
                 let norm = power.max(0.0) * g2 + EPS;
-                let g = MU * e * ref_gain / norm;
+                let g = MU * ew[j] * ref_gain / norm;
                 for (h, &r) in self.h.iter_mut().rev().zip(x) {
                     *h += g * r;
                 }
             }
-        }
-        if adapt {
             self.pre_e += pre;
             self.post_e += post;
             self.adapted_frames += 1;
@@ -127,6 +157,10 @@ impl Nlms {
             self.recent_pre += (pre - self.recent_pre) * ALPHA;
             self.recent_post += (post - self.recent_post) * ALPHA;
         }
+        // Error history for the next frame's whitening (adapted or not — the signal is continuous either way).
+        let keep = len.min(WHITEN_SPAN);
+        self.err_hist.rotate_left(keep);
+        self.err_hist[WHITEN_SPAN - keep..].copy_from_slice(&errs[len - keep..]);
     }
 }
 
@@ -219,6 +253,65 @@ mod tests {
         }
         let late_erle = 10.0 * (late_pre / late_post.max(1e-9)).log10();
         assert!(late_erle > 20.0, "converged ERLE {late_erle:.1}dB after 2s of far-talk");
+    }
+
+    /// The whitener kills DC and passes a high tone: the shape that flattens speech's tilt.
+    #[test]
+    fn whitener_kills_dc_and_keeps_treble() {
+        let dc: Vec<f32> = vec![1000.0; WHITEN_SPAN + 64];
+        assert!(whiten(&dc).iter().all(|v| v.abs() < 1e-3));
+        let hi: Vec<f32> = (0..WHITEN_SPAN + 64).map(|i| if i % 2 == 0 { 1000.0 } else { -1000.0 }).collect();
+        let out = whiten(&hi);
+        assert!(out.iter().map(|v| v.abs()).fold(0.0, f32::max) > 600.0, "a Nyquist tone must come thru the whitener near full (the even-lag differences vanish there, so two thirds)");
+    }
+
+    /// COLOURED input (a one-pole lowpass over noise, speech's tilt): a blunt seed must still converge — the whitened update is what makes this reachable in two seconds.
+    #[test]
+    fn adaptation_converges_on_coloured_input() {
+        let flen = 240usize;
+        let frames = 400usize;
+        let total = frames * flen + TAPS + 4096;
+        let white = noise(total, 8000.0, 11);
+        let mut r = vec![0f32; total];
+        let mut acc = 0f32;
+        for i in 0..total {
+            acc += (white[i] - acc) * 0.08; // ~600Hz one-pole lowpass at 48k
+            r[i] = acc;
+        }
+        let mut ring = RefRing::new(total * 2);
+        for c in r.chunks(flen) {
+            let f: Vec<i16> = c.iter().map(|&v| v as i16).collect();
+            ring.push(&f);
+        }
+        let ir_start = 1000usize;
+        let (_, h_true) = true_h(ir_start);
+        let mut h = vec![0f32; TAPS];
+        h[PRE] = 0.2;
+        let mut nlms = Nlms::new(ir_start, h);
+        let (mut late_pre, mut late_post) = (0f64, 0f64);
+        for fi in 0..frames {
+            let base = TAPS + 4096 + fi * flen;
+            let mut m = vec![0i16; flen];
+            for j in 0..flen {
+                let pos = base + j;
+                let mut a = 0f32;
+                for (k, &hk) in h_true.iter().enumerate() {
+                    let idx = pos as i64 - ir_start as i64 - k as i64;
+                    if idx >= 0 && (idx as usize) < r.len() {
+                        a += hk * r[idx as usize];
+                    }
+                }
+                m[j] = a.clamp(-32768.0, 32767.0) as i16;
+            }
+            let (p0, q0) = (nlms.pre_e, nlms.post_e);
+            nlms.cancel_frame(&mut m, &ring, base as i64, true, 1.0);
+            if fi >= frames - 50 {
+                late_pre += nlms.pre_e - p0;
+                late_post += nlms.post_e - q0;
+            }
+        }
+        let late_erle = 10.0 * (late_pre / late_post.max(1e-9)).log10();
+        assert!(late_erle > 12.0, "coloured-input ERLE {late_erle:.1}dB after 2s — the whitener must carry the tilt");
     }
 
     #[test]
