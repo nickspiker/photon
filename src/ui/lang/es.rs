@@ -502,6 +502,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decodificando\u{2026}".into(),
         Msg::ReaderTooLarge => "demasiado grande para leer aquí \u{2014} guardado".into(),
+        Msg::AttachDropHint => "suelta un archivo sobre la conversación para enviarlo".into(),
         Msg::InspectFailed(e) => format!("falló la inspección: {e}").into(),
         // ---- message persistence / attachments toasts ----
         Msg::RewritingVault => "re-escribiendo en la bóveda\u{2026}".into(),

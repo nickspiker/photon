@@ -520,6 +520,7 @@ pub enum Msg<'a> {
     ViewerOriginal,
     ViewerDecoding,
     ReaderTooLarge,
+    AttachDropHint,
     InspectFailed(&'a str),
     // ---- message persistence / attachments toasts ----
     RewritingVault,

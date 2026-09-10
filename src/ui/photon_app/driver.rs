@@ -244,6 +244,8 @@ impl FluorApp for PhotonApp {
         if let Some(b) = self.compose_link_btn.as_mut() {
             b.set_fill(Some(*theme::LINK_PURPLE));
         }
+        // The paperclip: always shown, one slot left of send (two when the link button is up).
+        self.compose_attach_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F4CE}\u{FE0F}"));
         // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER. Held = the SAME subtle fill: these fire on release, so a press must read as "nothing happened yet" — the default BUTTON_HELD ramp flashed a heavy fill mid-press (the "+" ticket).
         if let Some(b) = self.contacts_plus_btn.as_mut() {
             b.set_hover_fill(Some(*theme::SEND_BUTTON_HOVER));
@@ -1787,6 +1789,12 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
+                if let Some(btn) = self.compose_attach_btn.as_mut() {
+                    if btn.is_hovered() {
+                        btn.set_hovered(false);
+                        changed = true;
+                    }
+                }
                 // Call overlay controls (cross-screen) clear their hover too — otherwise a tint sticks when the pointer leaves the window mid-call.
                 for btn in [
                     self.call_start_btn.as_mut(),
@@ -2198,6 +2206,11 @@ impl FluorApp for PhotonApp {
                     }
                     ctx.window.request_redraw();
                 }
+                let attach_clicked = self.compose_attach_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                if attach_clicked {
+                    self.compose_attach_click();
+                    ctx.window.request_redraw();
+                }
                 if send_clicked {
                     self.submit_message();
                     // Return focus to the compose box so the send button releases its focused/active (dark, pressed-in) tint — otherwise it sticks down — and the user keeps typing.
@@ -2501,6 +2514,10 @@ impl FluorApp for PhotonApp {
                             let link_clicked = self.compose_link_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
                             if link_clicked {
                                 self.compose_link_click(ctx.text);
+                            }
+                            let attach_clicked = self.compose_attach_btn.as_mut().map(|b| b.take_click()).unwrap_or(false);
+                            if attach_clicked {
+                                self.compose_attach_click();
                             }
                             // Call overlay controls — Enter/Space activation when one holds focus.
                             let call_clicked = self.dispatch_call_button_clicks(ctx);
@@ -3321,6 +3338,11 @@ impl FluorApp for PhotonApp {
             }
         }
         if let Some(btn) = self.compose_link_btn.as_ref() {
+            if btn.hit_id() == hit {
+                return CursorIcon::Pointer;
+            }
+        }
+        if let Some(btn) = self.compose_attach_btn.as_ref() {
             if btn.hit_id() == hit {
                 return CursorIcon::Pointer;
             }

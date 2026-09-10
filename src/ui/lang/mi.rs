@@ -506,6 +506,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerOriginal => "Taketake".into(),
         Msg::ViewerDecoding => "e wetewete ana\u{2026}".into(),
         Msg::ReaderTooLarge => "he nui rawa hei pānui i konei \u{2014} kua tiakina".into(),
+        Msg::AttachDropHint => "tukua he kōnae ki runga i te kōrerorero hei tuku".into(),
         Msg::InspectFailed(e) => format!("i rahua te tirotiro: {e}").into(),
         // ---- message persistence / attachments toasts ----
         Msg::RewritingVault => "e tuhi anō ana ki te pātaka\u{2026}".into(),

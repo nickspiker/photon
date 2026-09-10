@@ -4048,6 +4048,11 @@ impl PhotonApp {
                                     btn.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map), id);
                                 }
                             }
+                            // PAPERCLIP, always: the attachment picker (Android) / the drop hint (desktop).
+                            if let Some(btn) = self.compose_attach_btn.as_mut() {
+                                let id = btn.hit_id();
+                                btn.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map), id);
+                            }
                             // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
@@ -4111,6 +4116,9 @@ impl PhotonApp {
                                 if let Some(btn) = self.compose_link_btn.as_ref() {
                                     btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                                 }
+                            }
+                            if let Some(btn) = self.compose_attach_btn.as_ref() {
+                                btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)

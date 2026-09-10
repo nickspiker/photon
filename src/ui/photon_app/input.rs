@@ -95,10 +95,14 @@ impl PhotonApp {
                 lb.set_rect(send_cx - send_size - send_inset, compose_cy, send_size, send_size);
                 lb.set_font_size(font_size * 0.9);
             }
-            if link_visible {
-                if let Some(tb) = self.message_textbox.as_mut() {
-                    tb.set_right_inset((send_size + send_inset) * 2.0);
-                }
+            // The paperclip sits one slot further left than whatever is beside send (the link button when it shows), and the text yields to every slot in use.
+            let slots = if link_visible { 3.0 } else { 2.0 };
+            if let Some(ab) = self.compose_attach_btn.as_mut() {
+                ab.set_rect(send_cx - (send_size + send_inset) * (slots - 1.0), compose_cy, send_size, send_size);
+                ab.set_font_size(font_size * 0.9);
+            }
+            if let Some(tb) = self.message_textbox.as_mut() {
+                tb.set_right_inset((send_size + send_inset) * slots);
             }
         }
 

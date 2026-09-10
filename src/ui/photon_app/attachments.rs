@@ -23,6 +23,24 @@ pub(super) fn raw_temp_path(kind: crate::types::AttachKind, hash: &[u8; 32], byt
 }
 
 impl PhotonApp {
+    /// The paperclip pressed: Android raises the any-file picker request the Choreographer poll drains into Kotlin; desktop has no picker dependency, so it says where to drop the file.
+    pub(super) fn compose_attach_click(&mut self) {
+        if !matches!(self.state, AppState::Conversation) {
+            return;
+        }
+        #[cfg(target_os = "android")]
+        {
+            self.pending_attach_picker = true;
+            crate::log("attach: picker requested");
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            self.ready_toast = Some(tr(Msg::AttachDropHint).into_owned());
+            self.ready_toast_screen = None;
+        }
+        self.scene_dirty = true;
+    }
+
     /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
     pub(super) fn send_attachment_from_path(&mut self, ci: usize, path: &str) {
         let bytes = match std::fs::read(path) {

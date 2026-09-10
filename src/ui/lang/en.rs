@@ -478,6 +478,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decoding\u{2026}".into(),
         Msg::ReaderTooLarge => "too large to read here \u{2014} saved instead".into(),
+        Msg::AttachDropHint => "drop a file onto the conversation to send it".into(),
         Msg::InspectFailed(e) => format!("inspect failed: {e}").into(),
         // ---- message persistence / attachments toasts ----
         Msg::RewritingVault => "re-writing to the vault\u{2026}".into(),

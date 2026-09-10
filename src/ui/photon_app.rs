@@ -1419,6 +1419,8 @@ pub struct PhotonApp {
     message_send_btn: Option<Button>,
     /// The purple chain-link button beside send: turns the detected URL into a tagged link with a trimmed label (messaging::compose_link_click). Shown only while a bare URL sits in the box.
     compose_link_btn: Option<Button>,
+    /// The PAPERCLIP: always beside send in the compose bar — Android opens the any-file picker, desktop points at drag-and-drop (typed attachments 2026-09-10; the old staged paperclip left with the resample card and nothing replaced it).
+    compose_attach_btn: Option<Button>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -2271,6 +2273,7 @@ impl PhotonApp {
             contacts_plus_btn: None,
             message_send_btn: None,
             compose_link_btn: None,
+            compose_attach_btn: None,
             storage: None,
             contacts: Vec::new(),
             conversations: Vec::new(),
@@ -3031,6 +3034,9 @@ impl PhotonApp {
                     if let Some(btn) = self.compose_link_btn.as_mut() {
                         f(btn);
                     }
+                }
+                if let Some(btn) = self.compose_attach_btn.as_mut() {
+                    f(btn);
                 }
             }
         }
