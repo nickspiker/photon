@@ -245,7 +245,7 @@ impl FluorApp for PhotonApp {
             b.set_fill(Some(*theme::LINK_PURPLE));
         }
         // The paperclip: always shown, one slot left of send (two when the link button is up).
-        self.compose_attach_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F4CE}\u{FE0F}"));
+        self.compose_attach_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F54A}\u{FE0F}"));
         // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER. Held = the SAME subtle fill: these fire on release, so a press must read as "nothing happened yet" — the default BUTTON_HELD ramp flashed a heavy fill mid-press (the "+" ticket).
         if let Some(b) = self.contacts_plus_btn.as_mut() {
             b.set_hover_fill(Some(*theme::SEND_BUTTON_HOVER));

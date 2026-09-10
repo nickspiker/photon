@@ -21,6 +21,9 @@ One sentence per line, however long; plain language for the person who installs 
 - The log keeps its last half minute even when Android kills the app outright: the in-memory batch writes through once it is thirty seconds old, so an unresponsive-app kill no longer erases what led up to it.
 - Installing an update no longer copies the package on the screen thread, which could hold the app unresponsive for seconds right after the install prompt.
 
+- Starting photon on a phone no longer stalls for five seconds: the vault's two mirrors were being compared block by block at every open, which grew with every kept wave and was what tripped Android's "not responding" prompt. Mirrors that already agree skip the comparison.
+- The attach button wears a dove for now; attachments may become pigeons.
+
 ## v89
 
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.
