@@ -160,6 +160,7 @@
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
 - [project_wave_card.md](project_wave_card.md) — WAVE CARD (2026-09-09): one row per wave + recording folds in; waveform IS the seek bar; stops envelope; all/waves/text pill; flag-day licensed
+- [project_recording_fills.md](project_recording_fills.md) — recording fills SHIPPED 2026-09-10 5a2e33d: lost windows asked back live + hangup drain; FILL datagrams 0xC8 own chain; seq-slotted spool
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; 2026-09-09 Android audio = Rust-owned AAudio exclusive, HAL-stamped frames (floor 20.6 ms); docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — NEVER run dev.sh twice to read one build: capture once to scratchpad, grep the capture (battery + heat + double relaunch)
