@@ -344,6 +344,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RenamePill => "Whakaingoa anō".into(),
         // ---- security page ----
         Msg::SecurityLock => "Raka".into(),
+        Msg::SecurityKill => "Patu".into(),
+        Msg::SecurityKillHint => "Ka tuku i tō tuakiri, ka kati tonu i a photon i tēnei wā, kotahi te pā, kāore he whakaū. Kāore he mea e mukua: whakatuwheratia anō a photon, tāurua tō handle kia hoki mai.".into(),
         Msg::DepartWordsShow(w) => format!("Kupu whakaae: {w}").into(),
         Msg::DepartWaitingLine => "E tatari ana ki te whakaae mai i t\u{0113}tahi atu o \u{014D} p\u{016B}rere (Tautuhinga \u{2192} K\u{0101}hui). Ka tonoa ng\u{0101} kupu o runga.".into(),
         Msg::DepartIntentNewOwner => "e hiahia ana ki te wehe \u{2014} ka riro i t\u{0113}tahi RANGATIRA HOU (m\u{0101} te whakaae ka tukuna hoki te taputapu)".into(),

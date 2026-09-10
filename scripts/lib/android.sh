@@ -27,6 +27,15 @@ android_build() {
     mkdir -p android/app/src/main/jniLibs/arm64-v8a
     cp "$so" android/app/src/main/jniLibs/arm64-v8a/
 
+    # SYMBOLS (2026-09-10): Gradle strips the .so it packages, so a tombstone's rel_pc can only be symbolized against the unstripped build kept here — one reflink per published build, named by the version and commit the APK reports. Symbolize with: llvm-symbolizer --obj=<file> 0x<rel_pc>
+    local symdir="/mnt/Harbor/Code/photon-symbols/android-arm64"
+    local ver commit
+    ver="$(grep -m1 '^version' "${SNAP_DIR:-.}/Cargo.toml" | sed 's/.*"\(.*\)".*/\1/')"
+    commit="$(git -C "${SNAP_DIR:-.}" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
+    if mkdir -p "$symdir" 2>/dev/null; then
+        cp --reflink=auto "$so" "$symdir/libphoton_messenger-v${ver}-${commit}.so" && echo "Symbols kept: $symdir/libphoton_messenger-v${ver}-${commit}.so"
+    fi
+
     # photon-specific: google-services.json (Firebase). The shared keystore lib exports TOKEN_KEYS_DIR but no longer copies this itself (it's app-agnostic now); other apps sharing keystore.sh skip it.
 
     cp "$TOKEN_KEYS_DIR/google-services.json" android/app/

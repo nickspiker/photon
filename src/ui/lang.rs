@@ -383,6 +383,9 @@ pub enum Msg<'a> {
     RenamePill,
     // ---- security page ----
     SecurityLock,
+    /// KILL (Nick 2026-09-10): one tap drops the identity and ends the process this instant; the vault stays.
+    SecurityKill,
+    SecurityKillHint,
     SecurityRevoke { armed: bool },
     SecurityRevokeHint,
     /// Why Revoke is dead on a fleet of one — shown IN PLACE of the normal hint, so the greying always carries its reason.

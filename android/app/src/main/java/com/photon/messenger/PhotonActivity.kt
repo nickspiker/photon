@@ -672,6 +672,13 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     1 -> connectionService?.sendSessionBroadcast()
                     -1 -> connectionService?.clearSessionBroadcast()
                     2 -> connectionService?.ensureSessionBroadcast()  // periodic freshness: re-post only if evicted
+                    // KILL (Security page, 2026-09-10): the sticky capsule must go BEFORE the process, or the next launch re-attests from it; then the service stops (no START_STICKY resurrection) and the process dies.
+                    -2 -> {
+                        connectionService?.clearSessionBroadcast()
+                        try { stopService(Intent(this@PhotonActivity, PhotonConnectionService::class.java)) } catch (_: Exception) {}
+                        finishAndRemoveTask()
+                        android.os.Process.killProcess(android.os.Process.myPid())
+                    }
                 }
                 // Self-update: a hash-verified APK is staged — hand it to the system installer (the OS owns package installs; its prompt is the second click).
                 nativePollApkInstall(nativePtr)?.let { apkPath ->

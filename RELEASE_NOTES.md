@@ -15,6 +15,9 @@ One sentence per line, however long; plain language for the person who installs 
 - A kept wave no longer carries the link's holes: every packet you lost is asked back from the other side while the wave runs, and the last stretch is fetched right after hangup, so the recording is whole even when the live sound stumbled.
 - The wave card's histogram is logarithmic now, with the other party above the line and you below it, each scaled to their own loudest moment.
 
+- Security gains Kill: one tap drops your identity and ends photon on the spot, nothing deleted; launch again and type your handle to come back.
+- A native crash on Android now reports where it died: the crashing thread's frames are decoded from the system's crash record at the next start, the last minutes of the log are saved as the process dies, and the fault handler is armed once the log folder is known, which it never was before.
+
 ## v89
 
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.

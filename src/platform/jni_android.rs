@@ -1256,6 +1256,8 @@ impl NetworkContext {
         // Empty shadow_dir (no external storage) falls back to internal in the sink.
         #[cfg(feature = "logging")]
         crate::set_android_log_dir(shadow_dir.to_string());
+        // The log directory is known now: fold in last run's crash sidecar and arm the native-fault handler (JNI_OnLoad ran too early for either).
+        crate::arm_crash_reporting();
 
         // Wire tohu's boot-locked session capsule to the app dirs — WITHOUT this, session_capsule_paths() is None, set_session falls thru to the desktop XDG tmpfs path (absent on Android) and FAILS, so the session never persists: attest succeeds but self.session stays None (avatar picker "not attested", broadcast "no session stored") and every restart lands back on the attest screen.
         let primary = std::path::Path::new(data_dir).join("session");

@@ -340,6 +340,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RenamePill => "Renombrar".into(),
         // ---- security page ----
         Msg::SecurityLock => "Bloquear".into(),
+        Msg::SecurityKill => "Matar".into(),
+        Msg::SecurityKillHint => "Suelta tu identidad y cierra photon al instante, con un toque y sin confirmar. No se borra nada: abre photon de nuevo y escribe tu handle para volver.".into(),
         Msg::DepartWordsShow(w) => format!("Palabras de aprobaci\u{00F3}n: {w}").into(),
         Msg::DepartWaitingLine => "Esperando la aprobaci\u{00F3}n desde otro de tus dispositivos (Ajustes \u{2192} Flota). Pedir\u{00E1} las palabras de arriba.".into(),
         Msg::DepartIntentNewOwner => "quiere salir \u{2014} va a un NUEVO DUE\u{00D1}O (aprobar tambi\u{00E9}n libera el hardware)".into(),

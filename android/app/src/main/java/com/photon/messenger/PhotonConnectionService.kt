@@ -255,13 +255,24 @@ class PhotonConnectionService : Service() {
                 }
                 PhotonLog.i("ExitInfo", "PRIOR RUN DIED (system): reason=$reason importance=${exit.importance} pss=${exit.pss}KB rss=${exit.rss}KB at=${exit.timestamp} desc=${exit.description ?: ""}")
                 // ANR / native-crash traces are the payload that names the stall or the frame — first 4KB is plenty for the log.
-                if (exit.reason == android.app.ApplicationExitInfo.REASON_ANR || exit.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                if (exit.reason == android.app.ApplicationExitInfo.REASON_ANR) {
                     try {
                         exit.traceInputStream?.use { ts ->
                             val head = String(ts.readBytes().take(4096).toByteArray())
                             for (line in head.lineSequence().take(60)) PhotonLog.i("ExitInfo", "trace: $line")
                         }
                     } catch (_: Exception) {}
+                }
+                // A native crash's trace is debuggerd's binary tombstone: decode it (Tombstone.kt) into the signal, the abort message and the crashing thread's frames — logged as text those bytes were unreadable.
+                if (exit.reason == android.app.ApplicationExitInfo.REASON_CRASH_NATIVE) {
+                    try {
+                        exit.traceInputStream?.use { ts ->
+                            val bytes = ts.readBytes()
+                            val lines = Tombstone.summarize(bytes)
+                            if (lines.isEmpty()) PhotonLog.i("ExitInfo", "tombstone: ${bytes.size} bytes, not decodable")
+                            for (line in lines) PhotonLog.i("ExitInfo", line)
+                        }
+                    } catch (e: Exception) { PhotonLog.w("ExitInfo", "tombstone read failed", e) }
                 }
             }
             if (newest != watermark) prefs.edit().putLong("last_reported", newest).apply()

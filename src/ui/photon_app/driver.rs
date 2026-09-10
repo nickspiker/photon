@@ -1040,6 +1040,21 @@ impl FluorApp for PhotonApp {
                         self.state = AppState::Launch(LaunchState::Fresh);
                         self.clear_handle_for_reproof();
                         crate::log("SECURITY: locked — session cleared, vault kept; re-type handle to unlock");
+                    } else if slot == 4 {
+                        // "Kill" (Nick 2026-09-10): the identity goes NOW and so does the process — no vault wipe, relaunch = re-attest. Android: the OS-held sticky session capsule would re-attest the next launch on its own, so Kotlin clears it and ends the process (poll code -2); the desktop exits here.
+                        tohu::clear_session();
+                        self.session = None;
+                        self.private_s = crate::crypto::blind::PrivateS::None;
+                        self.state = AppState::Launch(LaunchState::Fresh);
+                        self.clear_handle_for_reproof();
+                        crate::log("SECURITY: kill — session cleared, vault kept; ending the process");
+                        crate::flush_log_buffer();
+                        #[cfg(target_os = "android")]
+                        {
+                            self.pending_broadcast_signal = -2;
+                        }
+                        #[cfg(not(target_os = "android"))]
+                        std::process::exit(0);
                     } else if slot == 1 {
                         // "Revoke" (the desk case, from the device being revoked): treat THIS device as no-longer-trusted — the fleet key rotates away, the worker refuses it at announce, and it goes dark. It stays a permanent member (refusal, never removal); reinstating is handle-gated from another device, which is also why revoke_this_device refuses when there is no other device.
                         if self.settings_revoke_armed {

@@ -405,6 +405,9 @@ pub fn log_size_bytes() -> u64 {
 // Known filename (logging is a dev-build feature, so adb-pull discoverability beats filename privacy).
 #[cfg(feature = "logging")]
 static LOG_FILE: std::sync::Mutex<Option<std::fs::File>> = std::sync::Mutex::new(None);
+/// The open log file's raw descriptor (unix), for the native-fault handler's last-gasp flush of the soft batch — a signal handler may write(2) but must not open or lock.
+#[cfg(feature = "logging")]
+static LOG_FD: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 // Records that arrive before the sink can open (Android: everything logged before the JNI data dir lands, including the Kotlin bridge's earliest lifecycle lines) — held as already-built VSF record bytes so their creation stamps stay true, drained into the file the moment it opens. Bounded so a never-initializing process can't grow it unbounded; overflow drops the newest record (the earliest lines are the ones worth keeping).
 #[cfg(feature = "logging")]
@@ -542,6 +545,11 @@ fn ensure_log_open(guard: &mut Option<std::fs::File>) {
             jitter(LOG_AGE_TRIGGER_BASE_OSC),
             std::sync::atomic::Ordering::Relaxed,
         );
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            LOG_FD.store(f.as_raw_fd(), std::sync::atomic::Ordering::Relaxed);
+        }
         *guard = Some(f);
     }
 }
@@ -595,6 +603,35 @@ pub fn report_prior_crash() {
     for line in text.lines().filter(|l| !l.trim().is_empty()) {
         logf!("PRIOR RUN DIED: {}", line);
     }
+}
+
+/// NATIVE-FAULT FLUSH (2026-09-10, Nick's Scudo abort on Android: four minutes of the run before the crash were still in the soft batch and died with the process). Called from the signal handler: no allocation, no blocking lock — `try_lock` the batch and write(2) it to the already-open log fd. Best effort by nature: a fault that struck while the batch was locked leaves it unwritten.
+#[cfg(all(feature = "logging", unix))]
+pub fn crash_flush_pending() {
+    let fd = LOG_FD.load(std::sync::atomic::Ordering::Relaxed);
+    if fd < 0 {
+        return;
+    }
+    let Ok(mut pending) = LOG_PENDING.try_lock() else {
+        return;
+    };
+    let mut off = 0usize;
+    while off < pending.len() {
+        let n = unsafe { libc::write(fd, pending[off..].as_ptr() as *const libc::c_void, pending.len() - off) };
+        if n <= 0 {
+            break;
+        }
+        off += n as usize;
+    }
+    pending.clear();
+}
+#[cfg(not(all(feature = "logging", unix)))]
+pub fn crash_flush_pending() {}
+
+/// Fold last run's crash sidecar into this run's log and arm the native-fault handler — once the log directory is KNOWN. Android learns its directory at `nativeNetworkInit`, long after `JNI_OnLoad`, so the JNI_OnLoad call is a no-op there and the real arming happens from `NetworkContext::new` (the 2026-09-10 tombstone with no sidecar: the handler had never installed).
+pub fn arm_crash_reporting() {
+    report_prior_crash();
+    platform::crash_native::install();
 }
 
 pub fn flush_log_buffer() {
@@ -1346,10 +1383,8 @@ pub extern "system" fn JNI_OnLoad(vm: jni::JavaVM, _: *mut std::os::raw::c_void)
         flush_log_buffer();
     }));
 
-    // Last run's crash, if any, folded into this run's log so it rides the next submission.
-    report_prior_crash();
-    // Native faults (SIGSEGV etc.) write the same sidecar the panic hook does — a fold-in next run instead of a silent tombstone.
-    platform::crash_native::install();
+    // Last run's crash + the native-fault handler: a no-op until the log directory is known (see arm_crash_reporting) — re-armed from NetworkContext::new.
+    arm_crash_reporting();
 
     // Hand tohu the JavaVM so its device oracle can read Settings.Secure.ANDROID_ID itself (via ActivityThread.currentApplication()). Done here because JNI_OnLoad is where the vm is handed to us; the actual fetch happens later, once the Application exists.
     tohu::device::android_init(vm);

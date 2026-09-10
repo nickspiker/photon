@@ -5002,6 +5002,11 @@ impl PhotonApp {
                         &tr(Msg::SecurityLock),
                         &tr(Msg::SecurityLockHint),
                         0, *theme::PILL_GREEN, false, true);
+                    // KILL (Nick 2026-09-10): Lock plus the process ending — one tap, no arm state. The hint carries the whole contract.
+                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                        &tr(Msg::SecurityKill),
+                        &tr(Msg::SecurityKillHint),
+                        4, *theme::PILL_RED, false, true);
                     action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
                         &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
                         &tr(if fleet_verbs { Msg::SecurityRevokeHint } else { Msg::SecurityRevokeAloneHint }),

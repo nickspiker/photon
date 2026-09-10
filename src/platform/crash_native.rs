@@ -126,11 +126,16 @@ mod imp {
             put_str(&mut buf, &mut pos, "\n");
             let _ = libc::write(fd, buf.as_ptr() as *const _, pos);
         }
+        // The soft log batch (minutes of the run before this fault) dies with the process unless it goes to disk now — best effort, write(2) only.
+        crate::crash_flush_pending();
         // SA_RESETHAND restored the default action; re-raise so the OS finishes the kill (core dump, tombstone) exactly as if we were never here.
         let _ = libc::raise(sig);
     }
 
     pub fn install() {
+        if SIDECAR_FD.load(Ordering::Relaxed) >= 0 {
+            return; // armed already (Android arms from NetworkContext::new after the early JNI_OnLoad attempt)
+        }
         let Some(dir) = crate::log_dir() else { return };
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("photon.crash.txt");

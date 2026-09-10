@@ -319,6 +319,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::RenamePill => "Rename".into(),
         // ---- security page ----
         Msg::SecurityLock => "Lock".into(),
+        Msg::SecurityKill => "Kill".into(),
+        Msg::SecurityKillHint => "Drops your identity and ends photon this instant, one tap, no confirm. Nothing is deleted: launch photon again and type your handle to come back.".into(),
         Msg::DepartWordsShow(w) => format!("Approval words: {w}").into(),
         Msg::DepartWaitingLine => "Waiting for approval from another of your devices (Settings \u{2192} Fleet). It will ask for the words above.".into(),
         Msg::DepartIntentNewOwner => "wants to leave \u{2014} going to a NEW OWNER (approving also frees the hardware)".into(),
