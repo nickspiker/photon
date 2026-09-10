@@ -277,6 +277,7 @@ impl PhotonApp {
             reconnecting: false,
             last_anchor_osc: 0,
             last_beat_osc: now,
+            express_key: None,
         });
         if !self.send_call_signal(ci, sig) {
             crate::log("CALL: offer send failed (no lane) — not dialing");
@@ -637,6 +638,7 @@ impl PhotonApp {
                                 reconnecting: false,
                                 last_anchor_osc: 0,
                                 last_beat_osc: vsf::eagle_time_oscillations(),
+                            express_key: None,
                             });
                             // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_call();
@@ -698,6 +700,7 @@ impl PhotonApp {
                             reconnecting: false,
                             last_anchor_osc: 0,
                             last_beat_osc: vsf::eagle_time_oscillations(),
+                            express_key: None,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -916,11 +919,35 @@ impl PhotonApp {
         else {
             return;
         };
-        let key = crate::call::signal::express_key(lane_root, history_key);
-        let Some(frame) = crate::call::signal::seal_express(&key, ts, lane_key.as_ref(), sig)
-        else {
+        // ERA KEYS (2026-09-10): an OFFER seals under our current era AND our retired one (a peer that has not followed our re-key opens the retired copy); every other signal seals FIRST under the key that opened this call's first express frame from the peer, then under our current era if that differs. One era of skew either way and the call still connects.
+        let current = crate::call::signal::express_key(lane_root, history_key);
+        let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
+        if matches!(sig, CallSignal::Offer { .. }) {
+            keys.push(current);
+            if let Some(r) = chains.retired_era() {
+                if let Some(hk) = r.history_key.as_ref() {
+                    keys.push(crate::call::signal::express_key(&r.lane_root, hk));
+                }
+            }
+        } else {
+            if let Some(call) = self.active_call.as_ref() {
+                if call.call_id == *sig.call_id() {
+                    if let Some(k) = call.express_key {
+                        keys.push(k);
+                    }
+                }
+            }
+            if !keys.contains(&current) {
+                keys.push(current);
+            }
+        }
+        let frames: Vec<Vec<u8>> = keys
+            .iter()
+            .filter_map(|k| crate::call::signal::seal_express(k, ts, lane_key.as_ref(), sig))
+            .collect();
+        if frames.is_empty() {
             return;
-        };
+        }
         // RING WANTS BREADTH, REPLIES WANT PRECISION (fleet lifecycle, 2026-09-08). An OFFER is the ding — it fans to every known endpoint of every fold-trusted device, so all the callee's devices ring at express speed instead of waiting on replication. Every other signal is a reply about one specific call: it targets the ONE peer device driving it — the call's freshest express source plus that device's own endpoint addresses (multiple addresses of one device is a race, not a misfire; multiple DEVICES was the 2026-09-08 sibling-hangup bug). validated_path is only the no-better-knowledge fallback: it's per-CONTACT (whichever device punch-validated last), not per-call.
         let mut targets: Vec<std::net::SocketAddr> = Vec::new();
         let push = |t: &mut Vec<std::net::SocketAddr>, a: std::net::SocketAddr| {
@@ -972,16 +999,18 @@ impl PhotonApp {
             return;
         }
         for a in &targets {
-            let _ = crate::call::send_media(frame.clone(), *a);
+            for frame in &frames {
+                let _ = crate::call::send_media(frame.clone(), *a);
+            }
         }
-        crate::logf!("CALL: express {} fired → {} path(s)", sig.kind(), targets.len());
+        crate::logf!("CALL: express {} fired → {} path(s) × {} era key(s)", sig.kind(), targets.len(), frames.len());
     }
 
     /// Drain express frames the recv worker parked: trial-open against every friendship (a wrong key just fails the AEAD tag), dispatch as a direct non-merge signal, and remember the source address as the call's freshest direct path. Idempotent against the lane copy arriving later — dup call_ids are no-ops in `on_call_signal`.
     pub(super) fn drain_express_signals(&mut self) {
         let frames = crate::call::take_express_frames();
         for (bytes, src) in frames {
-            let mut opened: Option<(usize, i64, Option<[u8; 32]>, CallSignal)> = None;
+            let mut opened: Option<(usize, i64, Option<[u8; 32]>, CallSignal, [u8; 32])> = None;
             for (fid, chains) in &self.friendship_chains {
                 // Current era first, then the retired one: a call offer minted on the old era that lands after our cutover must still open (it used to read as "opened by no friendship").
                 let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
@@ -996,22 +1025,22 @@ impl PhotonApp {
                 if keys.is_empty() {
                     continue;
                 }
-                if let Some((ts, lane_key, sig)) = keys
+                if let Some((key, (ts, lane_key, sig))) = keys
                     .iter()
-                    .find_map(|key| crate::call::signal::open_express(key, &bytes))
+                    .find_map(|key| crate::call::signal::open_express(key, &bytes).map(|r| (*key, r)))
                 {
                     if let Some(ci) = self
                         .contacts
                         .iter()
                         .position(|c| c.friendship_id == Some(*fid) && !c.is_sibling)
                     {
-                        opened = Some((ci, ts, lane_key, sig));
+                        opened = Some((ci, ts, lane_key, sig, key));
                     }
                     break;
                 }
             }
-            let Some((ci, ts, lane_key, sig)) = opened else {
-                crate::log("CALL: express frame opened by no friendship — dropped");
+            let Some((ci, ts, lane_key, sig, opened_key)) = opened else {
+                crate::log("CALL: express frame opened by no friendship — dropped (an era we do not hold: neither current nor retired)");
                 continue;
             };
             crate::logf!(
@@ -1020,6 +1049,12 @@ impl PhotonApp {
                 crate::fp(&self.contacts[ci].handle_hash)
             );
             self.on_call_signal(ci, sig, lane_key, ts, false, false);
+            // Remember the era that opened it — replies for this call seal under it first (send_express_signal).
+            if let Some(call) = self.active_call.as_mut() {
+                if call.call_id == *sig.call_id() && call.express_key.is_none() {
+                    call.express_key = Some(opened_key);
+                }
+            }
             // Remember the reply path — but never the relay-injection sentinel (that's the pipe, not a route).
             if src != crate::network::status::RELAY_ADDR {
                 if let Some(call) = self.active_call.as_mut() {
@@ -1361,6 +1396,7 @@ impl PhotonApp {
             peer_addr: addr,
             spool: spool_param,
             cal: self.ringback_seeded_cal(),
+            plaid_allowed: is_lan_addr(addr),
         });
         (Some(handle), ticket)
     }
@@ -1389,5 +1425,16 @@ impl PhotonApp {
 
     pub(super) fn contact_index_by_handle_hash(&self, hh: &[u8; 32]) -> Option<usize> {
         self.contacts.iter().position(|c| c.handle_hash == *hh)
+    }
+}
+
+/// A LAN-class direct address: RFC 1918 / link-local IPv4, or link-local / unique-local IPv6 — the plaid rung's licence (raw PCM only where bandwidth is free and the path is one hop of radio).
+fn is_lan_addr(a: std::net::SocketAddr) -> bool {
+    match a.ip() {
+        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+        std::net::IpAddr::V6(v6) => {
+            let seg = v6.segments();
+            (seg[0] & 0xffc0) == 0xfe80 || (seg[0] & 0xfe00) == 0xfc00 || v6.to_ipv4_mapped().is_some_and(|v4| v4.is_private() || v4.is_link_local())
+        }
     }
 }

@@ -168,20 +168,29 @@ fn osc_to_slot(osc: i64, base: i64) -> i64 {
 }
 
 /// Bucket drained spool records into a dense per-channel × per-slot grid of encoded frames. Returns `(nchan, grid[chan][slot] = Option<opus>)`. `base_osc` is the earliest frame across all channels; every frame lands at `round((osc-base)*100/OSC_PER_SEC)`. A collision (two frames of one channel rounding to the same slot — osc jitter under 5 ms) keeps the last; gaps (remote packet loss) stay `None` = encoded silence at read time.
-fn grid_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<(usize, Vec<Vec<Option<Vec<u8>>>>)> {
+/// One spooled frame: an Opus packet, or raw little-endian i16 PCM from the plaid rung (spool.rs RAW_FLAG).
+#[derive(Clone)]
+enum Cell {
+    Opus(Vec<u8>),
+    Pcm(Vec<u8>),
+}
+
+fn grid_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<(usize, Vec<Vec<Option<Cell>>>)> {
     if records.is_empty() {
         return None;
     }
     let base = records.iter().map(|(_, osc, _)| *osc).min()?;
-    let nchan = (records.iter().map(|(c, _, _)| *c).max()? as usize) + 1;
+    let chan_of = |c: u8| (c & !crate::call::spool::RAW_FLAG) as usize;
+    let nchan = records.iter().map(|(c, _, _)| chan_of(*c)).max()? + 1;
     // LATTICE SLOTTING (field 2026-09-08, "super garbled" preview): frames are stamped at DRAIN, in 1ms engine-loop bursts — adjacent 5ms frames carry near-identical stamps, and slotting each by its own stamp collided them ("collision keeps the last" ate half the audio). Per channel the spool IS contiguous (appended in codec order), so slots advance on a LATTICE from the last anchor, and the stamp only re-anchors when it deviates past REANCHOR (a real gap: lost windows, an engine stall) — the learner's stamp-regularizer law, applied to the recording grid.
     let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
     let reanchor = ops / 20; // 50ms — ten slots; burst jitter is ±ms, real gaps are bigger
     let mut lat: Vec<Option<(i64, i64)>> = vec![None; nchan]; // per channel: (next_slot, expected_osc)
-    let mut slotted: Vec<(usize, usize, &Vec<u8>)> = Vec::with_capacity(records.len());
+    let mut slotted: Vec<(usize, usize, Cell)> = Vec::with_capacity(records.len());
     let mut max_slot = 0usize;
-    for (chan, osc, opus) in records {
-        let c = *chan as usize;
+    for (chan, osc, bytes) in records {
+        let c = chan_of(*chan);
+        let cell = if chan & crate::call::spool::RAW_FLAG != 0 { Cell::Pcm(bytes.clone()) } else { Cell::Opus(bytes.clone()) };
         let slot = match lat[c] {
             Some((next, expected)) if (osc - expected).abs() < reanchor => next,
             _ => osc_to_slot(*osc, base),
@@ -189,11 +198,11 @@ fn grid_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<(usize, Vec<Vec<O
         let slot_u = slot.max(0) as usize;
         lat[c] = Some((slot + 1, base + (slot + 1) * ops / SLOTS_PER_SEC));
         max_slot = max_slot.max(slot_u);
-        slotted.push((c, slot_u, opus));
+        slotted.push((c, slot_u, cell));
     }
-    let mut grid: Vec<Vec<Option<Vec<u8>>>> = vec![vec![None; max_slot + 1]; nchan];
-    for (c, slot, opus) in slotted {
-        grid[c][slot] = Some(opus.clone());
+    let mut grid: Vec<Vec<Option<Cell>>> = vec![vec![None; max_slot + 1]; nchan];
+    for (c, slot, cell) in slotted {
+        grid[c][slot] = Some(cell);
     }
     Some((nchan, grid))
 }
@@ -203,16 +212,18 @@ fn mono_decoder() -> Option<opus::Decoder> {
 }
 
 /// Decode one channel's slot (or silence) with its running decoder, at the caller's frame size — `FRAME_IN` for live-spool input (transcode + preview), `FRAME` for PHCALL2 archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
-fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Vec<u8>>, frame: usize) -> Vec<i16> {
+fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> Vec<i16> {
     match cell {
-        Some(opus) => {
+        Some(Cell::Opus(opus)) => {
             let mut pcm = vec![0i16; frame];
             match dec.decode(opus, &mut pcm, false) {
                 Ok(n) if n == frame => pcm,
                 _ => vec![0i16; frame],
             }
         }
-        None => vec![0i16; frame],
+        // A plaid frame is already the samples; a wrong-sized one is silence, never a guess.
+        Some(Cell::Pcm(raw)) if raw.len() == frame * 2 => raw.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect(),
+        Some(Cell::Pcm(_)) | None => vec![0i16; frame],
     }
 }
 
@@ -392,7 +403,7 @@ enum Inner {
     },
     /// Live-spool grid (the Ended-screen PREVIEW path): 5ms input slots, slot-iterated + interleaved on the fly.
     Grid {
-        grid: Vec<Vec<Option<Vec<u8>>>>,
+        grid: Vec<Vec<Option<Cell>>>,
         decs: Vec<opus::Decoder>,
         slot: usize,
     },

@@ -100,6 +100,9 @@ pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
     out
 }
 
+/// Set on the record's channel byte when the frame is RAW little-endian i16 PCM (the plaid rung) rather than an Opus packet; the low bits stay the channel index.
+pub const RAW_FLAG: u8 = 0x80;
+
 /// The engine-side writer. Appends sealed records; closing is just dropping (the ticket owns the fate).
 pub struct SpoolWriter {
     cipher: XChaCha20Poly1305,

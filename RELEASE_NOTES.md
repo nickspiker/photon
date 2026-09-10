@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- On a home network a wave now climbs past the top compressed rate to plain uncompressed audio: no codec in the path, a lost packet is a five-millisecond blip rather than added delay, and the recording keeps the full audio.
+- A wave answered by a phone that re-keyed the friendship moments earlier now connects: the answer travels under the same key the ring arrived on, so a one-step key mismatch between two phones no longer strands it.
+- Dialing right as the offer commits no longer leaves the ring without its keep-alive, which made the other phone stop ringing after three seconds.
 - In dozenal and hex, a file or recording size shows as its doubling count in bits, the same rule as the time-ago figure: one byte is four, a kilobyte fourteen, a megabyte two dozen.
 ## v88
 

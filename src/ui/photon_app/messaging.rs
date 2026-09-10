@@ -638,7 +638,8 @@ impl PhotonApp {
                             );
                         }
                     }
-                    if !captured {
+                    // Only a call THIS device dialed can be missing its capture — a re-served history row that happens to be an old offer commits here too (Esme's phone, 2026-09-10) and is not that.
+                    if !captured && self.dialed_call_ids.contains(&call_id) {
                         crate::logf!("CALL: offer {} committed with no matching outgoing call — lane key NOT captured, the express offer will never fire", hex::encode(&call_id[..4]));
                     }
                     // The offer's EXPRESS copy fires HERE, not at send: only the commit knows the lane key, and the express payload carries it as the callee's basket egg (signal.rs). ts = the row's own eagle stamp, so offer_osc and the stale-offer gate agree on both ends whichever copy lands first.

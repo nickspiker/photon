@@ -46,6 +46,17 @@ const JITTER_CAP: usize = 24; // 120ms — the most we'll ever buffer, even on a
 const JITTER_GROW: usize = 2; // frames added on each underrun
 const JITTER_DECAY_FRAMES: usize = 300; // ~1.5s of clean playback per shrink step. 500 was the latency ratchet (field 2026-09-08, both ends of a clean LAN call at target 11-12 = 110-120ms standing): growth is +2 per underrun but decay was 1 per 5s, so a handful of slow-start underruns taxed the whole call — a 10-frame overshoot took 50s to shed against a ~40s call. At 1.5s/step a clean path sheds 100ms in ~15s; a genuinely jittery path just re-grows (honest).
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
+/// The live ceiling on the target — JITTER_CAP normally, pulled down by the engine while the plaid (raw PCM) rung runs so late frames are dropped instead of buffered (calls/engine.rs).
+static JITTER_CAP_LIVE: AtomicUsize = AtomicUsize::new(JITTER_CAP);
+
+/// Engine hook: cap the adaptive target at `frames` (clamped to the floor..JITTER_CAP range); `usize::MAX` restores the normal cap. A target already above the new cap is pulled down at once.
+pub fn set_jitter_cap(frames: usize) {
+    let cap = frames.clamp(JITTER_FLOOR, JITTER_CAP);
+    JITTER_CAP_LIVE.store(cap, Ordering::Relaxed);
+    if JITTER_TARGET.load(Ordering::Relaxed) > cap {
+        JITTER_TARGET.store(cap, Ordering::Relaxed);
+    }
+}
 /// Tier-aware floor: the sender batches TIER_FRAMES per datagram, so audio ARRIVES in bursts of this size and a target below it structurally underruns between windows (every call start at the 4-frame floor rung ratcheted the target thru false "jitter"). The engine stores the current rx window size here; decay stops at max(JITTER_FLOOR, this).
 static JITTER_MIN: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 
@@ -310,7 +321,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
                 None => {
                     // Underrun: grow the target (capped), reset the clean streak, and re-prime.
                     let target = JITTER_TARGET.load(Ordering::Relaxed);
-                    JITTER_TARGET.store((target + JITTER_GROW).min(JITTER_CAP), Ordering::Relaxed);
+                    JITTER_TARGET.store((target + JITTER_GROW).min(JITTER_CAP_LIVE.load(Ordering::Relaxed)), Ordering::Relaxed);
                     JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
                     JITTER_PRIMING.store(true, Ordering::Relaxed);
                     JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
@@ -387,6 +398,7 @@ fn clear_queues() {
     RENDER_ENV.lock().unwrap().clear();
     // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth or window size.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
+    JITTER_CAP_LIVE.store(JITTER_CAP, Ordering::Relaxed);
     JITTER_MIN.store(JITTER_FLOOR, Ordering::Relaxed);
     LOCAL_SOURCE.store(false, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);

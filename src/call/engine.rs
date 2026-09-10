@@ -16,7 +16,7 @@ use std::sync::Arc;
 /// 5ms @ 48kHz mono — must match platform::audio::FRAME_SAMPLES.
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
 // Frames per window is PER-RUNG, in 5ms frames (flag day 2026-09-08, Nick: "batching nuke"): 8 at the floor (the same 40ms batching where bandwidth is scarcest), 4 at 32k (20ms), 2 at the top rungs — 10ms windows, one datagram per 10ms = double the old packet rate, and the jitter floor rides down with it. Packets per window stays invariantly 2, so the seq derivations hold at every rung.
-const TIER_FRAMES: [usize; 4] = [8, 4, 2, 2];
+const TIER_FRAMES: [usize; 5] = [8, 4, 2, 2, 1];
 // Repair symbols per window — with the symbol spanning the WHOLE window (see `oti`), 1 repair = 2 packets per window and the window survives EITHER packet lost. This beats the old 3-source+2-repair spread on both axes: fewer bytes (2 packets not 5) AND better loss odds (window dies only when BOTH packets drop, p² vs the old ≥3-of-5 tail).
 const REPAIR_PACKETS: u32 = 1;
 
@@ -28,9 +28,18 @@ const REPAIR_PACKETS: u32 = 1;
 // Climb evidence is RECEIVE-side cleanliness — a proxy for the channel both ways until a call_stats feedback frame exists (deferred in docs/calls.md); comment here so nobody mistakes it for measured TX loss.
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds cannot parse this wire at all; the whole fleet updates together.
-const TIER_RATES: [i32; 4] = [16_000, 32_000, 64_000, 128_000];
+const TIER_RATES: [i32; 5] = [16_000, 32_000, 64_000, 128_000, 768_000];
+// PLAID (Nick 2026-09-10, "stupid plaid mode"): the top rung is RAW 48 kHz mono 16-bit PCM — no codec at all, one 5 ms frame per datagram, no repair symbol. A lost datagram is skipped outright (a 5 ms hole, faded not synthesized) so the jitter buffer stays hot instead of paying standing latency for everyone. Reached only on a LAN-class direct path (EngineParams::plaid_allowed) after a full second of clean 10 ms windows; left only when losses run past a rate, not on a lone pair. What it buys is the codec's lookahead and CPU, not fidelity — 128 kbps CELT is already transparent for speech.
+const RAW_TIER: usize = 4;
+const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
+/// Clean 10 ms windows in a row that earn the plaid rung (1 s at the 128 kbps rung's cadence).
+const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
+/// Lost windows inside LOSS_WINDOW that push a plaid call back to 128 kbps: 20 of ~400 = a 5 % loss rate. Below that the crispies are the price of the hot buffer.
+const PLAID_LOSSES_TO_DROP: usize = 20;
+/// The jitter buffer's ceiling while on plaid: six 5 ms frames (30 ms). Late is lost, by design.
+const PLAID_JITTER_CAP: usize = 6;
 /// Max encoded bytes per 5ms frame at each rung: hard CBR emits exactly rate/1600 bytes, +2 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire).
-const TIER_MAX_ENC: [usize; 4] = [12, 22, 42, 82];
+const TIER_MAX_ENC: [usize; 5] = [12, 22, 42, 82, 486];
 /// Completed-window streak that earns one rung up (~0.25s at 10ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
 const CLIMB_CLEAN_WINDOWS: u32 = 25;
 /// LADDER HYSTERESIS (field 2026-09-09, the Emma+Nick LAN call: 27 ups / 13 downs in 53s — a burst of paired losses dropped two rungs per lost window and 25 clean windows climbed back in a quarter second at the top rungs, so the rate flapped 16↔64 kbps every 300ms for five seconds). Three edges-not-timers rules on top of AIMD: a climb needs CLIMB_HOLD since the last change as well as the clean streak (so the streak means the same at every rung); a drop needs LOSSES_TO_DROP lost windows inside LOSS_WINDOW (one lost pair on an otherwise clean channel is not a congestion signal); and no climb for DROP_HOLD after a drop.
@@ -83,6 +92,8 @@ pub struct EngineParams {
     pub spool: Option<([u8; 32], std::path::PathBuf)>,
     /// The stored calibration for the route/mic this call starts on — read on the UI thread (the engine can't touch settings). None = uncalibrated: reactive duck + PID until the in-call learner reaches Usable and arms the predictive path itself.
     pub cal: Option<CalSnapshot>,
+    /// The peer sits on a LAN-class direct path — the ladder may climb past 128 kbps to the raw PCM plaid rung.
+    pub plaid_allowed: bool,
 }
 
 /// The profile snapshot the predictive duck starts from (Cal 4). g is volume-normalized (the engine re-scales by live vol_lin); delay in 10ms bins.
@@ -260,6 +271,9 @@ fn run(
     let mut next_play: Option<u32> = None;
 
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
+    // Plaid forensics: raw frames each way, and the holes the fade covered.
+    let (mut raw_out, mut raw_in, mut holes_faded) = (0u64, 0u64, 0u64);
+    let mut last_played: Option<Vec<i16>> = None;
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
     // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
@@ -268,11 +282,12 @@ fn run(
     let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
 
     crate::logf!(
-        "CALL: engine up — tx {} → {}, ladder {}..{} kbps (start {}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
+        "CALL: engine up — tx {} → {}, ladder {}..{} kbps (start {}{}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
         if params.we_are_caller { "c>e" } else { "e>c" },
         peer,
         TIER_RATES[0] / 1000,
         TIER_RATES[TIER_RATES.len() - 1] / 1000,
+        if params.plaid_allowed { ", plaid armed" } else { ", plaid off — not a LAN path" },
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
@@ -418,7 +433,9 @@ fn run(
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
             if frames_in_window == 0 && pending_tier != tier {
                 tier = pending_tier;
-                let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier]));
+                if tier != RAW_TIER {
+                    let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier]));
+                }
             }
             // Mic health level BEFORE the duck, so a heavy duck never reads as a dead mic in the tally.
             tx_energy += frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
@@ -496,16 +513,27 @@ fn run(
                     }
                 }
             }
-            let mut enc = vec![0u8; TIER_MAX_ENC[tier]];
-            let n = match encoder.encode(&frame, &mut enc) {
-                Ok(n) => n,
-                Err(e) => {
-                    crate::logf!("CALL: opus encode error: {}", e);
-                    continue;
+            let (enc, n) = if tier == RAW_TIER {
+                // Plaid: the frame IS the payload — little-endian i16, no codec in the path.
+                let mut raw = Vec::with_capacity(RAW_FRAME_BYTES);
+                for s in &frame {
+                    raw.extend_from_slice(&s.to_le_bytes());
+                }
+                raw_out += 1;
+                (raw, RAW_FRAME_BYTES)
+            } else {
+                let mut enc = vec![0u8; TIER_MAX_ENC[tier]];
+                match encoder.encode(&frame, &mut enc) {
+                    Ok(n) => (enc, n),
+                    Err(e) => {
+                        crate::logf!("CALL: opus encode error: {}", e);
+                        continue;
+                    }
                 }
             };
             if let Some(w) = spool.as_mut() {
-                w.append(0, vsf::eagle_time_oscillations(), &enc[..n]);
+                let dir = if tier == RAW_TIER { super::spool::RAW_FLAG } else { 0 };
+                w.append(dir, vsf::eagle_time_oscillations(), &enc[..n]);
             }
             window_buf.extend_from_slice(&(n as u16).to_le_bytes());
             window_buf.extend_from_slice(&enc[..n]);
@@ -514,16 +542,24 @@ fn run(
 
             if frames_in_window == TIER_FRAMES[tier] {
                 // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:3 | rep_present:1<<3 | tier_rep:3<<4 — THREE-bit tier fields so the ladder can grow to 8 rungs (survival rung below, stereo rung above) WITHOUT another flag day; a rung switch between windows makes the two symbols different sizes, which is why the tiers ride explicitly at all.
-                let fec = raptorq::Encoder::new(&window_buf, oti(tier));
-                let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
+                // Plaid ships the window bare (no fountain, no repair — a lost datagram is a skipped 5 ms); every other rung is one source symbol + the repair of two windows back.
+                let (source, own_repair): (Vec<u8>, Vec<u8>) = if tier == RAW_TIER {
+                    (window_buf.clone(), Vec::new())
+                } else {
+                    let fec = raptorq::Encoder::new(&window_buf, oti(tier));
+                    let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
+                    (pkts[0].data().to_vec(), pkts[1].data().to_vec())
+                };
+                // An empty entry is a plaid window's placeholder: it keeps the two-back spacing honest and never flags a repair.
                 let rep = if repair_queue.len() >= 2 { repair_queue.pop_front() } else { None };
+                let rep = rep.filter(|(_, r)| !r.is_empty());
                 let mut payload = Vec::with_capacity(1 + tier_window_bytes(tier) * 2);
                 let ctrl = tier as u8
                     | rep
                         .as_ref()
                         .map_or(0, |(rt, _)| 0b1000 | ((*rt as u8) << 4));
                 payload.push(ctrl);
-                payload.extend_from_slice(pkts[0].data());
+                payload.extend_from_slice(&source);
                 if let Some((_, r)) = &rep {
                     payload.extend_from_slice(r);
                 }
@@ -537,7 +573,7 @@ fn run(
                     pkts_out += 1;
                 }
                 // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the call ended); its ~20-40ms tail is protected only by its source — accepted.
-                repair_queue.push_back((tier, pkts[1].data().to_vec()));
+                repair_queue.push_back((tier, own_repair));
                 window_id = window_id.wrapping_add(1);
                 window_buf.clear();
                 frames_in_window = 0;
@@ -579,7 +615,7 @@ fn run(
             let rep_present = ctrl & 0b1000 != 0;
             let tier_rep = ((ctrl >> 4) & 0b111) as usize;
             // Bounds-check BEFORE any geometry lookup: a rung this build doesn't know (a newer peer's future ladder entry) is a shape-drop, never an index panic — which also makes ADDING rungs a graceful degrade instead of a flag day.
-            if tier_src >= TIER_RATES.len() || (rep_present && tier_rep >= TIER_RATES.len()) {
+            if tier_src >= TIER_RATES.len() || (rep_present && (tier_rep >= TIER_RATES.len() || tier_rep == RAW_TIER)) {
                 rx_drop_shape += 1;
                 continue;
             }
@@ -604,17 +640,26 @@ fn run(
                 if wid < np || rx_done.contains_key(&wid) {
                     continue; // already played or already decoded
                 }
-                let ep = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, esi), sym.to_vec());
-                let entry = rx_decoders
-                    .entry(wid)
-                    .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
-                let dtier = entry.0;
-                // A same-window symbol at a DIFFERENT rung can't happen from a healthy sender (rung switches land on window boundaries) — feeding it would panic the decoder, so it's a shape-drop too.
-                if dtier != wtier {
-                    rx_drop_shape += 1;
-                    continue;
-                }
-                if let Some(data) = entry.1.decode(ep) {
+                // Plaid windows arrive whole — the symbol IS the window, no fountain state to keep.
+                let decoded: Option<(usize, Vec<u8>)> = if wtier == RAW_TIER {
+                    if esi != 0 {
+                        continue;
+                    }
+                    Some((RAW_TIER, sym.to_vec()))
+                } else {
+                    let ep = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, esi), sym.to_vec());
+                    let entry = rx_decoders
+                        .entry(wid)
+                        .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
+                    let dtier = entry.0;
+                    // A same-window symbol at a DIFFERENT rung can't happen from a healthy sender (rung switches land on window boundaries) — feeding it would panic the decoder, so it's a shape drop.
+                    if dtier != wtier {
+                        rx_drop_shape += 1;
+                        continue;
+                    }
+                    entry.1.decode(ep).map(|d| (dtier, d))
+                };
+                if let Some((dtier, data)) = decoded {
                     rx_decoders.remove(&wid);
                     let mut frames = Vec::with_capacity(TIER_FRAMES[dtier]);
                     for slot in 0..TIER_FRAMES[dtier] {
@@ -623,11 +668,26 @@ fn run(
                         if n == 0 || n > TIER_MAX_ENC[dtier] {
                             continue;
                         }
+                        let body = &data[base + 2..base + 2 + n];
+                        if dtier == RAW_TIER {
+                            if n != RAW_FRAME_BYTES {
+                                continue;
+                            }
+                            if let Some(w) = spool.as_mut() {
+                                w.append(1 | super::spool::RAW_FLAG, vsf::eagle_time_oscillations(), body);
+                            }
+                            let pcm: Vec<i16> = body.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+                            rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
+                            rx_frames += 1;
+                            raw_in += 1;
+                            frames.push(pcm);
+                            continue;
+                        }
                         if let Some(w) = spool.as_mut() {
-                            w.append(1, vsf::eagle_time_oscillations(), &data[base + 2..base + 2 + n]);
+                            w.append(1, vsf::eagle_time_oscillations(), body);
                         }
                         let mut pcm = vec![0i16; FRAME_SAMPLES];
-                        match decoder.decode(&data[base + 2..base + 2 + n], &mut pcm, false) {
+                        match decoder.decode(body, &mut pcm, false) {
                             Ok(s) if s == FRAME_SAMPLES => {
                                 rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
                                 rx_frames += 1;
@@ -638,18 +698,27 @@ fn run(
                     }
                     // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the call-start latency ratchet, field 2026-09-08).
                     crate::platform::audio::set_jitter_min(TIER_FRAMES[dtier]);
+                    // Plaid keeps the buffer hot: a hard 30 ms ceiling while raw windows arrive, the normal cap otherwise.
+                    crate::platform::audio::set_jitter_cap(if dtier == RAW_TIER { PLAID_JITTER_CAP } else { usize::MAX });
                     rx_done.insert(wid, frames);
                     // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
                     clean_rx_windows += 1;
                     let now = std::time::Instant::now();
                     let held = now.duration_since(last_tier_change) >= CLIMB_HOLD
                         && last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
-                    if clean_rx_windows >= CLIMB_CLEAN_WINDOWS && held && pending_tier + 1 < TIER_RATES.len() {
-                        pending_tier += 1;
+                    let next = pending_tier + 1;
+                    let need = if next == RAW_TIER { PLAID_CLIMB_CLEAN_WINDOWS } else { CLIMB_CLEAN_WINDOWS };
+                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || params.plaid_allowed);
+                    if clean_rx_windows >= need && held && allowed {
+                        pending_tier = next;
                         clean_rx_windows = 0;
                         tier_ups += 1;
                         last_tier_change = now;
-                        crate::logf!("CALL: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
+                        if pending_tier == RAW_TIER {
+                            crate::log("CALL: tier up → plaid (raw 48 kHz PCM, 768 kbps, one 5 ms frame per datagram)");
+                        } else {
+                            crate::logf!("CALL: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
+                        }
                     }
                 }
             }
@@ -669,12 +738,22 @@ fn run(
                         for s in &mut f {
                             *s >>= OUTPUT_PAD_STOPS;
                         }
+                        last_played = Some(f.clone());
                         crate::platform::audio::queue_playback(f);
                     }
                     np = np.wrapping_add(1);
                 } else if rx_done.range(np..).nth(1).is_some() {
                     // Two completed windows beyond the hole — declare it lost, move on.
                     windows_lost += 1;
+                    // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
+                    if !probing {
+                        if let Some(prev) = last_played.take() {
+                            let len = prev.len().max(1) as i32;
+                            let fade: Vec<i16> = prev.iter().enumerate().map(|(i, s)| ((*s as i32) * (len - i as i32) / len) as i16).collect();
+                            crate::platform::audio::queue_playback(fade);
+                            holes_faded += 1;
+                        }
+                    }
                     // A lost window restarts the climb evidence; it is the AIMD drop edge only when losses cluster (LOSSES_TO_DROP inside LOSS_WINDOW) — one lost pair on a clean channel is noise, not congestion.
                     clean_rx_windows = 0;
                     let now = std::time::Instant::now();
@@ -682,7 +761,9 @@ fn run(
                     while recent_losses.front().is_some_and(|t| now.duration_since(*t) > LOSS_WINDOW) {
                         recent_losses.pop_front();
                     }
-                    if recent_losses.len() >= LOSSES_TO_DROP && pending_tier > 0 {
+                    // Plaid drops on a loss RATE (the crispies are the deal); every Opus rung drops on a clustered pair.
+                    let need = if pending_tier == RAW_TIER { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
+                    if recent_losses.len() >= need && pending_tier > 0 {
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
                         last_tier_change = now;
@@ -691,7 +772,7 @@ fn run(
                         crate::logf!(
                             "CALL: tier down → {} kbps ({} windows lost within {}s)",
                             TIER_RATES[pending_tier] / 1000,
-                            LOSSES_TO_DROP,
+                            need,
                             LOSS_WINDOW.as_secs()
                         );
                     }
@@ -851,6 +932,14 @@ fn run(
         pkts_in,
         windows_lost
     );
+    if raw_out > 0 || raw_in > 0 || holes_faded > 0 {
+        crate::logf!(
+            "CALL: plaid — {} raw frames out, {} in; {} hole(s) faded",
+            raw_out,
+            raw_in,
+            holes_faded
+        );
+    }
     // The diagnostic that separates the two silent-failure worlds (see the RX loop): rx_seen=0 → media never arrived (target address / NAT / relay); rx_seen>0 with pkts_in=0 and rx_drop_open>0 → arrived but the basket secret didn't match (key derivation desync). Only logged when something was received or dropped, so a clean call stays quiet.
     if rx_seen > 0 || rx_drop_parse > 0 || rx_drop_shape > 0 || rx_drop_open > 0 {
         crate::logf!(
@@ -891,8 +980,8 @@ fn run(
     );
     // Ladder + duck field-tuning readout: where the call ended up, how it moved, and the echo numbers — `gated` = hard near-mutes (echo-only frames), `ducked` = any attenuation, `far-active` = frames the far end was talking. A healthy speakerphone call wants gated ≈ (far-active − double-talk): most far-talk-alone frames should hard-gate.
     crate::logf!(
-        "CALL: ladder — ended {} kbps, {} up(s), {} down(s); duck {} — gated {}, ducked {}, far-active {} of {} frames",
-        TIER_RATES[tier] / 1000,
+        "CALL: ladder — ended {}, {} up(s), {} down(s); duck {} — gated {}, ducked {}, far-active {} of {} frames",
+        if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },
         tier_ups,
         tier_downs,
         if PID_DUCK_ENABLED { "PID+gate" } else { "disarmed" },
@@ -991,6 +1080,24 @@ fn teardown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plaid_window_is_one_bare_frame() {
+        // The raw rung: one 5 ms frame per window, slot = 2 + 480 (+ pad to the 8-aligned 488), and the bytes come back as the identical samples with no codec in the path.
+        assert_eq!(TIER_FRAMES[RAW_TIER], 1);
+        assert_eq!(RAW_FRAME_BYTES, 480);
+        assert!(RAW_FRAME_BYTES + 2 <= tier_slot(RAW_TIER));
+        let frame: Vec<i16> = (0..FRAME_SAMPLES).map(|i| ((i as i32 * 137) % 65536 - 32768) as i16).collect();
+        let mut window = Vec::new();
+        window.extend_from_slice(&(RAW_FRAME_BYTES as u16).to_le_bytes());
+        for s in &frame {
+            window.extend_from_slice(&s.to_le_bytes());
+        }
+        window.resize(tier_window_bytes(RAW_TIER), 0);
+        let n = u16::from_le_bytes(window[..2].try_into().unwrap()) as usize;
+        let back: Vec<i16> = window[2..2 + n].chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+        assert_eq!(back, frame);
+    }
 
     #[test]
     fn tier_slots_fit_cbr_frames() {

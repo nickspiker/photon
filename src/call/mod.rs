@@ -143,6 +143,8 @@ pub struct ActiveCall {
     pub last_anchor_osc: i64,
     /// Ring-lease heartbeat (2026-09-08): caller side = osc we last BEAT the offer (re-express every ~1s during Outgoing); callee side = osc we last RECEIVED an offer beat. The callee drops a Ringing call after 3 missed beats (~3s) — the caller stopping its beat (answered elsewhere / hung up / gone) is the universal stop, needing no delivered edge. A lease on the offer heartbeat, NOT a UI timer.
     pub last_beat_osc: i64,
+    /// The friendship era key that OPENED this call's first express frame from the peer (the offer on the callee, the answer on the caller) — every express reply for this call seals under it first, so a one-era skew between the two fleets never strands an answer (field 2026-09-10: Esme re-keyed, Nick's phone had not; his offers opened on her retired era, her answers under her current one were "opened by no friendship").
+    pub express_key: Option<[u8; 32]>,
 }
 
 /// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this call. Written by the engine thread, read by the UI's drought measurement.
