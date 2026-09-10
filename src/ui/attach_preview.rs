@@ -356,8 +356,12 @@ fn inv3(m: &[f32; 9]) -> Option<[f32; 9]> {
 /// Gamma-2 VSF RGB bytes → fluor's packed α + darkness pixels for `paint::draw_image` (BT.2020 on the way, the same display conversion the avatar takes).
 pub fn micro_to_display(vsf_gamma2: &[u8]) -> Vec<u32> {
     let bt = crate::ui::colour_convert::vsf_rgb_to_bt2020(vsf_gamma2);
+    // Platform byte order thru fluor's `fmt` (R↔B on Android's RGBA_8888 buffer) exactly as the avatar path packs — `pack_argb` alone is desktop order, which is why previews came up blue-for-red on Android (2026-09-10).
     bt.chunks_exact(3)
-        .map(|p| fluor::paint::pack_argb(p[0], p[1], p[2], 255))
+        .map(|p| {
+            let visible = ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32;
+            fluor::theme::dark(fluor::theme::fmt(visible))
+        })
         .collect()
 }
 
@@ -407,5 +411,26 @@ mod tests {
         let (pw, ph, pixels) = decode_preview_blob(&blob).expect("preview decodes");
         assert_eq!((pw, ph), (64, 32));
         assert_eq!(pixels.len(), 64 * 32);
+    }
+}
+
+#[cfg(test)]
+mod colour_order_tests {
+    use super::*;
+
+    /// Red in, red out: the micro thumb and the display packing keep channel order (a swap would put the peak in the blue byte).
+    #[test]
+    fn red_stays_red_thru_the_micro_thumb_and_the_display_pack() {
+        let mut png = Vec::new();
+        let img = image::RgbImage::from_pixel(32, 32, image::Rgb([220, 20, 20]));
+        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let p = prepare(&png, "red.png", None);
+        let (_, _, px) = crate::types::parse_micro_image(&p.preview).unwrap();
+        assert!(px[0] > px[1] && px[0] > px[2], "VSF gamma2 thumb: R {} G {} B {}", px[0], px[1], px[2]);
+        let disp = micro_to_display(&px[..3]);
+        let packed = disp[0];
+        let (dr, dg, db) = (((packed >> 16) & 0xFF) as i32, ((packed >> 8) & 0xFF) as i32, (packed & 0xFF) as i32);
+        // Darkness convention: the RED byte is the LEAST dark.
+        assert!(dr < dg && dr < db, "display darkness R {dr} G {dg} B {db}");
     }
 }

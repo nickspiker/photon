@@ -307,7 +307,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(12); // reply/edit/resend/delete/save/stop/wave back/beam back/save-or-fetch (wave)/replicate + room
+        self.hit_counter = self.hit_counter.wrapping_add(12); // reply/edit/resend/delete/open-or-fetch/stop/wave back/save-or-fetch (wave)/replicate/(9 free)/save original + room
         self.react_strip_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -1438,6 +1438,28 @@ impl FluorApp for PhotonApp {
                         // DELETE: arm the deferred delete — the strip repaints "deleting…" THIS frame, and the tick performs the removal + mirror-verified persist after that frame painted (doing it synchronously here blocked the UI for the save's duration, reading as stuck). Tombstone caveat unchanged: until they exist, fleet sync can resurrect the row.
                         3 => {
                             self.pending_delete = Some(((sci, ts, out), false));
+                        }
+                        // SAVE (slot 10): the held original of any attachment row → Downloads, independent of what the row's primary tap does (open/play).
+                        10 => {
+                            let att = self
+                                .conv_of(sci)
+                                .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
+                                .and_then(|m| crate::types::parse_attachment_content(&m.content));
+                            if let Some((hash, name, _)) = att {
+                                if crate::storage::blob_present(&hash) {
+                                    match self.attach_save(&name, &hash) {
+                                        Some(dest) => {
+                                            self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned());
+                                            crate::logf!("attach: saved to {}", dest);
+                                        }
+                                        None => self.ready_toast = Some(tr(Msg::SaveFailed).into_owned()),
+                                    }
+                                } else {
+                                    self.attach_fetch(sci, &hash);
+                                    self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
+                                }
+                                self.ready_toast_screen = None;
+                            }
                         }
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {

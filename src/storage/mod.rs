@@ -292,6 +292,7 @@ pub fn blob_store(
     }
     let addr = blob_addr(content_hash).ok_or("blob: no session name key")?;
     let vault = device_vault().ok_or("blob: vault unavailable")?;
+    blob_presence_forget(content_hash);
     vault.write_addr(&addr, plaintext).map_err(|e| e.to_string())
 }
 
@@ -405,6 +406,7 @@ pub fn blob_store_any(
     }
     blob_manifest_store(identity_seed, content_hash, &m)?;
     complete_cache_set(*content_hash, true);
+    blob_presence_forget(content_hash);
     Ok(Some(m))
 }
 
@@ -414,6 +416,7 @@ pub fn blob_manifest_store(identity_seed: &[u8; 32], content_hash: &[u8; 32], m:
     }
     let addr = manifest_addr(content_hash).ok_or("blob: no session name key")?;
     let vault = device_vault().ok_or("blob: vault unavailable")?;
+    blob_presence_forget(content_hash);
     vault.write_addr(&addr, &m.to_bytes()).map_err(|e| e.to_string())
 }
 
@@ -440,10 +443,30 @@ pub fn blob_chunk_load(chunk_hash: &[u8; 32]) -> Option<Vec<u8>> {
 
 /// Whether the blob for `content_hash` is held locally — stored-bytes presence, NO decrypt (render-path cheap): one vault presence probe for a whole-value blob, a hash-set lookup for a chunked blob already proven complete, and the manifest walk once per session otherwise. False before a session exists.
 pub fn blob_present(content_hash: &[u8; 32]) -> bool {
+    if let Some(known) = BLOB_PRESENCE.lock().unwrap().as_ref().and_then(|m| m.get(content_hash).copied()) {
+        return known;
+    }
     let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) else {
+        // No vault or no name key yet: nothing to remember — the answer changes the moment the session opens.
         return false;
     };
-    if matches!(v.read_stored(&addr), Ok(Some(_))) {
+    let present = blob_present_probe(&v, &addr, content_hash);
+    BLOB_PRESENCE.lock().unwrap().get_or_insert_with(Default::default).insert(*content_hash, present);
+    present
+}
+
+/// The session-wide answer cache behind [`blob_present`]: the conversation render asks several times per attachment row per frame (progress bar, meta line, strip pill, image band, viewer pills), and each uncached ask is a vault probe under the vault mutex — for a chunked blob a manifest read plus one probe per chunk. Field: ~1.1 s per frame on a conversation holding one attachment (PERF: render stages, 2026-09-10). Every write path that can change the answer forgets its hash ([`blob_presence_forget`]); a chunk landing forgets its PARENT hash at the receive site, since the chunk store only knows the chunk.
+static BLOB_PRESENCE: std::sync::Mutex<Option<std::collections::HashMap<[u8; 32], bool>>> = std::sync::Mutex::new(None);
+
+/// Drop the remembered presence answer for `content_hash` (the next [`blob_present`] probes the vault again). Called by every blob write/delete here, and by the chunk receive path for the blob the chunk belongs to.
+pub fn blob_presence_forget(content_hash: &[u8; 32]) {
+    if let Some(m) = BLOB_PRESENCE.lock().unwrap().as_mut() {
+        m.remove(content_hash);
+    }
+}
+
+fn blob_present_probe(v: &std::sync::Arc<FlatStorage>, addr: &[u8; 32], content_hash: &[u8; 32]) -> bool {
+    if matches!(v.read_stored(addr), Ok(Some(_))) {
         return true;
     }
     if complete_cache_has(content_hash) {
@@ -541,6 +564,7 @@ pub fn blob_delete(content_hash: &[u8; 32]) {
             let _ = v.delete_addr(&a);
         }
         complete_cache_set(*content_hash, false);
+        blob_presence_forget(content_hash);
     }
 }
 

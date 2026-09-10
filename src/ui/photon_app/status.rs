@@ -3432,6 +3432,8 @@ impl PhotonApp {
                                 Ok(plain) if *blake3::hash(&plain).as_bytes() == expect => {
                                     match crate::storage::blob_store(&seed, &expect, &plain) {
                                         Ok(()) => {
+                                            // The chunk store forgot the CHUNK's presence; the blob it belongs to is what the render asks about.
+                                            crate::storage::blob_presence_forget(&content_hash);
                                             let complete = crate::storage::blob_present(&content_hash);
                                             let _ = tx.send(AttachInstalled {
                                                 sniffed: (index == 0).then(|| crate::types::sniff(&plain, &sniff_name)),

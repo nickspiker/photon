@@ -3265,7 +3265,12 @@ impl PhotonApp {
                                     } else {
                                         (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
+                                    let primary_saves = held && !viewable && !is_rec && !kind.is_some_and(|k| k.is_text());
                                     pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
+                                    // A held original whose primary action is Open or Play gets its own SAVE pill (slot 10) — download and preview are separate taps, not one shared slot (2026-09-10).
+                                    if held && !primary_saves {
+                                        pills.push((tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(10)));
+                                    }
                                 }
                                 let deleting =
                                     self.pending_delete.as_ref().is_some_and(|(k, _)| {

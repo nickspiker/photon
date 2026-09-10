@@ -8,6 +8,10 @@ One sentence per line, however long; plain language for the person who installs 
 ## Upcoming
 
 - A wave's buffering now follows the actual loss on the link instead of ratcheting up on every stumble: it settles as low as the link allows, holds loss to about one packet in two hundred and fifty-six, and fades over the rest. Every packet also measures the round trip, so the log says how far the other end really is.
+- A conversation holding attachments or kept waves draws at full speed again: the screen used to ask the vault about every file on every frame, which cost most of a second per frame with a few recordings in view.
+- Pictures show their true colours on Android (red and blue were swapped in previews and the viewer).
+- A held picture, text file or kept wave now offers Save beside Open or Play, so downloading and viewing are separate taps.
+
 ## v89
 
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.
