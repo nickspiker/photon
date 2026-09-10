@@ -458,10 +458,29 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
+    /// A chunked blob's manifest arrived (typed attachments Phase 1): sealed like a blob; the UI stores it and starts (or resumes) counting chunks.
+    AttachManifestReceived {
+        conversation_token: [u8; 32],
+        content_hash: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
+    /// One sealed chunk of a chunked blob; verified against the manifest's chunk hash off-thread, stored at its own address.
+    AttachChunkReceived {
+        conversation_token: [u8; 32],
+        content_hash: [u8; 32],
+        index: u32,
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// A peer wants the blob for an attachment row it holds (offline race, or a fleet sibling with row-but-no-blob). The UI answers with an attach_blob if the blob is held.
     AttachReqReceived {
         conversation_token: [u8; 32],
         content_hash: [u8; 32],
+        /// Resume bitmap (bit i = chunk i wanted); None = everything.
+        want: Option<Vec<u8>>,
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
@@ -2096,9 +2115,48 @@ async fn run_checker(
                                             &event_proxy_recv,
                                         );
                                     }
+                                    // Chunked attachment: manifest, then chunks (typed attachments Phase 1).
+                                    else if let Ok(((conversation_token, content_hash, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_attach_manifest_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: attach_manifest REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::AttachManifestReceived {
+                                                conversation_token,
+                                                content_hash,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    } else if let Ok(((conversation_token, content_hash, index, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_attach_chunk_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: attach_chunk REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::AttachChunkReceived {
+                                                conversation_token,
+                                                content_hash,
+                                                index,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
+                                    }
                                     // Attachment blob request (tap on a pill whose blob hasn't arrived)
                                     else if let Ok((
-                                        (conversation_token, content_hash),
+                                        (conversation_token, content_hash, want),
                                         sender_pubkey,
                                     )) = crate::network::fgtw::protocol::parse_attach_req_vsf(
                                         &data,
@@ -2112,6 +2170,7 @@ async fn run_checker(
                                             StatusUpdate::AttachReqReceived {
                                                 conversation_token,
                                                 content_hash,
+                                                want,
                                                 sender_pubkey: DevicePubkey::from_bytes(
                                                     sender_pubkey,
                                                 ),
@@ -2599,6 +2658,53 @@ async fn run_checker(
                                 );
                                 continue;
                             }
+                            if let Ok(((conversation_token, content_hash, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_attach_manifest_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::AttachManifestReceived {
+                                        conversation_token,
+                                        content_hash,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok(((conversation_token, content_hash, index, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_attach_chunk_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::AttachChunkReceived {
+                                        conversation_token,
+                                        content_hash,
+                                        index,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
                             if let Ok(((_tok, content_hash), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_attach_have_vsf(msg_bytes)
                             {
@@ -2641,7 +2747,7 @@ async fn run_checker(
                                 );
                                 continue;
                             }
-                            if let Ok(((conversation_token, content_hash), sender_pubkey)) =
+                            if let Ok(((conversation_token, content_hash, want), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_attach_req_vsf(msg_bytes)
                             {
                                 {
@@ -2656,6 +2762,7 @@ async fn run_checker(
                                     StatusUpdate::AttachReqReceived {
                                         conversation_token,
                                         content_hash,
+                                        want,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },

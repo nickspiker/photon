@@ -295,32 +295,283 @@ pub fn blob_store(
     vault.write_addr(&addr, plaintext).map_err(|e| e.to_string())
 }
 
-/// Load an attachment blob from the vault; verifies the content hash after the vault's own AEAD. None = not held locally.
+
+// CHUNKED BLOBS (typed attachments Phase 1, 2026-09-10): anything past BLOB_CHUNK_SIZE is stored as content-addressed CHUNKS (each a vault value at its own chunk-hash address — the same keyed address scheme) plus a MANIFEST at a separate keyed address under the whole-file hash. The wire carries the manifest then chunks, a fetch resumes from whatever chunks are held, and Save streams the chunks to the file with a running hash — the whole file is never rebuilt in RAM on the receiving side.
+pub const BLOB_CHUNK_SIZE: usize = 256 * 1024;
+
+/// A chunked blob's table of contents: total size, chunk size, and the blake3 of every chunk in order (the last one shorter).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlobManifest {
+    pub size: u64,
+    pub chunk_size: u32,
+    pub chunks: Vec<[u8; 32]>,
+}
+
+impl BlobManifest {
+    /// Binary at rest and on the wire: `[size u64 LE][chunk_size u32 LE][n u32 LE]` then `n × 32` hash bytes.
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(16 + self.chunks.len() * 32);
+        out.extend_from_slice(&self.size.to_le_bytes());
+        out.extend_from_slice(&self.chunk_size.to_le_bytes());
+        out.extend_from_slice(&(self.chunks.len() as u32).to_le_bytes());
+        for c in &self.chunks {
+            out.extend_from_slice(c);
+        }
+        out
+    }
+
+    pub fn from_bytes(b: &[u8]) -> Option<Self> {
+        if b.len() < 16 {
+            return None;
+        }
+        let size = u64::from_le_bytes(b[..8].try_into().ok()?);
+        let chunk_size = u32::from_le_bytes(b[8..12].try_into().ok()?);
+        let n = u32::from_le_bytes(b[12..16].try_into().ok()?) as usize;
+        if chunk_size == 0 || b.len() != 16 + n * 32 {
+            return None;
+        }
+        // The count must agree with the size (a manifest claiming more chunks than its bytes need is malformed).
+        let expect = (size as usize).div_ceil(chunk_size as usize);
+        if n != expect {
+            return None;
+        }
+        let chunks = b[16..].chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).collect();
+        Some(Self { size, chunk_size, chunks })
+    }
+
+    /// Split bytes into a manifest (chunk hashes) — the sender's half of blob_store_any.
+    pub fn of(bytes: &[u8]) -> Self {
+        Self {
+            size: bytes.len() as u64,
+            chunk_size: BLOB_CHUNK_SIZE as u32,
+            chunks: bytes.chunks(BLOB_CHUNK_SIZE).map(|c| *blake3::hash(c).as_bytes()).collect(),
+        }
+    }
+
+    /// The want bitmap a resuming fetch sends: bit i set = chunk i still wanted.
+    pub fn want_bitmap(held: &[bool]) -> Vec<u8> {
+        let mut out = vec![0u8; held.len().div_ceil(8)];
+        for (i, h) in held.iter().enumerate() {
+            if !h {
+                out[i / 8] |= 1 << (i % 8);
+            }
+        }
+        out
+    }
+
+    pub fn wanted(bitmap: &[u8], idx: usize) -> bool {
+        bitmap.get(idx / 8).is_some_and(|b| b & (1 << (idx % 8)) != 0)
+    }
+}
+
+fn manifest_addr(content_hash: &[u8; 32]) -> Option<[u8; 32]> {
+    let k = (*BLOB_NAME_KEY.lock().unwrap())?;
+    let mut input = Vec::with_capacity(8 + 32);
+    input.extend_from_slice(b"manifest");
+    input.extend_from_slice(content_hash);
+    Some(*blake3::keyed_hash(&k, &input).as_bytes())
+}
+
+/// Chunked blobs proven complete this session (every chunk present) — keeps blob_present a hash lookup on the render path instead of a manifest walk per frame.
+static BLOB_COMPLETE: std::sync::Mutex<Option<std::collections::HashSet<[u8; 32]>>> = std::sync::Mutex::new(None);
+
+fn complete_cache_has(h: &[u8; 32]) -> bool {
+    BLOB_COMPLETE.lock().unwrap().as_ref().is_some_and(|s| s.contains(h))
+}
+
+fn complete_cache_set(h: [u8; 32], present: bool) {
+    let mut g = BLOB_COMPLETE.lock().unwrap();
+    let set = g.get_or_insert_with(Default::default);
+    if present {
+        set.insert(h);
+    } else {
+        set.remove(&h);
+    }
+}
+
+/// Store a blob whichever way its size wants: one vault value up to BLOB_CHUNK_SIZE (None), else chunks + manifest (Some(manifest) — the sender ships that on the wire).
+pub fn blob_store_any(
+    identity_seed: &[u8; 32],
+    content_hash: &[u8; 32],
+    plaintext: &[u8],
+) -> Result<Option<BlobManifest>, String> {
+    if plaintext.len() <= BLOB_CHUNK_SIZE {
+        blob_store(identity_seed, content_hash, plaintext)?;
+        return Ok(None);
+    }
+    let m = BlobManifest::of(plaintext);
+    for (c, h) in plaintext.chunks(BLOB_CHUNK_SIZE).zip(&m.chunks) {
+        blob_store(identity_seed, h, c)?;
+    }
+    blob_manifest_store(identity_seed, content_hash, &m)?;
+    complete_cache_set(*content_hash, true);
+    Ok(Some(m))
+}
+
+pub fn blob_manifest_store(identity_seed: &[u8; 32], content_hash: &[u8; 32], m: &BlobManifest) -> Result<(), String> {
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
+    }
+    let addr = manifest_addr(content_hash).ok_or("blob: no session name key")?;
+    let vault = device_vault().ok_or("blob: vault unavailable")?;
+    vault.write_addr(&addr, &m.to_bytes()).map_err(|e| e.to_string())
+}
+
+/// The manifest for a chunked blob, if this device holds one (held chunks may still be partial).
+pub fn blob_manifest(content_hash: &[u8; 32]) -> Option<BlobManifest> {
+    let addr = manifest_addr(content_hash)?;
+    let bytes = device_vault()?.read_addr(&addr).ok()??;
+    BlobManifest::from_bytes(&bytes)
+}
+
+/// Which chunks of a chunked blob are held: one bool per manifest entry. None = no manifest here.
+pub fn blob_chunks_held(content_hash: &[u8; 32]) -> Option<Vec<bool>> {
+    let m = blob_manifest(content_hash)?;
+    let v = device_vault()?;
+    Some(m.chunks.iter().map(|h| blob_addr(h).is_some_and(|a| matches!(v.read_stored(&a), Ok(Some(_))))).collect())
+}
+
+/// A chunk's bytes (verified against its own hash — the chunk hash IS its content hash).
+pub fn blob_chunk_load(chunk_hash: &[u8; 32]) -> Option<Vec<u8>> {
+    let addr = blob_addr(chunk_hash)?;
+    let plain = device_vault()?.read_addr(&addr).ok()??;
+    (blake3::hash(&plain).as_bytes() == chunk_hash).then_some(plain)
+}
+
+/// Whether the blob for `content_hash` is held locally — stored-bytes presence, NO decrypt (render-path cheap): one vault presence probe for a whole-value blob, a hash-set lookup for a chunked blob already proven complete, and the manifest walk once per session otherwise. False before a session exists.
+pub fn blob_present(content_hash: &[u8; 32]) -> bool {
+    let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) else {
+        return false;
+    };
+    if matches!(v.read_stored(&addr), Ok(Some(_))) {
+        return true;
+    }
+    if complete_cache_has(content_hash) {
+        return true;
+    }
+    match blob_chunks_held(content_hash) {
+        Some(held) if !held.is_empty() && held.iter().all(|h| *h) => {
+            complete_cache_set(*content_hash, true);
+            true
+        }
+        _ => false,
+    }
+}
+
+/// Load an attachment blob from the vault; verifies the content hash after the vault's own AEAD. A chunked blob is rebuilt from its chunks (RAM-sized callers only — recordings and small files; Save streams thru blob_write_file instead). None = not held locally.
 pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
     if BLOB_NAME_KEY.lock().unwrap().is_none() {
         blob_init_names(identity_seed);
     }
     let addr = blob_addr(content_hash)?;
-    let plain = device_vault()?.read_addr(&addr).ok()??;
-    if blake3::hash(&plain).as_bytes() != content_hash {
-        crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
+    let vault = device_vault()?;
+    if let Ok(Some(plain)) = vault.read_addr(&addr) {
+        if blake3::hash(&plain).as_bytes() != content_hash {
+            crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
+            return None;
+        }
+        return Some(plain);
+    }
+    let m = blob_manifest(content_hash)?;
+    let mut out = Vec::with_capacity(m.size as usize);
+    for h in &m.chunks {
+        out.extend_from_slice(&blob_chunk_load(h)?);
+    }
+    if blake3::hash(&out).as_bytes() != content_hash {
+        crate::log("blob: chunked content hash mismatch on load — dropped");
         return None;
     }
-    Some(plain)
+    Some(out)
 }
 
-/// Whether the blob for `content_hash` is held locally — stored-bytes presence, NO decrypt (render-path cheap). False before a session exists (no name key = no way to look, same as no vault).
-pub fn blob_present(content_hash: &[u8; 32]) -> bool {
-    match (device_vault(), blob_addr(content_hash)) {
-        (Some(v), Some(addr)) => matches!(v.read_stored(&addr), Ok(Some(_))),
-        _ => false,
+/// Write a held blob to `path`, chunk by chunk with a running hash — the Save path for any size. Returns the byte count; a hash mismatch removes the partial file and returns None.
+pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: &std::path::Path) -> Option<u64> {
+    use std::io::Write;
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
     }
+    let addr = blob_addr(content_hash)?;
+    let vault = device_vault()?;
+    if let Ok(Some(plain)) = vault.read_addr(&addr) {
+        if blake3::hash(&plain).as_bytes() != content_hash {
+            return None;
+        }
+        std::fs::write(path, &plain).ok()?;
+        return Some(plain.len() as u64);
+    }
+    let m = blob_manifest(content_hash)?;
+    let mut f = std::fs::File::create(path).ok()?;
+    let mut hasher = blake3::Hasher::new();
+    let mut n = 0u64;
+    for h in &m.chunks {
+        let Some(c) = blob_chunk_load(h) else {
+            drop(f);
+            let _ = std::fs::remove_file(path);
+            return None;
+        };
+        hasher.update(&c);
+        if f.write_all(&c).is_err() {
+            drop(f);
+            let _ = std::fs::remove_file(path);
+            return None;
+        }
+        n += c.len() as u64;
+    }
+    if hasher.finalize().as_bytes() != content_hash {
+        drop(f);
+        let _ = std::fs::remove_file(path);
+        crate::log("blob: chunked content hash mismatch on save — file removed");
+        return None;
+    }
+    Some(n)
 }
 
-/// Delete a blob value (attachment tombstone follow-thru — blobs CAN truly shred; only row content is braid-bound).
+/// Delete a blob value (attachment tombstone follow-thru — blobs CAN truly shred; only row content is braid-bound). A chunked blob sheds its chunks and manifest too.
 pub fn blob_delete(content_hash: &[u8; 32]) {
     if let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) {
         let _ = v.delete_addr(&addr);
+        if let Some(m) = blob_manifest(content_hash) {
+            for h in &m.chunks {
+                if let Some(a) = blob_addr(h) {
+                    let _ = v.delete_addr(&a);
+                }
+            }
+        }
+        if let Some(a) = manifest_addr(content_hash) {
+            let _ = v.delete_addr(&a);
+        }
+        complete_cache_set(*content_hash, false);
+    }
+}
+
+#[cfg(test)]
+mod blob_manifest_tests {
+    use super::BlobManifest;
+
+    #[test]
+    fn manifest_round_trips_and_refuses_a_count_that_disagrees_with_its_size() {
+        let bytes: Vec<u8> = (0..(super::BLOB_CHUNK_SIZE * 2 + 5)).map(|i| (i % 253) as u8).collect();
+        let m = BlobManifest::of(&bytes);
+        assert_eq!(m.chunks.len(), 3);
+        assert_eq!(m.size, bytes.len() as u64);
+        let back = BlobManifest::from_bytes(&m.to_bytes()).unwrap();
+        assert_eq!(back, m);
+        // Two chunks claimed for three chunks' worth of bytes: malformed.
+        let mut bad = m.clone();
+        bad.chunks.pop();
+        assert!(BlobManifest::from_bytes(&bad.to_bytes()).is_none());
+        assert!(BlobManifest::from_bytes(&[0u8; 10]).is_none());
+    }
+
+    #[test]
+    fn want_bitmap_names_exactly_the_missing_chunks() {
+        let held = [true, false, true, true, false, false, true, true, true, false];
+        let w = BlobManifest::want_bitmap(&held);
+        assert_eq!(w.len(), 2);
+        for (i, h) in held.iter().enumerate() {
+            assert_eq!(BlobManifest::wanted(&w, i), !h, "chunk {i}");
+        }
+        assert!(!BlobManifest::wanted(&w, 40));
     }
 }
 

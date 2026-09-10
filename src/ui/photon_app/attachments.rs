@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// The send cap (typed attachments Phase 1): the picker still hands the bytes over whole, so RAM at pick time is the bound — 256 MB, up from the 25 MB one-frame limit the chunked wire no longer needs.
+pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
+
 impl PhotonApp {
     /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
     pub(super) fn send_attachment_from_path(&mut self, ci: usize, path: &str) {
@@ -21,7 +24,6 @@ impl PhotonApp {
 
     /// Byte entry (Android picker + desktop drop converge here). Every file — images included — sends BYTE-EXACT: no re-encode exists in this codebase (house doctrine; the JPEG resample overlay was excised 2026-08-20, the attachments rework is parked).
     pub(super) fn send_attachment_from_bytes(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
-        const MAX_ATTACH: usize = 25 * 1024 * 1024;
         if bytes.is_empty() || bytes.len() > MAX_ATTACH {
             self.ready_toast = Some(tr(Msg::AttachmentLimit).into_owned());
             self.ready_toast_screen = None;
@@ -63,10 +65,13 @@ impl PhotonApp {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
-        if let Err(e) = crate::storage::blob_store(&seed, &hash, &bytes) {
-            crate::logf!("attach: blob store failed: {}", e);
-            return;
-        }
+        let manifest = match crate::storage::blob_store_any(&seed, &hash, &bytes) {
+            Ok(m) => m,
+            Err(e) => {
+                crate::logf!("attach: blob store failed: {}", e);
+                return;
+            }
+        };
         let content = crate::types::attachment_content(&hash, &name, bytes.len() as u64);
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview));
@@ -74,8 +79,11 @@ impl PhotonApp {
             self.attach_stage = None;
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
-        // The blob: eager PT push to the friend. Siblings + offline races fetch on demand (attach_req).
-        self.send_attach_blob(ci, &hash);
+        // The blob: eager PT push to the friend — one frame for a small file, manifest + chunks for a large one. Siblings + offline races fetch on demand (attach_req).
+        match manifest {
+            Some(m) => self.send_attach_chunks(ci, &hash, m),
+            None => self.send_attach_blob(ci, &hash),
+        }
         self.msg_wrap = None;
         self.scene_dirty = true;
         crate::logf!(
@@ -172,7 +180,83 @@ impl PhotonApp {
         }
     }
 
-    /// Ask for a missing blob: attach_req to the conversation's friend device AND every online sibling — whoever holds it answers with an attach_blob.
+    /// Push a CHUNKED blob to the friend: the sealed manifest, then every chunk, each its own PT frame — sealed and dispatched from the worker (256 seals of 256 KB do not belong on the render thread).
+    pub(super) fn send_attach_chunks(&mut self, ci: usize, content_hash: &[u8; 32], m: crate::storage::BlobManifest) {
+        let (device, addr_pair, relay_to, token) = {
+            let Some(c) = self.contacts.get(ci) else {
+                return;
+            };
+            if self.our_party_id(c).is_none_or(|us| c.remote_count(&us) == 0) || c.is_sibling {
+                return;
+            }
+            let Some(token) = self
+                .friendship_chains
+                .iter()
+                .find(|(id, _)| Some(*id) == c.friendship_id)
+                .map(|(_, ch)| ch.conversation_token)
+            else {
+                crate::log("attach: no chains yet — chunks wait for attach_req");
+                return;
+            };
+            let relay_to = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
+            let Some(recipient_key) = c.device_key() else {
+                return;
+            };
+            (recipient_key, c.race_addrs(), relay_to, token)
+        };
+        let Some((peer_addr, alt_addr)) = addr_pair else {
+            return;
+        };
+        let Some(wire_key) = self.attach_wire_key(&device, &token) else {
+            crate::log("attach: no wire key (history key not derived yet)");
+            return;
+        };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+            return;
+        };
+        let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
+        let dispatch = checker.history_dispatch();
+        let content_hash = *content_hash;
+        queue_job(&self.seal_job_tx, move || {
+            let send = |vsf_bytes: Vec<u8>| {
+                let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                    peer_addr,
+                    alt_addr,
+                    recipient_pubkey: device,
+                    vsf_bytes,
+                    relay_to: relay_to.clone(),
+                });
+            };
+            match kete::encrypt_bytes(&m.to_bytes(), &wire_key).and_then(|sealed| {
+                crate::network::fgtw::protocol::build_attach_manifest_vsf(&token, &content_hash, sealed, &kp_pub, &kp_sec)
+            }) {
+                Ok(v) => send(v),
+                Err(e) => {
+                    crate::logf!("attach: manifest frame build failed: {}", e);
+                    return;
+                }
+            }
+            let mut sent = 0usize;
+            for (i, h) in m.chunks.iter().enumerate() {
+                let Some(plain) = crate::storage::blob_chunk_load(h) else {
+                    crate::logf!("attach: chunk {} missing locally — skipped", i);
+                    continue;
+                };
+                match kete::encrypt_bytes(&plain, &wire_key).and_then(|sealed| {
+                    crate::network::fgtw::protocol::build_attach_chunk_vsf(&token, &content_hash, i as u32, sealed, &kp_pub, &kp_sec)
+                }) {
+                    Ok(v) => {
+                        send(v);
+                        sent += 1;
+                    }
+                    Err(e) => crate::logf!("attach: chunk {} frame build failed: {}", i, e),
+                }
+            }
+            crate::logf!("attach: manifest + {} of {} chunk(s) dispatched over PT", sent, m.chunks.len());
+        });
+    }
+
+    /// Ask for a missing blob: attach_req to the conversation's friend device AND every online sibling — whoever holds it answers with an attach_blob (or, for a chunked blob, the manifest + chunks; a held manifest turns the ask into a RESUME carrying the want bitmap of the chunks still missing).
     pub(super) fn attach_fetch(&mut self, sci: usize, content_hash: &[u8; 32]) {
         // Token: the friendship token when one exists; else (self-conversation — no chains) the handle hash. Sibling exchanges seal under the FLEET key regardless of token, so the fallback only ever reaches sibling responders, where it's a plain discriminator.
         let Some(token) = ({
@@ -192,9 +276,18 @@ impl PhotonApp {
         else {
             return;
         };
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_vsf(
+        // Resume: the manifest is here and some chunks are not → ask only for those.
+        let want: Option<Vec<u8>> = crate::storage::blob_chunks_held(content_hash)
+            .filter(|held| held.iter().any(|h| !h))
+            .map(|held| crate::storage::BlobManifest::want_bitmap(&held));
+        if let Some(w) = want.as_ref() {
+            let missing = w.iter().map(|b| b.count_ones()).sum::<u32>();
+            crate::logf!("attach: resuming — {} chunk(s) still wanted", missing);
+        }
+        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_want_vsf(
             &token,
             content_hash,
+            want.as_deref(),
             kp.public.as_bytes(),
             kp.secret.as_bytes(),
         ) else {
@@ -235,7 +328,6 @@ impl PhotonApp {
     /// Save a held blob to the user's Downloads dir (name deduped). Returns the destination on success.
     pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Option<String> {
         let seed = self.session.as_ref().map(|s| s.identity_seed)?;
-        let plain = crate::storage::blob_load(&seed, content_hash)?;
         #[cfg(target_os = "android")]
         let base = crate::storage::photon_config_dir().ok()?.join("Download");
         #[cfg(not(target_os = "android"))]
@@ -252,7 +344,8 @@ impl PhotonApp {
             dest = base.join(format!("{} ({}){}", stem, i, ext));
             i += 1;
         }
-        std::fs::write(&dest, &plain).ok()?;
+        // Streams chunk by chunk with a running hash — a chunked blob is never rebuilt in RAM.
+        crate::storage::blob_write_file(&seed, content_hash, &dest)?;
         Some(dest.to_string_lossy().into_owned())
     }
 
@@ -260,7 +353,23 @@ impl PhotonApp {
     /// Drain attachment blobs a worker verified + stored off-thread: send the attach_have confirm (needs the keypair + checker, which is why it can't run in the worker) so the pusher's pill flips to delivered, then clear the compose wrap and repaint.
     pub(super) fn drain_attach_installed(&mut self) {
         while let Ok(r) = self.attach_installed_rx.try_recv() {
-            crate::logf!("ATTACH: blob received + stored ({} bytes)", r.len);
+            // A chunk: count it toward the bar; only the LAST one is an install (attach_have + re-sniff below).
+            let mut complete = true;
+            if let Some((idx, total, done)) = r.chunk {
+                let e = self.attach_chunk_progress.entry(r.content_hash).or_insert((0, total));
+                e.0 = (e.0 + 1).min(total);
+                e.1 = total;
+                complete = done;
+                if done {
+                    crate::logf!("ATTACH: chunked blob complete — {} chunk(s)", total);
+                    self.attach_chunk_progress.remove(&r.content_hash);
+                } else if idx % 16 == 0 {
+                    crate::logf!("ATTACH: chunk {} of {} stored", idx + 1, total);
+                }
+                self.scene_dirty = true;
+            } else {
+                crate::logf!("ATTACH: blob received + stored ({} bytes)", r.len);
+            }
             // RE-SNIFF (the receiver's own verdict): the row's kind is the peer's claim until the bytes are here; a stricter local sniff wins (a program dressed as a picture reads as a program from now on).
             if let Some(local) = r.sniffed {
                 for conv in self.conversations.iter_mut() {
@@ -279,6 +388,9 @@ impl PhotonApp {
                         }
                     }
                 }
+            }
+            if !complete {
+                continue;
             }
             if let (Some(kp), Some(checker)) =
                 (self.device_keypair.as_ref(), self.status_checker.as_ref())

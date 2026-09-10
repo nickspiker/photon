@@ -689,6 +689,8 @@ struct AttachPrepared {
 struct AttachInstalled {
     /// The receiver's own sniff of the stored bytes (None when the name was unknown to the worker).
     sniffed: Option<crate::types::AttachKind>,
+    /// A chunked blob's chunk landed: (index, total chunks, the blob is now complete). None = a whole-value blob landed.
+    chunk: Option<(u32, u32, bool)>,
     conversation_token: [u8; 32],
     content_hash: [u8; 32],
     sender_pubkey: crate::types::DevicePubkey,
@@ -1815,6 +1817,8 @@ pub struct PhotonApp {
     settings_zoom_slider: Option<fluor::widgets::Slider>,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
     attach_progress: Vec<(std::net::SocketAddr, u32, u32, bool)>,
+    /// Chunked-blob arrival progress keyed by the WHOLE-FILE hash: (chunks held, chunks total) — the pill bar's first source (typed attachments Phase 1; the PT snapshot above stays the fallback for whole-value blobs).
+    attach_chunk_progress: std::collections::HashMap<[u8; 32], (u32, u32)>,
     /// Blob pushes confirmed landed (attach_have), this session.
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
@@ -2397,6 +2401,7 @@ impl PhotonApp {
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
             attach_progress: Vec::new(),
+            attach_chunk_progress: std::collections::HashMap::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]

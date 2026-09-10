@@ -2906,10 +2906,112 @@ pub fn parse_attach_blob_vsf(
     Ok(((conversation_token, content_hash, sealed), sender_pubkey))
 }
 
+/// Build an `attach_manifest` frame (typed attachments Phase 1): the chunked blob's table of contents, sealed under the same relationship key as a blob. Sent ahead of the chunks, and served to a resuming fetcher that lacks it.
+pub fn build_attach_manifest_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    sealed_manifest: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_attach_data_frame("attach_manifest", conversation_token, content_hash, None, sealed_manifest, device_pubkey, device_secret)
+}
+
+/// Build an `attach_chunk` frame: one sealed chunk of a chunked blob, named by the whole-file hash and its index (the manifest names the chunk's own hash the receiver verifies against).
+pub fn build_attach_chunk_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    index: u32,
+    sealed_chunk: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_attach_data_frame("attach_chunk", conversation_token, content_hash, Some(index), sealed_chunk, device_pubkey, device_secret)
+}
+
+fn build_attach_data_frame(
+    name: &str,
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    index: Option<u32>,
+    sealed: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new(name);
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+    if let Some(i) = index {
+        section.add_field("idx", VsfType::u(i as usize, false));
+    }
+    let len = sealed.len();
+    section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![len], sealed)));
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build {name} VSF: {}", e))?;
+    vsf::verification::sign_file(unsigned, device_secret)
+}
+
+fn parse_attach_data_frame(
+    name: &str,
+    vsf_bytes: &[u8],
+) -> Result<(([u8; 32], [u8; 32], Option<u32>, Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("{name} verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != name {
+        return Err(format!("Expected '{name}' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_))).ok_or(format!("{name} missing tok"))?;
+    let content_hash = field_hash32(fields, "hash", |v| matches!(v, VsfType::hb(_))).ok_or(format!("{name} missing hash"))?;
+    let index = field_u64(fields, "idx").map(|i| i as u32);
+    let sealed = fields
+        .iter()
+        .find(|f| f.name == "data")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::t_u3(tensor) => Some(tensor.data.clone()),
+            _ => None,
+        })
+        .ok_or(format!("{name} missing data"))?;
+    Ok(((conversation_token, content_hash, index, sealed), sender_pubkey))
+}
+
+/// Parse + verify an `attach_manifest` frame → ((tok, hash, sealed_manifest), sender).
+pub fn parse_attach_manifest_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], Vec<u8>), [u8; 32]), String> {
+    let ((tok, hash, _, sealed), sender) = parse_attach_data_frame("attach_manifest", vsf_bytes)?;
+    Ok(((tok, hash, sealed), sender))
+}
+
+/// Parse + verify an `attach_chunk` frame → ((tok, hash, index, sealed_chunk), sender).
+pub fn parse_attach_chunk_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], u32, Vec<u8>), [u8; 32]), String> {
+    let ((tok, hash, idx, sealed), sender) = parse_attach_data_frame("attach_chunk", vsf_bytes)?;
+    let idx = idx.ok_or("attach_chunk missing idx")?;
+    Ok(((tok, hash, idx, sealed), sender))
+}
+
 /// Build an `attach_req` frame — "send me the blob for this attachment row". Fired on tapping a pill whose blob hasn't arrived (offline race, or a fleet sibling that only holds the row). Any device holding the blob answers with an `attach_blob`.
 pub fn build_attach_req_vsf(
     conversation_token: &[u8; 32],
     content_hash: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_attach_req_want_vsf(conversation_token, content_hash, None, device_pubkey, device_secret)
+}
+
+/// An `attach_req` with an optional WANT bitmap (typed attachments Phase 1): bit i set = chunk i still wanted. Present = the requester holds the manifest and resumes; absent = send everything (manifest + chunks, or the whole small blob).
+pub fn build_attach_req_want_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    want: Option<&[u8]>,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
@@ -2919,6 +3021,9 @@ pub fn build_attach_req_vsf(
     let mut section = VsfSection::new("attach_req");
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+    if let Some(w) = want {
+        section.add_field("want", VsfType::hR(w.to_vec()));
+    }
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -2930,8 +3035,8 @@ pub fn build_attach_req_vsf(
     vsf::verification::sign_file(unsigned, device_secret)
 }
 
-/// Parse + verify an `attach_req` frame. Returns ((conversation_token, content_hash), sender_pubkey). Same caller-side authorization rule as attach_blob.
-pub fn parse_attach_req_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
+/// Parse + verify an `attach_req` frame. Returns ((conversation_token, content_hash, want bitmap), sender_pubkey). Same caller-side authorization rule as attach_blob.
+pub fn parse_attach_req_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], Option<Vec<u8>>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("attach_req verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
@@ -2949,8 +3054,12 @@ pub fn parse_attach_req_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), [
         .ok_or("attach_req missing tok")?;
     let content_hash = field_hash32(fields, "hash", |v| matches!(v, VsfType::hb(_)))
         .ok_or("attach_req missing hash")?;
+    let want = fields.iter().find(|f| f.name == "want").and_then(|f| f.values.first()).and_then(|v| match v {
+        VsfType::hR(b) => Some(b.clone()),
+        _ => None,
+    });
 
-    Ok(((conversation_token, content_hash), sender_pubkey))
+    Ok(((conversation_token, content_hash, want), sender_pubkey))
 }
 
 /// Build an `attach_have` frame — the receiver's confirmation that an attachment blob arrived, verified, and stored. Flips the sender's pill from "sending" to delivered; purely informational (no retransmit machinery keys off it — PT owns reliability).

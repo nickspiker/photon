@@ -2973,14 +2973,16 @@ impl PhotonApp {
                                 } else {
                                     !crate::storage::blob_present(&hash)
                                 };
+                                // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback.
+                                let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| *have as f32 / (*total).max(1) as f32);
                                 if relevant {
-                                    if let Some((_, done, total, _)) = self
-                                        .attach_progress
-                                        .iter()
-                                        .find(|(_, _, _, ob)| *ob == want_outbound)
-                                    {
-                                        let frac =
-                                            (*done as f32 / (*total).max(1) as f32).clamp(0.0, 1.0);
+                                    if let Some(frac) = chunk_frac.or_else(|| {
+                                        self.attach_progress
+                                            .iter()
+                                            .find(|(_, _, _, ob)| *ob == want_outbound)
+                                            .map(|(_, done, total, _)| *done as f32 / (*total).max(1) as f32)
+                                    }) {
+                                        let frac = frac.clamp(0.0, 1.0);
                                         let bar_w = (buf_w as f32 - pad_x * 2.0) * frac;
                                         let (bx, bw) = if msg.is_outgoing {
                                             (
