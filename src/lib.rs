@@ -417,6 +417,12 @@ static LOG_PENDING: std::sync::Mutex<Vec<u8>> = std::sync::Mutex::new(Vec::new()
 const LOG_PENDING_CAP: usize = 4 << 20;
 /// Soft-mode batch: buffered records write thru in ONE chunk at this size — an idle session writes nothing, a busy one writes rarely and large (flash wear tracks write COUNT more than byte count).
 const SOFT_LOG_FLUSH_BYTES: usize = 512 << 10;
+/// Soft-mode batch AGE bound (2026-09-10: an ANR "close app" is a SIGKILL — no edge fires, and the 90 s before Nick's hang died in RAM twice in one afternoon): a batch older than this writes thru at the next record, whatever its size. Checked at write time, no timer; a session that logs nothing writes nothing.
+#[cfg(feature = "logging")]
+const SOFT_LOG_MAX_AGE_OSC: i64 = 30 * vsf::OSCILLATIONS_PER_SECOND as i64;
+/// Eagle osc when the current soft batch received its first record (0 = empty).
+#[cfg(feature = "logging")]
+static LOG_BATCH_SINCE: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 
 /// Hard-logs deadline in Eagle oscillations (0 = soft). ON = write thru per record (crash-durable via the kernel page cache); OFF (the default) = records batch in RAM and reach disk on the EDGES — panic, app background, submission, threshold, arming — so steady-state logging costs the disk nothing.
 /// DEVICE-LOCAL and SELF-EXPIRING: the Diagnostics checkbox arms THIS device for 24h (`LOG_AGE_TRIGGER_BASE_OSC`), because an investigation concerns one piece of hardware and nobody remembers to untick. Expiry is evaluated lazily at each write — no timer; the first record past the deadline simply batches again.
@@ -706,10 +712,14 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
     // SOFT mode (the default, and hard mode past its 24h deadline): batch in RAM; the batch reaches disk on the edges (panic / background / submit / threshold / arming) via flush_log_buffer.
     if LOG_HARD_UNTIL.load(std::sync::atomic::Ordering::Relaxed) <= vsf::eagle_time_oscillations() {
         let over = if let (Ok(bytes), Ok(mut pending)) = (&record, LOG_PENDING.lock()) {
+            let now = vsf::eagle_time_oscillations();
+            if pending.is_empty() {
+                LOG_BATCH_SINCE.store(now, std::sync::atomic::Ordering::Relaxed);
+            }
             if pending.len() + bytes.len() <= LOG_PENDING_CAP {
                 pending.extend_from_slice(bytes);
             }
-            pending.len() >= SOFT_LOG_FLUSH_BYTES
+            pending.len() >= SOFT_LOG_FLUSH_BYTES || now - LOG_BATCH_SINCE.load(std::sync::atomic::Ordering::Relaxed) >= SOFT_LOG_MAX_AGE_OSC
         } else {
             false
         };

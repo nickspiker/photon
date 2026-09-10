@@ -18,6 +18,9 @@ One sentence per line, however long; plain language for the person who installs 
 - Security gains Kill: one tap drops your identity and ends photon on the spot, nothing deleted; launch again and type your handle to come back.
 - A native crash on Android now reports where it died: the crashing thread's frames are decoded from the system's crash record at the next start, the last minutes of the log are saved as the process dies, and the fault handler is armed once the log folder is known, which it never was before.
 
+- The log keeps its last half minute even when Android kills the app outright: the in-memory batch writes through once it is thirty seconds old, so an unresponsive-app kill no longer erases what led up to it.
+- Installing an update no longer copies the package on the screen thread, which could hold the app unresponsive for seconds right after the install prompt.
+
 ## v89
 
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.

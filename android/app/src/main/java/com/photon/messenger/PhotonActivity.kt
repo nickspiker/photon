@@ -697,12 +697,15 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     /** Install a staged self-update APK (docs/updates.md, Android path). PackageInstaller SESSION first: on Android 12+ with photon as its own installer-of-record the install is UNATTENDED (USER_ACTION_NOT_REQUIRED) — no dialog, the OS swaps the package and restarts us. The first session install (or an OEM that refuses unattended) surfaces the one system confirm via STATUS_PENDING_USER_ACTION, which is also the bootstrap that TRANSFERS installer-of-record to photon — silent from then on. The classic ACTION_VIEW intent stays as the last-ditch fallback. */
     private fun installApk(path: String) {
-        try {
-            installApkSession(path)
-        } catch (e: Exception) {
-            PhotonLog.e("Update", "session install failed (${e.message}) — falling back to system installer intent")
-            installApkIntent(path)
-        }
+        // OFF the main thread (2026-09-10): the session write copies and fsyncs the whole APK (~50 MB) — seconds on flash, and the main thread owed the system a focus event meanwhile (ANR "Input dispatching timed out" right after an update prompt). The installer's own UI and result broadcast need nothing from this thread.
+        Thread({
+            try {
+                installApkSession(path)
+            } catch (e: Exception) {
+                PhotonLog.e("Update", "session install failed (${e.message}) — falling back to system installer intent")
+                runOnUiThread { installApkIntent(path) }
+            }
+        }, "photon-install").start()
     }
 
     private fun installApkSession(path: String) {

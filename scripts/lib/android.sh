@@ -15,7 +15,8 @@ android_build() {
 
     echo "Building Photon for Android (arm64) — $profile..."
     # Build the .so from deploy.sh's reflink snapshot when SNAP_DIR is exported (edit-safe release); standalone dev-adb builds the live tree.
-    ( cd "${SNAP_DIR:-.}" && PHOTON_ALLOW_RELEASE=1 cargo build --release --lib --target aarch64-linux-android $features )
+    # Symbols stay IN the .so (the profile's strip=true is overridden here; Gradle strips the copy it packages, so the APK is unchanged): a crash's rel_pc is only worth something against a build that kept its names and line tables.
+    ( cd "${SNAP_DIR:-.}" && PHOTON_ALLOW_RELEASE=1 CARGO_PROFILE_RELEASE_STRIP=none CARGO_PROFILE_RELEASE_DEBUG=line-tables-only cargo build --release --lib --target aarch64-linux-android $features )
 
     local so="target/aarch64-linux-android/release/libphoton_messenger.so"
     if [ ! -f "$so" ]; then
