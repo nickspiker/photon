@@ -8,7 +8,7 @@
 //!
 //! Transcode is a second lossy Opus generation over the spooled frames (decode-then-re-encode) — the accepted cost of "cheap live spool, rich keep". It is O(call length); run it OFF the UI thread (see `keep_recording`).
 
-use crate::call::spool::{drain_records, SpoolTicket};
+use crate::call::spool::{drain_records, Record, SpoolTicket};
 
 /// 10 ms at 48 kHz — the ARCHIVE frame (PHCALL2 slot + KeptStream playback unit). Deliberately unchanged by the 5ms flag day: every previously-kept recording plays without migration.
 const FRAME: usize = 480;
@@ -175,34 +175,85 @@ enum Cell {
     Pcm(Vec<u8>),
 }
 
-fn grid_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<(usize, Vec<Vec<Option<Cell>>>)> {
+fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>>)> {
     if records.is_empty() {
         return None;
     }
-    let base = records.iter().map(|(_, osc, _)| *osc).min()?;
-    let chan_of = |c: u8| (c & !crate::call::spool::RAW_FLAG) as usize;
-    let nchan = records.iter().map(|(c, _, _)| chan_of(*c)).max()? + 1;
-    // LATTICE SLOTTING (field 2026-09-08, "super garbled" preview): frames are stamped at DRAIN, in 1ms engine-loop bursts — adjacent 5ms frames carry near-identical stamps, and slotting each by its own stamp collided them ("collision keeps the last" ate half the audio). Per channel the spool IS contiguous (appended in codec order), so slots advance on a LATTICE from the last anchor, and the stamp only re-anchors when it deviates past REANCHOR (a real gap: lost windows, an engine stall) — the learner's stamp-regularizer law, applied to the recording grid.
+    let base = records.iter().filter(|r| !r.is_fill()).map(|r| r.osc).min().or_else(|| records.iter().map(|r| r.osc).min())?;
+    let nchan = records.iter().map(|r| r.index()).max()? + 1;
+    // LATTICE SLOTTING (field 2026-09-08, "super garbled" preview): frames are stamped at DRAIN, in 1ms engine-loop bursts — adjacent 5ms frames carry near-identical stamps, and slotting each by its own stamp collided them ("collision keeps the later one" = half the frames dropped). So each channel keeps a lattice: a frame within `reanchor` of the expected next stamp takes the NEXT slot; a real gap (loss, a stall) re-anchors on the stamp.
     let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
     let reanchor = ops / 20; // 50ms — ten slots; burst jitter is ±ms, real gaps are bigger
     let mut lat: Vec<Option<(i64, i64)>> = vec![None; nchan]; // per channel: (next_slot, expected_osc)
+    // SEQ LATTICE (recording fills, 2026-09-10): a record that names its wire window is slotted by that — the next window's first frame sits exactly (windows between × the previous window's frame count) slots on, so a LOST window leaves its hole in the grid for the fill to land in (the stamp lattice would swallow a 5–40 ms hole as burst jitter). The stamp still re-anchors the ruler when seq and stamp disagree by more than the lattice tolerance (a stall, a rung change across a gap).
+    let mut seq_lat: Vec<Option<(u32, i64, i64)>> = vec![None; nchan]; // per channel: (last seq, its first-frame slot, its frame count so far)
     let mut slotted: Vec<(usize, usize, Cell)> = Vec::with_capacity(records.len());
     let mut max_slot = 0usize;
-    for (chan, osc, bytes) in records {
-        let c = chan_of(*chan);
-        let cell = if chan & crate::call::spool::RAW_FLAG != 0 { Cell::Pcm(bytes.clone()) } else { Cell::Opus(bytes.clone()) };
-        let slot = match lat[c] {
-            Some((next, expected)) if (osc - expected).abs() < reanchor => next,
-            _ => osc_to_slot(*osc, base),
+    // Per channel: window seq → (grid slot of its first frame, frames in the window) for the records that ARRIVED live — the ruler the fills are placed against.
+    let mut arrived: Vec<std::collections::BTreeMap<u32, (usize, usize)>> = vec![Default::default(); nchan];
+    let cell_of = |r: &Record| if r.is_raw() { Cell::Pcm(r.bytes.clone()) } else { Cell::Opus(r.bytes.clone()) };
+    let reanchor_slots = reanchor * SLOTS_PER_SEC / ops;
+    for r in records.iter().filter(|r| !r.is_fill()) {
+        let c = r.index();
+        let by_stamp = match lat[c] {
+            Some((next, expected)) if (r.osc - expected).abs() < reanchor => next,
+            _ => osc_to_slot(r.osc, base),
+        };
+        let slot = match (r.seq, seq_lat[c]) {
+            (Some((seq, wslot)), Some((lseq, lslot0, ln))) if seq >= lseq => {
+                let by_seq = if seq == lseq { lslot0 + wslot as i64 } else { lslot0 + (seq - lseq) as i64 * ln.max(1) + wslot as i64 };
+                if (by_seq - by_stamp).abs() < reanchor_slots.max(2) { by_seq } else { by_stamp }
+            }
+            _ => by_stamp,
         };
         let slot_u = slot.max(0) as usize;
         lat[c] = Some((slot + 1, base + (slot + 1) * ops / SLOTS_PER_SEC));
+        if let Some((seq, wslot)) = r.seq {
+            seq_lat[c] = match seq_lat[c] {
+                Some((lseq, lslot0, ln)) if lseq == seq => Some((seq, lslot0, ln + 1)),
+                _ => Some((seq, slot - wslot as i64, 1)),
+            };
+            let e = arrived[c].entry(seq).or_insert((slot_u.saturating_sub(wslot as usize), 0));
+            e.1 += 1;
+        }
         max_slot = max_slot.max(slot_u);
-        slotted.push((c, slot_u, cell));
+        slotted.push((c, slot_u, cell_of(r)));
+    }
+    // FILLS (recording fills, 2026-09-10): a window the peer served after the fact has no honest arrival stamp, but it has a seq — the same seq its neighbours carried. It sits exactly where the ruler says: after the nearest earlier arrived window (its slot + the windows between × that window's frame count), else before the nearest later one. A fill never overwrites a frame that arrived.
+    let mut fills: Vec<(usize, usize, Cell)> = Vec::new();
+    let mut fill_frames: std::collections::HashMap<(usize, u32), usize> = Default::default();
+    for r in records.iter().filter(|r| r.is_fill()) {
+        if let Some((seq, _)) = r.seq {
+            *fill_frames.entry((r.index(), seq)).or_default() += 1;
+        }
+    }
+    for r in records.iter().filter(|r| r.is_fill()) {
+        let (Some((seq, wslot)), c) = (r.seq, r.index()) else {
+            continue;
+        };
+        let prev = arrived[c].range(..seq).next_back().map(|(s, v)| (*s, *v));
+        let next = arrived[c].range(seq + 1..).next().map(|(s, v)| (*s, *v));
+        let own = fill_frames.get(&(c, seq)).copied().unwrap_or(1).max(1);
+        let slot = match (prev, next) {
+            (Some((ps, (pslot, pn))), n) if n.map_or(true, |(ns, _)| seq - ps <= ns - seq) => pslot as i64 + (seq - ps) as i64 * pn.max(1) as i64 + wslot as i64,
+            (_, Some((ns, (nslot, _)))) => nslot as i64 - (ns - seq) as i64 * own as i64 + wslot as i64,
+            (Some((ps, (pslot, pn))), None) => pslot as i64 + (seq - ps) as i64 * pn.max(1) as i64 + wslot as i64,
+            (None, None) => continue,
+        };
+        if slot < 0 {
+            continue;
+        }
+        max_slot = max_slot.max(slot as usize);
+        fills.push((c, slot as usize, cell_of(r)));
     }
     let mut grid: Vec<Vec<Option<Cell>>> = vec![vec![None; max_slot + 1]; nchan];
     for (c, slot, cell) in slotted {
         grid[c][slot] = Some(cell);
+    }
+    for (c, slot, cell) in fills {
+        if grid[c][slot].is_none() {
+            grid[c][slot] = Some(cell);
+        }
     }
     Some((nchan, grid))
 }
@@ -242,11 +293,11 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
 }
 
 /// The transcode core: drained spool records → a `PHCALL2` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
-pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcoded> {
+pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     let (nchan, grid) = grid_from_records(records)?;
     let slots = grid[0].len();
     let slots_out = slots.div_ceil(2);
-    let base = records.iter().map(|(_, osc, _)| *osc).min().unwrap_or(0);
+    let base = records.iter().filter(|r| !r.is_fill()).map(|r| r.osc).min().unwrap_or(0);
     // Envelope accumulators: EVERY SAMPLE goes straight into one of ENV_BUCKETS bins per channel (Nick 2026-09-10: "every sample of audio, downsampling into bins 65536 wide… square each end so we get a good positive value"): the total sample count is known up front from the slot count, so a sample's bin is its index × ENV_BUCKETS ÷ total, and each bin keeps a sum of SQUARES per component (amplitude and the three band differences) plus a count — the bin's value is the root of the mean square, always positive. ~60 samples a bin on a 90s wave, ~5ms on a two-hour one: a true downsample at every length. 65536 × 4 × nchan doubles for the transcode's duration, then gone. The band states carry across slots so the filters see a continuous signal.
     let k = ENV_COMPONENTS;
     let total_samples = (slots_out * FRAME).max(1);
@@ -452,7 +503,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
 }
 
 /// Build a playable stream directly from drained spool records — the Ended-screen PREVIEW path, so Play works before Keep finalizes a blob.
-pub(crate) fn stream_from_records(records: &[(u8, i64, Vec<u8>)]) -> Option<KeptStream> {
+pub(crate) fn stream_from_records(records: &[Record]) -> Option<KeptStream> {
     let (nchan, grid) = grid_from_records(records)?;
     Some(KeptStream {
         nchan,
@@ -583,7 +634,7 @@ mod tests {
             opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
         let mut buf = vec![0u8; 4000];
         let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
-        let mut records: Vec<(u8, i64, Vec<u8>)> = Vec::new();
+        let mut records: Vec<Record> = Vec::new();
         for i in 0..20i64 {
             // A tone so decode is non-zero; both directions, 5 ms apart (the live spool cadence) — 20 input slots fold to 10 archive slots.
             let tone: Vec<i16> = (0..FRAME_IN)
@@ -591,8 +642,8 @@ mod tests {
                 .collect();
             let n = enc.encode(&tone, &mut buf).unwrap();
             let osc = i * (ops / 200);
-            records.push((0, osc, buf[..n].to_vec()));
-            records.push((1, osc, buf[..n].to_vec()));
+            records.push(Record { chan: 0, osc, seq: None, bytes: buf[..n].to_vec() });
+            records.push(Record { chan: 1, osc, seq: None, bytes: buf[..n].to_vec() });
         }
         let t = build_container(&records).unwrap();
         let container = t.container;
@@ -626,5 +677,29 @@ mod tests {
         let mut ks3 = open_blob(&container).unwrap();
         ks3.seek(total + 50);
         assert!(ks3.next_frame().is_none());
+    }
+
+    #[test]
+    fn fills_land_by_seq_beside_the_windows_that_arrived_and_never_overwrite() {
+        use crate::call::spool::{FILL_FLAG, RAW_FLAG};
+        let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let raw = |v: u8| vec![v; FRAME_IN * 2];
+        // Remote channel, two-frame windows: seq 10 arrived (slots 0,1), seq 11 LOST, seq 12 arrived (slots 4,5); the fill for 11 comes late with a stamp far in the future.
+        let mut records = vec![
+            Record { chan: 1 | RAW_FLAG, osc: 0, seq: Some((10, 0)), bytes: raw(1) },
+            Record { chan: 1 | RAW_FLAG, osc: ops / 200, seq: Some((10, 1)), bytes: raw(2) },
+            Record { chan: 1 | RAW_FLAG, osc: 4 * ops / 200, seq: Some((12, 0)), bytes: raw(5) },
+            Record { chan: 1 | RAW_FLAG, osc: 5 * ops / 200, seq: Some((12, 1)), bytes: raw(6) },
+            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((11, 0)), bytes: raw(3) },
+            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((11, 1)), bytes: raw(4) },
+            // A stale fill for a window that DID arrive must not replace it.
+            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((12, 0)), bytes: raw(0xEE) },
+        ];
+        records.push(Record { chan: 0 | RAW_FLAG, osc: 0, seq: Some((0, 0)), bytes: raw(9) });
+        let (nchan, grid) = grid_from_records(&records).unwrap();
+        assert_eq!(nchan, 2);
+        let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b)) => b[0], _ => 0xFF };
+        assert_eq!((0..6).map(|s| first(&grid[1][s])).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5, 6]);
+        assert_eq!(grid[1].len(), 6);
     }
 }

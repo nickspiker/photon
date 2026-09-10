@@ -102,12 +102,64 @@ pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
 
 /// Set on the record's channel byte when the frame is RAW little-endian i16 PCM (the plaid rung) rather than an Opus packet; the low bits stay the channel index.
 pub const RAW_FLAG: u8 = 0x80;
+/// Set when the record carries its WINDOW IDENTITY — `[seq u32 LE][slot u8]` between the stamp and the frame (recording fills, 2026-09-10): the wire window seq the frame travelled in and its slot inside that window. Both ends name a frame the same way, so a peer can serve exactly the windows this side lost.
+pub const SEQ_FLAG: u8 = 0x40;
+/// Set on a FILL: a remote frame that did NOT arrive live but was served by the peer afterwards (live re-request or the post-hangup drain). Its stamp is the time it landed, meaningless for placement — the transcode slots it by seq beside the windows that did arrive (record.rs).
+pub const FILL_FLAG: u8 = 0x20;
+/// The channel index under the flag bits.
+pub const CHAN_MASK: u8 = 0x0F;
+
+/// One decrypted spool record: channel byte (flags + index), eagle stamp, the window identity when the record carries one, and the frame bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Record {
+    pub chan: u8,
+    pub osc: i64,
+    pub seq: Option<(u32, u8)>,
+    pub bytes: Vec<u8>,
+}
+
+impl Record {
+    pub fn index(&self) -> usize {
+        (self.chan & CHAN_MASK) as usize
+    }
+    pub fn is_raw(&self) -> bool {
+        self.chan & RAW_FLAG != 0
+    }
+    pub fn is_fill(&self) -> bool {
+        self.chan & FILL_FLAG != 0
+    }
+}
+
+/// Where one record sits in the spool file — enough to read it back on its own (the fill server's index: window seq → the frames it sent).
+#[derive(Clone, Copy, Debug)]
+pub struct RecordAt {
+    pub offset: u64,
+    pub counter: u64,
+}
+
+fn parse_plain(plain: &[u8]) -> Option<Record> {
+    if plain.len() < 9 {
+        return None;
+    }
+    let chan = plain[0];
+    let osc = i64::from_le_bytes(plain[1..9].try_into().unwrap());
+    if chan & SEQ_FLAG != 0 {
+        if plain.len() < 14 {
+            return None;
+        }
+        let seq = u32::from_le_bytes(plain[9..13].try_into().unwrap());
+        Some(Record { chan, osc, seq: Some((seq, plain[13])), bytes: plain[14..].to_vec() })
+    } else {
+        Some(Record { chan, osc, seq: None, bytes: plain[9..].to_vec() })
+    }
+}
 
 /// The engine-side writer. Appends sealed records; closing is just dropping (the ticket owns the fate).
 pub struct SpoolWriter {
     cipher: XChaCha20Poly1305,
     file: std::fs::File,
     counter: u64,
+    offset: u64,
 }
 
 impl SpoolWriter {
@@ -125,28 +177,66 @@ impl SpoolWriter {
             cipher,
             file,
             counter: 0,
+            offset: 0,
         })
     }
 
     /// One encoded frame: dir 0 = local mic, 1 = remote. Failures are logged-not-fatal — a full disk must not kill the call.
     pub fn append(&mut self, dir: u8, osc: i64, opus: &[u8]) {
-        let mut plain = Vec::with_capacity(1 + 8 + opus.len());
-        plain.push(dir);
+        self.append_seq(dir & !SEQ_FLAG, osc, None, opus);
+    }
+
+    /// A frame with its window identity (`SEQ_FLAG` is set for the caller when `seq` is given). Returns where the record landed, for the fill server's index.
+    pub fn append_seq(&mut self, chan: u8, osc: i64, seq: Option<(u32, u8)>, frame: &[u8]) -> Option<RecordAt> {
+        let mut plain = Vec::with_capacity(1 + 8 + 5 + frame.len());
+        plain.push(if seq.is_some() { chan | SEQ_FLAG } else { chan });
         plain.extend_from_slice(&osc.to_le_bytes());
-        plain.extend_from_slice(opus);
+        if let Some((s, slot)) = seq {
+            plain.extend_from_slice(&s.to_le_bytes());
+            plain.push(slot);
+        }
+        plain.extend_from_slice(frame);
         let mut nonce = [0u8; 24];
         nonce[..8].copy_from_slice(&self.counter.to_le_bytes());
+        let at = RecordAt { offset: self.offset, counter: self.counter };
         self.counter += 1;
         let Ok(sealed) = self.cipher.encrypt(&nonce.into(), plain.as_slice()) else {
-            return;
+            return None;
         };
         let _ = self.file.write_all(&(sealed.len() as u16).to_le_bytes());
         let _ = self.file.write_all(&sealed);
+        self.offset += 2 + sealed.len() as u64;
+        Some(at)
+    }
+}
+
+/// A read-only view of a spool the engine is still writing: opens the records the writer's index names. The fill server reads the windows the peer asks for straight off disk (the page cache makes a just-written record free), so a whole call's worth of sent audio never has to sit in RAM.
+pub struct SpoolReader {
+    cipher: XChaCha20Poly1305,
+    file: std::fs::File,
+}
+
+impl SpoolReader {
+    pub fn open(key: &[u8; 32], path: &std::path::Path) -> Option<SpoolReader> {
+        Some(SpoolReader { cipher: XChaCha20Poly1305::new_from_slice(key).ok()?, file: std::fs::File::open(path).ok()? })
+    }
+
+    pub fn read_at(&mut self, at: RecordAt) -> Option<Record> {
+        use std::io::{Read, Seek, SeekFrom};
+        self.file.seek(SeekFrom::Start(at.offset)).ok()?;
+        let mut len = [0u8; 2];
+        self.file.read_exact(&mut len).ok()?;
+        let mut sealed = vec![0u8; u16::from_le_bytes(len) as usize];
+        self.file.read_exact(&mut sealed).ok()?;
+        let mut nonce = [0u8; 24];
+        nonce[..8].copy_from_slice(&at.counter.to_le_bytes());
+        let plain = self.cipher.decrypt(&nonce.into(), sealed.as_slice()).ok()?;
+        parse_plain(&plain)
     }
 }
 
 /// Decrypt the spool into its raw records `[(channel, osc, opus)…]` in write order (`channel` is the old `dir` byte — 0=local mic, 1=remote, generalizing to a per-participant index). A truncated/corrupt tail record (engine mid-write at the stop edge) ends the read — at most one lost frame, never an error. Shared by [`finalize`] (the PHCALL1 packer) and the N-channel transcode in [`crate::call::record`], so the decrypt/nonce discipline lives in exactly one place.
-pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<(u8, i64, Vec<u8>)>> {
+pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<Record>> {
     let cipher = XChaCha20Poly1305::new_from_slice(&ticket.key).ok()?;
     let bytes = std::fs::read(&ticket.path).ok()?;
     let mut out = Vec::new();
@@ -165,12 +255,9 @@ pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<(u8, i64, Vec<u8
             break; // corruption past here — keep what decrypted
         };
         off += len;
-        if plain.len() < 9 {
-            continue;
+        if let Some(r) = parse_plain(&plain) {
+            out.push(r);
         }
-        let channel = plain[0];
-        let osc = i64::from_le_bytes(plain[1..9].try_into().unwrap());
-        out.push((channel, osc, plain[9..].to_vec()));
     }
     Some(out)
 }
@@ -180,11 +267,11 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
     let records = drain_records(&ticket)?;
     let mut container = Vec::with_capacity(CONTAINER_MAGIC.len() + records.len() * 32);
     container.extend_from_slice(CONTAINER_MAGIC);
-    for (dir, osc, opus) in &records {
-        container.push(*dir);
-        container.extend_from_slice(&osc.to_le_bytes());
-        container.extend_from_slice(&(opus.len() as u16).to_le_bytes());
-        container.extend_from_slice(opus);
+    for r in &records {
+        container.push(r.chan & (CHAN_MASK | RAW_FLAG));
+        container.extend_from_slice(&r.osc.to_le_bytes());
+        container.extend_from_slice(&(r.bytes.len() as u16).to_le_bytes());
+        container.extend_from_slice(&r.bytes);
     }
     if container.len() <= CONTAINER_MAGIC.len() {
         shred(ticket);
@@ -235,5 +322,28 @@ mod tests {
         assert!(other.decrypt(&nonce.into(), &bytes[2..2 + len]).is_err());
         shred(ticket);
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn seq_records_read_back_by_index_and_thru_the_drain() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("photon-spool-seq-test-{}.tmp", std::process::id()));
+        let key: [u8; 32] = [9u8; 32];
+        let mut w = SpoolWriter::create(&key, &path).unwrap();
+        let a = w.append_seq(0, 5000, Some((17, 0)), &[1, 2, 3]).unwrap();
+        w.append(1, 5001, &[4, 4]);
+        let b = w.append_seq(1 | FILL_FLAG | RAW_FLAG, 5002, Some((40, 3)), &[7; 8]).unwrap();
+        drop(w);
+        let mut r = SpoolReader::open(&key, &path).unwrap();
+        let ra = r.read_at(a).unwrap();
+        assert_eq!(ra, Record { chan: SEQ_FLAG, osc: 5000, seq: Some((17, 0)), bytes: vec![1, 2, 3] });
+        let rb = r.read_at(b).unwrap();
+        assert_eq!(rb.seq, Some((40, 3)));
+        assert!(rb.is_fill() && rb.is_raw() && rb.index() == 1);
+        let ticket = SpoolTicket { key, path: path.clone() };
+        let all = drain_records(&ticket).unwrap();
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[1], Record { chan: 1, osc: 5001, seq: None, bytes: vec![4, 4] });
+        shred(ticket);
     }
 }

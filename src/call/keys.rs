@@ -64,6 +64,11 @@ pub fn derive_call_secret(
 }
 
 /// One direction's stepping key chain. `advance_to` walks forward (zeroizing each superseded step) and refuses to walk back — the whole point is that earlier steps no longer exist anywhere.
+/// The recording-fill plane's root: a domain-separated child of the call secret, so FILL datagrams run their own StepChains and seq space beside the media ones (packet.rs FILL_MAGIC) without ever sharing a key+nonce with an audio window.
+pub fn fill_secret(call_secret: &[u8; 32]) -> [u8; 32] {
+    blake3::derive_key("PHOTON_CALL_v1 recording fill", call_secret)
+}
+
 pub struct StepChain {
     key: [u8; 32],
     step: u32,

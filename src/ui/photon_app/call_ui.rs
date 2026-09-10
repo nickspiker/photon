@@ -449,7 +449,7 @@ impl PhotonApp {
                 "CALL: recovering orphaned wave spool ({}) — the crash interrupted its keep; transcoding now",
                 hex::encode(id8)
             );
-            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8);
+            self.spawn_keep_transcode(ticket, peer, offer_osc, seed, id8, None);
         }
     }
 
@@ -1125,11 +1125,12 @@ impl PhotonApp {
             .filter(|c| c.phase == CallPhase::Active)
             .map(|c| ((vsf::eagle_time_oscillations() - c.phase_osc).max(0) / vsf::OSCILLATIONS_PER_SECOND as i64) as u32)
             .unwrap_or(0);
-        if let Some(call) = &self.active_call {
-            if let Some(e) = &call.engine {
-                e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio
-            }
-        }
+        // The engine thread outlives `stop()` by the fill drain (engine.rs: the peer hands back the windows we lost); the keep joins it before reading the spool.
+        let engine_thread = self.active_call.as_ref().and_then(|call| {
+            let e = call.engine.as_ref()?;
+            e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio
+            e.take_thread()
+        });
         crate::platform::audio::stop();
         Self::stop_ring_alert_platform();
         self.call_minimized = false;
@@ -1160,7 +1161,7 @@ impl PhotonApp {
                 self.push_rows_to_siblings(ci, std::slice::from_ref(&row), None);
                 if let Some(ticket) = ticket {
                     // Recorded by default: the transcode lands the recording row against this wave row. Land the user in the conversation so the card shows up where it lives.
-                    self.spawn_keep_transcode(ticket, peer, offer_osc, seed, call_id8);
+                    self.spawn_keep_transcode(ticket, peer, offer_osc, seed, call_id8, engine_thread);
                     self.open_conversation_with(ci);
                 }
             }
@@ -1169,12 +1170,16 @@ impl PhotonApp {
     }
 
     /// Transcode a kept spool to the durable N-channel blob OFF the UI thread (decode+re-encode is O(call length)); the worker posts (hash,size) back to `drain_call_keep`, which mints the fleet-internal call.audio row. A failed transcode drops the ticket → the spool key zeroizes → safe degrade to nothing kept.
-    pub(super) fn spawn_keep_transcode(&mut self, ticket: crate::call::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32], call_id8: [u8; 8]) {
+    pub(super) fn spawn_keep_transcode(&mut self, ticket: crate::call::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32], call_id8: [u8; 8], engine_thread: Option<std::thread::JoinHandle<()>>) {
         let tx = self.call_keep_sender();
         let wake = self.event_proxy.clone();
         let spawned = std::thread::Builder::new()
             .name("call-keep".into())
             .spawn(move || {
+                // The spool is still being written while the engine drains fills from the peer — wait for it to go quiet (bounded by engine.rs DRAIN_MAX).
+                if let Some(t) = engine_thread {
+                    let _ = t.join();
+                }
                 let result = crate::call::record::finalize_nchannel(ticket, &seed);
                 let _ = tx.send(CallKeepResult { peer, offer_osc, call_id8, result });
                 if let Some(w) = wake {

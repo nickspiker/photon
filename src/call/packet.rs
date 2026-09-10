@@ -22,6 +22,8 @@ use poly1305::{Key as PolyKey, Poly1305};
 use subtle::ConstantTimeEq;
 
 pub const MEDIA_MAGIC: u8 = 0xC7;
+/// The RECORDING-FILL datagram (2026-09-10): same header and seal as media but its own magic, its own seq space and its own step chain (keys.rs `fill_secret`), so it never disturbs the audio window count and a peer that predates fills simply never sees a media packet in it. Payload = engine.rs `FillMsg`.
+pub const FILL_MAGIC: u8 = 0xC8;
 pub const HEADER_LEN: usize = 1 + 4;
 /// Truncated Poly1305 tag riding every sealed payload (SRTP-32 profile — see the module doc).
 pub const TAG_LEN: usize = 4;
@@ -30,11 +32,13 @@ pub const TAG_LEN: usize = 4;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MediaHeader {
     pub seq: u32,
+    /// A FILL datagram (FILL_MAGIC) rather than an audio window.
+    pub fill: bool,
 }
 
 /// Is this datagram a media packet at all? The recv worker's one-byte fast check (plus a floor: header + tag + at least one symbol byte). Junk that happens to lead 0xC7 dies at the engine's tag/shape gates, counted.
 pub fn is_media_packet(bytes: &[u8]) -> bool {
-    bytes.len() > HEADER_LEN + TAG_LEN && bytes[0] == MEDIA_MAGIC
+    bytes.len() > HEADER_LEN + TAG_LEN && (bytes[0] == MEDIA_MAGIC || bytes[0] == FILL_MAGIC)
 }
 
 /// The RFC 8439 setup: XChaCha20 positioned at block 1 for the payload, plus the one-time Poly1305 key from block 0.
@@ -68,6 +72,15 @@ fn nonce_for(seq: u32) -> [u8; 24] {
 
 /// Seal one encoded-audio payload into a wire packet.
 pub fn seal(chain: &StepChain, seq: u32, payload: &[u8]) -> Option<Vec<u8>> {
+    seal_kind(chain, seq, payload, MEDIA_MAGIC)
+}
+
+/// Seal a recording-fill message (its own chain and seq space — see FILL_MAGIC).
+pub fn seal_fill(chain: &StepChain, seq: u32, payload: &[u8]) -> Option<Vec<u8>> {
+    seal_kind(chain, seq, payload, FILL_MAGIC)
+}
+
+fn seal_kind(chain: &StepChain, seq: u32, payload: &[u8], magic: u8) -> Option<Vec<u8>> {
     debug_assert_eq!(
         StepChain::step_for_seq(seq),
         chain.step(),
@@ -80,7 +93,7 @@ pub fn seal(chain: &StepChain, seq: u32, payload: &[u8]) -> Option<Vec<u8>> {
     let tag = full_tag(&poly_key, &ct);
 
     let mut out = Vec::with_capacity(HEADER_LEN + ct.len() + TAG_LEN);
-    out.push(MEDIA_MAGIC);
+    out.push(magic);
     out.extend_from_slice(&seq.to_le_bytes());
     out.extend_from_slice(&ct);
     out.extend_from_slice(&tag[..TAG_LEN]);
@@ -93,7 +106,7 @@ pub fn parse_header(bytes: &[u8]) -> Option<(MediaHeader, &[u8])> {
         return None;
     }
     let seq = u32::from_le_bytes(bytes[1..5].try_into().ok()?);
-    Some((MediaHeader { seq }, &bytes[HEADER_LEN..]))
+    Some((MediaHeader { seq, fill: bytes[0] == FILL_MAGIC }, &bytes[HEADER_LEN..]))
 }
 
 /// Open a sealed payload with the direction's chain, advancing it to the seq's step first (forward-only: a packet from a destroyed step returns None — silence, never a rewind). The truncated tag is the whole gate: it proves call membership AND direction, since both live in the key. Constant-time compare, then decrypt.

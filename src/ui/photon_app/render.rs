@@ -3576,9 +3576,14 @@ impl PhotonApp {
                                                     let track = |c: usize| -> Vec<f32> {
                                                         (0..env_len).map(|i| lut[env[(ch * env_len + i) * K + c] as usize]).collect()
                                                     };
-                                                    let folded: Vec<Vec<f32>> = (0..K).map(|c| crate::call::record::resample_linear(&track(c), cols)).collect();
-                                                    // Per-party normalisation over the whole recording (the folded width IS the whole recording).
-                                                    let amp_max = folded[0].iter().cloned().fold(0f32, f32::max).max(1e-6);
+                                                    let mut folded: Vec<Vec<f32>> = (0..K).map(|c| crate::call::record::resample_linear(&track(c), cols)).collect();
+                                                    // AMPLITUDE (Nick 2026-09-10: "log it after we square, then put us bottom, them top and normalize each"): the amplitude track folds as POWER (mean square across the bucket span), and the bar height is that power's LOG — stops below the party's own loudest column — so a quiet reply reads as a shape, not a spike. Per party: the peak is full height, the floor is the party's quietest column or ten stops down, whichever is louder.
+                                                    let power: Vec<f32> = track(0).iter().map(|a| a * a).collect();
+                                                    folded[0] = crate::call::record::resample_linear(&power, cols);
+                                                    let pow_max = folded[0].iter().cloned().fold(0f32, f32::max).max(1e-12);
+                                                    let stops_of = |p: f32| -> f32 { if p > 0.0 { 0.5 * (p / pow_max).log2() } else { f32::NEG_INFINITY } };
+                                                    const FLOOR_STOPS: f32 = -10.0;
+                                                    let lo_stops = folded[0].iter().map(|p| stops_of(*p)).filter(|v| v.is_finite()).fold(0f32, f32::min).max(FLOOR_STOPS).min(-0.5);
                                                     let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
                                                     for c in 0..3 {
                                                         for v in &folded[1 + c] {
@@ -3588,7 +3593,7 @@ impl PhotonApp {
                                                     }
                                                     for px in 0..cols {
                                                         let lit = held && frac.is_some() && px < played_cols;
-                                                        let hgt = (folded[0][px] / amp_max).clamp(0.0, 1.0) * half * 0.92;
+                                                        let hgt = ((stops_of(folded[0][px]) - lo_stops) / (0.0 - lo_stops)).clamp(0.0, 1.0) * half * 0.92;
                                                         let norm = |c: usize| -> f32 {
                                                             let span = hi[c] - lo[c];
                                                             if span > 1e-6 { ((folded[1 + c][px] - lo[c]) / span).clamp(0.0, 1.0) } else { 0.0 }
@@ -3599,7 +3604,8 @@ impl PhotonApp {
                                                         let tip_a = ((hgt - full).sqrt() * (((c >> 24) & 0xFF) as f32)) as u32;
                                                         let tip_c = (tip_a << 24) | (c & 0x00FF_FFFF);
                                                         let x = (wx0 + px as f32) as isize;
-                                                        let (ty, th, tip_y) = if ch == 0 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
+                                                        // Them (ch1) above the centreline, us (ch0) below it.
+                                                        let (ty, th, tip_y) = if ch == 1 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
                                                         let run_top = ty.max(list_top);
                                                         let run_bot = (ty + th).min(list_bottom);
                                                         if run_bot > run_top && th >= 1.0 {

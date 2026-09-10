@@ -12,6 +12,9 @@ One sentence per line, however long; plain language for the person who installs 
 - Pictures show their true colours on Android (red and blue were swapped in previews and the viewer).
 - A held picture, text file or kept wave now offers Save beside Open or Play, so downloading and viewing are separate taps.
 
+- A kept wave no longer carries the link's holes: every packet you lost is asked back from the other side while the wave runs, and the last stretch is fetched right after hangup, so the recording is whole even when the live sound stumbled.
+- The wave card's histogram is logarithmic now, with the other party above the line and you below it, each scaled to their own loudest moment.
+
 ## v89
 
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.

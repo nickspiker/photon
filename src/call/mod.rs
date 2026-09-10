@@ -26,9 +26,20 @@ static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>>>
 /// True exactly while a call engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
 pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
-pub fn install_media_sink(tx: std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>) {
+/// Sink generation: each install bumps it; an engine clears only the generation it installed (a drained engine exiting seconds after hangup must not tear down the next wave's sink).
+static MEDIA_SINK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn install_media_sink(tx: std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>) -> u64 {
     *MEDIA_SINK.lock().unwrap() = Some(tx);
     MEDIA_QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
+    MEDIA_SINK_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+/// Clear the sink only if `gen` is still the installed generation.
+pub fn clear_media_sink_gen(gen: u64) {
+    if MEDIA_SINK_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
+        clear_media_sink();
+    }
 }
 
 /// Is the engine holding the media path? The ringback asks before deciding whether to close the audio session it opened — answered means the engine owns it now, unanswered means nobody does.

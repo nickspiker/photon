@@ -46,6 +46,25 @@ const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
 const JITTER_TARGET_CAP: usize = 24;
 /// Every bundle carries a 10-byte LINK TAIL: [our send stamp ms u32][echo of the peer's newest stamp u32][ms we held it u16] — an RTT measured on every packet, no separate probe.
 const LINK_TAIL: usize = 10;
+// RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
+/// Window seqs asked per fill datagram.
+const FILL_REQ_PER_PACKET: usize = 8;
+/// Bytes of served windows per fill datagram (one plaid window is ~500 B; a floor-rung window ~110 B).
+const FILL_PACKET_BUDGET: usize = 1100;
+/// Live re-request cadence: a wanted window is asked again this often until it lands or is nacked (an RTT and change on any real link).
+const FILL_REQ_LIVE: std::time::Duration = std::time::Duration::from_millis(40);
+/// Drain re-request cadence.
+const FILL_REQ_DRAIN: std::time::Duration = std::time::Duration::from_millis(8);
+/// Drain heartbeat: flags + our final window count go out at least this often so the peer's tail list closes.
+const FILL_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(40);
+/// The post-hangup drain deadline — a peer that vanished (the call died with the link) must not hold the recording open; what landed by now is the recording.
+const DRAIN_MAX: std::time::Duration = std::time::Duration::from_millis(2500);
+/// The wanted set's cap: a link losing more than this many windows is not one a drain can mend.
+const FILL_WANTED_CAP: usize = 4096;
+/// Fill-plane wire byte for "I do not have that window" (never a rung).
+const FILL_NACK: u8 = 0xFF;
+/// Sent-frame index cap (seq, slot, tier, spool position) — ~90 min of plaid, half a day at the floor rung; older windows can no longer be served.
+const TX_INDEX_CAP: usize = 1 << 20;
 /// Max encoded bytes per 5ms frame at each rung: hard CBR emits exactly rate/1600 bytes, +2 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire).
 const TIER_MAX_ENC: [usize; 5] = [12, 22, 42, 82, 486];
 /// Completed-window streak that earns one rung up (~0.25s at 10ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
@@ -119,11 +138,18 @@ pub struct CalSnapshot {
 pub struct EngineHandle {
     stop: Arc<AtomicBool>,
     pub muted: Arc<AtomicBool>,
+    /// The engine thread — the keep transcode joins it first, because the post-hangup fill drain is still writing the spool after `stop()`.
+    thread: std::sync::Mutex<Option<std::thread::JoinHandle<()>>>,
 }
 
 impl EngineHandle {
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
+    }
+
+    /// Hand the engine thread's join handle to whoever must wait for the spool to go quiet (end_call → the keep).
+    pub fn take_thread(&self) -> Option<std::thread::JoinHandle<()>> {
+        self.thread.lock().ok().and_then(|mut t| t.take())
     }
 }
 
@@ -141,11 +167,12 @@ pub fn start(params: EngineParams) -> EngineHandle {
     let handle = EngineHandle {
         stop: stop.clone(),
         muted: muted.clone(),
+        thread: std::sync::Mutex::new(None),
     };
     let (sink_tx, sink_rx) = std::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>();
-    super::install_media_sink(sink_tx);
+    let sink_gen = super::install_media_sink(sink_tx);
     crate::platform::audio::start();
-    if std::thread::Builder::new()
+    match std::thread::Builder::new()
         .name("call-engine".into())
         .spawn(move || {
             // Android: the engine thread runs the 5ms capture→send cadence; at default priority both phones in the 2026-09-09 LAN call produced 194 of 200 frames a second (the receiver underruns, the jitter target ratchets). URGENT_AUDIO's nice (-19) is what the platform grants an app's own audio threads.
@@ -154,13 +181,14 @@ pub fn start(params: EngineParams) -> EngineHandle {
                 let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -19) };
                 crate::logf!("CALL: engine thread priority → -19 ({})", if rc == 0 { "ok" } else { "refused" });
             }
-            run(params, stop, muted, sink_rx)
-        })
-        .is_err()
-    {
-        crate::log("CALL: engine thread spawn failed");
-        super::clear_media_sink();
-        crate::platform::audio::stop();
+            run(params, stop, muted, sink_rx, sink_gen)
+        }) {
+        Ok(j) => *handle.thread.lock().unwrap() = Some(j),
+        Err(_) => {
+            crate::log("CALL: engine thread spawn failed");
+            super::clear_media_sink_gen(sink_gen);
+            crate::platform::audio::stop();
+        }
     }
     handle
 }
@@ -170,6 +198,7 @@ fn run(
     stop: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
     sink_rx: std::sync::mpsc::Receiver<(Vec<u8>, SocketAddr)>,
+    sink_gen: u64,
 ) {
     let (tx_dir, rx_dir) = if params.we_are_caller {
         (Direction::CallerToCallee, Direction::CalleeToCaller)
@@ -187,7 +216,7 @@ fn run(
         }
         Err(e) => {
             crate::logf!("CALL: opus encoder init failed: {}", e);
-            teardown();
+            teardown(sink_gen);
             return;
         }
     };
@@ -195,7 +224,7 @@ fn run(
         Ok(d) => d,
         Err(e) => {
             crate::logf!("CALL: opus decoder init failed: {}", e);
-            teardown();
+            teardown(sink_gen);
             return;
         }
     };
@@ -296,6 +325,25 @@ fn run(
     let mut last_played: Option<Vec<i16>> = None;
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
+    // Recording-fill plane (see the FILL consts): its own chains + seq, the sent-frame index the peer's requests are served from, the arrived-window bits, the wanted set, the peer's requests we owe, and the drain state.
+    let fill_root = super::keys::fill_secret(&params.secret);
+    let mut tx_fill = StepChain::new(&fill_root, tx_dir);
+    let mut rx_fill = StepChain::new(&fill_root, rx_dir);
+    let mut fill_seq: u32 = 0;
+    let mut tx_index: std::collections::VecDeque<SentFrame> = std::collections::VecDeque::new();
+    let mut spool_reader: Option<super::spool::SpoolReader> = None;
+    let mut rx_have: Vec<u64> = Vec::new();
+    let mut wanted: std::collections::BTreeSet<u32> = Default::default();
+    let mut wanted_cursor: u32 = 0;
+    let mut serve_queue: std::collections::BTreeSet<u32> = Default::default();
+    let mut peer_fills = false;
+    let mut peer_windows: Option<u32> = None;
+    let (mut peer_draining, mut peer_satisfied) = (false, false);
+    let mut draining: Option<std::time::Instant> = None;
+    let mut fill_hello_due = true;
+    let mut last_req_tx = std::time::Instant::now() - FILL_REQ_LIVE;
+    let mut last_fill_tx = std::time::Instant::now();
+    let (mut fills_asked, mut fills_got_live, mut fills_got_drain, mut fills_nacked, mut fills_served, mut fills_served_drain) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
     // Capture cadence forensics (2026-09-09: both phones, both calls, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
@@ -358,7 +406,22 @@ fn run(
         );
     }
 
-    while !stop.load(Ordering::Relaxed) {
+    loop {
+        // STOP → DRAIN (recording fills): audio is over, but a fill-capable peer can still hand us the windows we lost — and wants ours. Both engines stay up on the fill plane until both are satisfied or the deadline passes. A peer that never spoke the fill plane ends the engine at once, exactly as before.
+        if stop.load(Ordering::Relaxed) && draining.is_none() {
+            if peer_fills && spool.is_some() {
+                draining = Some(std::time::Instant::now());
+                crate::logf!("CALL: draining — {} window(s) wanted so far, peer at {} window(s)", wanted.len(), peer_windows.map_or("?".to_string(), |w| w.to_string()));
+            } else {
+                break;
+            }
+        }
+        if let Some(t0) = draining {
+            let satisfied = peer_windows.is_some() && wanted.is_empty();
+            if (satisfied && peer_satisfied && serve_queue.is_empty()) || t0.elapsed() >= DRAIN_MAX {
+                break;
+            }
+        }
         // Paced chirp feed (probe phase): top the queue up to 40 frames (200ms) per pass.
         if probing {
             while chirp_idx < chirp_frames.len() && crate::platform::audio::playback_depth() < 40 {
@@ -395,6 +458,9 @@ fn run(
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
         for (cap_osc, frame) in crate::platform::audio::captured_frames() {
+            if draining.is_some() {
+                continue; // audio is over — the mic is closed, anything left in the queue is not part of the wave
+            }
             cap_first_osc.get_or_insert(cap_osc);
             cap_last_osc = cap_osc;
             // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows). Paired to the learner's 10ms cadence (see far_pair).
@@ -553,7 +619,12 @@ fn run(
             };
             if let Some(w) = spool.as_mut() {
                 let dir = if tier == RAW_TIER { super::spool::RAW_FLAG } else { 0 };
-                w.append(dir, vsf::eagle_time_oscillations(), &enc[..n]);
+                if let Some(at) = w.append_seq(dir, vsf::eagle_time_oscillations(), Some((window_id, frames_in_window as u8)), &enc[..n]) {
+                    if tx_index.len() >= TX_INDEX_CAP {
+                        tx_index.pop_front();
+                    }
+                    tx_index.push_back(SentFrame { seq: window_id, slot: frames_in_window as u8, tier: tier as u8, at });
+                }
             }
             window_buf.extend_from_slice(&(n as u16).to_le_bytes());
             window_buf.extend_from_slice(&enc[..n]);
@@ -619,6 +690,58 @@ fn run(
                 rx_drop_parse += 1;
                 continue;
             };
+            // FILL datagram: its own chain; carries the peer's window count + flags, their requests (we owe those windows), and served windows (ours to record).
+            if header.fill {
+                let Some(payload) = packet::open(&mut rx_fill, &header, sealed) else {
+                    rx_drop_open += 1;
+                    continue;
+                };
+                let Some(msg) = fill_decode(&payload) else {
+                    rx_drop_shape += 1;
+                    continue;
+                };
+                peer_fills = true;
+                peer_windows = Some(msg.windows);
+                peer_draining = msg.draining;
+                peer_satisfied = msg.satisfied;
+                for r in msg.reqs {
+                    if serve_queue.len() < FILL_WANTED_CAP {
+                        serve_queue.insert(r);
+                    }
+                }
+                for (seq, tier_b, bytes) in msg.fills {
+                    if tier_b == FILL_NACK {
+                        if wanted.remove(&seq) {
+                            fills_nacked += 1;
+                        }
+                        continue;
+                    }
+                    let t = tier_b as usize;
+                    if t >= TIER_RATES.len() || bytes.len() != tier_window_bytes(t) || have_get(&rx_have, seq) {
+                        continue;
+                    }
+                    if let Some(w) = spool.as_mut() {
+                        let osc = vsf::eagle_time_oscillations();
+                        for slot in 0..TIER_FRAMES[t] {
+                            let base = slot * tier_slot(t);
+                            let n = u16::from_le_bytes(bytes[base..base + 2].try_into().unwrap()) as usize;
+                            if n == 0 || n > TIER_MAX_ENC[t] || (t == RAW_TIER && n != RAW_FRAME_BYTES) {
+                                continue;
+                            }
+                            let chan = 1 | super::spool::FILL_FLAG | if t == RAW_TIER { super::spool::RAW_FLAG } else { 0 };
+                            w.append_seq(chan, osc, Some((seq, slot as u8)), &bytes[base + 2..base + 2 + n]);
+                        }
+                    }
+                    have_set(&mut rx_have, seq);
+                    wanted.remove(&seq);
+                    if draining.is_some() {
+                        fills_got_drain += 1;
+                    } else {
+                        fills_got_live += 1;
+                    }
+                }
+                continue;
+            }
             // No call-id or direction check — both live in the key now: the AEAD below is the whole gate (a stale call's straggler or a cross-direction packet just fails to open).
             let Some(payload) = packet::open(&mut rx_chain, &header, sealed) else {
                 rx_drop_open += 1;
@@ -726,7 +849,7 @@ fn run(
                                 continue;
                             }
                             if let Some(w) = spool.as_mut() {
-                                w.append(1 | super::spool::RAW_FLAG, vsf::eagle_time_oscillations(), body);
+                                w.append_seq(1 | super::spool::RAW_FLAG, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), body);
                             }
                             let pcm: Vec<i16> = body.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
                             rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
@@ -736,7 +859,7 @@ fn run(
                             continue;
                         }
                         if let Some(w) = spool.as_mut() {
-                            w.append(1, vsf::eagle_time_oscillations(), body);
+                            w.append_seq(1, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), body);
                         }
                         let mut pcm = vec![0i16; FRAME_SAMPLES];
                         match decoder.decode(body, &mut pcm, false) {
@@ -751,6 +874,8 @@ fn run(
                     // (The jitter target is the loss loop's, set in the play loop below; the arrival granularity is its floor.)
                     // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the call-start latency ratchet, field 2026-09-08).
                     rx_done.insert(wid, frames);
+                    have_set(&mut rx_have, wid);
+                    wanted.remove(&wid);
                     // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
                     clean_rx_windows += 1;
                     let now = std::time::Instant::now();
@@ -788,6 +913,9 @@ fn run(
                         for s in &mut f {
                             *s >>= OUTPUT_PAD_STOPS;
                         }
+                        if draining.is_some() {
+                            continue;
+                        }
                         last_played = Some(f.clone());
                         crate::platform::audio::queue_playback(f);
                     }
@@ -800,11 +928,15 @@ fn run(
                 } else if rx_done.range(np..).nth(1).is_some() {
                     // Two completed windows beyond the hole — declare it lost, move on.
                     windows_lost += 1;
+                    // …and ask for it back for the recording (the peer spooled what it sent).
+                    if !have_get(&rx_have, np) && wanted.len() < FILL_WANTED_CAP {
+                        wanted.insert(np);
+                    }
                     let underruns = crate::platform::audio::jitter_stats().2;
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, true, TIER_FRAMES[tier]);
                     // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
-                    if !probing {
+                    if !probing && draining.is_none() {
                         if let Some(prev) = last_played.take() {
                             let len = prev.len().max(1) as i32;
                             let fade: Vec<i16> = prev.iter().enumerate().map(|(i, s)| ((*s as i32) * (len - i as i32) / len) as i16).collect();
@@ -846,6 +978,75 @@ fn run(
             rx_decoders.retain(|w, _| *w >= np);
         }
 
+        // ---- FILL plane TX: requests for what we lost, the windows the peer asked for, and (draining) the flags that let both sides finish. ----
+        {
+            // Drain: the tail — every window from the play head to the peer's final count that never arrived — joins the wanted set as the peer's count becomes known.
+            if let (Some(_), Some(pw), Some(np)) = (draining, peer_windows, next_play) {
+                let mut s = np;
+                while s < pw && wanted.len() < FILL_WANTED_CAP {
+                    if !have_get(&rx_have, s) && !rx_done.contains_key(&s) {
+                        wanted.insert(s);
+                    }
+                    s = s.wrapping_add(1);
+                }
+            }
+            let req_every = if draining.is_some() { FILL_REQ_DRAIN } else { FILL_REQ_LIVE };
+            let mut reqs: Vec<u32> = Vec::new();
+            if peer_fills && !wanted.is_empty() && last_req_tx.elapsed() >= req_every {
+                // Round-robin thru the wanted set so a nack-less peer (or a lost request) never starves the rest.
+                let mut it = wanted.range(wanted_cursor..).chain(wanted.range(..wanted_cursor));
+                for _ in 0..FILL_REQ_PER_PACKET {
+                    match it.next() {
+                        Some(w) => reqs.push(*w),
+                        None => break,
+                    }
+                }
+                if let Some(last) = reqs.last() {
+                    wanted_cursor = last.wrapping_add(1);
+                }
+                last_req_tx = std::time::Instant::now();
+                fills_asked += reqs.len() as u64;
+            }
+            let mut fills: Vec<(u32, u8, Vec<u8>)> = Vec::new();
+            let mut budget = FILL_PACKET_BUDGET;
+            while let Some(seq) = serve_queue.iter().next().copied() {
+                let served = serve_window(&params, &mut spool_reader, &tx_index, seq);
+                let cost = 5 + served.as_ref().map_or(0, |(_, b)| b.len());
+                if cost > budget && !fills.is_empty() {
+                    break;
+                }
+                serve_queue.remove(&seq);
+                budget = budget.saturating_sub(cost);
+                match served {
+                    Some((t, b)) => {
+                        fills.push((seq, t, b));
+                        fills_served += 1;
+                        if draining.is_some() {
+                            fills_served_drain += 1;
+                        }
+                    }
+                    None => fills.push((seq, FILL_NACK, Vec::new())),
+                }
+            }
+            let heartbeat = draining.is_some() && last_fill_tx.elapsed() >= FILL_HEARTBEAT;
+            if fill_hello_due || heartbeat || !reqs.is_empty() || !fills.is_empty() {
+                let msg = FillMsg {
+                    draining: draining.is_some(),
+                    satisfied: draining.is_some() && peer_windows.is_some() && wanted.is_empty(),
+                    windows: window_id,
+                    reqs,
+                    fills,
+                };
+                tx_fill.advance_to(StepChain::step_for_seq(fill_seq));
+                if let Some(wire) = packet::seal_fill(&tx_fill, fill_seq, &fill_encode(&msg)) {
+                    let _ = super::send_media(wire, peer);
+                }
+                fill_seq = fill_seq.wrapping_add(1);
+                fill_hello_due = false;
+                last_fill_tx = std::time::Instant::now();
+            }
+        }
+
         // Signal-plane re-anchor: an authenticated express Anchor named a fresh peer address (both-sides-moved heal) — re-point TX there. The media plane's own follow rule keeps refining from packet sources as usual.
         if let Some(a) = super::take_peer_redirect() {
             if a != peer {
@@ -884,6 +1085,7 @@ fn run(
         // Periodic link + echo stats (10s cadence on the engine loop — a measurement cadence, not UI timing).
         if last_echo_stats.elapsed() >= std::time::Duration::from_secs(10) {
             last_echo_stats = std::time::Instant::now();
+            fill_hello_due = true; // the fill plane's presence beacon — a peer learns we speak it from any fill datagram
             {
                 let losses = loss_bits.iter().map(|w| w.count_ones()).sum::<u32>();
                 let js = crate::platform::audio::jitter_stats();
@@ -1028,6 +1230,20 @@ fn run(
         pkts_in,
         windows_lost
     );
+    if peer_fills || fills_asked > 0 {
+        crate::logf!(
+            "CALL: fills — asked {} ({} still wanted), got {} live + {} in the drain, {} nacked; served {} ({} in the drain); drain {} ms, peer {}",
+            fills_asked,
+            wanted.len(),
+            fills_got_live,
+            fills_got_drain,
+            fills_nacked,
+            fills_served,
+            fills_served_drain,
+            draining.map_or(0, |t| t.elapsed().as_millis()),
+            if peer_satisfied { "satisfied" } else if peer_draining { "draining" } else { "silent" }
+        );
+    }
     if rtt_n > 0 {
         crate::logf!(
             "CALL: link — rtt {} ms over the call (min {} max {} ema {:.0}, {} samples); final jitter target {}",
@@ -1136,7 +1352,7 @@ fn run(
         // Persist what the call proved (Stage 4): echo posts only at SOLID confidence (the persisted tier); voice posts on its own evidence gate (≥5s of voiced far-quiet speech ⇒ talk is Some). The drain blends against the stored profile — ritual outranks, learned refines.
         crate::call::calibrate::post_learned(learned_results(&e, &live_route));
     }
-    teardown();
+    teardown(sink_gen);
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
 }
 
@@ -1199,9 +1415,200 @@ fn learned_results(
     learned
 }
 
-fn teardown() {
-    super::clear_media_sink();
+fn teardown(sink_gen: u64) {
+    super::clear_media_sink_gen(sink_gen);
     crate::platform::audio::stop();
+}
+
+/// One frame this side SENT: where it sits in the spool, so the peer's request for its window can be served from disk.
+struct SentFrame {
+    seq: u32,
+    slot: u8,
+    tier: u8,
+    at: super::spool::RecordAt,
+}
+
+/// The FILL datagram's plaintext: `[flags u8][windows u32 LE][nreq u8][seq u32 LE × nreq][nfill u8][(seq u32 LE, tier u8, window bytes) × nfill]` — a `tier` of FILL_NACK carries no bytes.
+struct FillMsg {
+    draining: bool,
+    satisfied: bool,
+    /// Our source window count (the next seq we would send) — the peer's tail list runs up to it.
+    windows: u32,
+    reqs: Vec<u32>,
+    fills: Vec<(u32, u8, Vec<u8>)>,
+}
+
+fn fill_encode(m: &FillMsg) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + m.reqs.len() * 4 + m.fills.iter().map(|(_, _, b)| 5 + b.len()).sum::<usize>());
+    out.push((m.draining as u8) | ((m.satisfied as u8) << 1));
+    out.extend_from_slice(&m.windows.to_le_bytes());
+    out.push(m.reqs.len().min(255) as u8);
+    for r in m.reqs.iter().take(255) {
+        out.extend_from_slice(&r.to_le_bytes());
+    }
+    out.push(m.fills.len().min(255) as u8);
+    for (seq, tier, bytes) in m.fills.iter().take(255) {
+        out.extend_from_slice(&seq.to_le_bytes());
+        out.push(*tier);
+        if *tier != FILL_NACK {
+            out.extend_from_slice(bytes);
+        }
+    }
+    out
+}
+
+fn fill_decode(b: &[u8]) -> Option<FillMsg> {
+    let mut i = 0usize;
+    let take = |i: &mut usize, n: usize| -> Option<&[u8]> {
+        let s = b.get(*i..*i + n)?;
+        *i += n;
+        Some(s)
+    };
+    let flags = take(&mut i, 1)?[0];
+    let windows = u32::from_le_bytes(take(&mut i, 4)?.try_into().ok()?);
+    let nreq = take(&mut i, 1)?[0] as usize;
+    let mut reqs = Vec::with_capacity(nreq);
+    for _ in 0..nreq {
+        reqs.push(u32::from_le_bytes(take(&mut i, 4)?.try_into().ok()?));
+    }
+    let nfill = take(&mut i, 1)?[0] as usize;
+    let mut fills = Vec::with_capacity(nfill);
+    for _ in 0..nfill {
+        let seq = u32::from_le_bytes(take(&mut i, 4)?.try_into().ok()?);
+        let tier = take(&mut i, 1)?[0];
+        if tier == FILL_NACK {
+            fills.push((seq, tier, Vec::new()));
+            continue;
+        }
+        if tier as usize >= TIER_RATES.len() {
+            return None;
+        }
+        let bytes = take(&mut i, tier_window_bytes(tier as usize))?.to_vec();
+        fills.push((seq, tier, bytes));
+    }
+    if i != b.len() {
+        return None;
+    }
+    Some(FillMsg { draining: flags & 1 != 0, satisfied: flags & 2 != 0, windows, reqs, fills })
+}
+
+fn have_get(bits: &[u64], w: u32) -> bool {
+    bits.get((w / 64) as usize).is_some_and(|b| b & (1u64 << (w % 64)) != 0)
+}
+
+fn have_set(bits: &mut Vec<u64>, w: u32) {
+    let i = (w / 64) as usize;
+    if i >= bits.len() {
+        if i >= (1 << 22) {
+            return; // 2^28 windows — not a call
+        }
+        bits.resize(i + 1, 0);
+    }
+    bits[i] |= 1u64 << (w % 64);
+}
+
+/// Rebuild the window bundle for `seq` from the frames we spooled for it: `(tier, [len u16][frame] × TIER_FRAMES padded to the rung's slots)`. None = not held (older than the index, or never sent).
+fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, index: &std::collections::VecDeque<SentFrame>, seq: u32) -> Option<(u8, Vec<u8>)> {
+    let first = index.partition_point(|f| f.seq < seq);
+    if first >= index.len() || index[first].seq != seq {
+        return None;
+    }
+    if reader.is_none() {
+        let (key, path) = params.spool.as_ref()?;
+        *reader = Some(super::spool::SpoolReader::open(key, path)?);
+    }
+    let r = reader.as_mut()?;
+    let tier = index[first].tier as usize;
+    if tier >= TIER_RATES.len() {
+        return None;
+    }
+    let mut window = vec![0u8; tier_window_bytes(tier)];
+    let mut any = false;
+    for f in index.range(first..).take_while(|f| f.seq == seq) {
+        let slot = f.slot as usize;
+        if slot >= TIER_FRAMES[tier] {
+            continue;
+        }
+        let Some(rec) = r.read_at(f.at) else {
+            continue;
+        };
+        if rec.bytes.len() > TIER_MAX_ENC[tier] {
+            continue;
+        }
+        let base = slot * tier_slot(tier);
+        window[base..base + 2].copy_from_slice(&(rec.bytes.len() as u16).to_le_bytes());
+        window[base + 2..base + 2 + rec.bytes.len()].copy_from_slice(&rec.bytes);
+        any = true;
+    }
+    any.then_some((tier as u8, window))
+}
+
+#[cfg(test)]
+mod fill_tests {
+    use super::*;
+
+    #[test]
+    fn fill_message_round_trips_with_nacks_and_refuses_trailing_bytes() {
+        let m = FillMsg {
+            draining: true,
+            satisfied: false,
+            windows: 90_001,
+            reqs: vec![7, 9, 4_000_000_000],
+            fills: vec![(7, 0, vec![3u8; tier_window_bytes(0)]), (9, FILL_NACK, Vec::new()), (12, RAW_TIER as u8, vec![5u8; tier_window_bytes(RAW_TIER)])],
+        };
+        let bytes = fill_encode(&m);
+        let back = fill_decode(&bytes).unwrap();
+        assert!(back.draining && !back.satisfied && back.windows == 90_001);
+        assert_eq!(back.reqs, m.reqs);
+        assert_eq!(back.fills, m.fills);
+        let mut long = bytes.clone();
+        long.push(0);
+        assert!(fill_decode(&long).is_none());
+        assert!(fill_decode(&bytes[..bytes.len() - 1]).is_none());
+    }
+
+    #[test]
+    fn have_bits_grow_on_demand() {
+        let mut bits = Vec::new();
+        assert!(!have_get(&bits, 700));
+        have_set(&mut bits, 700);
+        assert!(have_get(&bits, 700) && !have_get(&bits, 699) && !have_get(&bits, 701));
+    }
+
+    #[test]
+    fn served_window_comes_back_off_the_spool_by_seq() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("photon-fill-serve-test-{}.tmp", std::process::id()));
+        let key = [3u8; 32];
+        let mut w = super::super::spool::SpoolWriter::create(&key, &path).unwrap();
+        let mut index = std::collections::VecDeque::new();
+        // Two floor-rung windows (8 frames each), a remote frame in between, then a plaid window.
+        for seq in 0u32..2 {
+            for slot in 0..TIER_FRAMES[0] {
+                let at = w.append_seq(0, 1, Some((seq, slot as u8)), &[seq as u8 + 1; 12]).unwrap();
+                index.push_back(SentFrame { seq, slot: slot as u8, tier: 0, at });
+            }
+            w.append(1, 2, &[9; 12]);
+        }
+        let at = w.append_seq(super::super::spool::RAW_FLAG, 3, Some((2, 0)), &[8; RAW_FRAME_BYTES]).unwrap();
+        index.push_back(SentFrame { seq: 2, slot: 0, tier: RAW_TIER as u8, at });
+        drop(w);
+        let params = EngineParams { secret: [0; 32], we_are_caller: true, peer_addr: "127.0.0.1:1".parse().unwrap(), spool: Some((key, path.clone())), cal: None, plaid_allowed: false };
+        let mut reader = None;
+        let (t, win) = serve_window(&params, &mut reader, &index, 1).unwrap();
+        assert_eq!(t, 0);
+        assert_eq!(win.len(), tier_window_bytes(0));
+        for slot in 0..TIER_FRAMES[0] {
+            let base = slot * tier_slot(0);
+            assert_eq!(u16::from_le_bytes([win[base], win[base + 1]]), 12);
+            assert_eq!(&win[base + 2..base + 14], &[2u8; 12]);
+        }
+        let (t, win) = serve_window(&params, &mut reader, &index, 2).unwrap();
+        assert_eq!(t as usize, RAW_TIER);
+        assert_eq!(u16::from_le_bytes([win[0], win[1]]) as usize, RAW_FRAME_BYTES);
+        assert!(serve_window(&params, &mut reader, &index, 3).is_none());
+        let _ = std::fs::remove_file(&path);
+    }
 }
 
 #[cfg(test)]
