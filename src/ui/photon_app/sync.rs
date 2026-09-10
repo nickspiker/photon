@@ -785,6 +785,10 @@ impl PhotonApp {
 
     /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is the per-message retry the protocol was missing — without it, a single dropped message OR a single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK freezes its chain while the receiver's has moved on → every later message decrypts as garbage). Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
     pub(super) fn retransmit_due_messages(&mut self) {
+        // Nothing pending anywhere: nothing to route (this runs every tick; the route build below is the expensive half).
+        if !self.friendship_chains.iter().any(|(_, ch)| ch.has_pending_messages()) {
+            return;
+        }
         let now_osc = vsf::eagle_time_oscillations();
 
         // Snapshot (friendship_id → primary + alt addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address. Carry BOTH addresses — a retransmit that only re-hit the primary would keep blackholing an off-LAN peer for the whole retry budget (observed: 8 attempts all to a dead LAN IPv4).

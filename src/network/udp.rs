@@ -79,7 +79,25 @@ pub fn get_local_ip_toward(peer: std::net::Ipv4Addr) -> Option<std::net::Ipv4Add
     }
 }
 
+/// Cached for one second: the routing-lookup socket below costs bind + connect + getsockname + close, and half a dozen per-tick paths (retransmits, history recovery, relay decisions) asked for it at every vsync — 117 socket round trips a second on an idle phone (2026-09-10 tick profile). A LAN address changes on the scale of seconds, never frames.
 pub fn get_local_ip() -> Option<std::net::Ipv4Addr> {
+    static CACHE: std::sync::Mutex<Option<(std::time::Instant, Option<std::net::Ipv4Addr>)>> = std::sync::Mutex::new(None);
+    let now = std::time::Instant::now();
+    if let Ok(g) = CACHE.lock() {
+        if let Some((at, ip)) = *g {
+            if now.duration_since(at) < std::time::Duration::from_secs(1) {
+                return ip;
+            }
+        }
+    }
+    let ip = get_local_ip_uncached();
+    if let Ok(mut g) = CACHE.lock() {
+        *g = Some((now, ip));
+    }
+    ip
+}
+
+fn get_local_ip_uncached() -> Option<std::net::Ipv4Addr> {
     let socket = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
     // Connect to Cloudflare DNS - doesn't actually send packets, just sets up routing
     socket.connect("1.1.1.1:80").ok()?;

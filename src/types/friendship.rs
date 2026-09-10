@@ -1430,6 +1430,11 @@ impl FriendshipChains {
     /// Reliability sweep: collect every unacked pending message whose backoff deadline has passed, bump its attempt count + next deadline, and return the data needed to resend it. Drives the tick-based retransmit so a dropped message OR a dropped ACK self-heals (we keep resending until the ACK lands; the receiver dedupes by eagle_time). Messages that have exhausted `MAX_SEND_ATTEMPTS` are NOT returned here (the caller treats them as undelivered) but are left in pending so a late ACK can still clear them.
     ///
     /// Returns `(eagle_time, prev_msg_hp, ciphertext, attempts_now, exhausted)` per due message.
+    /// Anything still waiting on an ACK? The per-tick retransmit scan asks this before it builds routes.
+    pub fn has_pending_messages(&self) -> bool {
+        !self.pending_messages.is_empty()
+    }
+
     pub fn collect_due_retransmits(
         &mut self,
         now_osc: i64,
