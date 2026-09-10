@@ -628,9 +628,10 @@ impl PhotonApp {
                 && (fold.is_empty() || s.device_key().is_some_and(|k| fold.contains(&k)))
         });
         // A conversation with no remote participants has nothing to exchange, so it never enters the queue. (This replaces a comparison against the raw identity SEED that could never match a pid — self was excluded from keygen only because something else forced its state Complete.)
+        // A REPAIR WEAVE (era_prior_claim set by the heavy-weave pickup) bypasses the fleet-first hold: the hold protects a fresh device's rejoin from re-clutching friends whose chains are about to replicate, while a weave is the owner repairing a friendship the fleet already agreed it holds nothing newer for. Desktop 2026-09-10 03:16: the Esme repair sat Pending behind a sibling whose pongs arrive unmatched and never make a verdict.
         let next_idx = self.contacts.iter().position(|c| {
             self.has_remote(c)
-                && (c.is_sibling || !sibling_probe_pending)
+                && (c.is_sibling || !sibling_probe_pending || c.era_prior_claim.is_some())
                 && c.clutch_state == crate::types::ClutchState::Pending
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
