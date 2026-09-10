@@ -1426,6 +1426,8 @@ pub struct PhotonApp {
     tick_stat_at: Option<std::time::Instant>,
     tick_stat_n: u32,
     tick_stat_dirty: u32,
+    /// Per-section tick cost since the last report (label, summed ms) — the idle screen's 3 ms tick on a phone (2026-09-10) had to be named section by section.
+    tick_prof: Vec<(&'static str, f32)>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -2283,6 +2285,7 @@ impl PhotonApp {
             tick_stat_at: None,
             tick_stat_n: 0,
             tick_stat_dirty: 0,
+            tick_prof: Vec::new(),
             storage: None,
             contacts: Vec::new(),
             conversations: Vec::new(),
@@ -2578,6 +2581,14 @@ impl PhotonApp {
     }
 
     /// One-shot poll for the Android sticky session broadcast signal. Returns `1` after a successful attest (Kotlin should call `sendSessionBroadcast()`), `-1` after a vault nuke (Kotlin should call `clearSessionBroadcast()`), `0` otherwise.
+    /// Accumulate one timed section's cost for the 30 s tick profile.
+    pub(crate) fn tick_prof_add(&mut self, label: &'static str, ms: f32) {
+        match self.tick_prof.iter_mut().find(|(l, _)| *l == label) {
+            Some((_, t)) => *t += ms,
+            None => self.tick_prof.push((label, ms)),
+        }
+    }
+
     /// Remember which line asked for this tick's redraw (deduplicated, capped) — read by the storm report in `tick`.
     pub(crate) fn note_redraw(&mut self, line: u32) {
         if self.redraw_why.len() < 32 && !self.redraw_why.contains(&line) {

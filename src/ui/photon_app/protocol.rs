@@ -12,10 +12,12 @@ impl PhotonApp {
             ($label:literal, $body:expr) => {{
                 let __t = Instant::now();
                 let __r = $body;
-                let __ms = __t.elapsed().as_millis();
+                let __el = __t.elapsed();
+                let __ms = __el.as_millis();
                 if __ms > 50 {
                     crate::logf!("PERF: {} took {}ms (UI thread)", $label, __ms);
                 }
+                self.tick_prof_add($label, __el.as_secs_f32() * 1000.0);
                 __r
             }};
         }

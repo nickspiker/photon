@@ -3266,7 +3266,12 @@ impl FluorApp for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
-        needs_redraw |= self.advance_protocol(now);
+        {
+            let t = Instant::now();
+            needs_redraw |= self.advance_protocol(now);
+            self.tick_prof_add("advance_protocol (whole)", t.elapsed().as_secs_f32() * 1000.0);
+            self.tick_prof_add("tick (whole)", now.elapsed().as_secs_f32() * 1000.0);
+        }
 
         // REDRAW-STORM REPORT (2026-09-10, Nick's phone at 100% CPU on Ready with nothing on screen moving): once per five seconds, only when more than thirty dirty ticks a second went by, name the lines that asked for them (protocol.rs as-is, driver.rs + 100000).
         {
@@ -3276,10 +3281,20 @@ impl FluorApp for PhotonApp {
             }
             let since = *self.tick_stat_at.get_or_insert(now);
             let secs = now.duration_since(since).as_secs_f32();
-            if secs >= 5.0 {
-                if self.tick_stat_dirty as f32 / secs > 30.0 {
+            let storm = self.tick_stat_dirty as f32 / secs > 30.0;
+            if (secs >= 5.0 && storm) || secs >= 30.0 {
+                if storm {
                     let why = format!("{:?}", self.redraw_why);
                     crate::logf!("PERF: redraw storm — {} ticks/s, {} dirty/s, asked at lines {}", (self.tick_stat_n as f32 / secs).round() as u32, (self.tick_stat_dirty as f32 / secs).round() as u32, why);
+                }
+                // TICK PROFILE every 30 s: the sections' average cost per tick, largest first, anything over a tenth of a millisecond.
+                if secs >= 30.0 {
+                    let n = self.tick_stat_n.max(1) as f32;
+                    let mut prof: Vec<(&'static str, f32)> = self.tick_prof.iter().map(|(l, t)| (*l, *t / n)).filter(|(_, ms)| *ms >= 0.1).collect();
+                    prof.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+                    let line: Vec<String> = prof.iter().take(10).map(|(l, ms)| format!("{l} {ms:.2}")).collect();
+                    crate::logf!("PERF: tick profile — {} ticks/s, ms per tick: {}", (self.tick_stat_n as f32 / secs).round() as u32, line.join(", "));
+                    self.tick_prof.clear();
                 }
                 self.tick_stat_n = 0;
                 self.tick_stat_dirty = 0;
