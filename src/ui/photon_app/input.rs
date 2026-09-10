@@ -151,58 +151,31 @@ impl PhotonApp {
                     for (i, row) in plan.iter().enumerate() {
                         let r = you_row_rect(&layout, settings_content_scroll, i);
                         match row {
-                            YouRow::Field(idx) => {
+                            YouRow::FieldLabel(idx) => {
+                                // Label line: the tag box (a phone's home / work / custom) and the default-share checkbox sit at the RIGHT end; the label draws on the left.
                                 let pf = &mut self.you_fields[*idx];
-                                // Same three columns the render pass draws thru: label | value | share box.
-                                let three = r.split_h([0.4, 0.54, 0.06]);
-                                let col = three[1];
+                                let sq_w = r.w * 0.08;
                                 if let Some(cb) = pf.share_cb.as_mut() {
-                                    let sq = three[2];
+                                    let sq = fluor::region::Region::new(r.right() - sq_w, r.y, sq_w, r.h);
                                     cb.set_rect(sq.center_x(), sq.center_y(), ctrl_h, ctrl_h);
                                     cb.set_font_size(ctrl_font);
                                 }
-                                if pf.tag_tb.is_some() {
-                                    // Value + tag share the column: value left ~60%, tag right ~32% (a phone's home/work/custom).
-                                    let boxr = fluor::region::Region::new(
-                                        col.x + col.w * 0.02,
-                                        col.y,
-                                        col.w * 0.60,
-                                        col.h,
-                                    );
-                                    let tagr = fluor::region::Region::new(
-                                        col.x + col.w * 0.66,
-                                        col.y,
-                                        col.w * 0.32,
-                                        col.h,
-                                    );
-                                    pf.tb.set_rect(
-                                        boxr.center_x(),
-                                        boxr.center_y(),
-                                        boxr.w,
-                                        ctrl_h * 1.2,
-                                    );
-                                    pf.tb.set_font_size(ctrl_font, ctx.text);
-                                    let tag = pf.tag_tb.as_mut().unwrap();
-                                    tag.set_rect(
-                                        tagr.center_x(),
-                                        tagr.center_y(),
-                                        tagr.w,
-                                        ctrl_h * 1.2,
-                                    );
+                                if let Some(tag) = pf.tag_tb.as_mut() {
+                                    let tag_w = r.w * 0.30;
+                                    let tagr = fluor::region::Region::new(r.right() - sq_w - tag_w - r.w * 0.02, r.y, tag_w, r.h);
+                                    tag.set_rect(tagr.center_x(), tagr.center_y(), tagr.w, ctrl_h * 1.1);
                                     tag.set_font_size(ctrl_font * 0.9, ctx.text);
-                                } else {
-                                    let boxr = col.center_h(0.92);
-                                    pf.tb.set_rect(
-                                        boxr.center_x(),
-                                        boxr.center_y(),
-                                        boxr.w,
-                                        ctrl_h * 1.2,
-                                    );
-                                    pf.tb.set_font_size(ctrl_font, ctx.text);
                                 }
                             }
+                            YouRow::FieldBox(idx) => {
+                                // Value line: the box takes the whole pane width (a hairline divider draws under it in the render arm).
+                                let pf = &mut self.you_fields[*idx];
+                                let boxr = fluor::region::Region::new(r.x + r.w * 0.01, r.y, r.w * 0.98, r.h).center_h(0.92);
+                                pf.tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                pf.tb.set_font_size(ctrl_font, ctx.text);
+                            }
                             YouRow::AddInput => {
-                                let boxr = r.split_h([0.62, 0.38])[0].center_h(0.92);
+                                let boxr = fluor::region::Region::new(r.x + r.w * 0.01, r.y, r.w * 0.98, r.h).center_h(0.92);
                                 if let Some(tb) = self.you_add_textbox.as_mut() {
                                     tb.set_rect(
                                         boxr.center_x(),
@@ -714,6 +687,8 @@ impl PhotonApp {
         self.drag_select_hit = id;
         self.pointer_down = true;
         self.pan_grab_x = x;
+        self.pan_grab_y = y;
+        self.drag_axis = 0;
         self.change_focus(Some(id));
         let grab_scroll = self.textbox_by_hit_mut(id).unwrap().scroll_offset();
         self.pan_grab_scroll = grab_scroll;
@@ -748,6 +723,23 @@ impl PhotonApp {
                 return true;
             }
         }
+        // ANDROID AXIS SPLIT (Nick 2026-09-10): a finger on a single-line box decides its axis in the first few pixels — left-right pans/selects the text, up-down is the PAGE scrolling and the box lets go of the gesture (drag_select_hit cleared, so the wheel path stops suppressing the pane scroll; focus + caret stay where the press put them).
+        #[cfg(target_os = "android")]
+        {
+            if self.drag_axis == 0 {
+                let (dx, dy) = (x - self.pan_grab_x, y - self.pan_grab_y);
+                const DECIDE_PX: Coord = 10.0;
+                if dx.abs() < DECIDE_PX && dy.abs() < DECIDE_PX {
+                    return false;
+                }
+                if dy.abs() > dx.abs() {
+                    self.drag_axis = 2;
+                    self.drag_select_hit = HIT_NONE;
+                    return false;
+                }
+                self.drag_axis = 1;
+            }
+        }
         let offset = self.pan_grab_scroll + (x - self.pan_grab_x);
         match self.textbox_by_hit_mut(id) {
             Some(tb) => tb.pan_scroll_to(offset),
@@ -764,6 +756,7 @@ impl PhotonApp {
         }
         self.pointer_down = false;
         self.drag_select_hit = HIT_NONE;
+        self.drag_axis = 0;
     }
 
     /// True iff both `[` and `]` are currently held. A bracket is "held" if its press timestamp is more recent than its release timestamp, OR the release was within [`CHORD_RELEASE_GRACE`] — that grace absorbs X11's habit of firing a synthetic Release for a held key the instant another key is pressed.

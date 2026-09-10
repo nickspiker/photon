@@ -4572,10 +4572,11 @@ impl PhotonApp {
                         if r.bottom() <= content_top || r.y >= content_bot {
                             // Culled: reset the row's textboxes to never-painted so they report NO damage while hidden — a culled box otherwise keeps dirty-from-birth caches (or a stale prev-rect from before the scroll) and leaks phantom damage every blink frame. The scroll frame that culled it was a full scene repaint, so its old pixels are already gone.
                             match row {
-                                YouRow::Field(idx) => {
-                                    let pf = &mut self.you_fields[*idx];
-                                    pf.tb.reset_paint_tracking();
-                                    if let Some(tag) = pf.tag_tb.as_mut() {
+                                YouRow::FieldBox(idx) => {
+                                    self.you_fields[*idx].tb.reset_paint_tracking();
+                                }
+                                YouRow::FieldLabel(idx) => {
+                                    if let Some(tag) = self.you_fields[*idx].tag_tb.as_mut() {
                                         tag.reset_paint_tracking();
                                     }
                                 }
@@ -4604,54 +4605,47 @@ impl PhotonApp {
                                     Some(content_clip),
                                     None,
                                 );
+                                // What the right-hand box means, said once per tier over the column it sits in (the name tier has no boxes).
+                                if *tier != "name" {
+                                    ctx.text.draw_text_right(
+                                        &mut canvas,
+                                        &tr(Msg::YouShareHint),
+                                        r.right() - hspan2 * 0.2,
+                                        r.center_y(),
+                                        &TextStyle::new(hspan2 * 0.8, *theme::LABEL_COLOUR).font("Oxanium"),
+                                        Some(content_clip),
+                                        None,
+                                    );
+                                }
                             }
-                            YouRow::Field(idx) => {
-                                // Label | value | share box — the third column is the default-share checkbox (absent on the display name row).
-                                let cols = r.split_h([0.4, 0.54, 0.06]);
+                            YouRow::FieldLabel(idx) => {
+                                // Label line: label left; the tag box and the default-share checkbox at the right end (laid out in input.rs on the same rect).
                                 let label = self.you_fields[*idx].label.clone();
                                 ctx.text.draw_text_left(
                                     &mut canvas,
                                     &label,
-                                    cols[0].x + hspan2 * 0.3,
-                                    cols[0].center_y(),
+                                    r.x + hspan2 * 0.3,
+                                    r.center_y(),
                                     &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
                                     Some(content_clip),
                                     None,
                                 );
                                 let pf = &mut self.you_fields[*idx];
-                                let id = pf.tb.hit_id();
-                                pf.tb.render_content_into(
-                                    &mut canvas,
-                                    0.,
-                                    0.,
-                                    ctx.text,
-                                    Some(glow_clip),
-                                    None,
-                                    Some(&mut chrome.hit_test_map),
-                                    id,
-                                );
-                                // Companion tag box (phone: home / work / custom) rides the right end of the same row.
                                 if let Some(tag) = pf.tag_tb.as_mut() {
                                     let tid = tag.hit_id();
-                                    tag.render_content_into(
-                                        &mut canvas,
-                                        0.,
-                                        0.,
-                                        ctx.text,
-                                        Some(glow_clip),
-                                        None,
-                                        Some(&mut chrome.hit_test_map),
-                                        tid,
-                                    );
+                                    tag.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), tid);
                                 }
                                 if let Some(cb) = pf.share_cb.as_mut() {
-                                    cb.render_content_into(
-                                        &mut canvas,
-                                        ctx.text,
-                                        Some(content_clip),
-                                        Some(&mut chrome.hit_test_map),
-                                    );
+                                    cb.render_content_into(&mut canvas, ctx.text, Some(content_clip), Some(&mut chrome.hit_test_map));
                                 }
+                            }
+                            YouRow::FieldBox(idx) => {
+                                // Value line: the full-width box, then the chat screen's hairline under it (pure white at α=1/8, one ru thick).
+                                let pf = &mut self.you_fields[*idx];
+                                let id = pf.tb.hit_id();
+                                pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
+                                let ru = ctx.viewport.ru.max(1.0);
+                                paint::fill_rect(&mut canvas, r.x as isize, (r.bottom() - ru) as isize, r.w as isize, ru as isize, theme::VERSION_COLOUR, Some(content_clip), None);
                             }
                             YouRow::AddHeader => {
                                 ctx.text.draw_text_left(
@@ -4667,7 +4661,6 @@ impl PhotonApp {
                                 );
                             }
                             YouRow::AddInput => {
-                                let cols = r.split_h([0.62, 0.38]);
                                 if let Some(tb) = self.you_add_textbox.as_mut() {
                                     let id = tb.hit_id();
                                     tb.render_content_into(
@@ -4681,13 +4674,16 @@ impl PhotonApp {
                                         id,
                                     );
                                 }
+                            }
+                            YouRow::AddPill => {
+                                let cols = r.split_h([0.38, 0.62]);
                                 draw_stub_pill(
                                     &mut canvas,
                                     ctx.text,
                                     &mut chrome.hit_test_map,
                                     buf_w,
                                     buf_h,
-                                    cols[1].center_h(0.72),
+                                    cols[0].center_h(0.72),
                                     &tr(Msg::Add),
                                     btn_base.wrapping_add(2),
                                     ctx.pressed_hit,
@@ -5286,10 +5282,44 @@ impl PhotonApp {
                             }
                         }
                     };
+                    // Status: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome — drawn RIGHT UNDER the channel pill that started it (Nick 2026-09-10), at the page bottom only for an auto-update nobody pressed.
+                    let update_progress = self.update_progress;
+                    let update_status = self.update_status.clone();
+                    let update_active_dev = self.update_active_dev;
+                    let draw_update_status = |flow: &mut Flow, canvas: &mut Canvas, text: &mut fluor::text::TextRenderer| {
+                        if let Some((done, total)) = update_progress {
+                            let finishing = total > 0 && done >= total;
+                            let label = if finishing {
+                                tr(Msg::Updating)
+                            } else if total > 0 {
+                                tr(Msg::Downloading)
+                            } else {
+                                tr(Msg::DownloadingMiB((done >> 20) as i64))
+                            };
+                            flow.gap(hspan2 * 0.3);
+                            flow.line(canvas, text, &label, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                            let bar = flow.band(hspan2 * 0.6);
+                            // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the fill MUST be painted before the track.
+                            let bar_w = bar.w as isize;
+                            let bar_y = bar.y as isize;
+                            let bar_h = (bar.h * 0.6) as isize;
+                            if total > 0 {
+                                let fill_w = (bar.w as f64 * (done as f64 / total as f64)) as isize;
+                                paint::fill_rect(canvas, bar.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
+                            }
+                            paint::fill_rect(canvas, bar.x as isize, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
+                        } else if let Some(status) = &update_status {
+                            flow.gap(hspan2 * 0.3);
+                            flow.line(canvas, text, status, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                        }
+                    };
                     let (rl, rf, re) = pill_state("release", *theme::PILL_GREEN, &self.update_release, self.update_busy);
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&rl, btn_base.wrapping_add(1), re, Some(rf)),
                     ], "Oxanium");
+                    if update_active_dev == Some(false) {
+                        draw_update_status(&mut flow, &mut canvas, ctx.text);
+                    }
                     {
                         // The release the green pill names: its minor is the notes section. Fetched notes first (they describe releases newer than this build); the compiled-in copy covers the case where the offered release IS this build (or the fetch hasn't landed).
                         let offered_minor: Option<usize> = match &self.update_release {
@@ -5320,6 +5350,9 @@ impl PhotonApp {
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&dl, btn_base.wrapping_add(2), de, Some(df)),
                     ], "Oxanium");
+                    if update_active_dev == Some(true) {
+                        draw_update_status(&mut flow, &mut canvas, ctx.text);
+                    }
                     flow.gap(hspan2 * 0.3);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::DevChannelHint), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     if dev_patch() > 0 {
@@ -5338,29 +5371,8 @@ impl PhotonApp {
                         flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
                     }
                     flow.gap(hspan2 * 0.4);
-                    // Status: the download bar while bytes stream (label flips "Downloading" → "Updating…" at the end), else the last APPLY outcome.
-                    if let Some((done, total)) = self.update_progress {
-                        let finishing = total > 0 && done >= total;
-                        let label = if finishing {
-                            tr(Msg::Updating)
-                        } else if total > 0 {
-                            tr(Msg::Downloading)
-                        } else {
-                            tr(Msg::DownloadingMiB((done >> 20) as i64))
-                        };
-                        flow.line(&mut canvas, ctx.text, &label, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
-                        let bar = flow.band(hspan2 * 0.6);
-                        // The bar: proportional fill THEN full-width track. fluor is under-blend (FIRST paint wins), so the fill MUST be painted before the track.
-                        let bar_w = bar.w as isize;
-                        let bar_y = bar.y as isize;
-                        let bar_h = (bar.h * 0.6) as isize;
-                        if total > 0 {
-                            let fill_w = (bar.w as f64 * (done as f64 / total as f64)) as isize;
-                            paint::fill_rect(&mut canvas, bar.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
-                        }
-                        paint::fill_rect(&mut canvas, bar.x as isize, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
-                    } else if let Some(status) = &self.update_status {
-                        flow.line(&mut canvas, ctx.text, status, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
+                    if update_active_dev.is_none() {
+                        draw_update_status(&mut flow, &mut canvas, ctx.text);
                     }
                     measured_extent = Some((flow.used(), inset.h));
                 }

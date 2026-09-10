@@ -1104,12 +1104,16 @@ fn profile_tier_label(tier: &str) -> Option<std::borrow::Cow<'static, str>> {
 enum YouRow {
     /// Category header — carries the TIER ID; the draw site routes it thru [`profile_tier_label`] so headers translate.
     Header(&'static str),
-    /// An editable field — index into `you_fields`. Label left, box right.
-    Field(usize),
+    /// An editable field's LABEL line — index into `you_fields`: label left, the tag box (phone: home / work) and the default-share checkbox at the right end.
+    FieldLabel(usize),
+    /// The same field's VALUE line: a full-width box, with the hairline divider under it (Nick 2026-09-10: "vertical, line returns and horizontal hairline dividers like the chat screen, so the textbox for each entry is full width").
+    FieldBox(usize),
     /// "Add a custom field" sub-header.
     AddHeader,
-    /// The custom-field-name entry box + "Add" pill.
+    /// The custom-field-name entry box (full width).
     AddInput,
+    /// The "Add" pill under it.
+    AddPill,
     /// "Your handle IS your identity" reassurance line.
     Note,
     /// "Identity" header.
@@ -1135,12 +1139,14 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
                     rows.push(YouRow::Header(tier));
                     any = true;
                 }
-                rows.push(YouRow::Field(i));
+                rows.push(YouRow::FieldLabel(i));
+                rows.push(YouRow::FieldBox(i));
             }
         }
     }
     rows.push(YouRow::AddHeader);
     rows.push(YouRow::AddInput);
+    rows.push(YouRow::AddPill);
     rows.push(YouRow::Note);
     rows.push(YouRow::IdentityHeader);
     rows.push(YouRow::IdentityFp);
@@ -1739,6 +1745,9 @@ pub struct PhotonApp {
     pointer_down: bool,
     /// The textbox hit id a press engaged for the text-pan (HIT_NONE if the press wasn't on a textbox). Set on press, cleared on release — the ONE bit of state the drag needs, works for every box via `textbox_by_hit_mut`. While live, pane-scroll (wheel / touch-drag synth) is suppressed: the finger owns the TEXT, not the page.
     drag_select_hit: HitId,
+    /// Where a single-line textbox press landed vertically, and which axis the drag committed to (0 undecided, 1 horizontal = text pan/select, 2 vertical = the finger is scrolling the PANE and the box lets go). Android only (Nick 2026-09-10: "text select should be left-right and scroll should be up-down").
+    pan_grab_y: Coord,
+    drag_axis: u8,
     /// Text-pan grab: pointer x and the box's scroll offset at press — the drag pans the text to `grab_scroll + (x − grab_x)`, so the grabbed character (and the caret on it) stays under the finger.
     pan_grab_x: Coord,
     pan_grab_scroll: Coord,
@@ -1983,6 +1992,8 @@ pub struct PhotonApp {
     update_reexec: Option<std::path::PathBuf>,
     /// In-flight download progress (bytes done, total; total 0 = unknown length): the Updates page renders the bar from this. `None` = no download running.
     update_progress: Option<(u64, u64)>,
+    /// Which channel pill started the running download / the last apply: Some(false) = release, Some(true) = dev, None = nothing user-started (an auto-update). The Updates page draws the bar and outcome RIGHT UNDER that pill (Nick 2026-09-10), not at the page bottom.
+    update_active_dev: Option<bool>,
     /// Next automatic release-channel check, eagle time. 0 = not yet scheduled (the driver arms a short post-launch delay, then ~6–8h jittered). The AUTOMATIC path (docs/updates.md): desktop release builds self-apply thru the stamp window; dev builds and Android only surface a toast — dev updates stay manual by mandate, Android package installs belong to the OS.
     next_update_check_osc: i64,
     /// Session dedup for the "update available" toast — the version already announced, so a 6-hourly re-check doesn't re-toast the same release.
@@ -2383,6 +2394,8 @@ impl PhotonApp {
             hover_is_textbox: false,
             pointer_down: false,
             drag_select_hit: HIT_NONE,
+            pan_grab_y: 0.0,
+            drag_axis: 0,
             pan_grab_x: 0.0,
             pan_grab_scroll: 0.0,
             last_click_hit: HIT_NONE,
@@ -2496,6 +2509,7 @@ impl PhotonApp {
             update_busy: false,
             update_reexec: None,
             update_progress: None,
+            update_active_dev: None,
             next_update_check_osc: 0,
             update_toasted: None,
             update_available: None,

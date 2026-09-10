@@ -479,6 +479,8 @@ pub enum Msg<'a> {
     ProfileTierPersonal,
     ProfileTierWork,
     ProfileTierSensitive,
+    /// Over the share-box column on the You page: what a tick means.
+    YouShareHint,
     ProfileTierCustom,
     ProfileNamePreferred,
     ProfileNameFirst,

@@ -169,6 +169,7 @@ impl PhotonApp {
         }
         let row = row.clone();
         self.update_busy = true;
+        self.update_active_dev = Some(matches!(channel, crate::network::updates::Channel::Dev));
         self.update_status = Some(
             tr(Msg::Installing { channel: channel.label(), ver: &dozenal_version_tuple(row.version) }).into_owned(),
         );
