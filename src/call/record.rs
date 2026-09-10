@@ -236,23 +236,27 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
     let slots = grid[0].len();
     let slots_out = slots.div_ceil(2);
     let base = records.iter().map(|(_, osc, _)| *osc).min().unwrap_or(0);
-    // Envelope accumulators: per channel, per 10ms SLOT, per component — sum of squares + sample count; folded to the fixed ENV_BUCKETS grid (and the row thumbnail) once the packets are written. The band states carry across slots so the filters see a continuous signal.
+    // Envelope accumulators: EVERY SAMPLE goes straight into one of ENV_BUCKETS bins per channel (Nick 2026-09-10: "every sample of audio, downsampling into bins 65536 wide… square each end so we get a good positive value"): the total sample count is known up front from the slot count, so a sample's bin is its index × ENV_BUCKETS ÷ total, and each bin keeps a sum of SQUARES per component (amplitude and the three band differences) plus a count — the bin's value is the root of the mean square, always positive. ~60 samples a bin on a 90s wave, ~5ms on a two-hour one: a true downsample at every length. 65536 × 4 × nchan doubles for the transcode's duration, then gone. The band states carry across slots so the filters see a continuous signal.
     let k = ENV_COMPONENTS;
-    let mut sumsq = vec![0f64; nchan * slots_out * k];
-    let mut counts = vec![0usize; nchan * slots_out];
+    let total_samples = (slots_out * FRAME).max(1);
+    let mut sumsq = vec![0f64; nchan * ENV_BUCKETS * k];
+    let mut counts = vec![0u32; nchan * ENV_BUCKETS];
     let mut bands: Vec<BandState> = (0..nchan).map(|_| BandState::new()).collect();
-    let mut accumulate = |ch: usize, slot_out: usize, pcm: &[i16]| {
-        let b = ch * slots_out + slot_out;
-        let base = b * k;
-        for &s in pcm {
+    let mut accumulate = |ch: usize, slot_out: usize, half: usize, pcm: &[i16]| {
+        // The absolute sample index of this pcm run's first sample within the archive.
+        let start = slot_out * FRAME + half * FRAME_IN;
+        for (i, &s) in pcm.iter().enumerate() {
             let x = s as i32;
             let (d1, d4, d8) = bands[ch].push(x);
+            let bin = ((start + i) as u64 * ENV_BUCKETS as u64 / total_samples as u64).min(ENV_BUCKETS as u64 - 1) as usize;
+            let b = ch * ENV_BUCKETS + bin;
+            let base = b * k;
             sumsq[base] += (x as f64) * (x as f64);
             sumsq[base + 1] += (d8 as f64) * (d8 as f64);
             sumsq[base + 2] += (d4 as f64) * (d4 as f64);
             sumsq[base + 3] += (d1 as f64) * (d1 as f64);
+            counts[b] += 1;
         }
-        counts[b] += pcm.len();
     };
 
     // Packets first, header after: the header carries the envelope, which the packet loop produces.
@@ -286,7 +290,7 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
                     } else {
                         vec![0i16; FRAME_IN]
                     };
-                    accumulate(ch, slot_out, &pcm);
+                    accumulate(ch, slot_out, half, &pcm);
                     for (i, &s) in pcm.iter().enumerate() {
                         interleaved[(half * FRAME_IN + i) * nchan + ch] = s;
                     }
@@ -317,7 +321,7 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
                     };
                     pcm[half * FRAME_IN..half * FRAME_IN + FRAME_IN].copy_from_slice(&p);
                 }
-                accumulate(ch, slot_out, &pcm);
+                accumulate(ch, slot_out, 0, &pcm);
                 let n = encs[ch].encode(&pcm, &mut pkt).ok()?;
                 write_pkt(&mut container, &pkt[..n]);
             }
@@ -327,25 +331,24 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
     if container.is_empty() {
         return None;
     }
-    // Per-slot LINEAR RMS per channel × component, then the fixed-grid fold (65536 per channel) and the row thumbnail from the same linear values.
+    // Root-mean-square per bin per component — LINEAR, positive — straight into the envelope bytes; the row thumbnail folds the same linear bins to one gross.
+    let env_len = ENV_BUCKETS;
     let lin: Vec<Vec<f32>> = (0..nchan * k)
         .map(|ci| {
             let (ch, c) = (ci / k, ci % k);
-            (0..slots_out)
-                .map(|slot| {
-                    let b = ch * slots_out + slot;
+            (0..env_len)
+                .map(|bin| {
+                    let b = ch * env_len + bin;
                     if counts[b] == 0 { 0.0 } else { (sumsq[b * k + c] / counts[b] as f64).sqrt() as f32 }
                 })
                 .collect()
         })
         .collect();
-    let env_len = ENV_BUCKETS;
     let mut fine = vec![255u8; nchan * env_len * k];
     for ch in 0..nchan {
         for c in 0..k {
-            let folded = resample_linear(&lin[ch * k + c], env_len);
             for b in 0..env_len {
-                fine[(ch * env_len + b) * k + c] = lin_to_stops_u8(folded[b]);
+                fine[(ch * env_len + b) * k + c] = lin_to_stops_u8(lin[ch * k + c][b]);
             }
         }
     }
