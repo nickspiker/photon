@@ -105,7 +105,16 @@ mod imp {
         *pos += take;
     }
 
+    /// Re-entry latch: on Android, ART's libsigchain wraps every app handler and does NOT honour SA_RESETHAND, so the re-raise at the bottom landed back HERE — 51,011 identical sidecar lines from one SIGBUS on Nick's phone (2026-09-10). A second entry ends the process on the spot.
+    static IN_HANDLER: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    /// The dispositions we replaced at install, restored before the re-raise so whatever stood before us (Android's debuggerd tombstone writer, the default kill) gets the signal next.
+    const FAULT_SIGS: [i32; 5] = [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT];
+    static mut OLD_ACTIONS: [Option<libc::sigaction>; 5] = [None, None, None, None, None];
+
     unsafe extern "C" fn handler(sig: i32, info: *mut libc::siginfo_t, _ctx: *mut libc::c_void) {
+        if IN_HANDLER.swap(true, Ordering::SeqCst) {
+            libc::_exit(128 + sig);
+        }
         let fd = SIDECAR_FD.load(Ordering::Relaxed);
         if fd >= 0 {
             let name = match sig {
@@ -128,8 +137,24 @@ mod imp {
         }
         // The soft log batch (minutes of the run before this fault) dies with the process unless it goes to disk now — best effort, write(2) only.
         crate::crash_flush_pending();
-        // SA_RESETHAND restored the default action; re-raise so the OS finishes the kill (core dump, tombstone) exactly as if we were never here.
+        // Put the PREVIOUS disposition back explicitly (SA_RESETHAND is not honoured under libsigchain), unblock the signal, and re-raise so whoever stood before us finishes the kill (debuggerd's tombstone, or the default) exactly as if we were never here.
+        let prev = FAULT_SIGS.iter().position(|s| *s == sig).and_then(|i| (*std::ptr::addr_of!(OLD_ACTIONS))[i]);
+        let mut restore: libc::sigaction = match prev {
+            Some(a) => a,
+            None => std::mem::zeroed(),
+        };
+        if prev.is_none() {
+            restore.sa_sigaction = libc::SIG_DFL;
+            libc::sigemptyset(&mut restore.sa_mask);
+        }
+        let _ = libc::sigaction(sig, &restore, std::ptr::null_mut());
+        let mut set: libc::sigset_t = std::mem::zeroed();
+        libc::sigemptyset(&mut set);
+        libc::sigaddset(&mut set, sig);
+        let _ = libc::pthread_sigmask(libc::SIG_UNBLOCK, &set, std::ptr::null_mut());
         let _ = libc::raise(sig);
+        // Still here (a chained handler swallowed it): do not return into the faulting instruction.
+        libc::_exit(128 + sig);
     }
 
     pub fn install() {
@@ -172,8 +197,11 @@ mod imp {
             sa.sa_sigaction = handler as usize;
             sa.sa_flags = libc::SA_SIGINFO | libc::SA_RESETHAND | libc::SA_ONSTACK;
             libc::sigemptyset(&mut sa.sa_mask);
-            for sig in [libc::SIGSEGV, libc::SIGBUS, libc::SIGILL, libc::SIGFPE, libc::SIGABRT] {
-                let _ = libc::sigaction(sig, &sa, std::ptr::null_mut());
+            for (i, sig) in FAULT_SIGS.iter().enumerate() {
+                let mut old: libc::sigaction = std::mem::zeroed();
+                if libc::sigaction(*sig, &sa, &mut old) == 0 {
+                    (*std::ptr::addr_of_mut!(OLD_ACTIONS))[i] = Some(old);
+                }
             }
         }
     }

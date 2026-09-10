@@ -606,8 +606,13 @@ pub fn report_prior_crash() {
         return;
     };
     let _ = std::fs::remove_file(&path);
-    for line in text.lines().filter(|l| !l.trim().is_empty()) {
+    // Bounded: a handler that re-entered (Android libsigchain, 2026-09-10) left fifty thousand identical lines; the report is the first few, plus the count.
+    let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+    for line in lines.iter().take(48) {
         logf!("PRIOR RUN DIED: {}", line);
+    }
+    if lines.len() > 48 {
+        logf!("PRIOR RUN DIED: … {} more line(s) not shown", lines.len() - 48);
     }
 }
 
