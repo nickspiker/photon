@@ -369,6 +369,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ChimeNewMessage => "Chime on new message".into(),
         Msg::VibrateNewMessage => "Vibrate on new message".into(),
         Msg::RingIncomingCall => "Ring on incoming wave".into(),
+        Msg::HoldWavesOnDevice => "Hold every wave recording on this device".into(),
         Msg::VibrateIncomingCall => "Vibrate on incoming wave".into(),
         Msg::PresenceCheckbox => "Show my presence to contacts".into(),
         Msg::PerContactOverride => "Per-contact override lives in each conversation.".into(),

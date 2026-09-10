@@ -1816,6 +1816,10 @@ pub struct PhotonApp {
     settings_autoupdate_check: Option<fluor::widgets::Checkbox>,
     /// Diagnostics "Hard logs" toggle (`logs.hard`): ON = every record writes thru to disk; OFF (default) = RAM-batched with edge flushes — see lib.rs LOG_HARD.
     settings_hardlogs_check: Option<fluor::widgets::Checkbox>,
+    /// Notifications-page "Hold every wave recording on this device" (`waves.hold`, DEVICE-LOCAL, default ON — Nick 2026-09-10: "fleet replication of waves by default; you can uncheck maybe a smartwatch"): ON = a sibling's kept recording is fetched the moment its row merges here; OFF = fetched on demand only.
+    settings_wave_hold_check: Option<fluor::widgets::Checkbox>,
+    /// The live value of `waves.hold` for the merge path.
+    wave_hold: bool,
     /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
     settings_background_check: Option<fluor::widgets::Checkbox>,
     /// Bulletproof-bridge (headless lifeline) enrolment checkbox — Linux/macOS only (the --lifeline flag is unix-desktop).
@@ -2365,6 +2369,8 @@ impl PhotonApp {
             settings_presence_check: None,
             settings_autoupdate_check: None,
             settings_hardlogs_check: None,
+            settings_wave_hold_check: None,
+            wave_hold: true,
             diag_log_view: false,
             diag_log_rows: Vec::new(),
             diag_log_consumed: 0,
@@ -2973,6 +2979,9 @@ impl PhotonApp {
                         f(cb);
                     }
                     if let Some(cb) = self.settings_vibrate_call_check.as_mut() {
+                        f(cb);
+                    }
+                    if let Some(cb) = self.settings_wave_hold_check.as_mut() {
                         f(cb);
                     }
                     // presence COMMENTED OUT (Nick 2026-09-01) — restore alongside the render + layout rows.

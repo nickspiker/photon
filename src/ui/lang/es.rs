@@ -394,6 +394,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ChimeNewMessage => "Sonar al llegar un mensaje nuevo".into(),
         Msg::VibrateNewMessage => "Vibrar al llegar un mensaje nuevo".into(),
         Msg::RingIncomingCall => "Timbrar en onda entrante".into(),
+        Msg::HoldWavesOnDevice => "Guardar cada grabación de onda en este dispositivo".into(),
         Msg::VibrateIncomingCall => "Vibrar en onda entrante".into(),
         Msg::PresenceCheckbox => "Mostrar mi presencia a mis contactos".into(),
         Msg::PerContactOverride => "El ajuste por contacto vive en cada conversación.".into(),

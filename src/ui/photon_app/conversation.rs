@@ -2198,6 +2198,19 @@ impl PhotonApp {
                 for ts in rejects {
                     self.on_sibling_reject(ts);
                 }
+                // REPLICATION BY DEFAULT (Nick 2026-09-10): a sibling's kept recording is fetched the moment its row lands here, unless this device opted out (waves.hold off — a watch).
+                if self.wave_hold {
+                    let recs: Vec<[u8; 32]> = fresh
+                        .iter()
+                        .filter(|m| !m.deleted && crate::types::is_call_recording(&m.content))
+                        .filter_map(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                        .filter(|h| !crate::storage::blob_present(h))
+                        .collect();
+                    for h in recs {
+                        crate::logf!("CALL: sibling's recording {}… — fetching (waves held on this device)", hex::encode(&h[..4]));
+                        self.attach_fetch(idx, &h);
+                    }
+                }
                 let hints: Vec<i64> = fresh.iter().filter_map(|m| match m.reference { Some((crate::types::RefKind::FetchHint, t)) => Some(t), _ => None }).collect();
                 for t in hints {
                     let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h)));

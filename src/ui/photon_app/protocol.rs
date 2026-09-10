@@ -444,6 +444,26 @@ impl PhotonApp {
 
 
         // Hard-logs toggle: arm THIS device for 24h (the value stored is the arm time; the sink self-expires) — device-local via unlink, mirroring the display.zoom pattern. Arming flips the sink NOW (a flush edge).
+        // Hold every wave on this device: device-local (unlinked) bool, default ON; the merge path reads `wave_hold` live.
+        let wave_hold_toggle = self
+            .settings_wave_hold_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = wave_hold_toggle {
+            self.wave_hold = checked;
+            let now = vsf::eagle_time_oscillations();
+            if self.ensure_fleet_settings() {
+                let fs = self.fleet_settings.as_mut().unwrap();
+                if fs.linked("waves.hold") {
+                    fs.set_link("waves.hold", false, now);
+                }
+                if fs.set("waves.hold", vsf::VsfType::u0(checked), now) {
+                    crate::logf!("SETTINGS: waves.hold = {} (device-local)", checked);
+                    self.persist_and_push_settings();
+                }
+            }
+            needs_redraw = true;
+        }
         let hardlogs_toggle = self
             .settings_hardlogs_check
             .as_mut()
@@ -1054,6 +1074,9 @@ impl PhotonApp {
         }
         if let Some(cb) = self.settings_chime_check.as_mut() {
             cb.set_label(tr(Msg::ChimeNewMessage));
+        }
+        if let Some(cb) = self.settings_wave_hold_check.as_mut() {
+            cb.set_label(tr(Msg::HoldWavesOnDevice));
         }
         if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
             cb.set_label(tr(Msg::VibrateNewMessage));

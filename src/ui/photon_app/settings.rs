@@ -488,6 +488,16 @@ impl PhotonApp {
         if let Some(cb) = self.settings_hardlogs_check.as_mut() {
             cb.set_checked(crate::hard_logs_active());
         }
+        // Hold every wave here: device-local, absent = ON (replication is the default; a watch opts out).
+        self.wave_hold = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.device_local("waves.hold"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(true);
+        if let Some(cb) = self.settings_wave_hold_check.as_mut() {
+            cb.set_checked(self.wave_hold);
+        }
         // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it thru `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
         // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements go half size a few moments after the contacts show up" report: the first pull after contacts load re-armed the restore, and every pull after it did so again. A restore is a startup action, not a steady-state one; the host applies it exactly like a user zoom and the user must stay in control after that.
         if !self.zoom_restored {

@@ -412,6 +412,8 @@ pub enum Msg<'a> {
     ChimeNewMessage,
     VibrateNewMessage,
     RingIncomingCall,
+    /// Notifications page: hold every wave recording on this device (replication by default).
+    HoldWavesOnDevice,
     VibrateIncomingCall,
     PresenceCheckbox,
     PerContactOverride,

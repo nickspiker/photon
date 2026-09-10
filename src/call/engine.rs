@@ -231,7 +231,8 @@ fn run(
     let mut nlms: Option<crate::call::nlms::Nlms> = None;
     let mut nlms_seed_vol: f32 = 1.0;
     let mut ref_ring = crate::call::nlms::RefRing::new(96_000); // 2s of rendered reference
-    let mut ref_cursor = 0usize;
+    // Start the reference cursor at NOW, not zero: on the caller the audio session carries over from the ringback ("engine has the session"), and the render reference ring already holds the ringback's audible frames — the chirp's render anchor then landed 3.7s early and the fit rejected its own seed at the grid bound (Nick 2026-09-10, no filter on his side of an otherwise clean wave).
+    let mut ref_cursor = crate::platform::audio::render_ref_since(usize::MAX).1;
     let mut ref_anchor_osc: Option<i64> = None;
     let mut mic_abs: u64 = 0;
     let mut mic_anchor_osc: Option<i64> = None;

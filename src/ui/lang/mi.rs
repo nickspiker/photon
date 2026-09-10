@@ -398,6 +398,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ChimeNewMessage => "He tangi mō te karere hou".into(),
         Msg::VibrateNewMessage => "He wiri mō te karere hou".into(),
         Msg::RingIncomingCall => "He tangi mō te ngaru mai".into(),
+        Msg::HoldWavesOnDevice => "Puritia ia hopukanga ngaru ki tēnei pūrere".into(),
         Msg::VibrateIncomingCall => "He wiri mō te ngaru mai".into(),
         Msg::PresenceCheckbox => "Whakaaturia tōku noho ki ōku hoa".into(),
         Msg::PerContactOverride => "Kei ia kōrerorero tōna ake tautuhinga mō ia hoa.".into(),

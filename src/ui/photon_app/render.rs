@@ -5069,11 +5069,13 @@ impl PhotonApp {
                     let vib_msg = tr(Msg::VibrateNewMessage);
                     let ring_call = tr(Msg::RingIncomingCall);
                     let vib_call = tr(Msg::VibrateIncomingCall);
-                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 4] = [
+                    let wave_hold = tr(Msg::HoldWavesOnDevice);
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 5] = [
                         (self.settings_chime_check.as_mut(), &*chime),
                         (self.settings_vibrate_msg_check.as_mut(), &*vib_msg),
                         (self.settings_ring_call_check.as_mut(), &*ring_call),
                         (self.settings_vibrate_call_check.as_mut(), &*vib_call),
+                        (self.settings_wave_hold_check.as_mut(), &*wave_hold),
                     ];
                     for (cb, label) in boxes {
                         let Some(cb) = cb else { continue };

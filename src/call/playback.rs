@@ -21,6 +21,8 @@ pub struct PlaybackHandle {
     done: Arc<AtomicBool>,
     /// Frames queued so far (skip included) — the scrub bar's numerator.
     pos: Arc<std::sync::atomic::AtomicUsize>,
+    /// A pending seek (archive slot), `usize::MAX` = none. The worker takes it between frames and repositions the SAME stream — a scrub never tears the audio session down (2026-09-10: restarting playback per seek raced the old worker's release and read "can't play now").
+    seek: Arc<std::sync::atomic::AtomicUsize>,
     /// Total frames in the stream — the denominator.
     pub total: usize,
     /// The container's fine envelope (`nchan × env_len`, eighth-stops) — the card draws this instead of the row thumbnail while the handle lives.
@@ -30,6 +32,11 @@ pub struct PlaybackHandle {
 }
 
 impl PlaybackHandle {
+    /// Reposition the running playback to archive slot `slot` — taken by the worker between frames.
+    pub fn seek(&self, slot: usize) {
+        self.seek.store(slot.min(self.total), Ordering::SeqCst);
+    }
+
     pub fn stop(&self) {
         self.stop.store(true, Ordering::SeqCst);
     }
@@ -70,6 +77,8 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let stop = Arc::new(AtomicBool::new(false));
     let done = Arc::new(AtomicBool::new(false));
     let pos = Arc::new(std::sync::atomic::AtomicUsize::new(skip.min(stream.total)));
+    let seek = Arc::new(std::sync::atomic::AtomicUsize::new(usize::MAX));
+    let seek_w = seek.clone();
     let total = stream.total;
     let envelope = stream.envelope.clone();
     let env_per_sec = stream.env_per_sec;
@@ -87,7 +96,7 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     let spawned = std::thread::Builder::new()
         .name("call-playback".into())
         .spawn(move || {
-            run(stream, &flag, skip, &pos_w);
+            run(stream, &flag, skip, &pos_w, &seek_w);
             done_flag.store(true, Ordering::SeqCst);
             crate::platform::audio::stop(); // only we flipped ACTIVE true — safe to release
         })
@@ -96,16 +105,22 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
         crate::platform::audio::stop();
         return None;
     }
-    Some(PlaybackHandle { stop, done, pos, total, envelope, env_per_sec, nchan })
+    Some(PlaybackHandle { stop, done, pos, seek, total, envelope, env_per_sec, nchan })
 }
 
-fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize) {
+fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize, seek: &std::sync::atomic::AtomicUsize) {
     let nchan = stream.nchan.max(1);
     // Seek = a length-prefix walk to just before the mark plus a few priming decodes (KeptStream::seek) — never a decode of everything before it.
     if skip > 0 {
         stream.seek(skip);
     }
     while !stop.load(Ordering::Relaxed) {
+        // A scrub landed: reposition this stream in place. The few frames already queued at the DAC play out (~30ms), then audio continues from the mark.
+        let want = seek.swap(usize::MAX, Ordering::SeqCst);
+        if want != usize::MAX {
+            stream.seek(want);
+            pos.store(want, Ordering::Relaxed);
+        }
         // Backpressure = the pacing clock: wait until the DAC has drained below the target, then decode+queue the next frame. The output callback pops one frame per 10 ms of hardware time; we poll depth on a 1 ms granularity, never sleeping to a wall time.
         while !stop.load(Ordering::Relaxed) && crate::platform::audio::playback_depth() >= PACE_TARGET {
             std::thread::sleep(Duration::from_millis(1));

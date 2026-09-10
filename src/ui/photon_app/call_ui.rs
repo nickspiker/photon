@@ -192,6 +192,14 @@ impl PhotonApp {
 
     /// Start (or restart) playback of a kept recording at archive slot `slot` — the wave card's tap-to-seek and scrub-release edge. Any prior playback stops (the handle drop). The card itself is the feedback; the only toast is the refusal (a wave is live and owns the audio session).
     pub(super) fn play_recording_from(&mut self, blob: [u8; 32], slot: usize) {
+        // Already playing THIS recording: seek the live stream in place — never tear down and respawn (the old worker's audio release raced the new spawn's "is a wave active?" check and the scrub read "can't play now").
+        if self.call_playback_hash == Some(blob) {
+            if let Some(h) = self.call_playback.as_ref() {
+                h.seek(slot);
+                self.scene_dirty = true;
+                return;
+            }
+        }
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };

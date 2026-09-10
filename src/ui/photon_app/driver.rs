@@ -450,6 +450,16 @@ impl FluorApp for PhotonApp {
             true,
         ));
         // Hard logs default OFF: steady-state logging batches in RAM and reaches disk on edges only (wear); tick it while chasing a crash on this device — see lib.rs LOG_HARD.
+        self.settings_wave_hold_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            tr(Msg::HoldWavesOnDevice),
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::HardLogs),
