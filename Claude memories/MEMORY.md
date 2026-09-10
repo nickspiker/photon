@@ -44,7 +44,7 @@
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable
 - [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23)
 - [project_clutch_token_asymmetry.md](project_clutch_token_asymmetry.md) — "unknown conversation_token" = §4.2 competing ceremony instances
-- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — no-ring CONVICTED (identity-era split); GLARE fixed 328bc7d; 2026-09-08 instant-drop FIXED; 2026-09-10 one-way connect = offer sent before ActiveCall existed (lane key never captured) FIXED aa74da5
+- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — no-ring/GLARE/instant-drop FIXED; 2026-09-10 offer-before-ActiveCall FIXED aa74da5; era-skew non-connect FIXED 6402ef0 (express_key)
 - [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock FIXED @7d5e356 (retries=no-progress, path-up/stall re-fire, pong-drop torches)
 - [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub)
@@ -62,7 +62,7 @@
 - [project_vault_op_latency.md](project_vault_op_latency.md) — CONVICTED + FIXED 2026-08-21: ~900ms/put → group commit (manifestus put_batch + kete batch drain) + five UI-thread writes
 - [project_android_session_capsule.md](project_android_session_capsule.md) — Android de-attest-on-restart fix: boot-locked session capsule (spaghettify(boot_id) wairua)
 - [project_vsf_canonical_signing.md](project_vsf_canonical_signing.md) — ONE canonical VSF signing scheme (ge over BLAKE3(file, ge zeroed)); hp-value signing retired 2026-07-06
-- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — CLUTCH completes crypto-correct but rebroadcasts its proof forever (ceremony decoupled from data plane)
+- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — OPEN, field-convicted 2026-09-10: restarts re-run ceremonies, each mints a fresh index-0 era (10/hour), proofs loop, era_pull can never answer
 - [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — FGTW substrate extracted into the fgtw crate through M3 (keys/fleet/fanout/fstate/pair/client)
 - [project_fgtw_nostd_deferred.md](project_fgtw_nostd_deferred.md) — fgtw crate stays std until ferros; move code verbatim (no alloc::/no_std refactors)
 - [project_peers_are_fgtw.md](project_peers_are_fgtw.md) — decentralize FGTW: peers = the trust web; MUTUAL-CONSENT clutch SHIPPED f33ebec 2026-08-25
