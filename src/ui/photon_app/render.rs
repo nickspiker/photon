@@ -4624,11 +4624,14 @@ impl PhotonApp {
                                 // The text's OWN one-third point lands on the pane's one-third mark (not its centre): x = pane third − text width / 3.
                                 let style = TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium");
                                 let tw = ctx.text.measure_text(&label, &style);
+                                // Vertically: a quarter of the way up from the box top toward the hairline above (the row's top edge), not the row centre — it sat too high.
+                                let box_top = r.bottom() + r.h * 0.44 - layout.unit * 0.6;
+                                let label_y = box_top - (box_top - r.y) * 0.25;
                                 ctx.text.draw_text_left(
                                     &mut canvas,
                                     &label,
                                     r.x + r.w / 3.0 - tw / 3.0,
-                                    r.center_y(),
+                                    label_y,
                                     &style,
                                     Some(content_clip),
                                     None,
