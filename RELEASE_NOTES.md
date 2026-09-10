@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v89
+
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.
 - A picture shows a small preview on the bubble the moment it is sent, on every device, before the file itself arrives; a sharper preview follows, and tapping opens a viewer with zoom, pan, arrows between pictures, the full-size original on request, and Save. Camera RAW files (DNG and the common makers) and JPEG XL preview too.
 - Text and code files show their first lines on the bubble and open in a reader.
