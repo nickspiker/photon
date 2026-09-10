@@ -22,6 +22,8 @@ impl PhotonApp {
             }};
         }
 
+        // TICK PROFILE regions (2026-09-10): the untimed stretches of this function, named for the 30 s report.
+        let __r = Instant::now();
         // DEMAND-DRIVEN presence (Nick 2026-09-02: "zero reason I need the status of my fleet OR friends until I open my fleet page OR my contacts screen; on a chat, ping THEM"): pings + the beacon that rides the full sweep fire only while the human is LOOKING at a presence surface — the contacts screen or the Fleet page (full sweep) or an open conversation (that one contact). Everything else arrives on edges: inbound acks/pongs/messages update state passively, the announce-on-online edge keeps our own mapping findable, retransmit ladders stay work-driven, and Android's FCM/doorbell is the background wake path. Screen ENTRY is an edge (immediate ping); while the surface stays visible a slow 30s refresh keeps the rings honest. Backgrounded = silent.
         {
             let watching = crate::platform::app_watching();
@@ -71,6 +73,8 @@ impl PhotonApp {
             }
         }
 
+        self.tick_prof_add("proto: presence", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // Periodic OWN-chain re-fold — the reliable doorbell for fleet membership changes (docs/pairing-v2.md). The hub `fleet` event is the instant path but best-effort; this catches a device add/remove that arrived while our WebSocket was down. Reconciling siblings re-seeds the answerable-pubkey set, so a newly-added device starts getting pong answers (stops showing offline) and appears in the Fleet list without a relaunch. 45s: brisk enough that a just-added device goes live within a sweep, slow enough to be a negligible one-fetch background poll.
         const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
         // Demand-driven (2026-09-02): the refold poll runs only while a Settings page is open (the Fleet list is what it feeds); the hub `fleet` event remains the instant background path, and app-start does one refold via last_fleet_refold starting None.
@@ -187,10 +191,14 @@ impl PhotonApp {
             }
         }
 
+        self.tick_prof_add("proto: refold+spine+refetch", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand). The `timed!` macro (hoisted to the top of this fn) logs any arm blocking the UI thread > 50ms.
         if timed!("check_status_updates", self.check_status_updates()) {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
+        self.tick_prof_add("proto: status (timed)", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // Ring colours are DERIVED state — recompute and diff every tick, repaint on any change (see painted_ring_tiers).
         {
             let tiers: Vec<u32> = self
@@ -205,6 +213,8 @@ impl PhotonApp {
                 self.scene_dirty = true;
             }
         }
+        self.tick_prof_add("proto: ring tiers", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
@@ -251,6 +261,8 @@ impl PhotonApp {
             }
         }
 
+        self.tick_prof_add("proto: clutch drains (timed)", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // Keep any notes-to-self row showing OUR name and avatar — a profile edit or a fresh avatar must reach it, and nothing else ever will (no peer pongs us).
         self.settle_self_display();
 
@@ -260,6 +272,8 @@ impl PhotonApp {
             self.spawn_fleet_key_grow();
         }
 
+        self.tick_prof_add("proto: settle_self_display", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // Drain handle_query results. `try_recv` is non-blocking; we collect into local Vecs so the immutable borrow on `handle_query` ends before the `&mut self` handlers run. Three channels feed in: attestation results, connectivity changes, handle searches.
         let mut drained: Vec<QueryResult> = Vec::new();
         let mut drained_searches: Vec<crate::ui::state::SearchResult> = Vec::new();
@@ -405,6 +419,8 @@ impl PhotonApp {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
 
+        self.tick_prof_add("proto: drains", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // The auto-update checkbox is the first linked-settings consumer: a user toggle writes updates.auto (born linked, so the whole fleet follows; unlink comes with the per-setting link affordance). Poll-then-set keeps the borrow simple.
         let autoupdate_toggle = self
             .settings_autoupdate_check
@@ -620,6 +636,8 @@ impl PhotonApp {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
 
+        self.tick_prof_add("proto: toggles", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         // AddDevice flow: the status line is EVENT-driven, re-derived on every edit by the LIVE MATCHER — the typed entry prefix-matches against the candidate word strings from the binding-request registry (docs/pairing-v2.md), so a typo flags at the exact word it happens and a full 23-word match auto-binds.
         if matches!(self.state, AppState::AddDevice) {
             let text: String = self
@@ -1062,6 +1080,8 @@ impl PhotonApp {
         }
 
         // Every needs_redraw in this function is content (protocol state — presence, roster, ceremony; the blinkey-narrow discipline lives in tick, not here), so convert it to scene_dirty HERE rather than trusting the caller: the Android service tick calls this headless and drops the return, and any content change it applied must still paint on the first visible frame.
+        self.tick_prof_add("proto: flows", __r.elapsed().as_secs_f32() * 1000.0);
+        let __r = Instant::now();
         self.scene_dirty |= needs_redraw;
         needs_redraw
     }
