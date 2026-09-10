@@ -241,21 +241,13 @@ impl PhotonApp {
             // Name the originating device: the callee routes its answer at THIS device's freshest address (not the offer's possibly-stale source), and our siblings get a name for the wave-in-progress chip.
             device: self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
         };
-        if !self.send_call_signal(ci, sig) {
-            crate::log("CALL: offer send failed (no lane) — not dialing");
-            return;
-        }
-        // The ringback rides the same relationship digest the callee's own ring does — what we hear IS their cadence — and honors the same "Ring on incoming call" tick as the inbound ring.
+        // The ring lease's audibility: the ringback rides the same relationship digest the callee's own ring does — what we hear IS their cadence — and honors the same "Ring on incoming call" tick as the inbound ring.
         let ring_audible = self
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.effective("notify.ring_call"))
             .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
-        let Some(ringback_digest) = ringback_digest else {
-            crate::log("CALL: no party id for the callee — dialing without ringback");
-            return;
-        };
         // Fresh call: clear any stale minimize / speaker state and stop a recording preview (the call owns the audio session).
         self.call_minimized = false;
         self.call_speaker_on = false;
@@ -263,6 +255,7 @@ impl PhotonApp {
         let now = vsf::eagle_time_oscillations();
         // THIS device placed this call — the only license to loud-kill a strayed answer for it later (see the Answer arm's sibling law).
         self.dialed_call_ids.insert(call_id);
+        // The Outgoing record exists BEFORE the offer goes out: the offer's lane key is captured at its send COMMIT (messaging.rs drain_braid_tx), and that commit can drain during the send itself when the chain is already at its window (2026-09-10 Esme/Nick: two dials in a row committed inside the send, found no active call, captured nothing — the express offer never fired and the callee's ring lease lapsed at 3 s).
         self.active_call = Some(ActiveCall {
             call_id,
             peer_handle_hash: peer,
@@ -278,18 +271,31 @@ impl PhotonApp {
             engine: None,
             spool: None,
             ring: None,
-            // Ringback: the CALLEE's ring in OUR ear (their identity cadence, so we hear who we're waving), padded to the same headset level as the wave that follows. It also probes the room's coupling off a known signal while we're not talking — see call::ringback.
-            ringback: if ring_audible {
-                crate::call::ringback::start(ringback_digest)
-            } else {
-                None
-            },
+            ringback: None, // started below, once the offer is actually on its way
             express_addr: None,
             peer_device: None,
             reconnecting: false,
             last_anchor_osc: 0,
             last_beat_osc: now,
         });
+        if !self.send_call_signal(ci, sig) {
+            crate::log("CALL: offer send failed (no lane) — not dialing");
+            self.active_call = None;
+            self.dialed_call_ids.remove(&call_id);
+            return;
+        }
+        let Some(ringback_digest) = ringback_digest else {
+            crate::log("CALL: no party id for the callee — dialing without ringback");
+            self.scene_dirty = true;
+            return;
+        };
+        // Ringback: the CALLEE's ring in OUR ear (their identity cadence, so we hear who we're waving), padded to the same headset level as the wave that follows. It also probes the room's coupling (the chirp anchor) so the echo filter has a fit when media lands.
+        if ring_audible {
+            let rb = crate::call::ringback::start(ringback_digest);
+            if let Some(call) = self.active_call.as_mut() {
+                call.ringback = rb;
+            }
+        }
         if contact_validated {
             crate::logf!("CALL: dialing {} (id {})", crate::fp(&peer), hex::encode(&call_id[..4]));
         } else {

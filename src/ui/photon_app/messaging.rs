@@ -638,6 +638,9 @@ impl PhotonApp {
                             );
                         }
                     }
+                    if !captured {
+                        crate::logf!("CALL: offer {} committed with no matching outgoing call — lane key NOT captured, the express offer will never fire", hex::encode(&call_id[..4]));
+                    }
                     // The offer's EXPRESS copy fires HERE, not at send: only the commit knows the lane key, and the express payload carries it as the callee's basket egg (signal.rs). ts = the row's own eagle stamp, so offer_osc and the stale-offer gate agree on both ends whichever copy lands first.
                     if captured {
                         if let Some(ci) = contact_idx {
