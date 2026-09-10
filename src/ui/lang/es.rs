@@ -456,7 +456,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ProfileTierPlace => "Lugar".into(),
         Msg::ProfileTierPersonal => "Personal".into(),
         Msg::ProfileTierWork => "Trabajo".into(),
-        Msg::ProfileTierSensitive => "Sensible \u{2014} se comparte solo donde lo marques; desmarca para dejar de compartir".into(),
+        Msg::ProfileTierSensitive => "Sensible".into(),
         Msg::YouShareHint => "marca = compartido con todas tus amistades\nanúlalo por persona en su página".into(),
         Msg::ProfileTierCustom => "Personalizado".into(),
         Msg::ProfileNamePreferred => "Nombre preferido".into(),
