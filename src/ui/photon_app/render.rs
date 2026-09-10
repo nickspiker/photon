@@ -4619,12 +4619,12 @@ impl PhotonApp {
                                 }
                             }
                             YouRow::FieldLabel(idx) => {
-                                // Label line: label left; the tag box and the default-share checkbox at the right end (laid out in input.rs on the same rect).
+                                // Label line (Nick 2026-09-10): the title sits LEFT-CENTRED — centred on the pane's one-third mark, "an average of left aligned and centre aligned", so left edges deliberately do not line up; the tag box rides the right end (laid out in input.rs on the same rect).
                                 let label = self.you_fields[*idx].label.clone();
-                                ctx.text.draw_text_left(
+                                ctx.text.draw_text_center(
                                     &mut canvas,
                                     &label,
-                                    r.x + hspan2 * 0.3,
+                                    r.x + r.w / 3.0,
                                     r.center_y(),
                                     &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
                                     Some(content_clip),
@@ -4635,17 +4635,17 @@ impl PhotonApp {
                                     let tid = tag.hit_id();
                                     tag.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), tid);
                                 }
-                                if let Some(cb) = pf.share_cb.as_mut() {
-                                    cb.render_content_into(&mut canvas, ctx.text, Some(content_clip), Some(&mut chrome.hit_test_map));
-                                }
                             }
                             YouRow::FieldBox(idx) => {
-                                // Value line: the full-width box, then the chat screen's hairline under it (pure white at α=1/8, one ru thick).
+                                // Value line: the box with its share checkbox touching its right end, then the chat screen's hairline (pure white at α=1/8, one ru thick) across the WHOLE content pane — edge to edge, no inset.
                                 let pf = &mut self.you_fields[*idx];
                                 let id = pf.tb.hit_id();
                                 pf.tb.render_content_into(&mut canvas, 0., 0., ctx.text, Some(glow_clip), None, Some(&mut chrome.hit_test_map), id);
+                                if let Some(cb) = pf.share_cb.as_mut() {
+                                    cb.render_content_into(&mut canvas, ctx.text, Some(content_clip), Some(&mut chrome.hit_test_map));
+                                }
                                 let ru = ctx.viewport.ru.max(1.0);
-                                paint::fill_rect(&mut canvas, r.x as isize, (r.bottom() - ru) as isize, r.w as isize, ru as isize, theme::VERSION_COLOUR, Some(content_clip), None);
+                                paint::fill_rect(&mut canvas, layout.content.x as isize, (r.bottom() - ru) as isize, layout.content.w as isize, ru as isize, theme::VERSION_COLOUR, Some(glow_clip), None);
                             }
                             YouRow::AddHeader => {
                                 ctx.text.draw_text_left(

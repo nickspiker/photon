@@ -432,7 +432,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ProfileTierPersonal => "Personal".into(),
         Msg::ProfileTierWork => "Work".into(),
         Msg::ProfileTierSensitive => "Sensitive \u{2014} shared only where you tick it; untick to stop sharing".into(),
-        Msg::YouShareHint => "tick = shared with new friends".into(),
+        Msg::YouShareHint => "tick = shared with all friends; override per friend on their page".into(),
         Msg::ProfileTierCustom => "Custom".into(),
         Msg::ProfileNamePreferred => "Preferred name".into(),
         Msg::ProfileNameFirst => "First".into(),

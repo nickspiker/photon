@@ -152,30 +152,30 @@ impl PhotonApp {
                         let r = you_row_rect(&layout, settings_content_scroll, i);
                         match row {
                             YouRow::FieldLabel(idx) => {
-                                // Label line: the tag box (a phone's home / work / custom) and the default-share checkbox sit at the RIGHT end; the label draws on the left.
+                                // Label line: the tag box (a phone's home / work / custom) sits at the RIGHT end; the label draws left-centred (render arm).
                                 let pf = &mut self.you_fields[*idx];
-                                let sq_w = r.w * 0.08;
-                                if let Some(cb) = pf.share_cb.as_mut() {
-                                    let sq = fluor::region::Region::new(r.right() - sq_w, r.y, sq_w, r.h);
-                                    cb.set_rect(sq.center_x(), sq.center_y(), ctrl_h, ctrl_h);
-                                    cb.set_font_size(ctrl_font);
-                                }
                                 if let Some(tag) = pf.tag_tb.as_mut() {
                                     let tag_w = r.w * 0.30;
-                                    let tagr = fluor::region::Region::new(r.right() - sq_w - tag_w - r.w * 0.02, r.y, tag_w, r.h);
+                                    let tagr = fluor::region::Region::new(r.right() - tag_w, r.y, tag_w, r.h);
                                     tag.set_rect(tagr.center_x(), tagr.center_y(), tagr.w, ctrl_h * 1.1);
                                     tag.set_font_size(ctrl_font * 0.9, ctx.text);
                                 }
                             }
                             YouRow::FieldBox(idx) => {
-                                // Value line: the box takes the whole pane width (a hairline divider draws under it in the render arm).
+                                // Value line (Nick 2026-09-10): the box runs the pane's width with the default-share checkbox TOUCHING its right end, both lifted a hair off the hairline under the row.
                                 let pf = &mut self.you_fields[*idx];
-                                let boxr = fluor::region::Region::new(r.x + r.w * 0.01, r.y, r.w * 0.98, r.h).center_h(0.92);
-                                pf.tb.set_rect(boxr.center_x(), boxr.center_y(), boxr.w, ctrl_h * 1.2);
+                                let cy = r.y + r.h * 0.44;
+                                let cb_w = if pf.share_cb.is_some() { ctrl_h * 1.1 } else { 0.0 };
+                                let box_w = (r.w - cb_w).max(ctrl_h);
+                                pf.tb.set_rect(r.x + box_w * 0.5, cy, box_w, ctrl_h * 1.2);
                                 pf.tb.set_font_size(ctrl_font, ctx.text);
+                                if let Some(cb) = pf.share_cb.as_mut() {
+                                    cb.set_rect(r.x + box_w + cb_w * 0.5, cy, ctrl_h, ctrl_h);
+                                    cb.set_font_size(ctrl_font);
+                                }
                             }
                             YouRow::AddInput => {
-                                let boxr = fluor::region::Region::new(r.x + r.w * 0.01, r.y, r.w * 0.98, r.h).center_h(0.92);
+                                let boxr = fluor::region::Region::new(r.x, r.y, r.w, r.h).center_h(0.92);
                                 if let Some(tb) = self.you_add_textbox.as_mut() {
                                     tb.set_rect(
                                         boxr.center_x(),
