@@ -1430,6 +1430,10 @@ pub struct PhotonApp {
     tick_prof: Vec<(&'static str, f32)>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
     last_keygen_pickup: Option<std::time::Instant>,
+    /// Our identity party id, memoized per seed: it is an ed25519 public-key derivation, and the tick asked for it once per contact per vsync (thirty-odd scalar multiplications a frame on an idle phone, 2026-09-10 profile).
+    identity_pid_cache: std::cell::Cell<Option<([u8; 32], [u8; 32])>>,
+    /// Last peer-store harvest for stalled contacts (once a second while any contact lacks an address, not per vsync).
+    last_peer_harvest: Option<std::time::Instant>,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -2289,6 +2293,8 @@ impl PhotonApp {
             tick_stat_dirty: 0,
             tick_prof: Vec::new(),
             last_keygen_pickup: None,
+            identity_pid_cache: std::cell::Cell::new(None),
+            last_peer_harvest: None,
             storage: None,
             contacts: Vec::new(),
             conversations: Vec::new(),

@@ -126,7 +126,10 @@ impl PhotonApp {
                 .is_none_or(|last| now.duration_since(last) >= interval);
             // Harvest every tick while blocked: a record for a stalled contact may have landed in the shared peer store — from our own fgtw fetch OR from a phonebook-gossip response.
             // Adopt it as the contact's address so the offer can send; fire-on-learn does the rest.
-            timed!("phonebook-harvest", if blocked {
+            // The harvest clones the whole peer store; once a second is plenty for an address that arrives by gossip (it ran every vsync, 2 ms a tick on an idle phone).
+            let harvest_due = self.last_peer_harvest.is_none_or(|t| now.duration_since(t) >= std::time::Duration::from_secs(1));
+            timed!("phonebook-harvest", if blocked && harvest_due {
+                self.last_peer_harvest = Some(now);
                 let recs = self
                     .peer_store
                     .as_ref()

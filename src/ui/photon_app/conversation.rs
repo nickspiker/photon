@@ -200,9 +200,16 @@ impl PhotonApp {
         if contact.is_sibling {
             self.our_sibling_pid()
         } else {
-            self.session
-                .as_ref()
-                .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
+            self.session.as_ref().map(|s| {
+                if let Some((seed, pid)) = self.identity_pid_cache.get() {
+                    if seed == s.identity_seed {
+                        return pid;
+                    }
+                }
+                let pid = crate::crypto::clutch::identity_party_id(&s.identity_seed);
+                self.identity_pid_cache.set(Some((s.identity_seed, pid)));
+                pid
+            })
         }
     }
 
