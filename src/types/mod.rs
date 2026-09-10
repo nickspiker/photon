@@ -1,3 +1,4 @@
+pub mod attach_kind;
 pub mod contact;
 pub mod conversation;
 pub mod device;
@@ -8,6 +9,7 @@ pub mod peer;
 pub mod seed;
 pub mod shard;
 
+pub use attach_kind::*;
 pub use contact::*;
 pub use conversation::{merge_wave_fields, Conversation, ConversationId, PartyId};
 pub use device::*;

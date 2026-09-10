@@ -39,6 +39,8 @@ impl PhotonApp {
         timed_drain!("audio_cal", self.drain_audio_cal());
         timed_drain!("avatar", self.drain_avatar_downloads());
         timed_drain!("attach", self.drain_attach_installed());
+        // Picked files the preparation worker finished (kind, dims, micro preview) → row + blob send.
+        timed_drain!("attach_prep", self.drain_attach_prepared());
         // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
         timed_drain!("history_pages", self.drain_history_pages());
         // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.
@@ -3205,6 +3207,8 @@ impl PhotonApp {
                                                 marks: m.marks.clone(),
                                                 wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
                                                 envelope: m.envelope.clone(),
+                                                attach: m.attach.map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
+                                                preview: m.preview.clone(),
                                             })
                                             .collect();
                                         let page = HistoryPagePlain {
@@ -3320,12 +3324,20 @@ impl PhotonApp {
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
                         // OFF-THREAD: an attachment blob is arbitrary-size, and the AEAD open + blake3-over-the-whole-blob + disk store all ran inline on the render thread. A worker does the three, then posts back so the drain (which holds the keypair + checker) sends the attach_have confirm and clears the compose wrap. A hash mismatch or store failure logs and posts nothing.
                         let tx = self.attach_installed_tx.clone();
+                        // The row's filename, for the re-sniff's extension tiebreak (TIFF-shaped RAWs, zip vs apk).
+                        let sniff_name: String = self
+                            .conversations
+                            .iter()
+                            .flat_map(|c| c.messages.iter())
+                            .find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == content_hash).map(|(_, n, _)| n))
+                            .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key) {
                                 Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
                                     match crate::storage::blob_store(&seed, &content_hash, &plain) {
                                         Ok(()) => {
                                             let _ = tx.send(AttachInstalled {
+                                                sniffed: Some(crate::types::sniff(&plain, &sniff_name)),
                                                 conversation_token,
                                                 content_hash,
                                                 sender_pubkey,

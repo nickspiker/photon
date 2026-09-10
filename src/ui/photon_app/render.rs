@@ -2,6 +2,9 @@
 
 use super::*;
 
+/// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10).
+const IMG_PREVIEW_LINES: usize = 4;
+
 /// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
 fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
     // Explicit '\n' is an authored break (the clutch steps use line returns, never dashes — Nick 2026-09-07): each segment wraps independently and the break always survives.
@@ -2779,7 +2782,7 @@ impl PhotonApp {
                                     return tr(Msg::RecordingPlaying { pct }).into_owned();
                                 }
                             }
-                            display_content(&m.content)
+                            display_row(m)
                         };
                         let conv_filter = self.conv_filter;
                         let visible: Vec<&crate::types::ChatMessage> = raw_msgs
@@ -2856,6 +2859,10 @@ impl PhotonApp {
                                     None => wrap_text_lines(ctx.text, &body_of(m), &row_wrap, avail_w),
                                 };
                                 total += lines.len();
+                                // An image attachment with a micro preview reserves a band above its pill (IMG_PREVIEW_LINES lines) — the picture draws there before any blob is fetched.
+                                if m.attach.is_some_and(|a| a.kind.is_image()) && crate::types::parse_micro_image(&m.preview).is_some() {
+                                    total += IMG_PREVIEW_LINES;
+                                }
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                                     total += 1;
@@ -2948,10 +2955,14 @@ impl PhotonApp {
                             let react_off = if reactions.is_some() { intra } else { 0.0 };
                             // A live wave's card carries its waveform band under the header (two lines, matching the wrap total above).
                             let wave_band_h = if msg.wave.is_some_and(|w| w.outcome.was_live()) { 2.0 * intra } else { 0.0 };
+                            // The image preview band above an image attachment's pill (typed attachments 2026-09-10).
+                            let micro = if msg.attach.is_some_and(|a| a.kind.is_image()) { crate::types::parse_micro_image(&msg.preview).map(|(w, h, _)| (w, h)) } else { None };
+                            let img_band_h = if micro.is_some() { IMG_PREVIEW_LINES as f32 * intra } else { 0.0 };
                             let block_extra = (lines.len() as f32 - 1.0) * intra
                                 + if reply_target.is_some() { intra } else { 0.0 }
                                 + react_off
-                                + wave_band_h;
+                                + wave_band_h
+                                + img_band_h;
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&msg.content)
@@ -3523,6 +3534,27 @@ impl PhotonApp {
                                                 self.msg_wave_bands[wave_slot] = Some(super::WaveBand { hash, held, x0: bx0, glyph_x1, x1: bx1, y0: by0.max(list_top), y1: by1.min(list_bottom), total: total_slots });
                                             }
                                         }
+                                    }
+                                }
+                            }
+                            // IMAGE PREVIEW BAND: the row's micro thumb (gamma-2 VSF RGB, ≤24 px) drawn above the pill, aspect-preserved, on the bubble's side. Nearest-neighbour up-scale — this is the before-any-fetch tier; the preview blob replaces it when held (Phase 2).
+                            if let Some((tw, th)) = micro {
+                                if let Some((_, _, px)) = crate::types::parse_micro_image(&msg.preview) {
+                                    let first_line_y = y - react_off - (lines.len().max(1) - 1) as f32 * intra;
+                                    let reply_off = if reply_target.is_some() { intra } else { 0.0 };
+                                    let band_bot = first_line_y - reply_off - msg_size * 0.9;
+                                    let band_top = band_bot - img_band_h + msg_size * 0.3;
+                                    let bh = (band_bot - band_top).max(1.0);
+                                    let aspect = msg.attach.and_then(|a| a.dims).map_or(tw as f32 / th as f32, |(w, h): (u32, u32)| w as f32 / h.max(1) as f32);
+                                    let avail = buf_w as f32 - pad_x * 2.0;
+                                    let bw = (bh * aspect).min(avail);
+                                    let bh = if bw < bh * aspect { bw / aspect } else { bh };
+                                    let right_aligned = msg.is_outgoing || is_self_contact;
+                                    let cx = if right_aligned { buf_w as f32 - pad_x - bw * 0.5 } else { pad_x + bw * 0.5 };
+                                    let cy = band_bot - bh * 0.5;
+                                    if cy + bh * 0.5 >= list_top && cy - bh * 0.5 <= list_bottom {
+                                        let pixels = crate::ui::attach_preview::micro_to_display(px);
+                                        paint::draw_image(&mut canvas, &pixels, tw, th, cx, cy, bw, bh, Some(list_clip));
                                     }
                                 }
                             }

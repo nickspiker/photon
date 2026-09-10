@@ -511,7 +511,7 @@ pub enum Msg<'a> {
     // ---- attachment bubbles ----
     RecordingBubble { size: &'a str, fetching: bool },
     RecordingPlaying { pct: u32 },
-    FileBubble { name: &'a str, size: &'a str, held: bool },
+    FileBubble { glyph: &'a str, name: &'a str, size: &'a str, held: bool },
     InspectFailed(&'a str),
     // ---- message persistence / attachments toasts ----
     RewritingVault,

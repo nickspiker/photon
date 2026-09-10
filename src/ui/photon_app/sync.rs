@@ -1228,6 +1228,8 @@ impl PhotonApp {
                 marks: m.marks.clone(),
                 wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
                 envelope: m.envelope.clone(),
+                attach: m.attach.map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
+                preview: m.preview.clone(),
             })
             .collect();
         if hist_rows.is_empty() {

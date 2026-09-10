@@ -205,6 +205,10 @@ impl PhotonApp {
                 ChatMessage::new_with_timestamp(text, true, crate::network::time_base::stamp_osc());
             msg.marks = self.marks_for_send(&msg.content);
             msg.reference = reference;
+            if let Some((a, p)) = self.attach_stage.take() {
+                msg.attach = Some(a);
+                msg.preview = p;
+            }
             let ts = msg.timestamp;
             let Some(conv) = self.conv_mut_of(ci) else {
                 return false;
@@ -227,6 +231,11 @@ impl PhotonApp {
         let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
         msg.marks = self.marks_for_send(&text);
         msg.reference = reference;
+        // A staged attachment's typed extras land on the row BEFORE the transmit reads it (attach_send_now stages them).
+        if let Some((a, p)) = self.attach_stage.take() {
+            msg.attach = Some(a);
+            msg.preview = p;
+        }
         // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on ("output row: present, exit: -" — the prompt held forever). Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
         if let Some(bw) = bridge.as_ref() {
             msg.bridge_seq = bw.seq.unwrap_or(0);
@@ -826,6 +835,17 @@ impl PhotonApp {
             .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
             .map(|m| m.marks.clone())
             .unwrap_or_default();
+        // The row's typed attachment extras ride the package the same way (a re-serve rebuilds them from the row too).
+        let row_attach: Option<crate::network::message_package::AttachWire> = self
+            .conv_of(ci)
+            .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
+            .and_then(|m| m.attach.map(|a| crate::network::message_package::AttachWire {
+                kind: a.kind as u8,
+                w: a.dims.map_or(0, |d| d.0),
+                h: a.dims.map_or(0, |d| d.1),
+                preview_hash: a.preview_hash,
+                preview: m.preview.clone(),
+            }));
         // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded thru it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
         let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
             let Some(contact) = self.contacts.get(ci) else {
@@ -994,6 +1014,7 @@ impl PhotonApp {
                 &wire_marks,
                 &pad,
                 era_kem,
+                row_attach.as_ref(),
             ) {
                 Ok(p) => p,
                 Err(e) => {

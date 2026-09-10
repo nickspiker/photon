@@ -21,11 +21,6 @@ impl PhotonApp {
 
     /// Byte entry (Android picker + desktop drop converge here). Every file — images included — sends BYTE-EXACT: no re-encode exists in this codebase (house doctrine; the JPEG resample overlay was excised 2026-08-20, the attachments rework is parked).
     pub(super) fn send_attachment_from_bytes(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
-        self.attach_send_now(ci, name, bytes);
-    }
-
-    /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
-    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
         const MAX_ATTACH: usize = 25 * 1024 * 1024;
         if bytes.is_empty() || bytes.len() > MAX_ATTACH {
             self.ready_toast = Some(tr(Msg::AttachmentLimit).into_owned());
@@ -33,6 +28,37 @@ impl PhotonApp {
             crate::logf!("attach: rejected ({} bytes)", bytes.len());
             return;
         }
+        let Some(peer) = self.contacts.get(ci).map(|c| c.handle_hash) else {
+            return;
+        };
+        // PREPARE OFF-THREAD (typed attachments 2026-09-10): the kind sniff is cheap, but an image's decode for the micro preview is hundreds of ms on a phone photo — the worker hands back the typed extras and the drain sends the row (re-resolving the contact by handle, the index may have moved).
+        let tx = self.attach_prepared_tx.clone();
+        queue_job(&self.seal_job_tx, move || {
+            let p = crate::ui::attach_preview::prepare(&bytes, &name);
+            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview });
+        });
+    }
+
+    /// Drain prepared picks: stage the typed extras for the row and send (attach_send_now).
+    pub(super) fn drain_attach_prepared(&mut self) {
+        while let Ok(p) = self.attach_prepared_rx.try_recv() {
+            let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == p.peer) else {
+                crate::log("attach: prepared pick has no contact any more — dropped");
+                continue;
+            };
+            crate::logf!(
+                "attach: prepared {} — kind {}{}, preview {} bytes",
+                crate::deglyph_for_log(&p.name),
+                format!("{:?}", p.meta.kind),
+                p.meta.dims.map_or(String::new(), |(w, h)| format!(", {w}×{h}")),
+                p.preview.len()
+            );
+            self.attach_send_now(ci, p.name, p.bytes, p.meta, p.preview);
+        }
+    }
+
+    /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
+    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>) {
         let hash = *blake3::hash(&bytes).as_bytes();
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
@@ -42,8 +68,10 @@ impl PhotonApp {
             return;
         }
         let content = crate::types::attachment_content(&hash, &name, bytes.len() as u64);
-        // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message.
+        // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
+        self.attach_stage = Some((meta, preview));
         if !self.send_chain_message(ci, &content, false, None, None) {
+            self.attach_stage = None;
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
         // The blob: eager PT push to the friend. Siblings + offline races fetch on demand (attach_req).
@@ -233,6 +261,25 @@ impl PhotonApp {
     pub(super) fn drain_attach_installed(&mut self) {
         while let Ok(r) = self.attach_installed_rx.try_recv() {
             crate::logf!("ATTACH: blob received + stored ({} bytes)", r.len);
+            // RE-SNIFF (the receiver's own verdict): the row's kind is the peer's claim until the bytes are here; a stricter local sniff wins (a program dressed as a picture reads as a program from now on).
+            if let Some(local) = r.sniffed {
+                for conv in self.conversations.iter_mut() {
+                    for m in conv.messages.iter_mut() {
+                        let is_row = crate::types::parse_attachment_content(&m.content).is_some_and(|(h, _, _)| h == r.content_hash);
+                        if !is_row {
+                            continue;
+                        }
+                        let claimed = m.attach.map_or(crate::types::AttachKind::Unknown, |a| a.kind);
+                        let verdict = crate::types::AttachKind::reconcile(local, claimed);
+                        if verdict != claimed {
+                            crate::logf!("ATTACH: kind reconciled {} → {} (our sniff outranks the claim)", format!("{claimed:?}"), format!("{verdict:?}"));
+                            let mut a = m.attach.unwrap_or(crate::types::AttachMeta { kind: verdict, dims: None, preview_hash: None });
+                            a.kind = verdict;
+                            m.attach = Some(a);
+                        }
+                    }
+                }
+            }
             if let (Some(kp), Some(checker)) =
                 (self.device_keypair.as_ref(), self.status_checker.as_ref())
             {

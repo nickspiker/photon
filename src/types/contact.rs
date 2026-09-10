@@ -269,6 +269,10 @@ pub struct ChatMessage {
     pub wave: Option<WaveInfo>,
     /// RECORDING ROW envelope thumbnail: `nchan × WAVE_THUMB_BUCKETS × 4` bytes, channel-major then bucket-major, each bucket `[amplitude, red, green, blue]` in eighth-STOPS below full scale (0 = full scale, 255 = silence floor) — the colour bands are high-pass energies at three scales (call/record.rs). Empty on every other row. Persisted + fleet-synced so any sibling draws the waveform before it holds the blob.
     pub envelope: Vec<u8>,
+    /// TYPED ATTACHMENT metadata (2026-09-10): kind sniffed from the bytes, pixel dims, preview-blob hash — beside the content string that keeps the row's identity (hash + name + size). Persisted, fleet-synced as page columns, sent to the friend as typed package fields. None on every non-attachment row and on pre-feature attachment rows.
+    pub attach: Option<crate::types::AttachMeta>,
+    /// MICRO PREVIEW that rides on the row itself (≤ MICRO_PREVIEW_MAX_BYTES): a ≤24-px gamma-2 VSF RGB thumb for images, the first bytes of a text file — visible on every device before any blob is fetched.
+    pub preview: Vec<u8>,
     /// BRIDGE runtime only (never persisted — bridge rows are ephemeral): the newest streamed snapshot's sequence on a BridgeOut row, so an out-of-order or duplicated partial can never regress the display.
     pub bridge_seq: u64,
     /// BRIDGE runtime only: the exit code once this BridgeOut row's command completed — present = FINAL frame arrived, the in-flight predicate's other half.
@@ -290,6 +294,8 @@ impl ChatMessage {
             marks: Vec::new(),
             wave: None,
             envelope: Vec::new(),
+            attach: None,
+            preview: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -313,6 +319,8 @@ impl ChatMessage {
             envelope: Vec::new(),
             bridge_seq: 0,
             replicated: false,
+            attach: None,
+            preview: Vec::new(),
             bridge_exit: None,
         }
     }

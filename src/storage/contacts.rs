@@ -991,6 +991,7 @@ pub fn save_messages(
             rec = rec.set("marks", Value::Bytes(crate::types::encode_marks(&msg.marks)));
         }
         rec = set_wave_fields(rec, msg);
+        rec = set_attach_fields(rec, msg);
         let row_key = message_row_key(msg.timestamp, &msg.content);
         // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
         if db
@@ -1104,6 +1105,8 @@ pub fn load_messages(
             marks: record_marks(&rec, content),
             wave: record_wave(&rec),
             envelope: record_envelope(&rec),
+            attach: record_attach(&rec),
+            preview: record_preview(&rec),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -1168,6 +1171,40 @@ fn record_wave(rec: &Record) -> Option<crate::types::WaveInfo> {
 
 fn record_envelope(rec: &Record) -> Vec<u8> {
     rec.bytes("wave_env").map(|b| b.to_vec()).unwrap_or_default()
+}
+
+/// Typed attachment fields (2026-09-10), written only when present: the sniffed kind, pixel dims, the preview-blob hash, and the row's micro preview bytes. Binary at rest.
+fn set_attach_fields(mut rec: Record, msg: &ChatMessage) -> Record {
+    if let Some(a) = msg.attach {
+        rec = rec.set("attach_kind", a.kind as u64);
+        if let Some((w, h)) = a.dims {
+            rec = rec.set("attach_w", w as u64).set("attach_h", h as u64);
+        }
+        if let Some(ph) = a.preview_hash {
+            rec = rec.set("attach_ph", Value::Bytes(ph.to_vec()));
+        }
+    }
+    if !msg.preview.is_empty() {
+        rec = rec.set("attach_pv", Value::Bytes(msg.preview.clone()));
+    }
+    rec
+}
+
+fn record_attach(rec: &Record) -> Option<crate::types::AttachMeta> {
+    let kind = crate::types::AttachKind::from_wire(rec.uint("attach_kind")? as u8)?;
+    let dims = match (rec.uint("attach_w"), rec.uint("attach_h")) {
+        (Some(w), Some(h)) if w > 0 && h > 0 => Some((w as u32, h as u32)),
+        _ => None,
+    };
+    let preview_hash = rec.bytes("attach_ph").and_then(|b| <[u8; 32]>::try_from(b).ok());
+    Some(crate::types::AttachMeta { kind, dims, preview_hash })
+}
+
+fn record_preview(rec: &Record) -> Vec<u8> {
+    rec.bytes("attach_pv")
+        .filter(|b| b.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES)
+        .map(|b| b.to_vec())
+        .unwrap_or_default()
 }
 
 /// Persist the conversation-scoped durable bits — unread count and the history-recovery cursor — under the conversation id. These historically rode the contact record; a conversation is not a contact, so they get their own tiny record.
@@ -1367,6 +1404,8 @@ pub fn load_message_page_before(
             marks: record_marks(&rec, content),
             wave: record_wave(&rec),
             envelope: record_envelope(&rec),
+            attach: record_attach(&rec),
+            preview: record_preview(&rec),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
@@ -1524,6 +1563,8 @@ mod tests {
                 notified: true,
                 wave: None,
                 envelope: Vec::new(),
+                attach: None,
+                preview: Vec::new(),
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
@@ -1541,6 +1582,8 @@ mod tests {
                 notified: true,
                 wave: None,
                 envelope: Vec::new(),
+                attach: None,
+                preview: Vec::new(),
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
@@ -1558,6 +1601,8 @@ mod tests {
                 notified: true,
                 wave: None,
                 envelope: Vec::new(),
+                attach: None,
+                preview: Vec::new(),
                 bridge_seq: 0,
                 replicated: false,
                 bridge_exit: None,
@@ -1846,6 +1891,8 @@ mod tests {
             notified: true,
             wave: None,
             envelope: Vec::new(),
+            attach: None,
+            preview: Vec::new(),
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,

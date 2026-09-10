@@ -496,9 +496,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let tail = if fetching { " \u{2014} e tiki ana\u{2026}" } else { "" };
             format!("\u{25B6}\u{FE0E} hopukanga \u{00B7} {size}{tail}").into()
         }
-        Msg::FileBubble { name, size, held } => {
+        Msg::FileBubble { glyph, name, size, held } => {
             let state = if held { "" } else { " \u{2014} pāwhiritia mō ngā mahi" };
-            format!("\u{1F4CE} {name} \u{00B7} {size}{state}").into()
+            format!("{glyph} {name} \u{00B7} {size}{state}").into()
         }
         Msg::InspectFailed(e) => format!("i rahua te tirotiro: {e}").into(),
         // ---- message persistence / attachments toasts ----

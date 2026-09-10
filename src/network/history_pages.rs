@@ -29,6 +29,10 @@ pub struct HistoryRow {
     pub wave: Option<(u8, u32)>,
     /// Recording row envelope thumbnail as a native multi-value column — absent ⇒ empty.
     pub envelope: Vec<u8>,
+    /// Typed attachment columns (2026-09-10): (raw wire kind, w, h, preview-blob hash) — absent on pre-feature pages ⇒ None.
+    pub attach: Option<(u8, u32, u32, Option<[u8; 32]>)>,
+    /// The row's micro preview as a native multi-value column — absent ⇒ empty.
+    pub preview: Vec<u8>,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -68,6 +72,14 @@ fn page_schema() -> SectionSchema {
         .field("m_wvs", TypeConstraint::AnyUnsigned) // wave live seconds, one per row
         .field("m_wvn", TypeConstraint::AnyUnsigned) // envelope byte COUNT, one per row (0 = none)
         .field("m_wve", TypeConstraint::AnyUnsigned) // envelope bytes as one multi-value field per row that has one, consumed in row order
+        // Typed attachment columns (2026-09-10): kind/dims one per row (0 = not typed), a preview-blob hash and the micro preview each as one field per row that carries one, with per-row presence/count columns keeping the rows aligned.
+        .field("m_ak", TypeConstraint::AnyUnsigned) // attachment kind, one per row: 0 = none
+        .field("m_aw", TypeConstraint::AnyUnsigned) // pixel width, one per row (0 = unknown)
+        .field("m_ah", TypeConstraint::AnyUnsigned) // pixel height, one per row
+        .field("m_ahn", TypeConstraint::AnyUnsigned) // preview-hash presence, one per row (0/1)
+        .field("m_aph", TypeConstraint::Any) // hb preview-blob hash, one per row that has one
+        .field("m_apn", TypeConstraint::AnyUnsigned) // micro preview byte COUNT, one per row (0 = none)
+        .field("m_apv", TypeConstraint::AnyUnsigned) // micro preview bytes as one multi-value field per row that has one
 }
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
@@ -118,10 +130,30 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .append_multi("m_wvs", vec![VsfType::u(row.wave.map(|(_, s)| s).unwrap_or(0) as usize, false)])
             .map_err(|e| e.to_string())?
             .append_multi("m_wvn", vec![VsfType::u(row.envelope.len(), false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_ak", vec![VsfType::u(row.attach.map(|(k, _, _, _)| k).unwrap_or(0) as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_aw", vec![VsfType::u(row.attach.map(|(_, w, _, _)| w).unwrap_or(0) as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_ah", vec![VsfType::u(row.attach.map(|(_, _, h, _)| h).unwrap_or(0) as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_ahn", vec![VsfType::u(row.attach.and_then(|(_, _, _, ph)| ph).is_some() as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_apn", vec![VsfType::u(row.preview.len(), false)])
             .map_err(|e| e.to_string())?;
         if !row.envelope.is_empty() {
             builder = builder
                 .append_multi("m_wve", row.envelope.iter().map(|&b| VsfType::u(b as usize, false)).collect())
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(ph) = row.attach.and_then(|(_, _, _, ph)| ph) {
+            builder = builder
+                .append_multi("m_aph", vec![VsfType::hb(ph.to_vec())])
+                .map_err(|e| e.to_string())?;
+        }
+        if !row.preview.is_empty() {
+            builder = builder
+                .append_multi("m_apv", row.preview.iter().map(|&b| VsfType::u(b as usize, false)).collect())
                 .map_err(|e| e.to_string())?;
         }
         for m in &row.marks {
@@ -266,6 +298,25 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         .iter()
         .map(|f| f.values.iter().filter_map(|v| v.as_u64()).map(|n| n.min(255) as u8).collect())
         .collect();
+    // Attachment columns (2026-09-10): kind/dims per row; the preview hash and the micro preview each one field per row that carries one, consumed in row order like the envelope.
+    let att_kinds = flat_u("m_ak");
+    let att_ws = flat_u("m_aw");
+    let att_hs = flat_u("m_ah");
+    let att_hn = flat_u("m_ahn");
+    let att_hashes: Vec<Option<[u8; 32]>> = section
+        .get_fields("m_aph")
+        .iter()
+        .map(|f| match f.values.first() {
+            Some(VsfType::hb(h)) => <[u8; 32]>::try_from(h.as_slice()).ok(),
+            _ => None,
+        })
+        .collect();
+    let pv_counts = flat_u("m_apn");
+    let pv_fields: Vec<Vec<u8>> = section
+        .get_fields("m_apv")
+        .iter()
+        .map(|f| f.values.iter().filter_map(|v| v.as_u64()).map(|n| n.min(255) as u8).collect())
+        .collect();
     let flat_total: usize = mark_counts.iter().sum();
     let marks_ok = flat_total == mk.len() && flat_total == ms.len() && flat_total == ml.len() && flat_total == md.len();
 
@@ -274,7 +325,30 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
     let mut rows = Vec::with_capacity(n);
     let mut mcur = 0usize;
     let mut ecur = 0usize;
+    let mut hcur = 0usize;
+    let mut pcur = 0usize;
     for i in 0..n {
+        let row_attach = match att_kinds.get(i).copied().unwrap_or(0) {
+            0 => None,
+            k => {
+                let ph = if att_hn.get(i).copied().unwrap_or(0) != 0 {
+                    let h = att_hashes.get(hcur).copied().flatten();
+                    hcur += 1;
+                    h
+                } else {
+                    None
+                };
+                Some((k as u8, att_ws.get(i).copied().unwrap_or(0) as u32, att_hs.get(i).copied().unwrap_or(0) as u32, ph))
+            }
+        };
+        let row_preview = match pv_counts.get(i).copied().unwrap_or(0) {
+            0 => Vec::new(),
+            cnt => {
+                let p = pv_fields.get(pcur).cloned().unwrap_or_default();
+                pcur += 1;
+                if p.len() == cnt as usize && p.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { p } else { Vec::new() }
+            }
+        };
         let row_env = match env_counts.get(i).copied().unwrap_or(0) {
             0 => Vec::new(),
             cnt => {
@@ -317,6 +391,8 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
                 o => Some((o as u8, wave_secs.get(i).copied().unwrap_or(0) as u32)),
             },
             envelope: row_env,
+            attach: row_attach,
+            preview: row_preview,
         });
     }
     Ok(HistoryPagePlain {
@@ -352,6 +428,9 @@ mod tests {
                     marks: vec![crate::types::MessageMark { kind: 1, start: 0, len: 7, dest: "https://x.example/".into() }],
                     wave: Some((4, 61)),
                     envelope: (0..288u32).map(|b| (b % 256) as u8).collect(),
+                    // Typed attachment columns ride too: kind, dims, a preview-blob hash and a micro preview, all back byte-exact.
+                    attach: Some((2, 6000, 4000, Some([9u8; 32]))),
+                    preview: vec![3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
                     notified: true,
                 },
                 HistoryRow {
@@ -364,6 +443,8 @@ mod tests {
                     marks: Vec::new(),
                     wave: None,
                     envelope: Vec::new(),
+                    attach: None,
+                    preview: Vec::new(),
                     notified: true,
                 },
                 HistoryRow {
@@ -376,6 +457,8 @@ mod tests {
                     marks: Vec::new(),
                     wave: None,
                     envelope: Vec::new(),
+                    attach: None,
+                    preview: Vec::new(),
                     notified: true,
                 },
             ],
@@ -428,6 +511,8 @@ mod tests {
                 marks: Vec::new(),
                 wave: None,
                 envelope: Vec::new(),
+                attach: None,
+                preview: Vec::new(),
                 notified: true,
             }],
             oldest_osc: 7,

@@ -1492,6 +1492,19 @@ impl PhotonApp {
                     .iter()
                     .map(|(k, st, ln, d)| crate::types::MessageMark { kind: *k, start: *st, len: *ln, dest: d.clone() })
                     .collect::<Vec<_>>());
+                // The wire's typed attachment fields land only on an attachment row (the content string is the identity; a stray field on a text row is ignored). The kind is the peer's claim until our own install re-sniffs the bytes (drain_attach_installed reconciles).
+                if let Some(a) = pkg.attach.as_ref() {
+                    if crate::types::parse_attachment_content(&msg.content).is_some() {
+                        msg.attach = Some(crate::types::AttachMeta {
+                            kind: crate::types::AttachKind::from_wire(a.kind).unwrap_or(crate::types::AttachKind::Unknown),
+                            dims: (a.w > 0 && a.h > 0).then_some((a.w, a.h)),
+                            preview_hash: a.preview_hash,
+                        });
+                        if a.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES {
+                            msg.preview = a.preview.clone();
+                        }
+                    }
+                }
 
                 // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere. Computed BEFORE the insert so the fleet alert-duty flag can ride the row into the sibling push.
                 let conversation_open = matches!(
@@ -2150,6 +2163,24 @@ impl PhotonApp {
                                 upgraded = true;
                             }
                         }
+                        // Attachment fields adopt-once: a page carrying the typed kind / preview enriches a copy that lacks them (content is the identity).
+                        if existing.attach.is_none() {
+                            if let Some((k, w, h, ph)) = row.attach {
+                                if let Some(kind) = crate::types::AttachKind::from_wire(k) {
+                                    existing.attach = Some(crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph });
+                                    upgraded = true;
+                                }
+                            }
+                        } else if let (Some(a), Some((_, _, _, Some(ph)))) = (existing.attach.as_mut(), row.attach) {
+                            if a.preview_hash.is_none() {
+                                a.preview_hash = Some(ph);
+                                upgraded = true;
+                            }
+                        }
+                        if existing.preview.is_empty() && !row.preview.is_empty() && row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES {
+                            existing.preview = row.preview.clone();
+                            upgraded = true;
+                        }
                         if upgraded {
                             fresh.push(existing.clone());
                         }
@@ -2172,6 +2203,8 @@ impl PhotonApp {
                         marks: crate::types::valid_marks(&row.content, &row.marks),
                         wave: row.wave.and_then(|(o, s)| crate::types::WaveOutcome::from_wire(o).map(|outcome| crate::types::WaveInfo { outcome, secs: s })),
                         envelope: row.envelope.clone(),
+                        attach: row.attach.and_then(|(k, w, h, ph)| crate::types::AttachKind::from_wire(k).map(|kind| crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph })),
+                        preview: if row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { row.preview.clone() } else { Vec::new() },
                         bridge_seq: 0,
                         bridge_exit: None,
                     });

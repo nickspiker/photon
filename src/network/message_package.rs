@@ -27,6 +27,18 @@ pub struct MessagePackage {
     pub marks: Vec<(u8, usize, usize, String)>,
     /// Era-ratchet KEM material (crypto/era.rs): present only on an Init/Resp control row. Typed fields beside the text, never inside it.
     pub era_kem: Option<crate::crypto::era::EraKemWire>,
+    /// Typed attachment fields (2026-09-10): the sender's sniffed kind, dims, preview-blob hash and the row's micro preview. None on every non-attachment row.
+    pub attach: Option<AttachWire>,
+}
+
+/// The attachment row's typed extras on the friend wire — kind (AttachKind wire value), pixel dims (0 = unknown), the preview-blob hash, and the micro preview bytes.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AttachWire {
+    pub kind: u8,
+    pub w: u32,
+    pub h: u32,
+    pub preview_hash: Option<[u8; 32]>,
+    pub preview: Vec<u8>,
 }
 
 /// The bridge's typed wire extras, riding the inner package as named optional fields: the locus that ends blind-cwd operation (field 2026-08-23), the snapshot sequence + final exit that make streamed output loss-proof (every partial is the FULL accumulated text; newest seq wins), and the interrupt signal. An old peer's parser discards the names it doesn't know; a new peer reading an old frame sees all-None — no flag day.
@@ -79,6 +91,12 @@ fn msg_schema() -> SectionSchema {
         .field("ekn", TypeConstraint::Any) // hR era-ratchet ML-KEM-1024 material (public key on Init, ciphertext on Resp)
         .field("ekx", TypeConstraint::Any) // hR era-ratchet X25519 ephemeral public key
         .field("ekh", TypeConstraint::Any) // hR era-ratchet HQC-256 material (public key on Init, ciphertext on Resp)
+        // Typed attachment extras (2026-09-10).
+        .field("ak", TypeConstraint::AnyUnsigned)
+        .field("aw", TypeConstraint::AnyUnsigned)
+        .field("ah", TypeConstraint::AnyUnsigned)
+        .field("aph", TypeConstraint::Any)
+        .field("apv", TypeConstraint::Any)
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -91,7 +109,7 @@ pub fn build_message_package(
     marks: &[(u8, usize, usize, String)],
     pad: &[u8],
 ) -> Result<Vec<u8>, String> {
-    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None)
+    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None, None)
 }
 
 /// The full builder: an era-ratchet row also carries its KEM material as typed fields.
@@ -105,6 +123,7 @@ pub fn build_message_package_era(
     marks: &[(u8, usize, usize, String)],
     pad: &[u8],
     era_kem: Option<&crate::crypto::era::EraKemWire>,
+    attach: Option<&AttachWire>,
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
         .build()
@@ -179,6 +198,21 @@ pub fn build_message_package_era(
             if !bytes.is_empty() {
                 builder = builder.set(name, VsfType::hR(bytes.clone())).map_err(|e| e.to_string())?;
             }
+        }
+    }
+    if let Some(a) = attach {
+        builder = builder
+            .set("ak", VsfType::u(a.kind as usize, false))
+            .map_err(|e| e.to_string())?
+            .set("aw", VsfType::u(a.w as usize, false))
+            .map_err(|e| e.to_string())?
+            .set("ah", VsfType::u(a.h as usize, false))
+            .map_err(|e| e.to_string())?;
+        if let Some(ph) = a.preview_hash {
+            builder = builder.set("aph", VsfType::hb(ph.to_vec())).map_err(|e| e.to_string())?;
+        }
+        if !a.preview.is_empty() {
+            builder = builder.set("apv", VsfType::hR(a.preview.clone())).map_err(|e| e.to_string())?;
         }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
@@ -324,6 +358,23 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
     } else {
         Vec::new()
     };
+    // Attachment extras: a non-zero kind is the presence flag; the rest are width-agnostic optionals.
+    let u_field = |name: &str| -> Option<u64> {
+        section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| v.as_u64())
+    };
+    let attach = match u_field("ak").unwrap_or(0) {
+        0 => None,
+        k => Some(AttachWire {
+            kind: u8::try_from(k).unwrap_or(0),
+            w: u_field("aw").unwrap_or(0) as u32,
+            h: u_field("ah").unwrap_or(0) as u32,
+            preview_hash: section.get_fields("aph").first().and_then(|f| f.values.first()).and_then(|v| match v {
+                VsfType::hb(h) => <[u8; 32]>::try_from(h.as_slice()).ok(),
+                _ => None,
+            }),
+            preview: bytes_field("apv"),
+        }),
+    };
     Ok(MessagePackage {
         body,
         incorporated_hp,
@@ -335,6 +386,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         bridge: (!bridge.is_empty()).then_some(bridge),
         marks,
         era_kem,
+        attach,
     })
 }
 
@@ -346,7 +398,7 @@ mod tests {
     #[test]
     fn era_kem_fields_round_trip_and_are_absent_on_plain_rows() {
         let wire = crate::crypto::era::EraKemWire { mlkem: vec![1u8; 1568], x25519: vec![2u8; 32], hqc: Vec::new() };
-        let built = build_message_package_era("\u{1}\u{2}photon-era\u{2}\u{1}init\u{2}1\u{2}00\u{2}0000000a\u{2}3", &[0u8; 32], &[], None, None, &[], &[], Some(&wire)).unwrap();
+        let built = build_message_package_era("\u{1}\u{2}photon-era\u{2}\u{1}init\u{2}1\u{2}00\u{2}0000000a\u{2}3", &[0u8; 32], &[], None, None, &[], &[], Some(&wire), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.era_kem, Some(wire));
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
@@ -384,6 +436,16 @@ mod tests {
         assert_eq!(parse_message_package(&plain).unwrap().reference, None);
 
         assert!(parse_message_package(b"not a vsf document").is_err());
+    }
+
+    /// The attachment extras ride as typed fields and zip back losslessly; a plain package parses to None.
+    #[test]
+    fn attach_fields_round_trip_typed() {
+        let a = AttachWire { kind: 1, w: 4000, h: 3000, preview_hash: Some([7u8; 32]), preview: vec![2, 2, 9, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6] };
+        let built = build_message_package_era("\u{1}\u{2}photon-attach\u{2}\u{1}00", &[0u8; 32], &[], None, None, &[], &[], None, Some(&a)).unwrap();
+        assert_eq!(parse_message_package(&built).unwrap().attach, Some(a));
+        let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
+        assert!(parse_message_package(&plain).unwrap().attach.is_none());
     }
 
     /// Marks ride as four correlated multi-fields and zip back losslessly; a plain package parses to zero marks.

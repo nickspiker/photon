@@ -25,6 +25,8 @@ pub mod colour_convert;
 
 // Avatar paint — Mitchell resize + AA textured circle into a fluor `Canvas`.
 pub mod avatar_render;
+/// Attachment kind sniff + micro preview minting, off the UI thread (typed attachments 2026-09-10).
+pub mod attach_preview;
 
 // The incoming-wave rim — the contact's bell casting drawn as an undulating Fourier contour around the avatar.
 pub mod ring_rim;

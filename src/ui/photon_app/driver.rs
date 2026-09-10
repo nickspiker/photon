@@ -3356,6 +3356,9 @@ impl PhotonApp {
             let (aitx, airx) = std::sync::mpsc::channel();
             self.attach_installed_tx = aitx;
             self.attach_installed_rx = airx;
+            let (aptx, aprx) = std::sync::mpsc::channel();
+            self.attach_prepared_tx = aptx;
+            self.attach_prepared_rx = aprx;
             let (hptx, hprx) = std::sync::mpsc::channel();
             self.hist_opened_tx = hptx;
             self.hist_opened_rx = hprx;

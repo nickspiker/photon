@@ -677,7 +677,18 @@ struct ChainSyncOpened {
 }
 
 /// A verified+stored attachment blob, posted from the off-thread worker back to the UI drain. Carries only what the drain needs to confirm receipt (attach_have) and refresh the view; the plaintext is already on disk.
+/// A picked file the preparation worker finished (kind sniffed, dims read, micro preview minted): the UI thread stages the typed extras and sends the row + blob (attachments.rs).
+struct AttachPrepared {
+    peer: [u8; 32],
+    name: String,
+    bytes: Vec<u8>,
+    meta: crate::types::AttachMeta,
+    preview: Vec<u8>,
+}
+
 struct AttachInstalled {
+    /// The receiver's own sniff of the stored bytes (None when the name was unknown to the worker).
+    sniffed: Option<crate::types::AttachKind>,
     conversation_token: [u8; 32],
     content_hash: [u8; 32],
     sender_pubkey: crate::types::DevicePubkey,
@@ -696,6 +707,25 @@ const DEFAULT_REACTIONS: [&str; 5] = [
     "\u{1F44E}",
 ];
 
+/// The bubble text for a ROW: a typed attachment gets its kind glyph (and a code file its language tag); everything else falls thru to [`display_content`].
+fn display_row(msg: &crate::types::ChatMessage) -> String {
+    if let (Some(a), Some((hash, name, size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+        if name.as_str() != "call.audio" {
+            let size_str = crate::types::size_label(size);
+            let held = crate::storage::blob_present(&hash);
+            let glyph = match a.kind {
+                crate::types::AttachKind::Code => match crate::types::code_language(&name) {
+                    Some(lang) => format!("{} {lang}", a.kind.glyph()),
+                    None => a.kind.glyph().to_string(),
+                },
+                k => k.glyph().to_string(),
+            };
+            return tr(Msg::FileBubble { glyph: &glyph, name: &name, size: &size_str, held }).into_owned();
+        }
+    }
+    display_content(&msg.content)
+}
+
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let size_str = crate::types::size_label(size);
@@ -707,7 +737,7 @@ fn display_content(content: &str) -> String {
             tr(Msg::RecordingBubble { size: &size_str, fetching: !held }).into_owned()
         } else {
             // Files keep the paperclip + DECIMAL size in the default bubble font (see the FileBubble arm's comment in en.rs).
-            tr(Msg::FileBubble { name: &name, size: &size_str, held }).into_owned()
+            tr(Msg::FileBubble { glyph: crate::types::AttachKind::Unknown.glyph(), name: &name, size: &size_str, held }).into_owned()
         }
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
@@ -1255,6 +1285,11 @@ pub struct PhotonApp {
     /// Attachment blobs verified + stored OFF the UI thread: the receive arm hands (sealed, key, hash, seed) to a worker that AEAD-opens the whole blob, checks its content hash, and writes it to blob storage — all heavy on the render thread inline (an arbitrary-size file). The worker posts back here on success; the drain sends the attach_have confirm (needs the keypair + checker) and clears the compose wrap.
     attach_installed_tx: std::sync::mpsc::Sender<AttachInstalled>,
     attach_installed_rx: std::sync::mpsc::Receiver<AttachInstalled>,
+    /// Picked files prepared off-thread (sniff + dims + micro preview) — the drain sends them.
+    attach_prepared_tx: std::sync::mpsc::Sender<AttachPrepared>,
+    attach_prepared_rx: std::sync::mpsc::Receiver<AttachPrepared>,
+    /// The typed extras of the attachment row about to be minted by send_chain_message (set by attach_send_now, consumed at row creation) — so the row carries its kind + preview before the transmit reads it.
+    attach_stage: Option<(crate::types::AttachMeta, Vec<u8>)>,
     /// History pages opened off-thread (see HistPageOpened) — the drain merges; merging is the cheap half since the (timestamp, content-hash) index landed.
     hist_opened_tx: std::sync::mpsc::Sender<HistPageOpened>,
     hist_opened_rx: std::sync::mpsc::Receiver<HistPageOpened>,
@@ -2105,6 +2140,12 @@ impl PhotonApp {
                 tx
             },
             attach_installed_rx: std::sync::mpsc::channel().1,
+            attach_prepared_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            attach_prepared_rx: std::sync::mpsc::channel().1,
+            attach_stage: None,
             hist_opened_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
