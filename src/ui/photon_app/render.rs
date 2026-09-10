@@ -6,6 +6,11 @@ use super::*;
 pub(super) const IMG_PREVIEW_LINES: usize = 4;
 pub(super) const IMG_PREVIEW_LINES_FULL: usize = 8;
 
+/// THE settings-pane hairline (Nick 2026-09-10: "a unified style"): the conversation's divider — pure white at α=1/8, one ru thick — drawn edge to edge across the whole content pane, never inset. Every settings page that separates rows draws its dividers thru here.
+fn pane_hairline(canvas: &mut Canvas, layout: &SettingsLayout, y: f32, ru: f32, clip: Option<fluor::paint::Clip>) {
+    paint::fill_rect(canvas, layout.content.x as isize, y as isize, layout.content.w as isize, ru.max(1.0) as isize, theme::VERSION_COLOUR, clip, None);
+}
+
 /// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
 fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
     // Explicit '\n' is an authored break (the clutch steps use line returns, never dashes — Nick 2026-09-07): each segment wraps independently and the break always survives.
@@ -4654,7 +4659,7 @@ impl PhotonApp {
                                     cb.render_content_into(&mut canvas, ctx.text, Some(content_clip), Some(&mut chrome.hit_test_map));
                                 }
                                 let ru = ctx.viewport.ru.max(1.0);
-                                paint::fill_rect(&mut canvas, layout.content.x as isize, (r.bottom() - ru) as isize, layout.content.w as isize, ru as isize, theme::VERSION_COLOUR, Some(glow_clip), None);
+                                pane_hairline(&mut canvas, &layout, r.bottom() - ru, ru, Some(glow_clip));
                             }
                             YouRow::AddHeader => {
                                 ctx.text.draw_text_left(
@@ -4743,26 +4748,15 @@ impl PhotonApp {
                         let row_locked = locked_set.contains(pk);
                         let tier_colour = super::shown_tier_colour(*tier);
                         let tier_word = super::tier_label(*tier);
-                        // NAME band — tap-to-copy stamped over it; transport dot leads.
+                        // NAME band — tap-to-copy stamped over it. The NAME's colour is the transport state (Nick 2026-09-10: no dot — LAN / WFD / WAN / relay in the path colours, offline in the label grey).
                         let name_band = flow.band(hspan2 * 1.7);
-                        if let Some(colour) = tier_colour.as_ref() {
-                            let r = hspan2 * 0.26;
-                            paint::circle_filled(
-                                &mut canvas,
-                                (name_band.x + hspan2 * 0.5) as isize,
-                                name_band.center_y() as isize,
-                                r as isize,
-                                *colour,
-                                None,
-                                None,
-                            );
-                        }
+                        let name_colour = tier_colour.unwrap_or(*theme::LABEL_COLOUR);
                         // Renaming THIS card: the name band IS the textbox (prefilled, focused); no tap-to-copy stamp while editing. Enter commits, Esc cancels (driver).
                         let renaming_here = self.fleet_rename.as_ref().is_some_and(|(rpk, _)| rpk == pk);
                         if renaming_here {
                             if let Some((_, tb)) = self.fleet_rename.as_mut() {
                                 // set_rect takes CENTER x — passing the text's LEFT edge (as this did) centred the box there and threw half its width back across the nav rail, which is why renaming looked like it spanned the whole window. Span exactly the column the name and pills occupy: from the name's left edge to the card's right margin.
-                                let tb_left = name_band.x + hspan2 * 1.1;
+                                let tb_left = name_band.x + hspan2 * 0.3;
                                 let tb_w = (name_band.right() - hspan2 * 0.5 - tb_left).max(hspan2 * 6.0);
                                 tb.set_rect(tb_left + tb_w * 0.5, name_band.center_y(), tb_w, name_band.h * 0.9);
                                 tb.set_font_size(hspan2, ctx.text);
@@ -4773,9 +4767,9 @@ impl PhotonApp {
                             ctx.text.draw_text_left(
                                 &mut canvas,
                                 name,
-                                name_band.x + hspan2 * 1.1,
+                                name_band.x + hspan2 * 0.3,
                                 name_band.center_y(),
-                                &TextStyle::new(hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR)
+                                &TextStyle::new(hspan2 * 1.05, name_colour)
                                     .weight(600)
                                     .font("Oxanium"),
                                 None,
@@ -4884,18 +4878,10 @@ impl PhotonApp {
                         }
                         // AIR between device cards — the whole point. Between cards (never after the last) the conversation's white hairline rides the midpoint (Nick 2026-09-03: "same white hairlines between messages"): pure white α=1/8 = VERSION_COLOUR, the between-messages divider treatment.
                         flow.gap(hspan2 * 0.6);
-                        if i + 1 < devices.len().min(6) {
-                            let hl = flow.band(ctx.viewport.ru.max(1.0) as Coord);
-                            paint::fill_rect(
-                                &mut canvas,
-                                hl.x as isize,
-                                hl.y as isize,
-                                hl.w as isize,
-                                ctx.viewport.ru.max(1.0) as isize,
-                                theme::VERSION_COLOUR,
-                                None,
-                                None,
-                            );
+                        if i + 1 < devices.len() {
+                            let ru = ctx.viewport.ru.max(1.0);
+                            let hl = flow.band(ru as Coord);
+                            pane_hairline(&mut canvas, &layout, hl.y, ru, None);
                             flow.gap(hspan2 * 0.6);
                         }
                     }

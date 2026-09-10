@@ -18,7 +18,10 @@ class PhotonInstallReceiver : BroadcastReceiver() {
                     context.startActivity(confirm)
                 }
             }
-            PackageInstaller.STATUS_SUCCESS -> PhotonLog.i("Update", "self-update installed")
+            PackageInstaller.STATUS_SUCCESS -> {
+                PhotonLog.i("Update", "self-update installed")
+                PhotonUpdateReceiver.bringBack(context)
+            }
             else -> PhotonLog.e("Update", "install failed: status=$status ${intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: ""}")
         }
     }

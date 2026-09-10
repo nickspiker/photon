@@ -848,6 +848,11 @@ impl FluorApp for PhotonApp {
                     if *p == SettingsPage::Fleet {
                         self.refresh_fleet_retired();
                     }
+                    // Navigating away abandons a rename in progress (Nick 2026-09-10): the box goes, nothing written.
+                    if self.fleet_rename.is_some() && self.state != AppState::Settings(*p) {
+                        self.fleet_rename = None;
+                        self.change_focus(None);
+                    }
                     self.state = AppState::Settings(*p);
                     ctx.window.request_redraw();
                 }
