@@ -1116,12 +1116,6 @@ enum YouRow {
     AddInput,
     /// The "Add" pill under it.
     AddPill,
-    /// "Your handle IS your identity" reassurance line.
-    Note,
-    /// "Identity" header.
-    IdentityHeader,
-    /// The identity fingerprint read-out.
-    IdentityFp,
     /// "Update" action pill.
     SavePill,
     /// Empty breathing row (between the action pills).
@@ -1153,9 +1147,7 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
     rows.push(YouRow::AddHeader);
     rows.push(YouRow::AddInput);
     rows.push(YouRow::AddPill);
-    rows.push(YouRow::Note);
-    rows.push(YouRow::IdentityHeader);
-    rows.push(YouRow::IdentityFp);
+    // No reassurance note and no identity read-out (Nick 2026-09-10): nothing key-shaped belongs in the GUI — the default machine names are the one exception, and they live on the Fleet page.
     // No SavePill / AvatarPill (Nick 2026-09-02): fields save on focus-leave + page-navigate (save_you_fields diffs, so a no-change blur is free), and the avatar changes from YOUR contact page, not here. Variants stay compiled for the render arm's exhaustive match.
     rows
 }

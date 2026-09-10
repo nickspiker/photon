@@ -4698,42 +4698,6 @@ impl PhotonApp {
                                     ctx.pressed_hit,
                                 );
                             }
-                            YouRow::Note => {
-                                ctx.text.draw_text_left(&mut canvas, &tr(Msg::YouNote), r.x + hspan2 * 0.3, r.center_y(), &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"), Some(content_clip), None);
-                            }
-                            YouRow::IdentityHeader => {
-                                ctx.text.draw_text_left(
-                                    &mut canvas,
-                                    &tr(Msg::YouIdentity),
-                                    r.x + tspan * 0.3,
-                                    r.center_y(),
-                                    &TextStyle::new(tspan, *theme::CONTACT_NAME_COLOUR)
-                                        .weight(600)
-                                        .font("Oxanium"),
-                                    Some(content_clip),
-                                    None,
-                                );
-                            }
-                            YouRow::IdentityFp => {
-                                let fp = self
-                                    .session
-                                    .as_ref()
-                                    .map(|s| {
-                                        crate::fp(&crate::crypto::clutch::identity_party_id(
-                                            &s.identity_seed,
-                                        ))
-                                    })
-                                    .unwrap_or_else(|| "—".to_string());
-                                ctx.text.draw_text_left(
-                                    &mut canvas,
-                                    &fp,
-                                    r.x + hspan2 * 0.3,
-                                    r.center_y(),
-                                    &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
-                                    Some(content_clip),
-                                    None,
-                                );
-                            }
                             YouRow::SavePill => {
                                 draw_stub_pill(
                                     &mut canvas,
