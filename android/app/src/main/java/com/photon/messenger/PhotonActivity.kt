@@ -874,7 +874,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             KeyEvent.KEYCODE_ENTER,    // Enter/Done
             KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                if (wakeFrames(); nativeOnKeyEvent(nativePtr, keyCode)) {
+                wakeFrames()
+                if (nativeOnKeyEvent(nativePtr, keyCode)) {
                     return true
                 }
             }
