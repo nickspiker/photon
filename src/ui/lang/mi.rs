@@ -461,7 +461,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ProfileTierPersonal => "Whaiaro".into(),
         Msg::ProfileTierWork => "Mahi".into(),
         Msg::ProfileTierSensitive => "Tairongo \u{2014} ka tohaina i te wāhi anake ka tohua e koe; wetekia kia mutu te toha".into(),
-        Msg::YouShareHint => "tohu = ka tohaina ki ngā hoa katoa; whakakāhoretia mō ia hoa i tō rātou whārangi".into(),
+        Msg::YouShareHint => "tohu = ka tohaina ki ngā hoa katoa\nwhakakāhoretia mō ia hoa i tō rātou whārangi".into(),
         Msg::ProfileTierCustom => "Ake".into(),
         Msg::ProfileNamePreferred => "Ingoa pai".into(),
         Msg::ProfileNameFirst => "Ingoa tuatahi".into(),

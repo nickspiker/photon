@@ -170,10 +170,12 @@ impl PhotonApp {
                                 pf.tb.set_rect(r.x + box_w * 0.5, cy, box_w, ctrl_h * 1.2);
                                 pf.tb.set_font_size(ctrl_font, ctx.text);
                                 if let Some(cb) = pf.share_cb.as_mut() {
-                                    // Top-aligned with the box (Nick 2026-09-10), not centred on it: the box is 1.2 ctrl_h tall, the checkbox one ctrl_h.
+                                    // Top-aligned with the box (Nick 2026-09-10): the checkbox's drawn side is min(1.3 × font, height), smaller than ctrl_h — so the centre is placed from ITS side, font set first.
                                     let box_top = cy - ctrl_h * 0.6;
-                                    cb.set_rect(r.x + box_w + cb_w * 0.5, box_top + ctrl_h * 0.5, ctrl_h, ctrl_h);
                                     cb.set_font_size(ctrl_font);
+                                    cb.set_rect(r.x + box_w + cb_w * 0.5, cy, ctrl_h, ctrl_h);
+                                    let side = cb.box_side();
+                                    cb.set_rect(r.x + box_w + cb_w * 0.5, box_top + side * 0.5, ctrl_h, ctrl_h);
                                 }
                             }
                             YouRow::AddInput => {

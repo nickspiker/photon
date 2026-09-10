@@ -1104,6 +1104,8 @@ fn profile_tier_label(tier: &str) -> Option<std::borrow::Cow<'static, str>> {
 enum YouRow {
     /// Category header — carries the TIER ID; the draw site routes it thru [`profile_tier_label`] so headers translate.
     Header(&'static str),
+    /// One line of the share hint under a tier header (the hint is two lines: what a tick means, then the per-friend override).
+    ShareHint(usize),
     /// An editable field's LABEL line — index into `you_fields`: label left, the tag box (phone: home / work) and the default-share checkbox at the right end.
     FieldLabel(usize),
     /// The same field's VALUE line: a full-width box, with the hairline divider under it (Nick 2026-09-10: "vertical, line returns and horizontal hairline dividers like the chat screen, so the textbox for each entry is full width").
@@ -1137,6 +1139,10 @@ fn you_rows_plan(fields: &[ProfileField]) -> Vec<YouRow> {
             if f.tier == tier {
                 if !any {
                     rows.push(YouRow::Header(tier));
+                    if tier != "name" {
+                        rows.push(YouRow::ShareHint(0));
+                        rows.push(YouRow::ShareHint(1));
+                    }
                     any = true;
                 }
                 rows.push(YouRow::FieldLabel(i));

@@ -4605,12 +4605,15 @@ impl PhotonApp {
                                     Some(content_clip),
                                     None,
                                 );
-                                // What the right-hand box means, said once per tier over the column it sits in (the name tier has no boxes).
-                                if *tier != "name" {
-                                    ctx.text.draw_text_right(
+                            }
+                            YouRow::ShareHint(n) => {
+                                // What the box means, on its own lines under the tier title (Nick 2026-09-10: below, not beside; a line return where the semicolon was).
+                                let hint = tr(Msg::YouShareHint);
+                                if let Some(line) = hint.split('\n').nth(*n) {
+                                    ctx.text.draw_text_left(
                                         &mut canvas,
-                                        &tr(Msg::YouShareHint),
-                                        r.right() - hspan2 * 0.2,
+                                        line,
+                                        r.x + tspan * 0.3,
                                         r.center_y(),
                                         &TextStyle::new(hspan2 * 0.8, *theme::LABEL_COLOUR).font("Oxanium"),
                                         Some(content_clip),
