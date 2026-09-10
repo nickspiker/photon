@@ -123,14 +123,7 @@ mod tests {
     use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305};
 
     fn secret() -> [u8; 32] {
-        derive_call_secret(
-            &[1; 32],
-            &[2; 32],
-            &[3; 32],
-            &[4; 16],
-            &[5; 32],
-            &[6; 32],
-        )
+        derive_call_secret(&[3; 32], &[4; 16], &[5; 32], &[6; 32])
     }
 
     /// The hand-assembled RFC 8439 composition must be BIT-IDENTICAL to the house AEAD library (ciphertext and the full 16-byte tag) — the wire merely truncates the tag. This KAT is what makes the hand-rolling safe to trust.

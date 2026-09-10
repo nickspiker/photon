@@ -1097,13 +1097,9 @@ impl PhotonApp {
         caller_nonce: &[u8; 32],
         callee_nonce: &[u8; 32],
     ) -> Option<[u8; 32]> {
-        let fid = self.contacts.get(ci)?.friendship_id?;
-        let (_, chains) = self.friendship_chains.iter().find(|(id, _)| *id == fid)?;
-        let lane_root = chains.lane_root()?;
-        let history_key = chains.history_key()?;
+        // v2: no era material beyond the offer lane key (keys.rs) — a one-era skew between the fleets used to split the secret. The contact is still required to exist (a call needs a friendship).
+        let _ = self.contacts.get(ci)?.friendship_id?;
         Some(crate::call::keys::derive_call_secret(
-            lane_root,
-            history_key,
             offer_lane_key,
             call_id,
             caller_nonce,

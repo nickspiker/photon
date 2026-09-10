@@ -46,22 +46,19 @@ impl Direction {
 }
 
 /// Derive the per-call root secret from the basket. Every input is fixed-width or length-prefixed by position, so the concatenation is injective; blake3's derive_key binds the domain.
+/// v2 (2026-09-10): the friendship's CURRENT lane_root + history_key are NOT ingredients any more. They were, and one era of skew between the two fleets (Emma re-keyed, Nick's phone had not) gave the two ends two different secrets with a perfectly good offer/answer exchange — "seen 293, open-drop 293, decoded 0" on BOTH sides. The offer lane key is already a per-era lane secret the caller sealed and the callee captured at decrypt, so the secret stays bound to the friendship's key material thru it, era-consistently by construction.
 pub fn derive_call_secret(
-    lane_root: &[u8; 32],
-    history_key: &[u8; 32],
     offer_lane_key: &[u8; 32],
     call_id: &[u8; 16],
     caller_nonce: &[u8; 32],
     callee_nonce: &[u8; 32],
 ) -> [u8; 32] {
-    let mut material = Vec::with_capacity(32 * 5 + 16);
-    material.extend_from_slice(lane_root);
-    material.extend_from_slice(history_key);
+    let mut material = Vec::with_capacity(32 * 3 + 16);
     material.extend_from_slice(offer_lane_key);
     material.extend_from_slice(call_id);
     material.extend_from_slice(caller_nonce);
     material.extend_from_slice(callee_nonce);
-    let out = blake3::derive_key("PHOTON_CALL_v1 call secret", &material);
+    let out = blake3::derive_key("PHOTON_CALL_v2 call secret", &material);
     material.zeroize();
     out
 }
@@ -124,14 +121,7 @@ mod tests {
     use super::*;
 
     fn basket() -> [u8; 32] {
-        derive_call_secret(
-            &[0x11; 32],
-            &[0x22; 32],
-            &[0x33; 32],
-            &[0x44; 16],
-            &[0x55; 32],
-            &[0x66; 32],
-        )
+        derive_call_secret(&[0x33; 32], &[0x44; 16], &[0x55; 32], &[0x66; 32])
     }
 
     /// Frozen contract: if this ever changes, an updated device cannot talk to a not-yet-updated one mid-rollout — the KAT is the tripwire, same doctrine as the device-keypair KAT in fgtw. The literal was computed by an INDEPENDENT program (blake3 1.5 direct, outside this crate) on 2026-08-18; regenerate ONLY with a version bump on the context string.
@@ -139,7 +129,7 @@ mod tests {
     fn call_secret_known_answer() {
         assert_eq!(
             hex::encode(basket()),
-            "6f12ef0cdc0cbb011d795c6645de39a8a2f62336b4bf45ad4ce08d57329637ce"
+            "434bffb7fd6dcf75d76e289a11094031d944cb50647526a11669a446d923be13"
         );
     }
 
@@ -147,12 +137,10 @@ mod tests {
     fn every_basket_ingredient_changes_the_secret() {
         let base = basket();
         let variants = [
-            derive_call_secret(&[0x12; 32], &[0x22; 32], &[0x33; 32], &[0x44; 16], &[0x55; 32], &[0x66; 32]),
-            derive_call_secret(&[0x11; 32], &[0x23; 32], &[0x33; 32], &[0x44; 16], &[0x55; 32], &[0x66; 32]),
-            derive_call_secret(&[0x11; 32], &[0x22; 32], &[0x34; 32], &[0x44; 16], &[0x55; 32], &[0x66; 32]),
-            derive_call_secret(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x45; 16], &[0x55; 32], &[0x66; 32]),
-            derive_call_secret(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x44; 16], &[0x56; 32], &[0x66; 32]),
-            derive_call_secret(&[0x11; 32], &[0x22; 32], &[0x33; 32], &[0x44; 16], &[0x55; 32], &[0x67; 32]),
+            derive_call_secret(&[0x34; 32], &[0x44; 16], &[0x55; 32], &[0x66; 32]),
+            derive_call_secret(&[0x33; 32], &[0x45; 16], &[0x55; 32], &[0x66; 32]),
+            derive_call_secret(&[0x33; 32], &[0x44; 16], &[0x56; 32], &[0x66; 32]),
+            derive_call_secret(&[0x33; 32], &[0x44; 16], &[0x55; 32], &[0x67; 32]),
         ];
         for (i, v) in variants.iter().enumerate() {
             assert_ne!(&base, v, "ingredient {} must reach the KDF", i);
