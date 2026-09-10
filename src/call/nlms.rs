@@ -22,7 +22,8 @@ fn whiten(x: &[f32]) -> Vec<f32> {
         .map(|i| WHITEN_SCALES.iter().map(|&s| x[i] - x[i - s]).sum::<f32>() / k)
         .collect()
 } // 2026-09-09: was 0.25 — the field's echo was audible with the filter barely moving; NLMS is stable below 2, and the per-sample update is what tracks a drifting path
-const EPS: f32 = 1e3;
+/// Regularisation floor on the (whitened) reference window's power, per tap: NLMS divides the step by that power, and a window of digital silence (the far end's mute-transmits-zeros, a DAC pulling silence) has NONE — with the old 1e3 the step became MU × error ÷ 1e3 and one loud near-end frame thru an open gate multiplied the taps into the millions (field 2026-09-10, the first whitener build: −143dB "ERLE" on one phone, NaN on the other, the near mic silenced for the rest of the wave). A floor of the noise-amplitude-squared per tap keeps the step bounded whatever the gate lets thru; a window under it is not adapted on at all.
+const POWER_FLOOR_PER_TAP: f32 = 400.0; // amplitude ~20 of i16, squared
 
 /// Flat reference ring over what the DAC actually rendered, indexed by ABSOLUTE sample position (never wraps indices — the buffer slides).
 pub struct RefRing {
@@ -78,11 +79,13 @@ pub struct Nlms {
     err_hist: [f32; WHITEN_SPAN],
     /// Frames the filter ran on at all (adapted or frozen) — with `adapted_frames`, the adapt ratio the stats print.
     pub run_frames: u64,
+    /// The taps went non-finite: the filter passes raw audio thru from then on and reports itself harmful so the engine disarms it. Logged once by the engine.
+    pub diverged: bool,
 }
 
 impl Nlms {
     pub fn new(ir_start: usize, taps: Vec<f32>) -> Self {
-        Self { h: taps, ir_start: ir_start as i64, pre_e: 0.0, post_e: 0.0, adapted_frames: 0, recent_pre: 0.0, recent_post: 0.0, err_hist: [0.0; WHITEN_SPAN], run_frames: 0 }
+        Self { h: taps, ir_start: ir_start as i64, pre_e: 0.0, post_e: 0.0, adapted_frames: 0, recent_pre: 0.0, recent_post: 0.0, err_hist: [0.0; WHITEN_SPAN], run_frames: 0, diverged: false }
     }
 
     /// ERLE in dB over the adapted stretches; None until any frame adapted.
@@ -94,7 +97,7 @@ impl Nlms {
     /// A canceller that MADE ECHO WORSE must be shot (field 2026-09-08: a −43dB chirp barely passed the fit gate and seeded a misaligned filter → −17.8dB ERLE, i.e. +17.8dB of injected garbage = the "scratchy"). After a probation window of adapted frames, net-negative ERLE means the seed was garbage — the caller disarms and falls back to the duck. `false` until probation completes (never judge on one noisy frame).
     pub fn is_net_harmful(&self) -> bool {
         const PROBATION: u64 = 200; // ~2s of far-talk-alone adaptation before any verdict
-        self.adapted_frames >= PROBATION && self.recent_post > self.recent_pre
+        self.diverged || (self.adapted_frames >= PROBATION && self.recent_post > self.recent_pre)
     }
 
     /// ERLE over the recent adapted stretch (the self-check's view); None until adapted.
@@ -113,43 +116,57 @@ impl Nlms {
         };
         let win = &win_ext[WHITEN_SPAN..];
         self.run_frames += 1;
-        // ---- Estimate + residual on RAW audio (this is what plays out and what the tally measures). ----
-        let mut errs = vec![0f32; len];
+        if self.diverged {
+            return; // raw passes thru; the engine disarms on the next self-check
+        }
+        // Whitened reference (aligned with `win`) and the whitened window's power as a running sum — both only when adapting. A window whose whitened power sits under the floor is not adapted on: there is no reference to learn from there, only near-end sound to poison the taps with.
+        let floor = POWER_FLOOR_PER_TAP * n as f32;
+        let g2 = ref_gain * ref_gain;
+        let xw: Vec<f32> = if adapt { whiten(win_ext) } else { Vec::new() };
+        let mut power: f32 = if adapt { xw[..n].iter().map(|&r| r * r).sum() } else { 0.0 };
+        let adapting = adapt && power * g2 >= floor;
+        // Error history for the whitened error: WHITEN_SPAN past raw errors, then this frame's, appended sample by sample.
+        let mut e_hist: Vec<f32> = Vec::with_capacity(WHITEN_SPAN + len);
+        e_hist.extend_from_slice(&self.err_hist);
         let mut pre = 0f64;
         let mut post = 0f64;
+        let k = WHITEN_SCALES.len() as f32;
+        // ONE interleaved loop (2026-09-10): estimate, residual, then the update — PER SAMPLE, so every update sees the error the CURRENT taps make. The first whitener build computed all 240 residuals with the frame's starting taps and then applied 240 updates against those stale errors: every update pushed the same way, the effective step was 240× the intended one, and the taps ran to infinity within two seconds on every phone (and in the tests, where NaN slipped past the ERLE arithmetic).
         for (j, m) in mic.iter_mut().enumerate() {
             // ref[frame_pos + j − ir_start − k] = win[j + n − 1 − k]: h ascending pairs with the window reversed.
             let x = &win[j..j + n];
             let est: f32 = self.h.iter().rev().zip(x).map(|(&h, &r)| h * r).sum::<f32>() * ref_gain;
+            if !est.is_finite() {
+                // The taps are gone: this and every later frame pass raw; the engine disarms on the self-check.
+                self.diverged = true;
+                return;
+            }
             let raw = *m as f32;
             let e = raw - est;
             pre += (raw * raw) as f64;
             post += (e * e) as f64;
-            errs[j] = e;
             *m = e.clamp(-32768.0, 32767.0) as i16;
-        }
-        // ---- Tap update on WHITENED signals (filtered-error NLMS): the whitened reference window and the whitened error, sharing the raw taps. ----
-        if adapt {
-            let xw = whiten(win_ext); // len == n + len − 1, aligned with `win`
-            // Whitened error with history across the frame edge.
-            let mut e_ext = Vec::with_capacity(WHITEN_SPAN + len);
-            e_ext.extend_from_slice(&self.err_hist);
-            e_ext.extend_from_slice(&errs);
-            let ew = whiten(&e_ext);
-            // The whitened window's power slides one sample per output sample — a running sum, O(1) per sample.
-            let g2 = ref_gain * ref_gain;
-            let mut power: f32 = xw[..n].iter().map(|&r| r * r).sum();
-            for j in 0..len {
-                let x = &xw[j..j + n];
+            e_hist.push(e);
+            if adapting {
                 if j > 0 {
                     power += xw[j + n - 1] * xw[j + n - 1] - xw[j - 1] * xw[j - 1];
                 }
-                let norm = power.max(0.0) * g2 + EPS;
-                let g = MU * ew[j] * ref_gain / norm;
-                for (h, &r) in self.h.iter_mut().rev().zip(x) {
+                // Whitened error at this sample from the raw error history (this sample and its lags).
+                let i = WHITEN_SPAN + j;
+                let ew: f32 = WHITEN_SCALES.iter().map(|&s| e_hist[i] - e_hist[i - s]).sum::<f32>() / k;
+                let norm = (power.max(0.0) * g2).max(floor);
+                let g = MU * ew * ref_gain / norm;
+                if !g.is_finite() {
+                    self.diverged = true;
+                    return;
+                }
+                let xwj = &xw[j..j + n];
+                for (h, &r) in self.h.iter_mut().rev().zip(xwj) {
                     *h += g * r;
                 }
             }
+        }
+        if adapting {
             self.pre_e += pre;
             self.post_e += post;
             self.adapted_frames += 1;
@@ -160,7 +177,7 @@ impl Nlms {
         // Error history for the next frame's whitening (adapted or not — the signal is continuous either way).
         let keep = len.min(WHITEN_SPAN);
         self.err_hist.rotate_left(keep);
-        self.err_hist[WHITEN_SPAN - keep..].copy_from_slice(&errs[len - keep..]);
+        self.err_hist[WHITEN_SPAN - keep..].copy_from_slice(&e_hist[e_hist.len() - keep..]);
     }
 }
 
@@ -251,7 +268,9 @@ mod tests {
                 late_post += nlms.post_e - q0;
             }
         }
-        let late_erle = 10.0 * (late_pre / late_post.max(1e-9)).log10();
+        assert!(nlms.h.iter().all(|v| v.is_finite()) && !nlms.diverged, "taps must stay finite");
+        assert!(late_post.is_finite() && late_post > 0.0, "late residual must be a finite positive energy, got {late_post}");
+        let late_erle = 10.0 * (late_pre / late_post).log10();
         assert!(late_erle > 20.0, "converged ERLE {late_erle:.1}dB after 2s of far-talk");
     }
 
@@ -310,8 +329,31 @@ mod tests {
                 late_post += nlms.post_e - q0;
             }
         }
-        let late_erle = 10.0 * (late_pre / late_post.max(1e-9)).log10();
+        assert!(nlms.h.iter().all(|v| v.is_finite()) && !nlms.diverged, "taps must stay finite (diverged {}, adapted {})", nlms.diverged, nlms.adapted_frames);
+        assert!(late_post.is_finite() && late_post > 0.0, "late residual must be a finite positive energy, got {late_post}");
+        let late_erle = 10.0 * (late_pre / late_post).log10();
         assert!(late_erle > 12.0, "coloured-input ERLE {late_erle:.1}dB after 2s — the whitener must carry the tilt");
+    }
+
+    /// A SILENT reference with a loud near mic thru an open gate must not move the taps (the 2026-09-10 blow-up): the power floor refuses the update.
+    #[test]
+    fn silent_reference_never_poisons_the_taps() {
+        let flen = 240usize;
+        let total = 40 * flen + TAPS + 4096;
+        let mut ring = RefRing::new(total * 2);
+        for _ in 0..(total / flen) {
+            ring.push(&vec![0i16; flen]);
+        }
+        let ir_start = 1000usize;
+        let (_, h0) = true_h(ir_start);
+        let mut nlms = Nlms::new(ir_start, h0.clone());
+        for fi in 0..40 {
+            let mut m: Vec<i16> = (0..flen).map(|i| if i % 2 == 0 { 12000 } else { -12000 }).collect();
+            nlms.cancel_frame(&mut m, &ring, (TAPS + 4096 + fi * flen) as i64, true, 1.0);
+            assert!(m.iter().all(|&v| v == 12000 || v == -12000), "raw must pass thru untouched over a silent reference");
+        }
+        assert!(!nlms.diverged);
+        assert!(nlms.h.iter().zip(&h0).all(|(a, b)| (a - b).abs() < 1e-6), "taps moved on a silent reference");
     }
 
     #[test]

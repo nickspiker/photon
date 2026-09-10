@@ -759,8 +759,12 @@ fn run(
         }
         // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
         if nlms.as_ref().is_some_and(|c| c.is_net_harmful()) {
-            let erle = nlms.as_ref().and_then(|c| c.erle_db()).unwrap_or(0.0);
-            crate::logf!("CALL: nlms disarmed — net harmful ({:.1}dB), duck carries", erle);
+            if nlms.as_ref().is_some_and(|c| c.diverged) {
+                crate::log("CALL: nlms disarmed — taps DIVERGED (non-finite), raw audio passed thru, duck carries");
+            } else {
+                let erle = nlms.as_ref().and_then(|c| c.erle_recent_db()).unwrap_or(0.0);
+                crate::logf!("CALL: nlms disarmed — net harmful (recent {:.1}dB), duck carries", erle);
+            }
             nlms = None;
         }
         // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.

@@ -3457,38 +3457,59 @@ impl PhotonApp {
                                                 out
                                             };
                                             if env_len > 0 {
+                                                // LUMIS METHOD (Nick 2026-09-10: "look how lumis generates histograms, make sure the oversample is done the same way"): every screen column is OVERSAMPLE sub-columns, each rasterised at full height as its own bar — solid below the tip, the tip pixel at √(fraction), and lumis's shade (brightest at the tip, falling as the square toward the base) — then the sub-columns are folded into the screen pixel in ENERGY space (mean of squares, then the root), exactly the histogram's downsample. The colour rides the same fold, so a column that spans several buckets blends their hues as light does.
+                                                const OVERSAMPLE: usize = 16;
                                                 let per_col = env_len as f32 / cols as f32;
-                                                // Sub-samples per column: enough to average every bucket a wide column spans, at least two so narrow columns interpolate.
-                                                let sub = (per_col.ceil() as usize * 2).clamp(2, 32);
+                                                let rows = (half * 0.92).ceil().max(1.0) as usize;
+                                                let base_alpha = |c: u32| ((c >> 24) & 0xFF) as f32;
                                                 for px in 0..cols {
                                                     let lit = held && frac.is_some() && px < played_cols;
                                                     for ch in 0..nchan.min(2) {
-                                                        let mut acc = [0f32; 4];
-                                                        for k in 0..sub {
-                                                            let pos = (px as f32 + (k as f32 + 0.5) / sub as f32) * per_col - 0.5;
+                                                        // Per sub-column: height in pixel rows and a saturated colour.
+                                                        let mut subs: Vec<(f32, [f32; 3])> = Vec::with_capacity(OVERSAMPLE);
+                                                        for k in 0..OVERSAMPLE {
+                                                            let pos = (px as f32 + (k as f32 + 0.5) / OVERSAMPLE as f32) * per_col - 0.5;
                                                             let v = sample_at(ch, pos);
-                                                            for c in 0..4 {
-                                                                acc[c] += v[c] * v[c];
+                                                            let m = v[1].max(v[2]).max(v[3]).max(0.001);
+                                                            subs.push((v[0] * half * 0.92, [v[1] / m, v[2] / m, v[3] / m]));
+                                                        }
+                                                        // Per pixel row (distance from the centreline): fold the sub-columns' coverage × shade × colour in energy space.
+                                                        for r in 0..rows {
+                                                            let (mut e_cov, mut e_r, mut e_g, mut e_b) = (0f32, 0f32, 0f32, 0f32);
+                                                            for (hgt, col) in &subs {
+                                                                let cov = if (r as f32 + 1.0) <= *hgt {
+                                                                    1.0
+                                                                } else if (r as f32) < *hgt {
+                                                                    (hgt - r as f32).sqrt()
+                                                                } else {
+                                                                    continue;
+                                                                };
+                                                                // lumis shade: 1 at the tip, (distance from tip / height)² darker toward the base.
+                                                                let from_tip = (hgt - r as f32) / hgt.max(1.0);
+                                                                let shade = (1.0 - from_tip * 0.6).max(0.4);
+                                                                let w = cov * shade;
+                                                                e_cov += w * w;
+                                                                e_r += (col[0] * w) * (col[0] * w);
+                                                                e_g += (col[1] * w) * (col[1] * w);
+                                                                e_b += (col[2] * w) * (col[2] * w);
                                                             }
-                                                        }
-                                                        let mean = |c: usize| (acc[c] / sub as f32).sqrt();
-                                                        let hgt = mean(0) * half * 0.92;
-                                                        let (rv, gv, bv) = (mean(1), mean(2), mean(3));
-                                                        let m = rv.max(gv).max(bv).max(0.001);
-                                                        let base_c = theme::rgb_colour((rv / m * 255.0) as u8, (gv / m * 255.0) as u8, (bv / m * 255.0) as u8);
-                                                        let c = if lit { base_c } else { theme::dim_colour(base_c) };
-                                                        let full = hgt.floor();
-                                                        let tip_a = ((hgt - full).sqrt() * (((c >> 24) & 0xFF) as f32)) as u32;
-                                                        let tip_c = (tip_a << 24) | (c & 0x00FF_FFFF);
-                                                        let x = (wx0 + px as f32) as isize;
-                                                        let (ty, th, tip_y) = if ch == 0 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
-                                                        let run_top = ty.max(list_top);
-                                                        let run_bot = (ty + th).min(list_bottom);
-                                                        if run_bot > run_top && th >= 1.0 {
-                                                            paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, None, None);
-                                                        }
-                                                        if tip_a > 0 && tip_y >= list_top && tip_y < list_bottom {
-                                                            paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, None, None);
+                                                            if e_cov <= 0.0 {
+                                                                break; // nothing above this row in any sub-column
+                                                            }
+                                                            let cov_m = (e_cov / OVERSAMPLE as f32).sqrt();
+                                                            let (rr, gg, bb) = ((e_r / OVERSAMPLE as f32).sqrt() / cov_m, (e_g / OVERSAMPLE as f32).sqrt() / cov_m, (e_b / OVERSAMPLE as f32).sqrt() / cov_m);
+                                                            let base_c = theme::rgb_colour((rr.clamp(0.0, 1.0) * 255.0) as u8, (gg.clamp(0.0, 1.0) * 255.0) as u8, (bb.clamp(0.0, 1.0) * 255.0) as u8);
+                                                            let c = if lit { base_c } else { theme::dim_colour(base_c) };
+                                                            let a = (cov_m.clamp(0.0, 1.0) * base_alpha(c)) as u32;
+                                                            if a == 0 {
+                                                                continue;
+                                                            }
+                                                            let pc = (a << 24) | (c & 0x00FF_FFFF);
+                                                            let x = (wx0 + px as f32) as isize;
+                                                            let y_px = if ch == 0 { bcy - 1.0 - r as f32 } else { bcy + r as f32 };
+                                                            if y_px >= list_top && y_px < list_bottom {
+                                                                paint::fill_rect(&mut canvas, x, y_px as isize, 1, 1, pc, None, None);
+                                                            }
                                                         }
                                                     }
                                                 }
