@@ -48,16 +48,31 @@ impl PhotonApp {
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
     pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
         // Standing render probe (born in the 2026-08-08 typing-lag hunt, kept for regressions). A Drop guard so it fires on every return path. The bar is a MISSED 60fps FRAME: the phone's healthy full-viewport render is 9-16ms, and the hunt's original 8ms bar logged every one of those — 3,326 lines in a 15-minute field log, the single biggest log-volume source (2026-08-09).
-        struct RenderTimer(std::time::Instant, &'static str);
+        // Stage marks ride the guard (the render-pass sub-profiler, TICKETS 2026-08-21: 5.8/8.3/8.8s single renders named no stage): each `mark` stamps the elapsed ms at a boundary, and a pass past ONE SECOND logs them — bg+chrome, the screen body, and the tail (overlays, extent, chrome finalize) fall out by subtraction.
+        struct RenderTimer(std::time::Instant, &'static str, Vec<(&'static str, u128)>);
+        impl RenderTimer {
+            fn mark(&mut self, stage: &'static str) {
+                self.2.push((stage, self.0.elapsed().as_millis()));
+            }
+        }
         impl Drop for RenderTimer {
             fn drop(&mut self) {
                 let ms = self.0.elapsed().as_millis();
                 if ms > 16 {
                     crate::logf!("PERF: render took {}ms on {} (UI thread)", ms, self.1);
                 }
+                if ms > 1000 {
+                    let mut prev = 0u128;
+                    let stages: Vec<String> = self.2.iter().map(|(s, t)| {
+                        let d = t.saturating_sub(prev);
+                        prev = *t;
+                        format!("{s} {d}ms")
+                    }).collect();
+                    crate::logf!("PERF: render stages on {} — {}, tail {}ms", self.1, stages.join(", "), ms.saturating_sub(prev));
+                }
             }
         }
-        let _rt = RenderTimer(
+        let mut _rt = RenderTimer(
             std::time::Instant::now(),
             // Every state named exactly — a sustained render storm hid behind "other" in a 2026-08-15 field log and the label couldn't say WHICH screen was looping.
             match self.state {
@@ -80,6 +95,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::ContactPanel(_) => "ContactPanel",
             },
+            Vec::new(),
         );
         // Press-hold-release: sync the "held" visual on every clickable WIDGET (attest / + / send Buttons) to the pointer arbiter's currently-pressed hit id. On desktop the host's overlay pass then paints the held tint from each Button's `tint_delta`; the app's own hit-stamped elements (pills, contact rows, nav rows) read `ctx.pressed_hit` directly further down. Must run before the widget tree is walked for overlay deltas (post-render), so a press lights up the same frame.
         let pressed_hit = ctx.pressed_hit;
@@ -560,6 +576,7 @@ impl PhotonApp {
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
             let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
             let call_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
+            _rt.mark("bg+chrome");
             if call_fullscreen {
                 // ── FULL-SCREEN CALL PANEL ── Ringing / Active / Ended, painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
                 let (phase, name, direct, pi) = match &call_overlay {
@@ -4752,7 +4769,7 @@ impl PhotonApp {
                     flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTapToCopy), hspan2 * 0.82, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.8);
                     for (i, (pk, is_self, online, retired, name, link, tier, about)) in
-                        devices.iter().take(6).enumerate()
+                        devices.iter().enumerate()
                     {
                         let row_locked = locked_set.contains(pk);
                         let tier_colour = super::shown_tier_colour(*tier);
@@ -5862,6 +5879,7 @@ impl PhotonApp {
         }
 
         } // end !call_fullscreen — per-screen bodies skipped while the ring panel owns the surface
+        _rt.mark("body");
 
         // Apply the frame's MEASURED extent (Flow pages) — next frame's clamp reads it.
         if let Some((content_h, pane_h)) = measured_extent {
