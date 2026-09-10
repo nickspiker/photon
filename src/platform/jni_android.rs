@@ -407,20 +407,22 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDraw(
     _class: JClass<'_>,
     context_ptr: jlong,
     surface: JObject<'_>,
-) {
+) -> jni::sys::jboolean {
     let Some(ctx) = get_context(context_ptr) else {
-        return;
+        return 0;
     };
     let Some(window) = (unsafe { NativeWindow::from_surface(env.get_raw(), surface.as_raw()) })
     else {
         error!("Failed to convert Surface to NativeWindow");
-        return;
+        return 0;
     };
     // Hold the tick guard across the whole draw (which runs `tick` → `advance_protocol` internally): a background `nativeServiceTick` racing us on `onResume` will see it busy and skip. The draw is the foreground owner and always wins; the deferred background tick is a harmless no-op because this very draw drains the same channels. `Acquire`/`Release` order the flag against the mutations.
     use std::sync::atomic::Ordering;
     ctx.ticking.store(true, Ordering::Relaxed);
-    ctx.shell.draw(&window);
+    // Returns whether pixels changed this frame — Kotlin's frame callback drops to an idle cadence after a run of unchanged frames (an idle screen ticked at every vsync, 2026-09-10).
+    let wrote = ctx.shell.draw(&window);
     ctx.ticking.store(false, Ordering::Release);
+    wrote as jni::sys::jboolean
 }
 
 /// Headless protocol advance, called from the foreground **service** thread (`PhotonConnectionService`) when inbound traffic arrives while the Activity is backgrounded — the Choreographer has stopped calling `nativeDraw`, so `tick` isn't running and CLUTCH/chat would otherwise stall until the screen comes on. Runs the surface-free `PhotonApp::advance_protocol` (drain channels, advance the ceremony + chain, retransmit) with NO drawing. Skips if a draw is concurrently in progress (the `onResume` overlap) — that draw covers the same work. Reuses the Activity `PhotonContext` ptr, which stays valid while the app is merely paused (destroyed only at `onDestroy`; a 0/stale ptr here is a no-op).

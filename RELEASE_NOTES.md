@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- An idle screen on Android no longer spends a third of a core keeping itself awake: the app's housekeeping ran at every display refresh, and several pieces of it (a socket lookup, a key derivation per contact, a peer-list scan) were needlessly repeated 119 times a second. They now run once, and an idle screen asks for frames at a slower cadence until you touch it.
+
 ## v90
 
 - A wave's buffering now follows the actual loss on the link instead of ratcheting up on every stumble: it settles as low as the link allows, holds loss to about one packet in two hundred and fifty-six, and fades over the rest. Every packet also measures the round trip, so the log says how far the other end really is.

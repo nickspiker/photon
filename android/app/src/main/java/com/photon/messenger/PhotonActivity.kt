@@ -170,7 +170,25 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     // Native methods for UI (network is in service)
     private external fun nativeInitWithNetwork(width: Int, height: Int, networkPtr: Long, isSamsung: Boolean): Long
-    private external fun nativeDraw(contextPtr: Long, surface: android.view.Surface)
+    private external fun nativeDraw(contextPtr: Long, surface: android.view.Surface): Boolean  // true = pixels changed this frame
+    // IDLE CADENCE (2026-09-10): after three frames that changed nothing and with no finger down, the next frame is asked for 24 ms later instead of at the next vsync — an idle screen ticked the whole protocol 119 times a second. Any touch or key posts a frame at once, so the first frame after idle is never later than one vsync.
+    private var idleFrames = 0
+    private var touchDown = false
+    private val frameHandler = Handler(Looper.getMainLooper())
+    private val idleFrameRunnable = Runnable { Choreographer.getInstance().postFrameCallback(this) }
+    private fun scheduleNextFrame() {
+        frameHandler.removeCallbacks(idleFrameRunnable)
+        Choreographer.getInstance().removeFrameCallback(this)
+        frameHandler.removeCallbacks(idleFrameRunnable)
+        if (idleFrames >= 3 && !touchDown) frameHandler.postDelayed(idleFrameRunnable, 24) else Choreographer.getInstance().postFrameCallback(this)
+    }
+    private fun wakeFrames() {
+        idleFrames = 0
+        frameHandler.removeCallbacks(idleFrameRunnable)
+        Choreographer.getInstance().removeFrameCallback(this)
+        frameHandler.removeCallbacks(idleFrameRunnable)
+        if (nativePtr != 0L && surfaceReady) Choreographer.getInstance().postFrameCallback(this)
+    }
     private external fun nativeResize(contextPtr: Long, width: Int, height: Int)
     private external fun nativeOnTouch(contextPtr: Long, action: Int, x: Float, y: Float): Int  // Returns: 1=show keyboard, -1=hide keyboard, 2=open image picker, 0=no change
     private external fun nativeOnTextInput(contextPtr: Long, text: String)  // Text from soft keyboard
@@ -348,9 +366,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 // Legacy commit path (hardware keys etc.)
                 if (nativePtr != 0L) {
                     if (text == "\b") {
-                        nativeOnKeyEvent(nativePtr, KeyEvent.KEYCODE_DEL)
+                        wakeFrames(); nativeOnKeyEvent(nativePtr, KeyEvent.KEYCODE_DEL)
                     } else {
-                        nativeOnTextInput(nativePtr, text)
+                        wakeFrames(); nativeOnTextInput(nativePtr, text)
                     }
                 }
             },
@@ -429,6 +447,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     else -> -1
                 }
                 if (action >= 0) {
+                    touchDown = action == 0 || action == 2
+                    wakeFrames()
                     val keyboardAction = nativeOnTouch(nativePtr, action, event.x, event.y)
                     when (keyboardAction) {
                         1 -> showKeyboard()
@@ -636,6 +656,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun surfaceDestroyed(holder: SurfaceHolder) {
         surfaceReady = false
         Choreographer.getInstance().removeFrameCallback(this)
+        frameHandler.removeCallbacks(idleFrameRunnable)
     }
 
     // Choreographer.FrameCallback - render loop
@@ -643,7 +664,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         if (nativePtr != 0L && surfaceReady) {
             val surface = surfaceView.holder.surface
             if (surface.isValid) {
-                nativeDraw(nativePtr, surface)
+                val wrote = nativeDraw(nativePtr, surface)
+                if (wrote || touchDown) idleFrames = 0 else idleFrames++
                 // Poll the soft-keyboard signal each frame so app-driven focus changes (e.g. dropping focus from the textbox when attestation starts) propagate to the IME without waiting for the next user touch. `wants_keyboard` is a take-on-change one-shot — almost every frame returns 0 (no change), so this is cheap.
                 when (nativePollKeyboard(nativePtr)) {
                     1 -> showKeyboard()
@@ -690,8 +712,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("photon", text))
                 }
             }
-            // Schedule next frame
-            Choreographer.getInstance().postFrameCallback(this)
+            // Schedule next frame — at vsync while anything moves, on the idle cadence otherwise.
+            scheduleNextFrame()
         }
     }
 
@@ -760,6 +782,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         super.onDestroy()
         if (live === this) live = null // drop the Service's back-reference to this (possibly recreated) Activity
         Choreographer.getInstance().removeFrameCallback(this)
+        frameHandler.removeCallbacks(idleFrameRunnable)
         if (nativePtr != 0L) {
             // Retract the ptr from the service FIRST so its RX worker can't fire a headless tick into
             // a context we're about to free, then destroy.
@@ -811,6 +834,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         inForeground = false
         nativeSetForeground(false)
         Choreographer.getInstance().removeFrameCallback(this)
+        frameHandler.removeCallbacks(idleFrameRunnable)
         sensorManager.unregisterListener(gravityListener)
         contentResolver.unregisterContentObserver(rotationSettingObserver)
     }
@@ -850,7 +874,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             KeyEvent.KEYCODE_ENTER,    // Enter/Done
             KeyEvent.KEYCODE_DPAD_LEFT,
             KeyEvent.KEYCODE_DPAD_RIGHT -> {
-                if (nativeOnKeyEvent(nativePtr, keyCode)) {
+                if (wakeFrames(); nativeOnKeyEvent(nativePtr, keyCode)) {
                     return true
                 }
             }
@@ -867,7 +891,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             val unicodeChar = it.unicodeChar
             if (unicodeChar != 0) {
                 val text = unicodeChar.toChar().toString()
-                nativeOnTextInput(nativePtr, text)
+                wakeFrames(); nativeOnTextInput(nativePtr, text)
                 return true
             }
         }
