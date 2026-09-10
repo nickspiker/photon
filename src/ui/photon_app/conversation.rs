@@ -1941,8 +1941,9 @@ impl PhotonApp {
             if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
                 let contact = &mut self.contacts[ci];
                 // A RE-KEY ROUND IS OPEN on this device (field 2026-09-10, the desktop vs Esme): a sibling's push of the era we ALREADY hold used to flip the contact Complete mid-round, and the round's completion then refused to land ("already produced its eggs") — the peer completed alone and moved era, we never followed. Same-era replication changes nothing about the round: leave it Pending. A push that MOVED our era is the fleet finishing the same re-key: our round is redundant, discard it and take the result.
+                // era_prior_claim: the heavy-weave pickup has reset the contact Pending and is waiting on keygen (fleet-first holds friend keygens until every sibling is probed) — a flip here loses the weave before it starts (desktop 03:07/03:13, 2026-09-10).
                 let round_open = contact.clutch_state != crate::types::ClutchState::Complete
-                    && (contact.clutch_our_keypairs.is_some() || contact.clutch_keygen_in_progress || contact.ceremony_id.is_some() || contact.clutch_offer_sent || !contact.clutch_slots.is_empty());
+                    && (contact.clutch_our_keypairs.is_some() || contact.clutch_keygen_in_progress || contact.ceremony_id.is_some() || contact.clutch_offer_sent || !contact.clutch_slots.is_empty() || contact.era_prior_claim.is_some());
                 if round_open && !era_moved {
                     contact.friendship_id = Some(fid);
                     crate::logf!(
