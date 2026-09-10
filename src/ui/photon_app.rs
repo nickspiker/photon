@@ -1421,6 +1421,11 @@ pub struct PhotonApp {
     compose_link_btn: Option<Button>,
     /// The PAPERCLIP: always beside send in the compose bar — Android opens the any-file picker, desktop points at drag-and-drop (typed attachments 2026-09-10; the old staged paperclip left with the resample card and nothing replaced it).
     compose_attach_btn: Option<Button>,
+    /// REDRAW-STORM forensics (2026-09-10, Nick's phone at 100% CPU on Ready with nothing moving): the source lines that asked for a redraw since the last report (protocol.rs lines as-is, driver.rs lines + 100000), and the tick/dirty counters behind the once-per-five-seconds report in `tick`.
+    redraw_why: Vec<u32>,
+    tick_stat_at: Option<std::time::Instant>,
+    tick_stat_n: u32,
+    tick_stat_dirty: u32,
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
@@ -2274,6 +2279,10 @@ impl PhotonApp {
             message_send_btn: None,
             compose_link_btn: None,
             compose_attach_btn: None,
+            redraw_why: Vec::new(),
+            tick_stat_at: None,
+            tick_stat_n: 0,
+            tick_stat_dirty: 0,
             storage: None,
             contacts: Vec::new(),
             conversations: Vec::new(),
@@ -2569,6 +2578,13 @@ impl PhotonApp {
     }
 
     /// One-shot poll for the Android sticky session broadcast signal. Returns `1` after a successful attest (Kotlin should call `sendSessionBroadcast()`), `-1` after a vault nuke (Kotlin should call `clearSessionBroadcast()`), `0` otherwise.
+    /// Remember which line asked for this tick's redraw (deduplicated, capped) — read by the storm report in `tick`.
+    pub(crate) fn note_redraw(&mut self, line: u32) {
+        if self.redraw_why.len() < 32 && !self.redraw_why.contains(&line) {
+            self.redraw_why.push(line);
+        }
+    }
+
     pub fn take_broadcast_signal(&mut self) -> i8 {
         let s = self.pending_broadcast_signal;
         self.pending_broadcast_signal = 0;

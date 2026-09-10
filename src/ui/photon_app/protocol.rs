@@ -177,17 +177,17 @@ impl PhotonApp {
             }
             // Apply whatever the seed answered (a resolve spawned on an earlier tick).
             if self.drain_pb_resolve() {
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
             // Deferred wire half of sends whose bubbles rendered last frame.
             if self.drain_pending_chain_sends() {
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
         // Drain per-contact presence + CLUTCH ceremony updates (pongs → is_online/ip; offers/KEM/complete → ceremony progress), plus the three background-job result channels (keygen / KEM-encap / ceremony-expand). The `timed!` macro (hoisted to the top of this fn) logs any arm blocking the UI thread > 50ms.
         if timed!("check_status_updates", self.check_status_updates()) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
         // Ring colours are DERIVED state — recompute and diff every tick, repaint on any change (see painted_ring_tiers).
         {
@@ -198,13 +198,13 @@ impl PhotonApp {
                 .collect();
             if tiers != self.painted_ring_tiers {
                 self.painted_ring_tiers = tiers;
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
                 // Marked here, not via the return: the Android service tick runs this headless and drops the bool — but it still updated painted_ring_tiers above, so on resume the diff read "already painted" and the ring stayed stale until a click (field, 2026-08-08). The dirty flag is state; it survives to the first visible frame.
                 self.scene_dirty = true;
             }
         }
         if timed!("check_clutch_keygens", self.check_clutch_keygens()) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
         // Serialized keygen queue: once the in-flight keygen (if any) has completed and cleared its flag above, start the next Pending-keyless contact's keygen. One McEliece at a time keeps the UI responsive on a multi-contact launch instead of spawning them all at once.
         timed!(
@@ -212,13 +212,13 @@ impl PhotonApp {
             self.spawn_next_pending_keygen()
         );
         if timed!("check_clutch_kem_encaps", self.check_clutch_kem_encaps()) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
         if timed!("check_clutch_kem_decaps", self.check_clutch_kem_decaps()) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
         if timed!("check_clutch_ceremonies", self.check_clutch_ceremonies()) {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Deferred own-avatar recovery: the pin arrives with the fleet settings, after the session restore that wanted it.
@@ -281,11 +281,11 @@ impl PhotonApp {
         }
         for result in drained {
             timed!("on_query_result", self.on_query_result(result));
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
         for search in drained_searches {
             self.on_search_result(search);
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // AddDevice flow: apply off-thread match-check/bind results (drain first so the rx borrow ends before we mutate self).
@@ -371,7 +371,7 @@ impl PhotonApp {
                     self.add_device_status = tr(Msg::AddDeviceError(&e)).into_owned();
                 }
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Diagnostics log-submit results (off-thread FGTW upload).
@@ -400,7 +400,7 @@ impl PhotonApp {
                     crate::logf!("DIAG: log submit failed: {}", e);
                 }
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // The auto-update checkbox is the first linked-settings consumer: a user toggle writes updates.auto (born linked, so the whole fleet follows; unlink comes with the per-setting link affordance). Poll-then-set keeps the borrow simple.
@@ -412,7 +412,7 @@ impl PhotonApp {
             if self.settings_set("updates.auto", vsf::VsfType::u0(checked)) {
                 crate::logf!("SETTINGS: updates.auto = {} (linked write)", checked);
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Vibrate/ring toggles (Notifications): fleet-wide linked writes. Enforcement is the alert paths' side (ring gate in ring_alert; vibration rides Kotlin — follow-up).
@@ -438,7 +438,7 @@ impl PhotonApp {
                 if self.settings_set(key, vsf::VsfType::u0(checked)) {
                     crate::logf!("SETTINGS: {} = {} (linked write)", key, checked);
                 }
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
@@ -462,7 +462,7 @@ impl PhotonApp {
                     self.persist_and_push_settings();
                 }
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
         let hardlogs_toggle = self
             .settings_hardlogs_check
@@ -490,7 +490,7 @@ impl PhotonApp {
                     self.persist_and_push_settings();
                 }
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // You-page default-share toggles: checked = the field auto-shares with NEW contacts (the always-shared display name has no box). Poll-then-set keeps the borrow simple; the key syncs fleet-wide like the value it gates.
@@ -507,7 +507,7 @@ impl PhotonApp {
             if self.settings_set(&format!("share.{fid}"), vsf::VsfType::u0(checked)) {
                 crate::logf!("SETTINGS: share.{} = {} (default-share)", fid, checked);
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Desktop resident-mode toggle: the OS autostart artifact IS the stored setting (platform::autostart — nothing in the vault to desync), and the live flag follows it immediately, so unchecking makes the very next close a real quit. A write failure reverts the box and says why.
@@ -548,7 +548,7 @@ impl PhotonApp {
                         self.ready_toast = Some(tr(Msg::CouldntChangeLoginItem(&e)).into_owned());
                     }
                 }
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
@@ -581,7 +581,7 @@ impl PhotonApp {
                         self.ready_toast = Some(tr(Msg::LifelineChangeFailed(&e)).into_owned());
                     }
                 }
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
@@ -594,7 +594,7 @@ impl PhotonApp {
                 .unwrap_or(false);
             if has_text {
                 self.unattended_confirm_failed = false;
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
@@ -615,7 +615,7 @@ impl PhotonApp {
                 let id = tb.hit_id();
                 self.change_focus(Some(id));
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // AddDevice flow: the status line is EVENT-driven, re-derived on every edit by the LIVE MATCHER — the typed entry prefix-matches against the candidate word strings from the binding-request registry (docs/pairing-v2.md), so a typo flags at the exact word it happens and a full 23-word match auto-binds.
@@ -628,7 +628,7 @@ impl PhotonApp {
             if text != self.add_device_wordcheck_text {
                 self.add_device_wordcheck_text = text;
                 self.refresh_add_device_match();
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
@@ -679,7 +679,7 @@ impl PhotonApp {
                                 }
                             }
                         });
-                        needs_redraw = true;
+                        { needs_redraw = true; self.note_redraw(line!()); }
                         continue;
                     }
                     // The confirm landed — leave the green hold and run the normal attest (it now passes the fleet gate). Stash the fleet key to persist once attest sets the vault up.
@@ -704,7 +704,7 @@ impl PhotonApp {
                     self.add_join_status = tr(Msg::JoinFailed(&e)).into_owned();
                 }
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Deferred initial roster pull: fire the moment the (async-synced) fleet key lands, so wake-up catch-up brings sibling-added friends onto this device. One-shot per attest/resume.
@@ -766,7 +766,7 @@ impl PhotonApp {
             if !refresh_contacts.is_empty() {
                 self.spawn_contact_fleet_refresh(refresh_contacts);
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Contact-fleet refresh results: fold-and-honour a friend's current device set, and ARM the fold-respecting trust rule. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
@@ -799,7 +799,7 @@ impl PhotonApp {
                     }
                     // The fold is stored: the computed ceremony owner follows it (era.rs).
                     self.recompute_ceremony_owners("fold adopt");
-                    needs_redraw = true;
+                    { needs_redraw = true; self.note_redraw(line!()); }
                     continue;
                 }
                 let Some((idx, c)) = self
@@ -885,7 +885,7 @@ impl PhotonApp {
             }
             if changed {
                 self.reseed_contact_pubkeys(); // rebuild answerable set BEFORE persist: an in-flight pong this tick already sees the revoked device gone
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
             // Persist the adopted folded set + arm flag + tip ts so a restart resumes fold-respecting trust immediately (no bootstrap regression, no trust-nobody window).
             if !to_persist.is_empty() {
@@ -935,7 +935,7 @@ impl PhotonApp {
             }
             // Re-fold the new chain now that its genesis is the pinned one — the fold that arrives adopts the re-founded member set.
             self.spawn_contact_fleet_refresh(vec![hp]);
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!()); }
         }
 
         // Roster-push completion edge: release the in-flight slot; if any push edge fired mid-flight, run the ONE coalesced follow-up now (it re-snapshots the roster, so it carries everything that landed meanwhile).
@@ -1018,7 +1018,7 @@ impl PhotonApp {
                     crate::log("FLEET: local roster ahead of the slot — pushing back (reconcile)");
                     self.spawn_roster_push();
                 }
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
             Some(Ok(Err(ref _e))) => {
                 // Pull failed to fetch/decrypt. On a fresh join this is the pairing key still being a pre-rotation generation; the in-flight fan-out key sync writes the current key within ~150ms, so re-arm and retry until the budget runs out (the pull's own round-trip spaces the attempts).

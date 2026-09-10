@@ -2741,7 +2741,7 @@ impl FluorApp for PhotonApp {
             self.vault_degraded = true;
             self.vault_degraded_latched = true;
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // The recovery edge, mirrored back: a writer cleared the latch (a persist succeeded after a failure). Only a LATCH-raised amber clears — a mirror healed at open or a dead open is not undone by a later write. Interaction-free and timer-free: the write itself is the edge.
         if self.vault_degraded_latched && !crate::storage::vault_sick() {
@@ -2749,13 +2749,13 @@ impl FluorApp for PhotonApp {
             self.vault_degraded_latched = false;
             self.ready_toast = Some(tr(Msg::StorageRecovered).into_owned());
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // The lost latch rides the same mirror, one severity up: pruned values or a dead vault open → the RED banner.
         if crate::storage::vault_data_lost() && !self.vault_data_lost {
             self.vault_data_lost = true;
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Android foreground edges, latched by nativeSetForeground on the Activity main thread and drained here where &mut self lives (2026-08-18). Pause retracts the clearer claim (siblings may ding again — the drop-sweep at their end covers anything that crossed in flight); resume is the same human-is-here edge as a desktop focus gain. When both latched since the last tick (fast pause→resume), apply them in the order that ends at the CURRENT truth.
@@ -2842,7 +2842,7 @@ impl FluorApp for PhotonApp {
             self.selected_msg_copied = false;
             self.msg_wrap = None; // row set changed — drop the wrap cache outright
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Fleet chain replication push: any friendship chain that mutated since its last push ships to the siblings. Constant-time no-op when nothing changed.
@@ -2935,7 +2935,7 @@ impl FluorApp for PhotonApp {
                 self.last_ime_inset = ime;
                 self.update_widget_layout(ctx);
                 self.scene_dirty = true;
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }
 
@@ -2956,7 +2956,7 @@ impl FluorApp for PhotonApp {
                 None => self.ready_toast_screen = Some(self.state.clone()),
                 Some(s) if *s != self.state => {
                     self.clear_toast();
-                    needs_redraw = true;
+                    { needs_redraw = true; self.note_redraw(line!() + 100_000); }
                 }
                 _ => {}
             }
@@ -2978,7 +2978,7 @@ impl FluorApp for PhotonApp {
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_bg();
                 }
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
             self.last_screen = self.state.clone();
         }
@@ -3018,7 +3018,7 @@ impl FluorApp for PhotonApp {
                             crate::fp(&req.device_pubkey)
                         );
                         self.spawn_bind_device(req);
-                        needs_redraw = true;
+                        { needs_redraw = true; self.note_redraw(line!() + 100_000); }
                     }
                     Some(_) => {}
                     None => crate::log(
@@ -3044,7 +3044,7 @@ impl FluorApp for PhotonApp {
             if let Some(chrome) = self.chrome.as_mut() {
                 chrome.invalidate_bg();
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Add-friend hourglass: stochastic wobble (≈ −12..+13°/tick) while a search is in flight, so the icon "shakes" like sand. xorshift keeps it dependency-free; the icon lives in the foreground (not the bg layer), so a plain redraw repaints it.
@@ -3054,7 +3054,7 @@ impl FluorApp for PhotonApp {
             self.hourglass_rng ^= self.hourglass_rng << 17;
             let wobble = (self.hourglass_rng % 26) as f32 - 12.0; // −12..+13
             self.hourglass_angle = (self.hourglass_angle + wobble).rem_euclid(360.0);
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Answer/Decline pressed on the Android call notification (backgrounded ring): the action intent latched a flag on the service thread; drain it here on the UI thread that owns the call state.
@@ -3065,7 +3065,7 @@ impl FluorApp for PhotonApp {
             } else {
                 self.decline_call();
             }
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing call just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
@@ -3075,7 +3075,7 @@ impl FluorApp for PhotonApp {
             .map_or(false, |c| c.phase == crate::call::CallPhase::Ringing)
         {
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Rubber-band spring: any scroll axis stretched past its bounds eases back exponentially (overshoot × e^(−8t) — C∞ in time, ~90% recovered in 0.3 s), snapping the final sub-third-pixel so the animation terminates. Runs only while an axis is out of range, so steady-state ticks are free. Scroll moves content (and its hit stamps), so a spring frame is a full scene frame with chrome invalidated — same as the wheel handler's frames.
@@ -3125,7 +3125,7 @@ impl FluorApp for PhotonApp {
             }
             if spring {
                 self.scene_dirty = true;
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_bg();
                     chrome.invalidate_chrome();
@@ -3138,7 +3138,7 @@ impl FluorApp for PhotonApp {
                 let m = (v.abs() >> 1) - 1;
                 self.compose_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
                 self.scene_dirty = true;
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
             // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
             let panning = if self.pointer_down {
@@ -3153,7 +3153,7 @@ impl FluorApp for PhotonApp {
                 }
             }
             if tb_spring {
-                needs_redraw = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         }
 
@@ -3175,21 +3175,21 @@ impl FluorApp for PhotonApp {
         // Diagnostics log viewer: drain the off-thread decode / tail-follow the live file (no-op unless the viewer is open on its page). Rows are CONTENT — a change needs the full scene frame, not just a widget-overlay pass.
         if self.drive_diag_log() {
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
         // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed).
         if self.drain_update_events() {
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // Keep-transcode results: a finished N-channel recording mints its `call.audio` row here (off-thread transcode posted back over the channel).
         if self.drain_wave_env() {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         if self.drain_call_keep() {
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.
         let unattended_verdict = self
@@ -3215,7 +3215,7 @@ impl FluorApp for PhotonApp {
                 self.unattended_confirm_failed = true;
             }
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
@@ -3263,10 +3263,30 @@ impl FluorApp for PhotonApp {
         if compose_lines != self.painted_compose_lines {
             self.painted_compose_lines = compose_lines;
             self.scene_dirty = true;
-            needs_redraw = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
         needs_redraw |= self.advance_protocol(now);
+
+        // REDRAW-STORM REPORT (2026-09-10, Nick's phone at 100% CPU on Ready with nothing on screen moving): once per five seconds, only when more than thirty dirty ticks a second went by, name the lines that asked for them (protocol.rs as-is, driver.rs + 100000).
+        {
+            self.tick_stat_n += 1;
+            if needs_redraw {
+                self.tick_stat_dirty += 1;
+            }
+            let since = *self.tick_stat_at.get_or_insert(now);
+            let secs = now.duration_since(since).as_secs_f32();
+            if secs >= 5.0 {
+                if self.tick_stat_dirty as f32 / secs > 30.0 {
+                    let why = format!("{:?}", self.redraw_why);
+                    crate::logf!("PERF: redraw storm — {} ticks/s, {} dirty/s, asked at lines {}", (self.tick_stat_n as f32 / secs).round() as u32, (self.tick_stat_dirty as f32 / secs).round() as u32, why);
+                }
+                self.tick_stat_n = 0;
+                self.tick_stat_dirty = 0;
+                self.redraw_why.clear();
+                self.tick_stat_at = Some(now);
+            }
+        }
 
         // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
         self.scene_dirty |= needs_redraw;

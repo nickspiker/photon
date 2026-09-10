@@ -24,6 +24,8 @@ One sentence per line, however long; plain language for the person who installs 
 - Starting photon on a phone no longer stalls for five seconds: the vault's two mirrors were being compared block by block at every open, which grew with every kept wave and was what tripped Android's "not responding" prompt. Mirrors that already agree skip the comparison.
 - The attach button wears a dove for now; attachments may become pigeons.
 
+- When the screen keeps redrawing with nothing changing, the log now says so every five seconds and names what asked for the redraws, so the next report can point at the cause.
+
 ## v89
 
 - Attachments know what they are: a picture, a camera RAW, a video, a sound, text, code, an archive, a program or a document, read from the file's own bytes, with a matching mark on the bubble.
