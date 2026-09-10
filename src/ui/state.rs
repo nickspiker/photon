@@ -91,12 +91,8 @@ impl SettingsPage {
             SettingsPage::Updates => "Updates",
             SettingsPage::Diagnostics => "Diagnostics",
             SettingsPage::Language => "Language",
-            // The base page is named for the base in force — the rail row itself shows the choice.
-            SettingsPage::Dozenal => match crate::num_base() {
-                crate::NumBase::Dozenal => "Dozenal",
-                crate::NumBase::Hex => "Hexadecimal",
-                crate::NumBase::Arabic => "Arabic",
-            },
+            // The base page is "Base" (Nick 2026-09-10) — the pills on it show the choice.
+            SettingsPage::Dozenal => "Base",
             SettingsPage::About => "About",
         }
     }

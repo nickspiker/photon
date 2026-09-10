@@ -211,6 +211,20 @@ pub enum Msg<'a> {
     DmsSizeIntro,
     /// Plain reading of a DMS size value (bit length of the size in bits); empty for values the legend doesn't list.
     DmsSizeReading(u32),
+    // ---- base page (2026-09-10) ----
+    /// Early note on the dozenal page: time and size are logarithmic (Dozenal Metric Scaling).
+    BaseLogNote,
+    /// The digit cheat sheet's title and the hex page's coder blurb.
+    DigitsHead,
+    WhyHex,
+    WhyHexProse,
+    HexTimeIntro,
+    HexTimeReading(u64),
+    HexSizeIntro,
+    HexSizeReading(u64),
+    /// Diagnostics: the last wave's link, as a frequency in the current base.
+    LastWave { link: &'a str, loss: &'a str, buffer: &'a str },
+    NoWaveYet,
     ConversationTitle,
     BackToContacts,
     NameReclaimed,

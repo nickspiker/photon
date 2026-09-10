@@ -173,14 +173,36 @@ pub fn dms_ui() -> bool {
     num_base() != NumBase::Arabic
 }
 
-/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — the bit length of the size in BITS, so one byte is Tera (4), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
-pub fn dms_size(bytes: u64) -> String {
-    fmt_num(dms_bits(bytes.saturating_mul(8).min(i64::MAX as u64) as i64))
+/// HEX is LINEAR (Nick 2026-09-10: "for coders"): ages are the plain seconds count in hex (a minute 3C, an hour E10), sizes the plain BIT count in hex (a megabyte 800000). Dozenal keeps the logarithmic DMS below.
+pub fn hex_linear(n: u64) -> String {
+    format!("{n:X}")
 }
 
-/// The DMS age in the current base (Oxanium `+glyphs` face at the draw site for the dozenal glyphs).
+/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — the bit length of the size in BITS, so one byte is Tera (4), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
+pub fn dms_size(bytes: u64) -> String {
+    let bits = bytes.saturating_mul(8);
+    match num_base() {
+        NumBase::Hex => hex_linear(bits),
+        _ => fmt_num(dms_bits(bits.min(i64::MAX as u64) as i64)),
+    }
+}
+
+/// The age in the current base: dozenal = DMS doublings (Oxanium `+glyphs` face at the draw site), hex = linear seconds.
 pub fn dms_age(secs: i64) -> String {
-    fmt_num(dms_bits(secs))
+    match num_base() {
+        NumBase::Hex => hex_linear(secs.max(0) as u64),
+        _ => fmt_num(dms_bits(secs)),
+    }
+}
+
+/// A LATENCY as a DOZENAL METRIC FREQUENCY (Nick 2026-09-10: "1 Hz reads Zila, 2 Hz Zilor, 4 Hz Ter, 8 Hz Tera"): the bit length of the frequency in hertz — each digit a doubling — rendered in the current base (hex reads the plain hertz, arabic the milliseconds).
+pub fn link_freq_label(rtt_ms: u32) -> String {
+    let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64;
+    match num_base() {
+        NumBase::Dozenal => dozenal_glyphs(dms_bits(hz)),
+        NumBase::Hex => hex_linear(hz as u64),
+        NumBase::Arabic => format!("{rtt_ms} ms"),
+    }
 }
 
 /// Render `n` in dozenal as reserved control-code bytes 0x10+digit — the Oxanium `+glyphs` face draws them as the dozenal digits. UI-only: terminals show garbage, so LOG paths use [`dozenal_words`] instead.

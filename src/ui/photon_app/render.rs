@@ -5492,6 +5492,18 @@ impl PhotonApp {
                     let cap = crate::LOG_CAP_BYTES;
                     let pct = if cap > 0 { used * 100 / cap } else { 0 };
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::DiagInfo { used: &human_bytes(used), cap: &human_bytes(cap), pct: pct as u64 }), hspan2, *theme::LABEL_COLOUR, 400);
+                    // The last wave's link (Nick 2026-09-10): the round trip as a dozenal-metric FREQUENCY (Zila = 1 Hz, Zilor = 2 Hz, Ter = 4 Hz, each digit a doubling), the loss ring, the buffer target.
+                    {
+                        let rtt = crate::call::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+                        let line = if rtt == 0 {
+                            tr(Msg::NoWaveYet).into_owned()
+                        } else {
+                            let loss = crate::fmt_num(crate::call::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
+                            let buffer = crate::fmt_num(crate::call::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
+                            tr(Msg::LastWave { link: &crate::link_freq_label(rtt), loss: &loss, buffer: &buffer }).into_owned()
+                        };
+                        flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    }
                     flow.gap(hspan2 * 0.4);
                     // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical dup.
                     let submit_disabled = self.log_submit_inflight || self.log_submitted_len == Some(crate::log_size_bytes());
@@ -5561,37 +5573,62 @@ impl PhotonApp {
                         y += flow.used();
                     }
                     y += line_h * 0.4;
-                    // Why dozenal — or, in arabic mode, why YOU dozenal: the unit-of-account answer. Hex gets the plain case: the machine's base is at least a base with a reason.
-                    let (head, rant) = if base == crate::NumBase::Arabic {
-                        (tr(Msg::WhyYouDozenal), tr(Msg::WhyYouDozenalProse))
-                    } else {
-                        (tr(Msg::WhyDozenal), tr(Msg::WhyDozenalProse))
-                    };
-                    ctx.text.draw_text_center(&mut canvas, &head, cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
-                    y += line_h;
-                    for line in rant.lines() {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                        y += line_h * 0.3;
+                    // PER-PAGE UNITS (Nick 2026-09-10): the dozenal page speaks dozenal, the hex page hex, whatever the base setting — each page's own examples never change base. So the dozenal legends use dozenal_glyphs directly, the hex legends hex_linear directly, and only the cheat sheet (every base, one column each) is shared.
+                    match base {
+                        crate::NumBase::Dozenal => {
+                            // The logarithm note EARLY: time and size on this base are Dozenal Metric Scaling.
+                            for line in tr(Msg::BaseLogNote).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                            y += line_h * 0.4;
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::WhyDozenal), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                            y += line_h;
+                            for line in tr(Msg::WhyDozenalProse).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                        }
+                        crate::NumBase::Hex => {
+                            // The coder's page: no dozenal sermon here.
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::WhyHex), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                            y += line_h;
+                            for line in tr(Msg::WhyHexProse).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                        }
+                        crate::NumBase::Arabic => {
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::WhyYouDozenal), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                            y += line_h;
+                            for line in tr(Msg::WhyYouDozenalProse).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                        }
                     }
                     y += line_h * 0.6;
-                    // The digit cheat sheet: GLYPH  name  value, two columns of six. The value is the ONE deliberate arabic numeral on the page: a cheat sheet is a translation table, and a table with one side missing is not one. The whole index is one tap target (slot 5) — a tap within it reveals the custodian riddle beneath.
+                    // THE DIGIT CHEAT SHEET, every base (Nick 2026-09-10): three columns — dozenal, hexadecimal, arabic — each counting 0 to F in its own numerals, the dozenal column with its digit names. The same table whatever base is chosen.
                     let index_top = y;
-                    if base == crate::NumBase::Dozenal {
-                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::AboutDozenalHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                        y += line_h;
-                        let col_l = inset.x + inset.w * 0.32;
-                        let col_r = inset.x + inset.w * 0.68;
-                        for d in 0..6usize {
-                            let cell = |digit: usize| format!("{}  {}  {}", char::from(0x10 + digit as u8), crate::DOZENAL_NAMES[digit], digit);
-                            ctx.text.draw_text_center(&mut canvas, &cell(d), col_l, y + line_h * 0.5, &cell_style, page_clip, None);
-                            ctx.text.draw_text_center(&mut canvas, &cell(d + 6), col_r, y + line_h * 0.5, &cell_style, page_clip, None);
-                            y += line_h;
-                        }
-                        restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base.wrapping_add(5));
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DigitsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h;
+                    let cols = [inset.x + inset.w * 0.2, inset.x + inset.w * 0.5, inset.x + inset.w * 0.8];
+                    let heads = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
+                    for (k, h) in heads.iter().enumerate() {
+                        ctx.text.draw_text_center(&mut canvas, h, cols[k], y + line_h * 0.5, &TextStyle::new(hspan2 * 0.8, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), page_clip, None);
                     }
+                    y += line_h;
+                    for n in 0..16u32 {
+                        let doz = format!("{}  {}", crate::dozenal_glyphs(n), crate::dozenal_spell(n));
+                        ctx.text.draw_text_center(&mut canvas, &doz, cols[0], y + line_h * 0.5, &cell_style, page_clip, None);
+                        ctx.text.draw_text_center(&mut canvas, &crate::hex_glyphs(n), cols[1], y + line_h * 0.5, &cell_style, page_clip, None);
+                        ctx.text.draw_text_center(&mut canvas, &n.to_string(), cols[2], y + line_h * 0.5, &cell_style, page_clip, None);
+                        y += line_h * 0.9;
+                    }
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base.wrapping_add(5));
                     if self.about_riddle_revealed && base == crate::NumBase::Dozenal {
                         y += line_h * 0.4;
-                        ctx.text.draw_text_center(&mut canvas, &crate::fmt_num(42), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(400).font("Oxanium"), page_clip, None);
+                        ctx.text.draw_text_center(&mut canvas, &crate::dozenal_glyphs(42), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(400).font("Oxanium"), page_clip, None);
                         y += line_h;
                         let s = tr(Msg::AboutRiddle);
                         for line in s.lines() {
@@ -5600,41 +5637,58 @@ impl PhotonApp {
                         }
                     }
                     y += line_h * 0.6;
-                    // DMS — the time-ago legend: the age is the bit length of the seconds count, so each row is a doubling. The single digits, then the landmarks (an hour, a day, a month, a year) where the second digit has taken over.
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h;
-                    for line in tr(Msg::DmsIntro).lines() {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                        y += line_h * 0.3;
-                    }
-                    y += line_h * 0.3;
-                    for bits in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 17, 22, 25] {
-                        // Glyphs in the current base; the spelled digit names only where they exist (dozenal).
-                        let row = if base == crate::NumBase::Dozenal {
-                            format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsReading(bits)))
-                        } else {
-                            format!("{}  {}", crate::fmt_num(bits), tr(Msg::DmsReading(bits)))
-                        };
-                        ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                        y += line_h * 0.9;
-                    }
-                    // SIZE legend — the same doubling rule with a bit in place of a second (sizes are DMS in dozenal and hex too): a byte is four, a kilobyte Zila Zilor, a megabyte Zilor Zil, a gigabyte Zilor Stela.
-                    y += line_h * 0.6;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsSizeHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h;
-                    for line in tr(Msg::DmsSizeIntro).lines() {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                        y += line_h * 0.3;
-                    }
-                    y += line_h * 0.3;
-                    for bits in [1u32, 4, 8, 11, 14, 17, 20, 24, 27, 30, 34, 44] {
-                        let row = if base == crate::NumBase::Dozenal {
-                            format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsSizeReading(bits)))
-                        } else {
-                            format!("{}  {}", crate::fmt_num(bits), tr(Msg::DmsSizeReading(bits)))
-                        };
-                        ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                        y += line_h * 0.9;
+                    match base {
+                        crate::NumBase::Dozenal => {
+                            // DMS — the time-ago legend: the age is the bit length of the seconds count, so each row is a doubling; dozenal glyphs + names, always.
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                            y += line_h;
+                            for line in tr(Msg::DmsIntro).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                            y += line_h * 0.3;
+                            for bits in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 17, 22, 25] {
+                                let row = format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsReading(bits)));
+                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                                y += line_h * 0.9;
+                            }
+                            y += line_h * 0.6;
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsSizeHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                            y += line_h;
+                            for line in tr(Msg::DmsSizeIntro).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                            y += line_h * 0.3;
+                            for bits in [1u32, 4, 8, 11, 14, 17, 20, 24, 27, 30, 34, 44] {
+                                let row = format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsSizeReading(bits)));
+                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                                y += line_h * 0.9;
+                            }
+                        }
+                        crate::NumBase::Hex => {
+                            // LINEAR legends: the seconds count and the bit count in hex, no scaling.
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                            y += line_h;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::HexTimeIntro), &prose_style, line_h * 0.8, page_clip);
+                            y += line_h * 0.6;
+                            for secs in [1u64, 60, 3600, 86400, 2592000, 31536000] {
+                                let row = format!("{}  {}", crate::hex_linear(secs), tr(Msg::HexTimeReading(secs)));
+                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                                y += line_h * 0.9;
+                            }
+                            y += line_h * 0.6;
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsSizeHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                            y += line_h;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::HexSizeIntro), &prose_style, line_h * 0.8, page_clip);
+                            y += line_h * 0.6;
+                            for bits in [8u64, 8192, 8388608, 8589934592] {
+                                let row = format!("{}  {}", crate::hex_linear(bits), tr(Msg::HexSizeReading(bits)));
+                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                                y += line_h * 0.9;
+                            }
+                        }
+                        crate::NumBase::Arabic => {}
                     }
                     measured_extent = Some((y + settings_content_scroll - inset.y + line_h, inset.h));
                     let _ = tspan;

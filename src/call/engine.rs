@@ -884,6 +884,11 @@ fn run(
             {
                 let losses = loss_bits.iter().map(|w| w.count_ones()).sum::<u32>();
                 let js = crate::platform::audio::jitter_stats();
+                if rtt_n > 0 {
+                    super::LAST_LINK_RTT_MS.store(rtt_ema.round().max(1.0) as u32, Ordering::Relaxed);
+                }
+                super::LAST_LINK_LOSS.store(losses, Ordering::Relaxed);
+                super::LAST_LINK_TARGET.store(jitter_target as u32, Ordering::Relaxed);
                 crate::logf!(
                     "CALL: link — rtt {} ms (min {} max {}, {} samples this window), loss {}/256 ring ({} lost this window), jitter target {} depth {} underruns {}",
                     if win_rtt_n > 0 { format!("{:.0}", rtt_ema) } else { "?".to_string() },

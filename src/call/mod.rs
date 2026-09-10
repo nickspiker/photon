@@ -147,6 +147,11 @@ pub struct ActiveCall {
     pub express_key: Option<[u8; 32]>,
 }
 
+/// The last wave's link readout for the Diagnostics page (engine.rs writes at every stats tick and at teardown): RTT ema in ms (0 = no wave yet), losses in the 256 ring, the jitter target in frames.
+pub static LAST_LINK_RTT_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static LAST_LINK_LOSS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+pub static LAST_LINK_TARGET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 /// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this call. Written by the engine thread, read by the UI's drought measurement.
 pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Eagle osc at engine start — the drought baseline before the first packet ever arrives (0 = no engine).
