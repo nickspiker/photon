@@ -950,8 +950,9 @@ impl PhotonApp {
         }
         // RING WANTS BREADTH, REPLIES WANT PRECISION (fleet lifecycle, 2026-09-08). An OFFER is the ding — it fans to every known endpoint of every fold-trusted device, so all the callee's devices ring at express speed instead of waiting on replication. Every other signal is a reply about one specific call: it targets the ONE peer device driving it — the call's freshest express source plus that device's own endpoint addresses (multiple addresses of one device is a race, not a misfire; multiple DEVICES was the 2026-09-08 sibling-hangup bug). validated_path is only the no-better-knowledge fallback: it's per-CONTACT (whichever device punch-validated last), not per-call.
         let mut targets: Vec<std::net::SocketAddr> = Vec::new();
+        // Never a loopback or unspecified target: a frame sent to ourselves opens under our own friendship key and reads as the peer's (2026-09-10 anchor storm).
         let push = |t: &mut Vec<std::net::SocketAddr>, a: std::net::SocketAddr| {
-            if !t.contains(&a) {
+            if !t.contains(&a) && !a.ip().to_canonical().is_loopback() && !a.ip().is_unspecified() {
                 t.push(a);
             }
         };
@@ -1055,8 +1056,9 @@ impl PhotonApp {
                     call.express_key = Some(opened_key);
                 }
             }
-            // Remember the reply path — but never the relay-injection sentinel (that's the pipe, not a route).
-            if src != crate::network::status::RELAY_ADDR {
+            // Remember the reply path — but never the relay-injection sentinel NOR a loopback/unspecified source: a pipe-injected frame arrives from 127.0.0.1, and re-pointing media there sent a whole call to ourselves (2026-09-10 Emma/Nick first call: 21,815 anchors in 30 s, every RX packet our own, "open-drop 581, decoded 0").
+            let routable = src != crate::network::status::RELAY_ADDR && !src.ip().to_canonical().is_loopback() && !src.ip().is_unspecified();
+            if routable {
                 if let Some(call) = self.active_call.as_mut() {
                     if call.call_id == *sig.call_id() {
                         call.express_addr = Some(src);
@@ -1070,9 +1072,15 @@ impl PhotonApp {
                     if echo {
                         crate::call::set_peer_redirect(src);
                         crate::logf!("CALL: anchor received — media re-pointed at {}", src);
-                        if self.active_call.as_ref().is_some_and(|c| c.reconnecting) {
+                        // Answer with our own anchor at most once a second (last_anchor_osc): two droughted sides otherwise anchor each other in a ms-cadence loop.
+                        let now = vsf::eagle_time_oscillations();
+                        let fire = self.active_call.as_ref().is_some_and(|c| c.reconnecting && now - c.last_anchor_osc >= vsf::OSCILLATIONS_PER_SECOND as i64);
+                        if fire {
+                            if let Some(c) = self.active_call.as_mut() {
+                                c.last_anchor_osc = now;
+                            }
                             let back = CallSignal::Anchor { call_id: *sig.call_id() };
-                            self.send_express_signal(ci, &back, vsf::eagle_time_oscillations(), None);
+                            self.send_express_signal(ci, &back, now, None);
                         }
                     }
                 }

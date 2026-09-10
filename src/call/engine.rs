@@ -761,9 +761,10 @@ fn run(
                     while recent_losses.front().is_some_and(|t| now.duration_since(*t) > LOSS_WINDOW) {
                         recent_losses.pop_front();
                     }
-                    // Plaid drops on a loss RATE (the crispies are the deal); every Opus rung drops on a clustered pair.
+                    // Plaid drops on a loss RATE (the crispies are the deal); every Opus rung drops on a clustered pair — and never twice inside DROP_HOLD (2026-09-10: one burst of lost windows cascaded plaid → 128 → 64 → 32 → 16 in a single tick; one rung per burst is the rule).
                     let need = if pending_tier == RAW_TIER { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
-                    if recent_losses.len() >= need && pending_tier > 0 {
+                    let drop_held = last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                    if recent_losses.len() >= need && pending_tier > 0 && drop_held {
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
                         last_tier_change = now;
