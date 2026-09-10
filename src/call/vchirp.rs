@@ -301,8 +301,11 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let scale = emit_scale.max(1e-6);
         let g_norm = if vol_lin > 0.0 { f.g / scale / vol_lin } else { f.g / scale };
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
+        // THE SEED'S LAG IS THE PHYSICAL RENDER→CAPTURE DELAY, on the reference timeline (nlms.rs: `from = frame_pos − ir_start − n + 1`), NOT the chirp's position inside the capture buffer — the capture starts at probe start, the sweep sits a quarter-second pad later (2026-09-10 Azie/Nick: the position-as-lag seed sat 250 ms wrong; Nick's filter never found its reference window, Azie's adapted from a wrong seed and read −17 dB). lag_osc already holds the physical delay; convert it to samples and back off by the pre-roll.
+        let lag_ref_samples = (lag_osc / ops * SAMPLE_RATE as f64).round().max(0.0) as usize;
+        let ir_start = lag_ref_samples.saturating_sub(crate::call::nlms::PRE);
         crate::logf!(
-            "CALL: v-chirp — g {} delay {}ms (anchor {}ms + acoustic {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",
+            "CALL: v-chirp — g {} delay {}ms (anchor {}ms + capture pos {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",
             format!("{g_norm:.4}"),
             delay_bins * 10,
             format!("{anchor_ms:.0}"),
@@ -330,7 +333,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
             windows: 25,
             solid: true,
         }]);
-        *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor, ir: (f.ir_start, taps) });
+        *VERDICT.lock().unwrap() = Some(Verdict::Coupled { g_norm, delay_bins, floor: f.floor, ir: (ir_start, taps) });
     });
 }
 
