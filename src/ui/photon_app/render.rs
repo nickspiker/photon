@@ -4621,12 +4621,15 @@ impl PhotonApp {
                             YouRow::FieldLabel(idx) => {
                                 // Label line (Nick 2026-09-10): the title sits LEFT-CENTRED — centred on the pane's one-third mark, "an average of left aligned and centre aligned", so left edges deliberately do not line up; the tag box rides the right end (laid out in input.rs on the same rect).
                                 let label = self.you_fields[*idx].label.clone();
-                                ctx.text.draw_text_center(
+                                // The text's OWN one-third point lands on the pane's one-third mark (not its centre): x = pane third − text width / 3.
+                                let style = TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium");
+                                let tw = ctx.text.measure_text(&label, &style);
+                                ctx.text.draw_text_left(
                                     &mut canvas,
                                     &label,
-                                    r.x + r.w / 3.0,
+                                    r.x + r.w / 3.0 - tw / 3.0,
                                     r.center_y(),
-                                    &TextStyle::new(hspan2, *theme::LABEL_COLOUR).font("Oxanium"),
+                                    &style,
                                     Some(content_clip),
                                     None,
                                 );
