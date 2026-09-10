@@ -1100,8 +1100,12 @@ impl Contact {
 
     /// A round completes ONCE. The slots stay full after completion, so every re-sent offer or KEM response used to re-trigger a fresh completion — and when our own re-encap had landed in between, the second run minted different eggs: the desktop superseded its own era four times in fourteen seconds and the sibling's proof never matched (2026-09-08). None = complete now; Some(why) = the slots are full but the round holds.
     pub fn ceremony_completion_hold(&self) -> Option<&'static str> {
-        if self.clutch_state != ClutchState::Pending {
+        // "Produced its eggs" is the PROOF being held, not the state: a contact can read Complete with a LIVE round (keypairs still installed) when replication flipped it mid-round (2026-09-10) — that round must still complete. Completed rounds zeroize the keypairs, so Complete-without-keypairs is "no round is open".
+        if self.clutch_our_eggs_proof.is_some() {
             return Some("this round already produced its eggs");
+        }
+        if self.clutch_state != ClutchState::Pending && self.clutch_our_keypairs.is_none() {
+            return Some("no round is open (completed, keypairs retired)");
         }
         if self.clutch_kem_encap_in_progress {
             return Some("our encap is still in flight");

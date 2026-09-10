@@ -1927,6 +1927,24 @@ impl PhotonApp {
             // Wire the contact: a device that never ran this ceremony gains the chain here — flip it sendable (Complete + woven; the owner proved the ratchet end-to-end before the state ever replicated).
             if let Some(ci) = self.contact_idx_for_conversation_token(&conversation_token) {
                 let contact = &mut self.contacts[ci];
+                // A RE-KEY ROUND IS OPEN on this device (field 2026-09-10, the desktop vs Esme): a sibling's push of the era we ALREADY hold used to flip the contact Complete mid-round, and the round's completion then refused to land ("already produced its eggs") — the peer completed alone and moved era, we never followed. Same-era replication changes nothing about the round: leave it Pending. A push that MOVED our era is the fleet finishing the same re-key: our round is redundant, discard it and take the result.
+                let round_open = contact.clutch_state != crate::types::ClutchState::Complete
+                    && (contact.clutch_our_keypairs.is_some() || contact.clutch_keygen_in_progress || contact.ceremony_id.is_some() || contact.clutch_offer_sent || !contact.clutch_slots.is_empty());
+                if round_open && !era_moved {
+                    contact.friendship_id = Some(fid);
+                    crate::logf!(
+                        "CHAIN-SYNC: caught up chain for {} — a re-key round is open here and the era did not move; the round stays Pending so its completion lands",
+                        crate::fp(&self.contacts[ci].handle_proof)
+                    );
+                    continue;
+                }
+                if round_open && era_moved {
+                    crate::logf!(
+                        "CHAIN-SYNC: the fleet finished the re-key for {} (era moved by a sibling's push) — our open round is redundant, discarded",
+                        crate::fp(&contact.handle_proof)
+                    );
+                    contact.discard_clutch_round();
+                }
                 let newly_enabled = contact.friendship_id != Some(fid)
                     || contact.clutch_state != crate::types::ClutchState::Complete;
                 contact.friendship_id = Some(fid);
