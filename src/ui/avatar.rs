@@ -574,6 +574,75 @@ fn convert_pixel_linear_u16(r: u16, g: u16, b: u16, converter: &IccColourConvert
 
 /// Encodes VSF RGB f32 data as AV1 using rav1e (optimized for f32 pipeline)
 fn encode_av1(rgb_data: &[f32], size: usize) -> Result<Vec<u8>, String> {
+    encode_av1_wh(rgb_data, size, size, 32)
+}
+
+/// The width × height form (typed attachments 2026-09-10: preview blobs are the source's aspect, not a square): γ2 VSF RGB f32 triples, row-major, EVEN dims (4:2:0 chroma — the caller crops an odd edge). `quantizer` = rav1e's base q (32 = the avatar's; higher = smaller).
+pub fn encode_av1_wh(rgb_data: &[f32], w: usize, h: usize, quantizer: usize) -> Result<Vec<u8>, String> {
+    if w == 0 || h == 0 || w % 2 != 0 || h % 2 != 0 || rgb_data.len() < w * h * 3 {
+        return Err(format!("encode_av1_wh: bad geometry {w}×{h} for {} samples", rgb_data.len()));
+    }
+    let enc_cfg = EncoderConfig {
+        width: w,
+        height: h,
+        bit_depth: 8,
+        chroma_sampling: ChromaSampling::Cs420,
+        time_base: Rational::new(1, 1),
+        low_latency: true,
+        speed_settings: SpeedSettings::from_preset(6),
+        quantizer,
+        min_quantizer: 0,
+        ..Default::default()
+    };
+    let cfg = Config::new().with_encoder_config(enc_cfg);
+    let mut ctx: Context<u8> = cfg
+        .new_context()
+        .map_err(|e| format!("Failed to create rav1e context: {}", e))?;
+    let mut frame = ctx.new_frame();
+    let mut y_plane = vec![0u8; w * h];
+    for i in 0..(w * h) {
+        let idx = i * 3;
+        let y = (rgb_data[idx] + 2. * rgb_data[idx + 1] + rgb_data[idx + 2]) / 4.;
+        y_plane[i] = (y.clamp(0., 1.) * 255.) as u8;
+    }
+    frame.planes[0].copy_from_raw_u8(&y_plane, w, 1);
+    let (cw, ch) = (w / 2, h / 2);
+    let mut cb_plane = vec![128u8; cw * ch];
+    let mut cr_plane = vec![128u8; cw * ch];
+    for cy in 0..ch {
+        for cx in 0..cw {
+            let (y0, x0) = (cy * 2, cx * 2);
+            let idx = [(y0 * w + x0) * 3, (y0 * w + x0 + 1) * 3, ((y0 + 1) * w + x0) * 3, ((y0 + 1) * w + x0 + 1) * 3];
+            let r = idx.iter().map(|&i| rgb_data[i]).sum::<f32>() / 4.;
+            let g = idx.iter().map(|&i| rgb_data[i + 1]).sum::<f32>() / 4.;
+            let b = idx.iter().map(|&i| rgb_data[i + 2]).sum::<f32>() / 4.;
+            let y = (r + 2. * g + b) / 4.;
+            cb_plane[cy * cw + cx] = (((b - y) / 2. + 0.5).clamp(0., 1.) * 255.) as u8;
+            cr_plane[cy * cw + cx] = (((r - y) / 2. + 0.5).clamp(0., 1.) * 255.) as u8;
+        }
+    }
+    frame.planes[1].copy_from_raw_u8(&cb_plane, cw, 1);
+    frame.planes[2].copy_from_raw_u8(&cr_plane, cw, 1);
+    ctx.send_frame(frame).map_err(|e| format!("Failed to send frame: {}", e))?;
+    ctx.flush();
+    let mut output = Vec::new();
+    loop {
+        match ctx.receive_packet() {
+            Ok(packet) => output.extend_from_slice(&packet.data),
+            Err(EncoderStatus::LimitReached) => break,
+            Err(EncoderStatus::Encoded | EncoderStatus::NeedMoreData) => continue,
+            Err(e) => return Err(format!("Encoding error: {:?}", e)),
+        }
+    }
+    if output.is_empty() {
+        return Err("AV1 encoder produced no output".to_string());
+    }
+    Ok(output)
+}
+
+/// The square avatar encoder, kept as the thin wrapper it always was (256×256, q 32).
+#[allow(dead_code)]
+fn encode_av1_square_legacy(rgb_data: &[f32], size: usize) -> Result<Vec<u8>, String> {
     let enc_cfg = EncoderConfig {
         width: size,
         height: size,

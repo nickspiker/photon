@@ -331,6 +331,9 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.link_consent_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3);
+        // Viewer / reader overlay: back, original, save, and the pane itself (a swallow — taps on the picture select no row).
+        self.viewer_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(4);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
@@ -537,6 +540,19 @@ impl FluorApp for PhotonApp {
 
     // Zoom about the ANCHOR (the pointer, or the window centre when no pointer is in the window), never about the pane top: the content under the pointer holds still while everything scales around it (Nick 2026-09-09 — "it locks from top"). Every pane inset is span-relative, so it scales by the same factor as the content and cancels out of the math; the anchor is measured from whichever WINDOW edge the pane hangs from. Top-hung panes (contacts block, settings rail + content): the content under the anchor sits `scroll + ay` below the top and `(scroll + ay) × f` after the zoom, so the new scroll is that minus `ay`. The conversation hangs from the BOTTOM (offset 0 = newest at the bottom, positive = older revealed above), so it measures from the bottom edge. Only the on-screen panes move — an off-screen pane has no anchor to hold. The 0 end clamps hard (a zoom-out at the top must not bounce off the rubber band); the far end is re-measured by the next render and settles like any other overshoot.
     fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
+        // The image viewer owns the gesture while open: zoom about the pointer (the point under it holds still), clamped to 1/4 … 32× of fit.
+        if let Some(v) = self.viewer.as_mut() {
+            let cx = ctx.viewport.width_px as f32 * 0.5;
+            let cy = ctx.viewport.height_px as f32 * 0.5;
+            let (ax, ay) = (_anchor_x as f32 - cx, anchor_y as f32 - cy);
+            let new_zoom = (v.zoom * factor).clamp(0.25, 32.0);
+            let f = new_zoom / v.zoom;
+            v.pan = ((v.pan.0 - ax) * f + ax, (v.pan.1 - ay) * f + ay);
+            v.zoom = new_zoom;
+            self.scene_dirty = true;
+            ctx.window.request_redraw();
+            return;
+        }
         let h = ctx.viewport.height_px as f32;
         let ay = anchor_y as f32;
         let top_hung = |s: f32| ((s + ay) * factor - ay).max(0.0);
@@ -1380,10 +1396,21 @@ impl FluorApp for PhotonApp {
                                         .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                 })
                                 .and_then(|m| crate::types::parse_attachment_content(&m.content));
+                            let kind = self
+                                .conv_of(sci)
+                                .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
+                                .and_then(|m| m.attach.map(|a| a.kind));
                             if let Some((hash, name, _)) = att {
-                                if !crate::storage::blob_present(&hash) {
+                                let held = crate::storage::blob_present(&hash);
+                                // An IMAGE opens the viewer as soon as any picture exists for it (the preview blob or the row's micro thumb) — the original fetches from the viewer's own pill.
+                                let image_viewable = kind.is_some_and(|k| k.is_image()) && (held || self.img_wants_any_picture(sci, &hash));
+                                if image_viewable {
+                                    self.open_viewer(sci, hash);
+                                } else if !held {
                                     self.attach_fetch(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
+                                } else if kind.is_some_and(|k| k.is_text()) {
+                                    self.open_reader(hash, name.clone());
                                 } else if name == "call.audio" {
                                     // A kept call recording — tap toggles play/stop on this very bubble (call/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
                                     self.toggle_recording_playback(hash);
@@ -1451,6 +1478,36 @@ impl FluorApp for PhotonApp {
                     self.scene_dirty = true;
                     ctx.window.request_redraw();
                 }
+                return EventResponse::Handled;
+            }
+            // Viewer / reader pills: back, original (decode the file), save; the pane hit swallows.
+            if self.viewer_base != HIT_NONE
+                && (self.viewer.is_some() || self.reader.is_some())
+                && hit_id >= self.viewer_base
+                && hit_id < self.viewer_base.wrapping_add(4)
+            {
+                match hit_id - self.viewer_base {
+                    0 => {
+                        self.close_viewers();
+                    }
+                    1 => self.request_full_image(),
+                    2 => {
+                        let target = self
+                            .viewer
+                            .as_ref()
+                            .map(|v| (v.hash, v.name.clone()))
+                            .or_else(|| self.reader.as_ref().map(|r| (r.hash, r.name.clone())));
+                        if let Some((hash, name)) = target {
+                            self.ready_toast = Some(match self.attach_save(&name, &hash) {
+                                Some(dest) => tr(Msg::SavedTo(&dest)).into_owned(),
+                                None => tr(Msg::SaveFailed).into_owned(),
+                            });
+                            self.ready_toast_screen = None;
+                        }
+                    }
+                    _ => {}
+                }
+                ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
             // Link consent pills: Open / Copy / Cancel — every path closes the dialog (interaction-cleared, no timers).
@@ -1786,6 +1843,28 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::MouseWheel { delta } => {
+                // The viewer / reader own the wheel while open: pixel deltas (touch drag, trackpads) PAN; line deltas (a wheel) ZOOM the picture or SCROLL the text.
+                if self.viewer.is_some() || self.reader.is_some() {
+                    let (dx, dy, pixel) = match delta {
+                        MouseScrollDelta::Lines(x, y) => (*x, *y, false),
+                        MouseScrollDelta::Pixels(x, y) => (*x as f32, *y as f32, true),
+                    };
+                    if let Some(v) = self.viewer.as_mut() {
+                        if pixel {
+                            v.pan = (v.pan.0 + dx, v.pan.1 + dy);
+                        } else if dy != 0.0 {
+                            let new_zoom = (v.zoom * 1.15f32.powf(dy)).clamp(0.25, 32.0);
+                            v.zoom = new_zoom;
+                        }
+                    } else if let Some(r) = self.reader.as_mut() {
+                        let step = if pixel { 1.0 } else { 24.0 };
+                        r.scroll = (r.scroll - dy * step).max(0.0);
+                        r.hscroll = (r.hscroll - dx * step).max(0.0);
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 // Bg-noise scroll. Vertical-only for now — horizontal trackpad gestures and shift-modified wheel both fold into the same `bg_scroll` axis. Discrete wheel notches (`Lines`) get multiplied to feel like a normal scroll step; continuous trackpad pixels (`Pixels`) are used directly. The scroll value feeds both `scroll_offset` (translates the noise pattern up/down on screens that want it) and `shimmer` (colour-bias cycle on every screen) in `render`.
                 // Pixel deltas (touch drag, trackpads) are REAL distances — they must track 1:1 (Android touch was riding the conversation arm's extra ×8 and outran the finger 8-fold). Discrete notches keep their synthetic step.
                 let (dy, is_pixel_delta) = match delta {
@@ -2197,11 +2276,26 @@ impl FluorApp for PhotonApp {
                         EventResponse::Handled
                     }
                     // Esc = BACK, one level per press; at the top of the stack it hides the app (resident) on every platform. Shift+Esc = the real exit, from anywhere. Also cancels an in-flight attestation back to Fresh — without this the user is stuck on the "Attesting…" indicator with no way out if the FGTW response never lands. Android's hardware/gesture back routes here via `nativeOnBackPressed` → Escape (long-press back on 3-button nav = the Activity's real close).
+                    // Viewer: arrows step between the conversation's images.
+                    Key::Named(NamedKey::ArrowLeft) if self.viewer.is_some() => {
+                        self.viewer_step(-1);
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    Key::Named(NamedKey::ArrowRight) if self.viewer.is_some() => {
+                        self.viewer_step(1);
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
                     Key::Named(NamedKey::Escape) => {
                         if ctx.modifiers.shift_key() {
                             // The deliberate quit chord: bypasses residency for ONE close so the host actually exits.
                             self.exit_requested = true;
                             return EventResponse::Close;
+                        }
+                        if self.close_viewers() {
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
                         }
                         if self.link_consent.is_some() {
                             self.link_consent = None;
@@ -3359,6 +3453,9 @@ impl PhotonApp {
             let (aptx, aprx) = std::sync::mpsc::channel();
             self.attach_prepared_tx = aptx;
             self.attach_prepared_rx = aprx;
+            let (idtx, idrx) = std::sync::mpsc::channel();
+            self.img_decoded_tx = idtx;
+            self.img_decoded_rx = idrx;
             let (hptx, hprx) = std::sync::mpsc::channel();
             self.hist_opened_tx = hptx;
             self.hist_opened_rx = hprx;

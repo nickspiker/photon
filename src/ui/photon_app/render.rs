@@ -2,8 +2,9 @@
 
 use super::*;
 
-/// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10).
-const IMG_PREVIEW_LINES: usize = 4;
+/// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10): the row's micro thumb, or the decoded preview blob (twice as tall).
+pub(super) const IMG_PREVIEW_LINES: usize = 4;
+pub(super) const IMG_PREVIEW_LINES_FULL: usize = 8;
 
 /// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
 fn wrap_to_width(text: &mut fluor::text::TextRenderer, s: &str, style: &TextStyle, max_w: f32) -> Vec<String> {
@@ -2836,8 +2837,11 @@ impl PhotonApp {
                         let wrap_style = TextStyle::new(msg_size, 0).weight(500);
                         let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
                         let intra = msg_size * 1.25;
+                        // The conversation's contact, for the preview wants the walk collects.
+                        let peer_handle_hash = self.contacts.get(ci).map(|c| c.handle_hash).unwrap_or([0u8; 32]);
+                        // The decoded-picture count rides the key: a preview blob landing grows its row's band.
                         let wrap_key =
-                            (ci, n, raw_msgs.len(), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
+                            (ci, n, raw_msgs.len() + (self.img_cache.len() << 20), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
@@ -2860,9 +2864,7 @@ impl PhotonApp {
                                 };
                                 total += lines.len();
                                 // An image attachment with a micro preview reserves a band above its pill (IMG_PREVIEW_LINES lines) — the picture draws there before any blob is fetched.
-                                if m.attach.is_some_and(|a| a.kind.is_image()) && crate::types::parse_micro_image(&m.preview).is_some() {
-                                    total += IMG_PREVIEW_LINES;
-                                }
+                                total += super::viewer::img_band_lines_of(&self.img_cache, m);
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                                     total += 1;
@@ -2932,6 +2934,60 @@ impl PhotonApp {
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base.wrapping_add(2), ctx.pressed_hit, true, None, "Open Sans");
                             consent_stamp = Some((prects, py0));
                         }
+                        // ── IMAGE VIEWER / TEXT READER ── painted BEFORE the walk (earliest paint wins under-blend) over the whole list region, hit-stamped AFTER it: the pane swallows taps, three pills win their rects back.
+                        let mut viewer_stamp: Option<[fluor::region::Region; 3]> = None;
+                        if self.viewer.is_some() || self.reader.is_some() {
+                            let pane_h = (list_bottom - list_top).max(1.0);
+                            paint::fill_rect(&mut canvas, 0, list_top as isize, buf_w as isize, pane_h as isize, 0xFF00_0000 | 0x00F4_F4F4, None, None);
+                            let pill_h = line_h * 1.4;
+                            let pw = ((buf_w as f32 - pad_x * 2.0) * 0.28).max(msg_size * 3.0);
+                            let py = list_top + line_h * 0.4;
+                            let prects = [
+                                fluor::region::Region::new(pad_x, py, pw, pill_h * 0.9),
+                                fluor::region::Region::new(pad_x + pw + line_h * 0.5, py, pw, pill_h * 0.9),
+                                fluor::region::Region::new(pad_x + (pw + line_h * 0.5) * 2.0, py, pw, pill_h * 0.9),
+                            ];
+                            let img_top = py + pill_h * 1.1;
+                            let img_area_h = (list_bottom - img_top).max(1.0);
+                            if let Some((w, h, px)) = self.viewer.as_ref().and_then(|v| super::viewer::viewer_pixels_of(v, &self.img_cache, raw_msgs)) {
+                                let v = self.viewer.as_ref().expect("viewer");
+                                let fit = (buf_w as f32 / w.max(1) as f32).min(img_area_h / h.max(1) as f32);
+                                let scale = fit * v.zoom;
+                                let (dw, dh) = (w as f32 * scale, h as f32 * scale);
+                                let cx = buf_w as f32 * 0.5 + v.pan.0;
+                                let cy = img_top + img_area_h * 0.5 + v.pan.1;
+                                let clip = fluor::paint::Clip::new(0, img_top as usize, buf_w, list_bottom as usize);
+                                paint::draw_image(&mut canvas, &px, w, h, cx, cy, dw, dh, Some(clip));
+                            }
+                            if let Some(v) = self.viewer.as_ref() {
+                                let decoding = self.img_pending.contains(&v.hash) || v.preview_hash.is_some_and(|ph| self.img_pending.contains(&ph));
+                                let orig_done = matches!(self.img_cache.get(&v.hash), Some(Some(_)));
+                                let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
+                                let caption = format!("{}{}{}", v.name, if decoding { format!(" \u{00B7} {}", tr(Msg::ViewerDecoding)) } else { String::new() }, if orig_done { " \u{00B7} 1:1" } else { "" });
+                                ctx.text.draw_text_left(&mut canvas, &caption, pad_x, list_bottom - line_h * 0.4, &small, None, None);
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::ViewerOriginal), self.viewer_base.wrapping_add(1), ctx.pressed_hit, !orig_done && crate::storage::blob_present(&v.hash), None, "Oxanium");
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, crate::storage::blob_present(&v.hash), None, "Oxanium");
+                            } else if let Some(r) = self.reader.as_ref() {
+                                let mono = TextStyle::new(msg_size * 0.9, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
+                                let step = msg_size * 1.2;
+                                let clip = fluor::paint::Clip::new(0, img_top as usize, buf_w, list_bottom as usize);
+                                let first = (r.scroll / step).floor().max(0.0) as usize;
+                                let mut ly = img_top + step - (r.scroll - first as f32 * step);
+                                for line in r.lines.iter().skip(first) {
+                                    if ly > list_bottom + step {
+                                        break;
+                                    }
+                                    ctx.text.draw_text_left(&mut canvas, line, pad_x - r.hscroll, ly, &mono, Some(clip), None);
+                                    ly += step;
+                                }
+                                let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
+                                ctx.text.draw_text_left(&mut canvas, &r.name, pad_x, list_bottom - line_h * 0.4, &small, None, None);
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, true, None, "Oxanium");
+                            }
+                            viewer_stamp = Some(prects);
+                        }
                         // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
                         let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
                         // Whether the walk reached the conversation's FIRST message (no early break): the scroll-top avatar/name block may only draw then — drawing it at the break position floated it mid-stream over recent messages in any long conversation ("the avatar and name are rendered in a different block").
@@ -2956,8 +3012,26 @@ impl PhotonApp {
                             // A live wave's card carries its waveform band under the header (two lines, matching the wrap total above).
                             let wave_band_h = if msg.wave.is_some_and(|w| w.outcome.was_live()) { 2.0 * intra } else { 0.0 };
                             // The image preview band above an image attachment's pill (typed attachments 2026-09-10).
-                            let micro = if msg.attach.is_some_and(|a| a.kind.is_image()) { crate::types::parse_micro_image(&msg.preview).map(|(w, h, _)| (w, h)) } else { None };
-                            let img_band_h = if micro.is_some() { IMG_PREVIEW_LINES as f32 * intra } else { 0.0 };
+                            let img_lines = super::viewer::img_band_lines_of(&self.img_cache, msg);
+                            let img_band_h = img_lines as f32 * intra;
+                            // The decoded preview blob outranks the micro thumb; either way the band's picture is (w, h, pixels).
+                            let decoded: Option<(usize, usize, &Vec<u32>)> = msg.attach.and_then(|a| a.preview_hash).and_then(|ph| match self.img_cache.get(&ph) {
+                                Some(Some((w, h, px))) => Some((*w, *h, px)),
+                                _ => None,
+                            });
+                            // Ask for the preview blob once: held → decode; missing → fetch (drained on the tick).
+                            if let Some(a) = msg.attach {
+                                if a.kind.is_image() {
+                                    if let Some(ph) = a.preview_hash {
+                                        if !self.img_cache.contains_key(&ph) && !self.img_pending.contains(&ph) && !self.img_wants.iter().any(|(_, h, _)| *h == ph) {
+                                            let held = crate::storage::blob_present(&ph);
+                                            if held || !self.attach_auto_fetched.contains(&ph) {
+                                                self.img_wants.push((peer_handle_hash, ph, held));
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                             let block_extra = (lines.len() as f32 - 1.0) * intra
                                 + if reply_target.is_some() { intra } else { 0.0 }
                                 + react_off
@@ -3158,7 +3232,11 @@ impl PhotonApp {
                                 {
                                     let held = crate::storage::blob_present(&hash);
                                     let is_rec = crate::types::is_call_recording(&msg.content);
-                                    let (label, colour) = if !held {
+                                    let kind = msg.attach.map(|a| a.kind);
+                                    let viewable = kind.is_some_and(|k| k.is_image()) && (held || crate::types::parse_micro_image(&msg.preview).is_some() || msg.attach.and_then(|a| a.preview_hash).is_some_and(|ph| matches!(self.img_cache.get(&ph), Some(Some(_)))));
+                                    let (label, colour) = if viewable || (held && kind.is_some_and(|k| k.is_text())) {
+                                        (tr(Msg::OpenPill), *theme::COPY_PILL_COLOUR)
+                                    } else if !held {
                                         (tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR)
                                     } else if is_rec {
                                         (tr(Msg::PlayPill), *theme::COPY_PILL_COLOUR)
@@ -3540,8 +3618,14 @@ impl PhotonApp {
                                 }
                             }
                             // IMAGE PREVIEW BAND: the row's micro thumb (gamma-2 VSF RGB, ≤24 px) drawn above the pill, aspect-preserved, on the bubble's side. Nearest-neighbour up-scale — this is the before-any-fetch tier; the preview blob replaces it when held (Phase 2).
-                            if let Some((tw, th)) = micro {
-                                if let Some((_, _, px)) = crate::types::parse_micro_image(&msg.preview) {
+                            if img_lines > 0 {
+                                let micro_px = if decoded.is_none() { crate::types::parse_micro_image(&msg.preview).map(|(w, h, px)| (w, h, crate::ui::attach_preview::micro_to_display(px))) } else { None };
+                                let picture: Option<(usize, usize, std::borrow::Cow<Vec<u32>>)> = match (decoded, micro_px) {
+                                    (Some((w, h, px)), _) => Some((w, h, std::borrow::Cow::Borrowed(px))),
+                                    (None, Some((w, h, px))) => Some((w, h, std::borrow::Cow::Owned(px))),
+                                    _ => None,
+                                };
+                                if let Some((tw, th, pixels)) = picture {
                                     let first_line_y = y - react_off - (lines.len().max(1) - 1) as f32 * intra;
                                     let reply_off = if reply_target.is_some() { intra } else { 0.0 };
                                     let band_bot = first_line_y - reply_off - msg_size * 0.9;
@@ -3555,7 +3639,6 @@ impl PhotonApp {
                                     let cx = if right_aligned { buf_w as f32 - pad_x - bw * 0.5 } else { pad_x + bw * 0.5 };
                                     let cy = band_bot - bh * 0.5;
                                     if cy + bh * 0.5 >= list_top && cy - bh * 0.5 <= list_bottom {
-                                        let pixels = crate::ui::attach_preview::micro_to_display(px);
                                         paint::draw_image(&mut canvas, &pixels, tw, th, cx, cy, bw, bh, Some(list_clip));
                                     }
                                 }
@@ -3777,6 +3860,15 @@ impl PhotonApp {
                                     if topbar_visible { self.conv_filter_hit } else { HIT_NONE },
                                     ctx.pressed_hit,
                                 );
+                            }
+                        }
+                        // Viewer / reader hit re-assert: the pane swallows (its own id, so a tap is a no-op rather than a row select), the pills win their rects back.
+                        if let Some(prects) = viewer_stamp {
+                            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, list_top as isize, buf_w as isize, list_bottom as isize, self.viewer_base.wrapping_add(3));
+                            let live = if self.viewer.is_some() { vec![0usize, 1, 2] } else { vec![0, 2] };
+                            for pi in live {
+                                let r = prects[pi];
+                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base.wrapping_add(pi as HitId));
                             }
                         }
                         // Consent panel hit re-assert (the row walk stamped over it): HIT_NONE swallows everything under the panel, then the three pills win their own rects back.

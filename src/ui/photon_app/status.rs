@@ -41,6 +41,9 @@ impl PhotonApp {
         timed_drain!("attach", self.drain_attach_installed());
         // Picked files the preparation worker finished (kind, dims, micro preview) → row + blob send.
         timed_drain!("attach_prep", self.drain_attach_prepared());
+        // Decoded attachment pictures → the cache; preview wants → decode jobs / fetches.
+        timed_drain!("img_decoded", self.drain_img_decoded());
+        timed_drain!("img_wants", self.drain_img_wants());
         // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
         timed_drain!("history_pages", self.drain_history_pages());
         // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.

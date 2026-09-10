@@ -5,6 +5,23 @@ use super::*;
 /// The send cap (typed attachments Phase 1): the picker still hands the bytes over whole, so RAM at pick time is the bound — 256 MB, up from the 25 MB one-frame limit the chunked wire no longer needs.
 pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
 
+/// A RAW's temp copy for limbus (file-only reader): written into the runtime dir under the content hash, None for every other kind or on a write failure. The caller removes it once the decode has landed.
+pub(super) fn raw_temp_path(kind: crate::types::AttachKind, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
+    if kind != crate::types::AttachKind::RawImage {
+        return None;
+    }
+    let dir = crate::storage::runtime_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("attach-raw-{}.tmp", hex::encode(&hash[..8])));
+    match std::fs::write(&path, bytes) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            crate::logf!("attach: RAW temp write failed: {}", e);
+            None
+        }
+    }
+}
+
 impl PhotonApp {
     /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
     pub(super) fn send_attachment_from_path(&mut self, ci: usize, path: &str) {
@@ -33,11 +50,13 @@ impl PhotonApp {
         let Some(peer) = self.contacts.get(ci).map(|c| c.handle_hash) else {
             return;
         };
-        // PREPARE OFF-THREAD (typed attachments 2026-09-10): the kind sniff is cheap, but an image's decode for the micro preview is hundreds of ms on a phone photo — the worker hands back the typed extras and the drain sends the row (re-resolving the contact by handle, the index may have moved).
+        // PREPARE OFF-THREAD (typed attachments 2026-09-10): the kind sniff is cheap, but an image's decode for the previews is hundreds of ms on a phone photo and the AV1 encode more — the worker hands back the typed extras and the drain sends the row (re-resolving the contact by handle, the index may have moved). A RAW gets a temp copy for limbus (file-only reader), minted in the worker and removed by the drain.
         let tx = self.attach_prepared_tx.clone();
         queue_job(&self.seal_job_tx, move || {
-            let p = crate::ui::attach_preview::prepare(&bytes, &name);
-            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview });
+            let kind = crate::types::sniff(&bytes, &name);
+            let raw_tmp = raw_temp_path(kind, blake3::hash(&bytes).as_bytes(), &bytes);
+            let p = crate::ui::attach_preview::prepare(&bytes, &name, raw_tmp.as_deref());
+            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp });
         });
     }
 
@@ -48,14 +67,26 @@ impl PhotonApp {
                 crate::log("attach: prepared pick has no contact any more — dropped");
                 continue;
             };
+            if let Some(t) = p.raw_tmp.as_ref() {
+                let _ = std::fs::remove_file(t);
+            }
             crate::logf!(
-                "attach: prepared {} — kind {}{}, preview {} bytes",
+                "attach: prepared {} — kind {}{}, micro {} bytes, preview blob {}",
                 crate::deglyph_for_log(&p.name),
                 format!("{:?}", p.meta.kind),
                 p.meta.dims.map_or(String::new(), |(w, h)| format!(", {w}×{h}")),
-                p.preview.len()
+                p.preview.len(),
+                p.blob.as_ref().map_or("none".to_string(), |b| format!("{} bytes", b.len()))
             );
-            self.attach_send_now(ci, p.name, p.bytes, p.meta, p.preview);
+            // The preview blob is stored under its own hash first: the row names it, and it is pushed ahead of the original so the picture lands before the file.
+            let mut meta = p.meta;
+            if let (Some(blob), Some(ph), Some(seed)) = (p.blob.as_ref(), meta.preview_hash, self.session.as_ref().map(|s| s.identity_seed)) {
+                if let Err(e) = crate::storage::blob_store(&seed, &ph, blob) {
+                    crate::logf!("attach: preview blob store failed: {}", e);
+                    meta.preview_hash = None;
+                }
+            }
+            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview);
         }
     }
 
@@ -79,7 +110,10 @@ impl PhotonApp {
             self.attach_stage = None;
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
-        // The blob: eager PT push to the friend — one frame for a small file, manifest + chunks for a large one. Siblings + offline races fetch on demand (attach_req).
+        // The preview blob first (small, the picture the friend sees before the file lands), then the original: one frame for a small file, manifest + chunks for a large one. Siblings + offline races fetch on demand (attach_req).
+        if let Some(ph) = meta.preview_hash {
+            self.send_attach_blob(ci, &ph);
+        }
         match manifest {
             Some(m) => self.send_attach_chunks(ci, &hash, m),
             None => self.send_attach_blob(ci, &hash),

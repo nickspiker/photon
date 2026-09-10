@@ -500,6 +500,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let state = if held { "" } else { " \u{2014} pāwhiritia mō ngā mahi" };
             format!("{glyph} {name} \u{00B7} {size}{state}").into()
         }
+        Msg::OpenPill => "Whakatuwhera".into(),
+        Msg::ViewerBack => "\u{2039} Hoki".into(),
+        Msg::ViewerOriginal => "Taketake".into(),
+        Msg::ViewerDecoding => "e wetewete ana\u{2026}".into(),
+        Msg::ReaderTooLarge => "he nui rawa hei pānui i konei \u{2014} kua tiakina".into(),
         Msg::InspectFailed(e) => format!("i rahua te tirotiro: {e}").into(),
         // ---- message persistence / attachments toasts ----
         Msg::RewritingVault => "e tuhi anō ana ki te pātaka\u{2026}".into(),

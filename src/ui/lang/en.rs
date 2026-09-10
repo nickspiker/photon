@@ -472,6 +472,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let state = if held { "" } else { " \u{2014} tap for actions" };
             format!("{glyph} {name} \u{00B7} {size}{state}").into()
         }
+        Msg::OpenPill => "Open".into(),
+        Msg::ViewerBack => "\u{2039} Back".into(),
+        Msg::ViewerOriginal => "Original".into(),
+        Msg::ViewerDecoding => "decoding\u{2026}".into(),
+        Msg::ReaderTooLarge => "too large to read here \u{2014} saved instead".into(),
         Msg::InspectFailed(e) => format!("inspect failed: {e}").into(),
         // ---- message persistence / attachments toasts ----
         Msg::RewritingVault => "re-writing to the vault\u{2026}".into(),

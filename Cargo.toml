@@ -129,7 +129,11 @@ num-bigint = "0.4"
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 icc-profile = "0.0.2"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "bmp"] }
+# Camera RAW / DNG intake for attachment previews (typed attachments 2026-09-10): native-depth counts + both DNG ColorMatrices, decode ONLY — VSF-Image out is the only write it will ever learn.
+limbus = { path = "../limbus" }
+# JPEG XL decode only (lumis exports): the attachment preview ingest, same as opsin.
+jxl-oxide = "0.12.6"
 img-parts = "0.4"
 chrono = "0.4.42"
 reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "blocking"] }

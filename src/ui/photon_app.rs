@@ -40,6 +40,7 @@ use fluor::host::WakeSender;
 
 // The method bodies live in per-concern child modules: each is a further `impl PhotonApp` (plus the `FluorApp` trait impl in `driver`) over this same struct, glob-importing the root's items via `use super::*;`.
 mod attachments;
+mod viewer;
 mod bridge;
 mod call_ui;
 mod ceremony;
@@ -684,6 +685,10 @@ struct AttachPrepared {
     bytes: Vec<u8>,
     meta: crate::types::AttachMeta,
     preview: Vec<u8>,
+    /// The AV1-in-VSF preview blob (its hash = meta.preview_hash), stored and pushed ahead of the original.
+    blob: Option<Vec<u8>>,
+    /// A RAW's temp copy for limbus — removed by the drain.
+    raw_tmp: Option<std::path::PathBuf>,
 }
 
 struct AttachInstalled {
@@ -1292,6 +1297,19 @@ pub struct PhotonApp {
     attach_prepared_rx: std::sync::mpsc::Receiver<AttachPrepared>,
     /// The typed extras of the attachment row about to be minted by send_chain_message (set by attach_send_now, consumed at row creation) — so the row carries its kind + preview before the transmit reads it.
     attach_stage: Option<(crate::types::AttachMeta, Vec<u8>)>,
+    /// Decoded attachment pictures by hash (preview blobs and Original decodes): (w, h, packed display pixels); None = decode failed, don't ask again this session.
+    img_cache: std::collections::HashMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>,
+    img_pending: std::collections::HashSet<[u8; 32]>,
+    img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
+    img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
+    /// Preview blobs the last render wanted: (contact handle, hash, held here) — drained into decode jobs / fetches on the tick (the walk cannot borrow &mut self).
+    img_wants: Vec<([u8; 32], [u8; 32], bool)>,
+    /// Preview blobs auto-fetched this session (one ask each).
+    attach_auto_fetched: std::collections::HashSet<[u8; 32]>,
+    /// The open image viewer / text reader (viewer.rs) and the hit-id base of their pills (back, original, save, the pane itself).
+    viewer: Option<viewer::Viewer>,
+    reader: Option<viewer::Reader>,
+    viewer_base: HitId,
     /// History pages opened off-thread (see HistPageOpened) — the drain merges; merging is the cheap half since the (timestamp, content-hash) index landed.
     hist_opened_tx: std::sync::mpsc::Sender<HistPageOpened>,
     hist_opened_rx: std::sync::mpsc::Receiver<HistPageOpened>,
@@ -2150,6 +2168,18 @@ impl PhotonApp {
             },
             attach_prepared_rx: std::sync::mpsc::channel().1,
             attach_stage: None,
+            img_cache: std::collections::HashMap::new(),
+            img_pending: std::collections::HashSet::new(),
+            img_decoded_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            img_decoded_rx: std::sync::mpsc::channel().1,
+            img_wants: Vec::new(),
+            attach_auto_fetched: std::collections::HashSet::new(),
+            viewer: None,
+            reader: None,
+            viewer_base: HIT_NONE,
             hist_opened_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

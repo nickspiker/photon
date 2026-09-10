@@ -512,6 +512,12 @@ pub enum Msg<'a> {
     RecordingBubble { size: &'a str, fetching: bool },
     RecordingPlaying { pct: u32 },
     FileBubble { glyph: &'a str, name: &'a str, size: &'a str, held: bool },
+    // ---- attachment viewer / reader ----
+    OpenPill,
+    ViewerBack,
+    ViewerOriginal,
+    ViewerDecoding,
+    ReaderTooLarge,
     InspectFailed(&'a str),
     // ---- message persistence / attachments toasts ----
     RewritingVault,
