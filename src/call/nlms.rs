@@ -9,7 +9,7 @@ pub const TAPS: usize = 2048;
 /// Taps AHEAD of the measured anchor: absorbs anchor wobble (±ms of drain-stamp jitter folded into the one-time alignment) and slow clock skew.
 pub const PRE: usize = 512;
 /// NLMS step size — conservative; the seed does the converging, this tracks drift.
-const MU: f32 = 0.25;
+const MU: f32 = 0.5; // 2026-09-09: was 0.25 — the field's echo was audible with the filter barely moving; NLMS is stable below 2, and the per-sample update is what tracks a drifting path
 const EPS: f32 = 1e3;
 
 /// Flat reference ring over what the DAC actually rendered, indexed by ABSOLUTE sample position (never wraps indices — the buffer slides).
@@ -59,11 +59,14 @@ pub struct Nlms {
     pub pre_e: f64,
     pub post_e: f64,
     pub adapted_frames: u64,
+    /// RECENT ERLE (exponential, ~100 adapted frames): the self-check judges the filter on what it is doing NOW, not its lifetime — a blunt seed that starts harmful and converges must not be shot for its first second.
+    recent_pre: f64,
+    recent_post: f64,
 }
 
 impl Nlms {
     pub fn new(ir_start: usize, taps: Vec<f32>) -> Self {
-        Self { h: taps, ir_start: ir_start as i64, pre_e: 0.0, post_e: 0.0, adapted_frames: 0 }
+        Self { h: taps, ir_start: ir_start as i64, pre_e: 0.0, post_e: 0.0, adapted_frames: 0, recent_pre: 0.0, recent_post: 0.0 }
     }
 
     /// ERLE in dB over the adapted stretches; None until any frame adapted.
@@ -74,8 +77,13 @@ impl Nlms {
 
     /// A canceller that MADE ECHO WORSE must be shot (field 2026-09-08: a −43dB chirp barely passed the fit gate and seeded a misaligned filter → −17.8dB ERLE, i.e. +17.8dB of injected garbage = the "scratchy"). After a probation window of adapted frames, net-negative ERLE means the seed was garbage — the caller disarms and falls back to the duck. `false` until probation completes (never judge on one noisy frame).
     pub fn is_net_harmful(&self) -> bool {
-        const PROBATION: u64 = 100; // ~1s of far-talk-alone adaptation
-        self.adapted_frames >= PROBATION && self.post_e > self.pre_e
+        const PROBATION: u64 = 200; // ~2s of far-talk-alone adaptation before any verdict
+        self.adapted_frames >= PROBATION && self.recent_post > self.recent_pre
+    }
+
+    /// ERLE over the recent adapted stretch (the self-check's view); None until adapted.
+    pub fn erle_recent_db(&self) -> Option<f64> {
+        (self.adapted_frames > 0 && self.recent_post > 0.0).then(|| 10.0 * (self.recent_pre / self.recent_post).log10())
     }
 
     /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. `ref_gain` = vol_lin_now ÷ vol_lin_at_seed — the taps are measured at the probe's volume, and the DAC gain sits between the reference and the room, so a mid-call volume change scales the echo without touching h; folding the ratio into the reference keeps the filter honest instantly (adaptation then refines in seed-volume units). Frames whose reference window isn't fully resident pass thru untouched.
@@ -88,9 +96,15 @@ impl Nlms {
         };
         let mut pre = 0f64;
         let mut post = 0f64;
+        // The reference window slides one sample per output sample, so its power is a running sum: seed it once, then add the incoming sample and drop the outgoing one — O(1) per sample where the old per-sample rescan was O(taps), half the filter's cost.
+        let g2 = ref_gain * ref_gain;
+        let mut power: f32 = win[..n].iter().map(|&r| r * r).sum();
         for (j, m) in mic.iter_mut().enumerate() {
             // ref[frame_pos + j − ir_start − k] = win[j + n − 1 − k]: h ascending pairs with the window reversed.
             let x = &win[j..j + n];
+            if j > 0 {
+                power += win[j + n - 1] * win[j + n - 1] - win[j - 1] * win[j - 1];
+            }
             let est: f32 = self.h.iter().rev().zip(x).map(|(&h, &r)| h * r).sum::<f32>() * ref_gain;
             let raw = *m as f32;
             let e = raw - est;
@@ -98,8 +112,7 @@ impl Nlms {
             post += (e * e) as f64;
             *m = e.clamp(-32768.0, 32767.0) as i16;
             if adapt {
-                let g2 = ref_gain * ref_gain;
-                let norm: f32 = x.iter().map(|&r| r * r).sum::<f32>() * g2 + EPS;
+                let norm = power.max(0.0) * g2 + EPS;
                 let g = MU * e * ref_gain / norm;
                 for (h, &r) in self.h.iter_mut().rev().zip(x) {
                     *h += g * r;
@@ -110,6 +123,9 @@ impl Nlms {
             self.pre_e += pre;
             self.post_e += post;
             self.adapted_frames += 1;
+            const ALPHA: f64 = 0.02;
+            self.recent_pre += (pre - self.recent_pre) * ALPHA;
+            self.recent_post += (post - self.recent_post) * ALPHA;
         }
     }
 }

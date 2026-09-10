@@ -123,6 +123,8 @@ class PhotonConnectionService : Service() {
     private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
     // Held for the DURATION OF A WAVE only (field 2026-09-09, Emma+Nick LAN call): without it the phone's WiFi power-save bunched the sender's datagrams and dropped them in consecutive PAIRS — 65 lost FEC windows on one side of a 53s call on a 5ms LAN, the ladder flapping 16↔64 kbps, the jitter buffer peaking past a second and trimming hundreds of frames. LOW_LATENCY (API 29+) asks the driver to leave power-save; HIGH_PERF is the older equivalent.
     private var waveWifiLock: android.net.wifi.WifiManager.WifiLock? = null
+    // The LOW_LATENCY mode is honoured only while the app is foreground AND THE SCREEN IS ON — and the proximity sensor turns the screen off at the ear (2026-09-09, Brittany/Nick: both phones held the low-latency lock, one side still lost 121 windows in pairs). HIGH_PERF has no screen condition; both are held for the wave.
+    private var waveWifiPerfLock: android.net.wifi.WifiManager.WifiLock? = null
 
     private fun acquireWaveWifiLock() {
         try {
@@ -130,12 +132,15 @@ class PhotonConnectionService : Service() {
             val mode = if (android.os.Build.VERSION.SDK_INT >= 29) android.net.wifi.WifiManager.WIFI_MODE_FULL_LOW_LATENCY else android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF
             val lock = waveWifiLock ?: wifi.createWifiLock(mode, "photon-wave").also { it.setReferenceCounted(false); waveWifiLock = it }
             if (!lock.isHeld) lock.acquire()
-            PhotonLog.i(TAG, "wave wifi lock held (" + (if (mode == android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF) "high-perf" else "low-latency") + ")")
+            val perf = waveWifiPerfLock ?: wifi.createWifiLock(android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF, "photon-wave-perf").also { it.setReferenceCounted(false); waveWifiPerfLock = it }
+            if (!perf.isHeld) perf.acquire()
+            PhotonLog.i(TAG, "wave wifi locks held (" + (if (mode == android.net.wifi.WifiManager.WIFI_MODE_FULL_HIGH_PERF) "high-perf" else "low-latency") + " + high-perf)")
         } catch (e: Exception) { PhotonLog.w(TAG, "wave wifi lock acquire failed", e) }
     }
 
     private fun releaseWaveWifiLock() {
         try { waveWifiLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "wave wifi lock release failed", e) }
+        try { waveWifiPerfLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "wave wifi perf lock release failed", e) }
     }
 
     override fun onCreate() {

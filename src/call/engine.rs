@@ -39,7 +39,7 @@ const LOSS_WINDOW: std::time::Duration = std::time::Duration::from_millis(2000);
 const LOSSES_TO_DROP: usize = 2;
 const DROP_HOLD: std::time::Duration = std::time::Duration::from_millis(2000);
 /// Rungs dropped on a lost window.
-const DROP_RUNGS_ON_LOSS: usize = 2;
+const DROP_RUNGS_ON_LOSS: usize = 1; // 2026-09-09: was 2 — on a 5ms-RTT LAN the losses are the radio's bursts, not congestion, and the top rung is the MORE burst-robust one (10ms per datagram); the drop is a nudge now, the diversity below is the fix
 
 /// Slot per encoded frame at a rung: 2-byte length prefix + that rung's max payload.
 const fn tier_slot(tier: usize) -> usize {
@@ -192,7 +192,8 @@ fn run(
     // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
-    let mut prev_repair: Option<(usize, Vec<u8>)> = None;
+    // Repair symbols waiting to ship: window n's datagram carries the repair of window n−2 (2026-09-09, the Emma/Nick and Brittany/Nick LAN calls: losses came in consecutive PAIRS, and with the repair one datagram behind its source a two-datagram burst killed the window every time — 65 and 121 lost windows on a 5ms LAN). Two back, a two-datagram burst can never take both symbols of one window; a lost source now waits one extra window for its repair, and only when it was lost.
+    let mut repair_queue: std::collections::VecDeque<(usize, Vec<u8>)> = std::collections::VecDeque::new();
     let mut window_buf: Vec<u8> = Vec::with_capacity(tier_window_bytes(TIER_RATES.len() - 1));
     let mut frames_in_window = 0usize;
 
@@ -260,6 +261,8 @@ fn run(
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
     // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
+    // Capture cadence forensics (2026-09-09: both phones, both calls, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
+    let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
 
     crate::logf!(
         "CALL: engine up — tx {} → {}, ladder {}..{} kbps (start {}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
@@ -354,6 +357,8 @@ fn run(
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
         for (cap_osc, frame) in crate::platform::audio::captured_frames() {
+            cap_first_osc.get_or_insert(cap_osc);
+            cap_last_osc = cap_osc;
             // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows). Paired to the learner's 10ms cadence (see far_pair).
             {
                 let e = crate::call::calibrate::env(&frame);
@@ -390,13 +395,19 @@ fn run(
                     let off_samples = (m0 - r0) * crate::call::vchirp::SAMPLE_RATE as i64
                         / vsf::OSCILLATIONS_PER_SECOND as i64;
                     let pos = this_mic_abs as i64 + off_samples;
-                    // Adapt only in far-talks-alone (the side-aware law): far active AND the raw mic no louder than a plausible echo. Double-talk freezes the taps.
+                    // Adapt only in far-talks-alone (the side-aware law): far active AND the raw mic no louder than a plausible echo. Double-talk freezes the taps. "Plausible echo" is the PREDICTION when a calibration is applied (2026-09-09: the raw-far ratio never opened on a phone whose echo path gain sits near 7 — the echo itself failed the ratio, the filter adapted for a second or two per call and died) — the same enter line the gate uses; the raw-far ratio stays as the uncalibrated fallback.
                     let raw_mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
                         / frame.len().max(1) as f32;
                     let far_now = crate::platform::audio::far_level() as f32;
                     let adapt = route_ducks
-                        && far_now > DUCK_FAR_HALF
-                        && raw_mean < far_now * ECHO_GATE_RATIO;
+                        && match applied {
+                            Some((g_norm, delay)) => {
+                                let far_del = learner.far_env_at(delay);
+                                let pred = g_norm * vol_lin_now * far_del;
+                                far_del > crate::call::learn::FAR_ACT && raw_mean < (pred * 2.0).max(live_floor * 2.0)
+                            }
+                            None => far_now > DUCK_FAR_HALF && raw_mean < far_now * ECHO_GATE_RATIO,
+                        };
                     let ref_gain = (vol_lin_now / nlms_seed_vol.max(1e-6)).clamp(0.05, 20.0);
                     c.cancel_frame(&mut frame, &ref_ring, pos, adapt, ref_gain);
                 }
@@ -430,8 +441,8 @@ fn run(
                         crate::call::learn::GateVerdict::Full => 1.0,
                         crate::call::learn::GateVerdict::Gate => {
                             gated_frames += 1;
-                            if nlms.is_some() {
-                                // A filter is armed: the frame already had the echo SUBTRACTED — the hard near-mute demotes to the soft residual duck, and double-talk survives (full duplex).
+                            if nlms.as_ref().is_some_and(|c| c.erle_recent_db().is_some_and(|e| e >= 6.0)) {
+                                // A filter that has PROVEN itself (≥6dB recent ERLE) has already subtracted the echo — the hard near-mute demotes to the soft residual duck, and double-talk survives (full duplex). An armed-but-weak filter keeps the gate (2026-09-09: a 2dB filter demoting the gate to a −16dB duck was the field's "echoey").
                                 (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
                             } else {
                                 ECHO_GATE_GAIN
@@ -502,7 +513,7 @@ fn run(
                 // PIGGYBACK BUNDLE (flag day, 2026-08-20): ONE datagram per window — sealed payload [ctrl:1][source(N)][repair(N−1)]. Halves the packet rate (per-packet header cost was 19% of the floor wire), and the window's two copies now ride datagrams one window APART, so a burst must kill two consecutive datagrams to lose audio — strictly better than the old back-to-back pair. Steady-state latency unchanged: the source still ships the instant the window closes; only loss RECOVERY waits one extra window. seq = window id (the nonce, the step index, everything); ctrl = tier_src:3 | rep_present:1<<3 | tier_rep:3<<4 — THREE-bit tier fields so the ladder can grow to 8 rungs (survival rung below, stereo rung above) WITHOUT another flag day; a rung switch between windows makes the two symbols different sizes, which is why the tiers ride explicitly at all.
                 let fec = raptorq::Encoder::new(&window_buf, oti(tier));
                 let pkts = fec.get_encoded_packets(REPAIR_PACKETS);
-                let rep = prev_repair.take();
+                let rep = if repair_queue.len() >= 2 { repair_queue.pop_front() } else { None };
                 let mut payload = Vec::with_capacity(1 + tier_window_bytes(tier) * 2);
                 let ctrl = tier as u8
                     | rep
@@ -523,7 +534,7 @@ fn run(
                     pkts_out += 1;
                 }
                 // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the call ended); its ~20-40ms tail is protected only by its source — accepted.
-                prev_repair = Some((tier, pkts[1].data().to_vec()));
+                repair_queue.push_back((tier, pkts[1].data().to_vec()));
                 window_id = window_id.wrapping_add(1);
                 window_buf.clear();
                 frames_in_window = 0;
@@ -576,11 +587,11 @@ fn run(
                 continue;
             }
             let body = &payload[1..];
-            // Feed the source symbol to window seq, and the piggybacked repair to window seq−1 — same per-symbol pipeline for both (dedup → fountain → slot walk → Opus → climb evidence).
+            // Feed the source symbol to window seq, and the piggybacked repair to window seq−2 (two back for burst diversity — see repair_queue) — same per-symbol pipeline for both (dedup → fountain → slot walk → Opus → climb evidence).
             let mut inputs: [(u32, usize, u32, &[u8]); 2] =
                 [(header.seq, tier_src, 0, &body[..src_len]), (0, 0, 1, &[])];
-            let n_inputs = if rep_present && header.seq > 0 {
-                inputs[1] = (header.seq - 1, tier_rep, 1, &body[src_len..]);
+            let n_inputs = if rep_present && header.seq > 1 {
+                inputs[1] = (header.seq - 2, tier_rep, 1, &body[src_len..]);
                 2
             } else {
                 1
@@ -836,6 +847,15 @@ fn run(
         format!("{:.0}", rx_frames as f64 / call_secs),
         format!("{:.1}", call_secs)
     );
+    if let Some(first) = cap_first_osc {
+        let hal_secs = (cap_last_osc - first).max(0) as f64 / vsf::OSCILLATIONS_PER_SECOND as f64;
+        crate::logf!(
+            "CALL: capture — {} frames over {}s of HAL time ({} fps by the HAL clock; 200 nominal)",
+            tx_frames,
+            format!("{hal_secs:.1}"),
+            format!("{:.0}", if hal_secs > 0.0 { tx_frames as f64 / hal_secs } else { 0.0 })
+        );
+    }
     // Mean |sample| each way (0..32767). ~0 on a side = that direction carried silence; compare tx (our mic) vs rx (what we played) to place a "one-way heard" report at capture or playback.
     let tx_level = if tx_frames > 0 { tx_energy / (tx_frames * FRAME_SAMPLES as u64) } else { 0 };
     let rx_level = if rx_frames > 0 { rx_energy / (rx_frames * FRAME_SAMPLES as u64) } else { 0 };

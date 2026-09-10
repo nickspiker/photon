@@ -2485,28 +2485,6 @@ impl PhotonApp {
                             HIT_NONE
                         },
                     );
-                    // STREAM FILTER PILL — centred in the top bar between the back arrow and the ☎ pill, riding the same slide-off. One pill that cycles all → waves → text (Nick 2026-09-09: "just calls or just messages, maybe a toggle") — one predicate in chat_row_visible does the filtering, so the render and the jump walk can never disagree.
-                    if topbar_visible {
-                        let f_label = tr(match self.conv_filter {
-                            ChatFilter::All => Msg::FilterAll,
-                            ChatFilter::Waves => Msg::FilterWaves,
-                            ChatFilter::Text => Msg::FilterText,
-                        });
-                        let f_h = unit * 1.4;
-                        let f_w = unit * 3.4;
-                        let f_rect = fluor::region::Region::new(buf_w as f32 * 0.5 - f_w * 0.5, back_y - f_h * 0.5, f_w, f_h);
-                        super::draw_stub_pill(
-                            &mut canvas,
-                            ctx.text,
-                            &mut chrome.hit_test_map,
-                            buf_w,
-                            buf_h,
-                            f_rect,
-                            &f_label,
-                            self.conv_filter_hit,
-                            ctx.pressed_hit,
-                        );
-                    }
 
                     // ONE LAYOUT, ONE LAYER (user spec, 2026-07-26): the conversation is a single scrolling stream whose ENTRY #0 is the avatar + name (+ ceremony status while pending) — visible ONLY at the conversation GENESIS, at the literal top of the content area, scrolling like any message. The fixed centred header is DEAD for every state (its pre-woven survival was the root of the "different layer" saga). The fixed strip holds ONLY the tiny always-on name, the orb, and the sliding "‹ Contacts".
                     let (_, _, avatar_r) = conv_layout.avatar_center_radius();
@@ -3715,6 +3693,31 @@ impl PhotonApp {
                                     Some((msg.timestamp, msg.is_outgoing, ref_band));
                             }
                             y -= line_h + block_extra;
+                        }
+                        // STREAM FILTER PILL — bottom RIGHT, just above the compose box (Nick 2026-09-09: the top-centre spot overlapped the title), sliding off to the RIGHT with the same scroll-tied offset the top bar slides up with. Stamped AFTER the row walk so it wins its rect; no stamp while slid away.
+                        {
+                            let f_label = tr(match self.conv_filter {
+                                ChatFilter::All => Msg::FilterAll,
+                                ChatFilter::Waves => Msg::FilterWaves,
+                                ChatFilter::Text => Msg::FilterText,
+                            });
+                            let f_h = unit * 1.3;
+                            let f_w = unit * 3.2;
+                            let f_x = buf_w as f32 - pad_x - f_w + bar_off;
+                            let f_y = list_bottom - f_h - unit * 0.25;
+                            if f_x < buf_w as f32 {
+                                super::draw_stub_pill(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    fluor::region::Region::new(f_x, f_y, f_w, f_h),
+                                    &f_label,
+                                    if topbar_visible { self.conv_filter_hit } else { HIT_NONE },
+                                    ctx.pressed_hit,
+                                );
+                            }
                         }
                         // Consent panel hit re-assert (the row walk stamped over it): HIT_NONE swallows everything under the panel, then the three pills win their own rects back.
                         if let Some((prects, py0)) = consent_stamp {
