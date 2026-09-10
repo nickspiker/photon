@@ -3404,112 +3404,91 @@ impl PhotonApp {
                                             let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                             let held = crate::storage::blob_present(&hash);
                                             let playing = self.call_playback.is_some() && self.call_playback_hash == Some(hash);
-                                            // Envelope source: the container's fine envelope while a handle is live, the row thumbnail otherwise. Channel-major, bucket-major, four components per bucket ([amp, r, g, b], eighth-stops below full scale).
+                                            // ENVELOPE SOURCE, in order: the playing handle's container envelope, the session cache (read off-thread from the held blob — requested here on first sight), else the row thumbnail. All are the same [amp, r, g, b] stops layout; the container ones are the fixed 65536-bucket grid.
                                             const K: usize = crate::call::record::ENV_COMPONENTS;
-                                            let (env, nchan): (&[u8], usize) = match (playing, self.call_playback.as_ref()) {
-                                                (true, Some(h)) if !h.envelope.is_empty() => (&h.envelope, h.nchan.max(1)),
-                                                _ => (&rec.envelope, if rec.envelope.is_empty() { 1 } else { (rec.envelope.len() / (crate::types::WAVE_THUMB_BUCKETS * K)).max(1) }),
+                                            let cached = self.wave_env.get(&hash).cloned();
+                                            if held && cached.is_none() && !self.wave_env_pending.contains(&hash) && self.session.is_some() {
+                                                // Kick the loader from the render edge: the state it touches (cache/pending/channel) is the app's own, and the read runs on its own thread.
+                                                self.wave_env_pending.insert(hash);
+                                                let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap();
+                                                if self.wave_env_tx.is_none() {
+                                                    let (tx, rx) = std::sync::mpsc::channel();
+                                                    self.wave_env_tx = Some(tx);
+                                                    self.wave_env_rx = Some(rx);
+                                                }
+                                                let tx = self.wave_env_tx.as_ref().unwrap().clone();
+                                                let wake = self.event_proxy.clone();
+                                                let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
+                                                    let env = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::call::record::envelope_of_blob(&b)).map(|(_, _, e)| e);
+                                                    let _ = tx.send((hash, env));
+                                                    #[cfg(not(target_os = "android"))]
+                                                    if let Some(w) = wake.as_ref() {
+                                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                    }
+                                                    #[cfg(target_os = "android")]
+                                                    let _ = wake;
+                                                });
+                                            }
+                                            let handle_env: Option<&[u8]> = match (playing, self.call_playback.as_ref()) {
+                                                (true, Some(h)) if !h.envelope.is_empty() => Some(&h.envelope),
+                                                _ => None,
                                             };
+                                            let env: &[u8] = handle_env.or(cached.as_deref().map(|v| v.as_slice())).unwrap_or(&rec.envelope);
+                                            let nchan = if env.len() >= crate::call::record::ENV_BUCKETS * K { (env.len() / (crate::call::record::ENV_BUCKETS * K)).max(1) } else if rec.envelope.is_empty() { 1 } else { (env.len() / (crate::types::WAVE_THUMB_BUCKETS * K)).max(1) };
                                             let env_len = env.len() / (nchan * K).max(1);
                                             let total_slots = if playing { self.call_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
                                             let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
                                             let frac: Option<f32> = scrub.or_else(|| {
                                                 playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
                                             });
-                                            // THE WAVEFORM (Nick 2026-09-09): one column per pixel, ch0 (you) up from the centreline, ch1 (them) down. Height = amplitude (eight stops of range); colour = the three high-pass bands. NORMALISED per recording (Nick 2026-09-10: "normalise the colours"): each band's brightness relative to the amplitude is stretched over the recording's own range before the triple is saturated, so the hue moves across the wave instead of sitting near one tint. SMOOTH: a column reads the envelope by linear interpolation between bucket centres rather than the nearest bucket ("it still looks blocky"), and a column that spans more than one bucket averages them in energy space like the lumis histogram; the bar's tip pixel takes a coverage alpha (√ of the fraction).
+                                            // THE PIPELINE (Nick 2026-09-10): LINEAR values (the stored eighth-stops decoded thru a table) on the recording's fixed grid → bilinear down to the preview width (box mean when folding, interpolation when stretching) → each axis NORMALISED per party over the whole recording: amplitude to its own peak, each colour band to its own min..max → shown as is. ch0 (you) up from the centreline, ch1 (them) down; played columns bright, the rest dim; the tip pixel takes √(fraction) alpha.
                                             let wx0 = glyph_x1;
                                             let cols = ((bx1 - wx0).max(1.0)) as usize;
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
-                                            // Band brightness relative to the amplitude (eight stops of range), then the per-recording stretch: min..max of that relative value across every bucket of this channel set.
-                                            let rel = |stops8: u8, amp8: u8| -> f32 { (1.0 - (stops8 as f32 - amp8 as f32) / 64.0).clamp(0.0, 1.0) };
-                                            let mut lo = [1f32; 3];
-                                            let mut hi = [0f32; 3];
-                                            for i in 0..env_len * nchan.min(2) {
-                                                let e = &env[i * K..i * K + K];
-                                                if e[0] >= 250 {
-                                                    continue; // silence: no colour information
+                                            let lut: [f32; 256] = {
+                                                let mut t = [0f32; 256];
+                                                for (i, v) in t.iter_mut().enumerate() {
+                                                    *v = if i >= 255 { 0.0 } else { (2f32).powf(-(i as f32) / 8.0) };
                                                 }
-                                                for c in 0..3 {
-                                                    let v = rel(e[1 + c], e[0]);
-                                                    lo[c] = lo[c].min(v);
-                                                    hi[c] = hi[c].max(v);
-                                                }
-                                            }
-                                            let stretch = |v: f32, c: usize| -> f32 {
-                                                let span = hi[c] - lo[c];
-                                                if span > 0.05 { ((v - lo[c]) / span).clamp(0.0, 1.0) } else { v }
-                                            };
-                                            // Sample the envelope at a fractional bucket position: linear interpolation between the two nearest bucket centres, in the (amp, r, g, b) brightness domain.
-                                            let sample_at = |ch: usize, pos: f32| -> [f32; 4] {
-                                                let p = pos.clamp(0.0, env_len as f32 - 1.0);
-                                                let i0 = p.floor() as usize;
-                                                let i1 = (i0 + 1).min(env_len - 1);
-                                                let t = p - i0 as f32;
-                                                let e0 = &env[(ch * env_len + i0) * K..(ch * env_len + i0) * K + K];
-                                                let e1 = &env[(ch * env_len + i1) * K..(ch * env_len + i1) * K + K];
-                                                let v = |e: &[u8], c: usize| -> f32 {
-                                                    if c == 0 { (1.0 - e[0] as f32 / 64.0).clamp(0.0, 1.0) } else { stretch(rel(e[c], e[0]), c - 1) }
-                                                };
-                                                let mut out = [0f32; 4];
-                                                for c in 0..4 {
-                                                    out[c] = v(e0, c) * (1.0 - t) + v(e1, c) * t;
-                                                }
-                                                out
+                                                t
                                             };
                                             if env_len > 0 {
-                                                // LUMIS METHOD (Nick 2026-09-10: "look how lumis generates histograms, make sure the oversample is done the same way"): every screen column is OVERSAMPLE sub-columns, each rasterised at full height as its own bar — solid below the tip, the tip pixel at √(fraction), and lumis's shade (brightest at the tip, falling as the square toward the base) — then the sub-columns are folded into the screen pixel in ENERGY space (mean of squares, then the root), exactly the histogram's downsample. The colour rides the same fold, so a column that spans several buckets blends their hues as light does.
-                                                const OVERSAMPLE: usize = 16;
-                                                let per_col = env_len as f32 / cols as f32;
-                                                let rows = (half * 0.92).ceil().max(1.0) as usize;
-                                                let base_alpha = |c: u32| ((c >> 24) & 0xFF) as f32;
-                                                for px in 0..cols {
-                                                    let lit = held && frac.is_some() && px < played_cols;
-                                                    for ch in 0..nchan.min(2) {
-                                                        // Per sub-column: height in pixel rows and a saturated colour.
-                                                        let mut subs: Vec<(f32, [f32; 3])> = Vec::with_capacity(OVERSAMPLE);
-                                                        for k in 0..OVERSAMPLE {
-                                                            let pos = (px as f32 + (k as f32 + 0.5) / OVERSAMPLE as f32) * per_col - 0.5;
-                                                            let v = sample_at(ch, pos);
-                                                            let m = v[1].max(v[2]).max(v[3]).max(0.001);
-                                                            subs.push((v[0] * half * 0.92, [v[1] / m, v[2] / m, v[3] / m]));
+                                                for ch in 0..nchan.min(2) {
+                                                    // Four linear tracks on the recording's grid, then the fold to the preview width.
+                                                    let track = |c: usize| -> Vec<f32> {
+                                                        (0..env_len).map(|i| lut[env[(ch * env_len + i) * K + c] as usize]).collect()
+                                                    };
+                                                    let folded: Vec<Vec<f32>> = (0..K).map(|c| crate::call::record::resample_linear(&track(c), cols)).collect();
+                                                    // Per-party normalisation over the whole recording (the folded width IS the whole recording).
+                                                    let amp_max = folded[0].iter().cloned().fold(0f32, f32::max).max(1e-6);
+                                                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
+                                                    for c in 0..3 {
+                                                        for v in &folded[1 + c] {
+                                                            lo[c] = lo[c].min(*v);
+                                                            hi[c] = hi[c].max(*v);
                                                         }
-                                                        // Per pixel row (distance from the centreline): fold the sub-columns' coverage × shade × colour in energy space.
-                                                        for r in 0..rows {
-                                                            let (mut e_cov, mut e_r, mut e_g, mut e_b) = (0f32, 0f32, 0f32, 0f32);
-                                                            for (hgt, col) in &subs {
-                                                                let cov = if (r as f32 + 1.0) <= *hgt {
-                                                                    1.0
-                                                                } else if (r as f32) < *hgt {
-                                                                    (hgt - r as f32).sqrt()
-                                                                } else {
-                                                                    continue;
-                                                                };
-                                                                // lumis shade: 1 at the tip, (distance from tip / height)² darker toward the base.
-                                                                let from_tip = (hgt - r as f32) / hgt.max(1.0);
-                                                                let shade = (1.0 - from_tip * 0.6).max(0.4);
-                                                                let w = cov * shade;
-                                                                e_cov += w * w;
-                                                                e_r += (col[0] * w) * (col[0] * w);
-                                                                e_g += (col[1] * w) * (col[1] * w);
-                                                                e_b += (col[2] * w) * (col[2] * w);
-                                                            }
-                                                            if e_cov <= 0.0 {
-                                                                break; // nothing above this row in any sub-column
-                                                            }
-                                                            let cov_m = (e_cov / OVERSAMPLE as f32).sqrt();
-                                                            let (rr, gg, bb) = ((e_r / OVERSAMPLE as f32).sqrt() / cov_m, (e_g / OVERSAMPLE as f32).sqrt() / cov_m, (e_b / OVERSAMPLE as f32).sqrt() / cov_m);
-                                                            let base_c = theme::rgb_colour((rr.clamp(0.0, 1.0) * 255.0) as u8, (gg.clamp(0.0, 1.0) * 255.0) as u8, (bb.clamp(0.0, 1.0) * 255.0) as u8);
-                                                            let c = if lit { base_c } else { theme::dim_colour(base_c) };
-                                                            let a = (cov_m.clamp(0.0, 1.0) * base_alpha(c)) as u32;
-                                                            if a == 0 {
-                                                                continue;
-                                                            }
-                                                            let pc = (a << 24) | (c & 0x00FF_FFFF);
-                                                            let x = (wx0 + px as f32) as isize;
-                                                            let y_px = if ch == 0 { bcy - 1.0 - r as f32 } else { bcy + r as f32 };
-                                                            if y_px >= list_top && y_px < list_bottom {
-                                                                paint::fill_rect(&mut canvas, x, y_px as isize, 1, 1, pc, None, None);
-                                                            }
+                                                    }
+                                                    for px in 0..cols {
+                                                        let lit = held && frac.is_some() && px < played_cols;
+                                                        let hgt = (folded[0][px] / amp_max).clamp(0.0, 1.0) * half * 0.92;
+                                                        let norm = |c: usize| -> f32 {
+                                                            let span = hi[c] - lo[c];
+                                                            if span > 1e-6 { ((folded[1 + c][px] - lo[c]) / span).clamp(0.0, 1.0) } else { 0.0 }
+                                                        };
+                                                        let base_c = theme::rgb_colour((norm(0) * 255.0) as u8, (norm(1) * 255.0) as u8, (norm(2) * 255.0) as u8);
+                                                        let c = if lit { base_c } else { theme::dim_colour(base_c) };
+                                                        let full = hgt.floor();
+                                                        let tip_a = ((hgt - full).sqrt() * (((c >> 24) & 0xFF) as f32)) as u32;
+                                                        let tip_c = (tip_a << 24) | (c & 0x00FF_FFFF);
+                                                        let x = (wx0 + px as f32) as isize;
+                                                        let (ty, th, tip_y) = if ch == 0 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
+                                                        let run_top = ty.max(list_top);
+                                                        let run_bot = (ty + th).min(list_bottom);
+                                                        if run_bot > run_top && th >= 1.0 {
+                                                            paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, None, None);
+                                                        }
+                                                        if tip_a > 0 && tip_y >= list_top && tip_y < list_bottom {
+                                                            paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, None, None);
                                                         }
                                                     }
                                                 }

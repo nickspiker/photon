@@ -1230,6 +1230,25 @@ impl PhotonApp {
         self.call_keep_tx.as_ref().unwrap().clone()
     }
 
+    /// Land finished envelope reads in the cache.
+    pub(super) fn drain_wave_env(&mut self) -> bool {
+        let mut got = Vec::new();
+        if let Some(rx) = self.wave_env_rx.as_ref() {
+            while let Ok(ev) = rx.try_recv() {
+                got.push(ev);
+            }
+        }
+        let any = !got.is_empty();
+        for (hash, env) in got {
+            self.wave_env_pending.remove(&hash);
+            if let Some(e) = env {
+                self.wave_env.insert(hash, std::sync::Arc::new(e));
+            }
+            self.scene_dirty = true;
+        }
+        any
+    }
+
     /// Drain finished keep-transcodes and mint the fleet-internal `call.audio` attachment row on the UI thread (the mint needs `&mut self`, so results are collected before the row work — same borrow dance as `drain_update_events`). Called from `tick`.
     pub(super) fn drain_call_keep(&mut self) -> bool {
         let mut pending: Vec<CallKeepResult> = Vec::new();

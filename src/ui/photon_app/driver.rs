@@ -3032,6 +3032,9 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
         // Keep-transcode results: a finished N-channel recording mints its `call.audio` row here (off-thread transcode posted back over the channel).
+        if self.drain_wave_env() {
+            needs_redraw = true;
+        }
         if self.drain_call_keep() {
             needs_redraw = true;
         }

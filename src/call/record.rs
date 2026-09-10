@@ -20,10 +20,66 @@ const SLOTS_PER_SEC: i64 = 200;
 pub const CONTAINER_MAGIC_V4: &[u8; 8] = b"PHCALL4\0";
 /// Envelope components per bucket per channel: [amplitude, red, green, blue] — amplitude is the plain RMS; the colour bands are three HIGH-PASS energies at three scales (Nick 2026-09-09: "1:1 filter for blue, 1:4 for green, 1:8 for red, all high pass"): blue = first difference (x[n] − x[n−1]), green = the difference of successive 4-sample sums ÷ 4, red = the difference of successive 8-sample sums ÷ 8. Running sums, no FFT. All four in eighth-stops below full scale.
 pub const ENV_COMPONENTS: usize = 4;
+/// The envelope's fixed length per channel (Nick 2026-09-10: "linear on the waveform, downsample it to 65536 samples, then bilinear down to preview width"): every recording carries exactly this many buckets per channel, whatever its length — a 10s wave upsamples its 10ms slots into them, a 2h wave folds ~7 slots into each. 65536 × 4 components × 2 channels = 512KB in the container.
+pub const ENV_BUCKETS: usize = 65536;
+
+/// Resample per-slot LINEAR values to `out_len` buckets: a box mean when folding down, linear interpolation between slot centres when stretching up — the "bilinear" half of the pipeline, on the recording's own grid.
+pub fn resample_linear(slots: &[f32], out_len: usize) -> Vec<f32> {
+    let n = slots.len();
+    if n == 0 || out_len == 0 {
+        return vec![0.0; out_len];
+    }
+    (0..out_len)
+        .map(|b| {
+            let s0 = b as f32 * n as f32 / out_len as f32;
+            let s1 = (b + 1) as f32 * n as f32 / out_len as f32;
+            if s1 - s0 >= 1.0 {
+                // Fold: mean over the slots this bucket spans, edge slots weighted by their overlap.
+                let (mut acc, mut cov) = (0f32, 0f32);
+                let mut i = s0.floor() as usize;
+                while (i as f32) < s1 && i < n {
+                    let c = (s1.min(i as f32 + 1.0) - s0.max(i as f32)).max(0.0);
+                    acc += slots[i] * c;
+                    cov += c;
+                    i += 1;
+                }
+                if cov > 0.0 { acc / cov } else { 0.0 }
+            } else {
+                // Stretch: interpolate between the two nearest slot centres.
+                let c = ((s0 + s1) * 0.5 - 0.5).clamp(0.0, (n - 1) as f32);
+                let i0 = c.floor() as usize;
+                let i1 = (i0 + 1).min(n - 1);
+                let t = c - i0 as f32;
+                slots[i0] * (1.0 - t) + slots[i1] * t
+            }
+        })
+        .collect()
+}
+
+/// Linear RMS (0..32768) → eighth-stops below full scale, the envelope byte.
+fn lin_to_stops_u8(rms: f32) -> u8 {
+    if rms < 1.0 {
+        return 255;
+    }
+    ((32768.0 / rms).log2() * 8.0).round().clamp(0.0, 255.0) as u8
+}
+
+/// The envelope straight from a container's header — no audio decoded, no decoder built: (nchan, env_len, bytes). The wave card's loader.
+pub fn envelope_of_blob(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
+    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC_V4 {
+        return None;
+    }
+    let nchan = bytes[8] as usize;
+    let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
+    let env_end = 8 + 22 + nchan * env_len * ENV_COMPONENTS;
+    if nchan == 0 || bytes.len() < env_end {
+        return None;
+    }
+    Some((nchan, env_len, bytes[8 + 22..env_end].to_vec()))
+}
 /// Fine-envelope buckets per second of recording (250 ms — syllable rate; two hours = 28.8k bytes per channel).
-pub const ENV_PER_SEC: usize = 4;
-/// Archive slots (10 ms) per fine-envelope bucket.
-const SLOTS_PER_BUCKET: usize = 100 / ENV_PER_SEC;
+/// Header byte kept for the format's shape: 0 = the fixed ENV_BUCKETS grid (every recording, since 2026-09-10); the old per-second cadence is gone.
+pub const ENV_PER_SEC: usize = 0;
 /// Envelope value for a bucket's RMS: eighth-stops below full scale, saturating at the silence floor (255). One stop = ×2 amplitude, so the scale is perceptual by construction (Nick: stops, never dB).
 fn stops_u8(sumsq: f64, n: usize) -> u8 {
     if n == 0 {
@@ -36,20 +92,16 @@ fn stops_u8(sumsq: f64, n: usize) -> u8 {
     ((32768.0 / rms).log2() * 8.0).round().clamp(0.0, 255.0) as u8
 }
 /// Fold a fine envelope down to the row thumbnail: one gross of buckets per channel, each the LOUDEST (minimum stops) fine bucket in its span so peaks survive.
-pub fn thumbnail(fine: &[u8], nchan: usize, env_len: usize) -> Vec<u8> {
+pub fn thumbnail(lin: &[Vec<f32>], nchan: usize) -> Vec<u8> {
+    // `lin[ch * ENV_COMPONENTS + comp]` = per-slot LINEAR values; the thumbnail is the same fold to one gross of buckets, then stops.
     let nb = crate::types::WAVE_THUMB_BUCKETS;
     let k = ENV_COMPONENTS;
     let mut out = vec![255u8; nchan * nb * k];
-    if env_len == 0 {
-        return out;
-    }
     for ch in 0..nchan {
-        let src = &fine[ch * env_len * k..(ch + 1) * env_len * k];
-        for b in 0..nb {
-            let s0 = b * env_len / nb;
-            let s1 = ((b + 1) * env_len / nb).max(s0 + 1).min(env_len);
-            for c in 0..k {
-                out[(ch * nb + b) * k + c] = (s0..s1).map(|i| src[i * k + c]).min().unwrap_or(255);
+        for c in 0..k {
+            let folded = resample_linear(&lin[ch * k + c], nb);
+            for b in 0..nb {
+                out[(ch * nb + b) * k + c] = lin_to_stops_u8(folded[b]);
             }
         }
     }
@@ -184,14 +236,13 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
     let slots = grid[0].len();
     let slots_out = slots.div_ceil(2);
     let base = records.iter().map(|(_, osc, _)| *osc).min().unwrap_or(0);
-    // Envelope accumulators: per channel, per fine bucket, per component — sum of squares + sample count, folded to stops once the packets are written. The band states carry across slots so the filters see a continuous signal.
-    let env_len = slots_out.div_ceil(SLOTS_PER_BUCKET);
+    // Envelope accumulators: per channel, per 10ms SLOT, per component — sum of squares + sample count; folded to the fixed ENV_BUCKETS grid (and the row thumbnail) once the packets are written. The band states carry across slots so the filters see a continuous signal.
     let k = ENV_COMPONENTS;
-    let mut sumsq = vec![0f64; nchan * env_len * k];
-    let mut counts = vec![0usize; nchan * env_len];
+    let mut sumsq = vec![0f64; nchan * slots_out * k];
+    let mut counts = vec![0usize; nchan * slots_out];
     let mut bands: Vec<BandState> = (0..nchan).map(|_| BandState::new()).collect();
     let mut accumulate = |ch: usize, slot_out: usize, pcm: &[i16]| {
-        let b = ch * env_len + slot_out / SLOTS_PER_BUCKET;
+        let b = ch * slots_out + slot_out;
         let base = b * k;
         for &s in pcm {
             let x = s as i32;
@@ -276,8 +327,29 @@ pub(crate) fn build_container(records: &[(u8, i64, Vec<u8>)]) -> Option<Transcod
     if container.is_empty() {
         return None;
     }
-    let fine: Vec<u8> = (0..nchan * env_len * k).map(|i| stops_u8(sumsq[i], counts[i / k])).collect();
-    let thumb = thumbnail(&fine, nchan, env_len);
+    // Per-slot LINEAR RMS per channel × component, then the fixed-grid fold (65536 per channel) and the row thumbnail from the same linear values.
+    let lin: Vec<Vec<f32>> = (0..nchan * k)
+        .map(|ci| {
+            let (ch, c) = (ci / k, ci % k);
+            (0..slots_out)
+                .map(|slot| {
+                    let b = ch * slots_out + slot;
+                    if counts[b] == 0 { 0.0 } else { (sumsq[b * k + c] / counts[b] as f64).sqrt() as f32 }
+                })
+                .collect()
+        })
+        .collect();
+    let env_len = ENV_BUCKETS;
+    let mut fine = vec![255u8; nchan * env_len * k];
+    for ch in 0..nchan {
+        for c in 0..k {
+            let folded = resample_linear(&lin[ch * k + c], env_len);
+            for b in 0..env_len {
+                fine[(ch * env_len + b) * k + c] = lin_to_stops_u8(folded[b]);
+            }
+        }
+    }
+    let thumb = thumbnail(&lin, nchan);
     let mut out = Vec::with_capacity(CONTAINER_MAGIC_V4.len() + 22 + fine.len() + container.len());
     out.extend_from_slice(CONTAINER_MAGIC_V4);
     out.push(nchan as u8);
@@ -517,7 +589,7 @@ mod tests {
         let mut ks = open_blob(&container).unwrap();
         assert_eq!(ks.nchan, 2);
         assert_eq!(ks.env_per_sec as usize, ENV_PER_SEC);
-        assert_eq!(ks.envelope.len() % (2 * ENV_COMPONENTS), 0);
+        assert_eq!(ks.envelope.len(), 2 * ENV_BUCKETS * ENV_COMPONENTS);
         assert!(ks.envelope.iter().any(|&b| b < 255), "fine envelope shows only silence");
         let mut frames = 0;
         let mut energy = 0i64;

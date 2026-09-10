@@ -1902,6 +1902,12 @@ pub struct PhotonApp {
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
     /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `call.audio` row mint. Lazily created on first keep (see `call_keep_sender`).
     call_keep_rx: Option<std::sync::mpsc::Receiver<call_ui::CallKeepResult>>,
+    /// Wave card envelopes read from held blobs (header only, off-thread), by recording hash — the 65536-bucket grid the card draws from whether or not the recording is playing. Session cache.
+    wave_env: std::collections::HashMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
+    /// Loads in flight (one per hash).
+    wave_env_pending: std::collections::HashSet<[u8; 32]>,
+    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<u8>>)>>,
+    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<u8>>)>>,
     call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
     /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
     update_release: ChannelCheck,
@@ -2398,6 +2404,10 @@ impl PhotonApp {
             update_rx: None,
             update_tx: None,
             call_keep_rx: None,
+            wave_env: std::collections::HashMap::new(),
+            wave_env_pending: std::collections::HashSet::new(),
+            wave_env_tx: None,
+            wave_env_rx: None,
             call_keep_tx: None,
             update_release: ChannelCheck::Idle,
             update_dev: ChannelCheck::Idle,
