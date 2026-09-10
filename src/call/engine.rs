@@ -36,8 +36,14 @@ const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
 /// Lost windows inside LOSS_WINDOW that push a plaid call back to 128 kbps: 20 of ~400 = a 5 % loss rate. Below that the crispies are the price of the hot buffer.
 const PLAID_LOSSES_TO_DROP: usize = 20;
-/// The jitter buffer's ceiling while on plaid: six 5 ms frames (30 ms). Late is lost, by design.
-const PLAID_JITTER_CAP: usize = 6;
+// LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
+const LOSS_RING: usize = 256;
+const LOSS_SETPOINT: f32 = 1.0 / 256.0;
+const LOSS_KP: f32 = 1.0; // frames per stop of error, immediately
+const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
+const JITTER_TARGET_CAP: usize = 24;
+/// Every bundle carries a 10-byte LINK TAIL: [our send stamp ms u32][echo of the peer's newest stamp u32][ms we held it u16] — an RTT measured on every packet, no separate probe.
+const LINK_TAIL: usize = 10;
 /// Max encoded bytes per 5ms frame at each rung: hard CBR emits exactly rate/1600 bytes, +2 headroom — sized so every rung's WINDOW is a multiple of 8, which makes the RaptorQ symbol exactly the window (its alignment rounds max_packet_size down to a multiple of 8; an unaligned window would split into two padded symbols and re-grow the wire).
 const TIER_MAX_ENC: [usize; 5] = [12, 22, 42, 82, 486];
 /// Completed-window streak that earns one rung up (~0.25s at 10ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
@@ -273,6 +279,17 @@ fn run(
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
     // Plaid forensics: raw frames each way, and the holes the fade covered.
     let (mut raw_out, mut raw_in, mut holes_faded) = (0u64, 0u64, 0u64);
+    // Loss-rate loop state: the 256-bit ring, its cursor, the integral, the last underrun count sampled, and the target we last set.
+    let mut loss_bits = [0u64; LOSS_RING / 64];
+    let mut loss_pos: u8 = 0;
+    let mut loss_integ: f32 = 0.0;
+    let mut last_underruns: usize = 0;
+    let mut jitter_target: usize = TIER_FRAMES[0];
+    // Link tail state: the peer's newest stamp + when it arrived (for the hold), and RTT statistics (min / EMA / max, sample count) over the call and over the last stats window.
+    let mut peer_stamp: Option<(u32, std::time::Instant)> = None;
+    let (mut rtt_min, mut rtt_max, mut rtt_ema, mut rtt_n) = (u32::MAX, 0u32, 0f32, 0u64);
+    let (mut win_rtt_min, mut win_rtt_max, mut win_rtt_n) = (u32::MAX, 0u32, 0u64);
+    let mut win_losses_at = 0u32;
     let mut last_played: Option<Vec<i16>> = None;
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
@@ -563,6 +580,17 @@ fn run(
                 if let Some((_, r)) = &rep {
                     payload.extend_from_slice(r);
                 }
+                // LINK TAIL: our stamp, the peer's newest stamp echoed, and how long we held it — the receiver subtracts the hold from its own round trip.
+                {
+                    let now_ms = start_instant.elapsed().as_millis() as u32;
+                    let (echo, hold) = match peer_stamp {
+                        Some((st, at)) => (st, at.elapsed().as_millis().min(u16::MAX as u128) as u16),
+                        None => (0, 0),
+                    };
+                    payload.extend_from_slice(&now_ms.to_le_bytes());
+                    payload.extend_from_slice(&echo.to_le_bytes());
+                    payload.extend_from_slice(&hold.to_le_bytes());
+                }
                 let seq = window_id;
                 tx_chain.advance_to(StepChain::step_for_seq(seq));
                 if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
@@ -621,11 +649,32 @@ fn run(
             }
             let src_len = tier_window_bytes(tier_src);
             let expected = 1 + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
-            if payload.len() != expected {
+            if payload.len() != expected && payload.len() != expected + LINK_TAIL {
                 rx_drop_shape += 1;
                 continue;
             }
-            let body = &payload[1..];
+            // Link tail (a pre-tail peer sends none — every shape still parses): remember their stamp for our echo, and turn their echo of ours into an RTT sample.
+            if payload.len() == expected + LINK_TAIL {
+                let t = &payload[expected..];
+                let stamp = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
+                let echo = u32::from_le_bytes([t[4], t[5], t[6], t[7]]);
+                let hold = u16::from_le_bytes([t[8], t[9]]) as u32;
+                peer_stamp = Some((stamp, std::time::Instant::now()));
+                if echo != 0 {
+                    let now_ms = start_instant.elapsed().as_millis() as u32;
+                    let rtt = now_ms.wrapping_sub(echo).wrapping_sub(hold);
+                    if rtt < 10_000 {
+                        rtt_min = rtt_min.min(rtt);
+                        rtt_max = rtt_max.max(rtt);
+                        rtt_ema = if rtt_n == 0 { rtt as f32 } else { rtt_ema + (rtt as f32 - rtt_ema) * 0.05 };
+                        rtt_n += 1;
+                        win_rtt_min = win_rtt_min.min(rtt);
+                        win_rtt_max = win_rtt_max.max(rtt);
+                        win_rtt_n += 1;
+                    }
+                }
+            }
+            let body = &payload[1..expected];
             // Feed the source symbol to window seq, and the piggybacked repair to window seq−2 (two back for burst diversity — see repair_queue) — same per-symbol pipeline for both (dedup → fountain → slot walk → Opus → climb evidence).
             let mut inputs: [(u32, usize, u32, &[u8]); 2] =
                 [(header.seq, tier_src, 0, &body[..src_len]), (0, 0, 1, &[])];
@@ -696,10 +745,8 @@ fn run(
                             Ok(_) | Err(_) => {}
                         }
                     }
+                    // (The jitter target is the loss loop's, set in the play loop below; the arrival granularity is its floor.)
                     // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the call-start latency ratchet, field 2026-09-08).
-                    crate::platform::audio::set_jitter_min(TIER_FRAMES[dtier]);
-                    // Plaid keeps the buffer hot: a hard 30 ms ceiling while raw windows arrive, the normal cap otherwise.
-                    crate::platform::audio::set_jitter_cap(if dtier == RAW_TIER { PLAID_JITTER_CAP } else { usize::MAX });
                     rx_done.insert(wid, frames);
                     // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
                     clean_rx_windows += 1;
@@ -741,10 +788,18 @@ fn run(
                         last_played = Some(f.clone());
                         crate::platform::audio::queue_playback(f);
                     }
+                    // Loss loop: a played window slot (an underrun since the last slot counts as lost — silence reached the ear either way).
+                    let underruns = crate::platform::audio::jitter_stats().2;
+                    let lost = underruns > last_underruns;
+                    last_underruns = underruns;
+                    jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, lost, TIER_FRAMES[tier]);
                     np = np.wrapping_add(1);
                 } else if rx_done.range(np..).nth(1).is_some() {
                     // Two completed windows beyond the hole — declare it lost, move on.
                     windows_lost += 1;
+                    let underruns = crate::platform::audio::jitter_stats().2;
+                    last_underruns = underruns;
+                    jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, true, TIER_FRAMES[tier]);
                     // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
                     if !probing {
                         if let Some(prev) = last_played.take() {
@@ -823,9 +878,29 @@ fn run(
                 probe_cap = Vec::new();
             }
         }
-        // Periodic echo stats (10s cadence on the engine loop — a measurement cadence, not UI timing).
+        // Periodic link + echo stats (10s cadence on the engine loop — a measurement cadence, not UI timing).
         if last_echo_stats.elapsed() >= std::time::Duration::from_secs(10) {
             last_echo_stats = std::time::Instant::now();
+            {
+                let losses = loss_bits.iter().map(|w| w.count_ones()).sum::<u32>();
+                let js = crate::platform::audio::jitter_stats();
+                crate::logf!(
+                    "CALL: link — rtt {} ms (min {} max {}, {} samples this window), loss {}/256 ring ({} lost this window), jitter target {} depth {} underruns {}",
+                    if win_rtt_n > 0 { format!("{:.0}", rtt_ema) } else { "?".to_string() },
+                    if win_rtt_n > 0 { win_rtt_min.to_string() } else { "?".to_string() },
+                    win_rtt_max,
+                    win_rtt_n,
+                    losses,
+                    windows_lost.saturating_sub(win_losses_at as u64),
+                    jitter_target,
+                    js.1,
+                    js.2
+                );
+                win_rtt_min = u32::MAX;
+                win_rtt_max = 0;
+                win_rtt_n = 0;
+                win_losses_at = windows_lost as u32;
+            }
             if let Some(c) = nlms.as_ref() {
                 crate::logf!(
                     "CALL: echo — filter recent {}dB lifetime {}dB, adapted {} of {} frames; gated {} ducked {} far-active {}",
@@ -933,6 +1008,17 @@ fn run(
         pkts_in,
         windows_lost
     );
+    if rtt_n > 0 {
+        crate::logf!(
+            "CALL: link — rtt {} ms over the call (min {} max {} ema {:.0}, {} samples); final jitter target {}",
+            format!("{:.0}", rtt_ema),
+            rtt_min,
+            rtt_max,
+            rtt_ema,
+            rtt_n,
+            jitter_target
+        );
+    }
     if raw_out > 0 || raw_in > 0 || holes_faded > 0 {
         crate::logf!(
             "CALL: plaid — {} raw frames out, {} in; {} hole(s) faded",
@@ -1034,6 +1120,26 @@ fn run(
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
 }
 
+/// One step of the loss-rate loop: record this window slot (lost or played) in the 256-bit ring, compute the loss rate's error in stops against LOSS_SETPOINT, P + I it onto the jitter target above the arrival floor, and set the buffer's target. Returns the target set.
+fn loss_loop_step(bits: &mut [u64; LOSS_RING / 64], pos: &mut u8, integ: &mut f32, lost: bool, floor_frames: usize) -> usize {
+    let i = *pos as usize;
+    let (w, b) = (i / 64, i % 64);
+    if lost {
+        bits[w] |= 1u64 << b;
+    } else {
+        bits[w] &= !(1u64 << b);
+    }
+    *pos = pos.wrapping_add(1);
+    let losses = bits.iter().map(|x| x.count_ones()).sum::<u32>() as f32;
+    let rate = (losses / LOSS_RING as f32).max(1.0 / 4096.0);
+    let err_stops = (rate / LOSS_SETPOINT).log2();
+    *integ = (*integ + LOSS_KI * err_stops).clamp(0.0, JITTER_TARGET_CAP as f32);
+    let floor = floor_frames.max(1) as f32;
+    let target = (floor + LOSS_KP * err_stops + *integ).round().clamp(floor, JITTER_TARGET_CAP as f32) as usize;
+    crate::platform::audio::set_jitter_target(target);
+    target
+}
+
 /// Package a learner estimate as persistable results (used at teardown AND on a mid-call route swap). Echo requires SOLID (the persisted tier); voice requires its own ≥5s-voiced evidence (talk is Some). g is per-window vol-normalized, so the stored reference is 0dB where a volume mirror exists, absent on desktop.
 fn learned_results(
     e: &crate::call::learn::Estimate,
@@ -1081,6 +1187,32 @@ fn teardown() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn loss_loop_holds_the_floor_when_clean_and_lifts_on_loss() {
+        let mut bits = [0u64; LOSS_RING / 64];
+        let (mut pos, mut integ) = (0u8, 0f32);
+        let mut t = 0;
+        for _ in 0..600 {
+            t = loss_loop_step(&mut bits, &mut pos, &mut integ, false, 2);
+        }
+        assert_eq!(t, 2, "a clean link rests on the arrival floor");
+        // Eight lost windows in a row: two stops over the setpoint → the target lifts at once and keeps climbing while the loss persists in the ring.
+        for _ in 0..8 {
+            t = loss_loop_step(&mut bits, &mut pos, &mut integ, true, 2);
+        }
+        assert!(t >= 4, "loss lifts the target, got {t}");
+        let lifted = t;
+        // 300 clean windows: the burst leaves the ring after 256 and the target is already falling; the integral bleeds out over the next few hundred and the floor returns.
+        for _ in 0..300 {
+            t = loss_loop_step(&mut bits, &mut pos, &mut integ, false, 2);
+        }
+        assert!(t < lifted, "clean windows shrink it back, got {t} (lifted {lifted})");
+        for _ in 0..600 {
+            t = loss_loop_step(&mut bits, &mut pos, &mut integ, false, 2);
+        }
+        assert_eq!(t, 2, "a clean link returns to the floor");
+    }
 
     #[test]
     fn plaid_window_is_one_bare_frame() {

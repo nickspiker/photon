@@ -37,48 +37,19 @@ const RENDER_ENV_MAX: usize = 2048; // ~10s of 5ms frames
 /// Monotonic count of entries ever pushed — the cursor base for `render_env_since`.
 static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
-// ADAPTIVE JITTER BUFFER (docs/calls.md): the far end arrives in bursts (a FEC window at a time) and the network jitters, so a fixed buffer either adds latency it doesn't need (clean LAN) or underruns (lossy relay).
-// Instead the render side plays silence until the queue reaches `JITTER_TARGET` frames, then drains steadily; a dry queue (underrun) GROWS the target and re-primes, while a long clean stretch SHRINKS it back toward the floor.
-// So a clean call rests at ~20ms of software buffer and only a jittery path pays more — exactly where the latency should go.
-// This sits BEFORE the device buffer, which is kept shallow (low-latency AudioTrack), so this is the ONE place jitter is absorbed.
-const JITTER_FLOOR: usize = 1; // 10ms — playback starts the instant the first frame exists; one frame of wobble tolerance. Zero is mechanically possible but useless: the queue is frame-quantized, so floor 0 saves at most one frame while making EVERY timing wobble an audible gap + re-prime stumble — and the adaptive growth would lift it right back. Below one frame the lever is smaller Opus frames (5ms CELT), not this constant.
-const JITTER_CAP: usize = 24; // 120ms — the most we'll ever buffer, even on a bad relay
-const JITTER_GROW: usize = 2; // frames added on each underrun
-const JITTER_DECAY_FRAMES: usize = 300; // ~1.5s of clean playback per shrink step. 500 was the latency ratchet (field 2026-09-08, both ends of a clean LAN call at target 11-12 = 110-120ms standing): growth is +2 per underrun but decay was 1 per 5s, so a handful of slow-start underruns taxed the whole call — a 10-frame overshoot took 50s to shed against a ~40s call. At 1.5s/step a clean path sheds 100ms in ~15s; a genuinely jittery path just re-grows (honest).
+// LOSS-RATE JITTER BUFFER (Nick 2026-09-10, replacing the event ratchet): the render side plays silence until the queue reaches `JITTER_TARGET` frames (priming), then drains steadily; a dry queue (underrun) renders silence, counts, and re-primes. The TARGET itself is set by the call engine's loss-rate loop (engine.rs: late = lost, a PID on the loss rate over the last 256 windows toward 1/256) — nothing here grows or decays it any more. The only actuator left here is the one-sample splice that glides the standing depth onto the target (the fine clock control), plus a stall guard that sheds a queue standing far past the target after an arrival stall.
+const JITTER_FLOOR: usize = 1; // one frame — the queue is frame-quantized, so zero is mechanically meaningless
+const JITTER_CAP: usize = 24; // 120ms — the most the engine's loop may ask for, even on a bad relay
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
-/// The live ceiling on the target — JITTER_CAP normally, pulled down by the engine while the plaid (raw PCM) rung runs so late frames are dropped instead of buffered (calls/engine.rs).
-static JITTER_CAP_LIVE: AtomicUsize = AtomicUsize::new(JITTER_CAP);
 
-/// Engine hook: cap the adaptive target at `frames` (clamped to the floor..JITTER_CAP range); `usize::MAX` restores the normal cap. A target already above the new cap is pulled down at once.
-pub fn set_jitter_cap(frames: usize) {
-    let cap = frames.clamp(JITTER_FLOOR, JITTER_CAP);
-    JITTER_CAP_LIVE.store(cap, Ordering::Relaxed);
-    if JITTER_TARGET.load(Ordering::Relaxed) > cap {
-        JITTER_TARGET.store(cap, Ordering::Relaxed);
-    }
-}
-/// Tier-aware floor: the sender batches TIER_FRAMES per datagram, so audio ARRIVES in bursts of this size and a target below it structurally underruns between windows (every call start at the 4-frame floor rung ratcheted the target thru false "jitter"). The engine stores the current rx window size here; decay stops at max(JITTER_FLOOR, this).
-static JITTER_MIN: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
-
-/// Engine hook: the just-decoded window's frame count — arrival granularity, the jitter target's honest floor. Also LIFTS the target to it immediately: waiting for the structural underruns to grow it is how every floor-rung call start ratcheted +2s that never fully decayed.
-pub fn set_jitter_min(frames: usize) {
-    let min = frames.clamp(JITTER_FLOOR, JITTER_CAP);
-    JITTER_MIN.store(min, Ordering::Relaxed);
-    if JITTER_TARGET.load(Ordering::Relaxed) < min {
-        JITTER_TARGET.store(min, Ordering::Relaxed);
-    }
+/// Engine hook: the loss-rate loop's target depth, clamped to floor..cap.
+pub fn set_jitter_target(frames: usize) {
+    JITTER_TARGET.store(frames.clamp(JITTER_FLOOR, JITTER_CAP), Ordering::Relaxed);
 }
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
-static JITTER_CLEAN_STREAK: AtomicUsize = AtomicUsize::new(0);
-// STANDING-DEPTH TRIM (2026-09-01 Emma/Nick field call): depth acquired during a transient (slow-start's 4-frame floor bursts, a recv-path stall) is PERMANENT without this — the DAC drains at exactly realtime, so excess queue = mouth-to-ear latency for the rest of the call. Target decay alone never sheds it (it only matters at a re-prime).
-// TWO trims, because the field found TWO regimes (Brittany/Nick call: depth 830ms, peak 990ms = the 100-frame cap, WITH 5 underruns — the queue swung dry→full, the fingerprint of sample-CLOCK DRIFT the gentle trim couldn't chase):
-//   1. Gentle: depth a hair over target for a clean second → drop one frame. Sheds slow-start overshoot inaudibly.
-//   2. Hard CEILING: the queue is NEVER allowed to stand more than target+ceiling. Above it, drop down NOW (bounded per render so a big spike sheds over a few frames, not one audible skip). Under pure drift the excess is ~1 frame per render, so this is smooth and bounds mouth-to-ear latency to (target+ceiling)×10ms instead of letting drift fill to the 1s cap.
-const TRIM_OVER_SLACK: usize = 1; // frames above target that count as "standing over" (gentle path)
-const TRIM_OBSERVE_FRAMES: usize = 200; // 1s of consecutive over-depth before each single-frame gentle drop
-const TRIM_CEILING_SLACK: usize = 8; // hard ceiling above target: 8 frames = 40ms = one floor-rung FEC-window burst of jitter headroom, never standing latency beyond it
-const TRIM_MAX_DROP_PER_RENDER: usize = 4; // cap the hard drop so a pathological backlog sheds over a few frames rather than one large skip
-static TRIM_OVER_STREAK: AtomicUsize = AtomicUsize::new(0);
+// STALL GUARD: after an arrival stall the whole backlog lands at once and the queue stands far past the target; the one-sample splice would take most of a minute to shed 200ms, so a queue past target + STALL_SLACK sheds frames now, bounded per render. This is not depth control (the loss loop owns the target) — it is the one case where standing latency is pure debris.
+const STALL_SLACK: usize = 16; // 80ms past target
+const STALL_MAX_DROP_PER_RENDER: usize = 4;
 // SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 240 = ±0.42% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
 const SPLICE_UNDER_MARGIN: usize = 2; // duplicate only when depth sits ≥2 under target (priming/underrun own the empty case; hysteresis keeps delete/duplicate from chattering)
 static SPLICE_DROPPED: AtomicUsize = AtomicUsize::new(0);
@@ -269,34 +240,15 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
         } else {
             match q.pop_front() {
                 Some(mut f) => {
-                    // Clean drain: after a long steady stretch, shrink the target one step toward the floor — but never below the arrival granularity (the sender's window size), which a lower target can only underrun against.
-                    let streak = JITTER_CLEAN_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
                     let target = JITTER_TARGET.load(Ordering::Relaxed);
-                    let floor = JITTER_FLOOR.max(JITTER_MIN.load(Ordering::Relaxed));
-                    if streak >= JITTER_DECAY_FRAMES && target > floor {
-                        JITTER_TARGET.store(target - 1, Ordering::Relaxed);
-                        JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
-                    }
-                    // Hard ceiling FIRST (clock-drift clamp): the queue may never stand more than target+ceiling. Drop the excess now, bounded per render so a spike sheds smoothly. This is what bounds latency under drift; the gentle trim below only shaves slow-start overshoot.
-                    let ceiling = target + TRIM_CEILING_SLACK;
-                    if q.len() > ceiling {
+                    // Stall guard (see the consts): shed a backlog standing far past the target, a few frames per render.
+                    if q.len() > target + STALL_SLACK {
                         let mut dropped = 0;
-                        while q.len() > ceiling && dropped < TRIM_MAX_DROP_PER_RENDER {
+                        while q.len() > target + STALL_SLACK && dropped < STALL_MAX_DROP_PER_RENDER {
                             q.pop_front();
                             dropped += 1;
                         }
                         JITTER_TRIMS.fetch_add(dropped, Ordering::Relaxed);
-                        TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
-                    } else if q.len() > target + TRIM_OVER_SLACK {
-                        // Gentle trim: a queue persistently a hair over target for a full second drops one frame — sheds slow-start overshoot inaudibly, without chattering against normal jitter.
-                        let over = TRIM_OVER_STREAK.fetch_add(1, Ordering::Relaxed) + 1;
-                        if over >= TRIM_OBSERVE_FRAMES {
-                            q.pop_front();
-                            JITTER_TRIMS.fetch_add(1, Ordering::Relaxed);
-                            TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
-                        }
-                    } else {
-                        TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
                     }
                     // Sample-splice clock control (the fine actuator — see the consts): one sample per frame, at the flattest point, glides the depth toward target so the frame trims above stay dormant.
                     if f.len() > 2 {
@@ -319,10 +271,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
                     f
                 }
                 None => {
-                    // Underrun: grow the target (capped), reset the clean streak, and re-prime.
-                    let target = JITTER_TARGET.load(Ordering::Relaxed);
-                    JITTER_TARGET.store((target + JITTER_GROW).min(JITTER_CAP_LIVE.load(Ordering::Relaxed)), Ordering::Relaxed);
-                    JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
+                    // Underrun: silence, count it (the engine's loss loop reads the count and treats it as loss), re-prime to the target.
                     JITTER_PRIMING.store(true, Ordering::Relaxed);
                     JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
                     silence()
@@ -398,12 +347,8 @@ fn clear_queues() {
     RENDER_ENV.lock().unwrap().clear();
     // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth or window size.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
-    JITTER_CAP_LIVE.store(JITTER_CAP, Ordering::Relaxed);
-    JITTER_MIN.store(JITTER_FLOOR, Ordering::Relaxed);
     LOCAL_SOURCE.store(false, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
-    JITTER_CLEAN_STREAK.store(0, Ordering::Relaxed);
-    TRIM_OVER_STREAK.store(0, Ordering::Relaxed);
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
     JITTER_DEPTH_PEAK.store(0, Ordering::Relaxed);
     JITTER_TRIMS.store(0, Ordering::Relaxed);
