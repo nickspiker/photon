@@ -1204,9 +1204,15 @@ impl PhotonApp {
     pub(super) fn spawn_keep_transcode(&mut self, ticket: crate::call::spool::SpoolTicket, peer: [u8; 32], offer_osc: i64, seed: [u8; 32], call_id8: [u8; 8], engine_thread: Option<std::thread::JoinHandle<()>>) {
         let tx = self.call_keep_sender();
         let wake = self.event_proxy.clone();
+        // KEEP HOLD (2026-09-11, Emma's 13-minute wave kept 53 minutes after hangup): the phone dozed the moment the wave ended and the transcode crawled in maintenance windows. Kotlin holds a partial wake lock while a keep runs (+1 here, −1 in the drain), and the thread asks for a better-than-background priority.
+        self.pending_keep_hold = 1;
         let spawned = std::thread::Builder::new()
             .name("call-keep".into())
             .spawn(move || {
+                #[cfg(target_os = "android")]
+                {
+                    let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -4) };
+                }
                 // The spool is still being written while the engine drains fills from the peer — wait for it to go quiet (bounded by engine.rs DRAIN_MAX).
                 if let Some(t) = engine_thread {
                     let _ = t.join();
@@ -1345,6 +1351,7 @@ impl PhotonApp {
             return false;
         }
         for r in pending {
+            self.pending_keep_hold = -1; // the keep finished, one way or the other — Kotlin drops the wake lock
             match r.result {
                 Some(kept) => {
                     // Keep completed (blob stored) → the durable spool register has done its job; a crash from here on has nothing to recover.

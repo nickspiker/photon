@@ -1150,7 +1150,7 @@ impl FluorApp for PhotonApp {
                         match crate::snapshot_log_bytes() {
                             Some(b) => {
                                 self.ready_toast =
-                                    Some(tr(Msg::LogSizeKib((b.len() + 1023) / 1024)).into_owned())
+                                    Some(tr(Msg::LogSize(&crate::dms_size(b.len() as u64))).into_owned())
                             }
                             None => self.ready_toast = Some(tr(Msg::LogEmpty).into_owned()),
                         }

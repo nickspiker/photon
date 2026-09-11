@@ -207,6 +207,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollAttachPicker(contextPtr: Long): Int  // Per-frame poll for the paperclip any-file picker — 1=launch, 0=no change
     private external fun nativeSendAttachment(contextPtr: Long, name: String, data: ByteArray)  // Picked file → the active conversation (name + raw bytes; Rust caps size + forks images to the resample overlay)
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
+    private external fun nativePollKeepHold(contextPtr: Long): Int  // 1=a wave's keep started (hold a wake lock), -1=finished (release), 0=no change
+    // KEEP HOLD (2026-09-11): a wave's keep transcode runs in this process after hangup; without a wake lock the phone dozes and a 13-minute wave took 53 minutes to keep. Timed as a safety net only — Rust releases it at the keep's end.
+    private val keepWakeLock: android.os.PowerManager.WakeLock by lazy {
+        (getSystemService(POWER_SERVICE) as android.os.PowerManager).newWakeLock(android.os.PowerManager.PARTIAL_WAKE_LOCK, "photon:keep")
+    }
     private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
     private external fun nativePollClipboardCopy(contextPtr: Long): String?  // Per-frame poll: text to place on the OS clipboard (one-shot) — copy-words / copy-name affordances
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
@@ -689,6 +694,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 // Paperclip (conversation) → any-file picker.
                 if (nativePollAttachPicker(nativePtr) == 1) {
                     openAttachPicker()
+                }
+                when (nativePollKeepHold(nativePtr)) {
+                    1 -> try { if (!keepWakeLock.isHeld) keepWakeLock.acquire(30 * 60 * 1000L) } catch (e: Exception) { PhotonLog.w("Keep", "wake lock acquire failed", e) }
+                    -1 -> try { if (keepWakeLock.isHeld) keepWakeLock.release() } catch (e: Exception) { PhotonLog.w("Keep", "wake lock release failed", e) }
                 }
                 when (nativePollSessionBroadcast(nativePtr)) {
                     1 -> connectionService?.sendSessionBroadcast()

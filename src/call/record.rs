@@ -353,6 +353,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
                 let mut e = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok()?;
                 let _ = e.set_vbr(true);
                 let _ = e.set_bitrate(opus::Bitrate::Bits(ARCHIVE_KBPS));
+                // Complexity 6 of 10: about half the CPU of the default at 128 kbps with no audible cost — a 13-minute wave is 160k encodes on a phone that may already be dozing (Emma's keep took 53 minutes at the default, 2026-09-11).
+                let _ = e.set_complexity(6);
                 Some(e)
             })
             .collect::<Option<_>>()?;

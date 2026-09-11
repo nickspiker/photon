@@ -1433,6 +1433,8 @@ pub struct PhotonApp {
     tick_stat_dirty: u32,
     /// Per-section tick cost since the last report (label, summed ms) — the idle screen's 3 ms tick on a phone (2026-09-10) had to be named section by section.
     tick_prof: Vec<(&'static str, f32)>,
+    /// Android keep hold: +1 = a keep transcode started (hold a partial wake lock), −1 = it finished (release), 0 = nothing; polled by Kotlin each frame like the session broadcast.
+    pub pending_keep_hold: i8,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
     last_keygen_pickup: Option<std::time::Instant>,
     /// Our identity party id, memoized per seed: it is an ed25519 public-key derivation, and the tick asked for it once per contact per vsync (thirty-odd scalar multiplications a frame on an idle phone, 2026-09-10 profile).
@@ -2306,6 +2308,7 @@ impl PhotonApp {
             tick_stat_dirty: 0,
             tick_prof: Vec::new(),
             last_keygen_pickup: None,
+            pending_keep_hold: 0,
             identity_pid_cache: std::cell::Cell::new(None),
             last_peer_harvest: None,
             storage: None,
@@ -2617,6 +2620,12 @@ impl PhotonApp {
         if self.redraw_why.len() < 32 && !self.redraw_why.contains(&line) {
             self.redraw_why.push(line);
         }
+    }
+
+    pub fn take_keep_hold(&mut self) -> i8 {
+        let s = self.pending_keep_hold;
+        self.pending_keep_hold = 0;
+        s
     }
 
     pub fn take_broadcast_signal(&mut self) -> i8 {

@@ -461,7 +461,8 @@ pub enum Msg<'a> {
     // ---- diagnostics ----
     HardLogs,
     LogCleared,
-    LogSizeKib(usize),
+    /// Diagnostics: the log file's size, already formatted in the current base (crate::dms_size).
+    LogSize(&'a str),
     LogEmpty,
     LogSent,
     SendFailed(&'a str),

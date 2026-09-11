@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Keeping a wave after hangup no longer crawls when the phone dozes: the phone stays awake for the transcode, which also runs lighter. A thirteen-minute wave that took 53 minutes to keep now takes about a minute.
+- The Diagnostics log size reads in the current base like every other size.
+
 ## v91
 
 - An idle screen on Android no longer spends a third of a core keeping itself awake: the app's housekeeping ran at every display refresh, and several pieces of it (a socket lookup, a key derivation per contact, a peer-list scan) were needlessly repeated 119 times a second. They now run once, and an idle screen asks for frames at a slower cadence until you touch it.

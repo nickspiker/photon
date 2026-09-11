@@ -420,7 +420,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Registros duros — este dispositivo, {}h (escribe cada línea a disco)", fmt_num(24)).into(),
         Msg::LogCleared => "Registro borrado".into(),
-        Msg::LogSizeKib(n) => format!("Registro: {} KiB", fmt_num(n as u32)).into(),
+        Msg::LogSize(s) => format!("Registro: {s}").into(),
         Msg::LogEmpty => "El registro está vacío".into(),
         Msg::LogSent => "Registro enviado \u{221a}".into(),
         Msg::SendFailed(e) => format!("Falló el envío: {e}").into(),

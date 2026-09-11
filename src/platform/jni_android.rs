@@ -866,6 +866,20 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroa
     ctx.shell.app().take_broadcast_signal() as jint
 }
 
+/// Per-frame poll for the keep hold: `1` = a wave's keep transcode started (hold a partial wake lock), `-1` = it finished (release), `0` = no change.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollKeepHold(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    context_ptr: jlong,
+) -> jint {
+    let Some(ctx) = get_context(context_ptr) else {
+        return 0;
+    };
+    ctx.shell.app().take_keep_hold() as jint
+}
+
 /// Per-frame poll for the avatar image-picker request. Returns `1` when the user has tapped the avatar circle since the last poll, `0` otherwise. Kotlin's `doFrame` hook calls this alongside `nativePollKeyboard` and launches `ACTION_GET_CONTENT` on `1`. One-shot semantics: `PhotonApp::take_picker_request` clears the flag so consecutive polls without further taps yield `0`.
 #[cfg(target_os = "android")]
 #[no_mangle]

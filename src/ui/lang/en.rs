@@ -399,7 +399,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- diagnostics ----
         Msg::HardLogs => format!("Hard logs — this device, {}h (write every line to disk)", fmt_num(24)).into(),
         Msg::LogCleared => "Log cleared".into(),
-        Msg::LogSizeKib(n) => format!("Log: {} KiB", fmt_num(n as u32)).into(),
+        Msg::LogSize(s) => format!("Log: {s}").into(),
         Msg::LogEmpty => "Log is empty".into(),
         Msg::LogSent => "Log sent \u{221a}".into(),
         Msg::SendFailed(e) => format!("Send failed: {e}").into(),
