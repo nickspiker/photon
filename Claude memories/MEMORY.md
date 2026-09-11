@@ -47,7 +47,7 @@
 - [project_chain_replication.md](project_chain_replication.md) — chain replication SHIPPED @ 2dfe7ed: chains sync fleet-wide (mutated_osc v7, adopt-iff-newer), adopting device flips sendable
 - [project_avatar_bearer_pin_gap.md](project_avatar_bearer_pin_gap.md) — CLOSED: pin-rotate on membership shrink shipped in removal-rotates step 1 (2026-07-23)
 - [project_clutch_token_asymmetry.md](project_clutch_token_asymmetry.md) — "unknown conversation_token" = §4.2 competing ceremony instances
-- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — no-ring/GLARE/instant-drop FIXED; 2026-09-10 offer-before-ActiveCall FIXED aa74da5; era-skew non-connect FIXED 6402ef0 (express_key)
+- [project_call_no_ring_incident.md](project_call_no_ring_incident.md) — no-ring class; 2026-09-11 relay-carried express + lane-aware ring lease 8f2fea8 (no direct path = no beats); earlier fixes aa74da5/6402ef0
 - [project_clutch_offer_deadlock.md](project_clutch_offer_deadlock.md) — CLUTCH offer-loss deadlock FIXED @7d5e356 (retries=no-progress, path-up/stall re-fire, pong-drop torches)
 - [project_clutch_ui_thread_hitch.md](project_clutch_ui_thread_hitch.md) — FIXED @c48b0e1: KEM decap = 4th job stage (HQC-prefix CAS drain), duplicate-KEM short-circuit
 - [project_nat_traversal_relay_gap.md](project_nat_traversal_relay_gap.md) — punch tiers + LIVE relay pipe shipped 2026-07-22: per-recipient Cloudflare DO (PipeHub)
