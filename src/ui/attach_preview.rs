@@ -32,29 +32,27 @@ pub fn full_image_linear(path: &std::path::Path, kind: AttachKind) -> Option<(us
                 return None;
             }
         };
-        let orient = opsin::convert::orientation_code(&dec.img);
-        Some(fold_oriented_linear(&lin, w, h, orient, LINEAR_VIEW_MAX_EDGE))
+        // opsin's to_linear_in already applied the EXIF orientation (convert.rs apply_orientation is its last step) — re-orienting here transposed rotated photos a second time with the wrong stride.
+        Some(fold_i32_to_edge(&lin, w, h, LINEAR_VIEW_MAX_EDGE))
     }
 }
 
-/// Apply an EXIF orientation while folding linear i32 RGB to `max_edge` on the long side: a box mean over the source block of each output pixel, gathered thru opsin's inverse orientation map. Integer all the way.
-fn fold_oriented_linear(lin: &[i32], w: usize, h: usize, orient: u16, max_edge: usize) -> (usize, usize, Vec<i32>) {
+/// Fold linear i32 RGB to `max_edge` on the long side: a box mean over the source block of each output pixel. Integer all the way; the buffer arrives already EXIF-oriented from opsin.
+fn fold_i32_to_edge(lin: &[i32], w: usize, h: usize, max_edge: usize) -> (usize, usize, Vec<i32>) {
     use rayon::prelude::*;
-    let (ow, oh) = if (5..=8).contains(&orient) { (h, w) } else { (w, h) };
-    let (tw, th) = fit_dims(ow, oh, max_edge);
+    let (tw, th) = fit_dims(w, h, max_edge);
     let mut out = vec![0i32; tw * th * 3];
     out.par_chunks_mut(tw * 3).enumerate().for_each(|(ty, row)| {
-        let y0 = ty * oh / th;
-        let y1 = ((ty + 1) * oh / th).max(y0 + 1).min(oh);
+        let y0 = ty * h / th;
+        let y1 = ((ty + 1) * h / th).max(y0 + 1).min(h);
         for tx in 0..tw {
-            let x0 = tx * ow / tw;
-            let x1 = ((tx + 1) * ow / tw).max(x0 + 1).min(ow);
+            let x0 = tx * w / tw;
+            let x1 = ((tx + 1) * w / tw).max(x0 + 1).min(w);
             let mut acc = [0i64; 3];
             let mut n = 0i64;
-            for dy in y0..y1 {
-                for dx in x0..x1 {
-                    let (sx, sy) = opsin::convert::orientation_src(orient, w, h, dx, dy);
-                    let i = (sy.min(h - 1) * w + sx.min(w - 1)) * 3;
+            for sy in y0..y1 {
+                for sx in x0..x1 {
+                    let i = (sy * w + sx) * 3;
                     acc[0] += lin[i] as i64;
                     acc[1] += lin[i + 1] as i64;
                     acc[2] += lin[i + 2] as i64;

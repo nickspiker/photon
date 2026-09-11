@@ -33,6 +33,10 @@ pub(super) struct Reader {
 /// Largest text file the reader will open (a bigger one saves instead).
 const READER_MAX_BYTES: usize = 4 * 1024 * 1024;
 
+/// Viewer zoom bounds, relative to fit: generous rather than defensive — blit cost is capped by the screen area whatever the zoom, the bounds just keep the picture findable.
+pub(super) const ZOOM_MIN: f32 = 1.0 / 16.0;
+pub(super) const ZOOM_MAX: f32 = 512.0;
+
 /// The decoded-picture cache type (hash → (w, h, packed pixels); None = decode failed).
 pub(super) type ImgCache = std::collections::HashMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>;
 

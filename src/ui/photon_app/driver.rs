@@ -541,13 +541,18 @@ impl FluorApp for PhotonApp {
     }
 
     // Zoom about the ANCHOR (the pointer, or the window centre when no pointer is in the window), never about the pane top: the content under the pointer holds still while everything scales around it (Nick 2026-09-09 — "it locks from top"). Every pane inset is span-relative, so it scales by the same factor as the content and cancels out of the math; the anchor is measured from whichever WINDOW edge the pane hangs from. Top-hung panes (contacts block, settings rail + content): the content under the anchor sits `scroll + ay` below the top and `(scroll + ay) × f` after the zoom, so the new scroll is that minus `ay`. The conversation hangs from the BOTTOM (offset 0 = newest at the bottom, positive = older revealed above), so it measures from the bottom edge. Only the on-screen panes move — an off-screen pane has no anchor to hold. The 0 end clamps hard (a zoom-out at the top must not bounce off the rubber band); the far end is re-measured by the next render and settles like any other overshoot.
+    /// The image viewer claims the zoom gesture while open, so the hosts leave the UI's `ru` alone and hand the raw factor to `on_zoom` — a pinch or Ctrl+wheel zooms the PICTURE, never the interface underneath it (the double-zoom both hosts used to apply).
+    fn owns_zoom_gesture(&self) -> bool {
+        self.viewer.is_some()
+    }
+
     fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
-        // The image viewer owns the gesture while open: zoom about the pointer (the point under it holds still), clamped to 1/4 … 32× of fit.
+        // The image viewer owns the gesture while open: zoom about the pointer (the point under it holds still).
         if let Some(v) = self.viewer.as_mut() {
             let cx = ctx.viewport.width_px as f32 * 0.5;
             let cy = ctx.viewport.height_px as f32 * 0.5;
             let (ax, ay) = (_anchor_x as f32 - cx, anchor_y as f32 - cy);
-            let new_zoom = (v.zoom * factor).clamp(0.25, 32.0);
+            let new_zoom = (v.zoom * factor).clamp(super::viewer::ZOOM_MIN, super::viewer::ZOOM_MAX);
             let f = new_zoom / v.zoom;
             v.pan = ((v.pan.0 - ax) * f + ax, (v.pan.1 - ay) * f + ay);
             v.zoom = new_zoom;
@@ -1910,7 +1915,14 @@ impl FluorApp for PhotonApp {
                         if pixel {
                             v.pan = (v.pan.0 + dx, v.pan.1 + dy);
                         } else if dy != 0.0 {
-                            let new_zoom = (v.zoom * 1.15f32.powf(dy)).clamp(0.25, 32.0);
+                            // opsin's wheel-zoom, verbatim: the asymmetric step curve, anchored at the pointer so the pixel under it holds still.
+                            let factor = fluor::geom::zoom_step_factor(dy);
+                            let cx = ctx.viewport.width_px as f32 * 0.5;
+                            let cy = ctx.viewport.height_px as f32 * 0.5;
+                            let (ax, ay) = (ctx.cursor_x as f32 - cx, ctx.cursor_y as f32 - cy);
+                            let new_zoom = (v.zoom * factor).clamp(super::viewer::ZOOM_MIN, super::viewer::ZOOM_MAX);
+                            let f = new_zoom / v.zoom;
+                            v.pan = ((v.pan.0 - ax) * f + ax, (v.pan.1 - ay) * f + ay);
                             v.zoom = new_zoom;
                         }
                     } else if let Some(r) = self.reader.as_mut() {
