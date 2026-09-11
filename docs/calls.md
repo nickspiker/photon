@@ -93,6 +93,11 @@ An express frame is sealed under the friendship's era key, so it cannot be forge
 When our own reflexive address changes we already republish our signed peer record to the seed. That is a pull for everyone else. `push_address_change` is the push for the few who are wrong immediately: the device we are in a wave with, plus any contact holding a validated path to where we no longer are. It rides the relay (a moved device can still reach it) and carries the ordinary self-signed `PeerRecord` inside an unsolicited `PhonebookResponse`, so the receiver's existing merge does the work: the record self-verifies, and only a strictly newer `last_seen` is adopted — replay-safe by the same rule gossip uses, and old builds already parse it.
 On the receive side, a merged record for the device named by `call::call_peer_device()` re-aims media at once (`set_peer_redirect`), so a network change costs one relay round trip instead of a walk through the candidate list. The drought probe stays as the floor for a peer on an older build, or with no relay.
 
+## A wave is with a DEVICE, not a contact (2026-09-11)
+
+The field case that named it: the presence ring was green (a validated direct path) and the wave still carried zero packets each way. The validated path belonged to the CONTACT and pointed at the peer's MacBook, sitting on our own LAN, while the wave was with their phone on cellular. Green was honest — that contact really was reachable directly — and useless, because the media plane needs the address of the device that answered.
+Everything the media plane picks is now device-scoped: the engine's opening address (`gather_device_candidates` for `ActiveCall::peer_device`, contact-level race only when no device is known), the drought probe's walk, and an anchor's target set. A contact-level address remains right for an OFFER, which rings every device by design.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.

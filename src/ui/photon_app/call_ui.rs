@@ -1470,15 +1470,27 @@ impl PhotonApp {
         crate::call::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), std::sync::atomic::Ordering::Relaxed);
         crate::call::LAST_MEDIA_RX_OSC.store(0, std::sync::atomic::Ordering::Relaxed);
         // No validated direct address is NOT no engine (field 2026-08-20, the "stuck call": Emma's validated path to Nick expired mid-session, this bail left her engine down, and the call sat Active-and-silent BOTH ways even tho Nick held a valid path and its media was arriving — with no engine there was no sink to decode it and no TX to answer with). Start on the RELAY_ADDR sentinel instead: RX needs no address at all (the engine installs the sink), sends to the sentinel are swallowed harmlessly, and the peer's FIRST authenticated packet re-points TX at its real source (address-follows-auth). Media stays dead only when NEITHER side holds an address.
+        // THE DEVICE IN THE WAVE, NOT THE CONTACT (field 2026-09-11, the green-circle wave: Emma's validated path to Nick pointed at his MACBOOK on her own LAN, because a validated path belongs to the CONTACT — so the engine aimed a wave with his PHONE at a laptop three feet away, and both sides logged zero packets in while the ring sat honestly green). A wave is with one device: take that device's own best address, and only fall back to the contact-level race when we do not know which device answered.
+        let peer_dev = self.active_call.as_ref().and_then(|c| c.peer_device);
         let addr = self
             .contacts
             .get(ci)
-            .and_then(|c| c.race_addrs())
-            .map(|(a, _)| a)
+            .and_then(|c| match peer_dev {
+                Some(dev) => crate::network::traverse::gather::gather_device_candidates(c, &dev)
+                    .sorted()
+                    .into_iter()
+                    .map(|x| x.addr)
+                    .next()
+                    .or_else(|| c.race_addrs().map(|(a, _)| a)),
+                None => c.race_addrs().map(|(a, _)| a),
+            })
             .unwrap_or_else(|| {
                 crate::log("CALL: no direct address — engine up on the sentinel; TX will follow the peer's first authenticated packet");
                 crate::network::status::RELAY_ADDR
             });
+        if let Some(dev) = peer_dev {
+            crate::logf!("CALL: media aimed at {} — the answering device {}", addr, crate::fp(&dev));
+        }
         let call_id8: [u8; 8] = call_id[..8].try_into().unwrap();
         // Recording by default (docs/calls.md): the engine writes sealed records as the wave runs; the register below is what makes that durable across a crash.
         let (spool_param, ticket) = match crate::call::spool::mint(&call_id8) {

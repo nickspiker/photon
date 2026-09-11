@@ -20,6 +20,8 @@ One sentence per line, however long; plain language for the person who installs 
 - When your phone changes network mid-wave it now tells the person you are talking to directly, over the relay, and their audio re-aims at once instead of hunting for you.
 - Call signalling refuses a repeated or stale frame, so a copy captured off the network cannot be replayed to redirect a wave.
 
+- A wave now aims at the device that answered rather than at whichever of that person's devices was easiest to reach. A wave with someone's phone was being sent to their laptop, which is why a call could show a healthy green ring and carry no sound at all.
+
 ## v91
 
 - An idle screen on Android no longer spends a third of a core keeping itself awake: the app's housekeeping ran at every display refresh, and several pieces of it (a socket lookup, a key derivation per contact, a peer-list scan) were needlessly repeated 119 times a second. They now run once, and an idle screen asks for frames at a slower cadence until you touch it.
