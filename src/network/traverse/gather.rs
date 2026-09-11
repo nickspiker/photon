@@ -21,6 +21,19 @@ pub use fgtw::traverse::gather::{
 /// Flatten a contact into the crate's endpoint shape: the active device first (its `ip` plus its `local_ip`/`local_port` pair), then every learned per-device endpoint.
 ///
 /// Scanning all of them, not just the active `ip`, is what surfaces a peer's global IPv6 when the active address happens to be v4 — so the v6 host, priority-first, gets tried before a v4 LAN address that may be on a foreign network.
+/// The candidates for ONE device of a contact — a call is with a device, not with a roster. Aiming media at a peer's OTHER device is dead by construction: it is not in the call and holds none of its keys (field 2026-09-11, a wave over WAN aimed its recovery probe at the peer's desktop). Empty when we know no endpoint for that device.
+pub fn gather_device_candidates(contact: &Contact, device: &[u8; 32]) -> CandidateSet {
+    let eps: Vec<PeerEndpoint> = contact
+        .device_endpoints
+        .iter()
+        .filter(|ep| ep.pubkey == *device)
+        .map(|ep| PeerEndpoint { public: ep.public, lan: ep.lan })
+        .collect();
+    // `contact.ip` / `p2p_addr` are the contact's own first-met pair; they belong to the device we first met, so they only join when that is the device we are asking about.
+    let p2p = (contact.device_key() == Some(*device)).then_some(contact.p2p_addr).flatten();
+    fgtw::traverse::gather::gather_peer_candidates(&eps, p2p, LanPolicy::AnyUsable)
+}
+
 fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
     let mut eps = Vec::with_capacity(contact.device_endpoints.len() + 1);
     eps.push(PeerEndpoint {

@@ -554,11 +554,12 @@ impl PhotonApp {
             if now - last_anchor >= anchor_every {
                 if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
                     // MEDIA FOLLOWS THE SEARCH (2026-09-11): the engine's TX is pinned to the address the call opened on; after a network change that address is a black hole and nothing re-points it, because re-pointing waits on media we can no longer receive. Each anchor round moves TX to the next candidate, so within a few rounds we are sending at the peer's live address — which is also what opens our NAT for its return path.
-                    let cands: Vec<std::net::SocketAddr> = self
-                        .contacts
-                        .get(ci)
-                        .map(|c| crate::network::traverse::gather::gather_peer_candidates(c).sorted().into_iter().map(|x| x.addr).collect())
-                        .unwrap_or_default();
+                    // THE CALL PEER'S DEVICE ONLY: a wave is with one device, and the first version of this probe walked the contact's whole roster — Emma's recovery aimed at Nick's DESKTOP while the wave was with his phone (field 2026-09-11).
+                    let peer_dev = self.active_call.as_ref().and_then(|c| c.peer_device);
+                    let cands: Vec<std::net::SocketAddr> = match (self.contacts.get(ci), peer_dev) {
+                        (Some(c), Some(dev)) => crate::network::traverse::gather::gather_device_candidates(c, &dev).sorted().into_iter().map(|x| x.addr).collect(),
+                        _ => Vec::new(),
+                    };
                     if !cands.is_empty() {
                         let n = self.active_call.as_ref().map_or(0, |c| c.reconnect_probe) as usize;
                         let addr = cands[n % cands.len()];
@@ -985,9 +986,18 @@ impl PhotonApp {
             }
         };
         if wide {
-            // Every candidate the phonebook knows, not just the address this call came in on — the one that still works is exactly the one the stale pin is hiding.
-            for c in crate::network::traverse::gather::gather_peer_candidates(contact).sorted() {
-                push(&mut targets, c.addr);
+            // Every candidate the phonebook knows, not just the address this call came in on — the one that still works is exactly the one the stale pin is hiding. An OFFER fans across the contact's devices by design (every device rings); an ANCHOR belongs to one device's wave, so it stays on that device's addresses.
+            match (matches!(sig, CallSignal::Anchor { .. }), self.active_call.as_ref().and_then(|c| c.peer_device)) {
+                (true, Some(dev)) => {
+                    for c in crate::network::traverse::gather::gather_device_candidates(contact, &dev).sorted() {
+                        push(&mut targets, c.addr);
+                    }
+                }
+                _ => {
+                    for c in crate::network::traverse::gather::gather_peer_candidates(contact).sorted() {
+                        push(&mut targets, c.addr);
+                    }
+                }
             }
             for ep in &contact.device_endpoints {
                 if !contact.knows_device(&ep.pubkey) {
