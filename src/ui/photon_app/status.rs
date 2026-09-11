@@ -4685,6 +4685,7 @@ impl PhotonApp {
                         self.our_lan_ips.keys().copied().min()
                     };
                     if self.our_lan_ip != chosen {
+                        let moved = self.our_lan_ip.is_some();
                         self.our_lan_ip = chosen;
                         if let Some(chosen_ip) = chosen {
                             crate::logf!(
@@ -4693,6 +4694,11 @@ impl PhotonApp {
                             );
                         }
                         self.self_record_published_for = None;
+                        // A MOVE (not the first learn): the reflexive we hold describes the network we left. Forget it here and in the receive loop, so nothing republishes a dead public address; the next pong from any peer relearns it.
+                        if moved {
+                            self.our_reflexive = None;
+                            crate::network::traverse::request_reflexive_reset();
+                        }
                         // Interface change = our NAT mapping likely changed too — re-arm the reflect-beside-pings bootstrap so the published record re-learns the TRUE mapping.
                         checker.set_reflect_needed(true);
                     }

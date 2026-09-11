@@ -3184,6 +3184,10 @@ async fn run_checker(
                                         );
                                     }
                                     if let Some(obs) = observed_addr.filter(|_| fresh_match) {
+                                        if crate::network::traverse::take_reflexive_reset() {
+                                            reflexive.clear();
+                                            crate::log("TRAVERSE: reflexive forgotten — the interface changed, relearning from the next pong");
+                                        }
                                         if let Some(addr) = reflexive.record(
                                             udp::canon_socketaddr(obs),
                                             *responder_pubkey.as_bytes(),
@@ -3536,6 +3540,10 @@ async fn run_checker(
                                     ) {
                                         continue;
                                     }
+                                    if crate::network::traverse::take_reflexive_reset() {
+                                        reflexive.clear();
+                                        crate::log("TRAVERSE: reflexive forgotten — the interface changed, relearning from the next pong");
+                                    }
                                     if let Some(addr) = reflexive.record(
                                         udp::canon_socketaddr(observed_addr),
                                         *responder_pubkey.as_bytes(),
@@ -3645,6 +3653,10 @@ async fn run_checker(
                                     ) {
                                         continue;
                                     }
+                                    if crate::network::traverse::take_reflexive_reset() {
+                                        reflexive.clear();
+                                        crate::log("TRAVERSE: reflexive forgotten — the interface changed, relearning from the next pong");
+                                    }
                                     if let Some(addr) = reflexive.record(
                                         udp::canon_socketaddr(observed_addr),
                                         *responder_pubkey.as_bytes(),
@@ -3735,12 +3747,23 @@ async fn run_checker(
                                     if !is_contact {
                                         continue;
                                     }
+                                    // An unsolicited PUSH (one record, the sender's own) rather than an answer to our request.
+                                    let is_push = peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes();
                                     let mut merged = 0usize;
                                     {
+                                        let call_peer = crate::call::call_peer_device();
                                         let mut store = peer_store_recv.lock().unwrap();
                                         for rec in peers {
+                                            // The wave's own peer told us where it moved: aim media there at once rather than waiting for the drought probe (push reroute, 2026-09-11). The record self-verifies inside merge_peer and only a strictly newer one is adopted, so this cannot be replayed backwards. A LAN-scope address is left to the probe's policy — it is only a route if we share that LAN.
+                                            let live = call_peer == Some(*rec.device_pubkey.as_bytes());
+                                            let moved_to = rec.ip;
                                             if store.merge_peer(rec) {
                                                 merged += 1;
+                                                let lan_scope = matches!(moved_to.ip(), std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4));
+                                                if live && !lan_scope && !crate::network::traverse::gather::is_bogus_addr(&moved_to) {
+                                                    crate::logf!("CALL: the wave's peer pushed a new address — media re-aimed at {}", moved_to);
+                                                    crate::call::set_peer_redirect(moved_to);
+                                                }
                                             }
                                         }
                                     }
@@ -3750,6 +3773,35 @@ async fn run_checker(
                                             merged,
                                             src_addr
                                         );
+                                    }
+                                    // ANSWER A PUSH WITH OURSELVES (push reroute, step two, 2026-09-11): the device that just told us where it moved is the one most likely to hold nothing for us. Reply with our own signed record over the relay — only when the push was NEW to us, so the exchange settles after one round each way (our reply is not new to them a second time).
+                                    if is_push && merged > 0 {
+                                        let ours = peer_store_recv
+                                            .lock()
+                                            .unwrap()
+                                            .get_all_peers()
+                                            .into_iter()
+                                            .find(|p| p.device_pubkey.as_bytes() == our_pubkey_recv.as_bytes());
+                                        if let Some(rec) = ours {
+                                            let provenance = *blake3::hash(rec.device_pubkey.as_bytes()).as_bytes();
+                                            let sig = keypair_recv.sign(&provenance);
+                                            let mut sig_bytes = [0u8; 64];
+                                            sig_bytes.copy_from_slice(&sig.to_bytes());
+                                            let reply = FgtwMessage::PhonebookResponse {
+                                                timestamp: eagle_time_now(),
+                                                responder_pubkey: our_pubkey_recv.clone(),
+                                                provenance_hash: provenance,
+                                                signature: sig_bytes,
+                                                peers: vec![rec],
+                                            };
+                                            let bytes = reply.to_vsf_bytes();
+                                            if !bytes.is_empty() {
+                                                crate::logf!("PHONEBOOK: answering {}'s address push with our own record", crate::fp(responder_pubkey.as_bytes()));
+                                                if let Err(e) = crate::network::fgtw::relay::send_via_relay(&keypair_recv, responder_pubkey.as_bytes(), &bytes).await {
+                                                    crate::logf!("PHONEBOOK: push answer failed: {}", e);
+                                                }
+                                            }
+                                        }
                                     }
                                 }
 

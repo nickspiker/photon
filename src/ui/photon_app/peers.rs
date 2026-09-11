@@ -131,6 +131,19 @@ impl PhotonApp {
                 }
             }
         }
+        // ONLINE BUT RELAY-ONLY: the first cut pushed only to contacts holding a direct path to us — which excluded exactly the devices that cannot find us (field 2026-09-11: Emma's phone held no address at all for Nick's phone, and the push went to his own siblings). Every device of such a contact gets it; offline contacts learn from the seed when they return.
+        for c in self.contacts.iter().filter(|c| c.is_online && c.validated_path.is_none() && !c.is_sibling) {
+            for ep in &c.device_endpoints {
+                if !targets.contains(&ep.pubkey) {
+                    targets.push(ep.pubkey);
+                }
+            }
+            if let Some(d) = c.device_key() {
+                if !targets.contains(&d) {
+                    targets.push(d);
+                }
+            }
+        }
         if targets.is_empty() {
             return;
         }

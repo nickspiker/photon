@@ -19,3 +19,14 @@ pub mod gather;
 pub mod punch;
 
 pub use fgtw::traverse::{candidate, reflexive, session};
+
+/// Raised on the UI thread when our LAN address CHANGES (a network we have left); taken by the status receive loop before its next reflexive observation, which then starts from nothing (2026-09-11: with public-beats-private in place, a stale public address would otherwise outlive the network it belonged to).
+static REFLEXIVE_RESET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn request_reflexive_reset() {
+    REFLEXIVE_RESET.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub fn take_reflexive_reset() -> bool {
+    REFLEXIVE_RESET.swap(false, std::sync::atomic::Ordering::AcqRel)
+}

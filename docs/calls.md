@@ -107,6 +107,14 @@ Three faults stacked, each hiding the next.
 
 Messaging masked all three: PT runs direct to the home network's public address at over a megabit, so only the wave failed.
 
+## The port collision behind one router (2026-09-11, the swarm of failed WAN waves)
+
+Two devices behind one home router both bind UDP 4383. The router can port-preserve only one of them on the outside: the desktop got `public:4383`, so the phone's outside mapping is `public:X` for some X nobody has been told. Everything that follows is about learning X.
+- The phone can only learn X from a pong that crossed the router: a peer OUTSIDE (a phone on cellular) or a hairpinned ping at a sibling's public address. A same-LAN pong teaches only the LAN address — and until 2026-09-11 that LAN address was adopted as the REFLEXIVE and published as public, so the phone's record said `192.168.1.163` to the whole world (fixed in fgtw: public beats private, and the reflexive is forgotten on an interface change so the rule cannot pin a stale public address either).
+- A private v4 that arrives in a record's PUBLIC field is now gated by the LAN policy like any LAN address (fgtw gather): a cellular phone no longer aims a wave at the peer's `192.168.x`.
+- For the outside peer to pong, it must first be known to the phone. The push reroute's first cut targeted only contacts holding a direct path — the one set that did not need it. It now also pushes to every device of an online contact reached only by relay, and a push is answered with the receiver's own record, so one relay exchange leaves both sides holding each other. A pushed record for the device we are in a wave with re-aims media on arrival (this part was described on 2026-09-11 but had not actually landed until now).
+Field expectation: after both phones update, the cellular phone's push lands on the home phone, the home phone pings the cellular address, the pong carries `public:X`, the reflexive is learned as public, the phone republishes and pushes, and the cellular phone aims at `public:X`. If the carrier NAT filters by port, the hairpin path is the fallback. Whether a home router hairpins is per router.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.

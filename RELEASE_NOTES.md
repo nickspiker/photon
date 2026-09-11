@@ -24,6 +24,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 - Waves now work between a phone on mobile data and a phone on home wi-fi. A device on a home network was telling everyone its public address was its home address, because the only devices watching it were on that same network, so a friend on mobile data had nowhere real to send audio. Messages still got through, which is why this looked like a call-only fault.
 
+- When your phone changes network it now tells the friends who could not find you, not just the ones who already could, and they answer with where they are, so a call between mobile data and home wi-fi has both sides' real addresses after one exchange.
+- A phone on home wi-fi no longer mistakes its home address for its public one, and forgets its old public address when it changes networks.
+
 ## v91
 
 - An idle screen on Android no longer spends a third of a core keeping itself awake: the app's housekeeping ran at every display refresh, and several pieces of it (a socket lookup, a key derivation per contact, a peer-list scan) were needlessly repeated 119 times a second. They now run once, and an idle screen asks for frames at a slower cadence until you touch it.
