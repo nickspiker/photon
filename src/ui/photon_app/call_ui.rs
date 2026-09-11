@@ -1034,6 +1034,12 @@ impl PhotonApp {
         let wide = matches!(sig, CallSignal::Offer { .. } | CallSignal::Anchor { .. });
         // RING WANTS BREADTH, REPLIES WANT PRECISION (fleet lifecycle, 2026-09-08). An OFFER is the ding — it fans to every known endpoint of every fold-trusted device, so all the callee's devices ring at express speed instead of waiting on replication. Every other signal is a reply about one specific call: it targets the ONE peer device driving it — the call's freshest express source plus that device's own endpoint addresses (multiple addresses of one device is a race, not a misfire; multiple DEVICES was the 2026-09-08 sibling-hangup bug). validated_path is only the no-better-knowledge fallback: it's per-CONTACT (whichever device punch-validated last), not per-call.
         let mut targets: Vec<std::net::SocketAddr> = Vec::new();
+        // THE PATH THE WAVE IS ON (field 2026-09-11 23:02, the ring green the whole time): media ran on a direct IPv6 path while the hangup and the ring-back went to the CONTACT's validated path — the peer's desktop on our LAN — and never reached the phone in the wave. While a wave is live, every signal also goes to the engine's live transmit address, the one path that is proven to work right now.
+        if let Some(live) = crate::call::call_tx_addr().filter(|a| *a != crate::network::status::RELAY_ADDR) {
+            if !live.ip().to_canonical().is_loopback() && !live.ip().is_unspecified() {
+                targets.push(live);
+            }
+        }
         // Never a loopback or unspecified target: a frame sent to ourselves opens under our own friendship key and reads as the peer's (2026-09-10 anchor storm).
         let push = |t: &mut Vec<std::net::SocketAddr>, a: std::net::SocketAddr| {
             if !t.contains(&a) && !a.ip().to_canonical().is_loopback() && !a.ip().is_unspecified() {
@@ -1094,7 +1100,9 @@ impl PhotonApp {
         }
         // AN ANCHOR NEVER TRUSTS THE VALIDATED PATH (field 2026-09-11, Nick/Emma: a deliberate LAN→WAN switch mid-wave — the validated path stayed Some but was dead, so every anchor went to two stale addresses with no relay copy, and the wave dropped at the 30 s deadline with both sides still reachable over the relay). An anchor is fired precisely when the direct path is in doubt, so it goes to every candidate endpoint AND over the relay, always.
         // RELAY-CARRIED EXPRESS (field 2026-09-11, Brittany/Nick: three rings failed in a row — no direct UDP path between the phones, so every express beat and answer vanished, the lane offer sat behind an undelivered text row, and the one ring that did land died at 3 s for want of beats). When the contact has no validated DIRECT path, every express frame also goes to each of their devices thru the relay pipe; an injected pipe frame lands in the same express drain as a datagram would.
-        let direct_ok = !matches!(sig, CallSignal::Anchor { .. }) && contact.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR);
+        // The relay copy rides with every frame that MUST land whatever the path (an offer rings, an anchor heals, a hangup ends): a contact-level validated path proves nothing about the device in the wave (2026-09-11 23:02: Emma's path to Nick was his desktop, her ring-back and hangup went there, his phone on cellular heard neither).
+        let must_land = matches!(sig, CallSignal::Offer { .. } | CallSignal::Anchor { .. } | CallSignal::Hangup { .. });
+        let direct_ok = !must_land && contact.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR);
         let relay_devs: Vec<[u8; 32]> = if direct_ok { Vec::new() } else { contact.relay_device_list() };
         if targets.is_empty() && relay_devs.is_empty() {
             crate::logf!("CALL: express {} skipped — no direct path and no relay device known (lane only)", sig.kind());
