@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v92
+
 - Keeping a wave after hangup no longer crawls when the phone dozes: the phone stays awake for the transcode, which also runs lighter. A thirteen-minute wave that took 53 minutes to keep now takes about a minute.
 - The Diagnostics log size reads in the current base like every other size.
 
