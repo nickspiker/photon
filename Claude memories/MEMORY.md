@@ -162,7 +162,7 @@
 - [project_window_geometry_shipped.md](project_window_geometry_shipped.md) — window geometry SHIPPED 2026-08-16 thru fluor's model: apply_window_rect + once-per-gesture settle hook
 - [project_humanitys_code.md](project_humanitys_code.md) — openness doctrine: secrecy surface = handles + keys ONLY; everything else public — "this is humanity's code"
 - [settings.md](settings.md) — Nick's note: naive fixed-width unlabeled settings converted to proper VSF (the fstate v7 arc)
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD (2026-09-09): one row per wave + recording folds in; waveform IS the seek bar; stops envelope; all/waves/text pill; flag-day licensed
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD: waveform IS the seek bar; ENVELOPE PYRAMID PHCALL6 flag day 2026-09-11 (exact u64 streaming bins S0=1024, Haar colour tree, power-fold render, variable env_len)
 - [project_recording_fills.md](project_recording_fills.md) — fills field-verified live 2026-09-10, drain fixed 8947821; spool RAW mic+verdict; PHCALL5 per-channel Opus; next = offline AEC at keep
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; 2026-09-09 Android audio = Rust-owned AAudio exclusive, HAL-stamped frames (floor 20.6 ms); docs/calls.md
 - [project_xchacha_migration.md](project_xchacha_migration.md) — 2026-08-18 stack-wide ChaCha20→XChaCha20-Poly1305 (96→192-bit nonce) EVERYWHERE incl. chain stream layer

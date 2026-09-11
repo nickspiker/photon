@@ -1383,9 +1383,9 @@ impl PhotonApp {
         let any = !got.is_empty();
         for (hash, env) in got {
             self.wave_env_pending.remove(&hash);
-            if let Some(e) = env {
-                self.wave_env.insert(hash, std::sync::Arc::new(e));
-            }
+            // A miss caches the empty marker so the render's cached-is-none gate goes quiet instead of respawning the loader every frame.
+            let (nchan, e) = env.unwrap_or((0, Vec::new()));
+            self.wave_env.insert(hash, (nchan, std::sync::Arc::new(e)));
             self.scene_dirty = true;
         }
         any

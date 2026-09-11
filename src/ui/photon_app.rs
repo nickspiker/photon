@@ -1992,14 +1992,14 @@ pub struct PhotonApp {
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
     /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `call.audio` row mint. Lazily created on first keep (see `call_keep_sender`).
     call_keep_rx: Option<std::sync::mpsc::Receiver<call_ui::CallKeepResult>>,
-    /// Wave card envelopes read from held blobs (header only, off-thread), by recording hash — the 65536-bucket grid the card draws from whether or not the recording is playing. Session cache.
-    wave_env: std::collections::HashMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
+    /// Wave card envelopes read from held blobs (header only, off-thread), by recording hash: (nchan, pyramid bytes). A load that found no envelope caches (0, empty) so the miss is an edge, not a respawn-every-frame loop. Session cache.
+    wave_env: std::collections::HashMap<[u8; 32], (u8, std::sync::Arc<Vec<u8>>)>,
     /// Loads in flight (one per hash).
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
-    /// Folded wave-card tracks per (recording, preview width, envelope length, channel) — the render reads them every frame, folds them once (render.rs wave card).
-    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<Vec<Vec<f32>>>>>,
-    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<u8>>)>>,
-    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<u8>>)>>,
+    /// Finished wave-card columns per (recording, preview width, envelope length, channel): per-column (height stops, base colour) — the render reads them every frame, folds and colours them once (render.rs wave card). Cleared wholesale past a small cap.
+    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
+    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<(u8, Vec<u8>)>)>>,
+    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<(u8, Vec<u8>)>)>>,
     call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
     /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
     update_release: ChannelCheck,

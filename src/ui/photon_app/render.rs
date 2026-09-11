@@ -3559,7 +3559,7 @@ impl PhotonApp {
                                             let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                             let held = crate::storage::blob_present(&hash);
                                             let playing = self.call_playback.is_some() && self.call_playback_hash == Some(hash);
-                                            // ENVELOPE SOURCE, in order: the playing handle's container envelope, the session cache (read off-thread from the held blob — requested here on first sight), else the row thumbnail. All are the same [amp, r, g, b] stops layout; the container ones are the fixed 65536-bucket grid.
+                                            // ENVELOPE SOURCE, in order: the playing handle's container envelope, the session cache (read off-thread from the held blob — requested here on first sight), else the row thumbnail. All are the same [amp, r, g, b] stops layout; the container ones are the variable-length pyramid grid, so nchan rides beside the bytes instead of being inferred from a length.
                                             const K: usize = crate::call::record::ENV_COMPONENTS;
                                             let cached = self.wave_env.get(&hash).cloned();
                                             if held && cached.is_none() && !self.wave_env_pending.contains(&hash) && self.session.is_some() {
@@ -3574,7 +3574,7 @@ impl PhotonApp {
                                                 let tx = self.wave_env_tx.as_ref().unwrap().clone();
                                                 let wake = self.event_proxy.clone();
                                                 let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
-                                                    let env = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::call::record::envelope_of_blob(&b)).map(|(_, _, e)| e);
+                                                    let env = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::call::record::envelope_of_blob(&b)).map(|(n, _, e)| (n as u8, e));
                                                     let _ = tx.send((hash, env));
                                                     #[cfg(not(target_os = "android"))]
                                                     if let Some(w) = wake.as_ref() {
@@ -3584,70 +3584,86 @@ impl PhotonApp {
                                                     let _ = wake;
                                                 });
                                             }
-                                            let handle_env: Option<&[u8]> = match (playing, self.call_playback.as_ref()) {
-                                                (true, Some(h)) if !h.envelope.is_empty() => Some(&h.envelope),
+                                            let handle_env: Option<(usize, &[u8])> = match (playing, self.call_playback.as_ref()) {
+                                                (true, Some(h)) if !h.envelope.is_empty() => Some((h.nchan, &h.envelope)),
                                                 _ => None,
                                             };
-                                            let env: &[u8] = handle_env.or(cached.as_deref().map(|v| v.as_slice())).unwrap_or(&rec.envelope);
-                                            let nchan = if env.len() >= crate::call::record::ENV_BUCKETS * K { (env.len() / (crate::call::record::ENV_BUCKETS * K)).max(1) } else if rec.envelope.is_empty() { 1 } else { (env.len() / (crate::types::WAVE_THUMB_BUCKETS * K)).max(1) };
+                                            let cache_env: Option<(usize, &[u8])> = cached.as_ref().and_then(|(n, e)| if e.is_empty() { None } else { Some((*n as usize, e.as_slice())) });
+                                            let (nchan, env): (usize, &[u8]) = handle_env.or(cache_env).unwrap_or(((rec.envelope.len() / (crate::types::WAVE_THUMB_BUCKETS * K)).max(1), &rec.envelope));
                                             let env_len = env.len() / (nchan * K).max(1);
                                             let total_slots = if playing { self.call_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
                                             let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
                                             let frac: Option<f32> = scrub.or_else(|| {
                                                 playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
                                             });
-                                            // THE PIPELINE (Nick 2026-09-10): LINEAR values (the stored eighth-stops decoded thru a table) on the recording's fixed grid → bilinear down to the preview width (box mean when folding, interpolation when stretching) → each axis NORMALISED per party over the whole recording: amplitude to its own peak, each colour band to its own min..max → shown as is. ch0 (you) up from the centreline, ch1 (them) down; played columns bright, the rest dim; the tip pixel takes √(fraction) alpha.
+                                            // THE PIPELINE (Nick 2026-09-11): store stops, fold in POWER, display in stops. Every component decodes to linear, squares, box-means to the preview width, roots — each column is the true RMS over its span (the geometric-mean fold medicated the old sub-pitch bins; the pyramid killed the ripple, so the honest fold returns). Height = stops above the party's floor. Colour = the three tree bands JOINT-scale normalised in linear (one min..max across all three, per party) so hue is honest spectral tilt. Two fully independent party passes — them (ch1) up from the centreline, us (ch0) down, nothing shared, each half its own voice.
                                             let wx0 = glyph_x1;
                                             let cols = ((bx1 - wx0).max(1.0)) as usize;
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
-                                            let lut: [f32; 256] = {
+                                            // Stored eighth-stops below full scale → linear amplitude, once per process; byte 255 is the silence floor.
+                                            static WAVE_LUT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
                                                 let mut t = [0f32; 256];
                                                 for (i, v) in t.iter_mut().enumerate() {
                                                     *v = if i >= 255 { 0.0 } else { (2f32).powf(-(i as f32) / 8.0) };
                                                 }
                                                 t
-                                            };
+                                            });
                                             if env_len > 0 {
                                                 for ch in 0..nchan.min(2) {
-                                                    // THE FOLD, ONCE (2026-09-10): four tracks folded to the preview width cost a millisecond or more per card per frame — the histogram's own render latency. Cached per (recording, width, envelope length); the cache empties with the session.
-                                                    // AMPLITUDE IN THE LOG DOMAIN (Nick: "log waveforms… it seems spikey"): the stored bucket value is already stops below full scale, and the fold AVERAGES STOPS (a geometric mean of amplitude) instead of power, so one loud pitch period no longer owns the whole column. Height = stops above the party's floor, where the floor is the party's quietest column or ten stops under its peak, whichever is louder; them above the line, us below, each normalised alone.
+                                                    // THE FOLD AND THE COLOURS, ONCE: folding four tracks and pushing every column thru the VSF→Rec.2020 colour path cost a millisecond or more per card per frame, so the cache holds the FINISHED columns — (height stops, base colour) — per (recording, width, envelope length, channel). The per-frame loop is a dim test and a fill_rect.
                                                     let key = (hash, cols, env_len, ch);
-                                                    let folded: std::rc::Rc<Vec<Vec<f32>>> = {
+                                                    let bars: std::rc::Rc<(Vec<f32>, Vec<u32>)> = {
                                                         let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                         match hit {
                                                             Some(f) => f,
                                                             None => {
-                                                                let stops: Vec<f32> = (0..env_len).map(|i| env[(ch * env_len + i) * K] as f32 / 8.0).collect();
-                                                                let mut f: Vec<Vec<f32>> = vec![crate::call::record::resample_linear(&stops, cols)];
+                                                                let folded: Vec<Vec<f32>> = (0..K)
+                                                                    .map(|c| {
+                                                                        let pow: Vec<f32> = (0..env_len)
+                                                                            .map(|i| {
+                                                                                let l = WAVE_LUT[env[(ch * env_len + i) * K + c] as usize];
+                                                                                l * l
+                                                                            })
+                                                                            .collect();
+                                                                        crate::call::record::resample_linear(&pow, cols).iter().map(|p| p.max(0.0).sqrt()).collect()
+                                                                    })
+                                                                    .collect();
+                                                                let stops: Vec<f32> = folded[0].iter().map(|l| if *l <= 0.0 { 255.0 / 8.0 } else { (-l.log2()).clamp(0.0, 255.0 / 8.0) }).collect();
+                                                                let (mut lo, mut hi) = (f32::MAX, f32::MIN);
                                                                 for c in 1..K {
-                                                                    let t: Vec<f32> = (0..env_len).map(|i| lut[env[(ch * env_len + i) * K + c] as usize]).collect();
-                                                                    f.push(crate::call::record::resample_linear(&t, cols));
+                                                                    for v in &folded[c] {
+                                                                        lo = lo.min(*v);
+                                                                        hi = hi.max(*v);
+                                                                    }
                                                                 }
-                                                                let f = std::rc::Rc::new(f);
-                                                                self.wave_fold_cache.borrow_mut().insert(key, f.clone());
+                                                                let span = hi - lo;
+                                                                let colours: Vec<u32> = (0..cols)
+                                                                    .map(|px| {
+                                                                        let norm = |c: usize| -> u8 {
+                                                                            if span > 1e-9 { (((folded[c][px] - lo) / span).clamp(0.0, 1.0) * 255.0).round() as u8 } else { 0 }
+                                                                        };
+                                                                        theme::rgb_colour(norm(1), norm(2), norm(3))
+                                                                    })
+                                                                    .collect();
+                                                                let f = std::rc::Rc::new((stops, colours));
+                                                                let mut cache = self.wave_fold_cache.borrow_mut();
+                                                                if cache.len() >= 128 {
+                                                                    cache.clear();
+                                                                }
+                                                                cache.insert(key, f.clone());
                                                                 f
                                                             }
                                                         }
                                                     };
-                                                    let peak_stops = folded[0].iter().cloned().fold(f32::MAX, f32::min);
-                                                    let quietest = folded[0].iter().cloned().fold(f32::MIN, f32::max);
+                                                    let (stops_col, colours) = &*bars;
+                                                    let peak_stops = stops_col.iter().cloned().fold(f32::MAX, f32::min);
+                                                    let quietest = stops_col.iter().cloned().fold(f32::MIN, f32::max);
                                                     let floor_stops = quietest.min(peak_stops + 10.0).max(peak_stops + 0.5);
-                                                    let (mut lo, mut hi) = ([f32::MAX; 3], [f32::MIN; 3]);
-                                                    for c in 0..3 {
-                                                        for v in &folded[1 + c] {
-                                                            lo[c] = lo[c].min(*v);
-                                                            hi[c] = hi[c].max(*v);
-                                                        }
-                                                    }
                                                     for px in 0..cols {
                                                         let lit = held && frac.is_some() && px < played_cols;
-                                                        let hgt = ((floor_stops - folded[0][px]) / (floor_stops - peak_stops)).clamp(0.0, 1.0) * half * 0.92;
-                                                        let norm = |c: usize| -> f32 {
-                                                            let span = hi[c] - lo[c];
-                                                            if span > 1e-6 { ((folded[1 + c][px] - lo[c]) / span).clamp(0.0, 1.0) } else { 0.0 }
-                                                        };
-                                                        let base_c = theme::rgb_colour((norm(0) * 255.0) as u8, (norm(1) * 255.0) as u8, (norm(2) * 255.0) as u8);
-                                                        // BRIGHTEN ONLY (Nick 2026-09-10, "weird double drawing… should be brighten only"): the unplayed bars were quarter-alpha, a translucent ghost of the waveform beside the solid played part, with an anti-aliased tip pixel floating over every column. Now every bar is solid: unplayed = the same colour at half brightness, played = full; heights are whole pixels.
+                                                        let hgt = ((floor_stops - stops_col[px]) / (floor_stops - peak_stops)).clamp(0.0, 1.0) * half * 0.92;
+                                                        let base_c = colours[px];
+                                                        // BRIGHTEN ONLY (Nick 2026-09-10, "weird double drawing… should be brighten only"): every bar is solid — unplayed = the same colour at half brightness (darkness-domain arithmetic, α untouched), played = full; heights are whole pixels.
                                                         let c = if lit {
                                                             base_c
                                                         } else {
@@ -3662,20 +3678,20 @@ impl PhotonApp {
                                                         let run_top = ty.max(list_top);
                                                         let run_bot = (ty + th).min(list_bottom);
                                                         if run_bot > run_top && th >= 1.0 {
-                                                            paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, None, None);
+                                                            paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, Some(list_clip), None);
                                                         }
                                                     }
                                                 }
                                             }
                                             // Centreline hairline, then the playhead.
                                             if bcy > list_top && bcy < list_bottom {
-                                                paint::fill_rect(&mut canvas, wx0 as isize, bcy as isize, (bx1 - wx0) as isize, hair as isize, dim, None, None);
+                                                paint::fill_rect(&mut canvas, wx0 as isize, bcy as isize, (bx1 - wx0) as isize, hair as isize, dim, Some(list_clip), None);
                                             }
                                             if let Some(f) = frac {
                                                 let px = wx0 + f * (bx1 - wx0);
                                                 let (py0, py1) = (by0.max(list_top), by1.min(list_bottom));
                                                 if py1 > py0 {
-                                                    paint::fill_rect(&mut canvas, px as isize, py0 as isize, hair.ceil() as isize, (py1 - py0) as isize, *theme::CONTACT_NAME_COLOUR, None, None);
+                                                    paint::fill_rect(&mut canvas, px as isize, py0 as isize, hair.ceil() as isize, (py1 - py0) as isize, *theme::CONTACT_NAME_COLOUR, Some(list_clip), None);
                                                 }
                                                 // Elapsed / total beside the header, on the side the header left free.
                                                 let pos_secs = (f * total_slots as f32 / 100.0) as i64;

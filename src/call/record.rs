@@ -1,31 +1,31 @@
 //! Kept-recording transcode + reader (docs/calls.md — endpoint memory).
 //!
-//! The live call spools already-ENCODED per-direction mono Opus frames (cheap: ~25 MB/hour, `call/spool.rs`). At KEEP the user wants a real audio FILE with **one channel per participant** (ch0 = local mic, ch1 = remote), so this module transcodes the spool ONCE: decrypt → decode each direction → time-align onto a shared 10 ms grid by eagle-osc → interleave → re-encode as a single interleaved Opus, in the `PHCALL2` container. Playback ([`crate::call::playback`]) reads it back and sums the channels to mono.
+//! The live call spools already-ENCODED per-direction mono Opus frames (cheap: ~25 MB/hour, `call/spool.rs`). At KEEP the user wants a real audio FILE with **one channel per participant** (ch0 = local mic, ch1 = remote), so this module transcodes the spool ONCE: decrypt → decode each direction → time-align onto a shared 10 ms grid by eagle-osc → interleave → re-encode one mono Opus stream per channel, in the `PHCALL6` container. Playback ([`crate::call::playback`]) reads it back and sums the channels to mono.
 //!
-//! **N > 2 (future multi-party — the stubbed "add handle").** `opus` 0.3.1 has no multistream encoder, so a genuine ≥3-channel Opus is unreachable in this crate. The `nchan` header lets the container degrade gracefully: for `nchan ≤ 2` each 10 ms slot is ONE interleaved packet (mono or stereo — the true N-channel-Opus case); for `nchan > 2` each slot is `nchan` side-by-side MONO packets. Same magic, same reader, one downmix path. A true ≥3-channel Opus is a later opus-binding swap.
+//! **N > 2 (future multi-party — the stubbed "add handle").** Every slot is `nchan` side-by-side MONO packets whatever N is, so multi-party needs no format change — `opus` 0.3.1 has no multistream encoder anyway. Same magic, same reader, one downmix path.
 //!
-//! **Container `PHCALL2\0`:** magic ‖ `[nchan u8][sample_rate u32 LE][base_osc i64 LE][slots u32 LE]` then `slots` records: for `nchan ≤ 2` one `[len u16 LE][opus]`; for `nchan > 2` exactly `nchan` such `[len u16 LE][opus]` back to back (one per channel, in channel order). Empty slots are encoded silence — the grid is dense so playback never has to reason about gaps.
+//! **Container:** see [`CONTAINER_MAGIC_V6`] — every slot is `nchan` side-by-side `[len u16 LE][opus]` mono packets. Empty slots are encoded silence — the grid is dense so playback never has to reason about gaps.
 //!
 //! Transcode is a second lossy Opus generation over the spooled frames (decode-then-re-encode) — the accepted cost of "cheap live spool, rich keep". It is O(call length); run it OFF the UI thread (see `keep_recording`).
 
 use crate::call::spool::{drain_records, Record, SpoolTicket};
 
-/// 10 ms at 48 kHz — the ARCHIVE frame (PHCALL2 slot + KeptStream playback unit). Deliberately unchanged by the 5ms flag day: every previously-kept recording plays without migration.
+/// 10 ms at 48 kHz — the ARCHIVE frame (PHCALL6 slot + KeptStream playback unit). Deliberately unchanged by the 5ms flag day: every previously-kept recording plays without migration.
 const FRAME: usize = 480;
 /// The LIVE spool frame — 5ms CELT packets since the 2026-09-08 flag day (platform FRAME_SAMPLES). Two input slots fold into one archive slot at transcode.
 const FRAME_IN: usize = crate::platform::audio::FRAME_SAMPLES;
 /// Input-grid slots per second (5 ms spool packets).
 const SLOTS_PER_SEC: i64 = 200;
-/// PHCALL4 (flag day 2026-09-09, the coloured wave card): `PHCALL2` header ‖ `[env_per_sec u8][env_len u32 LE]` ‖ `nchan × env_len × ENV_COMPONENTS` envelope bytes (channel-major, bucket-major, [amp, r, g, b] each in eighth-stops below full scale, 255 = silence floor) ‖ packets. The envelope is computed at transcode — every frame is decoded here anyway — so no draw path ever decodes audio to show a shape. No PHCALL2 reader: nobody has waved for real yet.
-pub const CONTAINER_MAGIC_V4: &[u8; 8] = b"PHCALL4\0";
-/// PHCALL5 (2026-09-10, "Opus per channel, mic raw"): the PHCALL4 header and envelope, then `slots × nchan` MONO Opus packets (channel order within each slot) — every party its own stream at a transparent bitrate, the local one encoded once from the raw mic. PHCALL4 blobs (one interleaved stereo packet per slot) still open.
-pub const CONTAINER_MAGIC_V5: &[u8; 8] = b"PHCALL5\0";
+/// PHCALL6 (waveform flag day 2026-09-11, the envelope pyramid): magic ‖ `[nchan u8][sample_rate u32 LE][base_osc i64 LE][slots u32 LE][env_per_sec u8][env_len u32 LE]` ‖ `nchan × env_len × ENV_COMPONENTS` envelope bytes (channel-major, bucket-major, [amp, r, g, b] each in eighth-stops below full scale, 255 = silence floor) ‖ `slots × nchan` MONO Opus packets (channel order within each slot). `env_len` is variable (0..=ENV_CAP) — the pyramid stores whatever bin count the recording ended on. The envelope is computed at transcode — every frame is decoded here anyway — so no draw path ever decodes audio to show a shape. PHCALL4/5 read support deleted with this flag day (their sub-pitch-period envelopes were the chunking; Nick: no backward compat, old previews looked bad).
+pub const CONTAINER_MAGIC_V6: &[u8; 8] = b"PHCALL6\0";
 /// Per-channel archive bitrate: CELT fullband is transparent for speech well below this; a two-party hour is ~115 MB.
 const ARCHIVE_KBPS: i32 = 128_000;
-/// Envelope components per bucket per channel: [amplitude, red, green, blue] — amplitude is the plain RMS; the colour bands are three HIGH-PASS energies at three scales (Nick 2026-09-09: "1:1 filter for blue, 1:4 for green, 1:8 for red, all high pass"): blue = first difference (x[n] − x[n−1]), green = the difference of successive 4-sample sums ÷ 4, red = the difference of successive 8-sample sums ÷ 8. Running sums, no FFT. All four in eighth-stops below full scale.
+/// Envelope components per bucket per channel: [amplitude, red, green, blue] — amplitude is the plain RMS; the colour bands are the top three detail levels of the decimated binary sum tree (Nick 2026-09-11: "binary trees"): blue = pair difference `x[n] − x[n−1]` (one value per 2 samples, highest octave), green = difference of adjacent pair-sums ÷ 2 (per 4 samples), red = difference of adjacent 4-sample sums ÷ 4 (per 8 samples). Adds and shifts, no FFT. All four in eighth-stops below full scale.
 pub const ENV_COMPONENTS: usize = 4;
-/// The envelope's fixed length per channel (Nick 2026-09-10: "linear on the waveform, downsample it to 65536 samples, then bilinear down to preview width"): every recording carries exactly this many buckets per channel, whatever its length — a 10s wave upsamples its 10ms slots into them, a 2h wave folds ~7 slots into each. 65536 × 4 components × 2 channels = 512KB in the container.
-pub const ENV_BUCKETS: usize = 65536;
+/// Envelope pyramid capacity (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2"): the working buffer is this many bins per channel, and a recording stores whatever count it ends on (0..=ENV_CAP), so `env_len` is genuinely variable now.
+pub const ENV_CAP: usize = 1 << 17;
+/// Starting samples-per-bin exponent: 2^10 = 1024 samples = 21.3 ms — at least one full pitch period down to ~50 Hz, so every bin is a true envelope value from birth (sub-period bins were the chunking). The one tunable.
+const ENV_S0_LOG2: u32 = 10;
 
 /// Resample per-slot LINEAR values to `out_len` buckets: a box mean when folding down, linear interpolation between slot centres when stretching up — the "bilinear" half of the pipeline, on the recording's own grid.
 pub fn resample_linear(slots: &[f32], out_len: usize) -> Vec<f32> {
@@ -70,7 +70,7 @@ fn lin_to_stops_u8(rms: f32) -> u8 {
 
 /// The envelope straight from a container's header — no audio decoded, no decoder built: (nchan, env_len, bytes). The wave card's loader.
 pub fn envelope_of_blob(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    if bytes.len() < 8 + 22 || (&bytes[..8] != CONTAINER_MAGIC_V4 && &bytes[..8] != CONTAINER_MAGIC_V5) {
+    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC_V6 {
         return None;
     }
     let nchan = bytes[8] as usize;
@@ -81,67 +81,137 @@ pub fn envelope_of_blob(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
     }
     Some((nchan, env_len, bytes[8 + 22..env_end].to_vec()))
 }
-/// Fine-envelope buckets per second of recording (250 ms — syllable rate; two hours = 28.8k bytes per channel).
-/// Header byte kept for the format's shape: 0 = the fixed ENV_BUCKETS grid (every recording, since 2026-09-10); the old per-second cadence is gone.
+/// Header byte kept for the format's shape: 0 = the pyramid grid (variable `env_len`, every recording since 2026-09-11); the old per-second cadence is gone.
 pub const ENV_PER_SEC: usize = 0;
-/// Envelope value for a bucket's RMS: eighth-stops below full scale, saturating at the silence floor (255). One stop = ×2 amplitude, so the scale is perceptual by construction (Nick: stops, never dB).
-fn stops_u8(sumsq: f64, n: usize) -> u8 {
-    if n == 0 {
-        return 255;
-    }
-    let rms = (sumsq / n as f64).sqrt();
-    if rms < 1.0 {
-        return 255;
-    }
-    ((32768.0 / rms).log2() * 8.0).round().clamp(0.0, 255.0) as u8
-}
-/// Fold a fine envelope down to the row thumbnail: one gross of buckets per channel, each the LOUDEST (minimum stops) fine bucket in its span so peaks survive.
+/// Fold a fine envelope down to the row thumbnail: one gross of buckets per channel, folded in the POWER domain (square → box mean → root) so each thumb bucket is the true RMS over its span, then stops.
 pub fn thumbnail(lin: &[Vec<f32>], nchan: usize) -> Vec<u8> {
-    // `lin[ch * ENV_COMPONENTS + comp]` = per-slot LINEAR values; the thumbnail is the same fold to one gross of buckets, then stops.
     let nb = crate::types::WAVE_THUMB_BUCKETS;
     let k = ENV_COMPONENTS;
     let mut out = vec![255u8; nchan * nb * k];
     for ch in 0..nchan {
         for c in 0..k {
-            let folded = resample_linear(&lin[ch * k + c], nb);
+            let pow: Vec<f32> = lin[ch * k + c].iter().map(|v| v * v).collect();
+            let folded = resample_linear(&pow, nb);
             for b in 0..nb {
-                out[(ch * nb + b) * k + c] = lin_to_stops_u8(folded[b]);
+                out[(ch * nb + b) * k + c] = lin_to_stops_u8(folded[b].max(0.0).sqrt());
             }
         }
     }
     out
 }
 
-/// Per-channel running state for the three high-pass bands: a 16-sample ring and the four running sums the band differences are made of.
-struct BandState {
-    hist: [i32; 16],
-    pos: usize,
-    s4: i64,
-    s4p: i64,
-    s8: i64,
-    s8p: i64,
+/// Per-channel state for the decimated binary sum tree: the top three detail levels are the colour bands (Nick 2026-09-11: blue = pair difference, green = difference of adjacent pair-sums, red = the same fold on 4-sample sums; binary trees).
+/// Each level stashes its left sibling and emits on the right one, so blue yields one value per 2 samples, green per 4, red per 8 — non-overlapping, exact, and every band lands on the same ≤2^16 amplitude scale via the mean-difference shifts.
+struct HaarState {
+    s1: i64,
+    p2: i64,
+    p4: i64,
 }
 
-impl BandState {
-    fn new() -> Self {
-        BandState { hist: [0; 16], pos: 0, s4: 0, s4p: 0, s8: 0, s8p: 0 }
+/// The streaming envelope accumulator (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2 to keep the total size under 2^17").
+/// Fixed integer samples-per-bin starting at 2^ENV_S0_LOG2; when a sample's bin index would pass ENV_CAP, adjacent bin pairs merge (sums and counts ADD, so the fold is bit-exact) and the bin width doubles.
+/// u64 sums of squares: a full-scale square wave needs ~25 hours in one bin to overflow, and unlike f64 the sums never round, so any resize history yields identical bytes.
+/// Needs no total length up front — the same structure can feed a live in-call band later.
+struct EnvPyramid {
+    nchan: usize,
+    cap: usize,
+    s_log2: u32,
+    sumsq: Vec<u64>,
+    counts: Vec<u64>,
+    haar: Vec<HaarState>,
+    total_samples: usize,
+}
+
+impl EnvPyramid {
+    fn new(nchan: usize) -> Self {
+        Self::with_geometry(nchan, ENV_CAP, ENV_S0_LOG2)
     }
-    /// Push one sample; return (d1, d4, d8) — the three high-pass outputs at this sample.
+    /// The test seam: a small capacity forces folds without hundreds of millions of pushes, and a raised s0 computes the direct binning a folded run must equal.
+    fn with_geometry(nchan: usize, cap: usize, s0_log2: u32) -> Self {
+        EnvPyramid {
+            nchan,
+            cap,
+            s_log2: s0_log2,
+            sumsq: vec![0u64; nchan * cap * ENV_COMPONENTS],
+            counts: vec![0u64; nchan * cap * ENV_COMPONENTS],
+            haar: (0..nchan).map(|_| HaarState { s1: 0, p2: 0, p4: 0 }).collect(),
+            total_samples: 0,
+        }
+    }
+    /// Merge adjacent bin pairs and double the bin width — pure addition, bit-exact, any number of times.
+    fn fold(&mut self) {
+        let k = ENV_COMPONENTS;
+        for ch in 0..self.nchan {
+            let base = ch * self.cap * k;
+            for i in 0..self.cap / 2 {
+                for c in 0..k {
+                    self.sumsq[base + i * k + c] = self.sumsq[base + 2 * i * k + c] + self.sumsq[base + (2 * i + 1) * k + c];
+                    self.counts[base + i * k + c] = self.counts[base + 2 * i * k + c] + self.counts[base + (2 * i + 1) * k + c];
+                }
+            }
+            for v in &mut self.sumsq[base + self.cap / 2 * k..base + self.cap * k] {
+                *v = 0;
+            }
+            for v in &mut self.counts[base + self.cap / 2 * k..base + self.cap * k] {
+                *v = 0;
+            }
+        }
+        self.s_log2 += 1;
+    }
+    /// One sample at its absolute archive index: amplitude squares in every sample; the tree details square in on the odd boundary of their level, binned at the emitting sample's bin.
     #[inline]
-    fn push(&mut self, x: i32) -> (i64, i64, i64) {
-        let back = |s: &Self, k: usize| s.hist[(s.pos + 16 - k) % 16] as i64;
-        let x1 = back(self, 1);
-        let x4 = back(self, 4);
-        let x8 = back(self, 8);
-        let x16 = back(self, 16);
+    fn push(&mut self, ch: usize, abs_idx: usize, x: i16) {
+        while (abs_idx >> self.s_log2) >= self.cap {
+            self.fold();
+        }
+        self.total_samples = self.total_samples.max(abs_idx + 1);
+        let k = ENV_COMPONENTS;
+        let base = (ch * self.cap + (abs_idx >> self.s_log2)) * k;
         let xi = x as i64;
-        self.s4 += xi - x4;
-        self.s4p += x4 - x8;
-        self.s8 += xi - x8;
-        self.s8p += x8 - x16;
-        self.hist[self.pos] = x;
-        self.pos = (self.pos + 1) % 16;
-        (xi - x1, (self.s4 - self.s4p) / 4, (self.s8 - self.s8p) / 8)
+        self.sumsq[base] += (xi * xi) as u64;
+        self.counts[base] += 1;
+        let h = &mut self.haar[ch];
+        if abs_idx & 1 == 0 {
+            h.s1 = xi;
+            return;
+        }
+        let blue = xi - h.s1;
+        let pair = xi + h.s1;
+        self.sumsq[base + 3] += (blue * blue) as u64;
+        self.counts[base + 3] += 1;
+        if (abs_idx >> 1) & 1 == 0 {
+            h.p2 = pair;
+            return;
+        }
+        let green = (pair - h.p2) / 2;
+        let quad = pair + h.p2;
+        self.sumsq[base + 2] += (green * green) as u64;
+        self.counts[base + 2] += 1;
+        if (abs_idx >> 2) & 1 == 0 {
+            h.p4 = quad;
+            return;
+        }
+        let red = (quad - h.p4) / 4;
+        self.sumsq[base + 1] += (red * red) as u64;
+        self.counts[base + 1] += 1;
+    }
+    /// Reduce to (env_len, per-component linear RMS tracks): env_len = however many bins the recording ended on, 0..=ENV_CAP — stored as-is, the readers honour it.
+    fn finish(&self) -> (usize, Vec<Vec<f32>>) {
+        let k = ENV_COMPONENTS;
+        let s = 1usize << self.s_log2;
+        let env_len = self.total_samples.div_ceil(s).min(self.cap);
+        let lin = (0..self.nchan * k)
+            .map(|ci| {
+                let (ch, c) = (ci / k, ci % k);
+                (0..env_len)
+                    .map(|bin| {
+                        let i = (ch * self.cap + bin) * k + c;
+                        if self.counts[i] == 0 { 0.0 } else { (self.sumsq[i] as f64 / self.counts[i] as f64).sqrt() as f32 }
+                    })
+                    .collect()
+            })
+            .collect();
+        (env_len, lin)
     }
 }
 
@@ -270,7 +340,7 @@ fn mono_decoder() -> Option<opus::Decoder> {
     opus::Decoder::new(48_000, opus::Channels::Mono).ok()
 }
 
-/// Decode one channel's slot (or silence) with its running decoder, at the caller's frame size — `FRAME_IN` for live-spool input (transcode + preview), `FRAME` for PHCALL2 archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
+/// Decode one channel's slot (or silence) with its running decoder, at the caller's frame size — `FRAME_IN` for live-spool input (transcode + preview), `FRAME` for PHCALL6 archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
 fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> Vec<i16> {
     match cell {
         Some(Cell::Opus(opus)) => {
@@ -292,7 +362,7 @@ fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> 
     }
 }
 
-/// KEEP with transcode → a true N-channel (stereo for 1:1) Opus in the `PHCALL2` container, stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket (dropping it crypto-shreds the spool key either way); removes the spool file on success. `None` = nothing recorded (treat keep as delete) or a codec init failure.
+/// KEEP with transcode → one mono Opus stream per channel in the `PHCALL6` container, stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket (dropping it crypto-shreds the spool key either way); removes the spool file on success. `None` = nothing recorded (treat keep as delete) or a codec init failure.
 pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<Kept> {
     let records = drain_records(&ticket)?;
     let Some(t) = build_container(&records) else {
@@ -307,34 +377,14 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
     Some(Kept { hash, size, thumb: t.thumb, secs: t.secs })
 }
 
-/// The transcode core: drained spool records → a `PHCALL2` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
+/// The transcode core: drained spool records → a `PHCALL6` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
 pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     let (nchan, grid) = grid_from_records(records)?;
     let slots = grid[0].len();
     let slots_out = slots.div_ceil(2);
     let base = records.iter().filter(|r| !r.is_fill()).map(|r| r.osc).min().unwrap_or(0);
-    // Envelope accumulators: EVERY SAMPLE goes straight into one of ENV_BUCKETS bins per channel (Nick 2026-09-10: "every sample of audio, downsampling into bins 65536 wide… square each end so we get a good positive value"): the total sample count is known up front from the slot count, so a sample's bin is its index × ENV_BUCKETS ÷ total, and each bin keeps a sum of SQUARES per component (amplitude and the three band differences) plus a count — the bin's value is the root of the mean square, always positive. ~60 samples a bin on a 90s wave, ~5ms on a two-hour one: a true downsample at every length. 65536 × 4 × nchan doubles for the transcode's duration, then gone. The band states carry across slots so the filters see a continuous signal.
-    let k = ENV_COMPONENTS;
-    let total_samples = (slots_out * FRAME).max(1);
-    let mut sumsq = vec![0f64; nchan * ENV_BUCKETS * k];
-    let mut counts = vec![0u32; nchan * ENV_BUCKETS];
-    let mut bands: Vec<BandState> = (0..nchan).map(|_| BandState::new()).collect();
-    let mut accumulate = |ch: usize, slot_out: usize, half: usize, pcm: &[i16]| {
-        // The absolute sample index of this pcm run's first sample within the archive.
-        let start = slot_out * FRAME + half * FRAME_IN;
-        for (i, &s) in pcm.iter().enumerate() {
-            let x = s as i32;
-            let (d1, d4, d8) = bands[ch].push(x);
-            let bin = ((start + i) as u64 * ENV_BUCKETS as u64 / total_samples as u64).min(ENV_BUCKETS as u64 - 1) as usize;
-            let b = ch * ENV_BUCKETS + bin;
-            let base = b * k;
-            sumsq[base] += (x as f64) * (x as f64);
-            sumsq[base + 1] += (d8 as f64) * (d8 as f64);
-            sumsq[base + 2] += (d4 as f64) * (d4 as f64);
-            sumsq[base + 3] += (d1 as f64) * (d1 as f64);
-            counts[b] += 1;
-        }
-    };
+    // Envelope: every decoded sample streams into the EnvPyramid at its absolute archive index — fixed integer bins from birth, fold-by-2 on overflow, no total needed up front (see the struct doc). The Haar states carry across slots so the tree sees one continuous signal per channel.
+    let mut pyramid = EnvPyramid::new(nchan);
 
     // Packets first, header after: the header carries the envelope, which the packet loop produces.
     let mut container = Vec::with_capacity(slots * 48);
@@ -346,7 +396,7 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         container.extend_from_slice(enc);
     };
 
-    // ONE MONO STREAM PER PARTY (PHCALL5, 2026-09-10): the local channel is a single lossy generation from the raw mic, every channel at the same transparent bitrate; nchan side-by-side mono packets per slot.
+    // ONE MONO STREAM PER PARTY (since PHCALL5, 2026-09-10): the local channel is a single lossy generation from the raw mic, every channel at the same transparent bitrate; nchan side-by-side mono packets per slot.
     {
         // N > 2 fallback: nchan side-by-side MONO packets per slot (no multistream Opus in this crate).
         let mut encs: Vec<opus::Encoder> = (0..nchan)
@@ -371,7 +421,9 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
                     };
                     pcm[half * FRAME_IN..half * FRAME_IN + FRAME_IN].copy_from_slice(&p);
                 }
-                accumulate(ch, slot_out, 0, &pcm);
+                for (i, &s) in pcm.iter().enumerate() {
+                    pyramid.push(ch, slot_out * FRAME + i, s);
+                }
                 let n = encs[ch].encode(&pcm, &mut pkt).ok()?;
                 write_pkt(&mut container, &pkt[..n]);
             }
@@ -382,18 +434,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         return None;
     }
     // Root-mean-square per bin per component — LINEAR, positive — straight into the envelope bytes; the row thumbnail folds the same linear bins to one gross.
-    let env_len = ENV_BUCKETS;
-    let lin: Vec<Vec<f32>> = (0..nchan * k)
-        .map(|ci| {
-            let (ch, c) = (ci / k, ci % k);
-            (0..env_len)
-                .map(|bin| {
-                    let b = ch * env_len + bin;
-                    if counts[b] == 0 { 0.0 } else { (sumsq[b * k + c] / counts[b] as f64).sqrt() as f32 }
-                })
-                .collect()
-        })
-        .collect();
+    let k = ENV_COMPONENTS;
+    let (env_len, lin) = pyramid.finish();
     let mut fine = vec![255u8; nchan * env_len * k];
     for ch in 0..nchan {
         for c in 0..k {
@@ -403,8 +445,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         }
     }
     let thumb = thumbnail(&lin, nchan);
-    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V5.len() + 22 + fine.len() + container.len());
-    out.extend_from_slice(CONTAINER_MAGIC_V5);
+    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V6.len() + 22 + fine.len() + container.len());
+    out.extend_from_slice(CONTAINER_MAGIC_V6);
     out.push(nchan as u8);
     out.extend_from_slice(&48_000u32.to_le_bytes());
     out.extend_from_slice(&base.to_le_bytes());
@@ -419,7 +461,7 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
 /// A decoded recording as a stream of interleaved `FRAME × nchan` i16 frames. Bounded memory: the compressed container stays in RAM (~tens of MB/hour) and each 10 ms frame decodes on demand via [`Self::next_frame`] — never the whole PCM at once (a stereo hour is ~700 MB decoded).
 pub struct KeptStream {
     pub nchan: usize,
-    /// Total playable frames (archive slots for PHCALL3, grid slots for a live-spool preview) — the scrub bar's denominator.
+    /// Total playable frames (archive slots for a kept blob, grid slots for a live-spool preview) — the scrub bar's denominator.
     pub total: usize,
     /// The fine envelope from the container header (`nchan × env_len × ENV_COMPONENTS`, eighth-stops) — empty for a live-spool preview.
     pub envelope: Vec<u8>,
@@ -428,13 +470,7 @@ pub struct KeptStream {
 }
 
 enum Inner {
-    /// PHCALL2, nchan ≤ 2: one sequential decoder, each packet already interleaved.
-    Packed {
-        bytes: Vec<u8>,
-        cur: usize,
-        dec: opus::Decoder,
-    },
-    /// PHCALL2, nchan > 2: nchan mono decoders, `nchan` packets per slot.
+    /// PHCALL6: nchan mono decoders, `nchan` packets per slot.
     Multi {
         bytes: Vec<u8>,
         cur: usize,
@@ -448,47 +484,28 @@ enum Inner {
     },
 }
 
-/// Open a kept-call blob for playback — `PHCALL2` only (PHCALL1 read support deleted with the 5ms flag day). `None` on unknown magic or codec init failure.
+/// Open a kept-call blob for playback — `PHCALL6` only (PHCALL1-5 read support deleted with their flag days, no backwards compat — unknown magic is unknown magic). `None` on unknown magic or codec init failure.
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
-    let v5 = bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V5;
-    if bytes.len() >= 8 && (&bytes[..8] == CONTAINER_MAGIC_V4 || v5) {
-        if bytes.len() < 8 + 22 {
-            return None;
-        }
-        let nchan = bytes[8] as usize;
-        // header: [nchan u8][rate u32][base i64][slots u32][env_per_sec u8][env_len u32] = 22 bytes after magic; envelope then packets follow.
-        let total = u32::from_le_bytes(bytes[8 + 13..8 + 17].try_into().ok()?) as usize;
-        let env_per_sec = bytes[8 + 17];
-        let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
-        let env_end = 8 + 22 + nchan * env_len * ENV_COMPONENTS;
-        if bytes.len() < env_end || nchan == 0 {
-            return None;
-        }
-        let envelope = bytes[8 + 22..env_end].to_vec();
-        let body = bytes[env_end..].to_vec();
-        let inner = if nchan <= 2 && !v5 {
-            let chans = if nchan == 2 {
-                opus::Channels::Stereo
-            } else {
-                opus::Channels::Mono
-            };
-            Inner::Packed {
-                bytes: body,
-                cur: 0,
-                dec: opus::Decoder::new(48_000, chans).ok()?,
-            }
-        } else {
-            Inner::Multi {
-                bytes: body,
-                cur: 0,
-                decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
-            }
-        };
-        Some(KeptStream { nchan, total, envelope, env_per_sec, inner })
-    } else {
-        // PHCALL1/2/3 read support deleted with their flag days (nobody waving yet, no backwards compat) — unknown magic is unknown magic.
-        None
+    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC_V6 {
+        return None;
     }
+    let nchan = bytes[8] as usize;
+    // header: [nchan u8][rate u32][base i64][slots u32][env_per_sec u8][env_len u32] = 22 bytes after magic; envelope then packets follow.
+    let total = u32::from_le_bytes(bytes[8 + 13..8 + 17].try_into().ok()?) as usize;
+    let env_per_sec = bytes[8 + 17];
+    let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
+    let env_end = 8 + 22 + nchan * env_len * ENV_COMPONENTS;
+    if bytes.len() < env_end || nchan == 0 {
+        return None;
+    }
+    let envelope = bytes[8 + 22..env_end].to_vec();
+    let body = bytes[env_end..].to_vec();
+    let inner = Inner::Multi {
+        bytes: body,
+        cur: 0,
+        decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
+    };
+    Some(KeptStream { nchan, total, envelope, env_per_sec, inner })
 }
 
 /// Build a playable stream directly from drained spool records — the Ended-screen PREVIEW path, so Play works before Keep finalizes a blob.
@@ -517,15 +534,6 @@ impl KeptStream {
         let start = slot.saturating_sub(SEEK_PRIME);
         let nchan = self.nchan;
         match &mut self.inner {
-            Inner::Packed { bytes, cur, dec } => {
-                *cur = 0;
-                for _ in 0..start {
-                    if read_pkt(bytes, cur).is_none() {
-                        return;
-                    }
-                }
-                let _ = dec.reset_state();
-            }
             Inner::Multi { bytes, cur, decs } => {
                 *cur = 0;
                 for _ in 0..start * nchan {
@@ -555,12 +563,6 @@ impl KeptStream {
     pub fn next_frame(&mut self) -> Option<Vec<i16>> {
         let nchan = self.nchan;
         match &mut self.inner {
-            Inner::Packed { bytes, cur, dec } => {
-                let opus = read_pkt(bytes, cur)?;
-                let mut out = vec![0i16; FRAME * nchan];
-                let _ = dec.decode(opus, &mut out, false);
-                Some(out)
-            }
             Inner::Multi { bytes, cur, decs } => {
                 let mut out = vec![0i16; FRAME * nchan];
                 for ch in 0..nchan {
@@ -618,7 +620,7 @@ mod tests {
 
     #[test]
     fn transcode_round_trips_to_stereo() {
-        // Build two directions of encoded frames, transcode to a PHCALL2 container, reopen, assert stereo + audible. No storage/vault (build_container is the transcode core).
+        // Build two directions of encoded frames, transcode to a PHCALL6 container, reopen, assert stereo + audible. No storage/vault (build_container is the transcode core).
         let mut enc =
             opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
         let mut buf = vec![0u8; 4000];
@@ -636,15 +638,20 @@ mod tests {
         }
         let t = build_container(&records).unwrap();
         let container = t.container;
-        assert_eq!(&container[..8], CONTAINER_MAGIC_V5);
+        assert_eq!(&container[..8], CONTAINER_MAGIC_V6);
         // The row thumbnail is one gross of buckets per channel, four components each, and a tone is well above the silence floor in every bucket that has audio.
         assert_eq!(t.thumb.len(), 2 * crate::types::WAVE_THUMB_BUCKETS * ENV_COMPONENTS);
         assert!(t.thumb.iter().any(|&b| b < 255), "thumbnail shows only silence");
         let mut ks = open_blob(&container).unwrap();
         assert_eq!(ks.nchan, 2);
         assert_eq!(ks.env_per_sec as usize, ENV_PER_SEC);
-        assert_eq!(ks.envelope.len(), 2 * ENV_BUCKETS * ENV_COMPONENTS);
+        // Variable env_len: 10 archive slots = 4800 samples at 1024 samples a bin = 5 bins per channel.
+        let expect_bins = (10 * FRAME).div_ceil(1usize << ENV_S0_LOG2);
+        assert_eq!(ks.envelope.len(), 2 * expect_bins * ENV_COMPONENTS);
         assert!(ks.envelope.iter().any(|&b| b < 255), "fine envelope shows only silence");
+        let (e_nchan, e_len, e_bytes) = envelope_of_blob(&container).unwrap();
+        assert_eq!((e_nchan, e_len), (2, expect_bins));
+        assert_eq!(e_bytes, ks.envelope);
         let mut frames = 0;
         let mut energy = 0i64;
         while let Some(f) = ks.next_frame() {
@@ -666,6 +673,54 @@ mod tests {
         let mut ks3 = open_blob(&container).unwrap();
         ks3.seek(total + 50);
         assert!(ks3.next_frame().is_none());
+    }
+
+    #[test]
+    fn pyramid_matches_direct_binning() {
+        // The exactness claim: samples streamed through fold-by-2 resizes yield the SAME sums and counts as binning directly at the final width — pure u64 addition, no rounding history.
+        let cap = 8usize;
+        let s0 = 10u32;
+        let n = 5 * cap * (1usize << s0);
+        let mut streamed = EnvPyramid::with_geometry(1, cap, s0);
+        for i in 0..n {
+            let x = (((i * 37 + 11) % 3001) as i32 - 1500) as i16;
+            streamed.push(0, i, x);
+        }
+        // 40 starting bins in a cap of 8 forces three folds: the direct run starts at the folded width and never resizes.
+        assert_eq!(streamed.s_log2, s0 + 3);
+        let mut direct = EnvPyramid::with_geometry(1, cap, s0 + 3);
+        for i in 0..n {
+            let x = (((i * 37 + 11) % 3001) as i32 - 1500) as i16;
+            direct.push(0, i, x);
+        }
+        assert_eq!(streamed.sumsq, direct.sumsq);
+        assert_eq!(streamed.counts, direct.counts);
+        let (a_len, a_lin) = streamed.finish();
+        let (b_len, b_lin) = direct.finish();
+        assert_eq!(a_len, b_len);
+        assert_eq!(a_lin, b_lin);
+    }
+
+    #[test]
+    fn haar_bands_separate_octaves() {
+        // The decimated tree's levels are octave-exclusive: DC excites nothing, a period-2 wave only blue, period-4 only green, period-8 only red.
+        let band_energy = |signal: &dyn Fn(usize) -> i16| -> [u64; 3] {
+            let mut p = EnvPyramid::with_geometry(1, 16, 10);
+            for i in 0..4096 {
+                p.push(0, i, signal(i));
+            }
+            let sum = |c: usize| (0..16).map(|b| p.sumsq[b * ENV_COMPONENTS + c]).sum::<u64>();
+            [sum(1), sum(2), sum(3)]
+        };
+        let a = 1000i16;
+        let dc = band_energy(&|_| a);
+        assert_eq!(dc, [0, 0, 0], "DC leaked into a detail band");
+        let nyq = band_energy(&|i| if i % 2 == 0 { a } else { -a });
+        assert!(nyq[2] > 0 && nyq[0] == 0 && nyq[1] == 0, "period-2 should be blue only: {nyq:?}");
+        let p4 = band_energy(&|i| if (i / 2) % 2 == 0 { a } else { -a });
+        assert!(p4[1] > 0 && p4[0] == 0 && p4[2] == 0, "period-4 should be green only: {p4:?}");
+        let p8 = band_energy(&|i| if (i / 4) % 2 == 0 { a } else { -a });
+        assert!(p8[0] > 0 && p8[1] == 0 && p8[2] == 0, "period-8 should be red only: {p8:?}");
     }
 
     #[test]
