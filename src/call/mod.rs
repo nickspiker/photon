@@ -156,6 +156,8 @@ pub struct ActiveCall {
     pub last_beat_osc: i64,
     /// The friendship era key that OPENED this call's first express frame from the peer (the offer on the callee, the answer on the caller) — every express reply for this call seals under it first, so a one-era skew between the two fleets never strands an answer (field 2026-09-10: Esme re-keyed, Nick's phone had not; his offers opened on her retired era, her answers under her current one were "opened by no friendship").
     pub express_key: Option<[u8; 32]>,
+    /// Offer beats that arrived as EXPRESS frames while Ringing. Zero means the ring came by the lane alone (no direct path, no relay-carried express yet), and the ring lease must not lapse on the express cadence.
+    pub express_beats: u32,
 }
 
 /// The last wave's link readout for the Diagnostics page (engine.rs writes at every stats tick and at teardown): RTT ema in ms (0 = no wave yet), losses in the 256 ring, the jitter target in frames.

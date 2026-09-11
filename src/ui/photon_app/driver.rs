@@ -746,6 +746,9 @@ impl FluorApp for PhotonApp {
                 self.broadcast_focus_claim(false);
                 self.state = AppState::Ready;
                 self.active_conversation = None;
+                // Leaving the conversation stops a playing wave (Nick 2026-09-10: "when you navigate back to contacts the playback needs to stop").
+                self.call_playback = None;
+                self.call_playback_hash = None;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -2401,6 +2404,8 @@ impl FluorApp for PhotonApp {
                             self.broadcast_focus_claim(false);
                             self.state = AppState::Ready;
                             self.active_conversation = None;
+                            self.call_playback = None;
+                            self.call_playback_hash = None;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }

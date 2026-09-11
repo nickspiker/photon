@@ -16,6 +16,9 @@ One sentence per line, however long; plain language for the person who installs 
 - The wave histogram's unplayed part is now solid at half brightness and playing simply brightens it; the translucent ghost and the floating edge pixels are gone.
 - Samsung phones no longer redraw and post the screen on every idle frame.
 
+- A wave to a friend you have no direct path to now rings: the ring signals ride the relay when no direct route exists, and a ring that arrived by the message lane no longer gives up after three seconds waiting for direct beats. Three rings in a row failed this way in the field.
+- Leaving a conversation, or switching to another one, stops a wave that was playing.
+
 ## v90
 
 - A wave's buffering now follows the actual loss on the link instead of ratcheting up on every stumble: it settles as low as the link allows, holds loss to about one packet in two hundred and fifty-six, and fades over the rest. Every packet also measures the round trip, so the log says how far the other end really is.

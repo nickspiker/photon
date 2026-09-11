@@ -278,6 +278,7 @@ impl PhotonApp {
             last_anchor_osc: 0,
             last_beat_osc: now,
             express_key: None,
+            express_beats: 0,
         });
         if !self.send_call_signal(ci, sig) {
             crate::log("CALL: offer send failed (no lane) — not dialing");
@@ -481,9 +482,13 @@ impl PhotonApp {
                 }
             }
             CallPhase::Ringing => {
-                if now - call.last_beat_osc >= 3 * OSC {
+                // The lease runs on the express cadence (3 s) only once an express beat has been seen; a ring that came by the lane alone keeps a 20 s lease, because a caller who vanishes also reaches us as a hangup row and a lane-only peer has no beats to miss.
+                let lease_secs: i64 = if call.express_beats > 0 { 3 } else { 20 };
+                if now - call.last_beat_osc >= lease_secs * OSC {
                     crate::logf!(
-                        "CALL: ring lease lapsed — no offer beat for 3s, caller stopped (id {})",
+                        "CALL: ring lease lapsed — no offer beat for {}s ({} express beat(s) seen), caller stopped (id {})",
+                        lease_secs,
+                        call.express_beats,
                         hex::encode(&call.call_id[..4])
                     );
                     self.active_call = None;
@@ -639,6 +644,7 @@ impl PhotonApp {
                                 last_anchor_osc: 0,
                                 last_beat_osc: vsf::eagle_time_oscillations(),
                             express_key: None,
+            express_beats: 0,
                             });
                             // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_call();
@@ -701,6 +707,7 @@ impl PhotonApp {
                             last_anchor_osc: 0,
                             last_beat_osc: vsf::eagle_time_oscillations(),
                             express_key: None,
+            express_beats: 0,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -995,8 +1002,11 @@ impl PhotonApp {
                 }
             }
         }
-        if targets.is_empty() {
-            crate::logf!("CALL: express {} skipped — no direct path known (lane only)", sig.kind());
+        // RELAY-CARRIED EXPRESS (field 2026-09-11, Brittany/Nick: three rings failed in a row — no direct UDP path between the phones, so every express beat and answer vanished, the lane offer sat behind an undelivered text row, and the one ring that did land died at 3 s for want of beats). When the contact has no validated DIRECT path, every express frame also goes to each of their devices thru the relay pipe; an injected pipe frame lands in the same express drain as a datagram would.
+        let direct_ok = contact.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR);
+        let relay_devs: Vec<[u8; 32]> = if direct_ok { Vec::new() } else { contact.relay_device_list() };
+        if targets.is_empty() && relay_devs.is_empty() {
+            crate::logf!("CALL: express {} skipped — no direct path and no relay device known (lane only)", sig.kind());
             return;
         }
         for a in &targets {
@@ -1004,7 +1014,20 @@ impl PhotonApp {
                 let _ = crate::call::send_media(frame.clone(), *a);
             }
         }
-        crate::logf!("CALL: express {} fired → {} path(s) × {} era key(s)", sig.kind(), targets.len(), frames.len());
+        if let Some(kp) = self.device_keypair.clone().filter(|_| !relay_devs.is_empty()) {
+            let kind = sig.kind();
+            for dev in relay_devs.iter().copied() {
+                for frame in frames.iter().cloned() {
+                    let kp = kp.clone();
+                    crate::network::http::runtime().spawn(async move {
+                        if let Err(e) = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &frame).await {
+                            crate::logf!("CALL: express {} via relay to {} failed: {}", kind, crate::fp(&dev), e);
+                        }
+                    });
+                }
+            }
+        }
+        crate::logf!("CALL: express {} fired → {} path(s) + {} relay device(s) × {} era key(s)", sig.kind(), targets.len(), relay_devs.len(), frames.len());
     }
 
     /// Drain express frames the recv worker parked: trial-open against every friendship (a wrong key just fails the AEAD tag), dispatch as a direct non-merge signal, and remember the source address as the call's freshest direct path. Idempotent against the lane copy arriving later — dup call_ids are no-ops in `on_call_signal`.
@@ -1050,6 +1073,14 @@ impl PhotonApp {
                 crate::fp(&self.contacts[ci].handle_hash)
             );
             self.on_call_signal(ci, sig, lane_key, ts, false, false);
+            // An express offer beat for the ringing call: the lease may run on the express cadence from here on.
+            if matches!(sig, CallSignal::Offer { .. }) {
+                if let Some(call) = self.active_call.as_mut() {
+                    if call.call_id == *sig.call_id() && call.phase == CallPhase::Ringing {
+                        call.express_beats = call.express_beats.saturating_add(1);
+                    }
+                }
+            }
             // Remember the era that opened it — replies for this call seal under it first (send_express_signal).
             if let Some(call) = self.active_call.as_mut() {
                 if call.call_id == *sig.call_id() && call.express_key.is_none() {

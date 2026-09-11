@@ -251,6 +251,9 @@ impl PhotonApp {
 
     /// Open the conversation this contact row stands for.
     pub(super) fn open_conversation_with(&mut self, ci: usize) {
+        // Switching conversations stops a wave that was playing in the one we leave.
+        self.call_playback = None;
+        self.call_playback_hash = None;
         self.active_conversation = self
             .contacts
             .get(ci)
