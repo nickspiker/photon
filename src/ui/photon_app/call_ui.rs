@@ -1476,12 +1476,12 @@ impl PhotonApp {
             .contacts
             .get(ci)
             .and_then(|c| match peer_dev {
+                // No device candidate survives the our-LAN filter (the peer's only known address is on a LAN we are not on): the contact-level race would hand back the same black hole, so take the sentinel and let TX follow the peer's first authenticated packet.
                 Some(dev) => crate::network::traverse::gather::gather_device_candidates(c, &dev)
                     .sorted()
                     .into_iter()
                     .map(|x| x.addr)
-                    .next()
-                    .or_else(|| c.race_addrs().map(|(a, _)| a)),
+                    .next(),
                 None => c.race_addrs().map(|(a, _)| a),
             })
             .unwrap_or_else(|| {
@@ -1489,7 +1489,11 @@ impl PhotonApp {
                 crate::network::status::RELAY_ADDR
             });
         if let Some(dev) = peer_dev {
-            crate::logf!("CALL: media aimed at {} — the answering device {}", addr, crate::fp(&dev));
+            if addr == crate::network::status::RELAY_ADDR {
+                crate::logf!("CALL: no reachable address for the answering device {} — TX waits for its first packet", crate::fp(&dev));
+            } else {
+                crate::logf!("CALL: media aimed at {} — the answering device {}", addr, crate::fp(&dev));
+            }
         }
         let call_id8: [u8; 8] = call_id[..8].try_into().unwrap();
         // Recording by default (docs/calls.md): the engine writes sealed records as the wave runs; the register below is what makes that durable across a crash.

@@ -23,6 +23,11 @@ pub use fgtw::traverse::gather::{
 /// Scanning all of them, not just the active `ip`, is what surfaces a peer's global IPv6 when the active address happens to be v4 — so the v6 host, priority-first, gets tried before a v4 LAN address that may be on a foreign network.
 /// The candidates for ONE device of a contact — a call is with a device, not with a roster. Aiming media at a peer's OTHER device is dead by construction: it is not in the call and holds none of its keys (field 2026-09-11, a wave over WAN aimed its recovery probe at the peer's desktop). Empty when we know no endpoint for that device.
 pub fn gather_device_candidates(contact: &Contact, device: &[u8; 32]) -> CandidateSet {
+    gather_device_candidates_from(contact, device, crate::network::udp::get_local_ip())
+}
+
+/// [`gather_device_candidates`] with our own LAN v4 in hand: the peer's private-v4 candidates survive only when they could actually be on our subnet. THE MEDIA PLANE MUST USE THIS (field 2026-09-11: a phone on cellular aimed a wave at the peer's 192.168.1.x, and the peer aimed back at ours — two black holes, zero packets, while the ring read green). A foreign LAN address is not a worse route, it is no route.
+pub fn gather_device_candidates_from(contact: &Contact, device: &[u8; 32], our_v4: Option<Ipv4Addr>) -> CandidateSet {
     let eps: Vec<PeerEndpoint> = contact
         .device_endpoints
         .iter()
@@ -31,7 +36,7 @@ pub fn gather_device_candidates(contact: &Contact, device: &[u8; 32]) -> Candida
         .collect();
     // `contact.ip` / `p2p_addr` are the contact's own first-met pair; they belong to the device we first met, so they only join when that is the device we are asking about.
     let p2p = (contact.device_key() == Some(*device)).then_some(contact.p2p_addr).flatten();
-    fgtw::traverse::gather::gather_peer_candidates(&eps, p2p, LanPolicy::AnyUsable)
+    fgtw::traverse::gather::gather_peer_candidates(&eps, p2p, LanPolicy::SameSubnetAs(our_v4))
 }
 
 fn contact_endpoints(contact: &Contact) -> Vec<PeerEndpoint> {
