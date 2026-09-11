@@ -62,6 +62,14 @@ pub fn seal_express(
     Some(out)
 }
 
+/// How far an express frame's stamp may sit from now and still be acted on. Generous because two devices' eagle clocks are anchored independently (seconds of skew is normal) and an offer's stamp is its ROW's stamp, not the moment it fired; tight enough that a frame captured off the wire is worthless minutes later. Paired with the nonce cache in the drain, which kills an exact replay inside the window.
+pub const EXPRESS_MAX_SKEW_OSC: i64 = 30 * vsf::OSCILLATIONS_PER_SECOND as i64;
+
+/// The frame's nonce — the drain's replay key (random per frame, so two legitimate frames never collide).
+pub fn express_nonce(bytes: &[u8]) -> Option<[u8; EXPRESS_NONCE_LEN]> {
+    is_express_frame(bytes).then(|| bytes[1..1 + EXPRESS_NONCE_LEN].try_into().ok())?
+}
+
 /// Open an express frame with one friendship's key. `None` = not ours (the receiver trial-opens across friendships — a wrong key fails the tag, never a panic).
 pub fn open_express(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32]>, CallSignal)> {
     use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
@@ -223,6 +231,22 @@ mod tests {
             CallSignal::parse(&garbled),
             Some(CallSignal::Answer { call_id: [5; 16], nonce: [6; 32], device: None })
         );
+    }
+
+    #[test]
+    fn the_replay_guard_can_read_a_nonce_and_two_frames_never_share_one() {
+        let key = [7u8; 32];
+        let sig = CallSignal::Anchor { call_id: [3; 16] };
+        let a = seal_express(&key, 1000, None, &sig).unwrap();
+        let b = seal_express(&key, 1000, None, &sig).unwrap();
+        let (na, nb) = (express_nonce(&a).unwrap(), express_nonce(&b).unwrap());
+        assert_ne!(na, nb, "each frame carries its own random nonce — the drain dedups on it");
+        assert_eq!(express_nonce(&a).unwrap(), na, "reading the nonce is stable");
+        assert!(express_nonce(b"nope").is_none(), "a non-express frame has no nonce");
+        // The stamp rides INSIDE the seal, so the drain's freshness check reads an authenticated value.
+        let (ts, _, _) = open_express(&key, &a).unwrap();
+        assert_eq!(ts, 1000);
+        assert!(EXPRESS_MAX_SKEW_OSC > 0);
     }
 
     #[test]

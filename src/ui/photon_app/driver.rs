@@ -2889,6 +2889,8 @@ impl FluorApp for PhotonApp {
             if self.our_reflexive.is_some() && self.our_reflexive != self.self_record_published_for
             {
                 self.publish_self_peer_record();
+                // …and tell the few peers who are wrong RIGHT NOW, over the relay, instead of waiting for them to ask.
+                self.push_address_change();
                 // Our own row changed, so the persisted copy is stale. Mark it dirty — the debounce gate below writes it off-thread, coalescing with any gossip-growth edge. The phonebook is a cache, so a gossiped row we lose to a crash arrives again on the next exchange.
                 self.request_peer_persist();
             }

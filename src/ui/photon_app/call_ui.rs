@@ -1060,6 +1060,14 @@ impl PhotonApp {
     pub(super) fn drain_express_signals(&mut self) {
         let frames = crate::call::take_express_frames();
         for (bytes, src) in frames {
+            // REPLAY GUARD (2026-09-11, before anchors carry routing): an express frame is sealed, so it cannot be forged — but a captured one could be replayed by anyone on path, and an anchor's SOURCE ADDRESS is what re-aims our media. Two cheap gates: the sealed stamp must be near now, and a nonce we have already opened is dropped. The nonce is checked before the trial decrypt, so a replay costs nothing.
+            let Some(nonce) = crate::call::signal::express_nonce(&bytes) else {
+                continue;
+            };
+            if self.express_seen.contains(&nonce) {
+                crate::log("CALL: express frame replayed (nonce already opened) — dropped");
+                continue;
+            }
             let mut opened: Option<(usize, i64, Option<[u8; 32]>, CallSignal, [u8; 32])> = None;
             for (fid, chains) in &self.friendship_chains {
                 // Current era first, then the retired one: a call offer minted on the old era that lands after our cutover must still open (it used to read as "opened by no friendship").
@@ -1093,6 +1101,16 @@ impl PhotonApp {
                 crate::log("CALL: express frame opened by no friendship — dropped (an era we do not hold: neither current nor retired)");
                 continue;
             };
+            // The stamp is INSIDE the seal, so only the friendship could have written it; all it has to prove is freshness.
+            let skew = (vsf::eagle_time_oscillations() - ts).abs();
+            if skew > crate::call::signal::EXPRESS_MAX_SKEW_OSC {
+                crate::logf!("CALL: express {} stamped {}s away — dropped as stale (replay guard)", sig.kind(), skew / vsf::OSCILLATIONS_PER_SECOND as i64);
+                continue;
+            }
+            if self.express_seen.len() >= 256 {
+                self.express_seen.drain(..64);
+            }
+            self.express_seen.push(nonce);
             crate::logf!(
                 "CALL: express {} from {} (jumped the lane)",
                 sig.kind(),
@@ -1188,6 +1206,7 @@ impl PhotonApp {
             e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio
             e.take_thread()
         });
+        crate::call::set_call_peer_device(None);
         crate::platform::audio::stop();
         Self::stop_ring_alert_platform();
         self.call_minimized = false;
@@ -1463,6 +1482,7 @@ impl PhotonApp {
             None => (None, None),
         };
         // No call_id in the engine params — the media wire dropped it (the basket-derived key IS the call identity; see packet.rs); the id's only job here is naming the spool above.
+        crate::call::set_call_peer_device(self.active_call.as_ref().and_then(|c| c.peer_device));
         let handle = crate::call::engine::start(crate::call::engine::EngineParams {
             secret,
             we_are_caller,

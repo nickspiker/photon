@@ -104,6 +104,62 @@ impl PhotonApp {
     /// This is what re-enters the discovery cycle. Every other address source needs an address already: a pong needs somewhere to send a ping, gossip needs a validated path, and a path needs a punch at an address we do not have. The seed is reachable without knowing anyone, so on a cold start it is the only way in — but it is asked LAST, after the gossip request to every peer we can already reach, because a peer's answer is fresher and costs the seed nothing.
     ///
     /// Results land in `device_endpoints`, which is what `gather_peer_candidates` reads to build punch candidates. They are NOT written to the contact-level `ip` slot: a resolved address is a claim we have not yet round-tripped, and the punch is what promotes it to a real path.
+    /// PUSH REROUTE (Nick 2026-09-11: "if we know our network address changed, we doorbell cloudflare and the phonebook gets updated so we should be able to make this a push reroute"). The seed publish above is a pull for everyone else; this is the push for the few who are wrong RIGHT NOW: the device we are in a wave with, and any contact holding a validated direct path to our old address. It rides the relay, the one channel a moved device can still reach, and carries the same self-signed record gossip carries — so the receiver's existing merge verifies the signature and adopts only a strictly newer record. Traffic: one small frame per device that actually cares, not a fan-out to the roster.
+    pub(super) fn push_address_change(&mut self) {
+        let (Some(kp), Some(addr), Some(hp)) = (self.device_keypair.as_ref(), self.our_reflexive, self.our_handle_proof()) else {
+            return;
+        };
+        if crate::network::traverse::gather::is_bogus_addr(&addr) {
+            return;
+        }
+        let local_ip = self.our_lan_ip.or_else(crate::network::udp::get_local_ip).map(std::net::IpAddr::V4);
+        let mut rec = crate::network::fgtw::PeerRecord {
+            handle_proof: hp,
+            device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
+            ip: addr,
+            local_ip,
+            last_seen: vsf::eagle_time_oscillations(),
+            signature: [0u8; 64],
+        };
+        rec.sign(&kp.secret);
+        // Who is wrong right now: the wave's peer device first, then anyone whose pin points at where we no longer are.
+        let mut targets: Vec<[u8; 32]> = self.active_call.as_ref().and_then(|c| c.peer_device).into_iter().collect();
+        for c in self.contacts.iter().filter(|c| c.validated_path.is_some()) {
+            if let Some(d) = c.device_key() {
+                if !targets.contains(&d) {
+                    targets.push(d);
+                }
+            }
+        }
+        if targets.is_empty() {
+            return;
+        }
+        let provenance = *blake3::hash(&rec.device_pubkey.as_bytes()[..]).as_bytes();
+        let sig = kp.sign(&provenance);
+        let mut sig_bytes = [0u8; 64];
+        sig_bytes.copy_from_slice(&sig.to_bytes());
+        let msg = crate::network::fgtw::protocol::FgtwMessage::PhonebookResponse {
+            timestamp: vsf::eagle_time_oscillations(),
+            responder_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
+            provenance_hash: provenance,
+            signature: sig_bytes,
+            peers: vec![rec],
+        };
+        let bytes = msg.to_vsf_bytes();
+        if bytes.is_empty() {
+            return;
+        }
+        crate::logf!("PHONEBOOK: pushing our new address {} to {} device(s) over the relay", addr, targets.len());
+        let secret = kp.clone();
+        crate::network::http::runtime().spawn(async move {
+            for dev in targets {
+                if let Err(e) = crate::network::fgtw::relay::send_via_relay(&secret, &dev, &bytes).await {
+                    crate::logf!("PHONEBOOK: address push to {} failed: {}", crate::fp(&dev), e);
+                }
+            }
+        });
+    }
+
     pub(super) fn resolve_stalled_addresses_from_seed(&mut self) {
         if self.pb_resolve_rx.is_some() {
             return; // one in flight — a slow seed must not stack requests

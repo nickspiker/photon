@@ -1433,6 +1433,8 @@ pub struct PhotonApp {
     tick_stat_dirty: u32,
     /// Per-section tick cost since the last report (label, summed ms) — the idle screen's 3 ms tick on a phone (2026-09-10) had to be named section by section.
     tick_prof: Vec<(&'static str, f32)>,
+    /// Express frames opened recently, by nonce — the replay guard's memory (bounded; oldest dropped in blocks). See call_ui::drain_express_signals.
+    express_seen: Vec<[u8; 24]>,
     /// Android keep hold: +1 = a keep transcode started (hold a partial wake lock), −1 = it finished (release), 0 = nothing; polled by Kotlin each frame like the session broadcast.
     pub pending_keep_hold: i8,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
@@ -2309,6 +2311,7 @@ impl PhotonApp {
             tick_prof: Vec::new(),
             last_keygen_pickup: None,
             pending_keep_hold: 0,
+            express_seen: Vec::new(),
             identity_pid_cache: std::cell::Cell::new(None),
             last_peer_harvest: None,
             storage: None,

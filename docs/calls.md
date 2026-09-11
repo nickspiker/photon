@@ -84,6 +84,15 @@ Field: a deliberate LAN→WAN switch dropped a wave at the 30 s deadline while b
 
 Media itself still has no relay carriage: if no candidate works, the wave still ends at the 30 s deadline. A relayed media plane is its own design.
 
+## Express replay guard (2026-09-11)
+
+An express frame is sealed under the friendship's era key, so it cannot be forged — but a captured one could be replayed by anyone on path, and an anchor's SOURCE ADDRESS is what re-aims media. Two gates in `drain_express_signals`: the nonce (24 random bytes, already on the wire) must not be one we have already opened — a bounded cache of the last 256, checked BEFORE the trial decrypt, so a replay costs nothing — and the stamp inside the seal must sit within `EXPRESS_MAX_SKEW_OSC` (30 s) of now. Generous because two devices anchor their eagle clocks independently and an offer's stamp is its row's, not its send moment; tight enough that a frame captured off the wire is worthless minutes later.
+
+## Push reroute (2026-09-11)
+
+When our own reflexive address changes we already republish our signed peer record to the seed. That is a pull for everyone else. `push_address_change` is the push for the few who are wrong immediately: the device we are in a wave with, plus any contact holding a validated path to where we no longer are. It rides the relay (a moved device can still reach it) and carries the ordinary self-signed `PeerRecord` inside an unsolicited `PhonebookResponse`, so the receiver's existing merge does the work: the record self-verifies, and only a strictly newer `last_seen` is adopted — replay-safe by the same rule gossip uses, and old builds already parse it.
+On the receive side, a merged record for the device named by `call::call_peer_device()` re-aims media at once (`set_peer_redirect`), so a network change costs one relay round trip instead of a walk through the candidate list. The drought probe stays as the floor for a peer on an older build, or with no relay.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.
