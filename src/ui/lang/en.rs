@@ -479,6 +479,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerBack => "\u{2039} Back".into(),
         Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decoding\u{2026}".into(),
+        Msg::ClipPill => "clip".into(),
+        Msg::ExposureStops(s) => format!("{s} stops").into(),
         Msg::ReaderTooLarge => "too large to read here \u{2014} saved instead".into(),
         Msg::AttachDropHint => "drop a file onto the conversation to send it".into(),
         Msg::BaseLogNote => "Time-ago and sizes on this base use Dozenal Metric Scaling: one digit per doubling, a logarithm rather than a count, so all of time fits in two digits.".into(),

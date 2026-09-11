@@ -132,6 +132,8 @@ icc-profile = "0.0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "bmp"] }
 # Camera RAW / DNG intake for attachment previews (typed attachments 2026-09-10): native-depth counts + both DNG ColorMatrices, decode ONLY — VSF-Image out is the only write it will ever learn.
 limbus = { path = "../limbus" }
+# opsin's ingest + colour pipeline for the attachment viewer (2026-09-11): DNG/RAW/JXL/JPEG/legacy → one native-depth spectral image → linear VSF RGB with the profile's matrix, exposure as a gain at display. Pipeline only — no winit host on Android.
+opsin = { path = "../opsin", default-features = false }
 # JPEG XL decode only (lumis exports): the attachment preview ingest, same as opsin.
 jxl-oxide = "0.12.6"
 img-parts = "0.4"

@@ -8,6 +8,101 @@ use crate::types::{AttachKind, AttachMeta, MICRO_PREVIEW_MAX_EDGE};
 pub const PREVIEW_MAX_EDGE: usize = 512;
 /// Long edge of the "open original" render (a 50 MP photo folds to this on the way to the screen; the file itself stays untouched).
 pub const FULL_VIEW_MAX_EDGE: usize = 4096;
+/// Long edge of the LINEAR buffer the viewer keeps for its exposure control — twelve bytes a pixel, so a phone keeps 2048 (50 MB) and a desktop 4096.
+pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } else { 4096 };
+
+/// THE COLOUR-MANAGED ORIGINAL (Nick 2026-09-11, "colour/spectral managed, vsf rgb as much as possible"): the bytes go thru opsin's ingest (limbus for DNG/RAW with both DNG matrices and the illuminant, jxl-oxide, zune for JPEG, the image crate for the rest) into one native-depth spectral image, then `to_linear_in(VsfRgb)` — the profile's matrix, illuminant-normalised, integer pipeline — gives linear VSF RGB with 65535 = the profile's white. EXIF orientation is applied and the buffer folded to [`LINEAR_VIEW_MAX_EDGE`] here, off the UI thread; exposure is a gain at the display encode ([`encode_linear`]), so it is live. RAW stays CFA-binned (no demosaic) — the same picture opsin shows. None = opsin could not read it (the caller falls back to the gamma-2 path).
+pub fn full_image_linear(bytes: &[u8], name: &str, kind: AttachKind, hash: &[u8; 32]) -> Option<(usize, usize, Vec<i32>)> {
+    if !kind.is_image() {
+        return None;
+    }
+    // opsin reads files (limbus and the JXL reader want a path): one temp copy carrying the original extension, removed before we return.
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let dir = crate::storage::runtime_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("attach-view-{}.{}", hex::encode(&hash[..8]), if ext.is_empty() { "bin" } else { ext.as_str() }));
+    if let Err(e) = std::fs::write(&path, bytes) {
+        crate::logf!("attach: view temp write failed: {}", e);
+        return None;
+    }
+    let out = (|| {
+        let dec = match opsin::convert::load_any(&path) {
+            Ok(d) => d,
+            Err(e) => {
+                crate::logf!("attach: opsin ingest declined {}: {}", ext, e);
+                return None;
+            }
+        };
+        let (w, h, lin) = match opsin::convert::to_linear_in(&dec, opsin::convert::Target::VsfRgb) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::logf!("attach: opsin linear render failed: {}", e);
+                return None;
+            }
+        };
+        let orient = opsin::convert::orientation_code(&dec.img);
+        Some(fold_oriented_linear(&lin, w, h, orient, LINEAR_VIEW_MAX_EDGE))
+    })();
+    let _ = std::fs::remove_file(&path);
+    out
+}
+
+/// Apply an EXIF orientation while folding linear i32 RGB to `max_edge` on the long side: a box mean over the source block of each output pixel, gathered thru opsin's inverse orientation map. Integer all the way.
+fn fold_oriented_linear(lin: &[i32], w: usize, h: usize, orient: u16, max_edge: usize) -> (usize, usize, Vec<i32>) {
+    use rayon::prelude::*;
+    let (ow, oh) = if (5..=8).contains(&orient) { (h, w) } else { (w, h) };
+    let (tw, th) = fit_dims(ow, oh, max_edge);
+    let mut out = vec![0i32; tw * th * 3];
+    out.par_chunks_mut(tw * 3).enumerate().for_each(|(ty, row)| {
+        let y0 = ty * oh / th;
+        let y1 = ((ty + 1) * oh / th).max(y0 + 1).min(oh);
+        for tx in 0..tw {
+            let x0 = tx * ow / tw;
+            let x1 = ((tx + 1) * ow / tw).max(x0 + 1).min(ow);
+            let mut acc = [0i64; 3];
+            let mut n = 0i64;
+            for dy in y0..y1 {
+                for dx in x0..x1 {
+                    let (sx, sy) = opsin::convert::orientation_src(orient, w, h, dx, dy);
+                    let i = (sy.min(h - 1) * w + sx.min(w - 1)) * 3;
+                    acc[0] += lin[i] as i64;
+                    acc[1] += lin[i + 1] as i64;
+                    acc[2] += lin[i + 2] as i64;
+                    n += 1;
+                }
+            }
+            let n = n.max(1);
+            row[tx * 3] = (acc[0] / n) as i32;
+            row[tx * 3 + 1] = (acc[1] / n) as i32;
+            row[tx * 3 + 2] = (acc[2] / n) as i32;
+        }
+    });
+    (tw, th, out)
+}
+
+/// Display encode of linear VSF RGB at `ev` stops: gain, VSF RGB → Rec.2020 (the panel space every platform is tagged for), gamma 2, fluor's α + darkness pixel in the platform byte order. `clip` paints a blown channel black and a crushed one white, opsin's raw-inversion convention.
+pub fn encode_linear(lin: &[i32], ev: f32, clip: bool) -> Vec<u32> {
+    use rayon::prelude::*;
+    let m = transpose3(&vsf::colour::VSF_RGB2REC2020);
+    let gain = 2f32.powf(ev) / 65535.0;
+    lin.par_chunks_exact(3)
+        .map(|px| {
+            let c = [px[0] as f32 * gain, px[1] as f32 * gain, px[2] as f32 * gain];
+            let mut vis = [0u32; 3];
+            for o in 0..3 {
+                let v = m[o * 3] * c[0] + m[o * 3 + 1] * c[1] + m[o * 3 + 2] * c[2];
+                vis[o] = if clip && v >= 1.0 {
+                    0
+                } else if clip && v < 0.0 {
+                    255
+                } else {
+                    (v.clamp(0.0, 1.0).sqrt() * 255.0 + 0.5) as u32
+                };
+            }
+            fluor::theme::dark(fluor::theme::fmt((vis[0] << 16) | (vis[1] << 8) | vis[2]))
+        })
+        .collect()
+}
 /// rav1e base quantizer for preview blobs (the avatar uses 32 at 256 px; a hair coarser keeps a 512-px preview near the 32 KB target).
 const PREVIEW_QUANTIZER: usize = 40;
 

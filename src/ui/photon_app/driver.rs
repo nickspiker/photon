@@ -333,9 +333,9 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.link_consent_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3);
-        // Viewer / reader overlay: back, original, save, and the pane itself (a swallow — taps on the picture select no row).
+        // Viewer / reader overlay: back, original, save, the pane itself (a swallow — taps on the picture select no row), then the exposure row: −½ stop, +½ stop, reset, clip view.
         self.viewer_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(4);
+        self.hit_counter = self.hit_counter.wrapping_add(8);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
@@ -1531,13 +1531,17 @@ impl FluorApp for PhotonApp {
             if self.viewer_base != HIT_NONE
                 && (self.viewer.is_some() || self.reader.is_some())
                 && hit_id >= self.viewer_base
-                && hit_id < self.viewer_base.wrapping_add(4)
+                && hit_id < self.viewer_base.wrapping_add(8)
             {
                 match hit_id - self.viewer_base {
                     0 => {
                         self.close_viewers();
                     }
                     1 => self.request_full_image(),
+                    4 => self.viewer_exposure(-0.5, false, false),
+                    5 => self.viewer_exposure(0.5, false, false),
+                    6 => self.viewer_exposure(0.0, true, false),
+                    7 => self.viewer_exposure(0.0, false, true),
                     2 => {
                         let target = self
                             .viewer
@@ -3560,6 +3564,9 @@ impl PhotonApp {
             let (idtx, idrx) = std::sync::mpsc::channel();
             self.img_decoded_tx = idtx;
             self.img_decoded_rx = idrx;
+            let (iltx, ilrx) = std::sync::mpsc::channel();
+            self.img_linear_tx = iltx;
+            self.img_linear_rx = ilrx;
             let (hptx, hprx) = std::sync::mpsc::channel();
             self.hist_opened_tx = hptx;
             self.hist_opened_rx = hprx;

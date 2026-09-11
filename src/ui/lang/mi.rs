@@ -503,6 +503,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerBack => "\u{2039} Hoki".into(),
         Msg::ViewerOriginal => "Taketake".into(),
         Msg::ViewerDecoding => "e wetewete ana\u{2026}".into(),
+        Msg::ClipPill => "tapahi".into(),
+        Msg::ExposureStops(s) => format!("{s} taumata").into(),
         Msg::ReaderTooLarge => "he nui rawa hei pānui i konei \u{2014} kua tiakina".into(),
         Msg::AttachDropHint => "tukua he kōnae ki runga i te kōrerorero hei tuku".into(),
         Msg::BaseLogNote => "Ko te wā kua hipa me ngā rahi i konei ka whakamahi i te Ine Tekau-mā-rua: kotahi te mati mō ia takiruatanga, he taukī kaua ko te tatau, nō reira ka uru te wā katoa ki roto i ngā mati e rua.".into(),

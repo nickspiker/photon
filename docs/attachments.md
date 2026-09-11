@@ -34,3 +34,9 @@ Overlays inside the conversation (painted before the row walk, hit-stamped after
 - Foreign audio decode-only ingest behind a `KeptStream`-shaped source so the wave card plays audio files.
 - A VSF video container (AV1 frames with eagle stamps + Opus track); foreign video stays byte-exact with a film pill.
 - Streaming picker read on Android (a content URI read in chunks), eager sibling replication of originals, scoped-blobs for attachments.
+
+## The colour-managed viewer (2026-09-11, opsin in photon)
+
+"Open original" no longer decodes to gamma-2 bytes. The bytes go thru opsin's pipeline (`opsin` is a path dependency with `default-features = false`: the ingest + colour code, no winit host): limbus for DNG and camera RAW (both DNG matrices and the illuminant become the profile), jxl-oxide, zune for JPEG, the image crate for the rest, into one native-depth spectral image; `to_linear_in(Target::VsfRgb)` renders linear VSF RGB (65535 = the profile's white) with opsin's integer pipeline. Photon applies the EXIF orientation while folding that buffer to `LINEAR_VIEW_MAX_EDGE` (2048 on a phone, 4096 on a desktop — twelve bytes a pixel) off the UI thread, and keeps it for the viewer.
+The display encode (`attach_preview::encode_linear`) is where exposure lives: a gain in stops, VSF RGB → Rec.2020, gamma 2, fluor's pixel in the platform byte order. The viewer's exposure row (−½, +½, 0, clip) re-encodes the held buffer on the UI thread (a few milliseconds at 4 MP); the clip view paints blown channels black and crushed ones white. Nothing touches the original bytes; the exposure is a viewing choice, not an edit, until a send-as-VSF carries it as opsin records it.
+RAW stays CFA-binned (no demosaic — Nick: skip it); what opsin declines falls back to the old gamma-2 decode. Histograms and the spectral chart are opsin's panel and not ported yet.

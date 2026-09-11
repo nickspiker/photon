@@ -15,6 +15,10 @@ pub(super) struct Viewer {
     pub pan: (f32, f32),
     /// The Original decode was requested (its pixels land in the image cache under the content hash).
     pub full_requested: bool,
+    /// Exposure in stops applied at the display encode of the linear original (0 = as rendered by the profile).
+    pub ev: f32,
+    /// Clip view: blown channels black, crushed ones white.
+    pub clip: bool,
 }
 
 /// The open text file: its lines and the scroll position.
@@ -84,6 +88,8 @@ impl PhotonApp {
             zoom: 1.0,
             pan: (0.0, 0.0),
             full_requested: false,
+            ev: 0.0,
+            clip: false,
         });
         self.reader = None;
         self.selected_msg = None;
@@ -106,11 +112,18 @@ impl PhotonApp {
         };
         self.img_pending.insert(hash);
         let tx = self.img_decoded_tx.clone();
+        let ltx = self.img_linear_tx.clone();
         queue_job(&self.seal_job_tx, move || {
             let Some(bytes) = crate::storage::blob_load(&seed, &hash) else {
                 let _ = tx.send((hash, None));
                 return;
             };
+            // The colour-managed path first (opsin: linear VSF RGB, exposure live at display); the gamma-2 decode only for what opsin declines.
+            if let Some((w, h, lin)) = crate::ui::attach_preview::full_image_linear(&bytes, &name, kind, &hash) {
+                crate::logf!("attach: original rendered linear {w}×{h} (opsin)");
+                let _ = ltx.send((hash, w, h, lin));
+                return;
+            }
             let raw_tmp = super::attachments::raw_temp_path(kind, &hash, &bytes);
             let out = crate::ui::attach_preview::full_image(&bytes, &name, kind, raw_tmp.as_deref());
             if let Some(p) = raw_tmp {
@@ -187,6 +200,7 @@ impl PhotonApp {
         let was = self.viewer.is_some() || self.reader.is_some();
         self.viewer = None;
         self.reader = None;
+        self.viewer_lin = None; // the linear original is the viewer's — up to 50 MB on a phone
         if was {
             self.scene_dirty = true;
         }
@@ -202,6 +216,43 @@ impl PhotonApp {
             self.msg_wrap = None;
             self.scene_dirty = true;
         }
+    }
+
+    /// A linear original landed: keep it for the exposure control and show it at the viewer's current exposure.
+    pub(super) fn drain_img_linear(&mut self) {
+        while let Ok((hash, w, h, lin)) = self.img_linear_rx.try_recv() {
+            self.img_pending.remove(&hash);
+            let (ev, clip) = self.viewer.as_ref().filter(|v| v.hash == hash).map_or((0.0, false), |v| (v.ev, v.clip));
+            let px = crate::ui::attach_preview::encode_linear(&lin, ev, clip);
+            self.img_cache.insert(hash, Some((w, h, px)));
+            self.viewer_lin = Some((hash, w, h, std::sync::Arc::new(lin)));
+            self.msg_wrap = None;
+            self.scene_dirty = true;
+        }
+    }
+
+    /// Exposure control on the open viewer: `delta` stops (0 = no change), `reset` back to the profile's rendering, `toggle_clip` flips the clip view. Re-encodes the held linear original at once; if the original is not linear yet, asks for it.
+    pub(super) fn viewer_exposure(&mut self, delta: f32, reset: bool, toggle_clip: bool) {
+        let Some(v) = self.viewer.as_mut() else {
+            return;
+        };
+        if reset {
+            v.ev = 0.0;
+        } else {
+            v.ev = (v.ev + delta).clamp(-6.0, 6.0);
+        }
+        if toggle_clip {
+            v.clip = !v.clip;
+        }
+        let (hash, ev, clip) = (v.hash, v.ev, v.clip);
+        match self.viewer_lin.as_ref().filter(|(h, ..)| *h == hash) {
+            Some((_, w, h, lin)) => {
+                let px = crate::ui::attach_preview::encode_linear(lin, ev, clip);
+                self.img_cache.insert(hash, Some((*w, *h, px)));
+            }
+            None => self.request_full_image(),
+        }
+        self.scene_dirty = true;
     }
 
     /// Preview wants the last render collected: a held preview blob → decode job; a missing one → one fetch per session (the friend + every sibling answer).

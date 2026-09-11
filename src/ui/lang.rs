@@ -536,6 +536,9 @@ pub enum Msg<'a> {
     ViewerBack,
     ViewerOriginal,
     ViewerDecoding,
+    /// Viewer exposure row: the clip-view pill, and the caption's exposure readout (stops, signed).
+    ClipPill,
+    ExposureStops(&'a str),
     ReaderTooLarge,
     AttachDropHint,
     InspectFailed(&'a str),

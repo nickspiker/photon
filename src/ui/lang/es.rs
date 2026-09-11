@@ -499,6 +499,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerBack => "\u{2039} Volver".into(),
         Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decodificando\u{2026}".into(),
+        Msg::ClipPill => "recorte".into(),
+        Msg::ExposureStops(s) => format!("{s} pasos").into(),
         Msg::ReaderTooLarge => "demasiado grande para leer aquí \u{2014} guardado".into(),
         Msg::AttachDropHint => "suelta un archivo sobre la conversación para enviarlo".into(),
         Msg::BaseLogNote => "Aquí el tiempo transcurrido y los tamaños usan Escala Métrica Duodecimal: un dígito por duplicación, un logaritmo y no un conteo, así todo el tiempo cabe en dos dígitos.".into(),

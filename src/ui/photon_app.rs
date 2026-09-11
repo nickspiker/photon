@@ -1306,6 +1306,11 @@ pub struct PhotonApp {
     img_pending: std::collections::HashSet<[u8; 32]>,
     img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
     img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
+    /// Linear VSF RGB originals from the opsin path (viewer.rs drain_img_linear).
+    img_linear_tx: std::sync::mpsc::Sender<([u8; 32], usize, usize, Vec<i32>)>,
+    img_linear_rx: std::sync::mpsc::Receiver<([u8; 32], usize, usize, Vec<i32>)>,
+    /// The open viewer's linear original (hash, w, h, pixels) — re-encoded at each exposure change; dropped with the viewer.
+    viewer_lin: Option<([u8; 32], usize, usize, std::sync::Arc<Vec<i32>>)>,
     /// Preview blobs the last render wanted: (contact handle, hash, held here) — drained into decode jobs / fetches on the tick (the walk cannot borrow &mut self).
     img_wants: Vec<([u8; 32], [u8; 32], bool)>,
     /// Preview blobs auto-fetched this session (one ask each).
@@ -2201,6 +2206,12 @@ impl PhotonApp {
                 tx
             },
             img_decoded_rx: std::sync::mpsc::channel().1,
+            img_linear_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            img_linear_rx: std::sync::mpsc::channel().1,
+            viewer_lin: None,
             img_wants: Vec::new(),
             attach_auto_fetched: std::collections::HashSet::new(),
             viewer: None,

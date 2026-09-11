@@ -2957,7 +2957,8 @@ impl PhotonApp {
                             consent_stamp = Some((prects, py0));
                         }
                         // ── IMAGE VIEWER / TEXT READER ── painted BEFORE the walk (earliest paint wins under-blend) over the whole list region, hit-stamped AFTER it: the pane swallows taps, three pills win their rects back.
-                        let mut viewer_stamp: Option<[fluor::region::Region; 3]> = None;
+                        // (region, hit offset) pairs the pane re-asserts after the row walk: the three pills, plus the exposure row when a picture is open.
+                        let mut viewer_stamp: Option<Vec<(fluor::region::Region, HitId)>> = None;
                         if self.viewer.is_some() || self.reader.is_some() {
                             let pane_h = (list_bottom - list_top).max(1.0);
                             paint::fill_rect(&mut canvas, 0, list_top as isize, buf_w as isize, pane_h as isize, 0xFF00_0000 | 0x00F4_F4F4, None, None);
@@ -2969,7 +2970,12 @@ impl PhotonApp {
                                 fluor::region::Region::new(pad_x + pw + line_h * 0.5, py, pw, pill_h * 0.9),
                                 fluor::region::Region::new(pad_x + (pw + line_h * 0.5) * 2.0, py, pw, pill_h * 0.9),
                             ];
-                            let img_top = py + pill_h * 1.1;
+                            // EXPOSURE ROW (opsin pipeline, 2026-09-11): −½ stop, +½ stop, back to the profile's rendering, and the clip view — only under a picture.
+                            let exposure_row = self.viewer.is_some();
+                            let pw2 = ((buf_w as f32 - pad_x * 2.0 - line_h * 1.5) / 4.0).max(msg_size * 2.0);
+                            let py2 = py + pill_h * 1.05;
+                            let erects: [fluor::region::Region; 4] = std::array::from_fn(|i| fluor::region::Region::new(pad_x + (pw2 + line_h * 0.5) * i as f32, py2, pw2, pill_h * 0.9));
+                            let img_top = if exposure_row { py2 + pill_h * 1.1 } else { py + pill_h * 1.1 };
                             let img_area_h = (list_bottom - img_top).max(1.0);
                             if let Some((w, h, px)) = self.viewer.as_ref().and_then(|v| super::viewer::viewer_pixels_of(v, &self.img_cache, raw_msgs)) {
                                 let v = self.viewer.as_ref().expect("viewer");
@@ -2985,11 +2991,17 @@ impl PhotonApp {
                                 let decoding = self.img_pending.contains(&v.hash) || v.preview_hash.is_some_and(|ph| self.img_pending.contains(&ph));
                                 let orig_done = matches!(self.img_cache.get(&v.hash), Some(Some(_)));
                                 let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
-                                let caption = format!("{}{}{}", v.name, if decoding { format!(" \u{00B7} {}", tr(Msg::ViewerDecoding)) } else { String::new() }, if orig_done { " \u{00B7} 1:1" } else { "" });
+                                let ev_note = if v.ev.abs() > 0.01 { format!(" \u{00B7} {}", tr(Msg::ExposureStops(&format!("{}{:.1}", if v.ev > 0.0 { "+" } else { "" }, v.ev)))) } else { String::new() };
+                                let caption = format!("{}{}{}{}", v.name, ev_note, if decoding { format!(" \u{00B7} {}", tr(Msg::ViewerDecoding)) } else { String::new() }, if orig_done { " \u{00B7} 1:1" } else { "" });
                                 ctx.text.draw_text_left(&mut canvas, &caption, pad_x, list_bottom - line_h * 0.4, &small, None, None);
                                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
                                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::ViewerOriginal), self.viewer_base.wrapping_add(1), ctx.pressed_hit, !orig_done && crate::storage::blob_present(&v.hash), None, "Oxanium");
                                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, crate::storage::blob_present(&v.hash), None, "Oxanium");
+                                let labels: [std::borrow::Cow<'_, str>; 4] = ["\u{2212}\u{00BD}".into(), "+\u{00BD}".into(), "0".into(), tr(Msg::ClipPill)];
+                                for (i, r) in erects.iter().enumerate() {
+                                    let lit = i == 3 && v.clip;
+                                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, *r, &labels[i], self.viewer_base.wrapping_add(4 + i as HitId), ctx.pressed_hit, true, lit.then_some(*theme::PILL_GREEN), "Oxanium");
+                                }
                             } else if let Some(r) = self.reader.as_ref() {
                                 let mono = TextStyle::new(msg_size * 0.9, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
                                 let step = msg_size * 1.2;
@@ -3008,7 +3020,12 @@ impl PhotonApp {
                                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
                                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, true, None, "Oxanium");
                             }
-                            viewer_stamp = Some(prects);
+                            let mut stamps: Vec<(fluor::region::Region, HitId)> = vec![(prects[0], 0), (prects[2], 2)];
+                            if exposure_row {
+                                stamps.push((prects[1], 1));
+                                stamps.extend(erects.iter().enumerate().map(|(i, r)| (*r, 4 + i as HitId)));
+                            }
+                            viewer_stamp = Some(stamps);
                         }
                         // TOP-ANCHOR while the conversation fits the view: the stream reads avatar/name → msg 1 → msg 2 from the top, ONE strip — bottom-anchoring a short history floated the header block mid-screen above a clump of bottom messages ("rendered in a different layer"). Once content outgrows the view the min() saturates and the classic newest-at-bottom anchor takes over seamlessly.
                         let mut y = (list_top + content_h).min(list_bottom) - msg_size + scroll;
@@ -3909,12 +3926,10 @@ impl PhotonApp {
                             }
                         }
                         // Viewer / reader hit re-assert: the pane swallows (its own id, so a tap is a no-op rather than a row select), the pills win their rects back.
-                        if let Some(prects) = viewer_stamp {
+                        if let Some(stamps) = viewer_stamp {
                             restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, list_top as isize, buf_w as isize, list_bottom as isize, self.viewer_base.wrapping_add(3));
-                            let live = if self.viewer.is_some() { vec![0usize, 1, 2] } else { vec![0, 2] };
-                            for pi in live {
-                                let r = prects[pi];
-                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base.wrapping_add(pi as HitId));
+                            for (r, off) in stamps {
+                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base.wrapping_add(off));
                             }
                         }
                         // Consent panel hit re-assert (the row walk stamped over it): HIT_NONE swallows everything under the panel, then the three pills win their own rects back.
