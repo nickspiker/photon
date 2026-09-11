@@ -73,6 +73,42 @@ pub(super) fn viewer_pixels_of<'a>(v: &Viewer, cache: &'a ImgCache, msgs: &[crat
 }
 
 impl PhotonApp {
+    /// Open a held image in the OPSIN app (Nick 2026-09-11: "once opened in opsin, that's when we get options like rotate, expose, save, delete"): decrypt to a runtime-dir temp, spawn opsin on it, and a watcher thread removes the temp when opsin exits. False = no binary / no blob / Android — the caller falls back to the in-app viewer.
+    pub(super) fn open_in_opsin(&mut self, hash: &[u8; 32], name: &str) -> bool {
+        if cfg!(target_os = "android") {
+            return false;
+        }
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return false;
+        };
+        let Some(bytes) = crate::storage::blob_load(&seed, hash) else {
+            return false;
+        };
+        let Some(path) = super::attachments::view_temp_path(name, hash, &bytes) else {
+            return false;
+        };
+        // Photon launched from Finder/desktop has a minimal PATH, so ~/.local/bin is tried explicitly before the bare name.
+        let home_bin = std::env::var("HOME").map(|h| std::path::PathBuf::from(h).join(".local/bin/opsin")).ok().filter(|p| p.exists());
+        let candidates: Vec<std::ffi::OsString> = home_bin.map(|p| p.into_os_string()).into_iter().chain([std::ffi::OsString::from("opsin")]).collect();
+        for exe in candidates {
+            match std::process::Command::new(&exe).arg(&path).spawn() {
+                Ok(mut child) => {
+                    crate::log("attach: opened in opsin");
+                    let tmp = path.clone();
+                    let _ = std::thread::Builder::new().name("opsin-view".into()).spawn(move || {
+                        let _ = child.wait();
+                        let _ = std::fs::remove_file(&tmp);
+                    });
+                    return true;
+                }
+                Err(_) => continue,
+            }
+        }
+        let _ = std::fs::remove_file(&path);
+        crate::log("attach: opsin not found — in-app viewer");
+        false
+    }
+
     /// Open the viewer on an image row (the preview blob or micro thumb shows at once; the Original decode is a pill away).
     pub(super) fn open_viewer(&mut self, ci: usize, hash: [u8; 32]) {
         let Some((meta, name)) = self.conv_of(ci).and_then(|v| {

@@ -8,7 +8,9 @@ pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
 /// A RAW's temp copy for limbus (file-only reader): written into the runtime dir under the content hash, None for every other kind or on a write failure. The caller removes it once the decode has landed.
 /// A temp copy of any picked/held image for the opsin viewer path (its readers want a path), carrying the original extension so the ingest dispatches on it. Lives in runtime_dir beside the RAW temp; the caller removes it after the render.
 pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
+    // The name's extension when it has one; images travel nameless now, so the bytes' own magic names the rest (opsin's ingest dispatches on the extension).
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let ext = if ext.is_empty() { crate::types::sniff_ext(bytes).to_string() } else { ext };
     let dir = crate::storage::runtime_dir();
     let _ = std::fs::create_dir_all(&dir);
     let path = dir.join(format!("attach-view-{}.{}", hex::encode(&hash[..8]), if ext.is_empty() { "bin" } else { ext.as_str() }));
@@ -136,7 +138,9 @@ impl PhotonApp {
                 return;
             }
         };
-        let content = crate::types::attachment_content(&hash, &name, bytes.len() as u64);
+        // Images travel NAMELESS (Nick 2026-09-11: "the user typed nothing. just an image") — a camera filename is metadata nobody chose to send; the receiver derives the ingest extension from the bytes' own magic.
+        let wire_name = if meta.kind.is_image() { "" } else { name.as_str() };
+        let content = crate::types::attachment_content(&hash, wire_name, bytes.len() as u64);
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview));
         if !self.send_chain_message(ci, &content, false, None, None) {
@@ -400,6 +404,15 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         let base = dirs::download_dir()?;
         let _ = std::fs::create_dir_all(&base);
+        // A nameless attachment (images travel without filenames) saves under its hash prefix with a magic-sniffed extension.
+        let derived;
+        let name = if name.is_empty() {
+            let head = crate::storage::blob_load(&seed, content_hash).unwrap_or_default();
+            derived = format!("photon-{}.{}", hex::encode(&content_hash[..8]), crate::types::sniff_ext(&head));
+            derived.as_str()
+        } else {
+            name
+        };
         // Dedupe: name, name (2), name (3)…
         let mut dest = base.join(name);
         let (stem, ext) = match name.rsplit_once('.') {

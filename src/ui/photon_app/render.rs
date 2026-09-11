@@ -2453,6 +2453,8 @@ impl PhotonApp {
                         let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
                         let ev_note = if v.ev.abs() > 0.01 { format!(" \u{00B7} {}", tr(Msg::ExposureStops(&format!("{}{:.1}", if v.ev > 0.0 { "+" } else { "" }, v.ev)))) } else { String::new() };
                         let caption = format!("{}{}{}{}", v.name, ev_note, if decoding { format!(" \u{00B7} {}", tr(Msg::ViewerDecoding)) } else { String::new() }, if orig_done { " \u{00B7} 1:1" } else { "" });
+                        // Nameless images leave a dangling separator at the front — trim it.
+                        let caption = caption.trim_start_matches([' ', '\u{00B7}']).to_string();
                         ctx.text.draw_text_left(&mut canvas, &caption, pad_x, buf_h as f32 - line_h * 0.4, &small, None, None);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::ViewerOriginal), self.viewer_base.wrapping_add(1), ctx.pressed_hit, !orig_done && crate::storage::blob_present(&v.hash), None, "Oxanium");

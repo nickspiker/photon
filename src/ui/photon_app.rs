@@ -727,7 +727,9 @@ fn display_row(msg: &crate::types::ChatMessage) -> String {
                 },
                 k => k.glyph().to_string(),
             };
-            return tr(Msg::FileBubble { glyph: &glyph, name: &name, size: &size_str, held }).into_owned();
+            // Images show no filename — the user typed nothing, the picture is the message (and new sends carry no name at all); the glyph + size line remains for the not-yet-fetched state.
+            let shown_name = if a.kind.is_image() { "" } else { name.as_str() };
+            return tr(Msg::FileBubble { glyph: &glyph, name: shown_name, size: &size_str, held }).into_owned();
         }
     }
     display_content(&msg.content)

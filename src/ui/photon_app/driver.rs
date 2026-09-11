@@ -1432,10 +1432,12 @@ impl FluorApp for PhotonApp {
                                 .and_then(|m| m.attach.map(|a| a.kind));
                             if let Some((hash, name, _)) = att {
                                 let held = crate::storage::blob_present(&hash);
-                                // An IMAGE opens the viewer as soon as any picture exists for it (the preview blob or the row's micro thumb) — the original fetches from the viewer's own pill.
+                                // An IMAGE opens in OPSIN when the original is held and the binary exists (Nick 2026-09-11: rotate/expose/save live there); otherwise the in-app viewer as soon as any picture exists — the original fetches from its pill.
                                 let image_viewable = kind.is_some_and(|k| k.is_image()) && (held || self.img_wants_any_picture(sci, &hash));
                                 if image_viewable {
-                                    self.open_viewer(sci, hash);
+                                    if !(held && self.open_in_opsin(&hash, &name)) {
+                                        self.open_viewer(sci, hash);
+                                    }
                                 } else if !held {
                                     self.attach_fetch(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());

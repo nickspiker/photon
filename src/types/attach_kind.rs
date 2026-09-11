@@ -157,6 +157,34 @@ pub fn micro_text(bytes: &[u8]) -> Vec<u8> {
     s[..end].replace(['\r', '\0'], "").into_bytes()
 }
 
+/// The file extension the bytes' own magic names — for the viewer temp of a NAMELESS attachment (images travel without filenames), so opsin's extension-dispatched ingest picks the right reader. TIFF-shaped bytes say "dng" (limbus reads the family); unknown magic says "bin".
+pub fn sniff_ext(bytes: &[u8]) -> &'static str {
+    let starts = |m: &[u8]| bytes.len() >= m.len() && &bytes[..m.len()] == m;
+    let at = |off: usize, m: &[u8]| bytes.len() >= off + m.len() && &bytes[off..off + m.len()] == m;
+    if starts(&[0xFF, 0xD8, 0xFF]) {
+        return "jpg";
+    }
+    if starts(&[0xFF, 0x0A]) || starts(b"\0\0\0\x0cJXL ") {
+        return "jxl";
+    }
+    if starts(b"\x89PNG\r\n\x1a\n") {
+        return "png";
+    }
+    if starts(b"GIF8") {
+        return "gif";
+    }
+    if starts(b"RIFF") && at(8, b"WEBP") {
+        return "webp";
+    }
+    if starts(b"II*\0") || starts(b"MM\0*") || starts(b"IIRO") || starts(b"IIRS") {
+        return "dng";
+    }
+    if starts(b"R") && bytes.len() >= 4 && bytes[..bytes.len().min(4096)].windows(14).any(|w| w == b"spectral_image") {
+        return "vsf";
+    }
+    "bin"
+}
+
 /// Sniff the kind from the bytes, with the name as a tiebreak only where the container cannot tell (TIFF-shaped camera RAWs, a zip that is an APK, code vs text).
 pub fn sniff(bytes: &[u8], name: &str) -> AttachKind {
     use AttachKind::*;

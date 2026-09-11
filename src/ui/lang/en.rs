@@ -473,7 +473,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // The "would tofu in the bubble font" caveat here was never true — MEASURED 2026-09-08 (tests/glyph_fallback_probe.rs): the glyph block falls back to Oxanium's `+glyphs` face from any primary family, so file sizes render dozenal like every other numeral.
         Msg::FileBubble { glyph, name, size, held } => {
             let state = if held { "" } else { " \u{2014} tap for actions" };
-            format!("{glyph} {name} \u{00B7} {size}{state}").into()
+            let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
+            format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
         Msg::OpenPill => "Open".into(),
         Msg::ViewerBack => "\u{2039} Back".into(),

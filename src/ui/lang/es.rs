@@ -493,7 +493,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::FileBubble { glyph, name, size, held } => {
             let state = if held { "" } else { " \u{2014} toca para acciones" };
-            format!("{glyph} {name} \u{00B7} {size}{state}").into()
+            let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
+            format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
         Msg::OpenPill => "Abrir".into(),
         Msg::ViewerBack => "\u{2039} Volver".into(),
