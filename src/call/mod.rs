@@ -156,6 +156,8 @@ pub struct ActiveCall {
     pub last_beat_osc: i64,
     /// The friendship era key that OPENED this call's first express frame from the peer (the offer on the callee, the answer on the caller) — every express reply for this call seals under it first, so a one-era skew between the two fleets never strands an answer (field 2026-09-10: Esme re-keyed, Nick's phone had not; his offers opened on her retired era, her answers under her current one were "opened by no friendship").
     pub express_key: Option<[u8; 32]>,
+    /// Which candidate endpoint the drought's media probe is on (call_drought_tick walks the peer's candidates one per anchor round). Reset when media resumes.
+    pub reconnect_probe: u32,
     /// Offer beats that arrived as EXPRESS frames while Ringing. Zero means the ring came by the lane alone (no direct path, no relay-carried express yet), and the ring lease must not lapse on the express cadence.
     pub express_beats: u32,
 }

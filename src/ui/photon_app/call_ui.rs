@@ -279,6 +279,7 @@ impl PhotonApp {
             last_beat_osc: now,
             express_key: None,
             express_beats: 0,
+            reconnect_probe: 0,
         });
         if !self.send_call_signal(ci, sig) {
             crate::log("CALL: offer send failed (no lane) — not dialing");
@@ -552,6 +553,21 @@ impl PhotonApp {
             }
             if now - last_anchor >= anchor_every {
                 if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
+                    // MEDIA FOLLOWS THE SEARCH (2026-09-11): the engine's TX is pinned to the address the call opened on; after a network change that address is a black hole and nothing re-points it, because re-pointing waits on media we can no longer receive. Each anchor round moves TX to the next candidate, so within a few rounds we are sending at the peer's live address — which is also what opens our NAT for its return path.
+                    let cands: Vec<std::net::SocketAddr> = self
+                        .contacts
+                        .get(ci)
+                        .map(|c| crate::network::traverse::gather::gather_peer_candidates(c).sorted().into_iter().map(|x| x.addr).collect())
+                        .unwrap_or_default();
+                    if !cands.is_empty() {
+                        let n = self.active_call.as_ref().map_or(0, |c| c.reconnect_probe) as usize;
+                        let addr = cands[n % cands.len()];
+                        crate::call::set_peer_redirect(addr);
+                        crate::logf!("CALL: reconnect probe {} of {} — media aimed at {}", n % cands.len() + 1, cands.len(), addr);
+                        if let Some(c) = self.active_call.as_mut() {
+                            c.reconnect_probe = c.reconnect_probe.wrapping_add(1);
+                        }
+                    }
                     self.send_express_signal(ci, &CallSignal::Anchor { call_id }, now, None);
                 }
                 if let Some(c) = self.active_call.as_mut() {
@@ -562,6 +578,7 @@ impl PhotonApp {
             crate::log("CALL: media resumed — reconnected");
             if let Some(c) = self.active_call.as_mut() {
                 c.reconnecting = false;
+                c.reconnect_probe = 0;
             }
             self.scene_dirty = true;
         }
@@ -645,6 +662,7 @@ impl PhotonApp {
                                 last_beat_osc: vsf::eagle_time_oscillations(),
                             express_key: None,
             express_beats: 0,
+            reconnect_probe: 0,
                             });
                             // Both users already pressed call — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the call stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_call();
@@ -708,6 +726,7 @@ impl PhotonApp {
                             last_beat_osc: vsf::eagle_time_oscillations(),
                             express_key: None,
             express_beats: 0,
+            reconnect_probe: 0,
                         });
                         self.ring_alert(ci);
                         crate::logf!(
@@ -955,6 +974,8 @@ impl PhotonApp {
         if frames.is_empty() {
             return;
         }
+        // An OFFER fans wide by design; an ANCHOR fans wide because the path it would otherwise trust is the one in doubt.
+        let wide = matches!(sig, CallSignal::Offer { .. } | CallSignal::Anchor { .. });
         // RING WANTS BREADTH, REPLIES WANT PRECISION (fleet lifecycle, 2026-09-08). An OFFER is the ding — it fans to every known endpoint of every fold-trusted device, so all the callee's devices ring at express speed instead of waiting on replication. Every other signal is a reply about one specific call: it targets the ONE peer device driving it — the call's freshest express source plus that device's own endpoint addresses (multiple addresses of one device is a race, not a misfire; multiple DEVICES was the 2026-09-08 sibling-hangup bug). validated_path is only the no-better-knowledge fallback: it's per-CONTACT (whichever device punch-validated last), not per-call.
         let mut targets: Vec<std::net::SocketAddr> = Vec::new();
         // Never a loopback or unspecified target: a frame sent to ourselves opens under our own friendship key and reads as the peer's (2026-09-10 anchor storm).
@@ -963,7 +984,11 @@ impl PhotonApp {
                 t.push(a);
             }
         };
-        if matches!(sig, CallSignal::Offer { .. }) {
+        if wide {
+            // Every candidate the phonebook knows, not just the address this call came in on — the one that still works is exactly the one the stale pin is hiding.
+            for c in crate::network::traverse::gather::gather_peer_candidates(contact).sorted() {
+                push(&mut targets, c.addr);
+            }
             for ep in &contact.device_endpoints {
                 if !contact.knows_device(&ep.pubkey) {
                     continue;
@@ -1002,8 +1027,9 @@ impl PhotonApp {
                 }
             }
         }
+        // AN ANCHOR NEVER TRUSTS THE VALIDATED PATH (field 2026-09-11, Nick/Emma: a deliberate LAN→WAN switch mid-wave — the validated path stayed Some but was dead, so every anchor went to two stale addresses with no relay copy, and the wave dropped at the 30 s deadline with both sides still reachable over the relay). An anchor is fired precisely when the direct path is in doubt, so it goes to every candidate endpoint AND over the relay, always.
         // RELAY-CARRIED EXPRESS (field 2026-09-11, Brittany/Nick: three rings failed in a row — no direct UDP path between the phones, so every express beat and answer vanished, the lane offer sat behind an undelivered text row, and the one ring that did land died at 3 s for want of beats). When the contact has no validated DIRECT path, every express frame also goes to each of their devices thru the relay pipe; an injected pipe frame lands in the same express drain as a datagram would.
-        let direct_ok = contact.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR);
+        let direct_ok = !matches!(sig, CallSignal::Anchor { .. }) && contact.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR);
         let relay_devs: Vec<[u8; 32]> = if direct_ok { Vec::new() } else { contact.relay_device_list() };
         if targets.is_empty() && relay_devs.is_empty() {
             crate::logf!("CALL: express {} skipped — no direct path and no relay device known (lane only)", sig.kind());

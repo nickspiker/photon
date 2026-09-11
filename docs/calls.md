@@ -75,6 +75,15 @@ Nick: recording by default, each party chooses keep-or-delete after. The wire st
 
 `engine::TIER_NAMES`, bottom to top: **sublight** (16 kbps), **light speed** (32), **ridiculous speed** (64), **ludicrous speed** (128), **plaid** (raw 48 kHz PCM, LAN only). The call panel prints the live rung beside the round trip as a frequency in the current base, the loss ring and the buffer depth — on every build, from `LAST_LINK_*` which the engine refreshes once a second (the 10 s log line is unchanged).
 
+## Surviving a network change mid-wave (2026-09-11)
+
+Field: a deliberate LAN→WAN switch dropped a wave at the 30 s deadline while both phones were still reachable over the relay the whole time. Three things were wrong and all three are fixed.
+- The engine's TX stayed pinned to the address the call opened on. Re-pointing only ever happened on an inbound authenticated packet, which is exactly what a dead path cannot deliver — a deadlock. Now each anchor round during a drought aims media at the NEXT candidate endpoint (`reconnect_probe` walks `gather_peer_candidates`), which also opens our NAT for that path's return.
+- Anchors went only to the call's own addresses. An anchor now fans to every candidate the phonebook holds, like an offer.
+- Anchors took the relay only when no validated path existed — but a stale path still reads as valid, so a moved peer got no relay copy at all. An anchor now ALWAYS sends its relay copy; it is fired precisely when the direct path is in doubt.
+
+Media itself still has no relay carriage: if no candidate works, the wave still ends at the 30 s deadline. A relayed media plane is its own design.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.
