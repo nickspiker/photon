@@ -98,6 +98,15 @@ On the receive side, a merged record for the device named by `call::call_peer_de
 The field case that named it: the presence ring was green (a validated direct path) and the wave still carried zero packets each way. The validated path belonged to the CONTACT and pointed at the peer's MacBook, sitting on our own LAN, while the wave was with their phone on cellular. Green was honest — that contact really was reachable directly — and useless, because the media plane needs the address of the device that answered.
 Everything the media plane picks is now device-scoped: the engine's opening address (`gather_device_candidates` for `ActiveCall::peer_device`, contact-level race only when no device is known), the drought probe's walk, and an anchor's target set. A contact-level address remains right for an OFFER, which rings every device by design.
 
+## Why a WAN wave rang and carried nothing (2026-09-11)
+
+Three faults stacked, each hiding the next.
+1. The engine took the CONTACT's validated path, so a wave with a phone was aimed at that person's laptop on our own LAN. Fixed: every media-plane address is now device-scoped.
+2. The candidate gather kept any usable private address, so a phone on a carrier network aimed at the peer's `192.168.x`. Fixed: the media plane uses the our-LAN-aware policy the retransmit and punch paths already used, and takes the sentinel (waiting for the peer's first packet) when nothing survives.
+3. The one that mattered: a device on a home LAN learned its REFLEXIVE address from peers on that same LAN, so it believed its public address was its LAN address and published that everywhere — seed, gossip, and the push reroute. A peer on cellular therefore had no reachable address for it at all, while messaging kept working because PT reaches the home network's real public IP for other devices behind it. Fixed in fgtw: a private observation fills an empty slot but never displaces a public one.
+
+Messaging masked all three: PT runs direct to the home network's public address at over a megabit, so only the wave failed.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.
