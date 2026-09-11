@@ -281,7 +281,7 @@ impl PhotonApp {
             express_beats: 0,
             reconnect_probe: 0,
         });
-        if !self.send_call_signal(ci, sig) {
+        if !self.send_call_signal(ci, sig, now) {
             crate::log("CALL: offer send failed (no lane) — not dialing");
             self.active_call = None;
             self.dialed_call_ids.remove(&call_id);
@@ -332,7 +332,7 @@ impl PhotonApp {
         };
         let callee_nonce: [u8; 32] = rand::random();
         let our_device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
-        if !self.send_call_signal(ci, CallSignal::Answer { call_id, nonce: callee_nonce, device: our_device }) {
+        if !self.send_call_signal(ci, CallSignal::Answer { call_id, nonce: callee_nonce, device: our_device }, vsf::eagle_time_oscillations()) {
             // The reason is already logged by chain_transmit. Field 2026-09-08: a re-CLUTCH with the caller's fleet was mid-ceremony, the friendship had no chain, and the tap silently did nothing while the ring kept going — say so on screen.
             let name = self.contacts.get(ci).map(|c| c.display_name()).unwrap_or_default();
             crate::log("CALL: answer send failed — the friendship can't carry a frame right now (ceremony in progress?)");
@@ -376,7 +376,7 @@ impl PhotonApp {
         }
         let (call_id, peer, offer_osc) = (call.call_id, call.peer_handle_hash, call.offer_osc);
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-            let _ = self.send_call_signal(ci, CallSignal::Decline { call_id });
+            let _ = self.send_call_signal(ci, CallSignal::Decline { call_id }, vsf::eagle_time_oscillations());
         }
         self.end_call(WaveOutcome::Declined, offer_osc);
     }
@@ -426,7 +426,7 @@ impl PhotonApp {
         );
         crate::logf!("CALL: hangup_call (phase {}, id {})", format!("{:?}", phase), hex::encode(&call_id[..4]));
         if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-            let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
+            let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id }, vsf::eagle_time_oscillations());
         }
         let _ = phase_osc; // the wave row's seconds come from the phase base inside end_call
         let outcome = match phase {
@@ -534,7 +534,7 @@ impl PhotonApp {
             );
             // The Hangup rides the durable lane row: a far end alive behind a dead path converges the moment any path heals, and the row tombstones the chip fleet-wide.
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-                let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
+                let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id }, vsf::eagle_time_oscillations());
             }
             self.end_call(WaveOutcome::Dropped, offer_osc);
             return;
@@ -680,7 +680,7 @@ impl PhotonApp {
                     Some(_) => {
                         // Busy: only the direct receiver replies (merge is history, and every sibling replying would triplicate it).
                         if !from_merge {
-                            let _ = self.send_call_signal(ci, CallSignal::Busy { call_id });
+                            let _ = self.send_call_signal(ci, CallSignal::Busy { call_id }, vsf::eagle_time_oscillations());
                         }
                     }
                     None => {
@@ -761,7 +761,7 @@ impl PhotonApp {
                     // An answer with no active call. Loud-kill ONLY if THIS device dialed that call this session (the caller dismissed/lost it and the answer strayed in late — without the hangup the friend sits Active on a dead call). Any other device is a fleet SIBLING hearing the friend's answer fan-out, and it must stay SILENT: the express key is per-friendship so its hangup authenticates as the whole identity, and on 2026-09-08 the non-calling sibling's "kill it loudly" tore down Brittany's engine 107ms after answer — 17s of nobody hearing anybody. Siblings observe, never destroy (fleetwide wave presence — join/switch mid-call — rides on exactly that). Trade accepted: a caller that CRASHED (RAM set gone) no longer kills its own stray answer; the friend hangs up a one-way call by hand, which beats every multi-device call dying at answer.
                     if !from_merge && !row_is_outgoing {
                         if self.dialed_call_ids.contains(&call_id) {
-                            let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id });
+                            let _ = self.send_call_signal(ci, CallSignal::Hangup { call_id }, vsf::eagle_time_oscillations());
                         } else {
                             crate::logf!(
                                 "CALL: answer for a call this device didn't place (id {}) — ignored (sibling's copy)",
@@ -823,7 +823,7 @@ impl PhotonApp {
                     CallPhase::Active => {
                         // A second device answered late — first won.
                         if call.callee_nonce != Some(nonce) && !from_merge {
-                            let _ = self.send_call_signal(ci, CallSignal::Taken { call_id });
+                            let _ = self.send_call_signal(ci, CallSignal::Taken { call_id }, vsf::eagle_time_oscillations());
                         }
                     }
                     // Ringing/Ended: an answer arriving after we've already left the live window is stale — ignore it.
@@ -905,9 +905,9 @@ impl PhotonApp {
     }
 
     /// Send one signal on the lane (hidden wire content, probe-pattern) AND store it as a hidden OUTGOING row pushed to our siblings — the fleet's ring/stop fan-out (a sibling seeing our Answer row stops its own ring).
-    fn send_call_signal(&mut self, ci: usize, sig: CallSignal) -> bool {
+    /// `ts` is the row's stamp, passed in rather than read here: the OFFER must be stamped with the caller's `offer_osc` — every device that lives the call mints its wave row at offer_osc+1, and the fold-by-shared-stamp dedup only works when the dialing device's local offer_osc IS the row's stamp. A second clock read here gave the dialer a private stamp and every wave showed twice on a multi-device fleet.
+    fn send_call_signal(&mut self, ci: usize, sig: CallSignal, ts: i64) -> bool {
         let content = sig.to_content();
-        let ts = vsf::eagle_time_oscillations();
         let sent = self.chain_transmit(ci, &content, ts, None, None);
         if sent {
             let mut row = ChatMessage::new_with_timestamp(content, true, ts);
