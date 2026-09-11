@@ -6,6 +6,21 @@ use super::*;
 pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
 
 /// A RAW's temp copy for limbus (file-only reader): written into the runtime dir under the content hash, None for every other kind or on a write failure. The caller removes it once the decode has landed.
+/// A temp copy of any picked/held image for the opsin viewer path (its readers want a path), carrying the original extension so the ingest dispatches on it. Lives in runtime_dir beside the RAW temp; the caller removes it after the render.
+pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
+    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
+    let dir = crate::storage::runtime_dir();
+    let _ = std::fs::create_dir_all(&dir);
+    let path = dir.join(format!("attach-view-{}.{}", hex::encode(&hash[..8]), if ext.is_empty() { "bin" } else { ext.as_str() }));
+    match std::fs::write(&path, bytes) {
+        Ok(()) => Some(path),
+        Err(e) => {
+            crate::logf!("attach: view temp write failed: {}", e);
+            None
+        }
+    }
+}
+
 pub(super) fn raw_temp_path(kind: crate::types::AttachKind, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
     if kind != crate::types::AttachKind::RawImage {
         return None;

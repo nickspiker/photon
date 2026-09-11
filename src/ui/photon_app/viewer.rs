@@ -119,7 +119,12 @@ impl PhotonApp {
                 return;
             };
             // The colour-managed path first (opsin: linear VSF RGB, exposure live at display); the gamma-2 decode only for what opsin declines.
-            if let Some((w, h, lin)) = crate::ui::attach_preview::full_image_linear(&bytes, &name, kind, &hash) {
+            let linear = super::attachments::view_temp_path(&name, &hash, &bytes).and_then(|p| {
+                let out = crate::ui::attach_preview::full_image_linear(&p, kind);
+                let _ = std::fs::remove_file(&p);
+                out
+            });
+            if let Some((w, h, lin)) = linear {
                 crate::logf!("attach: original rendered linear {w}×{h} (opsin)");
                 let _ = ltx.send((hash, w, h, lin));
                 return;

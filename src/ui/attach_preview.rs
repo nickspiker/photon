@@ -12,21 +12,13 @@ pub const FULL_VIEW_MAX_EDGE: usize = 4096;
 pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } else { 4096 };
 
 /// THE COLOUR-MANAGED ORIGINAL (Nick 2026-09-11, "colour/spectral managed, vsf rgb as much as possible"): the bytes go thru opsin's ingest (limbus for DNG/RAW with both DNG matrices and the illuminant, jxl-oxide, zune for JPEG, the image crate for the rest) into one native-depth spectral image, then `to_linear_in(VsfRgb)` — the profile's matrix, illuminant-normalised, integer pipeline — gives linear VSF RGB with 65535 = the profile's white. EXIF orientation is applied and the buffer folded to [`LINEAR_VIEW_MAX_EDGE`] here, off the UI thread; exposure is a gain at the display encode ([`encode_linear`]), so it is live. RAW stays CFA-binned (no demosaic) — the same picture opsin shows. None = opsin could not read it (the caller falls back to the gamma-2 path).
-pub fn full_image_linear(bytes: &[u8], name: &str, kind: AttachKind, hash: &[u8; 32]) -> Option<(usize, usize, Vec<i32>)> {
+pub fn full_image_linear(path: &std::path::Path, kind: AttachKind) -> Option<(usize, usize, Vec<i32>)> {
     if !kind.is_image() {
         return None;
     }
-    // opsin reads files (limbus and the JXL reader want a path): one temp copy carrying the original extension, removed before we return.
-    let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
-    let dir = crate::storage::runtime_dir();
-    let _ = std::fs::create_dir_all(&dir);
-    let path = dir.join(format!("attach-view-{}.{}", hex::encode(&hash[..8]), if ext.is_empty() { "bin" } else { ext.as_str() }));
-    if let Err(e) = std::fs::write(&path, bytes) {
-        crate::logf!("attach: view temp write failed: {}", e);
-        return None;
-    }
-    let out = (|| {
-        let dec = match opsin::convert::load_any(&path) {
+    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    {
+        let dec = match opsin::convert::load_any(path) {
             Ok(d) => d,
             Err(e) => {
                 crate::logf!("attach: opsin ingest declined {}: {}", ext, e);
@@ -42,9 +34,7 @@ pub fn full_image_linear(bytes: &[u8], name: &str, kind: AttachKind, hash: &[u8;
         };
         let orient = opsin::convert::orientation_code(&dec.img);
         Some(fold_oriented_linear(&lin, w, h, orient, LINEAR_VIEW_MAX_EDGE))
-    })();
-    let _ = std::fs::remove_file(&path);
-    out
+    }
 }
 
 /// Apply an EXIF orientation while folding linear i32 RGB to `max_edge` on the long side: a box mean over the source block of each output pixel, gathered thru opsin's inverse orientation map. Integer all the way.
