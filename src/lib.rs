@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_bits/dms_age/dms_size DMS doubling counts, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age/dms_size/dms_length DMS doubling counts as a pure logarithm, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
@@ -216,10 +216,10 @@ pub fn length_doublings(metres: f64) -> i32 {
     (metres / HYDROGEN_LINE_METRES).log2().floor() as i32
 }
 
-/// A signed doubling count in dozenal glyphs with bit-length semantics: k ≥ 0 reads as `k + 1` (the unit itself is Zila, like one bit or one second), k < 0 reads as a minus and the halving count.
+/// A signed doubling count in dozenal glyphs: the unit itself is Zil, k doublings read k, k halvings read a minus and k — symmetric about the unit, a pure logarithm.
 pub fn dms_doublings_glyphs(k: i32) -> String {
     if k >= 0 {
-        dozenal_glyphs((k + 1) as u32)
+        dozenal_glyphs(k as u32)
     } else {
         format!("\u{2212}{}", dozenal_glyphs(k.unsigned_abs()))
     }
@@ -228,7 +228,7 @@ pub fn dms_doublings_glyphs(k: i32) -> String {
 /// [`dms_doublings_glyphs`] spelled in digit words (the legend's second column).
 pub fn dms_doublings_spell(k: i32) -> String {
     if k >= 0 {
-        dozenal_spell((k + 1) as u32)
+        dozenal_spell(k as u32)
     } else {
         format!("\u{2212}{}", dozenal_spell(k.unsigned_abs()))
     }
@@ -243,9 +243,9 @@ pub fn dms_length(metres: f64) -> String {
     }
 }
 
-/// DMS — the dozenal age (Nick 2026-09-09): how many times a second has doubled since the event, i.e. the BIT LENGTH of the seconds count. 0 = now, 1 = a second, 2 = two or three seconds, 3 = four to seven, … 11 = half an hour, 12 (Zila Zil) = an hour, 17 = a day, 22 = a month, 25 = a year; the age of the universe is 58 (Tera Stela), so all of time fits in two dozenal digits. Rendered as glyphs by [`dms_age`]; the About-side legend uses [`dozenal_spell`] on the same value.
-pub fn dms_bits(secs: i64) -> u32 {
-    u64::BITS - (secs.max(0) as u64).leading_zeros()
+/// DMS — the doubling count, a PURE LOGARITHM: floor(log2 n). One unit reads Zil, two Zila, four Zilor, eight Ter (Nick 2026-09-11: "should it really be Zil? Not Zila" — the earlier bit-length form sat one digit above the log so that zero could be a digit; zero is a word now). None for zero, which has no logarithm.
+pub fn dms_log(n: u64) -> Option<u32> {
+    (n > 0).then(|| 63 - n.leading_zeros())
 }
 
 /// Do sizes and ages render BARE, without a unit word? Dozenal (DMS doublings) and hex (linear counts) do; arabic keeps the unit'd counts of the ledger world.
@@ -258,12 +258,26 @@ pub fn hex_linear(n: u64) -> String {
     format!("{n:X}")
 }
 
-/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — the bit length of the size in BITS, so one byte is Tera (4), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
+/// A sub-second span in hex: SECONDS with a hexadecimal fraction, three hex digits (a quarter-millisecond step) — 66 ms reads 0.10E, twenty 0.052. The unit stays the second; only the digits change base.
+pub fn hex_seconds_ms(ms: u64) -> String {
+    let mut whole = ms / 1000;
+    let mut frac = ((ms % 1000) * 4096 + 500) / 1000;
+    if frac == 4096 {
+        whole += 1;
+        frac = 0;
+    }
+    format!("{whole:X}.{frac:03X}")
+}
+
+/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — floor(log2) of the size in BITS, so one byte is Ter (3), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
 pub fn dms_size(bytes: u64) -> String {
     let bits = bytes.saturating_mul(8);
     match num_base() {
         NumBase::Hex => hex_linear(bits),
-        _ => fmt_num(dms_bits(bits.min(i64::MAX as u64) as i64)),
+        _ => match dms_log(bits) {
+            Some(k) => fmt_num(k),
+            None => crate::ui::lang::tr(crate::ui::lang::Msg::DmsEmpty).into_owned(),
+        },
     }
 }
 
@@ -271,19 +285,22 @@ pub fn dms_size(bytes: u64) -> String {
 pub fn dms_age(secs: i64) -> String {
     match num_base() {
         NumBase::Hex => hex_linear(secs.max(0) as u64),
-        _ => fmt_num(dms_bits(secs)),
+        _ => match dms_log(secs.max(0) as u64) {
+            Some(k) => fmt_num(k),
+            None => crate::ui::lang::tr(crate::ui::lang::Msg::DmsNow).into_owned(),
+        },
     }
 }
 
-/// A LATENCY as a DOZENAL METRIC FREQUENCY (Nick 2026-09-10: "1 Hz reads Zila, 2 Hz Zilor, 4 Hz Ter, 8 Hz Tera"): the bit length of the frequency in hertz — each digit a doubling — rendered in the current base (hex reads the plain hertz, arabic the milliseconds).
+/// A LATENCY as a DOZENAL METRIC FREQUENCY (1 Hz reads Zil, 2 Hz Zila, 4 Hz Zilor, 8 Hz Ter): the bit length of the frequency in hertz — each digit a doubling — rendered in the current base (hex reads the plain hertz, arabic the milliseconds).
 pub fn link_freq_label(rtt_ms: u32) -> String {
     match num_base() {
         NumBase::Dozenal => {
             let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64;
-            dozenal_glyphs(dms_bits(hz))
+            dozenal_glyphs(dms_log(hz.max(1) as u64).unwrap_or(0))
         }
-        // Hex is linear and shows what the machine holds: the round trip in milliseconds (seconds would floor every link to nothing).
-        NumBase::Hex => hex_linear(rtt_ms as u64),
+        // Hex is linear in SECONDS, the fraction in hex too (Nick 2026-09-11: "0.0001A is a valid duration in seconds in hex"): no decimal prefix smuggled back in.
+        NumBase::Hex => hex_seconds_ms(rtt_ms as u64),
         NumBase::Arabic => format!("{rtt_ms} ms"),
     }
 }
@@ -444,7 +461,10 @@ pub(crate) mod base_kat {
         assert_eq!(hex_linear(60), "3C");
         assert_eq!(dms_age(3600), "E10");
         assert_eq!(dms_size(1 << 20), "800000");
-        assert_eq!(link_freq_label(20), "14", "the round trip itself, in milliseconds");
+        assert_eq!(link_freq_label(20), "0.052", "seconds, the fraction in hex");
+        assert_eq!(hex_seconds_ms(66), "0.10E");
+        assert_eq!(hex_seconds_ms(1000), "1.000");
+        assert_eq!(hex_seconds_ms(999), "0.FFC");
         assert_eq!(fmt_halves(3), "+1.8");
         assert_eq!(unit_size(1024, SizeUnit::KiB), "2000", "bits, no unit, like every other hex size");
         assert_eq!(fmt_num64(1 << 40), "10000000000");
@@ -454,9 +474,12 @@ pub(crate) mod base_kat {
     #[test]
     fn dozenal_is_doublings() {
         let _g = hold_base(NumBase::Dozenal);
-        assert_eq!(dms_age(3600), g(&[1, 0]), "an hour is twelve doublings of a second");
-        assert_eq!(dms_size(1 << 20), g(&[2, 0]), "a megabyte is twenty-four doublings of a bit");
-        assert_eq!(link_freq_label(20), g(&[6]), "50 Hz is six doublings");
+        assert_eq!(dms_age(3600), g(&[11]), "an hour is eleven doublings of a second");
+        assert_eq!(dms_age(1), g(&[0]), "one second is the unit: Zil");
+        assert_eq!(dms_age(0), "now", "zero has no logarithm and reads as a word");
+        assert_eq!(dms_size(1 << 20), g(&[1, 11]), "a megabyte is twenty-three doublings of a bit");
+        assert_eq!(dms_size(0), "empty");
+        assert_eq!(link_freq_label(20), g(&[5]), "50 Hz is five doublings");
         assert_eq!(fmt_halves(3), format!("+{}.{}", g(&[1]), g(&[6])));
         assert_eq!(fmt_halves(-1), format!("-{}.{}", g(&[0]), g(&[6])));
         assert_eq!(unit_size(1024, SizeUnit::KiB), format!("{} KiB", g(&[1])));
@@ -466,7 +489,7 @@ pub(crate) mod base_kat {
     #[test]
     fn arabic_is_the_ledger_world() {
         let _g = hold_base(NumBase::Arabic);
-        assert_eq!(dms_age(3600), "12");
+        assert_eq!(dms_age(3600), "11");
         assert_eq!(link_freq_label(20), "20 ms");
         assert_eq!(fmt_halves(3), "+1.5");
         assert_eq!(fmt_halves(2), "+1.0");
@@ -481,14 +504,14 @@ pub(crate) mod base_kat {
     #[test]
     fn lengths_count_doublings_of_the_hydrogen_line() {
         assert_eq!(length_doublings(HYDROGEN_LINE_METRES), 0);
-        assert_eq!(dms_doublings_spell(0), "Zila", "the unit itself reads Zila, like one bit or one second");
+        assert_eq!(dms_doublings_spell(0), "Zil", "the unit itself reads Zil: a pure logarithm");
         assert_eq!(dms_doublings_spell(length_doublings(0.19)), "\u{2212}Zila");
-        assert_eq!(dms_doublings_spell(length_doublings(1.7)), "Tera");
-        assert_eq!(dms_doublings_spell(length_doublings(3.844e8)), "Zilor Luna");
+        assert_eq!(dms_doublings_spell(length_doublings(1.7)), "Ter");
+        assert_eq!(dms_doublings_spell(length_doublings(3.844e8)), "Zilor Lun");
         assert_eq!(dms_doublings_spell(length_doublings(1.616e-35)), "\u{2212}Stel Lun");
-        assert_eq!(dms_doublings_spell(length_doublings(8.8e26)), "Luna Lunor");
+        assert_eq!(dms_doublings_spell(length_doublings(8.8e26)), "Luna Luna");
         let _g = hold_base(NumBase::Dozenal);
-        assert_eq!(dms_length(1.7), g(&[4]));
+        assert_eq!(dms_length(1.7), g(&[3]));
         assert_eq!(dms_length(0.19), format!("\u{2212}{}", g(&[1])));
     }
 }
@@ -497,17 +520,17 @@ pub(crate) mod base_kat {
 mod log_seal_tests {
     use super::*;
 
-    /// DMS sizes count doublings of a BIT (Nick 2026-09-09: "I say bits"): one byte is 4, a kilobyte 14, a megabyte 24, a gigabyte 34, and nothing is 0.
+    /// DMS sizes count doublings of a BIT (Nick 2026-09-09: "I say bits"), as a pure logarithm (2026-09-11): a bit is 0, a byte 3, a kilobyte 13, a megabyte 23, a gigabyte 33, and nothing has no digit.
     #[test]
     fn dms_size_counts_bit_doublings() {
         let _g = base_kat::hold_base(NumBase::Dozenal);
-        let bits = |bytes: u64| dms_bits((bytes * 8) as i64);
-        assert_eq!(bits(0), 0);
-        assert_eq!(bits(1), 4);
-        assert_eq!(bits(1024), 14);
-        assert_eq!(bits(1 << 20), 24);
-        assert_eq!(bits(1 << 30), 34);
-        assert_eq!(dms_size(1), fmt_num(4));
+        let bits = |bytes: u64| dms_log(bytes * 8);
+        assert_eq!(bits(0), None);
+        assert_eq!(bits(1), Some(3));
+        assert_eq!(bits(1024), Some(13));
+        assert_eq!(bits(1 << 20), Some(23));
+        assert_eq!(bits(1 << 30), Some(33));
+        assert_eq!(dms_size(1), fmt_num(3));
     }
 
     #[test]

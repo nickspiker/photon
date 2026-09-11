@@ -14,7 +14,7 @@ The same word means a different amount on each scale (Tera is four peers, sixtee
 
 ## DMS: doublings, spelled dozenal
 
-A quantity shows as how many times its unit has doubled: the bit length of the count, written in dozenal digits (Zil 0, Zila 1, Zilor 2, Ter 3, Tera 4, Teror 5, Lun 6, Luna 7, Lunor 8, Stel 9, Stela 10, Stelor 11). One unit reads Zila, two Zilor, four Ter, eight Tera. It is a logarithm rather than a count, so a bit and a terabyte, a second and the age of the universe, each fit in two digits, and halving or doubling, the only step people feel, is one digit either way. "Metric" is the doubling; "dozenal" is only the numeral it is written in.
+A quantity shows as how many times its unit has doubled: the floor of log base two of the count, written in dozenal digits (Zil 0, Zila 1, Zilor 2, Ter 3, Tera 4, Teror 5, Lun 6, Luna 7, Lunor 8, Stel 9, Stela 10, Stelor 11). One unit reads Zil, two Zila, four Zilor, eight Ter. Zero has no logarithm and reads as a word: an age of nothing is "now", a size of nothing is "empty". Nick, 2026-09-11: "straight up log base something conversion; the only evenly spaced scale on this slide rule". It is a logarithm rather than a count, so a bit and a terabyte, a second and the age of the universe, each fit in two digits, and halving or doubling, the only step people feel, is one digit either way. "Metric" is the doubling; "dozenal" is only the numeral it is written in.
 
 ## The unit of account
 
@@ -24,7 +24,7 @@ Every scale counts doublings of one physical anchor, chosen so that it is defini
 |---|---|---|---|
 | size | a bit | the smallest thing that exists in a message | nothing (Zil) |
 | age, duration | an Eagle second: 1,420,407,826 oscillations of the hydrogen line | photon's own second, already its clock | reads Zil, "now"; sub-second spans are shown inverted, as a frequency |
-| rate, latency | one hertz | a round trip's interesting range is 5 ms to 2 s, 0.5 to 200 Hz, so inverting keeps the floor at one | 1 Hz reads Zila; slower than a second is a failure, not a number |
+| rate, latency | one hertz | a round trip's interesting range is 5 ms to 2 s, 0.5 to 200 Hz, so inverting keeps the floor at one | 1 Hz reads Zil; slower than a second is a failure, not a number |
 | length | one wavelength of the hydrogen line, 21.106 cm: the distance light travels in one Eagle oscillation | the one length that is a property of the universe rather than a king's foot, and it is already photon's clock | a minus counts halvings: −Zila is 10.6 cm, −Tera a coin, −ZilaZil a hair; the one scale where sub-unit is everyday, so the sign earns its keep |
 | reputation (future) | the median peer in the category | how much, relative to everyone: unbounded and skewed | signed: −Zila is half the median |
 | proportions | not DMS: a dot-fraction of the whole, one digit | bounded things are linear | .Zil none, .Lun half, .Stelor nearly whole |
@@ -33,7 +33,7 @@ Anchoring length at the Planck length so that every value is positive was consid
 
 ## Hexadecimal and arabic
 
-Hexadecimal is linear everywhere and shows what the machine holds: ages and durations as the plain seconds count, sizes as the bit count, a round trip in milliseconds, a length in millimetres, with no scaling and no M:SS. Arabic shows the ledger world's conventional units. Diagnostics record timestamps are wall-clock coordinates for correlating with photonlog and adb, and stay arabic clock time in every base.
+Hexadecimal is linear everywhere and shows what the machine holds: ages and durations as the plain seconds count, sizes as the bit count, a round trip in seconds with a hexadecimal fraction (66 ms is 0.10E), a length in millimetres, with no scaling and no M:SS. Arabic shows the ledger world's conventional units. Diagnostics record timestamps are wall-clock coordinates for correlating with photonlog and adb, and stay arabic clock time in every base.
 
 ## The length scale, one row per doubling
 
@@ -155,96 +155,96 @@ The unit is the hydrogen line's wavelength (`HYDROGEN_LINE_METRES` = c / `vsf::O
 | -3 | −Ter | 2.64 cm |  |
 | -2 | −Zilor | 5.28 cm |  |
 | -1 | −Zila | 10.6 cm | a hand |
-| +0 | Zila | 21.1 cm | THE UNIT: one hydrogen-line wavelength, light per Eagle oscillation |
-| +1 | Zilor | 42.2 cm |  |
-| +2 | Ter | 84.4 cm | a bald eagle, nose to tail; a metre |
-| +3 | Tera | 1.69 m | a person |
-| +4 | Teror | 3.38 m | a car |
-| +5 | Lun | 6.75 m |  |
-| +6 | Luna | 13.5 m |  |
-| +7 | Lunor | 27 m | a blue whale |
-| +8 | Stel | 54 m | a football pitch |
-| +9 | Stela | 108 m |  |
-| +10 | Stelor | 216 m | the Eiffel Tower |
-| +11 | ZilaZil | 432 m |  |
-| +12 | ZilaZila | 865 m | a kilometre; a mile |
-| +13 | ZilaZilor | 1.73 km |  |
-| +14 | ZilaTer | 3.46 km |  |
-| +15 | ZilaTera | 6.92 km | Everest |
-| +16 | ZilaTeror | 13.8 km |  |
-| +17 | ZilaLun | 27.7 km | a marathon |
-| +18 | ZilaLuna | 55.3 km |  |
-| +19 | ZilaLunor | 111 km |  |
-| +20 | ZilaStel | 221 km |  |
-| +21 | ZilaStela | 443 km |  |
-| +22 | ZilaStelor | 885 km |  |
-| +23 | ZilorZil | 1.77e+03 km |  |
-| +24 | ZilorZila | 3.54e+03 km | Earth's radius |
-| +25 | ZilorZilor | 7.08e+03 km |  |
-| +26 | ZilorTer | 1.42e+04 km |  |
-| +27 | ZilorTera | 2.83e+04 km |  |
-| +28 | ZilorTeror | 5.67e+04 km |  |
-| +29 | ZilorLun | 1.13e+05 km |  |
-| +30 | ZilorLuna | 2.27e+05 km | a light-second; the Moon |
-| +31 | ZilorLunor | 4.53e+05 km |  |
-| +32 | ZilorStel | 9.06e+05 km | the Sun's diameter |
-| +33 | ZilorStela | 1.81e+06 km |  |
-| +34 | ZilorStelor | 3.63e+06 km |  |
-| +35 | TerZil | 7.25e+06 km |  |
-| +36 | TerZila | 1.45e+07 km | a light-minute |
-| +37 | TerZilor | 2.9e+07 km |  |
-| +38 | TerTer | 5.8e+07 km |  |
-| +39 | TerTera | 1.16e+08 km | the Sun (one AU) |
-| +40 | TerTeror | 2.32e+08 km |  |
-| +41 | TerLun | 4.64e+08 km |  |
-| +42 | TerLuna | 9.28e+08 km |  |
-| +43 | TerLunor | 1.86e+09 km |  |
-| +44 | TerStel | 3.71e+09 km | Pluto |
-| +45 | TerStela | 7.43e+09 km |  |
-| +46 | TerStelor | 1.49e+10 km | Voyager 1 |
-| +47 | TeraZil | 2.97e+10 km |  |
-| +48 | TeraZila | 5.94e+10 km |  |
-| +49 | TeraZilor | 1.19e+11 km |  |
-| +50 | TeraTer | 2.38e+11 km |  |
-| +51 | TeraTera | 4.75e+11 km |  |
-| +52 | TeraTeror | 0.1 ly |  |
-| +53 | TeraLun | 0.201 ly |  |
-| +54 | TeraLuna | 0.402 ly |  |
-| +55 | TeraLunor | 0.804 ly | a light-year |
-| +56 | TeraStel | 1.61 ly |  |
-| +57 | TeraStela | 3.21 ly | Proxima Centauri |
-| +58 | TeraStelor | 6.43 ly |  |
-| +59 | TerorZil | 12.9 ly |  |
-| +60 | TerorZila | 25.7 ly |  |
-| +61 | TerorZilor | 51.4 ly |  |
-| +62 | TerorTer | 103 ly |  |
-| +63 | TerorTera | 206 ly |  |
-| +64 | TerorTeror | 412 ly |  |
-| +65 | TerorLun | 823 ly |  |
-| +66 | TerorLuna | 1.65e+03 ly |  |
-| +67 | TerorLunor | 3.29e+03 ly |  |
-| +68 | TerorStel | 6.58e+03 ly |  |
-| +69 | TerorStela | 1.32e+04 ly |  |
-| +70 | TerorStelor | 2.63e+04 ly |  |
-| +71 | LunZil | 5.27e+04 ly | the Milky Way, across |
-| +72 | LunZila | 1.05e+05 ly |  |
-| +73 | LunZilor | 2.11e+05 ly |  |
-| +74 | LunTer | 4.21e+05 ly |  |
-| +75 | LunTera | 8.43e+05 ly |  |
-| +76 | LunTeror | 1.69e+06 ly | Andromeda |
-| +77 | LunLun | 3.37e+06 ly |  |
-| +78 | LunLuna | 6.74e+06 ly |  |
-| +79 | LunLunor | 1.35e+07 ly |  |
-| +80 | LunStel | 2.7e+07 ly |  |
-| +81 | LunStela | 5.39e+07 ly |  |
-| +82 | LunStelor | 1.08e+08 ly |  |
-| +83 | LunaZil | 2.16e+08 ly |  |
-| +84 | LunaZila | 4.32e+08 ly |  |
-| +85 | LunaZilor | 8.63e+08 ly |  |
-| +86 | LunaTer | 1.73e+09 ly |  |
-| +87 | LunaTera | 3.45e+09 ly |  |
-| +88 | LunaTeror | 6.9e+09 ly |  |
-| +89 | LunaLun | 1.38e+10 ly |  |
-| +90 | LunaLuna | 2.76e+10 ly |  |
-| +91 | LunaLunor | 5.52e+10 ly | the observable universe, across |
-| +92 | LunaStel | 1.1e+11 ly |  |
+| +0 | Zil | 21.1 cm | THE UNIT: one hydrogen-line wavelength, light per Eagle oscillation |
+| +1 | Zila | 42.2 cm |  |
+| +2 | Zilor | 84.4 cm | a bald eagle, nose to tail; a metre |
+| +3 | Ter | 1.69 m | a person |
+| +4 | Tera | 3.38 m | a car |
+| +5 | Teror | 6.75 m |  |
+| +6 | Lun | 13.5 m |  |
+| +7 | Luna | 27 m | a blue whale |
+| +8 | Lunor | 54 m | a football pitch |
+| +9 | Stel | 108 m |  |
+| +10 | Stela | 216 m | the Eiffel Tower |
+| +11 | Stelor | 432 m |  |
+| +12 | ZilaZil | 865 m | a kilometre; a mile |
+| +13 | ZilaZila | 1.73 km |  |
+| +14 | ZilaZilor | 3.46 km |  |
+| +15 | ZilaTer | 6.92 km | Everest |
+| +16 | ZilaTera | 13.8 km |  |
+| +17 | ZilaTeror | 27.7 km | a marathon |
+| +18 | ZilaLun | 55.3 km |  |
+| +19 | ZilaLuna | 111 km |  |
+| +20 | ZilaLunor | 221 km |  |
+| +21 | ZilaStel | 443 km |  |
+| +22 | ZilaStela | 885 km |  |
+| +23 | ZilaStelor | 1.77e+03 km |  |
+| +24 | ZilorZil | 3.54e+03 km | Earth's radius |
+| +25 | ZilorZila | 7.08e+03 km |  |
+| +26 | ZilorZilor | 1.42e+04 km |  |
+| +27 | ZilorTer | 2.83e+04 km |  |
+| +28 | ZilorTera | 5.67e+04 km |  |
+| +29 | ZilorTeror | 1.13e+05 km |  |
+| +30 | ZilorLun | 2.27e+05 km | a light-second; the Moon |
+| +31 | ZilorLuna | 4.53e+05 km |  |
+| +32 | ZilorLunor | 9.06e+05 km | the Sun's diameter |
+| +33 | ZilorStel | 1.81e+06 km |  |
+| +34 | ZilorStela | 3.63e+06 km |  |
+| +35 | ZilorStelor | 7.25e+06 km |  |
+| +36 | TerZil | 1.45e+07 km | a light-minute |
+| +37 | TerZila | 2.9e+07 km |  |
+| +38 | TerZilor | 5.8e+07 km |  |
+| +39 | TerTer | 1.16e+08 km | the Sun (one AU) |
+| +40 | TerTera | 2.32e+08 km |  |
+| +41 | TerTeror | 4.64e+08 km |  |
+| +42 | TerLun | 9.28e+08 km |  |
+| +43 | TerLuna | 1.86e+09 km |  |
+| +44 | TerLunor | 3.71e+09 km | Pluto |
+| +45 | TerStel | 7.43e+09 km |  |
+| +46 | TerStela | 1.49e+10 km | Voyager 1 |
+| +47 | TerStelor | 2.97e+10 km |  |
+| +48 | TeraZil | 5.94e+10 km |  |
+| +49 | TeraZila | 1.19e+11 km |  |
+| +50 | TeraZilor | 2.38e+11 km |  |
+| +51 | TeraTer | 4.75e+11 km |  |
+| +52 | TeraTera | 0.1 ly |  |
+| +53 | TeraTeror | 0.201 ly |  |
+| +54 | TeraLun | 0.402 ly |  |
+| +55 | TeraLuna | 0.804 ly | a light-year |
+| +56 | TeraLunor | 1.61 ly |  |
+| +57 | TeraStel | 3.21 ly | Proxima Centauri |
+| +58 | TeraStela | 6.43 ly |  |
+| +59 | TeraStelor | 12.9 ly |  |
+| +60 | TerorZil | 25.7 ly |  |
+| +61 | TerorZila | 51.4 ly |  |
+| +62 | TerorZilor | 103 ly |  |
+| +63 | TerorTer | 206 ly |  |
+| +64 | TerorTera | 412 ly |  |
+| +65 | TerorTeror | 823 ly |  |
+| +66 | TerorLun | 1.65e+03 ly |  |
+| +67 | TerorLuna | 3.29e+03 ly |  |
+| +68 | TerorLunor | 6.58e+03 ly |  |
+| +69 | TerorStel | 1.32e+04 ly |  |
+| +70 | TerorStela | 2.63e+04 ly |  |
+| +71 | TerorStelor | 5.27e+04 ly | the Milky Way, across |
+| +72 | LunZil | 1.05e+05 ly |  |
+| +73 | LunZila | 2.11e+05 ly |  |
+| +74 | LunZilor | 4.21e+05 ly |  |
+| +75 | LunTer | 8.43e+05 ly |  |
+| +76 | LunTera | 1.69e+06 ly | Andromeda |
+| +77 | LunTeror | 3.37e+06 ly |  |
+| +78 | LunLun | 6.74e+06 ly |  |
+| +79 | LunLuna | 1.35e+07 ly |  |
+| +80 | LunLunor | 2.7e+07 ly |  |
+| +81 | LunStel | 5.39e+07 ly |  |
+| +82 | LunStela | 1.08e+08 ly |  |
+| +83 | LunStelor | 2.16e+08 ly |  |
+| +84 | LunaZil | 4.32e+08 ly |  |
+| +85 | LunaZila | 8.63e+08 ly |  |
+| +86 | LunaZilor | 1.73e+09 ly |  |
+| +87 | LunaTer | 3.45e+09 ly |  |
+| +88 | LunaTera | 6.9e+09 ly |  |
+| +89 | LunaTeror | 1.38e+10 ly |  |
+| +90 | LunaLun | 2.76e+10 ly |  |
+| +91 | LunaLuna | 5.52e+10 ly | the observable universe, across |
+| +92 | LunaLunor | 1.1e+11 ly |  |

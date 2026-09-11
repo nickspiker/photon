@@ -224,6 +224,9 @@ pub enum Msg<'a> {
     DmsLengthReading(i32),
     /// The hex page's one line on lengths: millimetres, linear.
     HexLengthNote,
+    /// Zero has no logarithm: an age of nothing and a size of nothing read as words (pure-log DMS, 2026-09-11).
+    DmsNow,
+    DmsEmpty,
     // ---- base page (2026-09-10) ----
     /// Early note on the dozenal page: time and size are logarithmic (Dozenal Metric Scaling).
     BaseLogNote,

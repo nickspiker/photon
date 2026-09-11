@@ -5749,7 +5749,10 @@ impl PhotonApp {
                                 y += line_h * 0.3;
                             }
                             y += line_h * 0.3;
-                            for bits in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 17, 22, 25] {
+                            // Zero has no logarithm: the first row is the word.
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsNow), cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                            y += line_h * 0.9;
+                            for bits in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 21, 24] {
                                 let row = format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsReading(bits)));
                                 ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
                                 y += line_h * 0.9;
@@ -5762,7 +5765,9 @@ impl PhotonApp {
                                 y += line_h * 0.3;
                             }
                             y += line_h * 0.3;
-                            for bits in [1u32, 4, 8, 11, 14, 17, 20, 24, 27, 30, 34, 44] {
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsEmpty), cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                            y += line_h * 0.9;
+                            for bits in [0u32, 3, 7, 10, 13, 16, 19, 23, 26, 29, 33, 43] {
                                 let row = format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsSizeReading(bits)));
                                 ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
                                 y += line_h * 0.9;
@@ -5984,10 +5989,13 @@ impl PhotonApp {
                             let ms = |o: i64| o * 1000 / crate::OSC_PER_SEC;
                             let (o, c) = (ms(offset_osc), ms(conf_osc));
                             let sign = if o < 0 { "-" } else { "+" };
-                            tr(Msg::AboutClockOffset {
-                                ms: &format!("{sign}{}", crate::fmt_num(o.unsigned_abs() as u32)),
-                                conf: &crate::fmt_num(c.unsigned_abs() as u32),
-                            })
+                            // Hex is seconds with a hex fraction; the other bases keep linear milliseconds with the unit.
+                            let (off, conf) = if crate::hex_ui() {
+                                (format!("{sign}{} s", crate::hex_seconds_ms(o.unsigned_abs() as u64)), format!("{} s", crate::hex_seconds_ms(c.unsigned_abs() as u64)))
+                            } else {
+                                (format!("{sign}{} ms", crate::fmt_num(o.unsigned_abs() as u32)), format!("{} ms", crate::fmt_num(c.unsigned_abs() as u32)))
+                            };
+                            tr(Msg::AboutClockOffset { ms: &off, conf: &conf })
                             .into_owned()
                         }
                         None => tr(Msg::AboutClockUnknown).into_owned(),

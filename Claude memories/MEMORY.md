@@ -75,7 +75,8 @@
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
 - [project_incall_learner.md](project_incall_learner.md) — in-call learner + V-CHIRP probe SHIPPED; field rounds 1-5 logged; 2x-TX double capture FIXED 2026-09-08
 - [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: exhaustive-match Msg enum (en+es+mi), every numeral thru fmt_num, You-page picker
-- [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs (ZilaZil ≈ an hour); Dozenal settings page (rail reads Dozenal/Hexadecimal/Arabic) holds 3 base pills+why+cheat sheet+legend; NumBase/display.base
+- [project_numeral_forms.md](project_numeral_forms.md) — 2026-09-11 number forms: counts linear, magnitudes DMS (floor log2, dozenal), proportions dot-fraction; hex linear everywhere; per-scale anchors incl. hydrogen-line length; docs/dozenal.md
+- [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs (Stelor ≈ an hour (pure log since 2026-09-11)); Dozenal settings page (rail reads Dozenal/Hexadecimal/Arabic) holds 3 base pills+why+cheat sheet+legend; NumBase/display.base
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day` space-separated; months zero-indexed single glyphs (Feb=short Zila)
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock VALIDATOR not photon's clock source; warn-only banner + ONE load-bearing use: `now` in the update stamp
 - [project_update_flow.md](project_update_flow.md) — self-update + release-notice push BUILT; RELEASE_NOTES.md (Upcoming → vN at deploy) compiled into the Updates page and rendered onto the website

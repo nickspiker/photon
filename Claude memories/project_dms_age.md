@@ -12,3 +12,5 @@ Shown: the message details-strip age in dozenal mode (`Msg::AgoDms`); arabic mod
 **How to apply:** any new age display goes thru `dms_age` in dozenal mode; new dozenal explainer material belongs on the Dozenal page, not About. See [[project_dozenal_datetime]], [[project_languages]].
 
 SIZES (Nick 2026-09-09, "I say bits ... just like time in seconds"): a file / recording / log size renders as the SAME doubling count over BITS — `dms_size(bytes)` = fmt_num(bit length of bytes×8): a byte is Tera (4), a kilobyte Zila Tera (14), a megabyte Zilor Zil (24), a gigabyte Zilor Tera (34). Gate = `dms_ui()` (dozenal AND hex; arabic keeps kB/MB and the unit'd age). Sites: `types::size_label` → RecordingBubble/FileBubble `size: &str`, `human_bytes` (Diagnostics + log toast), and the age gate in the detail strip now uses dms_ui too. Bare, no sigil, like the age; the Dozenal page legend still lists seconds only (a bytes column is the open follow-up).
+
+2026-09-11 evening: DMS became a PURE logarithm (floor log2, no +1): a second is Zil, an hour Stelor (was ZilaZil), a day ZilaTera, a year ZilorZil; zero reads "now". See [[project_numeral_forms]].
