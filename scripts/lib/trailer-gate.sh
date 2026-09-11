@@ -7,10 +7,11 @@ trailer_gate() {
     # Nothing to check without an upstream (a fresh clone mid-rebase, a detached head): stay quiet rather than guess a range.
     git rev-parse --abbrev-ref --symbolic-full-name '@{u}' >/dev/null 2>&1 || return 0
     range="@{u}..HEAD"
-    offenders=$(git log "$range" --format="%h %s%n%b" --grep="Co-Authored-By" 2>/dev/null | grep -c "Co-Authored-By" || true)
+    # A TRAILER, not a mention: the line must START with it, or this gate fails on the very commit that documents it.
+    offenders=$(git log "$range" --format="%H" --grep="^Co-Authored-By:" --extended-regexp 2>/dev/null | grep -c . || true)
     if [ "${offenders:-0}" != "0" ]; then
         echo "TRAILER GATE: unpushed commit(s) carry a Co-Authored-By trailer — Claude is a tool, not an author:"
-        git log "$range" --grep="Co-Authored-By" --format="  %h %s" | head -20
+        git log "$range" --grep="^Co-Authored-By:" --extended-regexp --format="  %h %s" | head -20
         echo "TRAILER GATE: use \"Built with Claude <version>\" instead — amend or rebase these, then build again."
         return 1
     fi
