@@ -866,6 +866,19 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroa
     ctx.shell.app().take_broadcast_signal() as jint
 }
 
+/// Raised by Kotlin's default-network callback when the phone's network changes (wifi off, cellular on, a new wifi); taken once per tick by the UI (call_drought_tick → on_network_changed).
+static NETWORK_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeNetworkChanged(_env: JNIEnv<'_>, _class: JClass<'_>) {
+    NETWORK_CHANGED.store(true, std::sync::atomic::Ordering::Release);
+}
+
+pub fn take_network_changed() -> bool {
+    NETWORK_CHANGED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
+
 /// Per-frame poll for the keep hold: `1` = a wave's keep transcode started (hold a partial wake lock), `-1` = it finished (release), `0` = no change.
 #[cfg(target_os = "android")]
 #[no_mangle]

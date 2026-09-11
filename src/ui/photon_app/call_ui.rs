@@ -528,7 +528,28 @@ impl PhotonApp {
     }
 
     /// Media-liveness measurement (edges-not-timers: packet arrival IS the event stream; this is a measurement cadence on it, like the learner tick or PT's RTO — never UI timing). Receive drought past the reconnect line → panel shows reconnecting + anchors fire at the peer's freshest paths; past the drop line → honest teardown with a dropped summary, because a silently-dead Active call the human must notice and kill is the worse experience. The engine's mute-transmits-zeros contract keeps a muted peer from ever reading as a drought.
+    /// THE INTERFACE CHANGED UNDER US (Android's ConnectivityManager, 2026-09-11): everything we knew about our own addresses describes a network we have left. Forget the LAN address and the reflexive (the receive loop forgets its copy too), re-arm the reflect bootstrap, sweep presence now so the first pong from any outside peer relearns the public address — that edge pushes it to whoever cannot find us — and if a wave is live, push to its peer on the next tick.
+    pub(super) fn on_network_changed(&mut self) {
+        crate::log("NET: interface changed — forgetting our LAN and public addresses, relearning from the next pong");
+        self.our_lan_ip = None;
+        self.our_lan_ips.clear();
+        self.our_reflexive = None;
+        self.self_record_published_for = None;
+        crate::network::traverse::request_reflexive_reset();
+        if let Some(checker) = self.status_checker.as_ref() {
+            checker.set_reflect_needed(true);
+        }
+        if let Some(dev) = self.active_call.as_ref().and_then(|c| c.peer_device) {
+            self.call_needs_addresses.set(Some(dev));
+        }
+        self.force_presence_sweep();
+    }
+
     pub(super) fn call_drought_tick(&mut self) {
+        #[cfg(target_os = "android")]
+        if crate::platform::jni_android::take_network_changed() {
+            self.on_network_changed();
+        }
         if let Some(dev) = self.call_needs_addresses.take() {
             self.push_address_record_to(vec![dev]);
             self.force_presence_sweep();
@@ -578,6 +599,10 @@ impl PhotonApp {
                 );
                 if let Some(c) = self.active_call.as_mut() {
                     c.reconnecting = true;
+                }
+                // A DROUGHT IS AN ADDRESS EVENT (field 2026-09-11 22:46, wifi off mid-wave): the call-time exchange fired only at engine start, so a network change mid-call sent anchors at a dead address for 30 s and never told the peer where we went. The next tick pushes our record to the peer device and sweeps presence with backoff reset, exactly as a wave that starts without a route does.
+                if let Some(dev) = self.active_call.as_ref().and_then(|c| c.peer_device) {
+                    self.call_needs_addresses.set(Some(dev));
                 }
                 self.scene_dirty = true;
             }
@@ -1247,6 +1272,7 @@ impl PhotonApp {
             e.take_thread()
         });
         crate::call::set_call_peer_device(None);
+        crate::call::set_call_tx_addr(None);
         crate::platform::audio::stop();
         Self::stop_ring_alert_platform();
         self.call_minimized = false;
@@ -1541,6 +1567,7 @@ impl PhotonApp {
         };
         // No call_id in the engine params — the media wire dropped it (the basket-derived key IS the call identity; see packet.rs); the id's only job here is naming the spool above.
         crate::call::set_call_peer_device(self.active_call.as_ref().and_then(|c| c.peer_device));
+        crate::call::set_call_tx_addr(Some(addr));
         let handle = crate::call::engine::start(crate::call::engine::EngineParams {
             secret,
             we_are_caller,

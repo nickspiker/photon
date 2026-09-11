@@ -613,6 +613,19 @@ impl PhotonApp {
                         &mut canvas, acx, acy, avatar_r, px, *diam, None,
                     );
                 }
+                // THE PRESENCE RING ON THE CALL SCREEN (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings.
+                {
+                    let ring = match crate::call::call_tx_addr() {
+                        Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip() {
+                            std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
+                            std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
+                            _ => super::ConnTier::Wan,
+                        }),
+                        Some(_) => super::ring_colour_of(super::ConnTier::Relay),
+                        None => pi.map(|i| super::ring_tier_colour(&self.contacts[i], true)).unwrap_or(super::ring_colour_of(super::ConnTier::Relay)),
+                    };
+                    paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), ring, None);
+                }
                 // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
                 if matches!(phase, crate::call::CallPhase::Ringing) {
                     if let Some(digest) = pi.and_then(|i| {

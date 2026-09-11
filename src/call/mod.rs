@@ -177,6 +177,17 @@ pub static MEDIA_START_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::At
 /// A fresh peer address for the LIVE engine's TX, set by an authenticated express Anchor's source (drain_express_signals) and drained by the engine loop. The media-plane "address follows authenticated packets" rule can't heal a both-sides-moved deadlock — this is the signal-plane override that can.
 static PEER_REDIRECT: Mutex<Option<SocketAddr>> = Mutex::new(None);
 
+/// Where the engine is sending media RIGHT NOW (None between waves, the sentinel while it waits for the peer's first packet): the call screen's presence ring reads the path from this (Nick 2026-09-11: "no coloured ring around the avatar on the call screen reflecting the WAN/LAN/Direct status").
+static CALL_TX_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
+
+pub fn set_call_tx_addr(addr: Option<SocketAddr>) {
+    *CALL_TX_ADDR.lock().unwrap() = addr;
+}
+
+pub fn call_tx_addr() -> Option<SocketAddr> {
+    *CALL_TX_ADDR.lock().unwrap()
+}
+
 /// The DEVICE on the other end of the live call, for the network thread (it has no view of the UI's ActiveCall). A pushed address record for this device re-aims media the moment it lands — the push reroute, 2026-09-11.
 static CALL_PEER_DEVICE: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 

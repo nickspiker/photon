@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The call screen's avatar now wears the presence ring in the colour of the path the wave is actually on: cyan on the same network, green across the internet, amber while it has no direct route yet.
+- A phone that changes network mid-wave now tells the other side straight away, from Android's own network signal and from the first five seconds of silence, instead of ringing a dead address for thirty seconds.
 - The doubling scale is now a pure logarithm: one second, one bit, one wavelength read Zil, and every age and size reads one digit lower than before (an hour is Stelor, a byte Ter, a megabyte ZilaStelor). Nothing reads as a word: "now" for an age, "empty" for a size.
 - Hexadecimal is now linear everywhere: every timer, age and duration is a plain seconds count, a round trip is seconds with a hexadecimal fraction, and sizes are the bit count, so nothing on that base is scaled or split into minutes.
 - The Base page now explains the scaling in plain words: what one number for how much means, why doublings, what "one" is on every scale, and a length legend from a hair to the observable universe, all in doublings of the hydrogen line's wavelength.

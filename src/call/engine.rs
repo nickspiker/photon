@@ -796,6 +796,7 @@ fn run(
                 if src != peer && src != crate::network::status::RELAY_ADDR {
                     crate::logf!("CALL: peer media now from {} (was {})", src, peer);
                     peer = src;
+                    super::set_call_tx_addr(Some(peer));
                 }
             }
             // Bundle payload: [ctrl:1][source(seq)][repair(seq−1) if flagged]. seq IS the window id; the ctrl byte names both rungs (a rung switch between windows makes the two symbols different sizes, so length alone is ambiguous). The EXACT-length check is LOAD-BEARING: raptorq panics on mis-sized symbols, so nothing unchecked may reach a decoder.
@@ -1091,6 +1092,7 @@ fn run(
             if a != peer {
                 crate::logf!("CALL: peer re-anchored via express → {} (was {})", a, peer);
                 peer = a;
+                super::set_call_tx_addr(Some(peer));
             }
         }
 

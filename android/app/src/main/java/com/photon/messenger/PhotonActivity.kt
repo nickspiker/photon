@@ -207,6 +207,20 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollAttachPicker(contextPtr: Long): Int  // Per-frame poll for the paperclip any-file picker — 1=launch, 0=no change
     private external fun nativeSendAttachment(contextPtr: Long, name: String, data: ByteArray)  // Picked file → the active conversation (name + raw bytes; Rust caps size + forks images to the resample overlay)
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
+    private external fun nativeNetworkChanged()  // the default network moved (wifi off, cellular on, another wifi): Rust forgets its addresses and relearns
+    // NETWORK EDGE (2026-09-11, a wave dropped when wifi went off mid-call): the phone knows the instant its network changes; Rust learned it only from a receive drought. The first callback after registration reports the current network and is not a change.
+    private var lastNetwork: android.net.Network? = null
+    private var networkCallbackRegistered = false
+    private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
+        override fun onAvailable(network: android.net.Network) {
+            val prev = lastNetwork
+            lastNetwork = network
+            if (prev != null && prev != network) nativeNetworkChanged()
+        }
+        override fun onLost(network: android.net.Network) {
+            if (lastNetwork == network) { lastNetwork = null; nativeNetworkChanged() }
+        }
+    }
     private external fun nativePollKeepHold(contextPtr: Long): Int  // 1=a wave's keep started (hold a wake lock), -1=finished (release), 0=no change
     // KEEP HOLD (2026-09-11): a wave's keep transcode runs in this process after hangup; without a wake lock the phone dozes and a 13-minute wave took 53 minutes to keep. Timed as a safety net only — Rust releases it at the keep's end.
     private val keepWakeLock: android.os.PowerManager.WakeLock by lazy {
@@ -850,6 +864,12 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onResume() {
         super.onResume()
+        if (!networkCallbackRegistered) {
+            try {
+                (getSystemService(CONNECTIVITY_SERVICE) as android.net.ConnectivityManager).registerDefaultNetworkCallback(networkCallback)
+                networkCallbackRegistered = true
+            } catch (e: Exception) { PhotonLog.w("Net", "default network callback not registered", e) }
+        }
         inForeground = true
         nativeSetForeground(true)
         // WFD work parked on the permission gate gets its retry now that a foreground exists to prompt from (a background stranded-arm cannot show the dialog).
