@@ -301,7 +301,8 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
     };
     let hash = *blake3::hash(&t.container).as_bytes();
     let size = t.container.len() as u64;
-    crate::storage::blob_store(identity_seed, &hash, &t.container).ok()?;
+    // Chunked past BLOB_CHUNK_SIZE (2026-09-11): a 13-minute wave is 26 MB, and one whole PT transfer of that never reached the desktop on any leg — chunks replicate a piece at a time with resume, like every other attachment.
+    crate::storage::blob_store_any(identity_seed, &hash, &t.container).ok()?;
     let _ = std::fs::remove_file(&ticket.path);
     Some(Kept { hash, size, thumb: t.thumb, secs: t.secs })
 }

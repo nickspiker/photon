@@ -3510,6 +3510,17 @@ impl PhotonApp {
                         let dispatch = checker.history_dispatch();
                         queue_job(&self.seal_job_tx, move || {
                             // CHUNKED (Phase 1): a manifest here means the blob is served as manifest + chunks — all of them, or only the requester's WANT bitmap (a resume, which already holds the manifest).
+                            // A whole-value blob past the chunk size (a recording kept before 2026-09-11) is re-stored chunked on its first request, so it too travels a piece at a time.
+                            if crate::storage::blob_manifest(&content_hash).is_none() {
+                                if let Some(plain) = crate::storage::blob_load(&seed, &content_hash) {
+                                    if plain.len() > crate::storage::BLOB_CHUNK_SIZE {
+                                        match crate::storage::blob_store_any(&seed, &content_hash, &plain) {
+                                            Ok(_) => crate::logf!("ATTACH: chunked a {} byte whole blob for serving", plain.len()),
+                                            Err(e) => crate::logf!("ATTACH: could not chunk the whole blob: {}", e),
+                                        }
+                                    }
+                                }
+                            }
                             if let Some(m) = crate::storage::blob_manifest(&content_hash) {
                                 let mut sent = 0usize;
                                 if want.is_none() {

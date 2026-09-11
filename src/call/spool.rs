@@ -316,7 +316,7 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
     }
     let hash = *blake3::hash(&container).as_bytes();
     let size = container.len() as u64;
-    crate::storage::blob_store(identity_seed, &hash, &container).ok()?;
+    crate::storage::blob_store_any(identity_seed, &hash, &container).ok()?;
     let _ = std::fs::remove_file(&ticket.path);
     Some((hash, size))
 }
