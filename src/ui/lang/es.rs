@@ -29,7 +29,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Conservar".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Reproducir".into(),
         Msg::EndCall => "Terminar onda".into(),
-        Msg::HangUp => "Colgar".into(),
+        Msg::HangUp => "Terminar".into(),
         Msg::Attest => "Atestar".into(),
         Msg::Cancel => "Cancelar".into(),
         Msg::Arm => "Armar".into(),

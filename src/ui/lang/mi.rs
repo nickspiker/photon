@@ -29,7 +29,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Pupuri".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Whakatangi".into(),
         Msg::EndCall => "Whakamutu".into(),
-        Msg::HangUp => "Whakairi".into(),
+        Msg::HangUp => "Whakamutua".into(),
         Msg::Attest => "Whakaū".into(),
         Msg::Cancel => "Whakakore".into(),
         Msg::Arm => "Whakarite".into(),
