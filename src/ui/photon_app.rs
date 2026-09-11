@@ -3559,6 +3559,11 @@ pub(crate) fn line_source_starts(source: &str, lines: &[String]) -> Option<Vec<u
     Some(starts)
 }
 
+/// THE PRESENCE RING'S THICKNESS (Nick 2026-09-11: "a thick stroke around the avatar with the network state"): a tenth of the radius, never under two pixels, plus one so the smallest avatars keep an annulus. Every ring site draws with this.
+pub(crate) fn ring_thickness(avatar_r: f32) -> f32 {
+    (avatar_r * 0.1).max(2.0) + 1.0
+}
+
 pub(crate) fn ring_colour_of(tier: ConnTier) -> u32 {
     match tier {
         ConnTier::Lan => *theme::RING_LAN_COLOUR,

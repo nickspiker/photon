@@ -12,6 +12,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 - Kept waves now replicate to your other devices in pieces with resume, like other attachments; a 26 MB recording sent as one transfer never arrived at the desktop. Recordings kept before this update are re-packaged the first time a device asks for them.
 
+- The ring around an avatar is thick enough to read at a glance, in the colour of how you are connected: cyan in the same room, blue radio-direct, green across the internet, amber relayed, and absent when offline.
+- A wave in progress shows its own numbers on every build: the speed rung by name (sublight, light speed, ridiculous speed, ludicrous speed, plaid), the round trip, the loss out of 256, and the buffer depth, refreshed every second.
+
 ## v91
 
 - An idle screen on Android no longer spends a third of a core keeping itself awake: the app's housekeeping ran at every display refresh, and several pieces of it (a socket lookup, a key derivation per contact, a peer-list scan) were needlessly repeated 119 times a second. They now run once, and an idle screen asks for frames at a slower cadence until you touch it.

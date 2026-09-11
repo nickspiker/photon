@@ -499,6 +499,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerBack => "\u{2039} Volver".into(),
         Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decodificando\u{2026}".into(),
+        Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} pérdida {loss} de 256 \u{00B7} búfer {buf}").into(),
         Msg::ClipPill => "recorte".into(),
         Msg::ExposureStops(s) => format!("{s} pasos").into(),
         Msg::ReaderTooLarge => "demasiado grande para leer aquí \u{2014} guardado".into(),

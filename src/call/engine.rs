@@ -29,6 +29,13 @@ const REPAIR_PACKETS: u32 = 1;
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds cannot parse this wire at all; the whole fleet updates together.
 const TIER_RATES: [i32; 5] = [16_000, 32_000, 64_000, 128_000, 768_000];
+/// The rungs' names for the call panel (Nick 2026-09-11: "spaceball themed names for the quality rungs"): Spaceballs' speeds, bottom to top, the top rung already being plaid.
+pub const TIER_NAMES: [&str; 5] = ["sublight", "light speed", "ridiculous speed", "ludicrous speed", "plaid"];
+
+/// A rung's name; anything off the ladder reads as the floor.
+pub fn tier_name(tier: usize) -> &'static str {
+    TIER_NAMES.get(tier).copied().unwrap_or(TIER_NAMES[0])
+}
 // PLAID (Nick 2026-09-10, "stupid plaid mode"): the top rung is RAW 48 kHz mono 16-bit PCM — no codec at all, one 5 ms frame per datagram, no repair symbol. A lost datagram is skipped outright (a 5 ms hole, faded not synthesized) so the jitter buffer stays hot instead of paying standing latency for everyone. Reached only on a LAN-class direct path (EngineParams::plaid_allowed) after a full second of clean 10 ms windows; left only when losses run past a rate, not on a lone pair. What it buys is the codec's lookahead and CPU, not fidelity — 128 kbps CELT is already transparent for speech.
 const RAW_TIER: usize = 4;
 const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
@@ -297,6 +304,7 @@ fn run(
     let mut last_est = std::time::Instant::now();
     // Echo stats cadence: a line every ten seconds while a filter is armed (recent + lifetime ERLE, adapt ratio) — the field's view of the whitener at work.
     let mut last_echo_stats = std::time::Instant::now();
+    let mut last_live_stats = std::time::Instant::now();
     let mut vol_lin_now: f32 = crate::platform::audio::current_volume_db()
         .map_or(1.0, |db| 10f32.powf(db / 20.0));
 
@@ -541,6 +549,7 @@ fn run(
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
             if frames_in_window == 0 && pending_tier != tier {
                 tier = pending_tier;
+                super::LAST_LINK_TIER.store(tier as u32, Ordering::Relaxed);
                 if tier != RAW_TIER {
                     let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier]));
                 }
@@ -1111,6 +1120,16 @@ fn run(
                 );
                 probe_cap = Vec::new();
             }
+        }
+        // Live readout once a second (the call panel's stats line on every build); the log line keeps its 10 s cadence below.
+        if last_live_stats.elapsed() >= std::time::Duration::from_secs(1) {
+            last_live_stats = std::time::Instant::now();
+            if rtt_n > 0 {
+                super::LAST_LINK_RTT_MS.store(rtt_ema.round().max(1.0) as u32, Ordering::Relaxed);
+            }
+            super::LAST_LINK_LOSS.store(loss_bits.iter().map(|w| w.count_ones()).sum::<u32>(), Ordering::Relaxed);
+            super::LAST_LINK_TARGET.store(jitter_target as u32, Ordering::Relaxed);
+            super::LAST_LINK_TIER.store(tier as u32, Ordering::Relaxed);
         }
         // Periodic link + echo stats (10s cadence on the engine loop — a measurement cadence, not UI timing).
         if last_echo_stats.elapsed() >= std::time::Duration::from_secs(10) {

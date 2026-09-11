@@ -479,6 +479,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ViewerBack => "\u{2039} Back".into(),
         Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decoding\u{2026}".into(),
+        Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} loss {loss} of 256 \u{00B7} buffer {buf}").into(),
         Msg::ClipPill => "clip".into(),
         Msg::ExposureStops(s) => format!("{s} stops").into(),
         Msg::ReaderTooLarge => "too large to read here \u{2014} saved instead".into(),

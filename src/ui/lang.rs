@@ -537,6 +537,8 @@ pub enum Msg<'a> {
     ViewerBack,
     ViewerOriginal,
     ViewerDecoding,
+    /// The call panel's live line: rung name (a proper noun, untranslated), round trip as a frequency, loss of 256, buffer frames.
+    CallLiveStats { rung: &'a str, freq: &'a str, loss: &'a str, buf: &'a str },
     /// Viewer exposure row: the clip-view pill, and the caption's exposure readout (stops, signed).
     ClipPill,
     ExposureStops(&'a str),

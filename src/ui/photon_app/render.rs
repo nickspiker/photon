@@ -681,6 +681,26 @@ impl PhotonApp {
                     None,
                     None,
                 );
+                // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs.
+                if matches!(phase, crate::call::CallPhase::Active) {
+                    let rtt = crate::call::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+                    if rtt > 0 {
+                        let rung = crate::call::engine::tier_name(crate::call::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed) as usize);
+                        let freq = crate::link_freq_label(rtt);
+                        let loss = crate::fmt_num(crate::call::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
+                        let buf = crate::fmt_num(crate::call::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
+                        let line = tr(Msg::CallLiveStats { rung, freq: &freq, loss: &loss, buf: &buf });
+                        ctx.text.draw_text_center(
+                            &mut canvas,
+                            &line,
+                            acx,
+                            acy + avatar_r + unit * 3.0,
+                            &TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium"),
+                            None,
+                            None,
+                        );
+                    }
+                }
                 // Actions: bottom third, thumb-reach, decline LEFT answer RIGHT with a generous gap — and bottom-anchored so an Android heads-up banner (which owns the top) can never cover them.
                 let bw = w * 0.34;
                 let bh = unit * 2.4;
@@ -1663,7 +1683,7 @@ impl PhotonApp {
             let text_x = avatar_cx + avatar_r * 1.5;
             let text_size = row_h as f32 * 0.5;
             // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
-            let ring_thickness = (avatar_r * 0.0375).max(1.0) + 1.0;
+            let ring_thickness = super::ring_thickness(avatar_r);
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
             // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero.
             let mut row_cursor = rows.y0 as isize;
@@ -2103,7 +2123,7 @@ impl PhotonApp {
                             cx,
                             cy,
                             // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
-                            avatar_r + (avatar_r * 0.0375).max(1.0) + 1.0,
+                            avatar_r + super::ring_thickness(avatar_r),
                             ring,
                             Some(content_clip),
                         );
@@ -2602,7 +2622,7 @@ impl PhotonApp {
                             }
                             let ring = conv_ring;
                             // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
-                            let ring_thick = (avatar_r * 0.0375).max(1.0) + 1.0;
+                            let ring_thick = super::ring_thickness(avatar_r);
                             paint::draw_circle(
                                 canvas,
                                 avatar_cx,
