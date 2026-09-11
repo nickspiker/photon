@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v91
+
 - An idle screen on Android no longer spends a third of a core keeping itself awake: the app's housekeeping ran at every display refresh, and several pieces of it (a socket lookup, a key derivation per contact, a peer-list scan) were needlessly repeated 119 times a second. They now run once, and an idle screen asks for frames at a slower cadence until you touch it.
 
 - Kept waves now record your microphone as captured, before the echo canceller and the ducking, and store each party as its own full-quality Opus stream, so a recording is one clean generation from the raw source rather than a re-encode of what went over the wire.
