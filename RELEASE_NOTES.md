@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave that starts without a route now exchanges addresses on its first tick instead of waiting on the presence cadence; the first mobile-to-home wave connected in the field but took 18 seconds to do it.
+
 ## v92
 
 - Keeping a wave after hangup no longer crawls when the phone dozes: the phone stays awake for the transcode, which also runs lighter. A thirteen-minute wave that took 53 minutes to keep now takes about a minute.
@@ -28,6 +30,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 - When your phone changes network it now tells the friends who could not find you, not just the ones who already could, and they answer with where they are, so a call between mobile data and home wi-fi has both sides' real addresses after one exchange.
 - A phone on home wi-fi no longer mistakes its home address for its public one, and forgets its old public address when it changes networks.
+
 
 ## v91
 

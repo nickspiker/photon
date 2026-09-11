@@ -106,22 +106,9 @@ impl PhotonApp {
     /// Results land in `device_endpoints`, which is what `gather_peer_candidates` reads to build punch candidates. They are NOT written to the contact-level `ip` slot: a resolved address is a claim we have not yet round-tripped, and the punch is what promotes it to a real path.
     /// PUSH REROUTE (Nick 2026-09-11: "if we know our network address changed, we doorbell cloudflare and the phonebook gets updated so we should be able to make this a push reroute"). The seed publish above is a pull for everyone else; this is the push for the few who are wrong RIGHT NOW: the device we are in a wave with, and any contact holding a validated direct path to our old address. It rides the relay, the one channel a moved device can still reach, and carries the same self-signed record gossip carries — so the receiver's existing merge verifies the signature and adopts only a strictly newer record. Traffic: one small frame per device that actually cares, not a fan-out to the roster.
     pub(super) fn push_address_change(&mut self) {
-        let (Some(kp), Some(addr), Some(hp)) = (self.device_keypair.as_ref(), self.our_reflexive, self.our_handle_proof()) else {
-            return;
-        };
-        if crate::network::traverse::gather::is_bogus_addr(&addr) {
-            return;
+        if self.our_reflexive.is_none() {
+            return; // the address-change edge without an address: nothing new to say yet
         }
-        let local_ip = self.our_lan_ip.or_else(crate::network::udp::get_local_ip).map(std::net::IpAddr::V4);
-        let mut rec = crate::network::fgtw::PeerRecord {
-            handle_proof: hp,
-            device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
-            ip: addr,
-            local_ip,
-            last_seen: vsf::eagle_time_oscillations(),
-            signature: [0u8; 64],
-        };
-        rec.sign(&kp.secret);
         // Who is wrong right now: the wave's peer device first, then anyone whose pin points at where we no longer are.
         let mut targets: Vec<[u8; 32]> = self.active_call.as_ref().and_then(|c| c.peer_device).into_iter().collect();
         for c in self.contacts.iter().filter(|c| c.validated_path.is_some()) {
@@ -144,9 +131,31 @@ impl PhotonApp {
                 }
             }
         }
-        if targets.is_empty() {
+        self.push_address_record_to(targets);
+    }
+
+    /// Push our signed record to exactly these devices over the relay. With no reflexive learned yet the record carries our LAN address — one-sided is enough to open a wave: the side holding a public address for the other sends, its packets open its own NAT, and the other engine follows the first authenticated packet (field 2026-09-11 20:47, the first WAN wave to carry media both ways).
+    pub(super) fn push_address_record_to(&mut self, targets: Vec<[u8; 32]>) {
+        let (Some(kp), Some(hp)) = (self.device_keypair.as_ref(), self.our_handle_proof()) else {
+            return;
+        };
+        let local_ip = self.our_lan_ip.or_else(crate::network::udp::get_local_ip).map(std::net::IpAddr::V4);
+        let lan_sock = local_ip.zip(self.handle_query.as_ref().map(|hq| hq.port())).map(|(ip, port)| std::net::SocketAddr::new(ip, port));
+        let Some(addr) = self.our_reflexive.or(lan_sock) else {
+            return; // nothing honest to say at all
+        };
+        if crate::network::traverse::gather::is_bogus_addr(&addr) || targets.is_empty() {
             return;
         }
+        let mut rec = crate::network::fgtw::PeerRecord {
+            handle_proof: hp,
+            device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
+            ip: addr,
+            local_ip,
+            last_seen: vsf::eagle_time_oscillations(),
+            signature: [0u8; 64],
+        };
+        rec.sign(&kp.secret);
         let provenance = *blake3::hash(&rec.device_pubkey.as_bytes()[..]).as_bytes();
         let sig = kp.sign(&provenance);
         let mut sig_bytes = [0u8; 64];

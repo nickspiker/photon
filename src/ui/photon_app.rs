@@ -1439,6 +1439,8 @@ pub struct PhotonApp {
     express_seen: Vec<[u8; 24]>,
     /// Android keep hold: +1 = a keep transcode started (hold a partial wake lock), −1 = it finished (release), 0 = nothing; polled by Kotlin each frame like the session broadcast.
     pub pending_keep_hold: i8,
+    /// A wave just started with no reachable address for this device: the next tick pushes our record to it and sweeps presence (set from the engine-start path, which holds only &self).
+    call_needs_addresses: std::cell::Cell<Option<[u8; 32]>>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
     last_keygen_pickup: Option<std::time::Instant>,
     /// Our identity party id, memoized per seed: it is an ed25519 public-key derivation, and the tick asked for it once per contact per vsync (thirty-odd scalar multiplications a frame on an idle phone, 2026-09-10 profile).
@@ -2313,6 +2315,7 @@ impl PhotonApp {
             tick_prof: Vec::new(),
             last_keygen_pickup: None,
             pending_keep_hold: 0,
+            call_needs_addresses: std::cell::Cell::new(None),
             express_seen: Vec::new(),
             identity_pid_cache: std::cell::Cell::new(None),
             last_peer_harvest: None,

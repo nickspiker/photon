@@ -207,6 +207,16 @@ impl PhotonApp {
     }
 
     /// Ping all contacts that have IP addresses (call periodically)
+    /// Ping everyone NOW, backoff reset: a wave is starting with no reachable address, and the pong that teaches our own public address must not wait for the presence cadence (field 2026-09-11 20:47: 18 s from answer to media, hung up as it connected).
+    pub(super) fn force_presence_sweep(&mut self) {
+        for c in self.contacts.iter_mut() {
+            c.last_pinged = None;
+            c.ping_backoff = 0;
+        }
+        self.last_presence_ping = None;
+        self.ping_contacts();
+    }
+
     pub(super) fn ping_contacts(&mut self) {
         self.ping_contacts_filtered(None)
     }

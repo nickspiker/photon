@@ -503,6 +503,10 @@ impl PhotonApp {
 
     /// Media-liveness measurement (edges-not-timers: packet arrival IS the event stream; this is a measurement cadence on it, like the learner tick or PT's RTO — never UI timing). Receive drought past the reconnect line → panel shows reconnecting + anchors fire at the peer's freshest paths; past the drop line → honest teardown with a dropped summary, because a silently-dead Active call the human must notice and kill is the worse experience. The engine's mute-transmits-zeros contract keeps a muted peer from ever reading as a drought.
     pub(super) fn call_drought_tick(&mut self) {
+        if let Some(dev) = self.call_needs_addresses.take() {
+            self.push_address_record_to(vec![dev]);
+            self.force_presence_sweep();
+        }
         const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
         let (reconnect_after, anchor_every, drop_after) = (5 * OSC, 2 * OSC, 30 * OSC);
         let Some(call) = self.active_call.as_ref() else {
@@ -1491,6 +1495,8 @@ impl PhotonApp {
         if let Some(dev) = peer_dev {
             if addr == crate::network::status::RELAY_ADDR {
                 crate::logf!("CALL: no reachable address for the answering device {} — TX waits for its first packet", crate::fp(&dev));
+                // CALL-TIME ADDRESS EXCHANGE (field 2026-09-11 20:47: the wave carried media both ways 18 s after answer, because our new public address was learned from a pong on the presence cadence mid-call, and they hung up the second it connected). Push whatever we hold to the answering device now — its answer is their record — and sweep presence at once so the pong that teaches our reflexive lands this tick; that edge pushes again with the public address.
+                self.call_needs_addresses.set(Some(dev)); // drained by call_drought_tick (this fn holds only &self)
             } else {
                 crate::logf!("CALL: media aimed at {} — the answering device {}", addr, crate::fp(&dev));
             }
