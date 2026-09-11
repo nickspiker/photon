@@ -18,7 +18,7 @@ pub(super) struct CallKeepResult {
     result: Option<crate::call::record::Kept>,
 }
 
-/// Format a duration as `M:SS`, base-aware (the About-page dozenal toggle). A free function so the render can call it under its chrome borrow (the method form reads `&self`). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
+/// Format a duration base-aware: `M:SS` in dozenal and arabic, the plain seconds count in hex (hex is linear everywhere, Nick 2026-09-11). A free function so the render can call it under its chrome borrow (the method form reads `&self`). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
 pub(super) fn fmt_duration_secs(secs: i64) -> String {
     let secs = secs.max(0);
     let (m, s) = ((secs / 60) as u32, (secs % 60) as u32);
@@ -30,8 +30,34 @@ pub(super) fn fmt_duration_secs(secs: i64) -> String {
             }
             format!("{}:{}", crate::dozenal_glyphs(m), ss)
         }
-        crate::NumBase::Hex => format!("{m:X}:{s:02X}"),
+        crate::NumBase::Hex => crate::hex_linear(secs as u64),
         crate::NumBase::Arabic => format!("{}:{:02}", m, s),
+    }
+}
+
+#[cfg(test)]
+mod duration_kat {
+    use super::fmt_duration_secs;
+    use crate::base_kat::hold_base;
+    use crate::NumBase;
+
+    #[test]
+    fn hex_is_the_seconds_count_and_the_others_are_minutes_and_seconds() {
+        {
+            let _g = hold_base(NumBase::Hex);
+            assert_eq!(fmt_duration_secs(3661), "E4D");
+            assert_eq!(fmt_duration_secs(0), "0");
+        }
+        {
+            let _g = hold_base(NumBase::Arabic);
+            assert_eq!(fmt_duration_secs(3661), "61:01");
+            assert_eq!(fmt_duration_secs(0), "0:00");
+        }
+        {
+            let _g = hold_base(NumBase::Dozenal);
+            let d = |v: u8| char::from(0x10 + v);
+            assert_eq!(fmt_duration_secs(3661), format!("{}{}:{}{}", d(5), d(1), d(0), d(1)));
+        }
     }
 }
 

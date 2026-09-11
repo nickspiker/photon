@@ -149,6 +149,11 @@ pub fn dozenal_ui() -> bool {
     num_base() == NumBase::Dozenal
 }
 
+/// Is the base hex? The LINEAR-only sites (the clock-off band, the viewer's stops) key on this.
+pub fn hex_ui() -> bool {
+    num_base() == NumBase::Hex
+}
+
 /// Hexadecimal render: plain uppercase 0-9 A-F — the machine's own digits, no house glyphs.
 pub fn hex_glyphs(n: u32) -> String {
     format!("{n:X}")
@@ -163,12 +168,87 @@ pub fn fmt_num(n: u32) -> String {
     }
 }
 
+/// u64 twin of [`fmt_num`] for byte counts and other quantities that outgrow u32: same digits, same faces.
+pub fn fmt_num64(n: u64) -> String {
+    match num_base() {
+        NumBase::Dozenal => dozenal_bytes(n.min(i64::MAX as u64) as i64),
+        NumBase::Hex => hex_linear(n),
+        NumBase::Arabic => n.to_string(),
+    }
+}
+
+/// Signed HALVES (the viewer's exposure rides half-stop steps) as sign, whole, radix point and the base's own half digit: arabic .5, dozenal .6, hex .8 — exact in every base, no arabic leaking thru a float format. A whole value still prints its .0, so arabic stays byte-identical to the old `{:.1}`.
+pub fn fmt_halves(halves: i32) -> String {
+    let sign = if halves < 0 { "-" } else { "+" };
+    let mag = halves.unsigned_abs();
+    let half = match num_base() {
+        NumBase::Arabic => 5,
+        NumBase::Dozenal => 6,
+        NumBase::Hex => 8,
+    };
+    format!("{sign}{}.{}", fmt_num(mag / 2), fmt_num(if mag % 2 == 1 { half } else { 0 }))
+}
+
+/// The unit'd sizes of the ledger bases (`n KiB`, `n MiB`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SizeUnit {
+    KiB,
+    MiB,
+}
+
+/// A size for a unit'd line: hex renders the LINEAR BIT COUNT with no unit (the base page's promise, the same as dms_size); dozenal and arabic keep the pre-divided count plus its symbol, byte-identical to the old catalog arms. KiB rounds up and MiB truncates, as those arms did.
+pub fn unit_size(bytes: u64, unit: SizeUnit) -> String {
+    match (num_base(), unit) {
+        (NumBase::Hex, _) => dms_size(bytes),
+        (_, SizeUnit::KiB) => format!("{} KiB", fmt_num64((bytes + 1023) / 1024)),
+        (_, SizeUnit::MiB) => format!("{} MiB", fmt_num64(bytes >> 20)),
+    }
+}
+
+/// THE LENGTH UNIT (Nick 2026-09-11): one wavelength of the hydrogen line, the distance light travels in one Eagle oscillation — c over `vsf::OSCILLATIONS_PER_SECOND`, 21.106 cm. The one length anchor that is a property of the universe rather than a king's foot, and it is already photon's clock.
+pub const HYDROGEN_LINE_METRES: f64 = 299_792_458.0 / 1_420_407_826.0;
+
+/// A length's doubling count from the hydrogen line: 0 is the unit itself, positive doubles, negative halves (a hand is −1, a person 3, the Moon 30, the Planck length −114, the observable universe 91).
+pub fn length_doublings(metres: f64) -> i32 {
+    if !(metres > 0.0) {
+        return i32::MIN;
+    }
+    (metres / HYDROGEN_LINE_METRES).log2().floor() as i32
+}
+
+/// A signed doubling count in dozenal glyphs with bit-length semantics: k ≥ 0 reads as `k + 1` (the unit itself is Zila, like one bit or one second), k < 0 reads as a minus and the halving count.
+pub fn dms_doublings_glyphs(k: i32) -> String {
+    if k >= 0 {
+        dozenal_glyphs((k + 1) as u32)
+    } else {
+        format!("\u{2212}{}", dozenal_glyphs(k.unsigned_abs()))
+    }
+}
+
+/// [`dms_doublings_glyphs`] spelled in digit words (the legend's second column).
+pub fn dms_doublings_spell(k: i32) -> String {
+    if k >= 0 {
+        dozenal_spell((k + 1) as u32)
+    } else {
+        format!("\u{2212}{}", dozenal_spell(k.unsigned_abs()))
+    }
+}
+
+/// A length in the current base: dozenal = signed doublings of the hydrogen line, hex = linear millimetres, arabic = metres. No caller in the app yet beyond the Base page's legend; the next length is one call.
+pub fn dms_length(metres: f64) -> String {
+    match num_base() {
+        NumBase::Dozenal => dms_doublings_glyphs(length_doublings(metres)),
+        NumBase::Hex => hex_linear((metres * 1000.0).round().max(0.0) as u64),
+        NumBase::Arabic => format!("{metres:.3} m"),
+    }
+}
+
 /// DMS — the dozenal age (Nick 2026-09-09): how many times a second has doubled since the event, i.e. the BIT LENGTH of the seconds count. 0 = now, 1 = a second, 2 = two or three seconds, 3 = four to seven, … 11 = half an hour, 12 (Zila Zil) = an hour, 17 = a day, 22 = a month, 25 = a year; the age of the universe is 58 (Tera Stela), so all of time fits in two dozenal digits. Rendered as glyphs by [`dms_age`]; the About-side legend uses [`dozenal_spell`] on the same value.
 pub fn dms_bits(secs: i64) -> u32 {
     u64::BITS - (secs.max(0) as u64).leading_zeros()
 }
 
-/// Do sizes and ages render as DMS? Dozenal and hex do (Nick 2026-09-09: "DMS when in dozenal and hex"); arabic keeps the unit'd counts of the ledger world.
+/// Do sizes and ages render BARE, without a unit word? Dozenal (DMS doublings) and hex (linear counts) do; arabic keeps the unit'd counts of the ledger world.
 pub fn dms_ui() -> bool {
     num_base() != NumBase::Arabic
 }
@@ -197,10 +277,13 @@ pub fn dms_age(secs: i64) -> String {
 
 /// A LATENCY as a DOZENAL METRIC FREQUENCY (Nick 2026-09-10: "1 Hz reads Zila, 2 Hz Zilor, 4 Hz Ter, 8 Hz Tera"): the bit length of the frequency in hertz — each digit a doubling — rendered in the current base (hex reads the plain hertz, arabic the milliseconds).
 pub fn link_freq_label(rtt_ms: u32) -> String {
-    let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64;
     match num_base() {
-        NumBase::Dozenal => dozenal_glyphs(dms_bits(hz)),
-        NumBase::Hex => hex_linear(hz as u64),
+        NumBase::Dozenal => {
+            let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64;
+            dozenal_glyphs(dms_bits(hz))
+        }
+        // Hex is linear and shows what the machine holds: the round trip in milliseconds (seconds would floor every link to nothing).
+        NumBase::Hex => hex_linear(rtt_ms as u64),
         NumBase::Arabic => format!("{rtt_ms} ms"),
     }
 }
@@ -330,6 +413,86 @@ pub fn log_retrieval_tag(identity_seed: &[u8; 32]) -> [u8; 32] {
     ihi::spaghettify(&input)
 }
 
+/// Base-flipping known answers. NUM_BASE is one process-wide atomic and cargo runs tests in parallel, so every test that sets a base holds the gate and restores the dozenal default on drop.
+#[cfg(test)]
+pub(crate) mod base_kat {
+    use super::*;
+
+    pub(crate) struct BaseGuard(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+    pub(crate) fn hold_base(b: NumBase) -> BaseGuard {
+        static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let g = GATE.lock().unwrap_or_else(|e| e.into_inner());
+        set_num_base(b);
+        BaseGuard(g)
+    }
+
+    impl Drop for BaseGuard {
+        fn drop(&mut self) {
+            set_num_base(NumBase::Dozenal);
+        }
+    }
+
+    fn g(digits: &[u8]) -> String {
+        digits.iter().map(|d| char::from(0x10 + d)).collect()
+    }
+
+    #[test]
+    fn hex_is_linear_everywhere() {
+        let _g = hold_base(NumBase::Hex);
+        assert_eq!(hex_linear(0), "0");
+        assert_eq!(hex_linear(60), "3C");
+        assert_eq!(dms_age(3600), "E10");
+        assert_eq!(dms_size(1 << 20), "800000");
+        assert_eq!(link_freq_label(20), "14", "the round trip itself, in milliseconds");
+        assert_eq!(fmt_halves(3), "+1.8");
+        assert_eq!(unit_size(1024, SizeUnit::KiB), "2000", "bits, no unit, like every other hex size");
+        assert_eq!(fmt_num64(1 << 40), "10000000000");
+        assert_eq!(dms_length(0.211), "D3", "millimetres");
+    }
+
+    #[test]
+    fn dozenal_is_doublings() {
+        let _g = hold_base(NumBase::Dozenal);
+        assert_eq!(dms_age(3600), g(&[1, 0]), "an hour is twelve doublings of a second");
+        assert_eq!(dms_size(1 << 20), g(&[2, 0]), "a megabyte is twenty-four doublings of a bit");
+        assert_eq!(link_freq_label(20), g(&[6]), "50 Hz is six doublings");
+        assert_eq!(fmt_halves(3), format!("+{}.{}", g(&[1]), g(&[6])));
+        assert_eq!(fmt_halves(-1), format!("-{}.{}", g(&[0]), g(&[6])));
+        assert_eq!(unit_size(1024, SizeUnit::KiB), format!("{} KiB", g(&[1])));
+        assert_eq!(fmt_num64(1 << 40), dozenal_bytes(1 << 40));
+    }
+
+    #[test]
+    fn arabic_is_the_ledger_world() {
+        let _g = hold_base(NumBase::Arabic);
+        assert_eq!(dms_age(3600), "12");
+        assert_eq!(link_freq_label(20), "20 ms");
+        assert_eq!(fmt_halves(3), "+1.5");
+        assert_eq!(fmt_halves(2), "+1.0");
+        assert_eq!(fmt_halves(-1), "-0.5");
+        assert_eq!(unit_size(1024, SizeUnit::KiB), "1 KiB");
+        assert_eq!(unit_size(1, SizeUnit::KiB), "1 KiB", "ceiling, as the old arm rounded");
+        assert_eq!(unit_size(5 << 20, SizeUnit::MiB), "5 MiB");
+        assert_eq!(fmt_num64(1 << 40), "1099511627776");
+    }
+
+    /// The length scale: a hand is one halving, a person three doublings, the Moon thirty, the Planck length −StelLun, the observable universe LunaLunor.
+    #[test]
+    fn lengths_count_doublings_of_the_hydrogen_line() {
+        assert_eq!(length_doublings(HYDROGEN_LINE_METRES), 0);
+        assert_eq!(dms_doublings_spell(0), "Zila", "the unit itself reads Zila, like one bit or one second");
+        assert_eq!(dms_doublings_spell(length_doublings(0.19)), "\u{2212}Zila");
+        assert_eq!(dms_doublings_spell(length_doublings(1.7)), "Tera");
+        assert_eq!(dms_doublings_spell(length_doublings(3.844e8)), "Zilor Luna");
+        assert_eq!(dms_doublings_spell(length_doublings(1.616e-35)), "\u{2212}Stel Lun");
+        assert_eq!(dms_doublings_spell(length_doublings(8.8e26)), "Luna Lunor");
+        let _g = hold_base(NumBase::Dozenal);
+        assert_eq!(dms_length(1.7), g(&[4]));
+        assert_eq!(dms_length(0.19), format!("\u{2212}{}", g(&[1])));
+    }
+}
+
 #[cfg(test)]
 mod log_seal_tests {
     use super::*;
@@ -337,6 +500,7 @@ mod log_seal_tests {
     /// DMS sizes count doublings of a BIT (Nick 2026-09-09: "I say bits"): one byte is 4, a kilobyte 14, a megabyte 24, a gigabyte 34, and nothing is 0.
     #[test]
     fn dms_size_counts_bit_doublings() {
+        let _g = base_kat::hold_base(NumBase::Dozenal);
         let bits = |bytes: u64| dms_bits((bytes * 8) as i64);
         assert_eq!(bits(0), 0);
         assert_eq!(bits(1), 4);

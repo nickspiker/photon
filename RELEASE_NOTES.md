@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Hexadecimal is now linear everywhere: every timer, age and duration is a plain seconds count, a round trip is milliseconds, and sizes are the bit count, so nothing on that base is scaled or split into minutes.
+- The Base page now explains the scaling in plain words: what one number for how much means, why doublings, what "one" is on every scale, and a length legend from a hair to the observable universe, all in doublings of the hydrogen line's wavelength.
 - A wave that starts without a route now exchanges addresses on its first tick instead of waiting on the presence cadence; the first mobile-to-home wave connected in the field but took 18 seconds to do it.
 
 ## v92

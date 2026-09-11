@@ -1140,7 +1140,7 @@ impl Contact {
         let prefix = if crate::dozenal_ui() {
             format!(".{}", crate::dozenal_glyphs(n as u32))
         } else {
-            format!("{n}/{}", Self::CLUTCH_STEPS)
+            format!("{}/{}", crate::fmt_num(n as u32), crate::fmt_num(Self::CLUTCH_STEPS as u32))
         };
         format!("{prefix} \u{00b7} {}", tr(Msg::ClutchStep(n)))
     }

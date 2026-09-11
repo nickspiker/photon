@@ -2095,7 +2095,7 @@ impl PhotonApp {
         ) {
             // Immediate press feedback — the read + upload run seconds on a big log, and silence here read as "the button did nothing". Replaced by "Log sent √" / "Send failed" when the worker thread reports.
             self.ready_toast =
-                Some(tr(Msg::SendingLog((total as usize + 1023) / 1024)).into_owned());
+                Some(tr(Msg::SendingLog(&crate::unit_size(total as u64, crate::SizeUnit::KiB))).into_owned());
             std::thread::spawn(move || {
                 let Some(bytes) = crate::snapshot_log_bytes() else {
                     let _ = tx.send(Err("log unreadable".to_string()));

@@ -2451,7 +2451,7 @@ impl PhotonApp {
                         let decoding = self.img_pending.contains(&v.hash) || v.preview_hash.is_some_and(|ph| self.img_pending.contains(&ph));
                         let orig_done = matches!(self.img_cache.get(&v.hash), Some(Some(_)));
                         let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
-                        let ev_note = if v.ev.abs() > 0.01 { format!(" \u{00B7} {}", tr(Msg::ExposureStops(&format!("{}{:.1}", if v.ev > 0.0 { "+" } else { "" }, v.ev)))) } else { String::new() };
+                        let halves = (v.ev * 2.0).round() as i32; let ev_note = if halves != 0 { format!(" \u{00B7} {}", tr(Msg::ExposureStops(&crate::fmt_halves(halves)))) } else { String::new() };
                         let caption = format!("{}{}{}{}", v.name, ev_note, if decoding { format!(" \u{00B7} {}", tr(Msg::ViewerDecoding)) } else { String::new() }, if orig_done { " \u{00B7} 1:1" } else { "" });
                         // Nameless images leave a dangling separator at the front — trim it.
                         let caption = caption.trim_start_matches([' ', '\u{00B7}']).to_string();
@@ -5351,7 +5351,7 @@ impl PhotonApp {
                             } else if total > 0 {
                                 tr(Msg::Downloading)
                             } else {
-                                tr(Msg::DownloadingMiB((done >> 20) as i64))
+                                tr(Msg::DownloadingSize(&crate::unit_size(done as u64, crate::SizeUnit::MiB)))
                             };
                             flow.gap(hspan2 * 0.3);
                             flow.line(canvas, text, &label, hspan2, *theme::CONTACT_NAME_COLOUR, 500);
@@ -5484,9 +5484,10 @@ impl PhotonApp {
                     } else if self.diag_log_rows.is_empty() {
                         tr(Msg::LogEmpty).into_owned()
                     } else {
+                        let size = crate::unit_size(crate::log_size_bytes() as u64, crate::SizeUnit::KiB);
                         let mut m = tr(Msg::DiagMeta {
                             count: self.diag_log_rows.len(),
-                            kib: ((crate::log_size_bytes() + 1023) / 1024) as usize,
+                            size: &size,
                         })
                         .into_owned();
                         if self.diag_log_rows.len() >= DIAG_LOG_MAX_ROWS {
@@ -5544,6 +5545,7 @@ impl PhotonApp {
                             }
                             let rec = &self.diag_log_rows[i];
                             // Display-edge time render (records store eagle time binary).
+                            // Wall-clock coordinate for correlating with photonlog and adb, not a quantity: arabic clock time in every base.
                             let ts = if rec.osc != 0 {
                                 vsf::types::EagleTime::from_oscillations(rec.osc)
                                     .to_datetime()
@@ -5678,6 +5680,16 @@ impl PhotonApp {
                                 y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                                 y += line_h * 0.3;
                             }
+                            // THE SCALING, EXPLAINED (Nick 2026-09-11): what one number for how much means, why doublings, the three forms; then what "one" is on every scale.
+                            for (head, prose) in [(Msg::DmsScaleHead, Msg::DmsScaleProse), (Msg::DmsUnitsHead, Msg::DmsUnitsProse)] {
+                                y += line_h * 0.4;
+                                ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                                y += line_h;
+                                for line in tr(prose).lines() {
+                                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                    y += line_h * 0.3;
+                                }
+                            }
                         }
                         crate::NumBase::Hex => {
                             // The coder's page: no dozenal sermon here.
@@ -5755,6 +5767,20 @@ impl PhotonApp {
                                 ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
                                 y += line_h * 0.9;
                             }
+                            // LENGTH (Nick 2026-09-11): doublings of the hydrogen line's wavelength, a minus for halvings; the same shape as the time and size legends.
+                            y += line_h * 0.6;
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsLengthHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                            y += line_h;
+                            for line in tr(Msg::DmsLengthIntro).lines() {
+                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                y += line_h * 0.3;
+                            }
+                            y += line_h * 0.3;
+                            for k in [-11i32, -6, -4, -1, 0, 2, 3, 7, 8, 12, 15, 24, 30, 39, 55, 91] {
+                                let row = format!("{}  {}  {}", crate::dms_doublings_glyphs(k), crate::dms_doublings_spell(k), tr(Msg::DmsLengthReading(k)));
+                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                                y += line_h * 0.9;
+                            }
                         }
                         crate::NumBase::Hex => {
                             // LINEAR legends: the seconds count and the bit count in hex, no scaling.
@@ -5777,6 +5803,8 @@ impl PhotonApp {
                                 ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
                                 y += line_h * 0.9;
                             }
+                            y += line_h * 0.6;
+                            y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::HexLengthNote), &prose_style, line_h * 0.8, page_clip);
                         }
                         crate::NumBase::Arabic => {}
                     }
@@ -6149,7 +6177,10 @@ impl PhotonApp {
         // Clock off (nunc-time consensus): warn only, Photon never corrects the clock.
         if let Some(offset_secs) = self.clock_off {
             let mag = offset_secs.unsigned_abs();
-            let pretty = tr(if mag >= 3600 {
+            // Hex is linear: the plain seconds count, no hour or minute rung.
+            let pretty = tr(if crate::hex_ui() {
+                Msg::SecondsShort(mag)
+            } else if mag >= 3600 {
                 Msg::HoursShort(mag / 3600)
             } else if mag >= 60 {
                 Msg::MinutesShort(mag / 60)

@@ -24,7 +24,7 @@ If non-programmer translators ever join, a build-script generating arms from a f
 
 ## Rules
 
-- Numbers inside messages render at the language edge per the number doctrine: dozenal glyphs via `dozenal_glyphs(n)`, arabic never.
+- Numbers inside messages render at the language edge per the number doctrine: dozenal glyphs via `dozenal_glyphs(n)`, arabic never. The three forms (counts, doublings, fractions), the scaling and each scale's unit are in docs/dozenal.md.
 - **Never translated**: handles (byte-precise, sacred), voca pairing words (protocol material), log lines (photonlog grep-ability dies the day logs localize), dozenal digit names (Zil/Ter/Lun/Stel are invented photon vocabulary, universal like the glyphs), VSF field names and storage keys.
 - **Translated**: labels, hints, toasts, dialog prose, connection-ladder narration, weekday and month words.
 - A new language starts as a copy of `en.rs` and translates incrementally — every arm exists from day one, content flips from English as it's done. Honest fallback with no fallback machinery.

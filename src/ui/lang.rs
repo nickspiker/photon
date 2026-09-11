@@ -211,6 +211,19 @@ pub enum Msg<'a> {
     DmsSizeIntro,
     /// Plain reading of a DMS size value (bit length of the size in bits); empty for values the legend doesn't list.
     DmsSizeReading(u32),
+    // ---- the scaling explained (Nick 2026-09-11: "DMS clearly explained on the base page and why it's used") ----
+    /// What one number for how much means, why doublings, and the three forms.
+    DmsScaleHead,
+    DmsScaleProse,
+    /// The unit of account: what "one" is on every scale, and what happens below it.
+    DmsUnitsHead,
+    DmsUnitsProse,
+    /// The length legend: doublings of the hydrogen line's wavelength; the reading takes the signed doubling count.
+    DmsLengthHead,
+    DmsLengthIntro,
+    DmsLengthReading(i32),
+    /// The hex page's one line on lengths: millimetres, linear.
+    HexLengthNote,
     // ---- base page (2026-09-10) ----
     /// Early note on the dozenal page: time and size are logarithmic (Dozenal Metric Scaling).
     BaseLogNote,
@@ -452,7 +465,8 @@ pub enum Msg<'a> {
     UpdateGet { kind: &'a str, ver: &'a str },
     Updating,
     Downloading,
-    DownloadingMiB(i64),
+    /// The pre-formatted size (unit_size: `n MiB`, or the bare hex bit count).
+    DownloadingSize(&'a str),
     UpdateAvailableToast(&'a str),
     Installing { channel: &'a str, ver: &'a str },
     UpdatedRestarting,
@@ -467,11 +481,12 @@ pub enum Msg<'a> {
     LogSent,
     SendFailed(&'a str),
     NoLogToSend,
-    SendingLog(usize),
+    /// The pre-formatted size (unit_size: `n KiB`, or the bare hex bit count).
+    SendingLog(&'a str),
     CantSendNotSignedIn,
     DiagRecordInspect { ts: &'a str, lines: usize },
     DiagDecoding,
-    DiagMeta { count: usize, kib: usize },
+    DiagMeta { count: usize, size: &'a str },
     DiagTrimmed,
     DiagInfo { used: &'a str, cap: &'a str, pct: u64 },
     LogTitle,
