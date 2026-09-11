@@ -1,0 +1,7 @@
+#!/bin/sh
+# ATTRIBUTION RATCHET, at the moment of writing (the build-time twin is scripts/lib/trailer-gate.sh). Claude is a tool, not an author.
+if grep -qi "^Co-Authored-By:.*Claude" "$1"; then
+    echo "commit-msg: refusing a Co-Authored-By trailer for Claude — it is a tool, not an author."
+    echo "commit-msg: end the message with \"Built with Claude <version>\" instead."
+    exit 1
+fi
