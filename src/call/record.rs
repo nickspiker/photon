@@ -176,7 +176,8 @@ fn osc_to_slot(osc: i64, base: i64) -> i64 {
 #[derive(Clone)]
 enum Cell {
     Opus(Vec<u8>),
-    Pcm(Vec<u8>),
+    /// Raw little-endian i16 PCM and the gain to apply at decode (1.0 for a wire cell; the live path's applied gain for a raw-mic cell, so the keep carries the duck and gate contour the peer heard while working from the raw source).
+    Pcm(Vec<u8>, f32),
 }
 
 fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>>)> {
@@ -198,7 +199,7 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
     let mut max_slot = 0usize;
     // Per channel: window seq → (grid slot of its first frame, frames in the window) for the records that ARRIVED live — the ruler the fills are placed against.
     let mut arrived: Vec<std::collections::BTreeMap<u32, (usize, usize)>> = vec![Default::default(); nchan];
-    let cell_of = |r: &Record| if r.is_raw() { Cell::Pcm(r.bytes.clone()) } else { Cell::Opus(r.bytes.clone()) };
+    let cell_of = |r: &Record| if r.is_raw() { Cell::Pcm(r.bytes.clone(), r.proc.map_or(1.0, |(g, _)| g as f32 / 256.0)) } else { Cell::Opus(r.bytes.clone()) };
     let reanchor_slots = reanchor * SLOTS_PER_SEC / ops;
     for r in records.iter().filter(|r| !r.is_fill() && keep(r)) {
         let c = r.index();
@@ -280,8 +281,14 @@ fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> 
             }
         }
         // A plaid frame is already the samples; a wrong-sized one is silence, never a guess.
-        Some(Cell::Pcm(raw)) if raw.len() == frame * 2 => raw.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect(),
-        Some(Cell::Pcm(_)) | None => vec![0i16; frame],
+        Some(Cell::Pcm(raw, gain)) if raw.len() == frame * 2 => raw
+            .chunks_exact(2)
+            .map(|c| {
+                let s = i16::from_le_bytes([c[0], c[1]]);
+                if (*gain - 1.0).abs() < 0.002 { s } else { (s as f32 * gain).clamp(-32768.0, 32767.0) as i16 }
+            })
+            .collect(),
+        Some(Cell::Pcm(..)) | None => vec![0i16; frame],
     }
 }
 
@@ -677,7 +684,7 @@ mod tests {
         records.push(Record { chan: 0 | RAW_FLAG, osc: 0, seq: Some((0, 0)), proc: None, bytes: raw(9) });
         let (nchan, grid) = grid_from_records(&records).unwrap();
         assert_eq!(nchan, 2);
-        let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b)) => b[0], _ => 0xFF };
+        let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b, _)) => b[0], _ => 0xFF };
         assert_eq!((0..6).map(|s| first(&grid[1][s])).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5, 6]);
         assert_eq!(grid[1].len(), 6);
     }
@@ -698,8 +705,13 @@ mod tests {
         ];
         let (nchan, grid) = grid_from_records(&records).unwrap();
         assert_eq!(nchan, 2);
-        let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b)) => b[0], _ => 0xFF };
+        let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b, _)) => b[0], _ => 0xFF };
         assert_eq!((first(&grid[0][0]), first(&grid[0][1])), (7, 8));
+        // The raw-mic cell carries the live gain (128/256 = half) and decodes with it applied.
+        let mut dec = mono_decoder().unwrap();
+        let pcm = decode_slot_n(&mut dec, &grid[0][0], FRAME_IN);
+        let raw7 = i16::from_le_bytes([7, 7]);
+        assert_eq!(pcm[0], (raw7 as f32 * 0.5) as i16);
         assert_eq!(first(&grid[1][0]), 3);
     }
 }

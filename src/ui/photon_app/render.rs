@@ -3610,20 +3610,22 @@ impl PhotonApp {
                                                             if span > 1e-6 { ((folded[1 + c][px] - lo[c]) / span).clamp(0.0, 1.0) } else { 0.0 }
                                                         };
                                                         let base_c = theme::rgb_colour((norm(0) * 255.0) as u8, (norm(1) * 255.0) as u8, (norm(2) * 255.0) as u8);
-                                                        let c = if lit { base_c } else { theme::dim_colour(base_c) };
-                                                        let full = hgt.floor();
-                                                        let tip_a = ((hgt - full).sqrt() * (((c >> 24) & 0xFF) as f32)) as u32;
-                                                        let tip_c = (tip_a << 24) | (c & 0x00FF_FFFF);
+                                                        // BRIGHTEN ONLY (Nick 2026-09-10, "weird double drawing… should be brighten only"): the unplayed bars were quarter-alpha, a translucent ghost of the waveform beside the solid played part, with an anti-aliased tip pixel floating over every column. Now every bar is solid: unplayed = the same colour at half brightness, played = full; heights are whole pixels.
+                                                        let c = if lit {
+                                                            base_c
+                                                        } else {
+                                                            let (a, d) = (base_c & 0xFF00_0000, base_c & 0x00FF_FFFF);
+                                                            let darker = |dark: u32| (255 + dark) / 2;
+                                                            a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
+                                                        };
+                                                        let full = hgt.round();
                                                         let x = (wx0 + px as f32) as isize;
                                                         // Them (ch1) above the centreline, us (ch0) below it.
-                                                        let (ty, th, tip_y) = if ch == 1 { (bcy - full, full, bcy - full - 1.0) } else { (bcy, full, bcy + full) };
+                                                        let (ty, th) = if ch == 1 { (bcy - full, full) } else { (bcy, full) };
                                                         let run_top = ty.max(list_top);
                                                         let run_bot = (ty + th).min(list_bottom);
                                                         if run_bot > run_top && th >= 1.0 {
                                                             paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, None, None);
-                                                        }
-                                                        if tip_a > 0 && tip_y >= list_top && tip_y < list_bottom {
-                                                            paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, None, None);
                                                         }
                                                     }
                                                 }

@@ -13,6 +13,9 @@ One sentence per line, however long; plain language for the person who installs 
 - The hangup exchange that fetches the last stretch of a wave from the other side now waits for the other side's fresh count and says goodbye before leaving, so both recordings get their final second instead of one side timing out.
 - The wave histogram averages in the log domain and is folded once per width instead of every frame, which removes the spikes and the drag the histogram put on scrolling.
 
+- The wave histogram's unplayed part is now solid at half brightness and playing simply brightens it; the translucent ghost and the floating edge pixels are gone.
+- Samsung phones no longer redraw and post the screen on every idle frame.
+
 ## v90
 
 - A wave's buffering now follows the actual loss on the link instead of ratcheting up on every stumble: it settles as low as the link allows, holds loss to about one packet in two hundred and fifty-six, and fades over the rest. Every packet also measures the round trip, so the log says how far the other end really is.
