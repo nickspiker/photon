@@ -417,8 +417,27 @@ fn run(
             }
         }
         if let Some(t0) = draining {
-            let satisfied = peer_windows.is_some() && wanted.is_empty();
+            // The tail joins the wanted set from the peer's FRESH count — the live count is up to ten seconds stale (the hello cadence), so nothing is 'satisfied' until the peer has been heard draining (field 2026-09-10: the hung-up-on side exited at 0 ms before asking for its tail, and the hanging-up side then waited the whole deadline for a heartbeat that never came).
+            if let (Some(pw), Some(np), true) = (peer_windows, next_play, peer_draining) {
+                let mut s = np;
+                while s < pw && wanted.len() < FILL_WANTED_CAP {
+                    if !have_get(&rx_have, s) && !rx_done.contains_key(&s) {
+                        wanted.insert(s);
+                    }
+                    s = s.wrapping_add(1);
+                }
+            }
+            let satisfied = peer_draining && wanted.is_empty();
             if (satisfied && peer_satisfied && serve_queue.is_empty()) || t0.elapsed() >= DRAIN_MAX {
+                // Last words, twice: our satisfied heartbeat is what lets the peer's own drain close without waiting on its deadline.
+                for _ in 0..2 {
+                    let msg = FillMsg { draining: true, satisfied: wanted.is_empty(), windows: window_id, reqs: Vec::new(), fills: Vec::new() };
+                    tx_fill.advance_to(StepChain::step_for_seq(fill_seq));
+                    if let Some(wire) = packet::seal_fill(&tx_fill, fill_seq, &fill_encode(&msg)) {
+                        let _ = super::send_media(wire, peer);
+                    }
+                    fill_seq = fill_seq.wrapping_add(1);
+                }
                 break;
             }
         }
@@ -487,6 +506,9 @@ fn run(
             if muted.load(Ordering::Relaxed) {
                 frame.fill(0);
             }
+            // THE MIC AS CAPTURED (Nick 2026-09-10: "mic RAW, per channel"): the spool keeps this frame untouched beside the wire copy, with the verdict the live path applied to it, so the keep works from the raw source and the duck/gate/canceller can be redone offline.
+            let raw_mic: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+            let mut proc_verdict: u8 = 0;
             // NLMS SUBTRACT — before the tally and the duck, so both see the residual (the duck is the RESIDUAL suppressor once a filter is armed). Mic timeline: pure frame count from a one-time anchor.
             if mic_anchor_osc.is_none() {
                 mic_anchor_osc = Some(cap_osc);
@@ -547,6 +569,7 @@ fn run(
                         crate::call::learn::GateVerdict::Full => 1.0,
                         crate::call::learn::GateVerdict::Gate => {
                             gated_frames += 1;
+                            proc_verdict = 2;
                             if nlms.as_ref().is_some_and(|c| c.erle_recent_db().is_some_and(|e| e >= 6.0)) {
                                 // A filter that has PROVEN itself (≥6dB recent ERLE) has already subtracted the echo — the hard near-mute demotes to the soft residual duck, and double-talk survives (full duplex). An armed-but-weak filter keeps the gate (2026-09-09: a 2dB filter demoting the gate to a −16dB duck was the field's "echoey").
                                 (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
@@ -555,6 +578,7 @@ fn run(
                             }
                         }
                         crate::call::learn::GateVerdict::Duck => {
+                            proc_verdict = 1;
                             (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
                         }
                     }
@@ -565,8 +589,10 @@ fn run(
                         1.0
                     } else if echo_only {
                         gated_frames += 1;
+                        proc_verdict = 2;
                         ECHO_GATE_GAIN
                     } else {
+                        proc_verdict = 1;
                         (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
                     }
                 };
@@ -618,8 +644,12 @@ fn run(
                 }
             };
             if let Some(w) = spool.as_mut() {
+                // Raw mic first (the archive's source), then the wire copy (what the peer heard, and what a fill serves).
+                let osc = vsf::eagle_time_oscillations();
+                let gain_q8 = (duck_gain * 256.0).round().clamp(0.0, 65535.0) as u16;
+                w.append_seq_proc(super::spool::RAW_FLAG | super::spool::PROC_FLAG, osc, Some((window_id, frames_in_window as u8)), Some((gain_q8, proc_verdict)), &raw_mic);
                 let dir = if tier == RAW_TIER { super::spool::RAW_FLAG } else { 0 };
-                if let Some(at) = w.append_seq(dir, vsf::eagle_time_oscillations(), Some((window_id, frames_in_window as u8)), &enc[..n]) {
+                if let Some(at) = w.append_seq(dir, osc, Some((window_id, frames_in_window as u8)), &enc[..n]) {
                     if tx_index.len() >= TX_INDEX_CAP {
                         tx_index.pop_front();
                     }
@@ -1032,7 +1062,7 @@ fn run(
             if fill_hello_due || heartbeat || !reqs.is_empty() || !fills.is_empty() {
                 let msg = FillMsg {
                     draining: draining.is_some(),
-                    satisfied: draining.is_some() && peer_windows.is_some() && wanted.is_empty(),
+                    satisfied: draining.is_some() && peer_draining && wanted.is_empty(),
                     windows: window_id,
                     reqs,
                     fills,

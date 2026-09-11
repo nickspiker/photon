@@ -180,7 +180,7 @@ pub fn sniff(bytes: &[u8], name: &str) -> AttachKind {
         return Document;
     }
     // House recording container.
-    if starts(crate::call::record::CONTAINER_MAGIC_V4) {
+    if starts(crate::call::record::CONTAINER_MAGIC_V4) || starts(crate::call::record::CONTAINER_MAGIC_V5) {
         return Audio;
     }
     // Images. TIFF-shaped bytes are a RAW when the name says so (DNG/NEF/ARW/CR2/PEF/ORF/RW2/SRW carry TIFF headers).

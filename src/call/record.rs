@@ -18,6 +18,10 @@ const FRAME_IN: usize = crate::platform::audio::FRAME_SAMPLES;
 const SLOTS_PER_SEC: i64 = 200;
 /// PHCALL4 (flag day 2026-09-09, the coloured wave card): `PHCALL2` header ‖ `[env_per_sec u8][env_len u32 LE]` ‖ `nchan × env_len × ENV_COMPONENTS` envelope bytes (channel-major, bucket-major, [amp, r, g, b] each in eighth-stops below full scale, 255 = silence floor) ‖ packets. The envelope is computed at transcode — every frame is decoded here anyway — so no draw path ever decodes audio to show a shape. No PHCALL2 reader: nobody has waved for real yet.
 pub const CONTAINER_MAGIC_V4: &[u8; 8] = b"PHCALL4\0";
+/// PHCALL5 (2026-09-10, "Opus per channel, mic raw"): the PHCALL4 header and envelope, then `slots × nchan` MONO Opus packets (channel order within each slot) — every party its own stream at a transparent bitrate, the local one encoded once from the raw mic. PHCALL4 blobs (one interleaved stereo packet per slot) still open.
+pub const CONTAINER_MAGIC_V5: &[u8; 8] = b"PHCALL5\0";
+/// Per-channel archive bitrate: CELT fullband is transparent for speech well below this; a two-party hour is ~115 MB.
+const ARCHIVE_KBPS: i32 = 128_000;
 /// Envelope components per bucket per channel: [amplitude, red, green, blue] — amplitude is the plain RMS; the colour bands are three HIGH-PASS energies at three scales (Nick 2026-09-09: "1:1 filter for blue, 1:4 for green, 1:8 for red, all high pass"): blue = first difference (x[n] − x[n−1]), green = the difference of successive 4-sample sums ÷ 4, red = the difference of successive 8-sample sums ÷ 8. Running sums, no FFT. All four in eighth-stops below full scale.
 pub const ENV_COMPONENTS: usize = 4;
 /// The envelope's fixed length per channel (Nick 2026-09-10: "linear on the waveform, downsample it to 65536 samples, then bilinear down to preview width"): every recording carries exactly this many buckets per channel, whatever its length — a 10s wave upsamples its 10ms slots into them, a 2h wave folds ~7 slots into each. 65536 × 4 components × 2 channels = 512KB in the container.
@@ -66,7 +70,7 @@ fn lin_to_stops_u8(rms: f32) -> u8 {
 
 /// The envelope straight from a container's header — no audio decoded, no decoder built: (nchan, env_len, bytes). The wave card's loader.
 pub fn envelope_of_blob(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC_V4 {
+    if bytes.len() < 8 + 22 || (&bytes[..8] != CONTAINER_MAGIC_V4 && &bytes[..8] != CONTAINER_MAGIC_V5) {
         return None;
     }
     let nchan = bytes[8] as usize;
@@ -181,6 +185,9 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
     }
     let base = records.iter().filter(|r| !r.is_fill()).map(|r| r.osc).min().or_else(|| records.iter().map(|r| r.osc).min())?;
     let nchan = records.iter().map(|r| r.index()).max()? + 1;
+    // RAW MIC OUTRANKS THE WIRE COPY (2026-09-10): a channel that has PROC records (the mic as captured) is built from them alone; its wire copies (ducked, gated, coded) are what the peer heard, not what the archive should keep. Spools without PROC records fall back to the wire copies as before.
+    let has_raw: Vec<bool> = (0..nchan).map(|c| records.iter().any(|r| r.index() == c && r.is_raw_mic())).collect();
+    let keep = |r: &Record| !(has_raw[r.index()] && !r.is_raw_mic());
     // LATTICE SLOTTING (field 2026-09-08, "super garbled" preview): frames are stamped at DRAIN, in 1ms engine-loop bursts — adjacent 5ms frames carry near-identical stamps, and slotting each by its own stamp collided them ("collision keeps the later one" = half the frames dropped). So each channel keeps a lattice: a frame within `reanchor` of the expected next stamp takes the NEXT slot; a real gap (loss, a stall) re-anchors on the stamp.
     let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
     let reanchor = ops / 20; // 50ms — ten slots; burst jitter is ±ms, real gaps are bigger
@@ -193,7 +200,7 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
     let mut arrived: Vec<std::collections::BTreeMap<u32, (usize, usize)>> = vec![Default::default(); nchan];
     let cell_of = |r: &Record| if r.is_raw() { Cell::Pcm(r.bytes.clone()) } else { Cell::Opus(r.bytes.clone()) };
     let reanchor_slots = reanchor * SLOTS_PER_SEC / ops;
-    for r in records.iter().filter(|r| !r.is_fill()) {
+    for r in records.iter().filter(|r| !r.is_fill() && keep(r)) {
         let c = r.index();
         let by_stamp = match lat[c] {
             Some((next, expected)) if (r.osc - expected).abs() < reanchor => next,
@@ -331,43 +338,14 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         container.extend_from_slice(enc);
     };
 
-    if nchan <= 2 {
-        // True N-channel Opus: one interleaved packet per slot. Application::Audio (archival — quality over the call's low-latency floor), VBR on.
-        let chans = if nchan == 2 {
-            opus::Channels::Stereo
-        } else {
-            opus::Channels::Mono
-        };
-        let mut enc = opus::Encoder::new(48_000, chans, opus::Application::Audio).ok()?;
-        let _ = enc.set_vbr(true);
-        let _ = enc.set_bitrate(opus::Bitrate::Bits(if nchan == 2 { 96_000 } else { 48_000 }));
-        for slot_out in 0..slots_out {
-            // Two 5ms input slots fold into one 10ms archive slot — the archive format (and every old kept blob) stays 10ms.
-            let mut interleaved = vec![0i16; FRAME * nchan];
-            for ch in 0..nchan {
-                for half in 0..2 {
-                    let slot_in = slot_out * 2 + half;
-                    let pcm = if slot_in < slots {
-                        decode_slot_n(&mut decs[ch], &grid[ch][slot_in], FRAME_IN)
-                    } else {
-                        vec![0i16; FRAME_IN]
-                    };
-                    accumulate(ch, slot_out, half, &pcm);
-                    for (i, &s) in pcm.iter().enumerate() {
-                        interleaved[(half * FRAME_IN + i) * nchan + ch] = s;
-                    }
-                }
-            }
-            let n = enc.encode(&interleaved, &mut pkt).ok()?;
-            write_pkt(&mut container, &pkt[..n]);
-        }
-    } else {
+    // ONE MONO STREAM PER PARTY (PHCALL5, 2026-09-10): the local channel is a single lossy generation from the raw mic, every channel at the same transparent bitrate; nchan side-by-side mono packets per slot.
+    {
         // N > 2 fallback: nchan side-by-side MONO packets per slot (no multistream Opus in this crate).
         let mut encs: Vec<opus::Encoder> = (0..nchan)
             .map(|_| {
                 let mut e = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok()?;
                 let _ = e.set_vbr(true);
-                let _ = e.set_bitrate(opus::Bitrate::Bits(48_000));
+                let _ = e.set_bitrate(opus::Bitrate::Bits(ARCHIVE_KBPS));
                 Some(e)
             })
             .collect::<Option<_>>()?;
@@ -415,8 +393,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         }
     }
     let thumb = thumbnail(&lin, nchan);
-    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V4.len() + 22 + fine.len() + container.len());
-    out.extend_from_slice(CONTAINER_MAGIC_V4);
+    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V5.len() + 22 + fine.len() + container.len());
+    out.extend_from_slice(CONTAINER_MAGIC_V5);
     out.push(nchan as u8);
     out.extend_from_slice(&48_000u32.to_le_bytes());
     out.extend_from_slice(&base.to_le_bytes());
@@ -462,7 +440,8 @@ enum Inner {
 
 /// Open a kept-call blob for playback — `PHCALL2` only (PHCALL1 read support deleted with the 5ms flag day). `None` on unknown magic or codec init failure.
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
-    if bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V4 {
+    let v5 = bytes.len() >= 8 && &bytes[..8] == CONTAINER_MAGIC_V5;
+    if bytes.len() >= 8 && (&bytes[..8] == CONTAINER_MAGIC_V4 || v5) {
         if bytes.len() < 8 + 22 {
             return None;
         }
@@ -477,7 +456,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
         }
         let envelope = bytes[8 + 22..env_end].to_vec();
         let body = bytes[env_end..].to_vec();
-        let inner = if nchan <= 2 {
+        let inner = if nchan <= 2 && !v5 {
             let chans = if nchan == 2 {
                 opus::Channels::Stereo
             } else {
@@ -642,12 +621,12 @@ mod tests {
                 .collect();
             let n = enc.encode(&tone, &mut buf).unwrap();
             let osc = i * (ops / 200);
-            records.push(Record { chan: 0, osc, seq: None, bytes: buf[..n].to_vec() });
-            records.push(Record { chan: 1, osc, seq: None, bytes: buf[..n].to_vec() });
+            records.push(Record { chan: 0, osc, seq: None, proc: None, bytes: buf[..n].to_vec() });
+            records.push(Record { chan: 1, osc, seq: None, proc: None, bytes: buf[..n].to_vec() });
         }
         let t = build_container(&records).unwrap();
         let container = t.container;
-        assert_eq!(&container[..8], CONTAINER_MAGIC_V4);
+        assert_eq!(&container[..8], CONTAINER_MAGIC_V5);
         // The row thumbnail is one gross of buckets per channel, four components each, and a tone is well above the silence floor in every bucket that has audio.
         assert_eq!(t.thumb.len(), 2 * crate::types::WAVE_THUMB_BUCKETS * ENV_COMPONENTS);
         assert!(t.thumb.iter().any(|&b| b < 255), "thumbnail shows only silence");
@@ -686,20 +665,41 @@ mod tests {
         let raw = |v: u8| vec![v; FRAME_IN * 2];
         // Remote channel, two-frame windows: seq 10 arrived (slots 0,1), seq 11 LOST, seq 12 arrived (slots 4,5); the fill for 11 comes late with a stamp far in the future.
         let mut records = vec![
-            Record { chan: 1 | RAW_FLAG, osc: 0, seq: Some((10, 0)), bytes: raw(1) },
-            Record { chan: 1 | RAW_FLAG, osc: ops / 200, seq: Some((10, 1)), bytes: raw(2) },
-            Record { chan: 1 | RAW_FLAG, osc: 4 * ops / 200, seq: Some((12, 0)), bytes: raw(5) },
-            Record { chan: 1 | RAW_FLAG, osc: 5 * ops / 200, seq: Some((12, 1)), bytes: raw(6) },
-            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((11, 0)), bytes: raw(3) },
-            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((11, 1)), bytes: raw(4) },
+            Record { chan: 1 | RAW_FLAG, osc: 0, seq: Some((10, 0)), proc: None, bytes: raw(1) },
+            Record { chan: 1 | RAW_FLAG, osc: ops / 200, seq: Some((10, 1)), proc: None, bytes: raw(2) },
+            Record { chan: 1 | RAW_FLAG, osc: 4 * ops / 200, seq: Some((12, 0)), proc: None, bytes: raw(5) },
+            Record { chan: 1 | RAW_FLAG, osc: 5 * ops / 200, seq: Some((12, 1)), proc: None, bytes: raw(6) },
+            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((11, 0)), proc: None, bytes: raw(3) },
+            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((11, 1)), proc: None, bytes: raw(4) },
             // A stale fill for a window that DID arrive must not replace it.
-            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((12, 0)), bytes: raw(0xEE) },
+            Record { chan: 1 | RAW_FLAG | FILL_FLAG, osc: 99 * ops, seq: Some((12, 0)), proc: None, bytes: raw(0xEE) },
         ];
-        records.push(Record { chan: 0 | RAW_FLAG, osc: 0, seq: Some((0, 0)), bytes: raw(9) });
+        records.push(Record { chan: 0 | RAW_FLAG, osc: 0, seq: Some((0, 0)), proc: None, bytes: raw(9) });
         let (nchan, grid) = grid_from_records(&records).unwrap();
         assert_eq!(nchan, 2);
         let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b)) => b[0], _ => 0xFF };
         assert_eq!((0..6).map(|s| first(&grid[1][s])).collect::<Vec<_>>(), vec![1, 2, 3, 4, 5, 6]);
         assert_eq!(grid[1].len(), 6);
+    }
+
+    #[test]
+    fn raw_mic_records_outrank_the_wire_copy_for_their_channel() {
+        use crate::call::spool::{PROC_FLAG, RAW_FLAG};
+        let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let raw = |v: u8| vec![v; FRAME_IN * 2];
+        let records = vec![
+            // Channel 0: the raw mic (PROC) and the ducked wire copy of the same frames — the grid must hold the raw ones.
+            Record { chan: RAW_FLAG | PROC_FLAG, osc: 0, seq: Some((0, 0)), proc: Some((128, 1)), bytes: raw(7) },
+            Record { chan: RAW_FLAG, osc: 0, seq: Some((0, 0)), proc: None, bytes: raw(1) },
+            Record { chan: RAW_FLAG | PROC_FLAG, osc: ops / 200, seq: Some((0, 1)), proc: Some((256, 0)), bytes: raw(8) },
+            Record { chan: RAW_FLAG, osc: ops / 200, seq: Some((0, 1)), proc: None, bytes: raw(2) },
+            // Channel 1 (remote) has only wire cells, as ever.
+            Record { chan: 1 | RAW_FLAG, osc: 0, seq: Some((5, 0)), proc: None, bytes: raw(3) },
+        ];
+        let (nchan, grid) = grid_from_records(&records).unwrap();
+        assert_eq!(nchan, 2);
+        let first = |c: &Option<Cell>| match c { Some(Cell::Pcm(b)) => b[0], _ => 0xFF };
+        assert_eq!((first(&grid[0][0]), first(&grid[0][1])), (7, 8));
+        assert_eq!(first(&grid[1][0]), 3);
     }
 }

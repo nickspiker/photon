@@ -106,6 +106,8 @@ pub const RAW_FLAG: u8 = 0x80;
 pub const SEQ_FLAG: u8 = 0x40;
 /// Set on a FILL: a remote frame that did NOT arrive live but was served by the peer afterwards (live re-request or the post-hangup drain). Its stamp is the time it landed, meaningless for placement — the transcode slots it by seq beside the windows that did arrive (record.rs).
 pub const FILL_FLAG: u8 = 0x20;
+/// Set on a RAW MIC record (2026-09-10, "mic RAW, per channel"): the frame as captured, before the canceller, the gain and the gate, followed by the verdict the live path applied — `[gain_q8 u16 LE][verdict u8]` (0 full, 1 ducked, 2 gated) between the window identity and the samples. The wire copy of the same frame rides as its own record without this flag; a keep prefers PROC records for the local channel and falls back to the wire copy for spools that predate them.
+pub const PROC_FLAG: u8 = 0x10;
 /// The channel index under the flag bits.
 pub const CHAN_MASK: u8 = 0x0F;
 
@@ -115,6 +117,8 @@ pub struct Record {
     pub chan: u8,
     pub osc: i64,
     pub seq: Option<(u32, u8)>,
+    /// `(gain in 8.8 fixed point, verdict)` on a PROC_FLAG record — what the live path did to this raw frame.
+    pub proc: Option<(u16, u8)>,
     pub bytes: Vec<u8>,
 }
 
@@ -127,6 +131,9 @@ impl Record {
     }
     pub fn is_fill(&self) -> bool {
         self.chan & FILL_FLAG != 0
+    }
+    pub fn is_raw_mic(&self) -> bool {
+        self.chan & PROC_FLAG != 0
     }
 }
 
@@ -143,15 +150,30 @@ fn parse_plain(plain: &[u8]) -> Option<Record> {
     }
     let chan = plain[0];
     let osc = i64::from_le_bytes(plain[1..9].try_into().unwrap());
-    if chan & SEQ_FLAG != 0 {
-        if plain.len() < 14 {
+    let mut at = 9usize;
+    let seq = if chan & SEQ_FLAG != 0 {
+        if plain.len() < at + 5 {
             return None;
         }
-        let seq = u32::from_le_bytes(plain[9..13].try_into().unwrap());
-        Some(Record { chan, osc, seq: Some((seq, plain[13])), bytes: plain[14..].to_vec() })
+        let s = u32::from_le_bytes(plain[at..at + 4].try_into().unwrap());
+        let slot = plain[at + 4];
+        at += 5;
+        Some((s, slot))
     } else {
-        Some(Record { chan, osc, seq: None, bytes: plain[9..].to_vec() })
-    }
+        None
+    };
+    let proc = if chan & PROC_FLAG != 0 {
+        if plain.len() < at + 3 {
+            return None;
+        }
+        let gain = u16::from_le_bytes(plain[at..at + 2].try_into().unwrap());
+        let verdict = plain[at + 2];
+        at += 3;
+        Some((gain, verdict))
+    } else {
+        None
+    };
+    Some(Record { chan, osc, seq, proc, bytes: plain[at..].to_vec() })
 }
 
 /// The engine-side writer. Appends sealed records; closing is just dropping (the ticket owns the fate).
@@ -188,12 +210,24 @@ impl SpoolWriter {
 
     /// A frame with its window identity (`SEQ_FLAG` is set for the caller when `seq` is given). Returns where the record landed, for the fill server's index.
     pub fn append_seq(&mut self, chan: u8, osc: i64, seq: Option<(u32, u8)>, frame: &[u8]) -> Option<RecordAt> {
-        let mut plain = Vec::with_capacity(1 + 8 + 5 + frame.len());
-        plain.push(if seq.is_some() { chan | SEQ_FLAG } else { chan });
+        self.append_seq_proc(chan & !PROC_FLAG, osc, seq, None, frame)
+    }
+
+    /// A frame with its window identity and, when `proc` is given, the live path's verdict on it (`PROC_FLAG` set for the caller).
+    pub fn append_seq_proc(&mut self, chan: u8, osc: i64, seq: Option<(u32, u8)>, proc: Option<(u16, u8)>, frame: &[u8]) -> Option<RecordAt> {
+        let mut plain = Vec::with_capacity(1 + 8 + 5 + 3 + frame.len());
+        let mut c = chan;
+        if seq.is_some() { c |= SEQ_FLAG; }
+        if proc.is_some() { c |= PROC_FLAG; } else { c &= !PROC_FLAG; }
+        plain.push(c);
         plain.extend_from_slice(&osc.to_le_bytes());
         if let Some((s, slot)) = seq {
             plain.extend_from_slice(&s.to_le_bytes());
             plain.push(slot);
+        }
+        if let Some((gain, verdict)) = proc {
+            plain.extend_from_slice(&gain.to_le_bytes());
+            plain.push(verdict);
         }
         plain.extend_from_slice(frame);
         let mut nonce = [0u8; 24];
@@ -268,6 +302,9 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
     let mut container = Vec::with_capacity(CONTAINER_MAGIC.len() + records.len() * 32);
     container.extend_from_slice(CONTAINER_MAGIC);
     for r in &records {
+        if r.is_raw_mic() {
+            continue; // the flat legacy container carries the wire copies only
+        }
         container.push(r.chan & (CHAN_MASK | RAW_FLAG));
         container.extend_from_slice(&r.osc.to_le_bytes());
         container.extend_from_slice(&(r.bytes.len() as u16).to_le_bytes());
@@ -336,14 +373,36 @@ mod tests {
         drop(w);
         let mut r = SpoolReader::open(&key, &path).unwrap();
         let ra = r.read_at(a).unwrap();
-        assert_eq!(ra, Record { chan: SEQ_FLAG, osc: 5000, seq: Some((17, 0)), bytes: vec![1, 2, 3] });
+        assert_eq!(ra, Record { chan: SEQ_FLAG, osc: 5000, seq: Some((17, 0)), proc: None, bytes: vec![1, 2, 3] });
         let rb = r.read_at(b).unwrap();
         assert_eq!(rb.seq, Some((40, 3)));
         assert!(rb.is_fill() && rb.is_raw() && rb.index() == 1);
         let ticket = SpoolTicket { key, path: path.clone() };
         let all = drain_records(&ticket).unwrap();
         assert_eq!(all.len(), 3);
-        assert_eq!(all[1], Record { chan: 1, osc: 5001, seq: None, bytes: vec![4, 4] });
+        assert_eq!(all[1], Record { chan: 1, osc: 5001, seq: None, proc: None, bytes: vec![4, 4] });
+        shred(ticket);
+    }
+
+    #[test]
+    fn raw_mic_records_carry_their_verdict() {
+        let dir = std::env::temp_dir();
+        let path = dir.join(format!("photon-spool-proc-test-{}.tmp", std::process::id()));
+        let key: [u8; 32] = [11u8; 32];
+        let mut w = SpoolWriter::create(&key, &path).unwrap();
+        let at = w.append_seq_proc(RAW_FLAG | PROC_FLAG, 7000, Some((3, 1)), Some((0x0180, 2)), &[9, 9, 9, 9]).unwrap();
+        w.append_seq(0, 7000, Some((3, 1)), &[5; 12]);
+        drop(w);
+        let mut r = SpoolReader::open(&key, &path).unwrap();
+        let rec = r.read_at(at).unwrap();
+        assert!(rec.is_raw_mic() && rec.is_raw() && rec.index() == 0);
+        assert_eq!(rec.proc, Some((0x0180, 2)));
+        assert_eq!(rec.seq, Some((3, 1)));
+        assert_eq!(rec.bytes, vec![9, 9, 9, 9]);
+        let ticket = SpoolTicket { key, path: path.clone() };
+        let all = drain_records(&ticket).unwrap();
+        assert_eq!(all.len(), 2);
+        assert!(!all[1].is_raw_mic());
         shred(ticket);
     }
 }

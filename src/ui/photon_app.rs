@@ -1987,6 +1987,8 @@ pub struct PhotonApp {
     wave_env: std::collections::HashMap<[u8; 32], std::sync::Arc<Vec<u8>>>,
     /// Loads in flight (one per hash).
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
+    /// Folded wave-card tracks per (recording, preview width, envelope length, channel) — the render reads them every frame, folds them once (render.rs wave card).
+    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<Vec<Vec<f32>>>>>,
     wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<u8>>)>>,
     wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<u8>>)>>,
     call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
@@ -2519,6 +2521,7 @@ impl PhotonApp {
             update_tx: None,
             call_keep_rx: None,
             wave_env: std::collections::HashMap::new(),
+            wave_fold_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             wave_env_pending: std::collections::HashSet::new(),
             wave_env_tx: None,
             wave_env_rx: None,
