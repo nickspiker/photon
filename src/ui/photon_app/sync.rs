@@ -387,6 +387,15 @@ impl PhotonApp {
                 }
             }
             let mut sent = false;
+            // THE DEVICE THAT OWNS THE ADDRESS (field 2026-09-12: "pong answered by fe46a74b but we pinged 90e571bf", dozens per log on every friend of a multi-device fleet): a contact's `ip` / `local_ip` are overwritten by whichever device's record was adopted last, while the ping was booked against the contact's FIRST-MET device — so a perfectly good pong from the MacBook at the MacBook's own address read as a mismatch, was re-armed, and the "ghost refusal" ticket chased a locked desktop that was never involved. Book each ping against the endpoint that carries that address; the primary device only when no endpoint claims it.
+            let dev_for = |addr: std::net::SocketAddr| -> crate::types::DevicePubkey {
+                contact
+                    .device_endpoints
+                    .iter()
+                    .find(|ep| ep.public == Some(addr) || ep.lan == Some(addr))
+                    .map(|ep| crate::types::DevicePubkey::from_bytes(ep.pubkey))
+                    .unwrap_or_else(|| primary_dev.clone())
+            };
             // No direct path proven → also ping over the relay pipe so PRESENCE works for a relay-only peer. Taken once per cycle so we don't relay the same ping three times (once per candidate address). A validated path means direct pings suffice — no relay ping needed.
             let mut relay_ping =
                 relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
@@ -395,7 +404,7 @@ impl PhotonApp {
                 if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
                     checker.ping(
                         vpath,
-                        primary_dev.clone(),
+                        dev_for(vpath),
                         std::mem::take(&mut punch),
                         std::mem::take(&mut relay_ping),
                         std::mem::take(&mut announce),
@@ -406,7 +415,7 @@ impl PhotonApp {
             if let Some(addr) = lan_addr {
                 checker.ping(
                     addr,
-                    primary_dev.clone(),
+                    dev_for(addr),
                     std::mem::take(&mut punch),
                     std::mem::take(&mut relay_ping),
                     std::mem::take(&mut announce),
@@ -418,7 +427,7 @@ impl PhotonApp {
                 if Some(public) != lan_addr {
                     checker.ping(
                         public,
-                        primary_dev.clone(),
+                        dev_for(public),
                         std::mem::take(&mut punch),
                         std::mem::take(&mut relay_ping),
                         std::mem::take(&mut announce),
