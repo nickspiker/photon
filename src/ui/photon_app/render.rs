@@ -3403,6 +3403,13 @@ impl PhotonApp {
                                     let held = crate::storage::blob_present(&hash);
                                     let is_rec = crate::types::is_call_recording(&msg.content);
                                     // Opening is a tap on the visual itself (2026-09-12); the strip's pill is the file verb: fetch it, play a standalone recording, or save it.
+                                    // A held music pigeon gets PLAY/STOP in the action row itself, beside save and delete (Nick 2026-09-12: "same line as reply/save/delete") — the same glyphs the wave card's play wears.
+                                    let is_music = msg.attach.is_some_and(|a| a.kind == crate::types::AttachKind::Audio) && !is_rec;
+                                    if held && is_music {
+                                        let playing_this = self.music_play.as_ref().is_some_and(|m| m.hash == hash && m.playing());
+                                        let glyph: std::borrow::Cow<'static, str> = if playing_this { "\u{25A0}".into() } else { "\u{25B6}\u{FE0E}".into() };
+                                        pills.push((glyph, *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(9)));
+                                    }
                                     let (label, colour) = if !held {
                                         (tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR)
                                     } else if is_rec {
@@ -3837,21 +3844,7 @@ impl PhotonApp {
                                         let cols = ((wx1 - wx0).max(1.0)) as usize;
                                         let rows = half as usize;
                                         const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
-                                        let strip_open = self.selected_msg.is_some_and(|(_, ts, out)| ts == msg.timestamp && out == msg.is_outgoing);
                                         let mfrac = self.music_play.as_ref().filter(|m| m.hash == ahash && m.playing()).map(|m| m.frac());
-                                        // The play twelfth, only while the options show: glyph first, its dark backdrop after, the bars fill beneath both (topmost-first).
-                                        let play_w = (wx1 - wx0) / 12.0;
-                                        if strip_open {
-                                            let glyph = if mfrac.is_some() { "\u{25A0}" } else { "\u{25B6}\u{FE0E}" };
-                                            let gs = TextStyle::new(msg_size, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
-                                            let gw = ctx.text.measure_text(glyph, &gs);
-                                            ctx.text.draw_text_left(&mut canvas, glyph, wx0 + play_w * 0.5 - gw * 0.5, bcy + msg_size * 0.35, &gs, Some(list_clip), None);
-                                            let bt = band_top.max(list_top);
-                                            let bb = band_bot.min(list_bottom);
-                                            if bb > bt {
-                                                paint::fill_rect(&mut canvas, wx0 as isize, bt as isize, play_w as isize, (bb - bt) as isize, theme::near_black(colour, 0.15), Some(list_clip), None);
-                                            }
-                                        }
                                         // Playhead while playing.
                                         if let Some(f) = mfrac {
                                             let phx = wx0 + f * (wx1 - wx0);

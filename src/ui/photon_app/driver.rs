@@ -1333,6 +1333,20 @@ impl FluorApp for PhotonApp {
                 }
                 if let Some((sci, ts, out)) = self.selected_msg {
                     match slot {
+                        // PLAY/STOP for a music pigeon (slot 9) — the action-row twin of the wave card's glyph.
+                        9 => {
+                            if let Some(hash) = self.conv_of(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| crate::types::parse_attachment_content(&m.content)).map(|(h, _, _)| h) {
+                                match self.music_play.as_ref().filter(|m| m.hash == hash) {
+                                    Some(m) => m.toggle(),
+                                    None => {
+                                        let dur = self.wave_env.get(&hash).and_then(|o| o.as_ref()).and_then(|envs| envs.first()).map(|e| e.bins as f32 * e.samples_per_bin as f32 / e.sample_rate.max(1) as f32).unwrap_or(0.0);
+                                        let bytes = self.session.as_ref().map(|se| se.identity_seed).and_then(|seed| crate::storage::blob_load(&seed, &hash));
+                                        self.music_play = bytes.and_then(|b| super::music_play::MusicPlay::start(hash, b, dur));
+                                    }
+                                }
+                                self.scene_dirty = true;
+                            }
+                        }
                         // REPLY = a REFERENCE, never a quote: arm the target eagle_time; the compose strip shows the referenced message at half alpha, and the sent row carries only the reference — the renderer resolves it live, so a later edit of the target updates every reply pointing at it.
                         0 => {
                             let _ = out; // the reference is by eagle_time alone (either direction resolves it)
@@ -1618,17 +1632,7 @@ impl FluorApp for PhotonApp {
                                     self.selected_msg = Some((ci, ts, out));
                                     self.selected_msg_copied = false;
                                 } else {
-                                    let play_w = (v.x1 - v.x0) / 12.0;
-                                    if px < v.x0 + play_w {
-                                        match self.music_play.as_ref().filter(|m| m.hash == v.hash) {
-                                            Some(m) => m.toggle(),
-                                            None => {
-                                                let dur = self.wave_env.get(&v.hash).and_then(|o| o.as_ref()).and_then(|envs| envs.first()).map(|e| e.bins as f32 * e.samples_per_bin as f32 / e.sample_rate.max(1) as f32).unwrap_or(0.0);
-                                                let bytes = self.session.as_ref().map(|se| se.identity_seed).and_then(|seed| crate::storage::blob_load(&seed, &v.hash));
-                                                self.music_play = bytes.and_then(|b| super::music_play::MusicPlay::start(v.hash, b, dur));
-                                            }
-                                        }
-                                    } else if self.music_play.as_ref().is_some_and(|m| m.hash == v.hash && m.playing()) {
+                                    if self.music_play.as_ref().is_some_and(|m| m.hash == v.hash && m.playing()) {
                                         let f = ((px - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0);
                                         if let Some(m) = self.music_play.as_ref() {
                                             m.seek_frac(f);
