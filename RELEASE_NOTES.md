@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The stream filter button no longer hides behind message rows.
+- Tapping beside an attachment opens its details: name, type, size and dimensions with the time up top, and reply, save and delete below, every option a real button.
+- An attachment row is now just the attachment: the picture, the first lines of a code or text file, or the waveform, with no size or hint line. Tap the picture or the code to open it; tap the row beside it for reply, save and delete.
 ## v93
 
 - Fixed a crash on Android that could hit right after answering a wave, when a background network event ran the app's tick on the wrong thread.

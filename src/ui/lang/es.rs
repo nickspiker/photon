@@ -269,6 +269,24 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "reenviar".into(),
         Msg::FetchPill => "traer".into(),
         Msg::SavePill => "guardar".into(),
+        Msg::AttachStats { name, kind, size, dims } => {
+            let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
+            let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
+            format!("{name_part}{kind} \u{00B7} {size}{dims_part}").into()
+        }
+        Msg::AttachKindName(k) => match k {
+            crate::types::AttachKind::Unknown => "archivo",
+            crate::types::AttachKind::Image => "imagen",
+            crate::types::AttachKind::RawImage => "imagen en bruto",
+            crate::types::AttachKind::Video => "vídeo",
+            crate::types::AttachKind::Audio => "audio",
+            crate::types::AttachKind::Text => "texto",
+            crate::types::AttachKind::Code => "código",
+            crate::types::AttachKind::Archive => "archivo comprimido",
+            crate::types::AttachKind::Program => "programa",
+            crate::types::AttachKind::Document => "documento",
+        }
+        .into(),
         Msg::PlayPill => "\u{25B6}\u{FE0E} reproducir".into(),
         Msg::DeletePill => "eliminar".into(),
         Msg::DeletingPill => "eliminando\u{2026}".into(),

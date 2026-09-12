@@ -248,6 +248,24 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "resend".into(),
         Msg::FetchPill => "fetch".into(),
         Msg::SavePill => "save".into(),
+        Msg::AttachStats { name, kind, size, dims } => {
+            let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
+            let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
+            format!("{name_part}{kind} \u{00B7} {size}{dims_part}").into()
+        }
+        Msg::AttachKindName(k) => match k {
+            crate::types::AttachKind::Unknown => "file",
+            crate::types::AttachKind::Image => "picture",
+            crate::types::AttachKind::RawImage => "raw picture",
+            crate::types::AttachKind::Video => "video",
+            crate::types::AttachKind::Audio => "audio",
+            crate::types::AttachKind::Text => "text",
+            crate::types::AttachKind::Code => "code",
+            crate::types::AttachKind::Archive => "archive",
+            crate::types::AttachKind::Program => "program",
+            crate::types::AttachKind::Document => "document",
+        }
+        .into(),
         Msg::PlayPill => "\u{25B6}\u{FE0E} play".into(),
         Msg::DeletePill => "delete".into(),
         Msg::DeletingPill => "deleting\u{2026}".into(),

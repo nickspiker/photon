@@ -714,22 +714,22 @@ const DEFAULT_REACTIONS: [&str; 5] = [
     "\u{1F44E}",
 ];
 
-/// The bubble text for a ROW: a typed attachment gets its kind glyph (and a code file its language tag); everything else falls thru to [`display_content`].
+/// The bubble text for a ROW. THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it"): a picture row has no text at all (the band above is the row), a code or text row shows its first lines, anything without a visual shows its bare filename. No kind glyph, no size, no hint — the size and the actions live in the details strip a tap on the row opens.
 fn display_row(msg: &crate::types::ChatMessage) -> String {
-    if let (Some(a), Some((hash, name, size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+    if let (Some(a), Some((hash, name, _size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
         if name.as_str() != "call.audio" {
-            let size_str = crate::types::size_label(size);
-            let held = crate::storage::blob_present(&hash);
-            let glyph = match a.kind {
-                crate::types::AttachKind::Code => match crate::types::code_language(&name) {
-                    Some(lang) => format!("{} {lang}", a.kind.glyph()),
-                    None => a.kind.glyph().to_string(),
-                },
-                k => k.glyph().to_string(),
-            };
-            // Images show no filename — the user typed nothing, the picture is the message (and new sends carry no name at all); the glyph + size line remains for the not-yet-fetched state.
-            let shown_name = if a.kind.is_image() { "" } else { name.as_str() };
-            return tr(Msg::FileBubble { glyph: &glyph, name: shown_name, size: &size_str, held }).into_owned();
+            if a.kind.is_image() {
+                let has_visual = crate::types::parse_micro_image(&msg.preview).is_some() || a.preview_hash.is_some() || crate::storage::blob_present(&hash);
+                return if has_visual { String::new() } else { "\u{2026}".to_string() };
+            }
+            if a.kind.is_text() && !msg.preview.is_empty() {
+                let text = String::from_utf8_lossy(&msg.preview);
+                let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).take(3).collect();
+                if !lines.is_empty() {
+                    return lines.join("\n");
+                }
+            }
+            return if name.is_empty() { a.kind.glyph().to_string() } else { name };
         }
     }
     display_content(&msg.content)
@@ -814,6 +814,24 @@ impl ChatFilter {
             ChatFilter::Waves => ChatFilter::Text,
             ChatFilter::Text => ChatFilter::All,
         }
+    }
+}
+
+/// An attachment's VISUAL as drawn this frame (the picture band, or a code row's preview lines), slot-indexed like [`PhotonApp::msg_hit_rows`]: a tap inside opens it, a tap on the rest of the row opens the actions (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it").
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct AttachVisual {
+    pub hash: [u8; 32],
+    pub held: bool,
+    pub kind: crate::types::AttachKind,
+    pub x0: f32,
+    pub x1: f32,
+    pub y0: f32,
+    pub y1: f32,
+}
+
+impl AttachVisual {
+    pub fn contains(&self, x: f32, y: f32) -> bool {
+        x >= self.x0 && x <= self.x1 && y >= self.y0 && y <= self.y1
     }
 }
 
@@ -1595,6 +1613,8 @@ pub struct PhotonApp {
     conv_filter_hit: HitId,
     /// Wave cards' waveform bands as drawn this frame, slot-indexed like `msg_hit_rows` (`visible_index % MSG_HIT_SPAN`).
     msg_wave_bands: Vec<Option<WaveBand>>,
+    /// Attachment visuals as drawn this frame, slot-indexed like `msg_hit_rows`.
+    msg_attach_visuals: Vec<Option<AttachVisual>>,
     /// A waveform scrub in progress (pointer down on a card's waveform); release seeks.
     wave_scrub: Option<WaveScrub>,
     /// One-shot launch sweep for waves whose keep a crash interrupted (spool.rs recover_orphans).
@@ -2394,6 +2414,7 @@ impl PhotonApp {
             strip_dismissed: None,
             conv_filter_hit: HIT_NONE,
             msg_wave_bands: Vec::new(),
+            msg_attach_visuals: Vec::new(),
             wave_scrub: None,
             orphan_waves_swept: false,
             lane_rearm_cycles: std::collections::HashMap::new(),

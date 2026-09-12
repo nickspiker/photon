@@ -273,6 +273,24 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "tuku anō".into(),
         Msg::FetchPill => "tiki".into(),
         Msg::SavePill => "tiaki".into(),
+        Msg::AttachStats { name, kind, size, dims } => {
+            let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
+            let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
+            format!("{name_part}{kind} \u{00B7} {size}{dims_part}").into()
+        }
+        Msg::AttachKindName(k) => match k {
+            crate::types::AttachKind::Unknown => "kōnae",
+            crate::types::AttachKind::Image => "pikitia",
+            crate::types::AttachKind::RawImage => "pikitia mata",
+            crate::types::AttachKind::Video => "ataata",
+            crate::types::AttachKind::Audio => "oro",
+            crate::types::AttachKind::Text => "kupu",
+            crate::types::AttachKind::Code => "waehere",
+            crate::types::AttachKind::Archive => "pūranga",
+            crate::types::AttachKind::Program => "hōtaka",
+            crate::types::AttachKind::Document => "tuhinga",
+        }
+        .into(),
         Msg::PlayPill => "\u{25B6}\u{FE0E} whakatangi".into(),
         Msg::DeletePill => "muku".into(),
         Msg::DeletingPill => "e muku ana\u{2026}".into(),

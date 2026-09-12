@@ -1432,17 +1432,11 @@ impl FluorApp for PhotonApp {
                                 .and_then(|m| m.attach.map(|a| a.kind));
                             if let Some((hash, name, _)) = att {
                                 let held = crate::storage::blob_present(&hash);
-                                // An IMAGE opens in OPSIN when the original is held and the binary exists (Nick 2026-09-11: rotate/expose/save live there); otherwise the in-app viewer as soon as any picture exists — the original fetches from its pill.
-                                let image_viewable = kind.is_some_and(|k| k.is_image()) && (held || self.img_wants_any_picture(sci, &hash));
-                                if image_viewable {
-                                    if !(held && self.open_in_opsin(&hash, &name)) {
-                                        self.open_viewer(sci, hash);
-                                    }
-                                } else if !held {
+                                let _ = kind;
+                                // Opening moved to a tap on the visual itself (2026-09-12); this pill is the file verb: fetch, play a standalone recording, or save.
+                                if !held {
                                     self.attach_fetch(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
-                                } else if kind.is_some_and(|k| k.is_text()) {
-                                    self.open_reader(hash, name.clone());
                                 } else if name == "call.audio" {
                                     // A kept call recording — tap toggles play/stop on this very bubble (call/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
                                     self.toggle_recording_playback(hash);
@@ -1610,6 +1604,28 @@ impl FluorApp for PhotonApp {
             }
             if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
+                // A tap inside an attachment's VISUAL (the picture, the code lines) opens it straight away; anywhere else on the row is the actions strip (Nick 2026-09-12).
+                if let Some(v) = self.msg_attach_visuals.get(vis).copied().flatten() {
+                    let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
+                    if v.contains(px, py) {
+                        if let Some(ci) = self.active_contact() {
+                            let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
+                            if v.kind.is_image() {
+                                // A held original opens in opsin where the binary exists (the desktop); otherwise the in-app viewer from whatever picture is here.
+                                if !(v.held && self.open_in_opsin(&v.hash, &name)) {
+                                    self.open_viewer(ci, v.hash);
+                                }
+                            } else if v.held {
+                                self.open_reader(v.hash, name);
+                            } else {
+                                self.attach_fetch(ci, &v.hash);
+                                self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
+                            }
+                        }
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                }
                 // A tap inside a wave card's band: the glyph toggles play/stop (or fetches the blob); the waveform itself was handled as a scrub on the release edge — never a row select either way.
                 if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
                     let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);

@@ -3002,7 +3002,11 @@ impl PhotonApp {
                                         }
                                         vec![super::call_ui::wave_header(w)]
                                     }
-                                    None => wrap_text_lines(ctx.text, &body_of(m), &row_wrap, avail_w),
+                                    None => {
+                                        let body = body_of(m);
+                                        // A picture row has no text: the band IS the row, so it reserves no body line at all (the draw walks an empty body; the band anchors off max(1)).
+                                        if body.is_empty() && m.attach.is_some() { Vec::new() } else { wrap_text_lines(ctx.text, &body, &row_wrap, avail_w) }
+                                    }
                                 };
                                 total += lines.len();
                                 // An image attachment with a micro preview reserves a band above its pill (IMG_PREVIEW_LINES lines) — the picture draws there before any blob is fetched.
@@ -3037,6 +3041,8 @@ impl PhotonApp {
                         self.msg_hit_rows.resize(super::MSG_HIT_SPAN as usize, None);
                         self.msg_wave_bands.clear();
                         self.msg_wave_bands.resize(super::MSG_HIT_SPAN as usize, None);
+                        self.msg_attach_visuals.clear();
+                        self.msg_attach_visuals.resize(super::MSG_HIT_SPAN as usize, None);
                         self.msg_link_hits.clear();
                         // ── LINK CONSENT PANEL ── painted BEFORE the message walk (earliest paint wins under-blend), hit-stamped AFTER it (latest stamp wins the map). A tapped link never opens silently: the full destination shows verbatim — punycode/homograph honesty — with Open / Copy / Cancel (Nick 2026-09-04).
                         let mut consent_stamp: Option<([fluor::region::Region; 3], f32)> = None;
@@ -3084,6 +3090,34 @@ impl PhotonApp {
                         // Hold the cached wrap strings for the whole walk (disjoint field from everything the loop mutates).
                         let wrap_cache: &Vec<Vec<String>> =
                             &self.msg_wrap.as_ref().expect("wrap cache built above").1;
+                        let mut filter_stamp: Option<(fluor::region::Region, HitId)> = None;
+                        // STREAM FILTER PILL — bottom RIGHT, drawn BEFORE the row walk so under-blend keeps it above the rows (Nick 2026-09-12: "the filter button is not drawn first like it should be"); its hit rect is re-asserted after the walk, just above the compose box (Nick 2026-09-09: the top-centre spot overlapped the title), sliding off to the RIGHT with the same scroll-tied offset the top bar slides up with. Stamped AFTER the row walk so it wins its rect; no stamp while slid away.
+                        {
+                            let f_label = tr(match self.conv_filter {
+                                ChatFilter::All => Msg::FilterAll,
+                                ChatFilter::Waves => Msg::FilterWaves,
+                                ChatFilter::Text => Msg::FilterText,
+                            });
+                            let f_h = unit * 1.3;
+                            let f_w = unit * 3.2;
+                            let f_x = buf_w as f32 - pad_x - f_w + bar_off;
+                            let f_y = list_bottom - f_h - unit * 0.25;
+                            filter_stamp = None;
+                            if f_x < buf_w as f32 {
+                                filter_stamp = Some((fluor::region::Region::new(f_x, f_y, f_w, f_h), if topbar_visible { self.conv_filter_hit } else { HIT_NONE }));
+                                super::draw_stub_pill(
+                                    &mut canvas,
+                                    ctx.text,
+                                    &mut chrome.hit_test_map,
+                                    buf_w,
+                                    buf_h,
+                                    fluor::region::Region::new(f_x, f_y, f_w, f_h),
+                                    &f_label,
+                                    if topbar_visible { self.conv_filter_hit } else { HIT_NONE },
+                                    ctx.pressed_hit,
+                                );
+                            }
+                        }
                         for (vi, msg) in visible.iter().enumerate().rev() {
                             if y < list_top - line_h {
                                 reached_oldest = false;
@@ -3239,6 +3273,14 @@ impl PhotonApp {
                                         detail.push_str(&tr(Msg::BlobNotHereSuffix));
                                     }
                                 }
+                                // STATS UP TOP (Nick 2026-09-12): an attachment row's meta line leads with name, type, size and dims; the age and delivery state follow.
+                                if let (Some(a), Some((_, name, size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+                                    let size_s = crate::types::size_label(size);
+                                    let dims_s = a.dims.map(|(w, h): (u32, u32)| format!("{}\u{00D7}{}", crate::fmt_num(w), crate::fmt_num(h))).unwrap_or_default();
+                                    let kind_s = tr(Msg::AttachKindName(a.kind));
+                                    let stats = tr(Msg::AttachStats { name: &name, kind: &kind_s, size: &size_s, dims: &dims_s });
+                                    detail = format!("{stats} \u{00B7} {detail}");
+                                }
                                 let detail_size = msg_size * 0.75;
                                 let detail_style =
                                     TextStyle::new(detail_size, *theme::LABEL_COLOUR)
@@ -3305,7 +3347,8 @@ impl PhotonApp {
                                         self.msg_action_base.wrapping_add(1),
                                     ));
                                 }
-                                if !is_wave_row {
+                                // Copy is for text: an attachment row's body is its visual, nothing to copy.
+                                if !is_wave_row && crate::types::parse_attachment_content(&msg.content).is_none() {
                                     pills.push((copy_label, copy_colour, self.msg_copy_id));
                                 }
                                 if msg.is_outgoing && !msg.delivered {
@@ -3321,23 +3364,15 @@ impl PhotonApp {
                                 {
                                     let held = crate::storage::blob_present(&hash);
                                     let is_rec = crate::types::is_call_recording(&msg.content);
-                                    let kind = msg.attach.map(|a| a.kind);
-                                    let viewable = kind.is_some_and(|k| k.is_image()) && (held || crate::types::parse_micro_image(&msg.preview).is_some() || msg.attach.and_then(|a| a.preview_hash).is_some_and(|ph| matches!(self.img_cache.get(&ph), Some(Some(_)))));
-                                    let (label, colour) = if viewable || (held && kind.is_some_and(|k| k.is_text())) {
-                                        (tr(Msg::OpenPill), *theme::COPY_PILL_COLOUR)
-                                    } else if !held {
+                                    // Opening is a tap on the visual itself (2026-09-12); the strip's pill is the file verb: fetch it, play a standalone recording, or save it.
+                                    let (label, colour) = if !held {
                                         (tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR)
                                     } else if is_rec {
                                         (tr(Msg::PlayPill), *theme::COPY_PILL_COLOUR)
                                     } else {
                                         (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
-                                    let primary_saves = held && !viewable && !is_rec && !kind.is_some_and(|k| k.is_text());
                                     pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
-                                    // A held original whose primary action is Open or Play gets its own SAVE pill (slot 10) — download and preview are separate taps, not one shared slot (2026-09-10).
-                                    if held && !primary_saves {
-                                        pills.push((tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(10)));
-                                    }
                                 }
                                 let deleting =
                                     self.pending_delete.as_ref().is_some_and(|(k, _)| {
@@ -3358,33 +3393,19 @@ impl PhotonApp {
                                         *painted = true;
                                     }
                                 }
+                                // ACTUAL BUTTONS (Nick 2026-09-12: "each option, like wave back, beam back, fetch, should be actual buttons"): every option is a filled pill thru the one pill renderer, tinted by its verb, a greyed one (no hit) for a stub like beam back.
+                                let pill_h = line_h * 0.9;
                                 let pad_hit = detail_size;
                                 let mut px_cursor = pad_x;
                                 for (label, colour, hid) in pills {
-                                    let style = TextStyle::new(detail_size, colour)
-                                        .weight(600)
-                                        .font("Oxanium");
-                                    let w = ctx.text.measure_text(&label, &style);
-                                    ctx.text.draw_text_left(
-                                        &mut canvas,
-                                        &label,
-                                        px_cursor,
-                                        y - line_h,
-                                        &style,
-                                        Some(list_clip),
-                                        None,
-                                    );
-                                    restamp_hit_rect(
-                                        &mut chrome.hit_test_map,
-                                        buf_w,
-                                        buf_h,
-                                        (px_cursor - pad_hit * 0.5) as isize,
-                                        ((y - line_h * 1.5).max(list_top)) as isize,
-                                        (px_cursor + w + pad_hit * 0.5) as isize,
-                                        ((y - line_h * 0.5).min(list_bottom)) as isize,
-                                        hid,
-                                    );
-                                    px_cursor += w + pad_hit * 2.0;
+                                    let style = TextStyle::new(detail_size, colour).weight(600).font("Oxanium");
+                                    let w = ctx.text.measure_text(&label, &style) + pad_hit * 1.4;
+                                    let rect = fluor::region::Region::new(px_cursor, y - line_h - pill_h * 0.5, w, pill_h);
+                                    if rect.y + rect.h >= list_top && rect.y <= list_bottom {
+                                        let fill = Some((theme::dim_colour(colour), colour));
+                                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
+                                    }
+                                    px_cursor += w + pad_hit * 0.6;
                                 }
                                 // Bottom strip line: the REACTION ROW — as many ranked glyphs as fit, our current one highlighted green (tap it again to retract; tap another to replace), then the circled "+" for anything the keyboard can type. Drawn order is snapshotted so the tap handler maps slot → glyph even as the ranking shifts.
                                 let ours_now: Option<String> = raw_msgs
@@ -3764,6 +3785,24 @@ impl PhotonApp {
                                     if cy + bh * 0.5 >= list_top && cy - bh * 0.5 <= list_bottom {
                                         paint::draw_image(&mut canvas, &pixels, tw, th, cx, cy, bw, bh, Some(list_clip));
                                     }
+                                    // The picture is its own tap target: inside opens the viewer, the rest of the row opens the actions.
+                                    if let (Some(a), Some((hash, _, _))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+                                        let slot = vi % super::MSG_HIT_SPAN as usize;
+                                        if slot < self.msg_attach_visuals.len() {
+                                            self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present(&hash), kind: a.kind, x0: cx - bw * 0.5, x1: cx + bw * 0.5, y0: (cy - bh * 0.5).max(list_top), y1: (cy + bh * 0.5).min(list_bottom) });
+                                        }
+                                    }
+                                }
+                            }
+                            // A code or text row's preview lines are its visual: the body rect opens the reader, the margins open the actions.
+                            if let (Some(a), Some((hash, _, _))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+                                if a.kind.is_text() && !lines.is_empty() {
+                                    let slot = vi % super::MSG_HIT_SPAN as usize;
+                                    let top = y - react_off - (lines.len() - 1) as f32 * intra - msg_size * 0.6;
+                                    let bot = y - react_off + msg_size * 0.6;
+                                    if slot < self.msg_attach_visuals.len() {
+                                        self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present(&hash), kind: a.kind, x0: pad_x, x1: buf_w as f32 - pad_x, y0: top.max(list_top), y1: bot.min(list_bottom) });
+                                    }
                                 }
                             }
                             static NO_LINES: Vec<String> = Vec::new();
@@ -3960,30 +3999,9 @@ impl PhotonApp {
                             }
                             y -= line_h + block_extra;
                         }
-                        // STREAM FILTER PILL — bottom RIGHT, just above the compose box (Nick 2026-09-09: the top-centre spot overlapped the title), sliding off to the RIGHT with the same scroll-tied offset the top bar slides up with. Stamped AFTER the row walk so it wins its rect; no stamp while slid away.
-                        {
-                            let f_label = tr(match self.conv_filter {
-                                ChatFilter::All => Msg::FilterAll,
-                                ChatFilter::Waves => Msg::FilterWaves,
-                                ChatFilter::Text => Msg::FilterText,
-                            });
-                            let f_h = unit * 1.3;
-                            let f_w = unit * 3.2;
-                            let f_x = buf_w as f32 - pad_x - f_w + bar_off;
-                            let f_y = list_bottom - f_h - unit * 0.25;
-                            if f_x < buf_w as f32 {
-                                super::draw_stub_pill(
-                                    &mut canvas,
-                                    ctx.text,
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    fluor::region::Region::new(f_x, f_y, f_w, f_h),
-                                    &f_label,
-                                    if topbar_visible { self.conv_filter_hit } else { HIT_NONE },
-                                    ctx.pressed_hit,
-                                );
-                            }
+                        // Re-asserted after the row walk (see the filter pill above the walk).
+                        if let Some((r, hid)) = filter_stamp {
+                            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, hid);
                         }
                         // Consent panel hit re-assert (the row walk stamped over it): HIT_NONE swallows everything under the panel, then the three pills win their own rects back.
                         if let Some((prects, py0)) = consent_stamp {
