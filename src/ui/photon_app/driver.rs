@@ -2773,6 +2773,9 @@ impl FluorApp for PhotonApp {
     fn tick(&mut self, ctx: &mut Context) -> bool {
         let now = Instant::now();
         let mut needs_redraw = false;
+        if self.poll_resume_vault() {
+            needs_redraw = true;
+        }
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial = self.tick_serial.wrapping_add(1);
         // Storage-failure latch → the amber banner. Writer threads and open paths can only set a static (no &mut self there); this mirror is how a fence error or a dead vault open reaches the screen — 1,276 of them once ran for hours as log lines while the UI claimed all was well (2026-08-24).
@@ -3700,13 +3703,44 @@ impl PhotonApp {
                 // open_session_vault = the ONE device vault via the shared registry: query_resume below spawns the attest worker, which opens this same vault — a second independent engine racing this one is how the vault corruption happened (stale engine committed over the live one's blocks → seal verification failed at every subsequent open).
                 // Phase-timed (the PERF summary below): everything in this arm runs on the UI thread BEFORE the first Ready frame, and the field measured ~1.2s of it with no line naming the eater — the timers make the next boot log ground truth.
                 let t_boot = std::time::Instant::now();
-                let opened = crate::storage::open_session_vault(
-                    remembered.identity_seed,
-                    remembered.vault_seed,
-                    device_secret,
-                );
-                let ms_vault = t_boot.elapsed().as_millis();
-                match opened {
+                // THE VAULT OPENS OFF THE UI THREAD (field 2026-09-12, Nick's note "persistent photon isn't responding nag": Android's input dispatcher waited 5001 ms for the focus event while the main thread sat in this open — 3.7 s of a 5.1 s resume, grown with the kept waves; nothing ever stalls to a person, the OS counts it). A worker opens the vault and sends the handle back; `poll_resume_vault` finishes the resume on the tick it lands, and the launch screen keeps consuming input meanwhile.
+                let (tx, rx) = std::sync::mpsc::channel();
+                let (identity_seed, vault_seed) = (remembered.identity_seed, remembered.vault_seed);
+                let spawned = std::thread::Builder::new()
+                    .name("vault-open".into())
+                    .spawn(move || {
+                        let _ = tx.send(crate::storage::open_session_vault(identity_seed, vault_seed, device_secret));
+                    })
+                    .is_ok();
+                if spawned {
+                    self.resume_vault_rx = Some((rx, remembered, t_boot));
+                    crate::log("RESUME: vault opening off the UI thread");
+                } else {
+                    // No thread: open inline, the old way, rather than never becoming Ready.
+                    let opened = crate::storage::open_session_vault(identity_seed, vault_seed, device_secret);
+                    self.resume_vault_rx = None;
+                    self.finish_resume_load(remembered, opened, t_boot);
+                }
+            }
+            // The vault worker finishes the resume (Ready, the announce, the first pings) when the handle lands; only the no-thread fallback reached Ready synchronously above.
+            if self.resume_vault_rx.is_none() && !matches!(self.state, AppState::Ready) {
+            self.state = AppState::Ready;
+            if let Some(hq) = self.handle_query.as_ref() {
+                crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
+                hq.query_resume(remembered);
+            }
+            // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
+            self.ping_contacts();
+            }
+        }
+    }
+}
+
+impl PhotonApp {
+    /// The resume's back half, once the vault handle lands (or inline when no worker thread could be spawned): every load that used to sit on the UI thread behind the open — contacts, messages, chains, keypairs, settings — then Ready, the announce and the first pings.
+    fn finish_resume_load(&mut self, remembered: tohu::SessionIdentity, opened: Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>, t_boot: std::time::Instant) {
+        let ms_vault = t_boot.elapsed().as_millis();
+                        match opened {
                     Ok(s) => {
                         // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
                         let now = vsf::eagle_time_oscillations();
@@ -4027,7 +4061,6 @@ impl PhotonApp {
                         self.vault_data_lost = true;
                     }
                 }
-            }
             self.state = AppState::Ready;
             if let Some(hq) = self.handle_query.as_ref() {
                 crate::log("UI: resumed to Ready from local session roots (tohu) — FGTW announce + presence run in background");
@@ -4035,6 +4068,23 @@ impl PhotonApp {
             }
             // Kick presence immediately for the just-loaded contacts so their online rings reflect reality without waiting for the FGTW round-trip.
             self.ping_contacts();
-        }
+    }
+
+    /// Polls the vault-open worker; true when the resume finished this tick (a frame is owed).
+    pub(super) fn poll_resume_vault(&mut self) -> bool {
+        let ready = match self.resume_vault_rx.as_ref() {
+            Some((rx, _, _)) => match rx.try_recv() {
+                Ok(opened) => Some(opened),
+                Err(std::sync::mpsc::TryRecvError::Empty) => None,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(crate::storage::StorageError::Vault("the vault-open worker died".to_string()))),
+            },
+            None => None,
+        };
+        let Some(opened) = ready else {
+            return false;
+        };
+        let (_, remembered, t_boot) = self.resume_vault_rx.take().unwrap();
+        self.finish_resume_load(remembered, opened, t_boot);
+        true
     }
 }

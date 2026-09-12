@@ -11,7 +11,7 @@
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor (draw_pill_immediate + retained Button); photon never hand-rolls squircles
 
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED 2026-09-08 (light KEM ratchet, computed owner, woven CLUTCH on shrink); NEXT stage 5 consent, 6 soak
-- [project_android_hang_nag.md](project_android_hang_nag.md) — CLOSED 2026-09-10: Android ANR at launch = 5 s vault open on UI thread; manifestus converged fast path; 1.5 s resume walk remains
+- [project_android_hang_nag.md](project_android_hang_nag.md) — ANR at launch CLOSED twice: manifestus fast path (09-10), then the vault open moved to a worker thread (09-12) as the vault grew; resume walk hashing remains the cost
 - [project_crash_handler_sigchain.md](project_crash_handler_sigchain.md) — Android fault handler lessons: arm after log dir known; libsigchain ignores SA_RESETHAND; tombstone decode; symbols archived per build
 - [project_idle_tick_cost.md](project_idle_tick_cost.md) — idle Android CPU 100%→10% 2026-09-10: tick profile lines, per-vsync syscalls/KDFs fixed, 30 Hz idle cadence
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% CPU = wake_at returns past Instant (animating flags / add_in_flight stuck / Android presence guard

@@ -14,3 +14,5 @@ Second cause, v0.89.19–.22 only: arming the native fault handler under libsigc
 
 **Why:** the ANR threshold is 5 s of unanswered input; the vault phase crossed it as the vault grew with recordings.
 **How to apply:** read `PERF: resume load` in any phone log first; a `vault` number near 5000 ms is this class. Vault-size-proportional work never belongs on the UI thread. Related: [[project_render_storm_lag]], [[project_vault_op_latency]].
+
+REOPENED AND CLOSED AGAIN 2026-09-12: back at 5.1 s (vault 3.7 s) as the vault grew with kept waves; the ANR record reads "Input dispatching timed out — waited 5001 ms for FocusEvent" with main in Native inside kete::FlatStore → mpsc recv, i.e. the launch, not a stall a person feels (Nick: "it never actually stalls"). Fix: `open_session_vault` runs on a `vault-open` worker; `poll_resume_vault` (tick) calls `finish_resume_load` (the extracted 320-line back half: contacts, messages, chains, keypairs, settings, then Ready + query_resume + pings) when the handle lands. Rule stands: vault-size-proportional work never on the UI thread; the resume walk's furrow hashing is still the cost underneath.

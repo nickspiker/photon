@@ -1459,6 +1459,8 @@ pub struct PhotonApp {
     pub pending_keep_hold: i8,
     /// A wave just started with no reachable address for this device: the next tick pushes our record to it and sweeps presence (set from the engine-start path, which holds only &self).
     call_needs_addresses: std::cell::Cell<Option<[u8; 32]>>,
+    /// The resume's vault-open worker: (its channel, the remembered session, the boot instant). Some while the open is in flight; the tick polls it and finishes the resume when the handle lands.
+    resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, tohu::SessionIdentity, std::time::Instant)>,
     /// The last frame the ACTIVE call screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "call screen should update at most every second").
     last_call_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight: content hash → (conversation contact index, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
@@ -2342,6 +2344,7 @@ impl PhotonApp {
             last_keygen_pickup: None,
             pending_keep_hold: 0,
             call_needs_addresses: std::cell::Cell::new(None),
+            resume_vault_rx: None,
             last_call_redraw: None,
             attach_fetch_inflight: std::collections::HashMap::new(),
             express_seen: Vec::new(),

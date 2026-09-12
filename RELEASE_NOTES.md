@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The "photon isn't responding" prompt at launch is gone: the vault now opens on a worker thread while the launch screen stays responsive, instead of holding the main thread for several seconds as the vault grew with kept waves.
 - The call screen now repaints once a second while a wave runs, so the timer, the live stats and the path ring keep up; the ring also reads cyan on the same network as it should, where it stayed green before.
 - The stream filter button no longer hides behind message rows.
 - Tapping beside an attachment opens its details: name, type, size and dimensions with the time up top, and reply, save and delete below, every option a real button.
