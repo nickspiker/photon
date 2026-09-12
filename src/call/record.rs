@@ -580,6 +580,30 @@ impl KeptStream {
     }
 }
 
+/// Interleaved PCM → one envelope per channel (≤2, the card's two halves) — the music-pigeon path: a dropped song runs the same three pyramids a wave does.
+pub fn envelopes_from_pcm(pcm: &[i16], nchan: usize, sample_rate: u32) -> Vec<crate::call::wave_env::WaveEnv> {
+    let nchan = nchan.max(1);
+    let shown = nchan.min(2);
+    let mut pyr = EnvPyramid::new(shown);
+    for (i, frame) in pcm.chunks_exact(nchan).enumerate() {
+        for ch in 0..shown {
+            pyr.push(ch, i, frame[ch]);
+        }
+    }
+    let spb = 1u32 << pyr.s_log2;
+    (0..shown)
+        .filter_map(|ch| {
+            pyr.finish_u8(ch).map(|(bins, peak_q48, data)| crate::call::wave_env::WaveEnv {
+                bins,
+                sample_rate,
+                samples_per_bin: spb,
+                peak_q48,
+                data: std::sync::Arc::new(data),
+            })
+        })
+        .collect()
+}
+
 /// Derive every channel's envelope from a held recording — the fallback for short waves (no blob shipped by design), the far channel before its wave.env lands, and every pre-exchange recording. One full decode, off the UI thread; ~real-time-x50 on a laptop.
 pub fn envelopes_from_blob(bytes: &[u8]) -> Option<Vec<crate::call::wave_env::WaveEnv>> {
     let mut ks = open_blob(bytes)?;

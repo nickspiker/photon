@@ -13,6 +13,7 @@ pub mod engine;
 pub mod spool;
 pub mod record;
 pub mod wave_env;
+pub mod music;
 pub mod playback;
 pub mod keys;
 pub mod packet;

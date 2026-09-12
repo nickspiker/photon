@@ -3028,6 +3028,7 @@ impl PhotonApp {
                                 total += lines.len();
                                 // An image attachment with a micro preview reserves a band above its pill (IMG_PREVIEW_LINES lines) — the picture draws there before any blob is fetched.
                                 total += super::viewer::img_band_lines_of(&self.img_cache, m);
+                                total += super::viewer::audio_band_lines_of(m);
                                 // A reply row reserves ONE extra line for its half-alpha reference snippet above the body.
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                                     total += 1;
@@ -3154,6 +3155,9 @@ impl PhotonApp {
                             // The image preview band above an image attachment's pill (typed attachments 2026-09-10).
                             let img_lines = super::viewer::img_band_lines_of(&self.img_cache, msg);
                             let img_band_h = img_lines as f32 * intra;
+                            // A music pigeon's waveform band (audio rows that aren't call recordings).
+                            let audio_lines = super::viewer::audio_band_lines_of(msg);
+                            let audio_band_h = audio_lines as f32 * intra;
                             // The decoded preview blob outranks the micro thumb; either way the band's picture is (w, h, pixels).
                             let decoded: Option<(usize, usize, &Vec<u32>)> = msg.attach.and_then(|a| a.preview_hash).and_then(|ph| match self.img_cache.get(&ph) {
                                 Some(Some((w, h, px))) => Some((*w, *h, px)),
@@ -3804,6 +3808,105 @@ impl PhotonApp {
                                         let slot = vi % super::MSG_HIT_SPAN as usize;
                                         if slot < self.msg_attach_visuals.len() {
                                             self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present(&hash), kind: a.kind, x0: cx - bw * 0.5, x1: cx + bw * 0.5, y0: (cy - bh * 0.5).max(list_top), y1: (cy + bh * 0.5).min(list_bottom) });
+                                        }
+                                    }
+                                }
+                            }
+                            // PIGEONS CARRYING WAVES (Nick 2026-09-12): a dropped song's row IS its waveform — the same three-pyramid tensor and cumulative stack a wave card runs, derived off-thread from the held audio thru symphonia; L up, R down, the row's colour.
+                            if audio_lines > 0 {
+                                if let Some((ahash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                    if !self.wave_env.contains_key(&ahash) && !self.wave_env_pending.contains(&ahash) {
+                                        if let Some(seed) = self.session.as_ref().map(|se| se.identity_seed) {
+                                            if self.wave_env_tx.is_none() {
+                                                let (tx, rx) = std::sync::mpsc::channel();
+                                                self.wave_env_tx = Some(tx);
+                                                self.wave_env_rx = Some(rx);
+                                            }
+                                            self.wave_env_pending.insert(ahash);
+                                            let tx = self.wave_env_tx.as_ref().unwrap().clone();
+                                            let wake = self.event_proxy.clone();
+                                            let _ = std::thread::Builder::new().name("music-env".into()).spawn(move || {
+                                                let res = crate::storage::blob_load(&seed, &ahash).and_then(|b| crate::call::music::envelopes_from_music(&b));
+                                                let _ = tx.send((ahash, res));
+                                                #[cfg(not(target_os = "android"))]
+                                                if let Some(wk) = wake.as_ref() {
+                                                    let _ = wk.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                                }
+                                                #[cfg(target_os = "android")]
+                                                let _ = wake;
+                                            });
+                                        }
+                                    }
+                                    if let Some(Some(envs)) = self.wave_env.get(&ahash) {
+                                        let first_line_y = y - react_off - (lines.len().max(1) - 1) as f32 * intra;
+                                        let reply_off = if reply_target.is_some() { intra } else { 0.0 };
+                                        let band_bot = first_line_y - reply_off - msg_size * 0.9;
+                                        let band_top = band_bot - audio_band_h + msg_size * 0.3;
+                                        let (wx0, wx1) = (pad_x, buf_w as f32 - pad_x);
+                                        let bcy = (band_top + band_bot) * 0.5;
+                                        let half = (band_bot - band_top).max(1.0) * 0.5;
+                                        let cols = ((wx1 - wx0).max(1.0)) as usize;
+                                        const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
+                                        let last = envs.len().saturating_sub(1);
+                                        for (chn, up) in [(0usize, true), (last, false)] {
+                                            let Some(e) = envs.get(chn) else { continue };
+                                            let key = (ahash, chn + 4, cols);
+                                            let amps: std::rc::Rc<Vec<f32>> = {
+                                                let hit = self.wave_fold_cache.borrow().get(&key).cloned();
+                                                match hit {
+                                                    Some(a) => a,
+                                                    None => {
+                                                        let bins = e.bins;
+                                                        let mut acc = vec![0u64; cols];
+                                                        let mut nn = vec![0u32; cols];
+                                                        for b in 0..bins {
+                                                            let px = (b * cols / bins.max(1)).min(cols - 1);
+                                                            acc[px] += e.data[b] as u64;
+                                                            nn[px] += 1;
+                                                        }
+                                                        let lsb0 = e.lsb(0);
+                                                        let a: Vec<f32> = (0..cols)
+                                                            .map(|i| if nn[i] == 0 { 0.0 } else { (acc[i] as f32 / nn[i] as f32 * lsb0).max(0.0).sqrt() })
+                                                            .collect();
+                                                        let a = std::rc::Rc::new(a);
+                                                        let mut cache = self.wave_fold_cache.borrow_mut();
+                                                        if cache.len() >= 128 {
+                                                            cache.clear();
+                                                        }
+                                                        cache.insert(key, a.clone());
+                                                        a
+                                                    }
+                                                }
+                                            };
+                                            for px in 0..cols {
+                                                let hgt = (amps[px] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92;
+                                                let full = hgt.floor();
+                                                let tip_a = ((hgt - full) * 255.0) as u32;
+                                                let x = (wx0 + px as f32) as isize;
+                                                let (ty, th) = if up { (bcy - full, full) } else { (bcy, full) };
+                                                let run_top = ty.max(list_top);
+                                                let run_bot = (ty + th).min(list_bottom);
+                                                if run_bot > run_top && th >= 1.0 {
+                                                    paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, colour, Some(list_clip), None);
+                                                }
+                                                if tip_a > 0 {
+                                                    let tip_y = if up { bcy - full - 1.0 } else { bcy + full };
+                                                    if tip_y >= list_top && tip_y < list_bottom {
+                                                        let tip_c = (colour & 0x00FF_FFFF) | (tip_a << 24);
+                                                        paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, Some(list_clip), None);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if bcy > list_top && bcy < list_bottom {
+                                            paint::fill_rect(&mut canvas, wx0 as isize, bcy as isize, (wx1 - wx0) as isize, 0, theme::dim_colour(colour), Some(list_clip), None);
+                                        }
+                                        // The band is the row's visual — a tap on it goes to the actions strip for now (play rides later).
+                                        if let Some(a) = msg.attach {
+                                            let slot = vi % super::MSG_HIT_SPAN as usize;
+                                            if slot < self.msg_attach_visuals.len() {
+                                                self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash: ahash, held: true, kind: a.kind, x0: wx0, x1: wx1, y0: band_top.max(list_top), y1: band_bot.min(list_bottom) });
+                                            }
                                         }
                                     }
                                 }

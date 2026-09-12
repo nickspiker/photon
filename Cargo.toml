@@ -134,6 +134,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 limbus = { path = "../limbus" }
 # opsin's ingest + colour pipeline for the attachment viewer (2026-09-11): DNG/RAW/JXL/JPEG/legacy → one native-depth spectral image → linear VSF RGB with the profile's matrix, exposure as a gain at display. Pipeline only — no winit host on Android.
 opsin = { path = "../opsin", default-features = false }
+# Music decode for the audio-attachment waveform band (2026-09-12, "drag/drop music... should be a good test"): symphonia turns a dropped mp3/ogg/flac into PCM for the same three-pyramid envelope a wave carries. Pure Rust, Android-clean.
+symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "ogg", "vorbis", "isomp4", "aac", "wav", "pcm"] }
 # JPEG XL decode only (lumis exports): the attachment preview ingest, same as opsin.
 jxl-oxide = "0.12.6"
 img-parts = "0.4"

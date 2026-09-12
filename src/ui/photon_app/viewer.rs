@@ -57,6 +57,20 @@ pub(super) fn img_band_lines_of(cache: &ImgCache, m: &crate::types::ChatMessage)
     0
 }
 
+/// Lines an AUDIO row's waveform band reserves — a pigeon carrying a wave (Nick 2026-09-12): the band derives from the audio itself, so it exists once the blob is held. Call recordings fold into their wave card instead.
+pub(super) fn audio_band_lines_of(m: &crate::types::ChatMessage) -> usize {
+    let Some(a) = m.attach else {
+        return 0;
+    };
+    if a.kind != crate::types::AttachKind::Audio || crate::types::is_call_recording(&m.content) {
+        return 0;
+    }
+    let Some((h, _, _)) = crate::types::parse_attachment_content(&m.content) else {
+        return 0;
+    };
+    if crate::storage::blob_present(&h) { super::render::IMG_PREVIEW_LINES } else { 0 }
+}
+
 /// The image the viewer shows right now: (w, h, pixels) — the Original decode, else the preview blob, else the row's micro thumb (found in `msgs`, the open conversation's rows).
 pub(super) fn viewer_pixels_of<'a>(v: &Viewer, cache: &'a ImgCache, msgs: &[crate::types::ChatMessage]) -> Option<(usize, usize, std::borrow::Cow<'a, Vec<u32>>)> {
     if let Some(Some((w, h, px))) = cache.get(&v.hash) {
