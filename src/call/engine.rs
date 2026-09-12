@@ -223,6 +223,14 @@ fn run(
         e
     });
     let mut arch_buf: Vec<i16> = Vec::with_capacity(480);
+    // The receive twin: received plaid frames re-encode at the high rung before spooling (5ms — the RX grid stays on its lattice).
+    let mut rx_arch_enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok().map(|mut e| {
+        let _ = e.set_vbr(true);
+        let _ = e.set_bitrate(opus::Bitrate::Bits(160_000));
+        let _ = e.set_complexity(6);
+        e
+    });
+    let mut rx_arch_pkt = vec![0u8; 4000];
     let mut arch_meta: Option<(i64, u32, u8)> = None;
     let mut arch_pkt = vec![0u8; 4000];
     // Archive record index (window id, first slot, spool position) — the serve fallback for plaid windows, whose wire copies no longer spool (a plaid window is exactly one 10ms archive record).
@@ -919,10 +927,16 @@ fn run(
                             if n != RAW_FRAME_BYTES {
                                 continue;
                             }
-                            if let Some(w) = spool.as_mut() {
-                                w.append_seq(1 | super::spool::RAW_FLAG, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), body);
-                            }
                             let pcm: Vec<i16> = body.chunks_exact(2).map(|c| i16::from_le_bytes([c[0], c[1]])).collect();
+                            // Received plaid compresses BEFORE it rests (the symmetric half of the ordering fix): high-end 5ms Opus into the spool instead of raw PCM — plaid now exists on the wire alone, and at N participants the receive side was N−1 plaid streams of disk.
+                            if let Some(w) = spool.as_mut() {
+                                let done = rx_arch_enc.as_mut().and_then(|e| e.encode(&pcm, &mut rx_arch_pkt).ok()).map(|an| {
+                                    w.append_seq(1, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), &rx_arch_pkt[..an]);
+                                });
+                                if done.is_none() {
+                                    w.append_seq(1 | super::spool::RAW_FLAG, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), body);
+                                }
+                            }
                             rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
                             rx_frames += 1;
                             raw_in += 1;
