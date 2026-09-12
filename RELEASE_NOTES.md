@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v95
+
 - Waveforms are rendered a new way, everywhere they appear: every stored sample lands in its screen column at its own height, and the edge pixels are shaded by how many of them reach that row, so the contour is smooth at any width with nothing invented and nothing thrown away.
 - Waveform colour is now the balance of three tuned voice bands — warmth below 240 Hz reads red, presence around 2.4 kHz reads green, sibilance and air above 8 kHz read blue — as vivid in a whisper as in a shout.
 - A wave now records your voice clean, before echo ducking touches it, and the ducking itself is saved as data beside it; the other side's card gets your true waveform, not the ducked one.
