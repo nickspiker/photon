@@ -3182,7 +3182,8 @@ impl PhotonApp {
                                 + if reply_target.is_some() { intra } else { 0.0 }
                                 + react_off
                                 + wave_band_h
-                                + img_band_h;
+                                + img_band_h
+                                + audio_band_h;
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&msg.content)
@@ -3241,6 +3242,12 @@ impl PhotonApp {
                             if sel_key.is_some_and(|(ts, out)| {
                                 msg.timestamp == ts && msg.is_outgoing == out
                             }) {
+                                // SELECTED HIGHLIGHT (Nick 2026-09-12, "like the settings pages, same white tint"): one full-width 1/8-white band over the whole block — the strip AND the message above it — painted FIRST so everything the row draws sits under one uniform veil (topmost-first: the earliest paint wins its α share).
+                                let hl_top = (y - detail_h - block_extra - msg_size * 0.9).max(list_top);
+                                let hl_bot = (y + line_h * 0.5).min(list_bottom);
+                                if hl_bot > hl_top {
+                                    paint::fill_rect(&mut canvas, 0, hl_top as isize, buf_w as isize, (hl_bot - hl_top) as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
+                                }
                                 let secs = ((vsf::eagle_time_oscillations() - msg.timestamp)
                                     / crate::OSC_PER_SEC)
                                     .max(0);
