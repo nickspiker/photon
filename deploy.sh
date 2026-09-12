@@ -238,11 +238,16 @@ apple_sign() {
         "$1"
 }
 
+# The macOS SDK for crates whose build scripts ask `xcrun` where it is (coreaudio-sys behind cpal, in the tree since the song attachments of 2026-09-12): there is no xcrun on Linux, so the osxcross SDK is named outright. One SDK serves both Apple targets.
+MACOS_SDK="$(ls -d /mnt/Harbor/Code/osxcross/target/SDK/MacOSX*.sdk | sort -V | tail -1)"
+[ -d "$MACOS_SDK" ] || { echo "ERROR: no macOS SDK under osxcross/target/SDK"; exit 1; }
+
 # Build macOS x86_64
 echo ""
 echo "Building macOS x86_64 release..."
 CC_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 CXX_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+COREAUDIO_SDK_PATH="$MACOS_SDK" \
 OSXCROSS_TRIPLE=x86_64-apple-darwin \
 CMAKE_TOOLCHAIN_FILE_x86_64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
 snap_cargo build --release --target x86_64-apple-darwin
@@ -257,6 +262,7 @@ echo ""
 echo "Building macOS ARM64 release..."
 CC_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 CXX_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+COREAUDIO_SDK_PATH="$MACOS_SDK" \
 CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
 OSXCROSS_TRIPLE=aarch64-apple-darwin \
 CMAKE_TOOLCHAIN_FILE_aarch64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
