@@ -3658,24 +3658,20 @@ impl PhotonApp {
                                                                         crate::call::record::resample_linear(&pow, cols).iter().map(|p| p.max(0.0).sqrt()).collect()
                                                                     })
                                                                     .collect();
-                                                                let stops: Vec<f32> = folded[0].iter().map(|l| if *l <= 0.0 { 255.0 / 8.0 } else { (-l.log2()).clamp(0.0, 255.0 / 8.0) }).collect();
-                                                                let (mut lo, mut hi) = (f32::MAX, f32::MIN);
-                                                                for c in 1..K {
-                                                                    for v in &folded[c] {
-                                                                        lo = lo.min(*v);
-                                                                        hi = hi.max(*v);
-                                                                    }
-                                                                }
-                                                                let span = hi - lo;
+                                                                // HEIGHT IS AMPLITUDE AGAINST A FIXED REFERENCE (Nick 2026-09-11: "more direct to power", "not normalized per channel"): the column's RMS amplitude, linear, full scale 1.0, with −12 dBFS as full height and clipping above — a quiet talker draws short bars, a loud one tall, and two waves are comparable.
+                                                                let amps: Vec<f32> = folded[0].clone();
+                                                                // COLOUR IS THE SPECTRAL BALANCE, THE AGB WAY (Nick 2026-09-11: "geometric mean, that's how the AGB colour model works — you get the correct colour and keep the brightness consistent"): each band's power over the geometric mean of the three, then the largest ratio pins the brightest channel at full — hue from the ratios, brightness constant, a quiet column as vivid as a loud one. Red is 188–750 Hz, green 750 Hz–3 kHz, blue 3–24 kHz.
                                                                 let colours: Vec<u32> = (0..cols)
                                                                     .map(|px| {
-                                                                        let norm = |c: usize| -> u8 {
-                                                                            if span > 1e-9 { (((folded[c][px] - lo) / span).clamp(0.0, 1.0) * 255.0).round() as u8 } else { 0 }
-                                                                        };
-                                                                        theme::rgb_colour(norm(1), norm(2), norm(3))
+                                                                        let p = |c: usize| (folded[c][px] * folded[c][px]).max(1e-12);
+                                                                        let g = (p(1) * p(2) * p(3)).cbrt();
+                                                                        let r = [p(1) / g, p(2) / g, p(3) / g];
+                                                                        let top = r[0].max(r[1]).max(r[2]).max(1e-12);
+                                                                        let ch = |v: f32| ((v / top).clamp(0.0, 1.0) * 255.0).round() as u8;
+                                                                        theme::rgb_colour(ch(r[0]), ch(r[1]), ch(r[2]))
                                                                     })
                                                                     .collect();
-                                                                let f = std::rc::Rc::new((stops, colours));
+                                                                let f = std::rc::Rc::new((amps, colours));
                                                                 let mut cache = self.wave_fold_cache.borrow_mut();
                                                                 if cache.len() >= 128 {
                                                                     cache.clear();
@@ -3685,13 +3681,11 @@ impl PhotonApp {
                                                             }
                                                         }
                                                     };
-                                                    let (stops_col, colours) = &*bars;
-                                                    let peak_stops = stops_col.iter().cloned().fold(f32::MAX, f32::min);
-                                                    let quietest = stops_col.iter().cloned().fold(f32::MIN, f32::max);
-                                                    let floor_stops = quietest.min(peak_stops + 10.0).max(peak_stops + 0.5);
+                                                    let (amps_col, colours) = &*bars;
+                                                    const WAVE_FULL_HEIGHT_AMP: f32 = 0.25; // −12 dBFS RMS fills the band; louder clips
                                                     for px in 0..cols {
                                                         let lit = held && frac.is_some() && px < played_cols;
-                                                        let hgt = ((floor_stops - stops_col[px]) / (floor_stops - peak_stops)).clamp(0.0, 1.0) * half * 0.92;
+                                                        let hgt = (amps_col[px] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92;
                                                         let base_c = colours[px];
                                                         // BRIGHTEN ONLY (Nick 2026-09-10, "weird double drawing… should be brighten only"): every bar is solid — unplayed = the same colour at half brightness (darkness-domain arithmetic, α untouched), played = full; heights are whole pixels.
                                                         let c = if lit {

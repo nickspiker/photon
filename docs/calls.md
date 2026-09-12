@@ -124,6 +124,11 @@ So a wave that starts with no reachable address for the answering device now doe
 
 The call-time exchange fired only at engine start, so a wave already running sent anchors at the dead address for the whole 30 s deadline and never told the peer where we went. Two edges now do: Android's default-network callback (`nativeNetworkChanged` → `on_network_changed`: forget our LAN and reflexive addresses, reset the receive loop's copy, re-arm the reflect bootstrap, sweep presence, and mark the live wave's peer for a push) and the first drought tick (the same push + sweep as a wave that starts without a route). The push carries whatever we hold; the sweep's first pong from an outside peer relearns the public address, and that edge pushes again. The call screen's ring reads `call::call_tx_addr()`, the engine's live transmit address, so the colour follows the path as it heals.
 
+## The waveform's height and colour (2026-09-11 evening)
+
+Height is the column's RMS amplitude, linear, against a fixed reference: −12 dBFS fills the band, louder clips. Nothing is normalised per channel or per recording, so a quiet talker draws short bars and two waves are comparable (the earlier render was stops relative to the channel's own peak over a ten-stop window — every recording peaked at full height and a column a thousandth as loud still stood at zero).
+Colour is the spectral balance the AGB way: each band's power over the geometric mean of the three, the largest ratio pinning the brightest channel at full — hue carries timbre, brightness stays constant, a quiet column is as vivid as a loud one. The bands moved to where voice lives at keep time: the Haar tree now tracks seven levels, red is 188–750 Hz, green 750 Hz–3 kHz, blue 3–24 kHz (the first cut coloured 3–24 kHz only, which is why speech read dark and red). Same container, same four components; recordings kept before this carry the old band meaning and simply recolour.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.

@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waveforms are brighter and truer: bar height is the actual loudness against one fixed scale for everyone, and colour is the balance of low, middle and high frequencies in the voice, vivid whether the moment is quiet or loud.
 - A wave that has already ended can no longer ring again when its original ring arrives late over the relay.
 - A hangup, a ring and a reconnect signal now travel on the path the wave's audio is using, and always carry a relay copy, so the other side hears you hang up and rings when you call back even when your address book points at a different one of their devices.
 - The call screen's avatar now wears the presence ring in the colour of the path the wave is actually on: cyan on the same network, green across the internet, amber while it has no direct route yet.

@@ -103,9 +103,20 @@ pub fn thumbnail(lin: &[Vec<f32>], nchan: usize) -> Vec<u8> {
 /// Per-channel state for the decimated binary sum tree: the top three detail levels are the colour bands (Nick 2026-09-11: blue = pair difference, green = difference of adjacent pair-sums, red = the same fold on 4-sample sums; binary trees).
 /// Each level stashes its left sibling and emits on the right one, so blue yields one value per 2 samples, green per 4, red per 8 — non-overlapping, exact, and every band lands on the same ≤2^16 amplitude scale via the mean-difference shifts.
 struct HaarState {
-    s1: i64,
-    p2: i64,
-    p4: i64,
+    /// The left sibling's sum at each level, levels 1..=HAAR_LEVELS (index 0 = the pair level).
+    left: [i64; HAAR_LEVELS],
+}
+
+/// Decimated Haar levels tracked per channel; level L's detail covers fs/2^L .. fs/2^(L-1), so at 48 kHz the seven levels span 188 Hz to 24 kHz.
+const HAAR_LEVELS: usize = 7;
+
+/// Which colour component a level's detail lands in (Nick 2026-09-11, the bands moved to where voice lives): blue = levels 1..3 (3–24 kHz, brightness and sibilance), green = levels 4..5 (750 Hz–3 kHz, the formants), red = levels 6..7 (188–750 Hz, the fundamental and warmth). Component 1 is red, 2 green, 3 blue.
+const fn band_of_level(level: usize) -> usize {
+    match level {
+        1..=3 => 3,
+        4..=5 => 2,
+        _ => 1,
+    }
 }
 
 /// The streaming envelope accumulator (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2 to keep the total size under 2^17").
@@ -134,7 +145,7 @@ impl EnvPyramid {
             s_log2: s0_log2,
             sumsq: vec![0u64; nchan * cap * ENV_COMPONENTS],
             counts: vec![0u64; nchan * cap * ENV_COMPONENTS],
-            haar: (0..nchan).map(|_| HaarState { s1: 0, p2: 0, p4: 0 }).collect(),
+            haar: (0..nchan).map(|_| HaarState { left: [0; HAAR_LEVELS] }).collect(),
             total_samples: 0,
         }
     }
@@ -170,30 +181,21 @@ impl EnvPyramid {
         let xi = x as i64;
         self.sumsq[base] += (xi * xi) as u64;
         self.counts[base] += 1;
+        // The decimated tree, level by level: each level stashes its left sibling's sum and emits on the right one — the detail (scaled back to sample amplitude by 2^(L-1)) squares into its band, the pair-sum climbs to the next level.
         let h = &mut self.haar[ch];
-        if abs_idx & 1 == 0 {
-            h.s1 = xi;
-            return;
+        let mut v = xi;
+        for l in 0..HAAR_LEVELS {
+            if (abs_idx >> l) & 1 == 0 {
+                h.left[l] = v;
+                return;
+            }
+            let detail = (v - h.left[l]) >> l;
+            let sum = v + h.left[l];
+            let band = band_of_level(l + 1);
+            self.sumsq[base + band] += (detail * detail) as u64;
+            self.counts[base + band] += 1;
+            v = sum;
         }
-        let blue = xi - h.s1;
-        let pair = xi + h.s1;
-        self.sumsq[base + 3] += (blue * blue) as u64;
-        self.counts[base + 3] += 1;
-        if (abs_idx >> 1) & 1 == 0 {
-            h.p2 = pair;
-            return;
-        }
-        let green = (pair - h.p2) / 2;
-        let quad = pair + h.p2;
-        self.sumsq[base + 2] += (green * green) as u64;
-        self.counts[base + 2] += 1;
-        if (abs_idx >> 2) & 1 == 0 {
-            h.p4 = quad;
-            return;
-        }
-        let red = (quad - h.p4) / 4;
-        self.sumsq[base + 1] += (red * red) as u64;
-        self.counts[base + 1] += 1;
     }
     /// Reduce to (env_len, per-component linear RMS tracks): env_len = however many bins the recording ended on, 0..=ENV_CAP — stored as-is, the readers honour it.
     fn finish(&self) -> (usize, Vec<Vec<f32>>) {
@@ -703,7 +705,7 @@ mod tests {
 
     #[test]
     fn haar_bands_separate_octaves() {
-        // The decimated tree's levels are octave-exclusive: DC excites nothing, a period-2 wave only blue, period-4 only green, period-8 only red.
+        // The decimated tree's levels are octave-exclusive, and the bands are where voice lives: DC excites nothing; periods 2, 4 and 8 (3–24 kHz) are blue only; 16 and 32 (750 Hz–3 kHz) green only; 64 and 128 (188–750 Hz) red only; 256 (below the tree) nothing.
         let band_energy = |signal: &dyn Fn(usize) -> i16| -> [u64; 3] {
             let mut p = EnvPyramid::with_geometry(1, 16, 10);
             for i in 0..4096 {
@@ -715,12 +717,21 @@ mod tests {
         let a = 1000i16;
         let dc = band_energy(&|_| a);
         assert_eq!(dc, [0, 0, 0], "DC leaked into a detail band");
-        let nyq = band_energy(&|i| if i % 2 == 0 { a } else { -a });
-        assert!(nyq[2] > 0 && nyq[0] == 0 && nyq[1] == 0, "period-2 should be blue only: {nyq:?}");
-        let p4 = band_energy(&|i| if (i / 2) % 2 == 0 { a } else { -a });
-        assert!(p4[1] > 0 && p4[0] == 0 && p4[2] == 0, "period-4 should be green only: {p4:?}");
-        let p8 = band_energy(&|i| if (i / 4) % 2 == 0 { a } else { -a });
-        assert!(p8[0] > 0 && p8[1] == 0 && p8[2] == 0, "period-8 should be red only: {p8:?}");
+        let square = |half_period: usize| move |i: usize| if (i / half_period) % 2 == 0 { a } else { -a };
+        for hp in [1usize, 2, 4] {
+            let e = band_energy(&square(hp));
+            assert!(e[2] > 0 && e[0] == 0 && e[1] == 0, "period {} should be blue only: {e:?}", 2 * hp);
+        }
+        for hp in [8usize, 16] {
+            let e = band_energy(&square(hp));
+            assert!(e[1] > 0 && e[0] == 0 && e[2] == 0, "period {} should be green only: {e:?}", 2 * hp);
+        }
+        for hp in [32usize, 64] {
+            let e = band_energy(&square(hp));
+            assert!(e[0] > 0 && e[1] == 0 && e[2] == 0, "period {} should be red only: {e:?}", 2 * hp);
+        }
+        let below = band_energy(&square(128));
+        assert_eq!(below, [0, 0, 0], "period 256 sits below the tree: {below:?}");
     }
 
     #[test]
