@@ -133,6 +133,10 @@ Colour is the spectral balance the AGB way: each band's power over the geometric
 
 Route and latency are different axes. Latency is the stream's path: exclusive MMAP, low-latency mode, 96-frame bursts, a 4 ms buffer. Route is which transducer the audio policy attaches the stream to. Android couples them only thru the IN_COMMUNICATION audio mode, which wakes the vendor voice pipeline (the 80 ms floor of 2026-08-19) — and that mode is never entered. Instead the OUTPUT stream carries the voice-communication usage (a policy label, nothing more) and Kotlin's `setCommunicationDevice` (API 31) points this app's voice-usage streams at the built-in earpiece for the wave, cleared at hangup. Wired and Bluetooth routes are left where the OS put them. The volume mirror reads the voice stream at the earpiece's curve while routed. The proof of the trade is the `AAudio out up` line: Exclusive/LowLatency at 4 ms, or the vendor policy has intervened on that device.
 
+## A working path is never abandoned (2026-09-12 22:28)
+
+Two phones on one LAN connected over the LAN, then one side's drought probe re-aimed it at the peer's global IPv6, the anchor carried that address across, and the other engine's express re-anchor followed — both left a live path for one the router does not route between its own clients. Two guards: the drought probe walks candidates only while no authenticated media has arrived on the wave (`LAST_MEDIA_RX_OSC == 0`), and the engine's express re-anchor applies only before the first authenticated packet (`rx_max_seq.is_none()`). After media has flowed, a drought means the peer stopped sending; the anchors still carry the search, and the media plane's forward-progress rule still re-points TX when the peer's own packets arrive from a new address.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.

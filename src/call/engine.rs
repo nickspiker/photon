@@ -1134,10 +1134,13 @@ fn run(
 
         // Signal-plane re-anchor: an authenticated express Anchor named a fresh peer address (both-sides-moved heal) — re-point TX there. The media plane's own follow rule keeps refining from packet sources as usual.
         if let Some(a) = super::take_peer_redirect() {
-            if a != peer {
+            // A path that has carried authenticated media is never yanked off by a signal (field 2026-09-12: the other side's rescue probe re-anchored a live LAN wave onto a dead IPv6 address). The media plane's own forward-progress rule still re-points TX when the PEER'S packets arrive from somewhere new — that is the heal that stays.
+            if a != peer && rx_max_seq.is_none() {
                 crate::logf!("CALL: peer re-anchored via express → {} (was {})", a, peer);
                 peer = a;
                 super::set_call_tx_addr(Some(peer));
+            } else if a != peer {
+                crate::logf!("CALL: express named {} but media has flowed from {} — keeping the working path", a, peer);
             }
         }
 

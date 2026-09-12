@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave that is already carrying audio keeps its working path: a moment of silence no longer makes either side re-aim at a different address, which was breaking same-network waves that had connected fine.
 - Opening the vault is instant again: it reads the index and nothing else, where it had been reading every kept wave in full at every launch, six seconds on a phone with a season of waves.
 ## v95
 

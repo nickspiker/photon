@@ -627,6 +627,11 @@ impl PhotonApp {
                             cands.push(live);
                         }
                     }
+                    // A WORKING PATH IS NEVER ABANDONED (field 2026-09-12 22:28, two phones on one LAN): media had flowed both ways over the LAN, a drought hit one side, this probe re-aimed it at the peer's global IPv6, the anchor carried that address across, the other engine followed it — and both left a live path for a dead one. A drought after media has flowed means the PEER stopped, not that we are aimed wrong: keep transmitting where it worked and let the anchors carry the search. The walk runs only while no authenticated media has ever arrived on this wave.
+                    let media_has_flowed = crate::call::LAST_MEDIA_RX_OSC.load(std::sync::atomic::Ordering::Relaxed) > 0;
+                    if media_has_flowed {
+                        cands.clear();
+                    }
                     if !cands.is_empty() {
                         let n = self.active_call.as_ref().map_or(0, |c| c.reconnect_probe) as usize;
                         let addr = cands[n % cands.len()];
