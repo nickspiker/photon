@@ -1638,7 +1638,9 @@ impl FluorApp for PhotonApp {
                                             m.seek_frac(f);
                                         }
                                     } else {
+                                        // Close must ALSO dismiss: the newest row auto-opens its strip whenever nothing is selected, so a bare deselect popped straight back — the undismissable strip (field 2026-09-12).
                                         self.selected_msg = None;
+                                        self.strip_dismissed = Some((ci, ts, out));
                                     }
                                 }
                                 self.scene_dirty = true;
