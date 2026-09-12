@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v93
+
 - Fixed a crash on Android that could hit right after answering a wave, when a background network event ran the app's tick on the wrong thread.
 - An attachment or wave that nobody answers for is asked for again every twenty seconds instead of showing "fetching" forever.
 - Waveforms are brighter and truer: bar height is the actual loudness against one fixed scale for everyone, and colour is the balance of low, middle and high frequencies in the voice, vivid whether the moment is quiet or loud.
