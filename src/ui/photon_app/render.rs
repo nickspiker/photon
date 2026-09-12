@@ -3340,7 +3340,8 @@ impl PhotonApp {
                                     ctx.text.draw_text_left(&mut canvas, ml, pad_x, ly, &detail_style, Some(list_clip), None);
                                 }
                                 // SELECTED HIGHLIGHT, painted after the meta so the veil is uniform under topmost-first: the META section wears YELLOW on a development build (a layout debugging aid — the section boundary is visible) and the rail's white on release; the media + strip below always wear the rail's white.
-                                let hl_meta_top = (meta_bottom - (meta_lines.len() as f32 - 0.4) * meta_lh - meta_lh * 0.2).max(list_top);
+                                // The veil's OUTER edges snap to the hairline dividers that bound this block: the one the older row drew above, and this row's own below — the sections fill divider to divider, no offset weirdness (Nick 2026-09-12).
+                                let hl_meta_top = (y - detail_h - line_h - block_extra - sel_meta_extra + msg_size * 0.8 + ru.max(1.0)).max(list_top);
                                 // On a media row the yellow ends exactly where the band begins and the cyan begins exactly where it ends (Nick 2026-09-12: max power must touch both).
                                 let band_pad_v = msg_size * 0.1;
                                 let media_edges = if audio_band_h > 0.0 {
@@ -3349,7 +3350,7 @@ impl PhotonApp {
                                     None
                                 };
                                 let hl_media_top = media_edges.map(|(t, _)| t).unwrap_or(meta_bottom + meta_lh * 0.6).max(list_top);
-                                let hl_bot = (y + line_h * 0.7).min(list_bottom);
+                                let hl_bot = (y + msg_size * 0.8).min(list_bottom);
                                 // Development builds tint each SECTION its own colour so the boundaries are visible while the layout iterates (Nick 2026-09-12): meta yellow, media white, actions cyan, reactions red. Release wears the rail's white throughout.
                                 let dev = cfg!(feature = "development");
                                 let meta_tint = if dev { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
