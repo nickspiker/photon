@@ -2988,7 +2988,7 @@ impl PhotonApp {
                                     .map(|m| (m.timestamp, m.is_outgoing))
                                     .filter(|&(ts, out)| self.strip_dismissed != Some((ci, ts, out)))
                             });
-                        let detail_h = line_h * 3.0; // three strip lines: meta (sent/age/state), the action row (reply · edit · copy · resend · delete), and the reaction row (ranked glyphs + the circled "+")
+                        let detail_h = line_h * 2.0; // two strip lines BELOW the media: the action row (reply · edit · copy · resend · delete) and the reaction row (ranked glyphs + the circled "+"). The META section lives ABOVE the media now (Nick 2026-09-12, the four-section block) and wraps, so its height is dynamic (self.sel_meta_h).
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| {
                             visible
                                 .iter()
@@ -3047,7 +3047,7 @@ impl PhotonApp {
                         let content_h = n as f32 * line_h
                             + (total_lines.saturating_sub(n)) as f32 * intra
                             + header_block_h
-                            + if sel_in_stream { detail_h } else { 0.0 };
+                            + if sel_in_stream { detail_h + self.sel_meta_h } else { 0.0 };
                         let view_h = (list_bottom - list_top).max(0.0);
                         let max_scroll = (content_h - view_h).max(0.0);
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
@@ -3239,15 +3239,10 @@ impl PhotonApp {
                                 None,
                             );
                             // Details strip for the SELECTED message: occupies this slot (directly under the message, above the newer row + divider); the message itself shifts up by detail_h. Direction + age + delivery on the left, the copy pill on the right (stamped msg_copy_id).
+                            let mut sel_meta_extra = 0.0f32;
                             if sel_key.is_some_and(|(ts, out)| {
                                 msg.timestamp == ts && msg.is_outgoing == out
                             }) {
-                                // SELECTED HIGHLIGHT (Nick 2026-09-12, "like the settings pages, same white tint"): one full-width 1/8-white band over the whole block — the strip AND the message above it — painted FIRST so everything the row draws sits under one uniform veil (topmost-first: the earliest paint wins its α share).
-                                let hl_top = (y - detail_h - block_extra - msg_size * 0.9).max(list_top);
-                                let hl_bot = (y + line_h * 0.5).min(list_bottom);
-                                if hl_bot > hl_top {
-                                    paint::fill_rect(&mut canvas, 0, hl_top as isize, buf_w as isize, (hl_bot - hl_top) as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
-                                }
                                 let secs = ((vsf::eagle_time_oscillations() - msg.timestamp)
                                     / crate::OSC_PER_SEC)
                                     .max(0);
@@ -3329,16 +3324,29 @@ impl PhotonApp {
                                         detail.push_str(&tr(Msg::ReactYouSuffix(g)));
                                     }
                                 }
-                                // Upper strip line: the meta text.
-                                ctx.text.draw_text_left(
-                                    &mut canvas,
-                                    &detail,
-                                    pad_x,
-                                    y - line_h * 2.0,
-                                    &detail_style,
-                                    Some(list_clip),
-                                    None,
-                                );
+                                // SECTION 1, THE META, ABOVE THE MEDIA (Nick 2026-09-12, the four-section block): everything about the message — stats, kind, age, delivery, quality — wrapped to the width the user's window and zoom allow. Its measured height feeds the extent walk thru self.sel_meta_h (one frame late on a selection change; settles like any overshoot).
+                                let meta_lh = detail_size * 1.3;
+                                let meta_lines = wrap_text_lines(ctx.text, &detail, &detail_style, buf_w as f32 - pad_x * 2.0);
+                                let meta_h = meta_lines.len() as f32 * meta_lh + msg_size * 0.4;
+                                self.sel_meta_h = meta_h;
+                                sel_meta_extra = meta_h;
+                                // The meta stacks DOWN from the block's top: above the message body and its media band.
+                                let meta_bottom = y - detail_h - block_extra - msg_size * 0.9;
+                                for (k, ml) in meta_lines.iter().enumerate() {
+                                    let ly = meta_bottom - (meta_lines.len() - 1 - k) as f32 * meta_lh;
+                                    ctx.text.draw_text_left(&mut canvas, ml, pad_x, ly, &detail_style, Some(list_clip), None);
+                                }
+                                // SELECTED HIGHLIGHT, painted after the meta so the veil is uniform under topmost-first: the META section wears YELLOW on a development build (a layout debugging aid — the section boundary is visible) and the rail's white on release; the media + strip below always wear the rail's white.
+                                let hl_meta_top = (meta_bottom - (meta_lines.len() as f32 - 0.2) * meta_lh).max(list_top);
+                                let hl_media_top = (meta_bottom + meta_lh * 0.4).max(list_top);
+                                let hl_bot = (y + line_h * 0.5).min(list_bottom);
+                                let meta_tint = if cfg!(feature = "development") { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
+                                if hl_media_top > hl_meta_top {
+                                    paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, (hl_media_top - hl_meta_top) as isize, meta_tint, Some(list_clip), None);
+                                }
+                                if hl_bot > hl_media_top {
+                                    paint::fill_rect(&mut canvas, 0, hl_media_top as isize, buf_w as isize, (hl_bot - hl_media_top) as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
+                                }
                                 // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
                                 let (copy_label, copy_colour) = if self.selected_msg_copied {
                                     (tr(Msg::CopiedPill), *theme::SEARCH_FOUND_COLOUR)
@@ -3819,10 +3827,10 @@ impl PhotonApp {
                                         }
                                     }
                                     if let Some(Some(envs)) = self.wave_env.get(&ahash).cloned() {
-                                        let first_line_y = y - react_off - (lines.len().max(1) - 1) as f32 * intra;
-                                        let reply_off = if reply_target.is_some() { intra } else { 0.0 };
-                                        let band_bot = first_line_y - reply_off - msg_size * 0.9;
-                                        let band_top = band_bot - audio_band_h + msg_size * 0.3;
+                                        // An audio row has no body text (the waveform IS the row), so the band anchors straight off the baseline with symmetric insets — the old text-row offset pushed it out of its box (Nick 2026-09-12).
+                                        let pad_v = msg_size * 0.35;
+                                        let band_bot = y - react_off - pad_v;
+                                        let band_top = y - react_off - audio_band_h + pad_v;
                                         let (wx0, wx1) = (pad_x, buf_w as f32 - pad_x);
                                         let bcy = (band_top + band_bot) * 0.5;
                                         let half = (band_bot - band_top).max(2.0) * 0.5;
@@ -4102,7 +4110,7 @@ impl PhotonApp {
                                 self.msg_hit_rows[slot] =
                                     Some((msg.timestamp, msg.is_outgoing, ref_band));
                             }
-                            y -= line_h + block_extra;
+                            y -= line_h + block_extra + sel_meta_extra;
                         }
                         // Re-asserted after the row walk (see the filter pill above the walk).
                         if let Some((r, hid)) = filter_stamp {

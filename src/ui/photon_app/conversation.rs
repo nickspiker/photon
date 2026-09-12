@@ -1560,6 +1560,11 @@ impl PhotonApp {
                 if looking || will_ding {
                     msg.notified = true;
                 }
+                // QUICK-REPLY AUTO-SELECT (Nick 2026-09-12, the fourth section's trigger): a fresh incoming message in the OPEN conversation selects itself, so the reactions and actions are one glance away; the next tap replaces the selection as ever. Plain and reply rows only — control/reaction/bridge rows never steal the strip.
+                if looking && !is_edit_row && !crate::types::is_control_content(&msg.content) && msg.reference.is_none_or(|(k, _)| matches!(k, crate::types::RefKind::Reply)) {
+                    self.selected_msg = Some((contact_idx, msg.timestamp, false));
+                    self.selected_msg_copied = false;
+                }
                 // STALE-HOLDER BALL DROP: our claim stands on this conversation but we are NOT its live clearer anymore (walked away past the recency window, attention stolen, or a missed blur edge). The arriving message is the edge that discovers it — retract NOW, so every sibling whose independently-received copy sat suppressed under our claim gets the retraction and its drop-sweep chirps. Without this, one lost frame (or the walk itself) leaves our claim muting the fleet with no bound.
                 if !looking && !is_edit_row {
                     if let (Some(kp), Some((t, d, cur))) =

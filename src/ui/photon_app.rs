@@ -1855,6 +1855,8 @@ pub struct PhotonApp {
     painted_compose_lines: usize,
     /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
     selected_msg: Option<(usize, i64, bool)>,
+    /// The selected message's wrapped META section height, measured at draw — the extent walk reads it (a frame late on selection change; settles like any overshoot).
+    sel_meta_h: f32,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
     /// Deferred delete: ((contact idx, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
@@ -2508,6 +2510,7 @@ impl PhotonApp {
             msg_view_h: 0.0,
             painted_compose_lines: 1,
             selected_msg: None,
+            sel_meta_h: 0.0,
             selected_msg_copied: false,
             pending_delete: None,
             compose_reply_to: None,
