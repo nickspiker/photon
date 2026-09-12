@@ -1584,6 +1584,8 @@ pub struct PhotonApp {
     conv_filter: ChatFilter,
     /// Calls this fleet REJECTED (silent dismissal): by call id (this device's own ring) and by offer stamp (a sibling's reject learned thru the wave row before or after this device's ring started). A re-expressed offer for either never rings. Session-local; a rejected call is over long before a relaunch.
     rejected_calls: std::collections::HashSet<[u8; 16]>,
+    /// Call ids this device has ENDED (answered, hung up, dropped, missed): an offer for one of them is a late copy, not a ring (field 2026-09-11 23:34, the ghost ring — a relay pipe reconnected and delivered the original dial's offer beats half a minute after the wave had ended; each beat is a distinct nonce and the clocks sat inside the stamp window).
+    ended_calls: std::collections::HashSet<[u8; 16]>,
     rejected_offers: std::collections::HashSet<i64>,
     /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
     strip_dismissed: Option<(usize, i64, bool)>,
@@ -2384,6 +2386,7 @@ impl PhotonApp {
             call_playback_hash: None,
             conv_filter: ChatFilter::All,
             rejected_calls: std::collections::HashSet::new(),
+            ended_calls: std::collections::HashSet::new(),
             rejected_offers: std::collections::HashSet::new(),
             strip_dismissed: None,
             conv_filter_hit: HIT_NONE,

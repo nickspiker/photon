@@ -665,6 +665,9 @@ impl PhotonApp {
         }
         match sig {
             // A rejected call never rings again: not on a re-expressed offer, not on a late-arriving one after a sibling's reject.
+            CallSignal::Offer { call_id, .. } if !row_is_outgoing && self.ended_calls.contains(&call_id) => {
+                crate::logf!("CALL: late offer for an ended call ignored (id {})", hex::encode(&call_id[..4]));
+            }
             CallSignal::Offer { call_id, .. } if !row_is_outgoing && (self.rejected_calls.contains(&call_id) || self.rejected_offers.contains(&row_ts)) => {}
             CallSignal::Offer { call_id, nonce, device } if !row_is_outgoing => {
                 match &self.active_call {
@@ -1257,6 +1260,13 @@ impl PhotonApp {
 
     /// Mint THE WAVE ROW (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row) with its typed outcome on EVERY end edge, stop the engine, and hand a live call's spool to the keep transcode. The wave card (2026-09-09): one row per wave; the recording, when it lands, REFERENCES this row and folds into its card — so the card exists at hangup, before the transcode finishes, and a sibling that only rang still shows the same event.
     fn end_call(&mut self, outcome: WaveOutcome, offer_osc: i64) {
+        if let Some(call) = &self.active_call {
+            // Remember the id so a late copy of its offer never rings again; bounded, since a session sees few waves.
+            if self.ended_calls.len() > 256 {
+                self.ended_calls.clear();
+            }
+            self.ended_calls.insert(call.call_id);
+        }
         // WHO tore the call down (field 2026-09-02: Brittany's active call died at ~3s the instant an inbound text landed, no call signal from Nick — the trigger wasn't in any obvious path, so every teardown now names itself). The outcome doubles as the reason tag here.
         if let Some(call) = &self.active_call {
             crate::logf!(
