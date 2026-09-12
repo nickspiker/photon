@@ -64,9 +64,20 @@ fn resolved_device_secret() -> Option<[u8; 32]> {
 
 /// THE process-wide device vault, pre-identity: open from the device secret alone, from first launch, before any handle is typed. This is where the pre-attest state lives (D2 binding, opt-in flags, reboot capsule) — Nick's key model: entries are hash(thing|device) here and hash(thing|device|person) once attested (the identity scope on the same vault, unlocked by open_session_vault). First open runs the census sweep.
 /// The cache is SECRET-KEYED, not first-open-wins: a rebound secret (tests; never runtime) re-resolves instead of silently serving the old vault. kete's shared-engine registry does the real dedup underneath.
+static DEVICE_VAULT: std::sync::Mutex<Option<([u8; 32], std::sync::Arc<FlatStorage>)>> =
+    std::sync::Mutex::new(None);
+
+/// The device vault if it is ALREADY open — never opens one, never waits on an open in progress. The UI thread's per-tick callers (the orphan-wave sweep, the reboot capsule) must use this: `device_vault()` holds the registry mutex across the whole open, and a tick that asked while the vault-open worker was inside it blocked for the full open (field 2026-09-12: "Input dispatching timed out — waited 5003 ms", main in lock_contended under status::check_status_updates, the ANR nag back one build after the open moved off the UI thread).
+pub fn device_vault_if_open() -> Option<std::sync::Arc<FlatStorage>> {
+    let secret = resolved_device_secret()?;
+    let g = DEVICE_VAULT.try_lock().ok()?;
+    match g.as_ref() {
+        Some((s, v)) if *s == secret => Some(v.clone()),
+        _ => None,
+    }
+}
+
 pub fn device_vault() -> Option<std::sync::Arc<FlatStorage>> {
-    static DEVICE_VAULT: std::sync::Mutex<Option<([u8; 32], std::sync::Arc<FlatStorage>)>> =
-        std::sync::Mutex::new(None);
     let secret = resolved_device_secret()?;
     let mut g = DEVICE_VAULT.lock().ok()?;
     if let Some((s, v)) = g.as_ref() {

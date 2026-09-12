@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Opening the vault is instant again: it reads the index and nothing else, where it had been reading every kept wave in full at every launch, six seconds on a phone with a season of waves.
 ## v95
 
 - Waveforms are rendered a new way, everywhere they appear: every stored sample lands in its screen column at its own height, and the edge pixels are shaded by how many of them reach that row, so the contour is smooth at any width with nothing invented and nothing thrown away.

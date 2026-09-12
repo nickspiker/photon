@@ -467,7 +467,8 @@ impl PhotonApp {
 
     /// Launch-time wave recovery (record-by-default durability): finish any keep a crash/battery-death interrupted. Once per session, after the vault + session are up — orphaned spool files with surviving registers re-enter the NORMAL keep-transcode path and the wave appears in its conversation as if the hangup had completed.
     pub(super) fn recover_orphan_waves(&mut self) {
-        if self.orphan_waves_swept || self.session.is_none() || crate::storage::device_vault().is_none() {
+        // device_vault_if_open, never device_vault: this runs every tick, and the opening form blocks the UI behind the vault-open worker (the 2026-09-12 ANR).
+        if self.orphan_waves_swept || self.session.is_none() || crate::storage::device_vault_if_open().is_none() {
             return;
         }
         self.orphan_waves_swept = true;
