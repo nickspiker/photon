@@ -160,7 +160,11 @@ pub fn rgb_colour(r: u8, g: u8, b: u8) -> u32 {
 
 /// The colour's hue at a fraction of its brightness, alpha kept — a NEAR-BLACK button fill that still says which verb it is (Nick 2026-09-12: "buttons need to be very dark colours, almost black"). Scales the display bytes, so `keep` is in gamma space: 0.15 reads as a few percent of the light.
 pub fn near_black(c: u32, keep: f32) -> u32 {
-    let ch = |shift: u32| ((((c >> shift) & 0xFF) as f32 * keep).round().clamp(0.0, 255.0) as u32) << shift;
+    // The stored bytes are DARKNESS: keeping `keep` of the VISIBLE brightness means pulling darkness TOWARD 255 — scaling the stored bytes down was brightening toward white, which made every "near-black tint" a near-WHITE tint (the blinding buttons, 2026-09-12).
+    let ch = |shift: u32| {
+        let dark = ((c >> shift) & 0xFF) as f32;
+        ((255.0 - (255.0 - dark) * keep).round().clamp(0.0, 255.0) as u32) << shift
+    };
     (c & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
 }
 

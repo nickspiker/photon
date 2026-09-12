@@ -3456,7 +3456,7 @@ impl PhotonApp {
                                     }
                                     let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.7, w, react_pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
-                                        let fill = Some((theme::dim_colour(verb), verb));
+                                        let fill = Some((theme::near_black(verb, 0.15), theme::near_black(verb, 0.3)));
                                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base.wrapping_add(self.react_strip_glyphs.len() as HitId), ctx.pressed_hit, true, fill, "Oxanium");
                                     }
                                     self.react_strip_glyphs.push(g.clone());
@@ -3470,7 +3470,7 @@ impl PhotonApp {
                                     plus_cx,
                                     plus_cy,
                                     plus_r,
-                                    theme::dim_colour(*theme::COPY_PILL_COLOUR),
+                                    theme::near_black(*theme::COPY_PILL_COLOUR, 0.3),
                                     Some(list_clip),
                                 );
                                 let plus_style =
