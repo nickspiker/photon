@@ -3118,6 +3118,16 @@ impl FluorApp for PhotonApp {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
+        // An ACTIVE call repaints once a second (field 2026-09-12: the wakeups flowed at 2 Hz but nothing marked the scene, so the timer, the live stats and the path ring froze on their first frame).
+        if self.active_call.as_ref().map_or(false, |c| matches!(c.phase, crate::call::CallPhase::Active | crate::call::CallPhase::Outgoing)) {
+            if self.last_call_redraw.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1)) {
+                self.last_call_redraw = Some(now);
+                self.scene_dirty = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            }
+        } else {
+            self.last_call_redraw = None;
+        }
 
         // Rubber-band spring: any scroll axis stretched past its bounds eases back exponentially (overshoot × e^(−8t) — C∞ in time, ~90% recovered in 0.3 s), snapping the final sub-third-pixel so the animation terminates. Runs only while an axis is out of range, so steady-state ticks are free. Scroll moves content (and its hit stamps), so a spring frame is a full scene frame with chrome invalidated — same as the wheel handler's frames.
         {

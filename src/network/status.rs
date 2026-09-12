@@ -3759,7 +3759,7 @@ async fn run_checker(
                                             let moved_to = rec.ip;
                                             if store.merge_peer(rec) {
                                                 merged += 1;
-                                                let lan_scope = matches!(moved_to.ip(), std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4));
+                                                let lan_scope = matches!(moved_to.ip().to_canonical(), std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4));
                                                 if live && !lan_scope && !crate::network::traverse::gather::is_bogus_addr(&moved_to) {
                                                     crate::logf!("CALL: the wave's peer pushed a new address — media re-aimed at {}", moved_to);
                                                     crate::call::set_peer_redirect(moved_to);

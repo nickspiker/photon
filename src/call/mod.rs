@@ -181,7 +181,8 @@ static PEER_REDIRECT: Mutex<Option<SocketAddr>> = Mutex::new(None);
 static CALL_TX_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
 
 pub fn set_call_tx_addr(addr: Option<SocketAddr>) {
-    *CALL_TX_ADDR.lock().unwrap() = addr;
+    // CANONICAL (field 2026-09-12: the ring stayed green on the same LAN): the dual-stack socket reports a v4 peer as an IPv4-mapped IPv6 address, and a mapped address is not `IpAddr::V4` — every reader that asks "is this private" would have called it public.
+    *CALL_TX_ADDR.lock().unwrap() = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
 }
 
 pub fn call_tx_addr() -> Option<SocketAddr> {

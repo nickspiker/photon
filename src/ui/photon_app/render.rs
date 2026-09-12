@@ -616,7 +616,7 @@ impl PhotonApp {
                 // THE PRESENCE RING ON THE CALL SCREEN (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings.
                 {
                     let ring = match crate::call::call_tx_addr() {
-                        Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip() {
+                        Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip().to_canonical() {
                             std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
                             std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
                             _ => super::ConnTier::Wan,
