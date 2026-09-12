@@ -1733,6 +1733,7 @@ impl FluorApp for PhotonApp {
                         raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (m.timestamp, m.is_outgoing))
                     });
                     let auto_open = self.selected_msg.is_none() && newest == Some((ts, out)) && self.strip_dismissed != Some(key);
+                    let was = self.selected_msg;
                     self.selected_msg = if self.selected_msg == Some(key) || auto_open {
                         self.strip_dismissed = Some(key);
                         None
@@ -1740,6 +1741,10 @@ impl FluorApp for PhotonApp {
                         self.strip_dismissed = None;
                         Some(key)
                     };
+                    // Leaving a wave row (a tap outside it, or its own second tap) stops its playback (Nick 2026-09-12: "clicking outside that wave whilst playing should cancel said wave playage").
+                    if was.is_some() && was != self.selected_msg {
+                        self.stop_playback_if_row_left(was);
+                    }
                     // A fresh selection (or a close) resets the copy pill to its ready state.
                     self.selected_msg_copied = false;
                     self.scene_dirty = true;
@@ -4180,5 +4185,27 @@ impl PhotonApp {
         let (_, remembered, t_boot) = self.resume_vault_rx.take().unwrap();
         self.finish_resume_load(remembered, opened, t_boot);
         true
+    }
+}
+
+impl PhotonApp {
+    /// A wave row that stopped being the selection takes its playback with it — the band's play glyph is only shown while selected, so a playing wave with no visible stop would be a trap.
+    pub(super) fn stop_playback_if_row_left(&mut self, left: Option<(usize, i64, bool)>) {
+        let Some((ci, ts, out)) = left else { return };
+        // The recording folds into the wave row by a Wave reference to the row's timestamp (the render's rec_over rule).
+        let Some(hash) = self.conv_of(ci).and_then(|c| {
+            let raw: &[crate::types::ChatMessage] = &c.messages;
+            let is_wave_row = raw.iter().any(|m| m.timestamp == ts && m.is_outgoing == out && m.wave.is_some());
+            if !is_wave_row {
+                return None;
+            }
+            raw.iter()
+                .find(|r| !r.deleted && crate::types::is_call_recording(&r.content) && matches!(r.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                .and_then(|r| crate::types::parse_attachment_content(&r.content).map(|(h, _, _)| h))
+        }) else { return };
+        if self.call_playback.is_some() && self.call_playback_hash == Some(hash) {
+            self.call_playback = None;
+            self.scene_dirty = true;
+        }
     }
 }

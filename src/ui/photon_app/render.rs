@@ -3636,13 +3636,16 @@ impl PhotonApp {
                             if let Some(w) = msg.wave {
                                 let right_aligned = msg.is_outgoing || is_self_contact;
                                 let hy = y - react_off - wave_band_h;
+                                // THE WAVE IS THE ROW (Nick 2026-09-12: "only the wave itself should show when not selected"): the header line (☎ wave · duration) and the play glyph draw only while this row is selected; unselected, the band alone. A wave with no band (missed, declined, rejected) keeps its one-line header, or the row would be empty.
+                                let wave_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
+                                let show_head = wave_selected || wave_band_h <= 0.0;
                                 // A rejected wave reads SMALL: it is a record for you, never a fuss.
                                 let head_size = if w.outcome == crate::types::WaveOutcome::Rejected { msg_size * 0.75 } else { msg_size };
                                 let head_style = TextStyle::new(head_size, colour).weight(500).font("Oxanium");
                                 let head = lines.first().cloned().unwrap_or_default();
-                                if right_aligned {
+                                if show_head && right_aligned {
                                     ctx.text.draw_text_right(&mut canvas, &head, buf_w as f32 - pad_x, hy, &head_style, Some(list_clip), None);
-                                } else {
+                                } else if show_head {
                                     ctx.text.draw_text_left(&mut canvas, &head, pad_x, hy, &head_style, Some(list_clip), None);
                                 }
                                 if wave_band_h > 0.0 {
@@ -3793,10 +3796,12 @@ impl PhotonApp {
                                                     ctx.text.draw_text_right(&mut canvas, &pos_label, buf_w as f32 - pad_x, hy, &small, Some(list_clip), None);
                                                 }
                                             }
-                                            // The glyph: ▶ to play, ■ while playing, the hourglass colour's ▶ until the blob is held (a tap fetches).
-                                            let glyph = if playing { "\u{25A0}" } else { "\u{25B6}\u{FE0E}" };
-                                            let glyph_style = TextStyle::new(msg_size, if held { colour } else { *theme::HOURGLASS_COLOUR }).weight(500).font("Oxanium");
-                                            ctx.text.draw_text_left(&mut canvas, glyph, bx0, bcy + msg_size * 0.35, &glyph_style, Some(list_clip), None);
+                                            // The glyph: ▶ to play, ■ while playing, the hourglass colour's ▶ until the blob is held (a tap fetches) — drawn only while the row is selected; the tap target stays either way.
+                                            if wave_selected {
+                                                let glyph = if playing { "\u{25A0}" } else { "\u{25B6}\u{FE0E}" };
+                                                let glyph_style = TextStyle::new(msg_size, if held { colour } else { *theme::HOURGLASS_COLOUR }).weight(500).font("Oxanium");
+                                                ctx.text.draw_text_left(&mut canvas, glyph, bx0, bcy + msg_size * 0.35, &glyph_style, Some(list_clip), None);
+                                            }
                                             // Hand the band to the input path (slot-indexed beside the row hit).
                                             if wave_slot < self.msg_wave_bands.len() {
                                                 self.msg_wave_bands[wave_slot] = Some(super::WaveBand { hash, held, x0: bx0, glyph_x1, x1: bx1, y0: by0.max(list_top), y1: by1.min(list_bottom), total: total_slots });
