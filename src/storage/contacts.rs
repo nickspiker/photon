@@ -992,6 +992,7 @@ pub fn save_messages(
         }
         rec = set_wave_fields(rec, msg);
         rec = set_attach_fields(rec, msg);
+        rec = set_star_field(rec, msg);
         let row_key = message_row_key(msg.timestamp, &msg.content);
         // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
         if db
@@ -1100,6 +1101,7 @@ pub fn load_messages(
             ack_hash,
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
+            star_osc: rec.time("star").unwrap_or(0),
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             marks: record_marks(&rec, content),
@@ -1154,6 +1156,11 @@ fn record_reference(rec: &Record) -> Option<(crate::types::RefKind, i64)> {
 }
 
 /// Wave-card fields (2026-09-09), written only when present: a wave row's typed outcome + live seconds, a recording row's envelope thumbnail bytes. Binary at rest like everything else in the record.
+/// The star stamp, written only when the row was ever touched (0 = the absent default).
+fn set_star_field(rec: Record, msg: &ChatMessage) -> Record {
+    if msg.star_osc != 0 { rec.set("star", Value::Time(msg.star_osc)) } else { rec }
+}
+
 fn set_wave_fields(mut rec: Record, msg: &ChatMessage) -> Record {
     if let Some(w) = msg.wave {
         rec = rec.set("wave_out", w.outcome as u64).set("wave_secs", w.secs as u64);
@@ -1399,6 +1406,7 @@ pub fn load_message_page_before(
             ack_hash: None, // never leaves this device; not part of a served page
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
+            star_osc: rec.time("star").unwrap_or(0),
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             marks: record_marks(&rec, content),
@@ -1559,6 +1567,7 @@ mod tests {
                 ack_hash: None,
                 recovered: false,
                 deleted: false,
+                star_osc: 0,
                 reference: None,
                 notified: true,
                 wave: None,
@@ -1578,6 +1587,7 @@ mod tests {
                 ack_hash: Some([0x7Au8; 32]), // received msg: its ACK hash must survive the round-trip
                 recovered: false,
                 deleted: false,
+                star_osc: 0,
                 reference: None,
                 notified: true,
                 wave: None,
@@ -1597,6 +1607,7 @@ mod tests {
                 ack_hash: None,
                 recovered: true, // friend-attested provenance must survive the round-trip,
                 deleted: false,
+                star_osc: 0,
                 reference: None,
                 notified: true,
                 wave: None,
@@ -1887,6 +1898,7 @@ mod tests {
             ack_hash: None,
             recovered: t <= 60, // the "older, recovered" half
             deleted: false,
+            star_osc: 0,
             reference: None,
             notified: true,
             wave: None,

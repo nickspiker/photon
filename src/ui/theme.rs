@@ -109,7 +109,8 @@ pub static PILL_GREY: LazyLock<(u32, u32)> = LazyLock::new(|| (c(0x00_24_24_28),
 pub static PROGRESS_FILL: LazyLock<u32> = LazyLock::new(|| c(0x00_80_FF_00));
 pub static PROGRESS_TRACK: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 /// Send-button arrowhead glyph — light grey.
-pub static SEND_ARROW_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_D0_D0_D0));
+/// The send arrowhead — GREEN over the purple pill (Nick 2026-09-12); the edit check keeps its own green by shape.
+pub static SEND_ARROW_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_30_FF_30));
 /// Hover fill for the send / plus action buttons — a SUBTLE neutral brightening of BUTTON_FILL (0x1A224E), reproducing the pre-fluor QUERY_BUTTON_HOVER feel rather than the shared BUTTON_HOVER's saturated-blue shift. A small delta also keeps the overlay from cooking the near-white arrowhead.
 pub static SEND_BUTTON_HOVER: LazyLock<u32> = LazyLock::new(|| c(0x00_25_2D_59));
 /// Call buttons wear the traffic light (Nick 2026-09-08): answer/keep = green pill, decline/delete/end = red pill. Dark-pill fills + hover/held ramps mirroring SEND_BUTTON's structure, not the bright text greens/reds.

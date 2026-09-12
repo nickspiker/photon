@@ -2213,12 +2213,17 @@ impl PhotonApp {
                             existing.preview = row.preview.clone();
                             upgraded = true;
                         }
+                        if row.star_osc.unsigned_abs() > existing.star_osc.unsigned_abs() {
+                            existing.star_osc = row.star_osc;
+                            upgraded = true;
+                        }
                         if upgraded {
                             fresh.push(existing.clone());
                         }
                         continue;
                     }
                     to_insert.push(crate::types::ChatMessage {
+                        star_osc: row.star_osc,
                         content: row.content.clone(),
                         timestamp: row.timestamp,
                         is_outgoing,
@@ -2228,6 +2233,7 @@ impl PhotonApp {
                         // Sibling pages carry OUR fleet's discharged-alert flag; a FRIEND page's flag is THEIR fleet's state — recovered history is always silent here (the catch-up summary in the sibling drain is the one place an unnotified batch may ding once).
                         notified: if from_sibling { row.notified } else { true },
                         deleted: row.deleted,
+                        
                         reference: row
                             .reference
                             .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))),

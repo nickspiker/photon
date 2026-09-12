@@ -1241,6 +1241,7 @@ impl PhotonApp {
             .iter()
             .filter(|m| !crate::types::is_control_content(&m.content))
             .map(|m| HistoryRow {
+                star_osc: m.star_osc,
                 timestamp: m.timestamp,
                 content: m.content.clone(),
                 sender_outgoing: m.is_outgoing,

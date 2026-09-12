@@ -3211,6 +3211,7 @@ impl PhotonApp {
                                                 sender_outgoing: m.is_outgoing,
                                                 delivered: m.delivered,
                                                 deleted: m.deleted,
+                                                star_osc: m.star_osc,
                                                 reference: m.reference.map(|(k, t)| (k as u8, t)),
                                                 notified: m.notified,
                                                 marks: m.marks.clone(),

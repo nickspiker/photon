@@ -255,6 +255,8 @@ pub struct ChatMessage {
     pub ack_hash: Option<[u8; 32]>,
     /// `true` when this row was RECOVERED from a friend's copy of the conversation (history recovery after a client reset) rather than witnessed by this device as a signed wire frame. Friend-attested provenance: the friend could in principle have altered it. Persisted so phase-2 fleet recovery (self-attested rows) can supersede friend-attested ones, and so a UI cue can exist later. No UI treatment yet.
     pub recovered: bool,
+    /// STARRED (Nick 2026-09-12, "mark important and not to prune"): 0 = never touched; positive = starred at that eagle osc; negative = UNstarred at |osc|. Merge = larger |osc| wins, so the latest toggle propagates thru fleet sync. The retention-horizon design reads it as "this row never ages out".
+    pub star_osc: i64,
     /// TOMBSTONE: the message is deleted-for-everyone — hidden from every UI, propagated monotonically (true wins) thru fleet sync AND to the friend via the hidden delete marker. The CONTENT IS PRESERVED internally on purpose: the braid weaves prior message content into future keys, so blanking it would fork chains that later weave this row — true content shredding needs a braid-safe redaction design (ticketed). Persisted.
     pub deleted: bool,
     /// TYPED reference metadata: this row points at another row (by eagle_time) — a reply to it, an edit superseding it, or a reaction on it. `content` then carries ONLY the body (reply text / corrected text / reaction glyph — empty glyph = retract). A field, never a string encoding: metadata smuggled thru content is what put marker droppings on old builds' screens (field, 2026-08-09). Rides its own wire field, row-record fields, and history-page columns; the braid is untouched (strands weave content, which stays byte-identical both sides). Persisted; absent on pre-feature rows.
@@ -289,6 +291,7 @@ impl ChatMessage {
             ack_hash: None,
             recovered: false,
             deleted: false,
+            star_osc: 0,
             reference: None,
             notified: is_outgoing,
             marks: Vec::new(),
@@ -312,6 +315,7 @@ impl ChatMessage {
             ack_hash: None,
             recovered: false,
             deleted: false,
+            star_osc: 0,
             reference: None,
             notified: is_outgoing,
             marks: Vec::new(),

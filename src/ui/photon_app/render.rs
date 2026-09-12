@@ -3277,6 +3277,9 @@ impl PhotonApp {
                                 if msg.recovered {
                                     detail.push_str(&tr(Msg::RecoveredSuffix));
                                 }
+                                if msg.star_osc > 0 {
+                                    detail.push_str(" \u{00B7} \u{2605}");
+                                }
                                 if crate::types::parse_attachment_content(&msg.content).is_none()
                                     && edit_over.contains_key(&msg.timestamp)
                                 {
@@ -3419,8 +3422,8 @@ impl PhotonApp {
                                     let is_music = msg.attach.is_some_and(|a| a.kind == crate::types::AttachKind::Audio) && !is_rec;
                                     if held && is_music {
                                         let playing_this = self.music_play.as_ref().is_some_and(|m| m.hash == hash && m.playing());
-                                        let glyph: std::borrow::Cow<'static, str> = if playing_this { "\u{25A0}".into() } else { "\u{25B6}\u{FE0E}".into() };
-                                        pills.push((glyph, *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(9)));
+                                        let label = if playing_this { tr(Msg::StopPill) } else { tr(Msg::PlayPill) };
+                                        pills.push((label, *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(9)));
                                     }
                                     let (label, colour) = if !held {
                                         (tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR)
@@ -3430,6 +3433,13 @@ impl PhotonApp {
                                         (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
                                     pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
+                                }
+                                // ★ — mark important, never prune (the retention design reads it; the glyph needs no translation).
+                                {
+                                    let starred = msg.star_osc > 0;
+                                    let star_fill = starred.then_some((theme::near_black(*theme::SEARCH_RELAY_COLOUR, 0.35), *theme::SEARCH_RELAY_COLOUR));
+                                    let _ = star_fill;
+                                    pills.push(("\u{2605}".into(), if starred { *theme::SEARCH_RELAY_COLOUR } else { *theme::LABEL_COLOUR }, self.msg_action_base.wrapping_add(10)));
                                 }
                                 let deleting =
                                     self.pending_delete.as_ref().is_some_and(|(k, _)| {
@@ -3494,7 +3504,7 @@ impl PhotonApp {
                                     {
                                         break;
                                     }
-                                    let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.75, w, react_pill_h);
+                                    let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.5, w, react_pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
                                         let fill = Some((theme::near_black(verb, 0.15), theme::near_black(verb, 0.3)));
                                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base.wrapping_add(self.react_strip_glyphs.len() as HitId), ctx.pressed_hit, true, fill, "Oxanium");
@@ -3504,7 +3514,7 @@ impl PhotonApp {
                                 }
                                 // The circled "+": react with ANYTHING — arms the compose box, the system keyboard is the picker. Dim ring, bright glyph — a dark button like its siblings.
                                 let plus_cx = rx_cursor + plus_r;
-                                let plus_cy = y - glyph_size * 0.32;
+                                let plus_cy = y;
                                 paint::draw_circle(
                                     &mut canvas,
                                     plus_cx,
@@ -3521,7 +3531,7 @@ impl PhotonApp {
                                     &mut canvas,
                                     "+",
                                     plus_cx - plus_w * 0.5,
-                                    y,
+                                    y + glyph_size * 0.35,
                                     &plus_style,
                                     Some(list_clip),
                                     None,

@@ -239,6 +239,10 @@ impl FluorApp for PhotonApp {
         ));
         // Send button overlaid in the compose box. ASCII ">" (not "→" U+2192 — absent from the Android font, so it rendered blank there; the contacts "+" button proves ASCII renders). Geometry set each frame in `update_widget_layout`. Empty label — the glyph is a drawn 4-vertex up arrowhead (draw_up_arrowhead), not text.
         self.message_send_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        // Send wears PURPLE with the green arrow drawn over it; the pigeon button wears the carrier's amber — the two compose actions stop being twins (Nick 2026-09-12).
+        if let Some(b) = self.message_send_btn.as_mut() {
+            b.set_fill(Some(theme::near_black(*theme::LINK_PURPLE, 0.35)));
+        }
         // The link button: purple pill, chain-link glyph (colour emoji face, FE0F pins it), beside send.
         self.compose_link_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F517}\u{FE0F}"));
         if let Some(b) = self.compose_link_btn.as_mut() {
@@ -246,6 +250,9 @@ impl FluorApp for PhotonApp {
         }
         // The paperclip: always shown, one slot left of send (two when the link button is up).
         self.compose_attach_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., "\u{1F54A}\u{FE0F}"));
+        if let Some(b) = self.compose_attach_btn.as_mut() {
+            b.set_fill(Some(theme::near_black(*theme::SEARCH_RELAY_COLOUR, 0.35)));
+        }
         // Specific subtle hover for the two overlay-in-textbox action buttons (pre-fluor per-control hover colours), instead of the generic saturated BUTTON_HOVER. Held = the SAME subtle fill: these fire on release, so a press must read as "nothing happened yet" — the default BUTTON_HELD ramp flashed a heavy fill mid-press (the "+" ticket).
         if let Some(b) = self.contacts_plus_btn.as_mut() {
             b.set_hover_fill(Some(*theme::SEND_BUTTON_HOVER));
@@ -1347,6 +1354,20 @@ impl FluorApp for PhotonApp {
                                 self.scene_dirty = true;
                             }
                         }
+                        // ★ toggle (slot 10): stamp the toggle with now — larger |osc| wins the merge, so the latest choice propagates fleet-wide.
+                        10 => {
+                            if let Some(conv) = self.conv_mut_of(sci) {
+                                if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == ts && m.is_outgoing == out) {
+                                    let now = vsf::eagle_time_oscillations();
+                                    m.star_osc = if m.star_osc > 0 { -now } else { now };
+                                    let row = m.clone();
+                                    conv.invalidate_digest();
+                                    self.persist_messages_async(sci);
+                                    self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
+                                }
+                            }
+                            self.scene_dirty = true;
+                        }
                         // REPLY = a REFERENCE, never a quote: arm the target eagle_time; the compose strip shows the referenced message at half alpha, and the sent row carries only the reference — the renderer resolves it live, so a later edit of the target updates every reply pointing at it.
                         0 => {
                             let _ = out; // the reference is by eagle_time alone (either direction resolves it)
@@ -1691,6 +1712,18 @@ impl FluorApp for PhotonApp {
                             self.scroll_to_message(ci, target);
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
+                        }
+                    }
+                    // A music row obeys the band rule ANYWHERE on the row (Nick 2026-09-12): while its song plays, any tap on the row seeks; the toggle below handles open/close otherwise.
+                    if let Some(v) = self.msg_attach_visuals.get(vis).copied().flatten() {
+                        if v.kind == crate::types::AttachKind::Audio {
+                            if let Some(m) = self.music_play.as_ref().filter(|m| m.hash == v.hash && m.playing()) {
+                                let f = (((ctx.cursor_x as f32) - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0);
+                                m.seek_frac(f);
+                                self.scene_dirty = true;
+                                ctx.window.request_redraw();
+                                return EventResponse::Handled;
+                            }
                         }
                     }
                     let key = (ci, ts, out);

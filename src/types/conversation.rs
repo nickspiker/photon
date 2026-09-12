@@ -175,6 +175,10 @@ impl Conversation {
             existing.recovered = existing.recovered && msg.recovered;
             // Wave rows fold by OUTCOME RANK (the most-informed copy wins) and max seconds; a recording row's envelope thumbnail is adopted once, never cleared.
             merge_wave_fields(existing, msg.wave, &msg.envelope);
+            // Star: the latest toggle wins (larger |osc| — a star and an unstar are both stamps).
+            if msg.star_osc.unsigned_abs() > existing.star_osc.unsigned_abs() {
+                existing.star_osc = msg.star_osc;
+            }
             return;
         }
         // A recovered PLACEHOLDER at this timestamp yields to an authoritative (live/witnessed) row even if the text differs — what we saw on the wire outranks friend-attested content.

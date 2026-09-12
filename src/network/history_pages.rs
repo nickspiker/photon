@@ -33,6 +33,8 @@ pub struct HistoryRow {
     pub attach: Option<(u8, u32, u32, Option<[u8; 32]>)>,
     /// The row's micro preview as a native multi-value column — absent ⇒ empty.
     pub preview: Vec<u8>,
+    /// Star stamp (signed eagle osc; positive = starred, negative = unstarred, 0 = never touched) — absent on pre-feature pages ⇒ 0. Merge = larger |osc| wins.
+    pub star_osc: i64,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -58,6 +60,7 @@ fn page_schema() -> SectionSchema {
         .field("m_text", TypeConstraint::Utf8Text) // x, one per row
         .field("m_out", TypeConstraint::AnyUnsigned) // bool, one per row (sender's is_outgoing)
         .field("m_del", TypeConstraint::AnyUnsigned) // bool, one per row
+        .field("m_str", TypeConstraint::Any) // e6 star stamp, one per row: 0 = never starred
         .field("m_tomb", TypeConstraint::AnyUnsigned) // bool, one per row: the deleted-for-everyone tombstone (absent on pre-feature pages → all false)
         .field("m_ntf", TypeConstraint::AnyUnsigned) // notified flag, one per row (absent column on pre-feature pages = all true)
         .field("m_refk", TypeConstraint::AnyUnsigned) // reference kind, one per row: 0 = none, else RefKind wire value (absent on pre-feature pages → all none)
@@ -107,6 +110,8 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .append_multi("m_del", vec![VsfType::u(row.delivered as usize, false)])
             .map_err(|e| e.to_string())?
             .append_multi("m_tomb", vec![VsfType::u(row.deleted as usize, false)])
+            .map_err(|e| e.to_string())?
+            .append_multi("m_str", vec![VsfType::e(vsf::types::EtType::e6(row.star_osc))])
             .map_err(|e| e.to_string())?
             .append_multi("m_ntf", vec![VsfType::u(row.notified as usize, false)])
             .map_err(|e| e.to_string())?
@@ -290,6 +295,15 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         })
         .collect();
     // Wave columns: per-row outcome/seconds, and the envelope thumbnails — a per-row byte count plus one multi-value field per row that carries one, consumed in row order.
+    let stars: Vec<i64> = section
+        .get_fields("m_str")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
+            _ => None,
+        })
+        .collect();
     let wave_outs = flat_u("m_wvo");
     let wave_secs = flat_u("m_wvs");
     let env_counts = flat_u("m_wvn");
@@ -375,6 +389,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             Vec::new()
         };
         rows.push(HistoryRow {
+            star_osc: stars.get(i).copied().unwrap_or(0),
             timestamp: times[i],
             content: texts[i].clone(),
             sender_outgoing: outs[i],
@@ -418,6 +433,7 @@ mod tests {
         HistoryPagePlain {
             rows: vec![
                 HistoryRow {
+                    star_osc: 0,
                     timestamp: 1_000,
                     content: "oldest in page 👋 unicode".to_string(),
                     sender_outgoing: true,
@@ -434,6 +450,7 @@ mod tests {
                     notified: true,
                 },
                 HistoryRow {
+                    star_osc: 0,
                     timestamp: 2_000,
                     content: "".to_string(), // empty content is a legal row
                     sender_outgoing: false,
@@ -448,6 +465,7 @@ mod tests {
                     notified: true,
                 },
                 HistoryRow {
+                    star_osc: 0,
                     timestamp: 3_000,
                     content: "newest".to_string(),
                     sender_outgoing: true,
@@ -502,6 +520,7 @@ mod tests {
         let key = [4u8; 32];
         let page = HistoryPagePlain {
             rows: vec![HistoryRow {
+                star_osc: 0,
                 timestamp: 7,
                 content: "hi".to_string(),
                 sender_outgoing: true,
