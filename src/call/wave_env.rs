@@ -13,33 +13,37 @@ pub struct WaveEnv {
     pub bins: usize,
     pub sample_rate: u32,
     pub samples_per_bin: u32,
-    /// Per-component peak MEAN POWER relative to full scale (peak = the u8 255 of that track).
-    pub peaks: [f32; 3],
-    /// Planar `[3][bins]`: power, first-difference power, second-level detail power.
+    /// Per-component peak MEAN POWER relative to full scale, Q48 fixed point — exact integers at rest, never a float (Nick: and scaling is multiplication + shifts, never division: a byte decodes as `byte × peak_q48 >> 8` in Q48, the ÷256 a shift, the ÷2^48 a constant multiply at the float boundary).
+    pub peak_q48: [u64; 3],
+    /// Planar `[3][bins]`: power, first-difference power, second-level detail power; a byte spans 1/256 of the peak (256, not 255 — integer maths floors).
     pub data: Arc<Vec<u8>>,
 }
 
 impl WaveEnv {
+    /// One u8 step of a track as full-scale-relative power (f32 at the display boundary only): `peak_q48 × 2^-56` = peak ÷ 256 ÷ 2^48 — two constant multiplies, no division.
+    #[inline]
+    pub fn lsb(&self, comp: usize) -> f32 {
+        self.peak_q48[comp] as f32 * (1.0 / (1u64 << 48) as f32 / 256.0)
+    }
     /// One track's absolute mean power (full-scale-relative) at a bin.
     #[inline]
     pub fn power(&self, comp: usize, bin: usize) -> f32 {
-        self.data[comp * self.bins + bin] as f32 / 255.0 * self.peaks[comp]
+        self.data[comp * self.bins + bin] as f32 * self.lsb(comp)
     }
 }
 
-/// Serialize an envelope to VSF bytes.
-pub fn write(sample_rate: u32, samples_per_bin: u32, bins: usize, peaks: [f32; 3], data: &[u8]) -> Vec<u8> {
+/// Serialize an envelope to VSF bytes. `pk` is ONE field with three values (never decimal-indexed names), each an exact Q48 integer.
+pub fn write(sample_rate: u32, samples_per_bin: u32, bins: usize, peak_q48: [u64; 3], data: &[u8]) -> Vec<u8> {
     let tensor = vsf::BitPackedTensor::pack(8, vec![3, bins], data);
-    let fields = vec![
-        ("rate".to_string(), vsf::VsfType::u(sample_rate as usize, false)),
-        ("spb".to_string(), vsf::VsfType::u(samples_per_bin as usize, false)),
-        ("bins".to_string(), vsf::VsfType::u(bins, false)),
-        ("peak".to_string(), vsf::VsfType::t_f5(vsf::types::tensor::Tensor::new(vec![3], peaks.to_vec()))),
-        ("env".to_string(), vsf::VsfType::p(tensor)),
-    ];
+    let mut section = vsf::VsfSection::new("wave_env");
+    section.add_field_multi("rate", vec![vsf::VsfType::u(sample_rate as usize, false)]);
+    section.add_field_multi("spb", vec![vsf::VsfType::u(samples_per_bin as usize, false)]);
+    section.add_field_multi("bins", vec![vsf::VsfType::u(bins, false)]);
+    section.add_field_multi("pk", peak_q48.iter().map(|&q| vsf::VsfType::u(q as usize, false)).collect());
+    section.add_field_multi("env", vec![vsf::VsfType::p(tensor)]);
     vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section("wave_env", fields)
+        .add_section_direct(section)
         .build()
         .unwrap_or_default()
 }
@@ -58,22 +62,20 @@ pub fn read(bytes: &[u8]) -> Option<WaveEnv> {
     let sample_rate = field("rate")?.as_u64()? as u32;
     let samples_per_bin = field("spb")?.as_u64()? as u32;
     let bins = field("bins")?.as_u64()? as usize;
-    let peaks_v: Vec<f32> = match field("peak")? {
-        vsf::VsfType::t_f5(t) => t.data.clone(),
-        _ => return None,
-    };
+    let pk_field = section.fields.iter().find(|f| f.name == "pk")?;
+    let pk: Vec<u64> = pk_field.values.iter().filter_map(|v| v.as_u64()).collect();
     let data: Vec<u8> = match field("env")? {
         vsf::VsfType::p(t) => t.unpack_u8(),
         _ => return None,
     };
-    if peaks_v.len() != 3 || bins == 0 || data.len() != 3 * bins || samples_per_bin == 0 {
+    if pk.len() != 3 || bins == 0 || data.len() != 3 * bins || samples_per_bin == 0 {
         return None;
     }
     Some(WaveEnv {
         bins,
         sample_rate,
         samples_per_bin,
-        peaks: [peaks_v[0], peaks_v[1], peaks_v[2]],
+        peak_q48: [pk[0], pk[1], pk[2]],
         data: Arc::new(data),
     })
 }
@@ -86,13 +88,14 @@ mod tests {
     fn wave_env_round_trips() {
         let bins = 70_000usize;
         let data: Vec<u8> = (0..3 * bins).map(|i| (i * 37 % 251) as u8).collect();
-        let bytes = write(48_000, 32, bins, [0.25, 0.001, 0.0004], &data);
+        let pk = [1u64 << 46, 12_345_678_901, 42];
+        let bytes = write(48_000, 32, bins, pk, &data);
         assert!(!bytes.is_empty());
         let e = read(&bytes).expect("parse back");
         assert_eq!((e.bins, e.sample_rate, e.samples_per_bin), (bins, 48_000, 32));
         assert_eq!(*e.data, data);
-        assert!((e.peaks[0] - 0.25).abs() < 1e-6);
-        assert!((e.power(0, 0) - (data[0] as f32 / 255.0 * 0.25)).abs() < 1e-9);
+        assert_eq!(e.peak_q48, pk, "peaks are exact integers at rest");
+        assert!((e.power(0, 0) - data[0] as f32 * e.lsb(0)).abs() < 1e-12);
     }
 
     #[test]

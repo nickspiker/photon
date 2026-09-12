@@ -3437,52 +3437,32 @@ impl PhotonApp {
                                     .filter(|g| !g.is_empty());
                                 let glyph_size = detail_size * 1.2;
                                 let plus_r = glyph_size * 0.62;
+                                let react_pill_h = line_h * 0.9;
                                 let mut rx_cursor = pad_x;
                                 self.react_strip_glyphs.clear();
                                 for g in ranked_reactions.iter() {
                                     if self.react_strip_glyphs.len() >= 9 {
                                         break;
                                     }
-                                    let style = TextStyle::new(
-                                        glyph_size,
-                                        if ours_now.as_deref() == Some(g.as_str()) {
-                                            *theme::SEARCH_FOUND_COLOUR
-                                        } else {
-                                            *theme::COPY_PILL_COLOUR
-                                        },
-                                    )
-                                    .weight(500);
-                                    let w = ctx.text.measure_text(g, &style);
+                                    // DARK BUTTONS (Nick 2026-09-12, "text should be bright and colourful but the buttons should be DARK — on reactions specifically"): each glyph is a real pill in the action row's dim verb tint — cyan for react, green for the one that's ours — instead of the old full-brightness bare glyph.
+                                    let verb = if ours_now.as_deref() == Some(g.as_str()) { *theme::SEARCH_FOUND_COLOUR } else { *theme::COPY_PILL_COLOUR };
+                                    let style = TextStyle::new(glyph_size, verb).weight(500);
+                                    let w = ctx.text.measure_text(g, &style) + pad_hit * 1.2;
                                     // Fit gate: always leave room for the circled "+" at the row's end.
                                     if rx_cursor + w + pad_hit + plus_r * 2.0 + pad_hit
                                         > buf_w as f32 - pad_x
                                     {
                                         break;
                                     }
-                                    ctx.text.draw_text_left(
-                                        &mut canvas,
-                                        g,
-                                        rx_cursor,
-                                        y,
-                                        &style,
-                                        Some(list_clip),
-                                        None,
-                                    );
-                                    restamp_hit_rect(
-                                        &mut chrome.hit_test_map,
-                                        buf_w,
-                                        buf_h,
-                                        (rx_cursor - pad_hit * 0.4) as isize,
-                                        ((y - line_h * 0.5).max(list_top)) as isize,
-                                        (rx_cursor + w + pad_hit * 0.4) as isize,
-                                        ((y + line_h * 0.5).min(list_bottom)) as isize,
-                                        self.react_strip_base
-                                            .wrapping_add(self.react_strip_glyphs.len() as HitId),
-                                    );
+                                    let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.7, w, react_pill_h);
+                                    if rect.y + rect.h >= list_top && rect.y <= list_bottom {
+                                        let fill = Some((theme::dim_colour(verb), verb));
+                                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base.wrapping_add(self.react_strip_glyphs.len() as HitId), ctx.pressed_hit, true, fill, "Oxanium");
+                                    }
                                     self.react_strip_glyphs.push(g.clone());
-                                    rx_cursor += w + pad_hit;
+                                    rx_cursor += w + pad_hit * 0.6;
                                 }
-                                // The circled "+": react with ANYTHING — arms the compose box, the system keyboard is the picker.
+                                // The circled "+": react with ANYTHING — arms the compose box, the system keyboard is the picker. Dim ring, bright glyph — a dark button like its siblings.
                                 let plus_cx = rx_cursor + plus_r;
                                 let plus_cy = y - glyph_size * 0.32;
                                 paint::draw_circle(
@@ -3490,7 +3470,7 @@ impl PhotonApp {
                                     plus_cx,
                                     plus_cy,
                                     plus_r,
-                                    *theme::COPY_PILL_COLOUR,
+                                    theme::dim_colour(*theme::COPY_PILL_COLOUR),
                                     Some(list_clip),
                                 );
                                 let plus_style =
@@ -3718,8 +3698,10 @@ impl PhotonApp {
                                                                 acc[px] += e.data[b] as u64;
                                                                 n[px] += 1;
                                                             }
+                                                            // One u8 step of the power track as absolute power — multiplication only; the count divide is the fold's own mean, once per column per fold.
+                                                            let lsb0 = e.lsb(0);
                                                             let a: Vec<f32> = (0..cols)
-                                                                .map(|i| if n[i] == 0 { 0.0 } else { (acc[i] as f32 / n[i] as f32 / 255.0 * e.peaks[0]).max(0.0).sqrt() })
+                                                                .map(|i| if n[i] == 0 { 0.0 } else { (acc[i] as f32 / n[i] as f32 * lsb0).max(0.0).sqrt() })
                                                                 .collect();
                                                             let a = std::rc::Rc::new(a);
                                                             let mut cache = self.wave_fold_cache.borrow_mut();

@@ -152,7 +152,7 @@ impl EnvPyramid {
         self.counts[base + 2] += 1;
     }
     /// Reduce ONE channel to the shareable form (Nick 2026-09-12, "3 channel u8 normalized tensor"): per bin per component the MEAN POWER (`sumsq/count`), each component normalized to its own peak over the recording, quantized to u8 by STOCHASTIC rounding — the dither noise carries sub-LSB signal into the render's per-pixel averages, so 8 bits hold the full dynamic range statistically. Returns (bins, per-component peak power relative to full scale, planar `[3][bins]` bytes); None for an empty channel.
-    fn finish_u8(&self, ch: usize) -> Option<(usize, [f32; 3], Vec<u8>)> {
+    fn finish_u8(&self, ch: usize) -> Option<(usize, [u64; 3], Vec<u8>)> {
         let k = ENV_COMPONENTS;
         let s = 1usize << self.s_log2;
         let bins = self.total_samples.div_ceil(s).min(self.cap);
@@ -179,18 +179,20 @@ impl EnvPyramid {
             z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
             (z ^ (z >> 31)) as f64 / (u64::MAX as f64)
         };
+        // A byte is 1/256 of the peak (256, not 255 — integer maths floors; the peak bin lands on 256 and clamps into the top step).
         let mut data = vec![0u8; k * bins];
         for c in 0..k {
             for bin in 0..bins {
-                let q = if peaks[c] > 0.0 { (mean(bin, c) / peaks[c] * 255.0).clamp(0.0, 255.0) } else { 0.0 };
+                let q = if peaks[c] > 0.0 { (mean(bin, c) / peaks[c] * 256.0).clamp(0.0, 256.0) } else { 0.0 };
                 let f = q.floor();
                 let up = (q - f) > dither01((c * self.cap + bin) as u64);
-                data[c * bins + bin] = (f as u8).saturating_add(up as u8);
+                data[c * bins + bin] = (f as u64 + up as u64).min(255) as u8;
             }
         }
+        // Peak power relative to full scale in Q48 — an exact integer at rest; decode is multiplication and shifts only.
         const FS_POWER: f64 = 32768.0 * 32768.0;
-        let peaks_rel = [(peaks[0] / FS_POWER) as f32, (peaks[1] / FS_POWER) as f32, (peaks[2] / FS_POWER) as f32];
-        Some((bins, peaks_rel, data))
+        let q48 = |v: f64| ((v / FS_POWER) * (1u64 << 48) as f64).round() as u64;
+        Some((bins, [q48(peaks[0]), q48(peaks[1]), q48(peaks[2])], data))
     }
 }
 
@@ -430,7 +432,7 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     out.extend_from_slice(&container);
     // Our OWN channel's shareable envelope (ch0 = the raw mic): minted here where the samples were just decoded anyway; a short wave (< ENV_MIN_SHARE_SAMPLES) ships none by design.
     let env = if pyramid.total_samples >= ENV_MIN_SHARE_SAMPLES {
-        pyramid.finish_u8(0).map(|(bins, peaks, data)| crate::call::wave_env::write(48_000, 1u32 << pyramid.s_log2, bins, peaks, &data))
+        pyramid.finish_u8(0).map(|(bins, peak_q48, data)| crate::call::wave_env::write(48_000, 1u32 << pyramid.s_log2, bins, peak_q48, &data))
     } else {
         None
     };
@@ -595,11 +597,11 @@ pub fn envelopes_from_blob(bytes: &[u8]) -> Option<Vec<crate::call::wave_env::Wa
     let spb = 1u32 << pyr.s_log2;
     let envs: Vec<crate::call::wave_env::WaveEnv> = (0..nchan)
         .filter_map(|ch| {
-            pyr.finish_u8(ch).map(|(bins, peaks, data)| crate::call::wave_env::WaveEnv {
+            pyr.finish_u8(ch).map(|(bins, peak_q48, data)| crate::call::wave_env::WaveEnv {
                 bins,
                 sample_rate: 48_000,
                 samples_per_bin: spb,
-                peaks,
+                peak_q48,
                 data: std::sync::Arc::new(data),
             })
         })
