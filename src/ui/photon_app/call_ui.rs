@@ -546,6 +546,7 @@ impl PhotonApp {
     }
 
     pub(super) fn call_drought_tick(&mut self) {
+        self.attach_fetch_retry_tick();
         #[cfg(target_os = "android")]
         if crate::platform::jni_android::take_network_changed() {
             self.on_network_changed();

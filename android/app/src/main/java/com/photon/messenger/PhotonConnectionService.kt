@@ -15,6 +15,7 @@ import android.os.Binder
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
+import android.os.Looper
 import android.os.IBinder
 import android.os.PowerManager
 import android.os.VibrationAttributes
@@ -442,16 +443,25 @@ class PhotonConnectionService : Service() {
      * also skips if a foreground draw is concurrently in progress (the onResume overlap). Any thread.
      * See docs/background-tick.md.
      */
+    // ONE THREAD OWNS THE APP (field 2026-09-12 00:25, SIGABRT "invalid chunk state when deallocating" on Thread-275): this used to run nativeServiceTick on whatever thread asked — a status update on the NETWORK thread called straight thru JNI into advance_protocol while the UI thread was mid-tick, two threads mutating the same app state, and the allocator caught the double free. The tick now posts to the main looper, the same thread the Activity's frame tick runs on, so the two are serialized by construction; a pending post coalesces.
+    private val mainHandler = Handler(Looper.getMainLooper())
+    @Volatile private var servicePending = false
     fun requestServiceTick() {
-        val ptr = activityContextPtr
-        if (ptr == 0L) return  // no live Activity context (destroyed / not yet created)
-        try {
-            wakeLock.acquire(2_000L)  // safety-net timeout; the tick is milliseconds
-            nativeServiceTick(ptr)
-        } catch (e: Exception) {
-            PhotonLog.w(TAG, "requestServiceTick failed", e)
-        } finally {
-            if (wakeLock.isHeld) wakeLock.release()
+        if (activityContextPtr == 0L) return  // no live Activity context (destroyed / not yet created)
+        if (servicePending) return
+        servicePending = true
+        mainHandler.post {
+            servicePending = false
+            val ptr = activityContextPtr
+            if (ptr == 0L) return@post
+            try {
+                wakeLock.acquire(2_000L)  // safety-net timeout; the tick is milliseconds
+                nativeServiceTick(ptr)
+            } catch (e: Exception) {
+                PhotonLog.w(TAG, "requestServiceTick failed", e)
+            } finally {
+                if (wakeLock.isHeld) wakeLock.release()
+            }
         }
     }
 

@@ -439,6 +439,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServic
         return;
     };
     // CAS false→true: acquire the guard only if no draw (or another service tick) holds it. On failure we skip — the concurrent draw advances the same state, so a dropped background tick loses nothing.
+    // The CAS only stops two service ticks overlapping; it cannot make this safe from another thread, since the UI thread may be inside render or input rather than a tick. Kotlin therefore posts this to the main looper (field 2026-09-12: a network-thread call thru here double-freed under the UI thread's feet).
     if ctx
         .ticking
         .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)

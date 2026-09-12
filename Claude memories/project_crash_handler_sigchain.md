@@ -18,3 +18,5 @@ crash_native.rs on Android (all shipped 2026-09-10, v0.89.18–.23):
 
 **Why:** three days of "force close constantly" reports with nothing actionable in the log.
 **How to apply:** for any Android crash, pull the log and look for `tombstone:` lines, then symbolize against the archived .so of that exact version. Related: [[project_android_hang_nag]].
+
+- 2026-09-12 00:25 v0.92.8, SIGABRT "Scudo ERROR: invalid chunk state when deallocating" on Thread-275: send_status_update (network thread) → request_service_tick → Kotlin requestServiceTick → nativeServiceTick INLINE on the caller thread → advance_protocol → check_status_updates → double free under the UI thread. The ctx.ticking CAS only serializes service ticks against each other. Fix: Kotlin posts the tick to Handler(Looper.getMainLooper()) (coalesced), so every tick runs on the main looper. Rule: nothing but the main thread may touch PhotonApp; JNI entry points invoked from Rust worker threads must post, never call.

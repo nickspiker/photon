@@ -394,6 +394,34 @@ impl PhotonApp {
             });
         }
         crate::log("attach: fetch request dispatched");
+        let tries = self.attach_fetch_inflight.get(content_hash).map_or(0, |(_, _, n)| *n);
+        self.attach_fetch_inflight.insert(*content_hash, (sci, std::time::Instant::now(), tries.saturating_add(1)));
+    }
+
+    /// Re-ask for fetches nobody answered: every 20 s while nothing has landed (no blob, no manifest), up to eight times, then let go. Landed fetches leave the map at once.
+    pub(super) fn attach_fetch_retry_tick(&mut self) {
+        const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
+        const MAX_TRIES: u8 = 8;
+        let now = std::time::Instant::now();
+        let due: Vec<([u8; 32], usize, u8)> = self
+            .attach_fetch_inflight
+            .iter()
+            .filter(|(_, (_, at, _))| now.duration_since(*at) >= RETRY_AFTER)
+            .map(|(h, (sci, _, n))| (*h, *sci, *n))
+            .collect();
+        for (hash, sci, tries) in due {
+            if crate::storage::blob_present(&hash) || crate::storage::blob_manifest(&hash).is_some() {
+                self.attach_fetch_inflight.remove(&hash);
+                continue;
+            }
+            if tries >= MAX_TRIES || sci >= self.contacts.len() {
+                crate::logf!("attach: fetch of {}… gave up after {} asks — nobody answered", hex::encode(&hash[..4]), tries);
+                self.attach_fetch_inflight.remove(&hash);
+                continue;
+            }
+            crate::logf!("attach: fetch of {}… unanswered for {}s — asking again ({} of {})", hex::encode(&hash[..4]), RETRY_AFTER.as_secs(), tries + 1, MAX_TRIES);
+            self.attach_fetch(sci, &hash);
+        }
     }
 
     /// Save a held blob to the user's Downloads dir (name deduped). Returns the destination on success.

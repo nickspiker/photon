@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Fixed a crash on Android that could hit right after answering a wave, when a background network event ran the app's tick on the wrong thread.
+- An attachment or wave that nobody answers for is asked for again every twenty seconds instead of showing "fetching" forever.
 - Waveforms are brighter and truer: bar height is the actual loudness against one fixed scale for everyone, and colour is the balance of low, middle and high frequencies in the voice, vivid whether the moment is quiet or loud.
 - A wave that has already ended can no longer ring again when its original ring arrives late over the relay.
 - A hangup, a ring and a reconnect signal now travel on the path the wave's audio is using, and always carry a relay copy, so the other side hears you hang up and rings when you call back even when your address book points at a different one of their devices.
