@@ -112,11 +112,16 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 - ✅ LAN peer discovery (NAT hairpinning workaround via broadcast)
 - ✅ Android build pipeline (tested on device)
 - ✅ Signed binary distribution with self-verification
+- ✅ Waves: end-to-end encrypted voice, direct peer to peer, single-digit-millisecond round trips on a LAN, lossless PCM on a clean path and an Opus ladder elsewhere; lost windows filled from the other side's recording; every wave kept as a per-party archive with a waveform card
+- ✅ Attachments: any file, byte-exact, chunked and resumable; pictures and code previewed in the row, images colour-managed thru opsin with live exposure on the desktop
+- ✅ Dozenal by default, hexadecimal for coders, arabic if you insist — every number on screen thru one base switch, magnitudes on a doubling scale (docs/dozenal.md)
 
 ### What Doesn't Work Yet
 - ⚠️ Custodian recovery (all-devices-lost): threshold reconstruction is designed and partially built — **not yet a backstop you can rely on.** Keep more than one device.
 - ⚠️ NFC device-add and physical invite cards (designed; typing/near-tap is the path today)
 - ⚠️ The wider TOKEN surface — billing you alone authorize, portable reputation, physics-anchored time — is specified in the patent and not yet in Photon
+- ⚠️ Waves have no relay carriage: two phones that cannot reach each other directly (both behind carrier NAT) signal fine but carry no audio yet
+- ⚠️ Video (beams) is on the way; the button is a stub
 
 ### Platform Support
 
@@ -429,6 +434,9 @@ This synchronization model doesn't compromise performance. Direct peer-to-peer c
 
 | Path | Round-trip Latency |
 |------|-------------------|
+| Photon wave, same LAN (measured 2026-09-12) | 5-10ms |
+| Photon wave, same city over IPv6 (measured 2026-09-12) | ~10ms |
+| Photon wave, cellular to home wifi (measured 2026-09-12) | ~55ms |
 | Photon P2P (Seattle–Los Angeles) | ~25-30ms |
 | Photon P2P (Los Angeles–New York) | ~50-60ms |
 | Signal/WhatsApp | 100-300ms (server relay) |
