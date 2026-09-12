@@ -2988,7 +2988,7 @@ impl PhotonApp {
                                     .map(|m| (m.timestamp, m.is_outgoing))
                                     .filter(|&(ts, out)| self.strip_dismissed != Some((ci, ts, out)))
                             });
-                        let detail_h = line_h * 2.0; // two strip lines BELOW the media: the action row (reply · edit · copy · resend · delete) and the reaction row (ranked glyphs + the circled "+"). The META section lives ABOVE the media now (Nick 2026-09-12, the four-section block) and wraps, so its height is dynamic (self.sel_meta_h).
+                        let detail_h = line_h * 2.5; // two strip lines BELOW the media, padded: the action row (reply · edit · copy · resend · delete) and the reaction row (ranked glyphs + the circled "+"). The META section lives ABOVE the media now (Nick 2026-09-12, the four-section block) and wraps, so its height is dynamic (self.sel_meta_h).
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| {
                             visible
                                 .iter()
@@ -3178,7 +3178,7 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            let block_extra = (lines.len() as f32 - 1.0) * intra
+                            let block_extra = (lines.len().max(1) as f32 - 1.0) * intra
                                 + if reply_target.is_some() { intra } else { 0.0 }
                                 + react_off
                                 + wave_band_h
@@ -3331,22 +3331,22 @@ impl PhotonApp {
                                 self.sel_meta_h = meta_h;
                                 sel_meta_extra = meta_h;
                                 // The meta stacks DOWN from the block's top: above the message body and its media band.
-                                let meta_bottom = y - detail_h - block_extra - msg_size * 0.9;
+                                let meta_bottom = y - detail_h - block_extra - msg_size * 1.1;
                                 for (k, ml) in meta_lines.iter().enumerate() {
                                     let ly = meta_bottom - (meta_lines.len() - 1 - k) as f32 * meta_lh;
                                     ctx.text.draw_text_left(&mut canvas, ml, pad_x, ly, &detail_style, Some(list_clip), None);
                                 }
                                 // SELECTED HIGHLIGHT, painted after the meta so the veil is uniform under topmost-first: the META section wears YELLOW on a development build (a layout debugging aid — the section boundary is visible) and the rail's white on release; the media + strip below always wear the rail's white.
-                                let hl_meta_top = (meta_bottom - (meta_lines.len() as f32 - 0.2) * meta_lh).max(list_top);
-                                let hl_media_top = (meta_bottom + meta_lh * 0.4).max(list_top);
-                                let hl_bot = (y + line_h * 0.5).min(list_bottom);
+                                let hl_meta_top = (meta_bottom - (meta_lines.len() as f32 - 0.4) * meta_lh - meta_lh * 0.2).max(list_top);
+                                let hl_media_top = (meta_bottom + meta_lh * 0.6).max(list_top);
+                                let hl_bot = (y + line_h * 0.7).min(list_bottom);
                                 // Development builds tint each SECTION its own colour so the boundaries are visible while the layout iterates (Nick 2026-09-12): meta yellow, media white, actions cyan, reactions red. Release wears the rail's white throughout.
                                 let dev = cfg!(feature = "development");
                                 let meta_tint = if dev { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
                                 let action_tint = if dev { fluor::theme::fmt(0x20_FF_00_00) } else { theme::RAIL_ACTIVE_COLOUR };
                                 let react_tint = if dev { fluor::theme::fmt(0x20_00_FF_FF) } else { theme::RAIL_ACTIVE_COLOUR };
-                                let hl_actions_top = (y - line_h * 1.5).max(list_top);
-                                let hl_react_top = (y - line_h * 0.5).max(list_top);
+                                let hl_actions_top = (y - line_h * 2.0).max(list_top);
+                                let hl_react_top = (y - line_h * 0.7).max(list_top);
                                 if hl_media_top > hl_meta_top {
                                     paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, (hl_media_top - hl_meta_top) as isize, meta_tint, Some(list_clip), None);
                                 }
@@ -3457,12 +3457,12 @@ impl PhotonApp {
                                 for (label, colour, hid) in pills {
                                     let style = TextStyle::new(detail_size, colour).weight(600).font("Oxanium");
                                     let w = ctx.text.measure_text(&label, &style) + pad_hit * 1.4;
-                                    let rect = fluor::region::Region::new(px_cursor, y - line_h - pill_h * 0.5, w, pill_h);
+                                    let rect = fluor::region::Region::new(px_cursor, y - line_h * 1.4 - pill_h * 0.5, w, pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
                                         let fill = Some((theme::near_black(colour, 0.15), theme::near_black(colour, 0.3)));
                                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
                                     }
-                                    px_cursor += w + pad_hit * 0.6;
+                                    px_cursor += w + pad_hit;
                                 }
                                 // Bottom strip line: the REACTION ROW — as many ranked glyphs as fit, our current one highlighted green (tap it again to retract; tap another to replace), then the circled "+" for anything the keyboard can type. Drawn order is snapshotted so the tap handler maps slot → glyph even as the ranking shifts.
                                 let ours_now: Option<String> = raw_msgs
@@ -3494,13 +3494,13 @@ impl PhotonApp {
                                     {
                                         break;
                                     }
-                                    let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.7, w, react_pill_h);
+                                    let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.75, w, react_pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
                                         let fill = Some((theme::near_black(verb, 0.15), theme::near_black(verb, 0.3)));
                                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base.wrapping_add(self.react_strip_glyphs.len() as HitId), ctx.pressed_hit, true, fill, "Oxanium");
                                     }
                                     self.react_strip_glyphs.push(g.clone());
-                                    rx_cursor += w + pad_hit * 0.6;
+                                    rx_cursor += w + pad_hit;
                                 }
                                 // The circled "+": react with ANYTHING — arms the compose box, the system keyboard is the picker. Dim ring, bright glyph — a dark button like its siblings.
                                 let plus_cx = rx_cursor + plus_r;
