@@ -209,7 +209,7 @@ windows = { version = "0.58", features = [
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.21"
-ndk = { version = "0.9.0", features = ["api-level-26", "audio"] }
+ndk = { version = "0.9.0", features = ["api-level-28", "audio"] }
 ndk-sys = "0.6.0"
 # fluor's Android backend — ANativeWindow surface + JNI shims + Choreographer-driven render scheduling. Same `PhotonApp` FluorApp impl runs on Android (via AndroidShell) and desktop (via host-winit's DesktopShell). winit no longer appears in the Android dep graph — fluor's `WakeSender` trait abstracts cross-thread wake-up (which previously needed `winit::event_loop::EventLoopProxy<UserEvent>` in the trait signature), so the platform-data-types-only `winit` dep + the `android-activity` compile-glue dep + the `android_main` linker shim all retire.
 fluor = { path = "../fluor", default-features = false, features = ["host-android", "emoji"] }
