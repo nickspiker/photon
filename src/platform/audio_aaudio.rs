@@ -51,9 +51,11 @@ fn frame_time(stream: &AudioStream, pos: i64) -> Option<i64> {
 
 /// Build one stream. AAudio's DEFAULTS are the attributes we want — MEDIA usage rides the fast mixer (the vendor voice pipeline behind VOICE_COMMUNICATION was the 80 ms floor, 2026-08-19) and the VOICE_RECOGNITION preset is the mic without the vendor NS/AGC/AEC chain — and the explicit setters are API 28 while minSdk is 26, so nothing is set. The callback box is consumed by the builder, so a failed open needs a fresh one from the factory.
 fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::AudioStreamDataCallback) -> Result<AudioStream, String> {
+    // VOICE USAGE ON THE OUTPUT (Nick 2026-09-12, "exclusive earpiece without losing latency"): the earpiece route (Kotlin's setCommunicationDevice) attaches to voice-usage streams, and usage is only a policy label — sharing mode, performance mode and burst size are set here and untouched by it. The August 80 ms floor came from the IN_COMMUNICATION audio MODE waking the vendor voice pipeline; the mode is never entered. The "AAudio out up" line is the proof: Exclusive/LowLatency at 4 ms, or it isn't.
     let b = AudioStreamBuilder::new()
         .map_err(|e| format!("builder: {e:?}"))?
         .direction(direction)
+        .usage(if matches!(direction, AudioDirection::Output) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
         .sharing_mode(sharing)
         .performance_mode(AudioPerformanceMode::LowLatency)
         .sample_rate(SAMPLE_RATE)

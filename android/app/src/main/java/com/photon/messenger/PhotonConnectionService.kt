@@ -204,16 +204,15 @@ class PhotonConnectionService : Service() {
         fun pushVolume() {
             try {
                 // STREAM_MUSIC, not STREAM_VOICE_CALL (field 2026-09-02, Nick's rocker-indicator catch): our render track is USAGE_MEDIA (the latency-first 2026-08-19 trade — the vendor voice pipeline cost an 80ms buffer floor), so the MUSIC stream is the knob that actually governs our loudness. Mirroring the voice-call stream normalized the echo profile (g_norm = g / vol_lin) by a slider that does NOTHING to our audio — media volume changes didn't rescale the prediction, voice-call changes rescaled it for no physical reason.
+                // While the wave rides the earpiece the rocker governs the VOICE stream at the earpiece's own curve; otherwise the media stream at the loudspeaker's, as before (2026-09-12).
+                val stream = if (earpieceRouted) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+                val device = if (earpieceRouted) android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE else android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
                 val db = if (Build.VERSION.SDK_INT >= 28) {
-                    am.getStreamVolumeDb(
-                        android.media.AudioManager.STREAM_MUSIC,
-                        am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC),
-                        android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-                    )
+                    am.getStreamVolumeDb(stream, am.getStreamVolume(stream), device)
                 } else {
                     // Pre-28 fallback: linear index ratio → rough dB (20·log10), floor -60.
-                    val v = am.getStreamVolume(android.media.AudioManager.STREAM_MUSIC).toFloat()
-                    val max = am.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC).toFloat().coerceAtLeast(1f)
+                    val v = am.getStreamVolume(stream).toFloat()
+                    val max = am.getStreamMaxVolume(stream).toFloat().coerceAtLeast(1f)
                     if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
                 }
                 nativeVolumeDb(db)
@@ -894,9 +893,34 @@ class PhotonConnectionService : Service() {
     }
 
     /** Called from Rust (call_service_void) as a call goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
+    // THE EARPIECE, WITHOUT THE VOICE PIPELINE (Nick 2026-09-12): setCommunicationDevice (API 31) routes this app's voice-usage streams to the device named, with no audio-mode change — the streams stay on the fast path. Wired/BT stays wherever the OS put it; only the built-in speaker becomes the earpiece. Cleared at hangup so media plays from the loudspeaker again.
+    @Volatile var earpieceRouted = false
+    private fun routeEarpiece(on: Boolean) {
+        if (Build.VERSION.SDK_INT < 31) return
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        try {
+            if (on) {
+                val current = am.communicationDevice
+                if (current != null && current.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER && current.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) {
+                    PhotonLog.i(TAG, "callAudio: route stays on ${current.productName} (type ${current.type})")
+                    return
+                }
+                val ear = am.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                if (ear == null) { PhotonLog.i(TAG, "callAudio: no earpiece on this device — loudspeaker"); return }
+                earpieceRouted = am.setCommunicationDevice(ear)
+                PhotonLog.i(TAG, "callAudio: earpiece route ${if (earpieceRouted) "set" else "REFUSED"}")
+            } else {
+                am.clearCommunicationDevice()
+                earpieceRouted = false
+            }
+        } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route change failed", e) }
+        pushVolume()
+    }
+
     fun startCallAudio() {
         if (callAudioRunning) return
         callAudioRunning = true
+        routeEarpiece(true)
         acquireWaveWifiLock()
         try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
@@ -913,6 +937,7 @@ class PhotonConnectionService : Service() {
     /** Called from Rust at hangup, after its streams are closed. */
     fun stopCallAudio() {
         callAudioRunning = false
+        routeEarpiece(false)
         releaseWaveWifiLock()
         try { proximityLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
         // The call surface no longer needs to sit over the keyguard.

@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waves on Android play through the earpiece, the way a phone call does, while keeping the same low-latency audio path; the volume rocker adjusts the earpiece during a wave and media the rest of the time.
 ## v94
 
 - Presence pings to a friend with several devices are now booked against the device that owns each address, so a good answer from one of their other devices no longer counts as a mismatch and gets re-asked forever.
