@@ -3341,14 +3341,21 @@ impl PhotonApp {
                                 }
                                 // SELECTED HIGHLIGHT, painted after the meta so the veil is uniform under topmost-first: the META section wears YELLOW on a development build (a layout debugging aid — the section boundary is visible) and the rail's white on release; the media + strip below always wear the rail's white.
                                 let hl_meta_top = (meta_bottom - (meta_lines.len() as f32 - 0.4) * meta_lh - meta_lh * 0.2).max(list_top);
-                                let hl_media_top = (meta_bottom + meta_lh * 0.6).max(list_top);
+                                // On a media row the yellow ends exactly where the band begins and the cyan begins exactly where it ends (Nick 2026-09-12: max power must touch both).
+                                let band_pad_v = msg_size * 0.1;
+                                let media_edges = if audio_band_h > 0.0 {
+                                    Some((y - detail_h - react_off - audio_band_h + band_pad_v, y - detail_h - react_off - band_pad_v))
+                                } else {
+                                    None
+                                };
+                                let hl_media_top = media_edges.map(|(t, _)| t).unwrap_or(meta_bottom + meta_lh * 0.6).max(list_top);
                                 let hl_bot = (y + line_h * 0.7).min(list_bottom);
                                 // Development builds tint each SECTION its own colour so the boundaries are visible while the layout iterates (Nick 2026-09-12): meta yellow, media white, actions cyan, reactions red. Release wears the rail's white throughout.
                                 let dev = cfg!(feature = "development");
                                 let meta_tint = if dev { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
                                 let action_tint = if dev { fluor::theme::fmt(0x20_FF_00_00) } else { theme::RAIL_ACTIVE_COLOUR };
                                 let react_tint = if dev { fluor::theme::fmt(0x20_00_FF_FF) } else { theme::RAIL_ACTIVE_COLOUR };
-                                let hl_actions_top = (y - line_h * 2.0).max(list_top);
+                                let hl_actions_top = media_edges.map(|(_, b)| b).unwrap_or(y - line_h * 2.0).max(list_top);
                                 let hl_react_top = (y - line_h * 0.7).max(list_top);
                                 if hl_media_top > hl_meta_top {
                                     paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, (hl_media_top - hl_meta_top) as isize, meta_tint, Some(list_clip), None);
@@ -3858,7 +3865,7 @@ impl PhotonApp {
                                     }
                                     if let Some(Some(envs)) = self.wave_env.get(&ahash).cloned() {
                                         // An audio row has no body text (the waveform IS the row), so the band anchors straight off the baseline with symmetric insets — the old text-row offset pushed it out of its box (Nick 2026-09-12).
-                                        let pad_v = msg_size * 0.35;
+                                        let pad_v = msg_size * 0.1;
                                         let band_bot = y - react_off - pad_v;
                                         let band_top = y - react_off - audio_band_h + pad_v;
                                         let (wx0, wx1) = (pad_x, buf_w as f32 - pad_x);
@@ -3884,12 +3891,14 @@ impl PhotonApp {
                                                 continue;
                                             }
                                             let key = (ahash, chn + 4, cols, rows);
+                                            // A song's height reference is its OWN peak column (full power = full band); the absolute wave reference told us only that masters are loud.
+                                            let ref_amp = (e.peak_q48[0] as f32 * (1.0 / (1u64 << 48) as f32)).sqrt().max(1e-6);
                                             let bars: std::rc::Rc<(Vec<f32>, Vec<u32>)> = {
                                                 let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                 match hit {
                                                     Some(a) => a,
                                                     None => {
-                                                        let a = std::rc::Rc::new((wave_fold_coverage(e, cols, rows, WAVE_FULL_HEIGHT_AMP), wave_fold_colours(e, cols)));
+                                                        let a = std::rc::Rc::new((wave_fold_coverage(e, cols, rows, ref_amp), wave_fold_colours(e, cols)));
                                                         let mut cache = self.wave_fold_cache.borrow_mut();
                                                         if cache.len() >= 128 {
                                                             cache.clear();
@@ -6396,7 +6405,7 @@ pub(super) fn wave_fold_coverage(e: &crate::call::wave_env::WaveEnv, cols: usize
     let lsb0 = e.lsb(0);
     let mut h_lut = [0f32; 256];
     for (b, h) in h_lut.iter_mut().enumerate() {
-        *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32 * 0.92;
+        *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32;
     }
     let bins = e.bins.max(1);
     let mut cov = vec![0f32; cols * rows.max(1)];
