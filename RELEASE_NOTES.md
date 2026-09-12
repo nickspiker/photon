@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v94
+
 - Presence pings to a friend with several devices are now booked against the device that owns each address, so a good answer from one of their other devices no longer counts as a mismatch and gets re-asked forever.
 - Waveforms are drawn the way Lumis draws its histogram: folded at four sub-columns per pixel and lit by coverage at the tip, so the bars are anti-aliased in both directions instead of stair-stepped.
 - The option buttons under a message are now near-black, each with a hint of its verb's colour.
