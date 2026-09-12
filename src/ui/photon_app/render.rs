@@ -3,6 +3,9 @@
 use super::*;
 
 /// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10): the row's micro thumb, or the decoded preview blob (twice as tall).
+/// The waveform's horizontal oversample: the envelope folds to this many sub-columns per screen column, and a column's tip is lit by their coverage (the Lumis histogram's method, 2026-09-12).
+pub(super) const WAVE_OVER: usize = 4;
+
 pub(super) const IMG_PREVIEW_LINES: usize = 4;
 pub(super) const IMG_PREVIEW_LINES_FULL: usize = 8;
 
@@ -3402,7 +3405,7 @@ impl PhotonApp {
                                     let w = ctx.text.measure_text(&label, &style) + pad_hit * 1.4;
                                     let rect = fluor::region::Region::new(px_cursor, y - line_h - pill_h * 0.5, w, pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
-                                        let fill = Some((theme::dim_colour(colour), colour));
+                                        let fill = Some((theme::near_black(colour, 0.15), theme::near_black(colour, 0.3)));
                                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
                                     }
                                     px_cursor += w + pad_hit * 0.6;
@@ -3676,7 +3679,7 @@ impl PhotonApp {
                                                                                 l * l
                                                                             })
                                                                             .collect();
-                                                                        crate::call::record::resample_linear(&pow, cols).iter().map(|p| p.max(0.0).sqrt()).collect()
+                                                                        crate::call::record::resample_linear(&pow, cols * WAVE_OVER).iter().map(|p| p.max(0.0).sqrt()).collect()
                                                                     })
                                                                     .collect();
                                                                 // HEIGHT IS AMPLITUDE AGAINST A FIXED REFERENCE (Nick 2026-09-11: "more direct to power", "not normalized per channel"): the column's RMS amplitude, linear, full scale 1.0, with −12 dBFS as full height and clipping above — a quiet talker draws short bars, a loud one tall, and two waves are comparable.
@@ -3684,7 +3687,8 @@ impl PhotonApp {
                                                                 // COLOUR IS THE SPECTRAL BALANCE, THE AGB WAY (Nick 2026-09-11: "geometric mean, that's how the AGB colour model works — you get the correct colour and keep the brightness consistent"): each band's power over the geometric mean of the three, then the largest ratio pins the brightest channel at full — hue from the ratios, brightness constant, a quiet column as vivid as a loud one. Red is 188–750 Hz, green 750 Hz–3 kHz, blue 3–24 kHz.
                                                                 let colours: Vec<u32> = (0..cols)
                                                                     .map(|px| {
-                                                                        let p = |c: usize| (folded[c][px] * folded[c][px]).max(1e-12);
+                                                                        // The column's band power is the mean over its sub-columns (power adds; the geometric mean below is of the three bands, not of the sub-columns).
+                                                                        let p = |c: usize| ((0..WAVE_OVER).map(|j| folded[c][px * WAVE_OVER + j] * folded[c][px * WAVE_OVER + j]).sum::<f32>() / WAVE_OVER as f32).max(1e-12);
                                                                         let g = (p(1) * p(2) * p(3)).cbrt();
                                                                         let r = [p(1) / g, p(2) / g, p(3) / g];
                                                                         let top = r[0].max(r[1]).max(r[2]).max(1e-12);
@@ -3702,11 +3706,15 @@ impl PhotonApp {
                                                             }
                                                         }
                                                     };
-                                                    let (amps_col, colours) = &*bars;
+                                                    let (amps_over, colours) = &*bars;
                                                     const WAVE_FULL_HEIGHT_AMP: f32 = 0.25; // −12 dBFS RMS fills the band; louder clips
                                                     for px in 0..cols {
                                                         let lit = held && frac.is_some() && px < played_cols;
-                                                        let hgt = (amps_col[px] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92;
+                                                        // THE LUMIS DOWNSAMPLE (Nick 2026-09-12, "look at how Lumis draws the histogram"): the bar is folded at WAVE_OVER sub-columns; the rows every sub-column covers are one solid run, and each row at the tip is lit by its coverage across the sub-columns, square-rooted for the gamma of the display — anti-aliased in both axes, still brighten-only (one write per pixel, the colour scaled, no alpha).
+                                                        let heights: [f32; WAVE_OVER] = std::array::from_fn(|j| (amps_over[px * WAVE_OVER + j] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92);
+                                                        let h_min = heights.iter().cloned().fold(f32::MAX, f32::min);
+                                                        let h_max = heights.iter().cloned().fold(f32::MIN, f32::max);
+                                                        let hgt = h_min;
                                                         let base_c = colours[px];
                                                         // BRIGHTEN ONLY (Nick 2026-09-10, "weird double drawing… should be brighten only"): every bar is solid — unplayed = the same colour at half brightness (darkness-domain arithmetic, α untouched), played = full; heights are whole pixels.
                                                         let c = if lit {
@@ -3716,7 +3724,7 @@ impl PhotonApp {
                                                             let darker = |dark: u32| (255 + dark) / 2;
                                                             a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
                                                         };
-                                                        let full = hgt.round();
+                                                        let full = hgt.floor();
                                                         let x = (wx0 + px as f32) as isize;
                                                         // Them (ch1) above the centreline, us (ch0) below it.
                                                         let (ty, th) = if ch == 1 { (bcy - full, full) } else { (bcy, full) };
@@ -3724,6 +3732,21 @@ impl PhotonApp {
                                                         let run_bot = (ty + th).min(list_bottom);
                                                         if run_bot > run_top && th >= 1.0 {
                                                             paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, Some(list_clip), None);
+                                                        }
+                                                        // The tip rows: from the shortest sub-column's height to the tallest's, each row lit by its coverage.
+                                                        let scale = |colour: u32, f: f32| -> u32 {
+                                                            let g = f.clamp(0.0, 1.0).sqrt();
+                                                            let ch = |shift: u32| ((((colour >> shift) & 0xFF) as f32 * g).round() as u32) << shift;
+                                                            (colour & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
+                                                        };
+                                                        let mut r = full;
+                                                        while r < h_max.ceil() {
+                                                            let cov = heights.iter().map(|h| (h - r).clamp(0.0, 1.0)).sum::<f32>() / WAVE_OVER as f32;
+                                                            let py = if ch == 1 { bcy - r - 1.0 } else { bcy + r };
+                                                            if cov > 0.0 && py >= list_top && py < list_bottom {
+                                                                paint::fill_rect(&mut canvas, x, py as isize, 1, 1, scale(c, cov), Some(list_clip), None);
+                                                            }
+                                                            r += 1.0;
                                                         }
                                                     }
                                                 }

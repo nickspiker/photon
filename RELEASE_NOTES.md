@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waveforms are drawn the way Lumis draws its histogram: folded at four sub-columns per pixel and lit by coverage at the tip, so the bars are anti-aliased in both directions instead of stair-stepped.
+- The option buttons under a message are now near-black, each with a hint of its verb's colour.
 - The "photon isn't responding" prompt at launch is gone: the vault now opens on a worker thread while the launch screen stays responsive, instead of holding the main thread for several seconds as the vault grew with kept waves.
 - The call screen now repaints once a second while a wave runs, so the timer, the live stats and the path ring keep up; the ring also reads cyan on the same network as it should, where it stayed green before.
 - The stream filter button no longer hides behind message rows.

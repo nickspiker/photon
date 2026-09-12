@@ -154,6 +154,12 @@ pub fn rgb_colour(r: u8, g: u8, b: u8) -> u32 {
     c(((r as u32) << 16) | ((g as u32) << 8) | b as u32)
 }
 
+/// The colour's hue at a fraction of its brightness, alpha kept — a NEAR-BLACK button fill that still says which verb it is (Nick 2026-09-12: "buttons need to be very dark colours, almost black"). Scales the display bytes, so `keep` is in gamma space: 0.15 reads as a few percent of the light.
+pub fn near_black(c: u32, keep: f32) -> u32 {
+    let ch = |shift: u32| ((((c >> shift) & 0xFF) as f32 * keep).round().clamp(0.0, 255.0) as u32) << shift;
+    (c & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
+}
+
 pub fn dim_colour(c: u32) -> u32 {
     let a = ((c >> 24) & 0xFF) >> 2;
     (c & 0x00FF_FFFF) | (a << 24)
