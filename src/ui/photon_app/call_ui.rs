@@ -1456,14 +1456,23 @@ impl PhotonApp {
             }
         }
         let any = !got.is_empty();
-        for (hash, env) in got {
+        for (hash, envs) in got {
             self.wave_env_pending.remove(&hash);
-            // A miss caches the empty marker so the render's cached-is-none gate goes quiet instead of respawning the loader every frame.
-            let (nchan, e) = env.unwrap_or((0, Vec::new()));
-            self.wave_env.insert(hash, (nchan, std::sync::Arc::new(e)));
+            // A miss caches None so the render's contains_key gate goes quiet instead of respawning the loader every frame.
+            self.wave_env.insert(hash, envs.map(|v| v.into_iter().map(std::sync::Arc::new).collect()));
             self.scene_dirty = true;
         }
         any
+    }
+
+    /// Fetch far-party env blobs the render saw but this device doesn't hold — once per hash per session; the blob is small and the fetch rides the ordinary attachment machinery.
+    pub(super) fn drain_wave_env_wants(&mut self) {
+        let wants = std::mem::take(&mut self.wave_env_wants);
+        for (ci, h) in wants {
+            if self.attach_auto_fetched.insert(h) {
+                self.attach_fetch(ci, &h);
+            }
+        }
     }
 
     /// Drain finished keep-transcodes and mint the fleet-internal `call.audio` attachment row on the UI thread (the mint needs `&mut self`, so results are collected before the row work — same borrow dance as `drain_update_events`). Called from `tick`.
@@ -1493,9 +1502,23 @@ impl PhotonApp {
                             .with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
                         row.notified = true;
                         row.delivered = true;
-                        row.envelope = kept.thumb.clone();
                         // The wave row's seconds refine to the recording's length (merge = max); push the upgraded copy too.
                         let mut pushed = vec![row.clone()];
+                        // OUR wave.env (the 3-channel u8 tensor, docs in call/wave_env.rs): its own row at +3 referencing the wave row, sent on the FRIEND chain (this is the exchange — their card colours from our clean mic, ours from theirs), blob pushed ahead of the audio. A short wave minted none.
+                        if let Some((eh, ebytes)) = kept.env.clone() {
+                            let econtent = crate::types::attachment_content(&eh, crate::call::wave_env::WAVE_ENV_NAME, ebytes.len() as u64);
+                            let ets = r.offer_osc + 3;
+                            if self.chain_transmit(ci, &econtent, ets, Some((crate::types::RefKind::Wave, r.offer_osc + 1)), None) {
+                                let mut erow = ChatMessage::new_with_timestamp(econtent, true, ets).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
+                                erow.notified = true;
+                                erow.delivered = true;
+                                pushed.push(erow.clone());
+                                if let Some(conv) = self.conv_mut_of(ci) {
+                                    conv.insert_message_sorted(erow);
+                                }
+                                self.send_attach_blob(ci, &eh);
+                            }
+                        }
                         if let Some(conv) = self.conv_mut_of(ci) {
                             conv.insert_message_sorted(row.clone());
                             if let Some(w) = conv.messages.iter_mut().find(|m| m.timestamp == r.offer_osc + 1 && m.wave.is_some()) {

@@ -40,6 +40,10 @@ fn c(hex: u32) -> u32 {
 
 /// Error-state message colour for the Launch screen's error slot — bright red, fully opaque.
 pub static ERROR_TEXT_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_FF_50_50));
+/// The fullscreen viewer/reader backdrop — near-black, authored VSF like everything else (it was a raw darkness literal bypassing the palette, one of the 2026-09-12 colour crimes).
+pub static VIEWER_BG_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_0B_0B_0B));
+/// The link-consent panel backdrop — dark blue-grey, formerly the raw darkness literal 0xE8E2D8.
+pub static CONSENT_BG_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_17_1D_27));
 
 /// Colour for the dozenal version glyphs at the bottom of the screen: pure white (darkness 0 across all channels), α = 32 = 1/8 opacity. `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
 pub const VERSION_COLOUR: u32 = 0x20_00_00_00;

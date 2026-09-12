@@ -2024,14 +2024,16 @@ pub struct PhotonApp {
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
     /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `call.audio` row mint. Lazily created on first keep (see `call_keep_sender`).
     call_keep_rx: Option<std::sync::mpsc::Receiver<call_ui::CallKeepResult>>,
-    /// Wave card envelopes read from held blobs (header only, off-thread), by recording hash: (nchan, pyramid bytes). A load that found no envelope caches (0, empty) so the miss is an edge, not a respawn-every-frame loop. Session cache.
-    wave_env: std::collections::HashMap<[u8; 32], (u8, std::sync::Arc<Vec<u8>>)>,
+    /// Wave-card envelopes by SOURCE hash: an env blob's hash maps to a one-entry vec (that party's tensor); a recording's hash maps to the audio-derived per-channel vec. None = the load/parse failed (a durable miss, not a respawn loop). Session cache.
+    wave_env: std::collections::HashMap<[u8; 32], Option<Vec<std::sync::Arc<crate::call::wave_env::WaveEnv>>>>,
     /// Loads in flight (one per hash).
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
-    /// Finished wave-card columns per (recording, preview width, envelope length, channel): per-column (height stops, base colour) — the render reads them every frame, folds and colours them once (render.rs wave card). Cleared wholesale past a small cap.
-    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
-    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<(u8, Vec<u8>)>)>>,
-    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<(u8, Vec<u8>)>)>>,
+    /// Far-party env blobs seen but not held: (ci, hash) queued by the render, fetched once per session by drain_wave_env_wants.
+    wave_env_wants: Vec<(usize, [u8; 32])>,
+    /// Finished wave-card columns per (source hash, channel-in-source, width): per-column RMS amplitude — the cumulative stack runs once, the per-frame loop is a height map and fill_rects. Cleared wholesale past a small cap.
+    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize), std::rc::Rc<Vec<f32>>>>,
+    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,
+    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,
     call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
     /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
     update_release: ChannelCheck,
@@ -2576,6 +2578,7 @@ impl PhotonApp {
             update_tx: None,
             call_keep_rx: None,
             wave_env: std::collections::HashMap::new(),
+            wave_env_wants: Vec::new(),
             wave_fold_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             wave_env_pending: std::collections::HashSet::new(),
             wave_env_tx: None,

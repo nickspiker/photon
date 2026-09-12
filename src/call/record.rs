@@ -20,12 +20,14 @@ const SLOTS_PER_SEC: i64 = 200;
 pub const CONTAINER_MAGIC_V6: &[u8; 8] = b"PHCALL6\0";
 /// Per-channel archive bitrate: CELT fullband is transparent for speech well below this; a two-party hour is ~115 MB.
 const ARCHIVE_KBPS: i32 = 128_000;
-/// Envelope components per bucket per channel: [amplitude, red, green, blue] — amplitude is the plain RMS; the colour bands are the top three detail levels of the decimated binary sum tree (Nick 2026-09-11: "binary trees"): blue = pair difference `x[n] − x[n−1]` (one value per 2 samples, highest octave), green = difference of adjacent pair-sums ÷ 2 (per 4 samples), red = difference of adjacent 4-sample sums ÷ 4 (per 8 samples). Adds and shifts, no FFT. All four in eighth-stops below full scale.
-pub const ENV_COMPONENTS: usize = 4;
+/// Envelope components per bin per channel (Nick 2026-09-12, "three pyramids"): [0] power `x²`, [1] first-difference detail power `(n₀−n₁)²`, [2] second-level Haar detail power `((n₀+n₁)−(n₂+n₃))²`. Three channels of a u8 normalized tensor; how they colour the card is worked out downstream, once the aliasing is right.
+pub const ENV_COMPONENTS: usize = 3;
 /// Envelope pyramid capacity (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2"): the working buffer is this many bins per channel, and a recording stores whatever count it ends on (0..=ENV_CAP), so `env_len` is genuinely variable now.
 pub const ENV_CAP: usize = 1 << 17;
-/// Starting samples-per-bin exponent: 2^10 = 1024 samples = 21.3 ms — at least one full pitch period down to ~50 Hz, so every bin is a true envelope value from birth (sub-period bins were the chunking). The one tunable.
-const ENV_S0_LOG2: u32 = 10;
+/// Starting samples-per-bin exponent: ONE sample — every completed wave of at least [`ENV_MIN_SHARE_SAMPLES`] lands between 2^16 and 2^17 bins after the folds. Sub-pitch ripple in the stored bins is fine now: the render's cumulative stack averages ~a gross of bins into every pixel column, so the ripple dies at display instead of at capture.
+const ENV_S0_LOG2: u32 = 0;
+/// A wave shorter than this many samples (~1.4 s) mints no wave.env blob — cheaper for the receiver to derive the envelope from the audio it fetches anyway.
+pub const ENV_MIN_SHARE_SAMPLES: usize = 1 << 16;
 
 /// Resample per-slot LINEAR values to `out_len` buckets: a box mean when folding down, linear interpolation between slot centres when stretching up — the "bilinear" half of the pipeline, on the recording's own grid.
 pub fn resample_linear(slots: &[f32], out_len: usize) -> Vec<f32> {
@@ -60,63 +62,13 @@ pub fn resample_linear(slots: &[f32], out_len: usize) -> Vec<f32> {
         .collect()
 }
 
-/// Linear RMS (0..32768) → eighth-stops below full scale, the envelope byte.
-fn lin_to_stops_u8(rms: f32) -> u8 {
-    if rms < 1.0 {
-        return 255;
-    }
-    ((32768.0 / rms).log2() * 8.0).round().clamp(0.0, 255.0) as u8
-}
-
-/// The envelope straight from a container's header — no audio decoded, no decoder built: (nchan, env_len, bytes). The wave card's loader.
-pub fn envelope_of_blob(bytes: &[u8]) -> Option<(usize, usize, Vec<u8>)> {
-    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC_V6 {
-        return None;
-    }
-    let nchan = bytes[8] as usize;
-    let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
-    let env_end = 8 + 22 + nchan * env_len * ENV_COMPONENTS;
-    if nchan == 0 || bytes.len() < env_end {
-        return None;
-    }
-    Some((nchan, env_len, bytes[8 + 22..env_end].to_vec()))
-}
-/// Header byte kept for the format's shape: 0 = the pyramid grid (variable `env_len`, every recording since 2026-09-11); the old per-second cadence is gone.
+/// Header byte kept for the format's shape: 0 = no embedded envelope (the wave.env exchange, 2026-09-12); the old per-second cadence is gone.
 pub const ENV_PER_SEC: usize = 0;
-/// Fold a fine envelope down to the row thumbnail: one gross of buckets per channel, folded in the POWER domain (square → box mean → root) so each thumb bucket is the true RMS over its span, then stops.
-pub fn thumbnail(lin: &[Vec<f32>], nchan: usize) -> Vec<u8> {
-    let nb = crate::types::WAVE_THUMB_BUCKETS;
-    let k = ENV_COMPONENTS;
-    let mut out = vec![255u8; nchan * nb * k];
-    for ch in 0..nchan {
-        for c in 0..k {
-            let pow: Vec<f32> = lin[ch * k + c].iter().map(|v| v * v).collect();
-            let folded = resample_linear(&pow, nb);
-            for b in 0..nb {
-                out[(ch * nb + b) * k + c] = lin_to_stops_u8(folded[b].max(0.0).sqrt());
-            }
-        }
-    }
-    out
-}
 
-/// Per-channel state for the decimated binary sum tree: the top three detail levels are the colour bands (Nick 2026-09-11: blue = pair difference, green = difference of adjacent pair-sums, red = the same fold on 4-sample sums; binary trees).
-/// Each level stashes its left sibling and emits on the right one, so blue yields one value per 2 samples, green per 4, red per 8 — non-overlapping, exact, and every band lands on the same ≤2^16 amplitude scale via the mean-difference shifts.
+/// Per-channel state for the two decimated detail streams: the previous sample (for `n₀−n₁` at every odd index) and the previous pair-sum (for `(n₀+n₁)−(n₂+n₃)` at every fourth).
 struct HaarState {
-    /// The left sibling's sum at each level, levels 1..=HAAR_LEVELS (index 0 = the pair level).
-    left: [i64; HAAR_LEVELS],
-}
-
-/// Decimated Haar levels tracked per channel; level L's detail covers fs/2^L .. fs/2^(L-1), so at 48 kHz the seven levels span 188 Hz to 24 kHz.
-const HAAR_LEVELS: usize = 7;
-
-/// Which colour component a level's detail lands in (Nick 2026-09-11, the bands moved to where voice lives): blue = levels 1..3 (3–24 kHz, brightness and sibilance), green = levels 4..5 (750 Hz–3 kHz, the formants), red = levels 6..7 (188–750 Hz, the fundamental and warmth). Component 1 is red, 2 green, 3 blue.
-const fn band_of_level(level: usize) -> usize {
-    match level {
-        1..=3 => 3,
-        4..=5 => 2,
-        _ => 1,
-    }
+    s1: i64,
+    p2: i64,
 }
 
 /// The streaming envelope accumulator (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2 to keep the total size under 2^17").
@@ -145,7 +97,7 @@ impl EnvPyramid {
             s_log2: s0_log2,
             sumsq: vec![0u64; nchan * cap * ENV_COMPONENTS],
             counts: vec![0u64; nchan * cap * ENV_COMPONENTS],
-            haar: (0..nchan).map(|_| HaarState { left: [0; HAAR_LEVELS] }).collect(),
+            haar: (0..nchan).map(|_| HaarState { s1: 0, p2: 0 }).collect(),
             total_samples: 0,
         }
     }
@@ -181,47 +133,72 @@ impl EnvPyramid {
         let xi = x as i64;
         self.sumsq[base] += (xi * xi) as u64;
         self.counts[base] += 1;
-        // The decimated tree, level by level: each level stashes its left sibling's sum and emits on the right one — the detail (scaled back to sample amplitude by 2^(L-1)) squares into its band, the pair-sum climbs to the next level.
+        // The two detail streams, raw Haar (no mean scaling — the per-channel peak normalization at finish washes any constant factor out): d1 on every odd sample, d2 on every fourth.
         let h = &mut self.haar[ch];
-        let mut v = xi;
-        for l in 0..HAAR_LEVELS {
-            if (abs_idx >> l) & 1 == 0 {
-                h.left[l] = v;
-                return;
-            }
-            let detail = (v - h.left[l]) >> l;
-            let sum = v + h.left[l];
-            let band = band_of_level(l + 1);
-            self.sumsq[base + band] += (detail * detail) as u64;
-            self.counts[base + band] += 1;
-            v = sum;
+        if abs_idx & 1 == 0 {
+            h.s1 = xi;
+            return;
         }
+        let d1 = h.s1 - xi;
+        self.sumsq[base + 1] += (d1 * d1) as u64;
+        self.counts[base + 1] += 1;
+        let pair = h.s1 + xi;
+        if (abs_idx >> 1) & 1 == 0 {
+            h.p2 = pair;
+            return;
+        }
+        let d2 = h.p2 - pair;
+        self.sumsq[base + 2] += (d2 * d2) as u64;
+        self.counts[base + 2] += 1;
     }
-    /// Reduce to (env_len, per-component linear RMS tracks): env_len = however many bins the recording ended on, 0..=ENV_CAP — stored as-is, the readers honour it.
-    fn finish(&self) -> (usize, Vec<Vec<f32>>) {
+    /// Reduce ONE channel to the shareable form (Nick 2026-09-12, "3 channel u8 normalized tensor"): per bin per component the MEAN POWER (`sumsq/count`), each component normalized to its own peak over the recording, quantized to u8 by STOCHASTIC rounding — the dither noise carries sub-LSB signal into the render's per-pixel averages, so 8 bits hold the full dynamic range statistically. Returns (bins, per-component peak power relative to full scale, planar `[3][bins]` bytes); None for an empty channel.
+    fn finish_u8(&self, ch: usize) -> Option<(usize, [f32; 3], Vec<u8>)> {
         let k = ENV_COMPONENTS;
         let s = 1usize << self.s_log2;
-        let env_len = self.total_samples.div_ceil(s).min(self.cap);
-        let lin = (0..self.nchan * k)
-            .map(|ci| {
-                let (ch, c) = (ci / k, ci % k);
-                (0..env_len)
-                    .map(|bin| {
-                        let i = (ch * self.cap + bin) * k + c;
-                        if self.counts[i] == 0 { 0.0 } else { (self.sumsq[i] as f64 / self.counts[i] as f64).sqrt() as f32 }
-                    })
-                    .collect()
-            })
-            .collect();
-        (env_len, lin)
+        let bins = self.total_samples.div_ceil(s).min(self.cap);
+        if bins == 0 {
+            return None;
+        }
+        let mean = |bin: usize, c: usize| -> f64 {
+            let i = (ch * self.cap + bin) * k + c;
+            if self.counts[i] == 0 { 0.0 } else { self.sumsq[i] as f64 / self.counts[i] as f64 }
+        };
+        let mut peaks = [0f64; ENV_COMPONENTS];
+        for c in 0..k {
+            for bin in 0..bins {
+                let v = mean(bin, c);
+                if v > peaks[c] {
+                    peaks[c] = v;
+                }
+            }
+        }
+        // Deterministic dither (splitmix64 on the flat index): the same recording always quantizes to the same bytes, and the ensemble is uniform so the mean is unbiased.
+        let dither01 = |i: u64| -> f64 {
+            let mut z = i.wrapping_add(0x9E37_79B9_7F4A_7C15);
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            (z ^ (z >> 31)) as f64 / (u64::MAX as f64)
+        };
+        let mut data = vec![0u8; k * bins];
+        for c in 0..k {
+            for bin in 0..bins {
+                let q = if peaks[c] > 0.0 { (mean(bin, c) / peaks[c] * 255.0).clamp(0.0, 255.0) } else { 0.0 };
+                let f = q.floor();
+                let up = (q - f) > dither01((c * self.cap + bin) as u64);
+                data[c * bins + bin] = (f as u8).saturating_add(up as u8);
+            }
+        }
+        const FS_POWER: f64 = 32768.0 * 32768.0;
+        let peaks_rel = [(peaks[0] / FS_POWER) as f32, (peaks[1] / FS_POWER) as f32, (peaks[2] / FS_POWER) as f32];
+        Some((bins, peaks_rel, data))
     }
 }
 
 /// A finished transcode: the sealed container plus what the wave card needs without opening it.
 pub struct Transcoded {
     pub container: Vec<u8>,
-    /// Row thumbnail, `nchan × WAVE_THUMB_BUCKETS`.
-    pub thumb: Vec<u8>,
+    /// Our channel's shareable wave.env VSF file (None for a short wave — the receiver derives from audio).
+    pub env: Option<Vec<u8>>,
     /// Whole seconds of audio (archive slots ÷ 100).
     pub secs: u32,
 }
@@ -230,7 +207,8 @@ pub struct Transcoded {
 pub struct Kept {
     pub hash: [u8; 32],
     pub size: u64,
-    pub thumb: Vec<u8>,
+    /// Our channel's wave.env VSF file, stored beside the recording: (content hash, bytes). None for a short wave.
+    pub env: Option<([u8; 32], Vec<u8>)>,
     pub secs: u32,
 }
 
@@ -375,8 +353,13 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
     let size = t.container.len() as u64;
     // Chunked past BLOB_CHUNK_SIZE (2026-09-11): a 13-minute wave is 26 MB, and one whole PT transfer of that never reached the desktop on any leg — chunks replicate a piece at a time with resume, like every other attachment.
     crate::storage::blob_store_any(identity_seed, &hash, &t.container).ok()?;
+    // The envelope blob rides beside the recording under its own hash — small, so it lands at the far end long before the audio.
+    let env = t.env.and_then(|e| {
+        let eh = *blake3::hash(&e).as_bytes();
+        crate::storage::blob_store_any(identity_seed, &eh, &e).ok().map(|_| (eh, e))
+    });
     let _ = std::fs::remove_file(&ticket.path);
-    Some(Kept { hash, size, thumb: t.thumb, secs: t.secs })
+    Some(Kept { hash, size, env, secs: t.secs })
 }
 
 /// The transcode core: drained spool records → a `PHCALL6` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
@@ -435,29 +418,23 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     if container.is_empty() {
         return None;
     }
-    // Root-mean-square per bin per component — LINEAR, positive — straight into the envelope bytes; the row thumbnail folds the same linear bins to one gross.
-    let k = ENV_COMPONENTS;
-    let (env_len, lin) = pyramid.finish();
-    let mut fine = vec![255u8; nchan * env_len * k];
-    for ch in 0..nchan {
-        for c in 0..k {
-            for b in 0..env_len {
-                fine[(ch * env_len + b) * k + c] = lin_to_stops_u8(lin[ch * k + c][b]);
-            }
-        }
-    }
-    let thumb = thumbnail(&lin, nchan);
-    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V6.len() + 22 + fine.len() + container.len());
+    // The container carries NO envelope since the wave.env exchange (2026-09-12): env_len writes 0 and the envelope lives as a standalone VSF tensor blob per party. The header keeps the field so the layout is unchanged.
+    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V6.len() + 22 + container.len());
     out.extend_from_slice(CONTAINER_MAGIC_V6);
     out.push(nchan as u8);
     out.extend_from_slice(&48_000u32.to_le_bytes());
     out.extend_from_slice(&base.to_le_bytes());
     out.extend_from_slice(&(slots_out as u32).to_le_bytes());
     out.push(ENV_PER_SEC as u8);
-    out.extend_from_slice(&(env_len as u32).to_le_bytes());
-    out.extend_from_slice(&fine);
+    out.extend_from_slice(&0u32.to_le_bytes());
     out.extend_from_slice(&container);
-    Some(Transcoded { container: out, thumb, secs: (slots_out / 100) as u32 })
+    // Our OWN channel's shareable envelope (ch0 = the raw mic): minted here where the samples were just decoded anyway; a short wave (< ENV_MIN_SHARE_SAMPLES) ships none by design.
+    let env = if pyramid.total_samples >= ENV_MIN_SHARE_SAMPLES {
+        pyramid.finish_u8(0).map(|(bins, peaks, data)| crate::call::wave_env::write(48_000, 1u32 << pyramid.s_log2, bins, peaks, &data))
+    } else {
+        None
+    };
+    Some(Transcoded { container: out, env, secs: (slots_out / 100) as u32 })
 }
 
 /// A decoded recording as a stream of interleaved `FRAME × nchan` i16 frames. Bounded memory: the compressed container stays in RAM (~tens of MB/hour) and each 10 ms frame decodes on demand via [`Self::next_frame`] — never the whole PCM at once (a stereo hour is ~700 MB decoded).
@@ -601,6 +578,35 @@ impl KeptStream {
     }
 }
 
+/// Derive every channel's envelope from a held recording — the fallback for short waves (no blob shipped by design), the far channel before its wave.env lands, and every pre-exchange recording. One full decode, off the UI thread; ~real-time-x50 on a laptop.
+pub fn envelopes_from_blob(bytes: &[u8]) -> Option<Vec<crate::call::wave_env::WaveEnv>> {
+    let mut ks = open_blob(bytes)?;
+    let nchan = ks.nchan;
+    let mut pyr = EnvPyramid::new(nchan);
+    let mut idx = 0usize;
+    while let Some(f) = ks.next_frame() {
+        for i in 0..FRAME {
+            for ch in 0..nchan {
+                pyr.push(ch, idx + i, f[i * nchan + ch]);
+            }
+        }
+        idx += FRAME;
+    }
+    let spb = 1u32 << pyr.s_log2;
+    let envs: Vec<crate::call::wave_env::WaveEnv> = (0..nchan)
+        .filter_map(|ch| {
+            pyr.finish_u8(ch).map(|(bins, peaks, data)| crate::call::wave_env::WaveEnv {
+                bins,
+                sample_rate: 48_000,
+                samples_per_bin: spb,
+                peaks,
+                data: std::sync::Arc::new(data),
+            })
+        })
+        .collect();
+    (envs.len() == nchan).then_some(envs)
+}
+
 /// Read one `[len u16 LE][bytes]` packet, advancing `cur`. `None` at end / on a truncated length prefix.
 fn read_pkt<'a>(bytes: &'a [u8], cur: &mut usize) -> Option<&'a [u8]> {
     if *cur + 2 > bytes.len() {
@@ -639,21 +645,17 @@ mod tests {
             records.push(Record { chan: 1, osc, seq: None, proc: None, bytes: buf[..n].to_vec() });
         }
         let t = build_container(&records).unwrap();
+        // 10 archive slots = 4800 samples, under ENV_MIN_SHARE_SAMPLES — a short wave ships no envelope by design; the receiver derives it from the audio.
+        assert!(t.env.is_none(), "a short wave must not mint a wave.env");
         let container = t.container;
         assert_eq!(&container[..8], CONTAINER_MAGIC_V6);
-        // The row thumbnail is one gross of buckets per channel, four components each, and a tone is well above the silence floor in every bucket that has audio.
-        assert_eq!(t.thumb.len(), 2 * crate::types::WAVE_THUMB_BUCKETS * ENV_COMPONENTS);
-        assert!(t.thumb.iter().any(|&b| b < 255), "thumbnail shows only silence");
+        let envs = envelopes_from_blob(&container).expect("derive from audio");
+        assert_eq!(envs.len(), 2);
+        assert!(envs[0].bins > 0 && envs[0].data.iter().any(|&b| b > 0), "derived envelope shows no signal");
         let mut ks = open_blob(&container).unwrap();
         assert_eq!(ks.nchan, 2);
         assert_eq!(ks.env_per_sec as usize, ENV_PER_SEC);
-        // Variable env_len: 10 archive slots = 4800 samples at 1024 samples a bin = 5 bins per channel.
-        let expect_bins = (10 * FRAME).div_ceil(1usize << ENV_S0_LOG2);
-        assert_eq!(ks.envelope.len(), 2 * expect_bins * ENV_COMPONENTS);
-        assert!(ks.envelope.iter().any(|&b| b < 255), "fine envelope shows only silence");
-        let (e_nchan, e_len, e_bytes) = envelope_of_blob(&container).unwrap();
-        assert_eq!((e_nchan, e_len), (2, expect_bins));
-        assert_eq!(e_bytes, ks.envelope);
+        assert!(ks.envelope.is_empty(), "the container carries no embedded envelope since the wave.env exchange");
         let mut frames = 0;
         let mut energy = 0i64;
         while let Some(f) = ks.next_frame() {
@@ -697,41 +699,34 @@ mod tests {
         }
         assert_eq!(streamed.sumsq, direct.sumsq);
         assert_eq!(streamed.counts, direct.counts);
-        let (a_len, a_lin) = streamed.finish();
-        let (b_len, b_lin) = direct.finish();
-        assert_eq!(a_len, b_len);
-        assert_eq!(a_lin, b_lin);
+        let (a_bins, a_peaks, a_data) = streamed.finish_u8(0).unwrap();
+        let (b_bins, b_peaks, b_data) = direct.finish_u8(0).unwrap();
+        assert_eq!(a_bins, b_bins);
+        assert_eq!(a_peaks, b_peaks);
+        assert_eq!(a_data, b_data);
     }
 
     #[test]
-    fn haar_bands_separate_octaves() {
-        // The decimated tree's levels are octave-exclusive, and the bands are where voice lives: DC excites nothing; periods 2, 4 and 8 (3–24 kHz) are blue only; 16 and 32 (750 Hz–3 kHz) green only; 64 and 128 (188–750 Hz) red only; 256 (below the tree) nothing.
-        let band_energy = |signal: &dyn Fn(usize) -> i16| -> [u64; 3] {
+    fn detail_channels_separate_octaves() {
+        // The two detail streams are octave-exclusive: DC excites neither, a period-2 wave only d1, a period-4 wave only d2, and a slow wave (period 8, constant across every aligned quad) neither.
+        let band_energy = |signal: &dyn Fn(usize) -> i16| -> [u64; 2] {
             let mut p = EnvPyramid::with_geometry(1, 16, 10);
             for i in 0..4096 {
                 p.push(0, i, signal(i));
             }
             let sum = |c: usize| (0..16).map(|b| p.sumsq[b * ENV_COMPONENTS + c]).sum::<u64>();
-            [sum(1), sum(2), sum(3)]
+            [sum(1), sum(2)]
         };
         let a = 1000i16;
         let dc = band_energy(&|_| a);
-        assert_eq!(dc, [0, 0, 0], "DC leaked into a detail band");
+        assert_eq!(dc, [0, 0], "DC leaked into a detail channel");
         let square = |half_period: usize| move |i: usize| if (i / half_period) % 2 == 0 { a } else { -a };
-        for hp in [1usize, 2, 4] {
-            let e = band_energy(&square(hp));
-            assert!(e[2] > 0 && e[0] == 0 && e[1] == 0, "period {} should be blue only: {e:?}", 2 * hp);
-        }
-        for hp in [8usize, 16] {
-            let e = band_energy(&square(hp));
-            assert!(e[1] > 0 && e[0] == 0 && e[2] == 0, "period {} should be green only: {e:?}", 2 * hp);
-        }
-        for hp in [32usize, 64] {
-            let e = band_energy(&square(hp));
-            assert!(e[0] > 0 && e[1] == 0 && e[2] == 0, "period {} should be red only: {e:?}", 2 * hp);
-        }
-        let below = band_energy(&square(128));
-        assert_eq!(below, [0, 0, 0], "period 256 sits below the tree: {below:?}");
+        let nyq = band_energy(&square(1));
+        assert!(nyq[0] > 0 && nyq[1] == 0, "period 2 should be d1 only: {nyq:?}");
+        let p4 = band_energy(&square(2));
+        assert!(p4[1] > 0 && p4[0] == 0, "period 4 should be d2 only: {p4:?}");
+        let p8 = band_energy(&square(4));
+        assert_eq!(p8, [0, 0], "period 8 sits below both details: {p8:?}");
     }
 
     #[test]

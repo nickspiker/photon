@@ -3,9 +3,6 @@
 use super::*;
 
 /// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10): the row's micro thumb, or the decoded preview blob (twice as tall).
-/// The waveform's horizontal oversample: the envelope folds to this many sub-columns per screen column, and a column's tip is lit by their coverage (the Lumis histogram's method, 2026-09-12).
-pub(super) const WAVE_OVER: usize = 4;
-
 pub(super) const IMG_PREVIEW_LINES: usize = 4;
 pub(super) const IMG_PREVIEW_LINES_FULL: usize = 8;
 
@@ -2513,7 +2510,7 @@ impl PhotonApp {
                     }
                     // Backdrop LAST (under-blend: everything above already owns its pixels) — the whole buffer below the chrome strip.
                     let bd_top = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
-                    paint::fill_rect(&mut canvas, 0, bd_top as isize, buf_w as isize, (buf_h as f32 - bd_top) as isize, 0xFF00_0000 | 0x00F4_F4F4, None, None);
+                    paint::fill_rect(&mut canvas, 0, bd_top as isize, buf_w as isize, (buf_h as f32 - bd_top) as isize, *theme::VIEWER_BG_COLOUR, None, None);
                     // Hit map: swallow the whole screen below the strip (stale stamps from the skipped conversation body must not fire), then the pills win their rects back.
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, bd_top as isize, buf_w as isize, buf_h as isize, self.viewer_base.wrapping_add(3));
                     let mut stamps: Vec<(fluor::region::Region, HitId)> = vec![(prects[0], 0), (prects[2], 2)];
@@ -2945,6 +2942,23 @@ impl PhotonApp {
                                 _ => None,
                             })
                             .collect();
+                        // The wave.env rows that fold into each card: wave ts → (our env blob hash, their env blob hash) — each party's own shared 3-channel tensor (call/wave_env.rs).
+                        let env_over: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = {
+                            let mut m: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = std::collections::HashMap::new();
+                            for e in raw_msgs.iter().filter(|m| !m.deleted) {
+                                if let (Some((crate::types::RefKind::Wave, t)), Some((h, name, _))) = (e.reference, crate::types::parse_attachment_content(&e.content)) {
+                                    if name == crate::call::wave_env::WAVE_ENV_NAME {
+                                        let slot = m.entry(t).or_default();
+                                        if e.is_outgoing {
+                                            slot.0 = Some(h);
+                                        } else {
+                                            slot.1 = Some(h);
+                                        }
+                                    }
+                                }
+                            }
+                            m
+                        };
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
                         // The contact's chosen name may carry line returns — each extra line adds a pitch to entry #0 (the avatar above rides up by the same).
                         let header_name = super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
@@ -3082,7 +3096,7 @@ impl PhotonApp {
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::OpenLinkPill), self.link_consent_base, ctx.pressed_hit, can_open, Some(*theme::PILL_GREEN), "Open Sans");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::CopyPill), self.link_consent_base.wrapping_add(1), ctx.pressed_hit, true, None, "Open Sans");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base.wrapping_add(2), ctx.pressed_hit, true, None, "Open Sans");
-                            paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, (list_bottom - py0) as isize, 0xFF00_0000 | 0x00E8_E2D8, None, None);
+                            paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, (list_bottom - py0) as isize, *theme::CONSENT_BG_COLOUR, None, None);
                             consent_stamp = Some((prects, py0));
                         }
                         // (The image viewer / text reader is a DISTINCT screen now — drawn above, this whole body skipped while it's open.)
@@ -3613,140 +3627,135 @@ impl PhotonApp {
                                             let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                             let held = crate::storage::blob_present(&hash);
                                             let playing = self.call_playback.is_some() && self.call_playback_hash == Some(hash);
-                                            // ENVELOPE SOURCE, in order: the playing handle's container envelope, the session cache (read off-thread from the held blob — requested here on first sight), else the row thumbnail. All are the same [amp, r, g, b] stops layout; the container ones are the variable-length pyramid grid, so nchan rides beside the bytes instead of being inferred from a length.
-                                            const K: usize = crate::call::record::ENV_COMPONENTS;
-                                            let cached = self.wave_env.get(&hash).cloned();
-                                            if held && cached.is_none() && !self.wave_env_pending.contains(&hash) && self.session.is_some() {
-                                                // Kick the loader from the render edge: the state it touches (cache/pending/channel) is the app's own, and the read runs on its own thread.
-                                                self.wave_env_pending.insert(hash);
-                                                let seed = self.session.as_ref().map(|s| s.identity_seed).unwrap();
-                                                if self.wave_env_tx.is_none() {
-                                                    let (tx, rx) = std::sync::mpsc::channel();
-                                                    self.wave_env_tx = Some(tx);
-                                                    self.wave_env_rx = Some(rx);
-                                                }
-                                                let tx = self.wave_env_tx.as_ref().unwrap().clone();
-                                                let wake = self.event_proxy.clone();
-                                                let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
-                                                    let env = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::call::record::envelope_of_blob(&b)).map(|(n, _, e)| (n as u8, e));
-                                                    let _ = tx.send((hash, env));
-                                                    #[cfg(not(target_os = "android"))]
-                                                    if let Some(w) = wake.as_ref() {
-                                                        let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
-                                                    }
-                                                    #[cfg(target_os = "android")]
-                                                    let _ = wake;
-                                                });
-                                            }
-                                            let handle_env: Option<(usize, &[u8])> = match (playing, self.call_playback.as_ref()) {
-                                                (true, Some(h)) if !h.envelope.is_empty() => Some((h.nchan, &h.envelope)),
-                                                _ => None,
-                                            };
-                                            let cache_env: Option<(usize, &[u8])> = cached.as_ref().and_then(|(n, e)| if e.is_empty() { None } else { Some((*n as usize, e.as_slice())) });
-                                            let (nchan, env): (usize, &[u8]) = handle_env.or(cache_env).unwrap_or(((rec.envelope.len() / (crate::types::WAVE_THUMB_BUCKETS * K)).max(1), &rec.envelope));
-                                            let env_len = env.len() / (nchan * K).max(1);
+                                            // ENVELOPE SOURCES (the wave.env exchange, 2026-09-12): each half of the card comes from that party's OWN shared 3-channel tensor — ours from our blob, theirs from theirs — and a side whose blob hasn't landed (or was never minted: short waves) derives from the held audio, one decode, off-thread. Nothing reads the container's header any more.
+                                            let (env_ours_h, env_theirs_h) = env_over.get(&msg.timestamp).copied().unwrap_or((None, None));
                                             let total_slots = if playing { self.call_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
                                             let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
                                             let frac: Option<f32> = scrub.or_else(|| {
                                                 playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
                                             });
-                                            // THE PIPELINE (Nick 2026-09-11): store stops, fold in POWER, display in stops. Every component decodes to linear, squares, box-means to the preview width, roots — each column is the true RMS over its span (the geometric-mean fold medicated the old sub-pitch bins; the pyramid killed the ripple, so the honest fold returns). Height = stops above the party's floor. Colour = the three tree bands JOINT-scale normalised in linear (one min..max across all three, per party) so hue is honest spectral tilt. Two fully independent party passes — them (ch1) up from the centreline, us (ch0) down, nothing shared, each half its own voice.
                                             let wx0 = glyph_x1;
                                             let cols = ((bx1 - wx0).max(1.0)) as usize;
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
-                                            // Stored eighth-stops below full scale → linear amplitude, once per process; byte 255 is the silence floor.
-                                            static WAVE_LUT: std::sync::LazyLock<[f32; 256]> = std::sync::LazyLock::new(|| {
-                                                let mut t = [0f32; 256];
-                                                for (i, v) in t.iter_mut().enumerate() {
-                                                    *v = if i >= 255 { 0.0 } else { (2f32).powf(-(i as f32) / 8.0) };
+                                            // Loads on the render edge, one per hash: an env blob parses in the worker (vec of one); the audio derive decodes once and yields every channel. A far blob not yet held is queued for one fetch.
+                                            if let Some(seed) = self.session.as_ref().map(|se| se.identity_seed) {
+                                                if self.wave_env_tx.is_none() {
+                                                    let (tx, rx) = std::sync::mpsc::channel();
+                                                    self.wave_env_tx = Some(tx);
+                                                    self.wave_env_rx = Some(rx);
                                                 }
-                                                t
-                                            });
-                                            if env_len > 0 {
-                                                for ch in 0..nchan.min(2) {
-                                                    // THE FOLD AND THE COLOURS, ONCE: folding four tracks and pushing every column thru the VSF→Rec.2020 colour path cost a millisecond or more per card per frame, so the cache holds the FINISHED columns — (height stops, base colour) — per (recording, width, envelope length, channel). The per-frame loop is a dim test and a fill_rect.
-                                                    let key = (hash, cols, env_len, ch);
-                                                    let bars: std::rc::Rc<(Vec<f32>, Vec<u32>)> = {
-                                                        let hit = self.wave_fold_cache.borrow().get(&key).cloned();
-                                                        match hit {
-                                                            Some(f) => f,
-                                                            None => {
-                                                                let folded: Vec<Vec<f32>> = (0..K)
-                                                                    .map(|c| {
-                                                                        let pow: Vec<f32> = (0..env_len)
-                                                                            .map(|i| {
-                                                                                let l = WAVE_LUT[env[(ch * env_len + i) * K + c] as usize];
-                                                                                l * l
-                                                                            })
-                                                                            .collect();
-                                                                        crate::call::record::resample_linear(&pow, cols * WAVE_OVER).iter().map(|p| p.max(0.0).sqrt()).collect()
-                                                                    })
-                                                                    .collect();
-                                                                // HEIGHT IS AMPLITUDE AGAINST A FIXED REFERENCE (Nick 2026-09-11: "more direct to power", "not normalized per channel"): the column's RMS amplitude, linear, full scale 1.0, with −12 dBFS as full height and clipping above — a quiet talker draws short bars, a loud one tall, and two waves are comparable.
-                                                                let amps: Vec<f32> = folded[0].clone();
-                                                                // COLOUR IS THE SPECTRAL BALANCE, THE AGB WAY (Nick 2026-09-11: "geometric mean, that's how the AGB colour model works — you get the correct colour and keep the brightness consistent"): each band's power over the geometric mean of the three, then the largest ratio pins the brightest channel at full — hue from the ratios, brightness constant, a quiet column as vivid as a loud one. Red is 188–750 Hz, green 750 Hz–3 kHz, blue 3–24 kHz.
-                                                                let colours: Vec<u32> = (0..cols)
-                                                                    .map(|px| {
-                                                                        // The column's band power is the mean over its sub-columns (power adds; the geometric mean below is of the three bands, not of the sub-columns).
-                                                                        let p = |c: usize| ((0..WAVE_OVER).map(|j| folded[c][px * WAVE_OVER + j] * folded[c][px * WAVE_OVER + j]).sum::<f32>() / WAVE_OVER as f32).max(1e-12);
-                                                                        let g = (p(1) * p(2) * p(3)).cbrt();
-                                                                        let r = [p(1) / g, p(2) / g, p(3) / g];
-                                                                        let top = r[0].max(r[1]).max(r[2]).max(1e-12);
-                                                                        let ch = |v: f32| ((v / top).clamp(0.0, 1.0) * 255.0).round() as u8;
-                                                                        theme::rgb_colour(ch(r[0]), ch(r[1]), ch(r[2]))
-                                                                    })
-                                                                    .collect();
-                                                                let f = std::rc::Rc::new((amps, colours));
-                                                                let mut cache = self.wave_fold_cache.borrow_mut();
-                                                                if cache.len() >= 128 {
-                                                                    cache.clear();
-                                                                }
-                                                                cache.insert(key, f.clone());
-                                                                f
+                                                let tx0 = self.wave_env_tx.as_ref().unwrap().clone();
+                                                let wake0 = self.event_proxy.clone();
+                                                for eh in [env_ours_h, env_theirs_h].into_iter().flatten() {
+                                                    if self.wave_env.contains_key(&eh) || self.wave_env_pending.contains(&eh) {
+                                                        continue;
+                                                    }
+                                                    if crate::storage::blob_present(&eh) {
+                                                        self.wave_env_pending.insert(eh);
+                                                        let (tx, wake) = (tx0.clone(), wake0.clone());
+                                                        let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
+                                                            let res = crate::storage::blob_load(&seed, &eh).and_then(|b| crate::call::wave_env::read(&b)).map(|e| vec![e]);
+                                                            let _ = tx.send((eh, res));
+                                                            #[cfg(not(target_os = "android"))]
+                                                            if let Some(wk) = wake.as_ref() {
+                                                                let _ = wk.send(crate::ui::PhotonEvent::NetworkUpdate);
                                                             }
+                                                            #[cfg(target_os = "android")]
+                                                            let _ = wake;
+                                                        });
+                                                    } else {
+                                                        self.wave_env_wants.push((ci, eh));
+                                                    }
+                                                }
+                                                let side_unresolvable = |h: Option<[u8; 32]>| h.is_none_or(|x| !crate::storage::blob_present(&x));
+                                                if held && !self.wave_env.contains_key(&hash) && !self.wave_env_pending.contains(&hash) && (side_unresolvable(env_ours_h) || side_unresolvable(env_theirs_h)) {
+                                                    self.wave_env_pending.insert(hash);
+                                                    let (tx, wake) = (tx0.clone(), wake0.clone());
+                                                    let _ = std::thread::Builder::new().name("wave-env-derive".into()).spawn(move || {
+                                                        let res = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::call::record::envelopes_from_blob(&b));
+                                                        let _ = tx.send((hash, res));
+                                                        #[cfg(not(target_os = "android"))]
+                                                        if let Some(wk) = wake.as_ref() {
+                                                            let _ = wk.send(crate::ui::PhotonEvent::NetworkUpdate);
                                                         }
+                                                        #[cfg(target_os = "android")]
+                                                        let _ = wake;
+                                                    });
+                                                }
+                                            }
+                                            // Resolve each party: their own blob first, the audio-derived channel second (0 = us/mic, 1 = them/wire).
+                                            let resolve = |blob_h: Option<[u8; 32]>, chn: usize| -> Option<([u8; 32], usize, std::sync::Arc<crate::call::wave_env::WaveEnv>)> {
+                                                if let Some(h) = blob_h {
+                                                    if let Some(Some(v)) = self.wave_env.get(&h) {
+                                                        if let Some(e) = v.first() {
+                                                            return Some((h, 0, e.clone()));
+                                                        }
+                                                    }
+                                                }
+                                                if let Some(Some(v)) = self.wave_env.get(&hash) {
+                                                    if let Some(e) = v.get(chn) {
+                                                        return Some((hash, chn, e.clone()));
+                                                    }
+                                                }
+                                                None
+                                            };
+                                            let sides = [(resolve(env_ours_h, 0), false, our_colour), (resolve(env_theirs_h, 1), true, their_colour)];
+                                            // THE CUMULATIVE STACK (Nick 2026-09-12, "just divide and fit"): every bin adds into exactly ONE pixel bin by the integer map bin·cols÷bins, a count divides each column after (uneven counts expected), so a column's value is the true mean POWER of its whole span — no interpolation branch, no bin/column beat, the dither noise averages out. Height = RMS amplitude against −12 dBFS; the fractional tip renders as OPACITY (α in fluor's darkness convention), vertical alias only, no oversampling.
+                                            const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
+                                            for (src, up, pc) in sides {
+                                                let Some((src_h, src_ch, e)) = src else { continue };
+                                                let key = (src_h, src_ch, cols);
+                                                let amps: std::rc::Rc<Vec<f32>> = {
+                                                    let hit = self.wave_fold_cache.borrow().get(&key).cloned();
+                                                    match hit {
+                                                        Some(a) => a,
+                                                        None => {
+                                                            let bins = e.bins;
+                                                            let mut acc = vec![0u64; cols];
+                                                            let mut n = vec![0u32; cols];
+                                                            for b in 0..bins {
+                                                                let px = (b * cols / bins.max(1)).min(cols - 1);
+                                                                acc[px] += e.data[b] as u64;
+                                                                n[px] += 1;
+                                                            }
+                                                            let a: Vec<f32> = (0..cols)
+                                                                .map(|i| if n[i] == 0 { 0.0 } else { (acc[i] as f32 / n[i] as f32 / 255.0 * e.peaks[0]).max(0.0).sqrt() })
+                                                                .collect();
+                                                            let a = std::rc::Rc::new(a);
+                                                            let mut cache = self.wave_fold_cache.borrow_mut();
+                                                            if cache.len() >= 128 {
+                                                                cache.clear();
+                                                            }
+                                                            cache.insert(key, a.clone());
+                                                            a
+                                                        }
+                                                    }
+                                                };
+                                                for px in 0..cols {
+                                                    let lit = held && frac.is_some() && px < played_cols;
+                                                    let hgt = (amps[px] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92;
+                                                    let full = hgt.floor();
+                                                    let tip_a = ((hgt - full) * 255.0) as u32;
+                                                    // BRIGHTEN ONLY: unplayed = half brightness in the darkness domain, α untouched; played = full.
+                                                    let c = if lit {
+                                                        pc
+                                                    } else {
+                                                        let (a, d) = (pc & 0xFF00_0000, pc & 0x00FF_FFFF);
+                                                        let darker = |dark: u32| (255 + dark) / 2;
+                                                        a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
                                                     };
-                                                    let (amps_over, colours) = &*bars;
-                                                    const WAVE_FULL_HEIGHT_AMP: f32 = 0.25; // −12 dBFS RMS fills the band; louder clips
-                                                    for px in 0..cols {
-                                                        let lit = held && frac.is_some() && px < played_cols;
-                                                        // THE LUMIS DOWNSAMPLE (Nick 2026-09-12, "look at how Lumis draws the histogram"): the bar is folded at WAVE_OVER sub-columns; the rows every sub-column covers are one solid run, and each row at the tip is lit by its coverage across the sub-columns, square-rooted for the gamma of the display — anti-aliased in both axes, still brighten-only (one write per pixel, the colour scaled, no alpha).
-                                                        let heights: [f32; WAVE_OVER] = std::array::from_fn(|j| (amps_over[px * WAVE_OVER + j] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92);
-                                                        let h_min = heights.iter().cloned().fold(f32::MAX, f32::min);
-                                                        let h_max = heights.iter().cloned().fold(f32::MIN, f32::max);
-                                                        let hgt = h_min;
-                                                        let base_c = colours[px];
-                                                        // BRIGHTEN ONLY (Nick 2026-09-10, "weird double drawing… should be brighten only"): every bar is solid — unplayed = the same colour at half brightness (darkness-domain arithmetic, α untouched), played = full; heights are whole pixels.
-                                                        let c = if lit {
-                                                            base_c
-                                                        } else {
-                                                            let (a, d) = (base_c & 0xFF00_0000, base_c & 0x00FF_FFFF);
-                                                            let darker = |dark: u32| (255 + dark) / 2;
-                                                            a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
-                                                        };
-                                                        let full = hgt.floor();
-                                                        let x = (wx0 + px as f32) as isize;
-                                                        // Them (ch1) above the centreline, us (ch0) below it.
-                                                        let (ty, th) = if ch == 1 { (bcy - full, full) } else { (bcy, full) };
-                                                        let run_top = ty.max(list_top);
-                                                        let run_bot = (ty + th).min(list_bottom);
-                                                        if run_bot > run_top && th >= 1.0 {
-                                                            paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, Some(list_clip), None);
-                                                        }
-                                                        // The tip rows: from the shortest sub-column's height to the tallest's, each row lit by its coverage.
-                                                        let scale = |colour: u32, f: f32| -> u32 {
-                                                            let g = f.clamp(0.0, 1.0).sqrt();
-                                                            let ch = |shift: u32| ((((colour >> shift) & 0xFF) as f32 * g).round() as u32) << shift;
-                                                            (colour & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
-                                                        };
-                                                        let mut r = full;
-                                                        while r < h_max.ceil() {
-                                                            let cov = heights.iter().map(|h| (h - r).clamp(0.0, 1.0)).sum::<f32>() / WAVE_OVER as f32;
-                                                            let py = if ch == 1 { bcy - r - 1.0 } else { bcy + r };
-                                                            if cov > 0.0 && py >= list_top && py < list_bottom {
-                                                                paint::fill_rect(&mut canvas, x, py as isize, 1, 1, scale(c, cov), Some(list_clip), None);
-                                                            }
-                                                            r += 1.0;
+                                                    let x = (wx0 + px as f32) as isize;
+                                                    let (ty, th) = if up { (bcy - full, full) } else { (bcy, full) };
+                                                    let run_top = ty.max(list_top);
+                                                    let run_bot = (ty + th).min(list_bottom);
+                                                    if run_bot > run_top && th >= 1.0 {
+                                                        paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, Some(list_clip), None);
+                                                    }
+                                                    if tip_a > 0 {
+                                                        let tip_y = if up { bcy - full - 1.0 } else { bcy + full };
+                                                        if tip_y >= list_top && tip_y < list_bottom {
+                                                            let tip_c = (c & 0x00FF_FFFF) | (tip_a << 24);
+                                                            paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, Some(list_clip), None);
                                                         }
                                                     }
                                                 }
