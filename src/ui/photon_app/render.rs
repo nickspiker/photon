@@ -3695,12 +3695,12 @@ impl PhotonApp {
                                                     continue;
                                                 }
                                                 let key = (src_h, src_ch, cols, rows);
-                                                let cov: std::rc::Rc<Vec<f32>> = {
+                                                let bars: std::rc::Rc<(Vec<f32>, Vec<u32>)> = {
                                                     let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                     match hit {
                                                         Some(a) => a,
                                                         None => {
-                                                            let a = std::rc::Rc::new(wave_fold_coverage(&e, cols, rows, WAVE_FULL_HEIGHT_AMP));
+                                                            let a = std::rc::Rc::new((wave_fold_coverage(&e, cols, rows, WAVE_FULL_HEIGHT_AMP), wave_fold_colours(&e, cols)));
                                                             let mut cache = self.wave_fold_cache.borrow_mut();
                                                             if cache.len() >= 128 {
                                                                 cache.clear();
@@ -3710,13 +3710,15 @@ impl PhotonApp {
                                                         }
                                                     }
                                                 };
-                                                let dim_pc = {
-                                                    let (a, d) = (pc & 0xFF00_0000, pc & 0x00FF_FFFF);
-                                                    let darker = |dark: u32| (255 + dark) / 2;
-                                                    a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
+                                                let _ = pc;
+                                                let (cov, band_cols) = &*bars;
+                                                let darker = |c: u32| {
+                                                    let (a, d) = (c & 0xFF00_0000, c & 0x00FF_FFFF);
+                                                    let dk = |dark: u32| (255 + dark) / 2;
+                                                    a | (dk((d >> 16) & 0xFF) << 16) | (dk((d >> 8) & 0xFF) << 8) | dk(d & 0xFF)
                                                 };
-                                                let colour_of = move |px: usize| if held && frac.is_some() && px < played_cols { pc } else { dim_pc };
-                                                wave_draw_coverage(&mut canvas, &cov, cols, rows, wx0, bcy, up, &colour_of, list_top, list_bottom, Some(list_clip));
+                                                let colour_of = move |px: usize| if held && frac.is_some() && px < played_cols { band_cols[px] } else { darker(band_cols[px]) };
+                                                wave_draw_coverage(&mut canvas, cov, cols, rows, wx0, bcy, up, &colour_of, list_top, list_bottom, Some(list_clip));
                                             }
                                             // Centreline hairline, then the playhead.
                                             if bcy > list_top && bcy < list_bottom {
@@ -3851,12 +3853,12 @@ impl PhotonApp {
                                                 continue;
                                             }
                                             let key = (ahash, chn + 4, cols, rows);
-                                            let cov: std::rc::Rc<Vec<f32>> = {
+                                            let bars: std::rc::Rc<(Vec<f32>, Vec<u32>)> = {
                                                 let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                 match hit {
                                                     Some(a) => a,
                                                     None => {
-                                                        let a = std::rc::Rc::new(wave_fold_coverage(e, cols, rows, WAVE_FULL_HEIGHT_AMP));
+                                                        let a = std::rc::Rc::new((wave_fold_coverage(e, cols, rows, WAVE_FULL_HEIGHT_AMP), wave_fold_colours(e, cols)));
                                                         let mut cache = self.wave_fold_cache.borrow_mut();
                                                         if cache.len() >= 128 {
                                                             cache.clear();
@@ -3866,15 +3868,16 @@ impl PhotonApp {
                                                     }
                                                 }
                                             };
-                                            // Bright when idle (Nick: "when not playing always shows bright"); playing splits played bright / rest half.
-                                            let dim_pc = {
-                                                let (a, d) = (colour & 0xFF00_0000, colour & 0x00FF_FFFF);
-                                                let darker = |dark: u32| (255 + dark) / 2;
-                                                a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
+                                            // Bright when idle (Nick: "when not playing always shows bright"); playing splits played bright / rest half. Hue is the AGB spectral balance of the three voice bands.
+                                            let (cov, band_cols) = &*bars;
+                                            let darker = |c: u32| {
+                                                let (a, d) = (c & 0xFF00_0000, c & 0x00FF_FFFF);
+                                                let dk = |dark: u32| (255 + dark) / 2;
+                                                a | (dk((d >> 16) & 0xFF) << 16) | (dk((d >> 8) & 0xFF) << 8) | dk(d & 0xFF)
                                             };
                                             let playing = mfrac.is_some();
-                                            let colour_of = move |px: usize| if !playing || px < played_cols { colour } else { dim_pc };
-                                            wave_draw_coverage(&mut canvas, &cov, cols, rows, wx0, bcy, up, &colour_of, list_top, list_bottom, Some(list_clip));
+                                            let colour_of = move |px: usize| if !playing || px < played_cols { band_cols[px] } else { darker(band_cols[px]) };
+                                            wave_draw_coverage(&mut canvas, cov, cols, rows, wx0, bcy, up, &colour_of, list_top, list_bottom, Some(list_clip));
                                         }
                                         if bcy > list_top && bcy < list_bottom {
                                             paint::fill_rect(&mut canvas, wx0 as isize, bcy as isize, (wx1 - wx0) as isize, 0, theme::dim_colour(colour), Some(list_clip), None);
@@ -6389,6 +6392,34 @@ pub(super) fn wave_fold_coverage(e: &crate::call::wave_env::WaveEnv, cols: usize
         }
     }
     cov
+}
+
+/// Per-column colours from the three band tracks, THE AGB WAY (Nick: each band's power over the geometric mean of the three, the top ratio pinned at full — hue from the ratios, brightness constant): the same integer bin→column stack as the coverage fold, means per band, colour thru the VSF path once per fold.
+pub(super) fn wave_fold_colours(e: &crate::call::wave_env::WaveEnv, cols: usize) -> Vec<u32> {
+    let bins = e.bins.max(1);
+    let mut acc = vec![[0u64; 3]; cols];
+    let mut n = vec![0u32; cols];
+    for b in 0..e.bins {
+        let px = (b * cols / bins).min(cols - 1);
+        n[px] += 1;
+        for c in 0..3 {
+            acc[px][c] += e.data[(c + 1) * e.bins + b] as u64;
+        }
+    }
+    let lsb = [e.lsb(1), e.lsb(2), e.lsb(3)];
+    (0..cols)
+        .map(|px| {
+            if n[px] == 0 {
+                return theme::rgb_colour(0, 0, 0);
+            }
+            let p = |c: usize| (acc[px][c] as f32 / n[px] as f32 * lsb[c]).max(1e-12);
+            let g = (p(0) * p(1) * p(2)).cbrt();
+            let r = [p(0) / g, p(1) / g, p(2) / g];
+            let top = r[0].max(r[1]).max(r[2]).max(1e-12);
+            let ch = |v: f32| ((v / top).clamp(0.0, 1.0) * 255.0).round() as u8;
+            theme::rgb_colour(ch(r[0]), ch(r[1]), ch(r[2]))
+        })
+        .collect()
 }
 
 /// Draw one half-band from a coverage fold: one solid run where coverage saturates, then per-pixel alpha up the graded contour (coverage is monotone, so the first near-zero row ends the column). `colour_of` picks the column's colour (the played/unplayed split).

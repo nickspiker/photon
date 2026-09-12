@@ -110,6 +110,8 @@ pub const FILL_FLAG: u8 = 0x20;
 pub const PROC_FLAG: u8 = 0x10;
 /// The channel index under the flag bits.
 pub const CHAN_MASK: u8 = 0x0F;
+/// ARCHIVE records ride a RESERVED CHANNEL INDEX (every flag bit is spoken for — 0x40 is SEQ_FLAG): a 10ms high-end Opus encode of the CLEAN mic — pre-canceller, pre-duck, pre-gate — the recording's own stream, spooled beside the wire traffic. Its PROC fields carry the ducking profile (gain + verdict at 10ms resolution), so the wire copy never needs storing twice: plaid wire copies stop spooling entirely (they ate ~5.5MB/min) and compressed-tier wire copies stay only to serve bit-exact fills.
+pub const ARCH_CHAN: u8 = 0x0E;
 
 /// One decrypted spool record: channel byte (flags + index), eagle stamp, the window identity when the record carries one, and the frame bytes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -134,6 +136,9 @@ impl Record {
     }
     pub fn is_raw_mic(&self) -> bool {
         self.chan & PROC_FLAG != 0
+    }
+    pub fn is_arch(&self) -> bool {
+        self.chan & CHAN_MASK == ARCH_CHAN
     }
 }
 

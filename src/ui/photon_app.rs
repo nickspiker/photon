@@ -2036,7 +2036,7 @@ pub struct PhotonApp {
     /// Far-party env blobs seen but not held: (ci, hash) queued by the render, fetched once per session by drain_wave_env_wants.
     wave_env_wants: Vec<(usize, [u8; 32])>,
     /// Finished band folds per (source hash, channel-in-source, width, rows): per-column-per-row VERTICAL COVERAGE 0..1 (the downscale-with-opacity-contributions fold) — built once, the per-frame loop is solid runs + graded contour pixels. Cleared wholesale past a small cap.
-    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<Vec<f32>>>>,
+    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
     /// The playing music pigeon, if any (desktop; Android stubs until music routes thru its audio engine).
     music_play: Option<music_play::MusicPlay>,
     wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,

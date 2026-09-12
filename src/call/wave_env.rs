@@ -1,6 +1,6 @@
 //! wave.env — the shared waveform envelope (Nick 2026-09-12: "3 channel u8 normalized tensor VSF").
 //!
-//! One per party per wave: at keep, the transcode's pyramid reduces our RAW-MIC channel to three power tracks — `x²`, `(n₀−n₁)²`, `((n₀+n₁)−(n₂+n₃))²` — each normalized to its own peak and STOCHASTICALLY quantized to u8 (the dither carries sub-LSB signal into the render's per-pixel averages). The file is a plain VSF section holding the metadata and an 8-bit `[3, bins]` tensor, stored as a content-addressed blob and pushed at wave end — a few hundred KB, so the far card colours in long before the multi-MB audio replicates. A wave shorter than [`crate::call::record::ENV_MIN_SHARE_SAMPLES`] ships none: the receiver derives the envelope from the audio it fetches anyway (the same fallback covers the far channel before its blob lands, and every pre-exchange recording).
+//! One per party per wave: the pyramid reduces our CLEAN archive channel to four power tracks — total `x²` plus the three tuned voice bands (red ≤240 Hz, green bell ~2.4 kHz, blue shelf ≥7.7 kHz; see record.rs ENV_COMPONENTS) — each normalized to its own peak and STOCHASTICALLY quantized to u8 (the dither carries sub-LSB signal into the render's per-pixel averages). The file is a plain VSF section holding the metadata and an 8-bit `[4, bins]` tensor, stored as a content-addressed blob and pushed at wave end — a few hundred KB, so the far card colours in long before the multi-MB audio replicates. A wave shorter than [`crate::call::record::ENV_MIN_SHARE_SAMPLES`] ships none: the receiver derives the envelope from the audio it fetches anyway (the same fallback covers the far channel before its blob lands, and every pre-exchange recording).
 //! The row that carries it is an ordinary attachment row named [`WAVE_ENV_NAME`] referencing the wave row (`RefKind::Wave`), so replication, fetch, tombstones and the fold-into-the-card all ride the existing machinery.
 
 use std::sync::Arc;
@@ -14,8 +14,8 @@ pub struct WaveEnv {
     pub sample_rate: u32,
     pub samples_per_bin: u32,
     /// Per-component peak MEAN POWER relative to full scale, Q48 fixed point — exact integers at rest, never a float (Nick: and scaling is multiplication + shifts, never division: a byte decodes as `byte × peak_q48 >> 8` in Q48, the ÷256 a shift, the ÷2^48 a constant multiply at the float boundary).
-    pub peak_q48: [u64; 3],
-    /// Planar `[3][bins]`: power, first-difference power, second-level detail power; a byte spans 1/256 of the peak (256, not 255 — integer maths floors).
+    pub peak_q48: [u64; 4],
+    /// Planar `[4][bins]`: total power, red, green, blue band powers; a byte spans 1/256 of the peak (256, not 255 — integer maths floors).
     pub data: Arc<Vec<u8>>,
 }
 
@@ -33,8 +33,8 @@ impl WaveEnv {
 }
 
 /// Serialize an envelope to VSF bytes. `pk` is ONE field with three values (never decimal-indexed names), each an exact Q48 integer.
-pub fn write(sample_rate: u32, samples_per_bin: u32, bins: usize, peak_q48: [u64; 3], data: &[u8]) -> Vec<u8> {
-    let tensor = vsf::BitPackedTensor::pack(8, vec![3, bins], data);
+pub fn write(sample_rate: u32, samples_per_bin: u32, bins: usize, peak_q48: [u64; 4], data: &[u8]) -> Vec<u8> {
+    let tensor = vsf::BitPackedTensor::pack(8, vec![4, bins], data);
     let mut section = vsf::VsfSection::new("wave_env");
     section.add_field_multi("rate", vec![vsf::VsfType::u(sample_rate as usize, false)]);
     section.add_field_multi("spb", vec![vsf::VsfType::u(samples_per_bin as usize, false)]);
@@ -68,14 +68,14 @@ pub fn read(bytes: &[u8]) -> Option<WaveEnv> {
         vsf::VsfType::p(t) => t.unpack_u8(),
         _ => return None,
     };
-    if pk.len() != 3 || bins == 0 || data.len() != 3 * bins || samples_per_bin == 0 {
+    if pk.len() != 4 || bins == 0 || data.len() != 4 * bins || samples_per_bin == 0 {
         return None;
     }
     Some(WaveEnv {
         bins,
         sample_rate,
         samples_per_bin,
-        peak_q48: [pk[0], pk[1], pk[2]],
+        peak_q48: [pk[0], pk[1], pk[2], pk[3]],
         data: Arc::new(data),
     })
 }
@@ -87,8 +87,8 @@ mod tests {
     #[test]
     fn wave_env_round_trips() {
         let bins = 70_000usize;
-        let data: Vec<u8> = (0..3 * bins).map(|i| (i * 37 % 251) as u8).collect();
-        let pk = [1u64 << 46, 12_345_678_901, 42];
+        let data: Vec<u8> = (0..4 * bins).map(|i| (i * 37 % 251) as u8).collect();
+        let pk = [1u64 << 46, 12_345_678_901, 42, 7];
         let bytes = write(48_000, 32, bins, pk, &data);
         assert!(!bytes.is_empty());
         let e = read(&bytes).expect("parse back");

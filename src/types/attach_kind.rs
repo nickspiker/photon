@@ -223,7 +223,7 @@ pub fn sniff(bytes: &[u8], name: &str) -> AttachKind {
         return Document;
     }
     // House recording container.
-    if starts(crate::call::record::CONTAINER_MAGIC_V6) {
+    if starts(crate::call::record::CONTAINER_MAGIC_V7) {
         return Audio;
     }
     // Images. TIFF-shaped bytes are a RAW when the name says so (DNG/NEF/ARW/CR2/PEF/ORF/RW2/SRW carry TIFF headers).
@@ -327,7 +327,7 @@ mod tests {
         assert_eq!(sniff(b"fn main() {}\n", "main.rs"), AttachKind::Code);
         assert_eq!(sniff("just words, with ünïcode\n".as_bytes(), "notes.txt"), AttachKind::Text);
         assert_eq!(sniff(&[0x00, 0x01, 0x02, 0x03, 0xFF], "blob.bin"), AttachKind::Unknown);
-        assert_eq!(sniff(crate::call::record::CONTAINER_MAGIC_V6, "call.audio"), AttachKind::Audio);
+        assert_eq!(sniff(crate::call::record::CONTAINER_MAGIC_V7, "call.audio"), AttachKind::Audio);
     }
 
     #[test]

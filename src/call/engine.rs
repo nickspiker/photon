@@ -215,6 +215,19 @@ fn run(
     let mut tx_chain = StepChain::new(&params.secret, tx_dir);
     let mut rx_chain = StepChain::new(&params.secret, rx_dir);
 
+    // THE ARCHIVE ENCODER (the ordering fix, Nick 2026-09-12: "save the encoded stream… ideally before the duck(s)"): one high-end Opus encode of the CLEAN mic runs live beside the wire encoder — 10ms frames, VBR 160k, complexity 6 — and THAT is what the spool keeps. Plaid raw-PCM spooling dies (it ate ~5.5MB/min), the keep repackages these packets verbatim (no second lossy generation), and the ducking rides as a profile, not a second stream.
+    let mut arch_enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok().map(|mut e| {
+        let _ = e.set_vbr(true);
+        let _ = e.set_bitrate(opus::Bitrate::Bits(160_000));
+        let _ = e.set_complexity(6);
+        e
+    });
+    let mut arch_buf: Vec<i16> = Vec::with_capacity(480);
+    let mut arch_meta: Option<(i64, u32, u8)> = None;
+    let mut arch_pkt = vec![0u8; 4000];
+    // Archive record index (window id, first slot, spool position) — the serve fallback for plaid windows, whose wire copies no longer spool (a plaid window is exactly one 10ms archive record).
+    let mut arch_index: std::collections::VecDeque<(u32, u8, super::spool::RecordAt)> = std::collections::VecDeque::new();
+    let mut arch_dec: Option<opus::Decoder> = None;
     let mut encoder = match opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay) {
         Ok(mut e) => {
             let _ = e.set_vbr(false); // CBR — traffic-shape privacy (VBR leaks the speech envelope via packet sizes)
@@ -514,8 +527,8 @@ fn run(
             if muted.load(Ordering::Relaxed) {
                 frame.fill(0);
             }
-            // THE MIC AS CAPTURED (Nick 2026-09-10: "mic RAW, per channel"): the spool keeps this frame untouched beside the wire copy, with the verdict the live path applied to it, so the keep works from the raw source and the duck/gate/canceller can be redone offline.
-            let raw_mic: Vec<u8> = frame.iter().flat_map(|s| s.to_le_bytes()).collect();
+            // THE MIC AS CAPTURED (Nick 2026-09-12, the ordering fix): the clean pre-canceller pre-duck frame feeds the ARCHIVE encoder below; the verdict the live path applies rides beside it as the ducking profile.
+            let pre_frame: Vec<i16> = frame.clone();
             let mut proc_verdict: u8 = 0;
             // NLMS SUBTRACT — before the tally and the duck, so both see the residual (the duck is the RESIDUAL suppressor once a filter is armed). Mic timeline: pure frame count from a one-time anchor.
             if mic_anchor_osc.is_none() {
@@ -653,16 +666,34 @@ fn run(
                 }
             };
             if let Some(w) = spool.as_mut() {
-                // Raw mic first (the archive's source), then the wire copy (what the peer heard, and what a fill serves).
                 let osc = vsf::eagle_time_oscillations();
                 let gain_q8 = (duck_gain * 256.0).round().clamp(0.0, 65535.0) as u16;
-                w.append_seq_proc(super::spool::RAW_FLAG | super::spool::PROC_FLAG, osc, Some((window_id, frames_in_window as u8)), Some((gain_q8, proc_verdict)), &raw_mic);
-                let dir = if tier == RAW_TIER { super::spool::RAW_FLAG } else { 0 };
-                if let Some(at) = w.append_seq(dir, osc, Some((window_id, frames_in_window as u8)), &enc[..n]) {
-                    if tx_index.len() >= TX_INDEX_CAP {
-                        tx_index.pop_front();
+                // The archive stream: clean mic pairs encode once at the high rung, the ducking profile rides the record's proc fields (10ms resolution — the gain slews far slower than that).
+                if arch_buf.is_empty() {
+                    arch_meta = Some((osc, window_id, frames_in_window as u8));
+                }
+                arch_buf.extend_from_slice(&pre_frame);
+                if arch_buf.len() >= 480 {
+                    if let (Some(enc2), Some((osc0, wid0, slot0))) = (arch_enc.as_mut(), arch_meta.take()) {
+                        if let Ok(an) = enc2.encode(&arch_buf[..480], &mut arch_pkt) {
+                            if let Some(at) = w.append_seq_proc(super::spool::ARCH_CHAN | super::spool::PROC_FLAG, osc0, Some((wid0, slot0)), Some((gain_q8, proc_verdict)), &arch_pkt[..an]) {
+                                if arch_index.len() >= TX_INDEX_CAP {
+                                    arch_index.pop_front();
+                                }
+                                arch_index.push_back((wid0, slot0, at));
+                            }
+                        }
                     }
-                    tx_index.push_back(SentFrame { seq: window_id, slot: frames_in_window as u8, tier: tier as u8, at });
+                    arch_buf.clear();
+                }
+                // The wire copy spools ONLY when compressed (bit-exact fill service, small); a plaid window reconstructs from its archive record at serve time.
+                if tier != RAW_TIER {
+                    if let Some(at) = w.append_seq(0, osc, Some((window_id, frames_in_window as u8)), &enc[..n]) {
+                        if tx_index.len() >= TX_INDEX_CAP {
+                            tx_index.pop_front();
+                        }
+                        tx_index.push_back(SentFrame { seq: window_id, slot: frames_in_window as u8, tier: tier as u8, at });
+                    }
                 }
             }
             window_buf.extend_from_slice(&(n as u16).to_le_bytes());
@@ -1050,7 +1081,7 @@ fn run(
             let mut fills: Vec<(u32, u8, Vec<u8>)> = Vec::new();
             let mut budget = FILL_PACKET_BUDGET;
             while let Some(seq) = serve_queue.iter().next().copied() {
-                let served = serve_window(&params, &mut spool_reader, &tx_index, seq);
+                let served = serve_window(&params, &mut spool_reader, &tx_index, seq).or_else(|| serve_window_from_archive(&params, &mut spool_reader, &arch_index, &mut arch_dec, seq));
                 let cost = 5 + served.as_ref().map_or(0, |(_, b)| b.len());
                 if cost > budget && !fills.is_empty() {
                     break;
@@ -1590,6 +1621,52 @@ fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolRe
         window[base..base + 2].copy_from_slice(&(rec.bytes.len() as u16).to_le_bytes());
         window[base + 2..base + 2 + rec.bytes.len()].copy_from_slice(&rec.bytes);
         any = true;
+    }
+    any.then_some((tier as u8, window))
+}
+
+/// Plaid fills reconstruct from the ARCHIVE (whose wire copies never spool): a plaid window is exactly 2 frames = one 10ms archive record — decode it, split the halves, bundle at the RAW tier. Serve-time decode, and only on the pristine-path rung where losses are rare anyway.
+fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, arch_index: &std::collections::VecDeque<(u32, u8, super::spool::RecordAt)>, dec: &mut Option<opus::Decoder>, seq: u32) -> Option<(u8, Vec<u8>)> {
+    let first = arch_index.partition_point(|(w, _, _)| *w < seq);
+    if first >= arch_index.len() || arch_index[first].0 != seq {
+        return None;
+    }
+    if reader.is_none() {
+        let (key, path) = params.spool.as_ref()?;
+        *reader = Some(super::spool::SpoolReader::open(key, path)?);
+    }
+    let r = reader.as_mut()?;
+    if dec.is_none() {
+        *dec = opus::Decoder::new(48_000, opus::Channels::Mono).ok();
+    }
+    let d = dec.as_mut()?;
+    let tier = RAW_TIER;
+    let mut window = vec![0u8; tier_window_bytes(tier)];
+    let mut any = false;
+    for (_, slot0, at) in arch_index.range(first..).take_while(|(w, _, _)| *w == seq) {
+        let Some(rec) = r.read_at(*at) else {
+            continue;
+        };
+        let mut pcm = vec![0i16; 480];
+        let _ = d.reset_state();
+        let Ok(got) = d.decode(&rec.bytes, &mut pcm, false) else {
+            continue;
+        };
+        if got < 480 {
+            continue;
+        }
+        for half in 0..2usize {
+            let slot = *slot0 as usize + half;
+            if slot >= TIER_FRAMES[tier] {
+                continue;
+            }
+            let base = slot * tier_slot(tier);
+            window[base..base + 2].copy_from_slice(&(RAW_FRAME_BYTES as u16).to_le_bytes());
+            for (i, sample) in pcm[half * 240..half * 240 + 240].iter().enumerate() {
+                window[base + 2 + i * 2..base + 2 + i * 2 + 2].copy_from_slice(&sample.to_le_bytes());
+            }
+            any = true;
+        }
     }
     any.then_some((tier as u8, window))
 }
