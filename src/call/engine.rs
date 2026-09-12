@@ -288,6 +288,11 @@ fn run(
     let mut pid_last_e: f32 = 0.0;
     let mut ducked_frames: u64 = 0;
     let mut gated_frames: u64 = 0;
+    // THE HARD MUTE IS BOUNDED (field 2026-09-12: Brittany could not hear Nick for the last fifteen seconds — his mic sat under the predicted echo for the whole tail and the gate held it at 0.02, and the canceller that could have demoted it had disarmed). A run of consecutive Gate verdicts longer than this is double-talk, not echo: a person talking over the far end. Past the bound the verdict demotes to the soft duck until a frame comes in clearly under the prediction again.
+    const GATE_RUN_MAX: u32 = 100; // 100 × 5 ms = half a second
+    let mut gate_run: u32 = 0;
+    // When the canceller disarms, the chirp's prediction it was meant to verify is unverified: gate REACTIVELY (the measured far level, not the predicted echo) for the rest of the wave.
+    let mut prediction_trusted = true;
     let mut far_active_frames: u64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
@@ -591,14 +596,23 @@ fn run(
                 // Duck term, two modes:
                 //   PREDICTIVE (Cal 4, an applied calibration exists): expected echo = g_norm × vol_lin × far_env(t−delay) from the learner's delay-aligned bins — the gate compares the mic against what the SPEAKER PHYSICALLY EMITTED one acoustic round-trip ago, not the peak-hold of what's rendering now; hysteresis kills threshold chatter.
                 //   REACTIVE (uncalibrated fallback): the peak-hold far_level + absolute ratio gate, exactly the pre-calibration behavior — until the live learner reaches Usable and arms the predictive path itself.
-                let duck_term = if let Some((g_norm, delay)) = applied {
+                let duck_term = if let (Some((g_norm, delay)), true) = (applied, prediction_trusted) {
                     let far_del = learner.far_env_at(delay);
                     let far_talking = route_ducks && far_del > crate::call::learn::FAR_ACT;
                     let pred = g_norm * vol_lin_now * far_del;
                     match pred_gate.decide(mean, pred, live_floor, far_talking) {
-                        crate::call::learn::GateVerdict::Full => 1.0,
+                        crate::call::learn::GateVerdict::Full => {
+                            gate_run = 0;
+                            1.0
+                        }
+                        crate::call::learn::GateVerdict::Gate if gate_run >= GATE_RUN_MAX => {
+                            // Bounded: half a second of "echo only" is a person talking — soft duck, never the mute.
+                            proc_verdict = 1;
+                            (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
+                        }
                         crate::call::learn::GateVerdict::Gate => {
                             gated_frames += 1;
+                            gate_run += 1;
                             proc_verdict = 2;
                             if nlms.as_ref().is_some_and(|c| c.erle_recent_db().is_some_and(|e| e >= 6.0)) {
                                 // A filter that has PROVEN itself (≥6dB recent ERLE) has already subtracted the echo — the hard near-mute demotes to the soft residual duck, and double-talk survives (full duplex). An armed-but-weak filter keeps the gate (2026-09-09: a 2dB filter demoting the gate to a −16dB duck was the field's "echoey").
@@ -608,6 +622,7 @@ fn run(
                             }
                         }
                         crate::call::learn::GateVerdict::Duck => {
+                            gate_run = 0;
                             proc_verdict = 1;
                             (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
                         }
@@ -616,9 +631,14 @@ fn run(
                     let far_talking = route_ducks && far > DUCK_FAR_HALF;
                     let echo_only = far_talking && mean < far * ECHO_GATE_RATIO;
                     if !route_ducks || !far_talking {
+                        gate_run = 0;
                         1.0
+                    } else if echo_only && gate_run >= GATE_RUN_MAX {
+                        proc_verdict = 1;
+                        (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
                     } else if echo_only {
                         gated_frames += 1;
+                        gate_run += 1;
                         proc_verdict = 2;
                         ECHO_GATE_GAIN
                     } else {
@@ -1232,6 +1252,11 @@ fn run(
                 crate::logf!("CALL: nlms disarmed — net harmful (recent {:.1}dB), duck carries", erle);
             }
             nlms = None;
+            // The prediction the canceller was meant to verify is unverified: reactive gating from here on.
+            if prediction_trusted {
+                prediction_trusted = false;
+                crate::log("CALL: gate falls back to reactive (measured far level) — the predictive seed is unverified without the canceller");
+            }
         }
         // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
         if let Some(v) = crate::call::vchirp::take_verdict() {

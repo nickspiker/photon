@@ -137,6 +137,10 @@ Route and latency are different axes. Latency is the stream's path: exclusive MM
 
 Two phones on one LAN connected over the LAN, then one side's drought probe re-aimed it at the peer's global IPv6, the anchor carried that address across, and the other engine's express re-anchor followed — both left a live path for one the router does not route between its own clients. Two guards: the drought probe walks candidates only while no authenticated media has arrived on the wave (`LAST_MEDIA_RX_OSC == 0`), and the engine's express re-anchor applies only before the first authenticated packet (`rx_max_seq.is_none()`). After media has flowed, a drought means the peer stopped sending; the anchors still carry the search, and the media plane's forward-progress rule still re-points TX when the peer's own packets arrive from a new address.
 
+## The gate is bounded, the prediction is provisional (2026-09-12 evening)
+
+Field: Brittany could not hear Nick for the last fifteen seconds of a LAN wave, and the next wave was "bouncy" from her side. Transport was fine both times; Nick's mic was under the chirp's predicted echo (earpiece coupling 0.67, her play level 8,000) so the gate held it at 0.02, and the canceller that could have demoted the mute had disarmed as net harmful. Two guards in the engine: a run of Gate verdicts longer than `GATE_RUN_MAX` (half a second) demotes to the soft duck — that long under the prediction is a person talking, not echo — and when the canceller disarms the gate goes reactive (the measured far level) for the rest of the wave, since the prediction it was meant to verify is unverified. The structural answer is a subband canceller trained on the clean take; see the plan in memory.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-call handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept call are the follow-up.
