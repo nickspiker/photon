@@ -3796,10 +3796,11 @@ impl PhotonApp {
                                     _ => None,
                                 };
                                 if let Some((tw, th, pixels)) = picture {
-                                    let first_line_y = y - react_off - (lines.len().max(1) - 1) as f32 * intra;
+                                    // A picture row has no body text (the picture IS the row), so the band anchors straight off the baseline with symmetric insets — the text-row offset left dead padding under every image (Nick 2026-09-12, same fix as the audio band).
                                     let reply_off = if reply_target.is_some() { intra } else { 0.0 };
-                                    let band_bot = first_line_y - reply_off - msg_size * 0.9;
-                                    let band_top = band_bot - img_band_h + msg_size * 0.3;
+                                    let pad_v = msg_size * 0.35;
+                                    let band_bot = y - react_off - reply_off - pad_v;
+                                    let band_top = y - react_off - reply_off - img_band_h + pad_v;
                                     let bh = (band_bot - band_top).max(1.0);
                                     let aspect = msg.attach.and_then(|a| a.dims).map_or(tw as f32 / th as f32, |(w, h): (u32, u32)| w as f32 / h.max(1) as f32);
                                     let avail = buf_w as f32 - pad_x * 2.0;
