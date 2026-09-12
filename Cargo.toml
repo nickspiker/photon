@@ -178,6 +178,10 @@ bluer = { version = "0.17", features = ["bluetoothd"] }
 ksni = "0.3.6"
 
 # Pairing v2 beacon SCANNER (sponsor / old-device role) via btleplug's cross-platform central (CoreBluetooth on macOS, WinRT on Windows) — docs/pairing-v2.md. btleplug is central-only, so ADVERTISING (new-device role) is wired per-OS natively (CoreBluetooth CBPeripheralManager / WinRT BluetoothLEAdvertisementPublisher).
+# Music-pigeon playback (2026-09-12): a rodio sink over the blob bytes. Desktop only — Android routes thru its own audio engine later.
+[target.'cfg(all(not(target_os = "android"), not(target_os = "redox")))'.dependencies]
+rodio = "0.20"
+
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
 btleplug = "0.11"
 

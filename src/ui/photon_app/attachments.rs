@@ -138,8 +138,8 @@ impl PhotonApp {
                 return;
             }
         };
-        // Images travel NAMELESS (Nick 2026-09-11: "the user typed nothing. just an image") — a camera filename is metadata nobody chose to send; the receiver derives the ingest extension from the bytes' own magic.
-        let wire_name = if meta.kind.is_image() { "" } else { name.as_str() };
+        // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
+        let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
         let content = crate::types::attachment_content(&hash, wire_name, bytes.len() as u64);
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview));

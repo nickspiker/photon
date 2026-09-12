@@ -3684,30 +3684,21 @@ impl PhotonApp {
                                                 None
                                             };
                                             let sides = [(resolve(env_ours_h, 0), false, our_colour), (resolve(env_theirs_h, 1), true, their_colour)];
-                                            // THE CUMULATIVE STACK (Nick 2026-09-12, "just divide and fit"): every bin adds into exactly ONE pixel bin by the integer map bin·cols÷bins, a count divides each column after (uneven counts expected), so a column's value is the true mean POWER of its whole span — no interpolation branch, no bin/column beat, the dither noise averages out. Height = RMS amplitude against −12 dBFS; the fractional tip renders as OPACITY (α in fluor's darkness convention), vertical alias only, no oversampling.
+                                            // THE CUMULATIVE STACK WITH OPACITY CONTRIBUTIONS (Nick 2026-09-12): wave_fold_coverage lands every bin in one column at its own height and tracks per-row coverage; the draw is one solid run plus a graded contour. Height reference −12 dBFS; the played/unplayed split rides the colour.
                                             const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
+                                            let rows = half as usize;
                                             for (src, up, pc) in sides {
                                                 let Some((src_h, src_ch, e)) = src else { continue };
-                                                let key = (src_h, src_ch, cols);
-                                                let amps: std::rc::Rc<Vec<f32>> = {
+                                                if rows == 0 {
+                                                    continue;
+                                                }
+                                                let key = (src_h, src_ch, cols, rows);
+                                                let cov: std::rc::Rc<Vec<f32>> = {
                                                     let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                     match hit {
                                                         Some(a) => a,
                                                         None => {
-                                                            let bins = e.bins;
-                                                            let mut acc = vec![0u64; cols];
-                                                            let mut n = vec![0u32; cols];
-                                                            for b in 0..bins {
-                                                                let px = (b * cols / bins.max(1)).min(cols - 1);
-                                                                acc[px] += e.data[b] as u64;
-                                                                n[px] += 1;
-                                                            }
-                                                            // One u8 step of the power track as absolute power — multiplication only; the count divide is the fold's own mean, once per column per fold.
-                                                            let lsb0 = e.lsb(0);
-                                                            let a: Vec<f32> = (0..cols)
-                                                                .map(|i| if n[i] == 0 { 0.0 } else { (acc[i] as f32 / n[i] as f32 * lsb0).max(0.0).sqrt() })
-                                                                .collect();
-                                                            let a = std::rc::Rc::new(a);
+                                                            let a = std::rc::Rc::new(wave_fold_coverage(&e, cols, rows, WAVE_FULL_HEIGHT_AMP));
                                                             let mut cache = self.wave_fold_cache.borrow_mut();
                                                             if cache.len() >= 128 {
                                                                 cache.clear();
@@ -3717,34 +3708,13 @@ impl PhotonApp {
                                                         }
                                                     }
                                                 };
-                                                for px in 0..cols {
-                                                    let lit = held && frac.is_some() && px < played_cols;
-                                                    let hgt = (amps[px] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92;
-                                                    let full = hgt.floor();
-                                                    let tip_a = ((hgt - full) * 255.0) as u32;
-                                                    // BRIGHTEN ONLY: unplayed = half brightness in the darkness domain, α untouched; played = full.
-                                                    let c = if lit {
-                                                        pc
-                                                    } else {
-                                                        let (a, d) = (pc & 0xFF00_0000, pc & 0x00FF_FFFF);
-                                                        let darker = |dark: u32| (255 + dark) / 2;
-                                                        a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
-                                                    };
-                                                    let x = (wx0 + px as f32) as isize;
-                                                    let (ty, th) = if up { (bcy - full, full) } else { (bcy, full) };
-                                                    let run_top = ty.max(list_top);
-                                                    let run_bot = (ty + th).min(list_bottom);
-                                                    if run_bot > run_top && th >= 1.0 {
-                                                        paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, Some(list_clip), None);
-                                                    }
-                                                    if tip_a > 0 {
-                                                        let tip_y = if up { bcy - full - 1.0 } else { bcy + full };
-                                                        if tip_y >= list_top && tip_y < list_bottom {
-                                                            let tip_c = (c & 0x00FF_FFFF) | (tip_a << 24);
-                                                            paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, Some(list_clip), None);
-                                                        }
-                                                    }
-                                                }
+                                                let dim_pc = {
+                                                    let (a, d) = (pc & 0xFF00_0000, pc & 0x00FF_FFFF);
+                                                    let darker = |dark: u32| (255 + dark) / 2;
+                                                    a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
+                                                };
+                                                let colour_of = move |px: usize| if held && frac.is_some() && px < played_cols { pc } else { dim_pc };
+                                                wave_draw_coverage(&mut canvas, &cov, cols, rows, wx0, bcy, up, &colour_of, list_top, list_bottom, Some(list_clip));
                                             }
                                             // Centreline hairline, then the playhead.
                                             if bcy > list_top && bcy < list_bottom {
@@ -3837,38 +3807,54 @@ impl PhotonApp {
                                             });
                                         }
                                     }
-                                    if let Some(Some(envs)) = self.wave_env.get(&ahash) {
+                                    if let Some(Some(envs)) = self.wave_env.get(&ahash).cloned() {
                                         let first_line_y = y - react_off - (lines.len().max(1) - 1) as f32 * intra;
                                         let reply_off = if reply_target.is_some() { intra } else { 0.0 };
                                         let band_bot = first_line_y - reply_off - msg_size * 0.9;
                                         let band_top = band_bot - audio_band_h + msg_size * 0.3;
                                         let (wx0, wx1) = (pad_x, buf_w as f32 - pad_x);
                                         let bcy = (band_top + band_bot) * 0.5;
-                                        let half = (band_bot - band_top).max(1.0) * 0.5;
+                                        let half = (band_bot - band_top).max(2.0) * 0.5;
                                         let cols = ((wx1 - wx0).max(1.0)) as usize;
+                                        let rows = half as usize;
                                         const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
+                                        let strip_open = self.selected_msg.is_some_and(|(_, ts, out)| ts == msg.timestamp && out == msg.is_outgoing);
+                                        let mfrac = self.music_play.as_ref().filter(|m| m.hash == ahash && m.playing()).map(|m| m.frac());
+                                        // The play twelfth, only while the options show: glyph first, its dark backdrop after, the bars fill beneath both (topmost-first).
+                                        let play_w = (wx1 - wx0) / 12.0;
+                                        if strip_open {
+                                            let glyph = if mfrac.is_some() { "\u{25A0}" } else { "\u{25B6}\u{FE0E}" };
+                                            let gs = TextStyle::new(msg_size, *theme::CONTACT_NAME_COLOUR).weight(500).font("Oxanium");
+                                            let gw = ctx.text.measure_text(glyph, &gs);
+                                            ctx.text.draw_text_left(&mut canvas, glyph, wx0 + play_w * 0.5 - gw * 0.5, bcy + msg_size * 0.35, &gs, Some(list_clip), None);
+                                            let bt = band_top.max(list_top);
+                                            let bb = band_bot.min(list_bottom);
+                                            if bb > bt {
+                                                paint::fill_rect(&mut canvas, wx0 as isize, bt as isize, play_w as isize, (bb - bt) as isize, theme::near_black(colour, 0.15), Some(list_clip), None);
+                                            }
+                                        }
+                                        // Playhead while playing.
+                                        if let Some(f) = mfrac {
+                                            let phx = wx0 + f * (wx1 - wx0);
+                                            let (py0, py1) = (band_top.max(list_top), band_bot.min(list_bottom));
+                                            if py1 > py0 {
+                                                paint::fill_rect(&mut canvas, phx as isize, py0 as isize, 0, (py1 - py0) as isize, *theme::CONTACT_NAME_COLOUR, Some(list_clip), None);
+                                            }
+                                        }
+                                        let played_cols = mfrac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
                                         let last = envs.len().saturating_sub(1);
                                         for (chn, up) in [(0usize, true), (last, false)] {
                                             let Some(e) = envs.get(chn) else { continue };
-                                            let key = (ahash, chn + 4, cols);
-                                            let amps: std::rc::Rc<Vec<f32>> = {
+                                            if rows == 0 {
+                                                continue;
+                                            }
+                                            let key = (ahash, chn + 4, cols, rows);
+                                            let cov: std::rc::Rc<Vec<f32>> = {
                                                 let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                 match hit {
                                                     Some(a) => a,
                                                     None => {
-                                                        let bins = e.bins;
-                                                        let mut acc = vec![0u64; cols];
-                                                        let mut nn = vec![0u32; cols];
-                                                        for b in 0..bins {
-                                                            let px = (b * cols / bins.max(1)).min(cols - 1);
-                                                            acc[px] += e.data[b] as u64;
-                                                            nn[px] += 1;
-                                                        }
-                                                        let lsb0 = e.lsb(0);
-                                                        let a: Vec<f32> = (0..cols)
-                                                            .map(|i| if nn[i] == 0 { 0.0 } else { (acc[i] as f32 / nn[i] as f32 * lsb0).max(0.0).sqrt() })
-                                                            .collect();
-                                                        let a = std::rc::Rc::new(a);
+                                                        let a = std::rc::Rc::new(wave_fold_coverage(e, cols, rows, WAVE_FULL_HEIGHT_AMP));
                                                         let mut cache = self.wave_fold_cache.borrow_mut();
                                                         if cache.len() >= 128 {
                                                             cache.clear();
@@ -3878,30 +3864,20 @@ impl PhotonApp {
                                                     }
                                                 }
                                             };
-                                            for px in 0..cols {
-                                                let hgt = (amps[px] / WAVE_FULL_HEIGHT_AMP).clamp(0.0, 1.0) * half * 0.92;
-                                                let full = hgt.floor();
-                                                let tip_a = ((hgt - full) * 255.0) as u32;
-                                                let x = (wx0 + px as f32) as isize;
-                                                let (ty, th) = if up { (bcy - full, full) } else { (bcy, full) };
-                                                let run_top = ty.max(list_top);
-                                                let run_bot = (ty + th).min(list_bottom);
-                                                if run_bot > run_top && th >= 1.0 {
-                                                    paint::fill_rect(&mut canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, colour, Some(list_clip), None);
-                                                }
-                                                if tip_a > 0 {
-                                                    let tip_y = if up { bcy - full - 1.0 } else { bcy + full };
-                                                    if tip_y >= list_top && tip_y < list_bottom {
-                                                        let tip_c = (colour & 0x00FF_FFFF) | (tip_a << 24);
-                                                        paint::fill_rect(&mut canvas, x, tip_y as isize, 1, 1, tip_c, Some(list_clip), None);
-                                                    }
-                                                }
-                                            }
+                                            // Bright when idle (Nick: "when not playing always shows bright"); playing splits played bright / rest half.
+                                            let dim_pc = {
+                                                let (a, d) = (colour & 0xFF00_0000, colour & 0x00FF_FFFF);
+                                                let darker = |dark: u32| (255 + dark) / 2;
+                                                a | (darker((d >> 16) & 0xFF) << 16) | (darker((d >> 8) & 0xFF) << 8) | darker(d & 0xFF)
+                                            };
+                                            let playing = mfrac.is_some();
+                                            let colour_of = move |px: usize| if !playing || px < played_cols { colour } else { dim_pc };
+                                            wave_draw_coverage(&mut canvas, &cov, cols, rows, wx0, bcy, up, &colour_of, list_top, list_bottom, Some(list_clip));
                                         }
                                         if bcy > list_top && bcy < list_bottom {
                                             paint::fill_rect(&mut canvas, wx0 as isize, bcy as isize, (wx1 - wx0) as isize, 0, theme::dim_colour(colour), Some(list_clip), None);
                                         }
-                                        // The band is the row's visual — a tap on it goes to the actions strip for now (play rides later).
+                                        // The band is the row's visual: the driver routes its taps (options / the play twelfth / seek-while-playing).
                                         if let Some(a) = msg.attach {
                                             let slot = vi % super::MSG_HIT_SPAN as usize;
                                             if slot < self.msg_attach_visuals.len() {
@@ -6376,5 +6352,72 @@ fn draw_standing_bands(bands: &[(String, u32)], canvas: &mut Canvas, text: &mut 
             text.draw_text_center(canvas, line, cx, cy, &style_of(*colour), None, None);
         }
         bottom -= band_h * n as f32;
+    }
+}
+
+/// DOWNSCALE WITH OPACITY CONTRIBUTIONS (Nick 2026-09-12, "are we downscaling and tracking opacity contributions?"): fold one envelope channel to per-column VERTICAL COVERAGE — every bin lands in exactly one column with its OWN bar height, and a row's value is the fraction of that column's bins whose bar reaches it. Coverage is monotone non-increasing upward, solid where the bins agree and graded where they don't, so the contour anti-aliases from the true within-column distribution with no oversampling.
+pub(super) fn wave_fold_coverage(e: &crate::call::wave_env::WaveEnv, cols: usize, rows: usize, ref_amp: f32) -> Vec<f32> {
+    let lsb0 = e.lsb(0);
+    let mut h_lut = [0f32; 256];
+    for (b, h) in h_lut.iter_mut().enumerate() {
+        *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32 * 0.92;
+    }
+    let bins = e.bins.max(1);
+    let mut cov = vec![0f32; cols * rows.max(1)];
+    let mut n = vec![0u32; cols];
+    for b in 0..e.bins {
+        let px = (b * cols / bins).min(cols - 1);
+        n[px] += 1;
+        let h = h_lut[e.data[b] as usize];
+        let full = (h.floor() as usize).min(rows);
+        let base = px * rows;
+        for r in 0..full {
+            cov[base + r] += 1.0;
+        }
+        if full < rows {
+            cov[base + full] += h - full as f32;
+        }
+    }
+    for px in 0..cols {
+        if n[px] > 1 {
+            let inv = 1.0 / n[px] as f32;
+            for r in 0..rows {
+                cov[px * rows + r] *= inv;
+            }
+        }
+    }
+    cov
+}
+
+/// Draw one half-band from a coverage fold: one solid run where coverage saturates, then per-pixel alpha up the graded contour (coverage is monotone, so the first near-zero row ends the column). `colour_of` picks the column's colour (the played/unplayed split).
+#[allow(clippy::too_many_arguments)]
+pub(super) fn wave_draw_coverage(canvas: &mut Canvas, cov: &[f32], cols: usize, rows: usize, wx0: f32, bcy: f32, up: bool, colour_of: &dyn Fn(usize) -> u32, list_top: f32, list_bottom: f32, clip: Option<fluor::paint::Clip>) {
+    for px in 0..cols {
+        let base = px * rows;
+        let c = colour_of(px);
+        let x = (wx0 + px as f32) as isize;
+        let mut solid = 0usize;
+        while solid < rows && cov[base + solid] >= 0.999 {
+            solid += 1;
+        }
+        if solid > 0 {
+            let (ty, th) = if up { (bcy - solid as f32, solid as f32) } else { (bcy, solid as f32) };
+            let run_top = ty.max(list_top);
+            let run_bot = (ty + th).min(list_bottom);
+            if run_bot > run_top {
+                paint::fill_rect(canvas, x, run_top as isize, 1, (run_bot - run_top) as isize, c, clip, None);
+            }
+        }
+        for r in solid..rows {
+            let a = cov[base + r];
+            if a <= 0.004 {
+                break;
+            }
+            let ac = (c & 0x00FF_FFFF) | (((a * 255.0) as u32) << 24);
+            let ry = if up { bcy - r as f32 - 1.0 } else { bcy + r as f32 };
+            if ry >= list_top && ry < list_bottom {
+                paint::fill_rect(canvas, x, ry as isize, 1, 1, ac, clip, None);
+            }
+        }
     }
 }

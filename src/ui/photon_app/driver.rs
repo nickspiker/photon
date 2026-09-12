@@ -1608,6 +1608,40 @@ impl FluorApp for PhotonApp {
                 if let Some(v) = self.msg_attach_visuals.get(vis).copied().flatten() {
                     let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
                     if v.contains(px, py) {
+                        // MUSIC PIGEON (Nick 2026-09-12): first tap opens the options (the strip below, stats above, the play twelfth on the band); the twelfth toggles play; while playing the rest of the band seeks; idle elsewhere closes the options.
+                        if v.kind == crate::types::AttachKind::Audio {
+                            let row = self.active_contact().and_then(|ci| {
+                                self.conv_of(ci).and_then(|c| c.messages.iter().find(|m| crate::types::parse_attachment_content(&m.content).is_some_and(|(h, _, _)| h == v.hash)).map(|m| (ci, m.timestamp, m.is_outgoing)))
+                            });
+                            if let Some((ci, ts, out)) = row {
+                                if self.selected_msg != Some((ci, ts, out)) {
+                                    self.selected_msg = Some((ci, ts, out));
+                                    self.selected_msg_copied = false;
+                                } else {
+                                    let play_w = (v.x1 - v.x0) / 12.0;
+                                    if px < v.x0 + play_w {
+                                        match self.music_play.as_ref().filter(|m| m.hash == v.hash) {
+                                            Some(m) => m.toggle(),
+                                            None => {
+                                                let dur = self.wave_env.get(&v.hash).and_then(|o| o.as_ref()).and_then(|envs| envs.first()).map(|e| e.bins as f32 * e.samples_per_bin as f32 / e.sample_rate.max(1) as f32).unwrap_or(0.0);
+                                                let bytes = self.session.as_ref().map(|se| se.identity_seed).and_then(|seed| crate::storage::blob_load(&seed, &v.hash));
+                                                self.music_play = bytes.and_then(|b| super::music_play::MusicPlay::start(v.hash, b, dur));
+                                            }
+                                        }
+                                    } else if self.music_play.as_ref().is_some_and(|m| m.hash == v.hash && m.playing()) {
+                                        let f = ((px - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0);
+                                        if let Some(m) = self.music_play.as_ref() {
+                                            m.seek_frac(f);
+                                        }
+                                    } else {
+                                        self.selected_msg = None;
+                                    }
+                                }
+                                self.scene_dirty = true;
+                                ctx.window.request_redraw();
+                                return EventResponse::Handled;
+                            }
+                        }
                         if let Some(ci) = self.active_contact() {
                             let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
                             if v.kind.is_image() {
@@ -3240,6 +3274,15 @@ impl FluorApp for PhotonApp {
         }
         // Keep-transcode results: a finished N-channel recording mints its `call.audio` row here (off-thread transcode posted back over the channel).
         self.drain_wave_env_wants();
+        // A playing music pigeon sweeps its playhead (and clears itself at the end of the song — an edge, not a timer).
+        if let Some(m) = self.music_play.as_ref() {
+            if m.done() {
+                self.music_play = None;
+                self.scene_dirty = true;
+            } else if m.playing() {
+                self.scene_dirty = true;
+            }
+        }
         if self.drain_wave_env() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }

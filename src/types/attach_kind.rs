@@ -182,6 +182,21 @@ pub fn sniff_ext(bytes: &[u8]) -> &'static str {
     if starts(b"R") && bytes.len() >= 4 && bytes[..bytes.len().min(4096)].windows(14).any(|w| w == b"spectral_image") {
         return "vsf";
     }
+    if starts(b"ID3") || starts(&[0xFF, 0xFB]) || starts(&[0xFF, 0xF3]) || starts(&[0xFF, 0xF2]) {
+        return "mp3";
+    }
+    if starts(b"OggS") {
+        return "ogg";
+    }
+    if starts(b"fLaC") {
+        return "flac";
+    }
+    if starts(b"RIFF") && at(8, b"WAVE") {
+        return "wav";
+    }
+    if at(4, b"ftyp") {
+        return "m4a";
+    }
     "bin"
 }
 

@@ -54,6 +54,7 @@ mod launch;
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub mod lifeline;
 mod messaging;
+mod music_play;
 mod peers;
 mod protocol;
 mod render;
@@ -721,6 +722,10 @@ fn display_row(msg: &crate::types::ChatMessage) -> String {
             if a.kind.is_image() {
                 let has_visual = crate::types::parse_micro_image(&msg.preview).is_some() || a.preview_hash.is_some() || crate::storage::blob_present(&hash);
                 return if has_visual { String::new() } else { "\u{2026}".to_string() };
+            }
+            // A music pigeon is its waveform alone, like a picture is its picture (Nick 2026-09-12: "no name, just like images, just the waveform").
+            if a.kind == crate::types::AttachKind::Audio {
+                return if crate::storage::blob_present(&hash) { String::new() } else { "\u{2026}".to_string() };
             }
             if a.kind.is_text() && !msg.preview.is_empty() {
                 let text = String::from_utf8_lossy(&msg.preview);
@@ -2030,8 +2035,10 @@ pub struct PhotonApp {
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
     /// Far-party env blobs seen but not held: (ci, hash) queued by the render, fetched once per session by drain_wave_env_wants.
     wave_env_wants: Vec<(usize, [u8; 32])>,
-    /// Finished wave-card columns per (source hash, channel-in-source, width): per-column RMS amplitude — the cumulative stack runs once, the per-frame loop is a height map and fill_rects. Cleared wholesale past a small cap.
-    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize), std::rc::Rc<Vec<f32>>>>,
+    /// Finished band folds per (source hash, channel-in-source, width, rows): per-column-per-row VERTICAL COVERAGE 0..1 (the downscale-with-opacity-contributions fold) — built once, the per-frame loop is solid runs + graded contour pixels. Cleared wholesale past a small cap.
+    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<Vec<f32>>>>,
+    /// The playing music pigeon, if any (desktop; Android stubs until music routes thru its audio engine).
+    music_play: Option<music_play::MusicPlay>,
     wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,
     wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,
     call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
@@ -2579,6 +2586,7 @@ impl PhotonApp {
             call_keep_rx: None,
             wave_env: std::collections::HashMap::new(),
             wave_env_wants: Vec::new(),
+            music_play: None,
             wave_fold_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
             wave_env_pending: std::collections::HashSet::new(),
             wave_env_tx: None,
