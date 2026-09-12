@@ -7,6 +7,18 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waveforms are rendered a new way, everywhere they appear: every stored sample lands in its screen column at its own height, and the edge pixels are shaded by how many of them reach that row, so the contour is smooth at any width with nothing invented and nothing thrown away.
+- Waveform colour is now the balance of three tuned voice bands — warmth below 240 Hz reads red, presence around 2.4 kHz reads green, sibilance and air above 8 kHz read blue — as vivid in a whisper as in a shout.
+- A wave now records your voice clean, before echo ducking touches it, and the ducking itself is saved as data beside it; the other side's card gets your true waveform, not the ducked one.
+- Keeping a wave is near-instant now: the recording is written once during the call at archive quality, so the keep packages it instead of re-encoding it, and recordings take a fraction of the space they did.
+- A wave's waveform card colours in seconds after hangup on both sides — the envelope travels ahead of the audio.
+- Drop a song into any conversation and the row IS its waveform, left channel up, right channel down; tap it for the options and the play button, tap play to listen, tap along the band to seek while it plays.
+- Pictures and songs travel without their filenames; a picture is the picture and a song is its waveform, and nothing about your camera or your files rides along.
+- On the desktop, opening a picture opens it in opsin, with exposure and the full raw pipeline; the in-app viewer stays for phones.
+- The viewer is a real full screen now: while it is open the conversation underneath stops being drawn entirely, which also ends the black-rectangle open.
+- The reaction buttons and the option buttons are dark with bright labels, as they were always meant to be, instead of blinding.
+- A wave no longer appears twice on the timeline when your other devices lived the same call.
+- Old kept recordings and their previews from before this version do not play or draw; the recording format changed for all of the above and takes no baggage along.
 - The call screen's ring reads cyan for a same-network wave that runs over IPv6, not just over a private IPv4 address.
 - When the other side's phone changes network mid-wave, yours now sends its own address straight back and tries every address it knows for them, so a wave can pick up again on mobile data instead of dropping.
 - The earpiece route is kept only where it keeps the low-latency audio path; a phone whose vendor audio policy claims voice streams falls back to the loudspeaker at full speed rather than the earpiece at 40 ms.
