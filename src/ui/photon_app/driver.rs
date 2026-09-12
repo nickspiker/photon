@@ -2875,9 +2875,11 @@ impl FluorApp for PhotonApp {
                     conv.invalidate_digest(); // a tombstone drops a row from the syncable set
                 }
             }
+            // Blob shredding runs OFF-THREAD (field 2026-09-12: deleting a wave froze photon for minutes — a kept recording is a CHUNKED blob, one vault commit per chunk, and the vault was committing at seconds per op; the UI thread owes nobody those commits). Deletes are idempotent and nothing here awaits them.
+            let mut shred: Vec<[u8; 32]> = Vec::new();
             for row in &cascade {
                 if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
-                    crate::storage::blob_delete(&hash);
+                    shred.push(hash);
                 }
             }
             if !cascade.is_empty() {
@@ -2887,11 +2889,20 @@ impl FluorApp for PhotonApp {
                 // OFF-THREAD (ticket 2026-09-02): this was the last save_messages call still running synchronously on the UI thread — a delete froze the frame behind an encrypted table write (the delta gate shrank it, but the vault commit is still milliseconds the render loop doesn't have). The async writer's coalescing + quit drain cover it like any other persist.
                 self.persist_messages_async(sci);
             }
-            if let Some(row) = tombstoned {
-                // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted here and on every device that applies this tombstone.
+            if let Some(row) = &tombstoned {
+                // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted (off-thread, below) here and on every device that applies this tombstone.
                 if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
-                    crate::storage::blob_delete(&hash);
+                    shred.push(hash);
                 }
+            }
+            if !shred.is_empty() {
+                queue_job(&self.seal_job_tx, move || {
+                    for h in shred {
+                        crate::storage::blob_delete(&h);
+                    }
+                });
+            }
+            if let Some(row) = tombstoned {
                 // Fleet-wide: the tombstoned row rides the ordinary sibling push (merge upgrades true-wins).
                 self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).

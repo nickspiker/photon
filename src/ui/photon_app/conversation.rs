@@ -1409,7 +1409,11 @@ impl PhotonApp {
                         if let Some((hash, _, _)) =
                             crate::types::parse_attachment_content(&row.content)
                         {
-                            crate::storage::blob_delete(&hash);
+                            {
+                                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
+                                let h = hash;
+                                queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
+                            }
                         }
                         crate::logf!(
                             "CHAT: friend deleted a message (ts {}) — tombstone applied + gossiped",
@@ -2148,7 +2152,11 @@ impl PhotonApp {
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&existing.content)
                             {
-                                crate::storage::blob_delete(&hash);
+                                {
+                                // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
+                                let h = hash;
+                                queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
+                            }
                             }
                             upgraded = true;
                         }
