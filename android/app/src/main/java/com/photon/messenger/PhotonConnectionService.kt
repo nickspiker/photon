@@ -201,23 +201,7 @@ class PhotonConnectionService : Service() {
             }
             try { nativeAudioMic(micId) } catch (e: Throwable) { PhotonLog.w(TAG, "mic mirror failed: ${e.message}") }
         }
-        fun pushVolume() {
-            try {
-                // STREAM_MUSIC, not STREAM_VOICE_CALL (field 2026-09-02, Nick's rocker-indicator catch): our render track is USAGE_MEDIA (the latency-first 2026-08-19 trade — the vendor voice pipeline cost an 80ms buffer floor), so the MUSIC stream is the knob that actually governs our loudness. Mirroring the voice-call stream normalized the echo profile (g_norm = g / vol_lin) by a slider that does NOTHING to our audio — media volume changes didn't rescale the prediction, voice-call changes rescaled it for no physical reason.
-                // While the wave rides the earpiece the rocker governs the VOICE stream at the earpiece's own curve; otherwise the media stream at the loudspeaker's, as before (2026-09-12).
-                val stream = if (earpieceRouted) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
-                val device = if (earpieceRouted) android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE else android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-                val db = if (Build.VERSION.SDK_INT >= 28) {
-                    am.getStreamVolumeDb(stream, am.getStreamVolume(stream), device)
-                } else {
-                    // Pre-28 fallback: linear index ratio → rough dB (20·log10), floor -60.
-                    val v = am.getStreamVolume(stream).toFloat()
-                    val max = am.getStreamMaxVolume(stream).toFloat().coerceAtLeast(1f)
-                    if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
-                }
-                nativeVolumeDb(db)
-            } catch (e: Throwable) { PhotonLog.w(TAG, "volume mirror failed: ${e.message}") }
-        }
+        fun pushVolume() = pushVolumeMirror()
         am.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
             override fun onAudioDevicesAdded(added: Array<out android.media.AudioDeviceInfo>?) { pushRoute() }
             override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>?) { pushRoute() }
@@ -227,6 +211,26 @@ class PhotonConnectionService : Service() {
         }, android.content.IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
         pushRoute()
         pushVolume()
+    }
+
+    /** The routed volume in dB, mirrored to Rust (the chirp's level estimate): the voice stream at the earpiece while a wave rides it, the media stream at the loudspeaker otherwise. A member so the route change can call it (2026-09-12). */
+    fun pushVolumeMirror() {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        try {
+            // STREAM_MUSIC, not STREAM_VOICE_CALL (field 2026-09-02, Nick's rocker-indicator catch): our render track is USAGE_MEDIA (the latency-first 2026-08-19 trade — the vendor voice pipeline cost an 80ms buffer floor), so the MUSIC stream is the knob that actually governs our loudness. Mirroring the voice-call stream normalized the echo profile (g_norm = g / vol_lin) by a slider that does NOTHING to our audio — media volume changes didn't rescale the prediction, voice-call changes rescaled it for no physical reason.
+            // While the wave rides the earpiece the rocker governs the VOICE stream at the earpiece's own curve; otherwise the media stream at the loudspeaker's, as before (2026-09-12).
+            val stream = if (earpieceRouted) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+            val device = if (earpieceRouted) android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE else android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
+            val db = if (Build.VERSION.SDK_INT >= 28) {
+                am.getStreamVolumeDb(stream, am.getStreamVolume(stream), device)
+            } else {
+                // Pre-28 fallback: linear index ratio → rough dB (20·log10), floor -60.
+                val v = am.getStreamVolume(stream).toFloat()
+                val max = am.getStreamMaxVolume(stream).toFloat().coerceAtLeast(1f)
+                if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
+            }
+            nativeVolumeDb(db)
+        } catch (e: Throwable) { PhotonLog.w(TAG, "volume mirror failed: ${e.message}") }
     }
 
     /** The system's account of every death the process could not witness itself — ANR, low-memory kill, native crash, explicit stop — logged at the NEXT start so it rides the next submission. The in-process panic hook + crash sidecar cover Rust panics with file and line; this covers everything that bypasses a hook entirely (SIGKILL has no hook), and for ANRs/native crashes attaches the system's own trace. Watermarked in prefs so each exit reports exactly once. API 30+; older devices keep sidecar-only coverage. */
@@ -914,7 +918,7 @@ class PhotonConnectionService : Service() {
                 earpieceRouted = false
             }
         } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route change failed", e) }
-        pushVolume()
+        pushVolumeMirror()
     }
 
     fun startCallAudio() {
