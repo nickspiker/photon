@@ -191,6 +191,17 @@ pub fn call_tx_addr() -> Option<SocketAddr> {
     *CALL_TX_ADDR.lock().unwrap()
 }
 
+/// A device that just pushed us its new address mid-wave, so the UI pushes ours back to it on the next tick (the network thread cannot: our freshest reflexive lives in the app).
+static ADDRESS_PUSH_WANTED: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+
+pub fn request_address_push(dev: [u8; 32]) {
+    *ADDRESS_PUSH_WANTED.lock().unwrap() = Some(dev);
+}
+
+pub fn take_address_push() -> Option<[u8; 32]> {
+    ADDRESS_PUSH_WANTED.lock().unwrap().take()
+}
+
 /// The DEVICE on the other end of the live call, for the network thread (it has no view of the UI's ActiveCall). A pushed address record for this device re-aims media the moment it lands — the push reroute, 2026-09-11.
 static CALL_PEER_DEVICE: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 

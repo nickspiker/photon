@@ -3757,12 +3757,15 @@ async fn run_checker(
                                             // The wave's own peer told us where it moved: aim media there at once rather than waiting for the drought probe (push reroute, 2026-09-11). The record self-verifies inside merge_peer and only a strictly newer one is adopted, so this cannot be replayed backwards. A LAN-scope address is left to the probe's policy — it is only a route if we share that LAN.
                                             let live = call_peer == Some(*rec.device_pubkey.as_bytes());
                                             let moved_to = rec.ip;
+                                            let rec_dev = *rec.device_pubkey.as_bytes();
                                             if store.merge_peer(rec) {
                                                 merged += 1;
                                                 let lan_scope = matches!(moved_to.ip().to_canonical(), std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4));
                                                 if live && !lan_scope && !crate::network::traverse::gather::is_bogus_addr(&moved_to) {
                                                     crate::logf!("CALL: the wave's peer pushed a new address — media re-aimed at {}", moved_to);
                                                     crate::call::set_peer_redirect(moved_to);
+                                                    // THE OTHER HALF (field 2026-09-12, wifi off mid-wave): we re-aimed at their new cellular address, a carrier NAT that opens only for flows THEY start — and they were still probing our old door. The UI pushes OUR freshest record to this device on the next tick (the store reply below can be stale).
+                                                    crate::call::request_address_push(rec_dev);
                                                 }
                                             }
                                         }

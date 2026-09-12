@@ -50,12 +50,15 @@ fn frame_time(stream: &AudioStream, pos: i64) -> Option<i64> {
 }
 
 /// Build one stream. AAudio's DEFAULTS are the attributes we want — MEDIA usage rides the fast mixer (the vendor voice pipeline behind VOICE_COMMUNICATION was the 80 ms floor, 2026-08-19) and the VOICE_RECOGNITION preset is the mic without the vendor NS/AGC/AEC chain — and the explicit setters are API 28 while minSdk is 26, so nothing is set. The callback box is consumed by the builder, so a failed open needs a fresh one from the factory.
+/// Whether the output opens with the voice-communication usage (the earpiece route's label). Field 2026-09-12: Nick's Pixel kept Exclusive/LowLatency at 4 ms under it, Emma's phone came up Shared/None at 40 ms on every wave — the vendor policy there hands voice-usage streams to its voice pipeline. So the usage is tried first and DROPPED for the process when it costs the fast path (the loudspeaker at 4 ms beats the earpiece at 40).
+static VOICE_USAGE_OK: AtomicBool = AtomicBool::new(true);
+
 fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::AudioStreamDataCallback) -> Result<AudioStream, String> {
     // VOICE USAGE ON THE OUTPUT (Nick 2026-09-12, "exclusive earpiece without losing latency"): the earpiece route (Kotlin's setCommunicationDevice) attaches to voice-usage streams, and usage is only a policy label — sharing mode, performance mode and burst size are set here and untouched by it. The August 80 ms floor came from the IN_COMMUNICATION audio MODE waking the vendor voice pipeline; the mode is never entered. The "AAudio out up" line is the proof: Exclusive/LowLatency at 4 ms, or it isn't.
     let b = AudioStreamBuilder::new()
         .map_err(|e| format!("builder: {e:?}"))?
         .direction(direction)
-        .usage(if matches!(direction, AudioDirection::Output) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
+        .usage(if matches!(direction, AudioDirection::Output) && VOICE_USAGE_OK.load(Ordering::Relaxed) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
         .sharing_mode(sharing)
         .performance_mode(AudioPerformanceMode::LowLatency)
         .sample_rate(SAMPLE_RATE)
@@ -143,7 +146,14 @@ fn describe(stream: &AudioStream, what: &str) {
 }
 
 fn start_output() -> Result<AudioStream, String> {
-    let s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+    let mut s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+    // THE GUARD (2026-09-12): the earpiece is only free when the voice-usage stream still runs the fast path. A stream that came up without LowLatency has been claimed by the vendor voice pipeline — close it, forget voice usage for this process, and reopen on media (the loudspeaker; Kotlin's earpiece route then has nothing to attach to and the OS falls back on its own).
+    if VOICE_USAGE_OK.load(Ordering::Relaxed) && !matches!(s.performance_mode(), AudioPerformanceMode::LowLatency) {
+        crate::logf!("AUDIO: voice usage cost the fast path on this device ({}/{}, {} fr bursts) — reopening on media usage, loudspeaker", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst());
+        VOICE_USAGE_OK.store(false, Ordering::Relaxed);
+        drop(s);
+        s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+    }
     // Two bursts of buffer: the smallest ask that still absorbs one late callback (the tester's own default).
     let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
     s.request_start().map_err(|e| format!("start: {e:?}"))?;

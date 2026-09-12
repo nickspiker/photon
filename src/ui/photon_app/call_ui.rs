@@ -555,6 +555,9 @@ impl PhotonApp {
             self.push_address_record_to(vec![dev]);
             self.force_presence_sweep();
         }
+        if let Some(dev) = crate::call::take_address_push() {
+            self.push_address_record_to(vec![dev]);
+        }
         const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
         let (reconnect_after, anchor_every, drop_after) = (5 * OSC, 2 * OSC, 30 * OSC);
         let Some(call) = self.active_call.as_ref() else {
@@ -616,6 +619,13 @@ impl PhotonApp {
                         (Some(c), Some(dev)) => crate::network::traverse::gather::gather_device_candidates(c, &dev).sorted().into_iter().map(|x| x.addr).collect(),
                         _ => Vec::new(),
                     };
+                    // The freshly PUSHED address joins the walk (the peer told us where it went; a candidate list rebuilt from the phonebook may not carry it yet).
+                    let mut cands = cands;
+                    if let Some(live) = crate::call::call_tx_addr().filter(|a| *a != crate::network::status::RELAY_ADDR) {
+                        if !cands.contains(&live) {
+                            cands.push(live);
+                        }
+                    }
                     if !cands.is_empty() {
                         let n = self.active_call.as_ref().map_or(0, |c| c.reconnect_probe) as usize;
                         let addr = cands[n % cands.len()];

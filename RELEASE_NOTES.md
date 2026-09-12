@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The call screen's ring reads cyan for a same-network wave that runs over IPv6, not just over a private IPv4 address.
+- When the other side's phone changes network mid-wave, yours now sends its own address straight back and tries every address it knows for them, so a wave can pick up again on mobile data instead of dropping.
+- The earpiece route is kept only where it keeps the low-latency audio path; a phone whose vendor audio policy claims voice streams falls back to the loudspeaker at full speed rather than the earpiece at 40 ms.
 - Waves on Android play through the earpiece, the way a phone call does, while keeping the same low-latency audio path; the volume rocker adjusts the earpiece during a wave and media the rest of the time.
 ## v94
 
