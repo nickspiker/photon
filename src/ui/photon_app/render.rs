@@ -3340,12 +3340,24 @@ impl PhotonApp {
                                 let hl_meta_top = (meta_bottom - (meta_lines.len() as f32 - 0.2) * meta_lh).max(list_top);
                                 let hl_media_top = (meta_bottom + meta_lh * 0.4).max(list_top);
                                 let hl_bot = (y + line_h * 0.5).min(list_bottom);
-                                let meta_tint = if cfg!(feature = "development") { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
+                                // Development builds tint each SECTION its own colour so the boundaries are visible while the layout iterates (Nick 2026-09-12): meta yellow, media white, actions cyan, reactions red. Release wears the rail's white throughout.
+                                let dev = cfg!(feature = "development");
+                                let meta_tint = if dev { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
+                                let action_tint = if dev { fluor::theme::fmt(0x20_FF_00_00) } else { theme::RAIL_ACTIVE_COLOUR };
+                                let react_tint = if dev { fluor::theme::fmt(0x20_00_FF_FF) } else { theme::RAIL_ACTIVE_COLOUR };
+                                let hl_actions_top = (y - line_h * 1.5).max(list_top);
+                                let hl_react_top = (y - line_h * 0.5).max(list_top);
                                 if hl_media_top > hl_meta_top {
                                     paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, (hl_media_top - hl_meta_top) as isize, meta_tint, Some(list_clip), None);
                                 }
-                                if hl_bot > hl_media_top {
-                                    paint::fill_rect(&mut canvas, 0, hl_media_top as isize, buf_w as isize, (hl_bot - hl_media_top) as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
+                                if hl_actions_top > hl_media_top {
+                                    paint::fill_rect(&mut canvas, 0, hl_media_top as isize, buf_w as isize, (hl_actions_top - hl_media_top) as isize, theme::RAIL_ACTIVE_COLOUR, Some(list_clip), None);
+                                }
+                                if hl_react_top > hl_actions_top {
+                                    paint::fill_rect(&mut canvas, 0, hl_actions_top as isize, buf_w as isize, (hl_react_top - hl_actions_top) as isize, action_tint, Some(list_clip), None);
+                                }
+                                if hl_bot > hl_react_top {
+                                    paint::fill_rect(&mut canvas, 0, hl_react_top as isize, buf_w as isize, (hl_bot - hl_react_top) as isize, react_tint, Some(list_clip), None);
                                 }
                                 // Lower strip line: the ACTION ROW — reply · edit · copy/copied · resend · delete. Conditional pills: edit only for outgoing (stub until the message-format rework), resend only for undelivered outgoing (manual re-fire on the chain), delete always (LOCAL until tombstones — fleet sync may resurrect it), reply always. Each pill stamps its own hit id with generous padding.
                                 let (copy_label, copy_colour) = if self.selected_msg_copied {
