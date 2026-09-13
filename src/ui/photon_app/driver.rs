@@ -1343,8 +1343,9 @@ impl FluorApp for PhotonApp {
                         // PLAY/STOP for a music pigeon (slot 9) — the action-row twin of the wave card's glyph.
                         // PLAY / STOP the wave's recording (slot 11): the only way a wave starts playing.
                         11 => {
+                            // The RECORDING row specifically ("call.audio") — three rows reference a wave (the recording, our wave.env, the PEER's wave.env off the friend chain), and the first-match finder used to grab an env row in the minute before the transcode landed, toasting "fetching from your devices" at a wave whose recording was right here (Nick, 2026-09-13).
                             let rec_hash = self.conv_of(sci).and_then(|v| {
-                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts)).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts) && crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "call.audio")).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
                             });
                             if let Some(hash) = rec_hash {
                                 if crate::storage::blob_present(&hash) {
@@ -1538,10 +1539,12 @@ impl FluorApp for PhotonApp {
                         }
                         // The wave card's recording options: SAVE (blob held → Downloads) or FETCH (missing → ask the fleet), and REPLICATE (a fleet-internal fetch hint so every sibling holds the blob now, not on demand).
                         7 | 8 => {
+                            // Same "call.audio"-only selection as the play slot: export/replicate act on the recording, never a wave.env row that happens to reference the same wave.
                             let rec = self.conv_of(sci).and_then(|v| {
                                 v.messages
                                     .iter()
-                                    .find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                                    .filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                                    .find(|m| crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "call.audio"))
                                     .and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, n, _)| (m.timestamp, h, n)))
                             });
                             if let Some((rec_ts, hash, name)) = rec {
