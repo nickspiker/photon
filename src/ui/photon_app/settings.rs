@@ -679,10 +679,12 @@ impl PhotonApp {
             crate::call::calibrate::CalResult::Voice(p) => {
                 let base = format!("audio.cal.voice.{}", p.mic_id);
                 let fs = self.fleet_settings.as_ref().unwrap();
-                let stored_n = read_n(fs, &format!("{base}.n"));
+                // n restarts when no .voiced exists yet — the gain-era profiles left n=100 behind, which would give a first voiced write a fifth of the weight it earned.
+                let stored_voiced = read_f32(fs, &format!("{base}.voiced"));
+                let stored_n = if stored_voiced.is_some() { read_n(fs, &format!("{base}.n")) } else { 0.0 };
                 let w = lr.windows as f32;
                 let alpha = w / (w + stored_n + 20.0);
-                let voiced = match read_f32(fs, &format!("{base}.voiced")) {
+                let voiced = match stored_voiced {
                     Some(v0) => v0 + alpha * (p.voiced - v0),
                     None => p.voiced,
                 };
