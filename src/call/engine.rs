@@ -271,6 +271,8 @@ fn run(
         None => match crate::platform::audio::mic_sensitivity_dbfs() {
             // Only a PLAUSIBLE sensitivity is believed (field 2026-09-13 23:47: Nick's vendor reports ~−8 dBFS at 94 dB SPL — physically absurd — and the derived 2048 gave a 1.3× makeup, his voice at 66 on the wire). Real elements sit −25..−50 dBFS; outside that the report is garbage and the default carries until the first call's measurement stores the truth.
             Some(s) if (-50.0..=-25.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity"),
+            // Nick's vendor reports +37.0 where Emma's reports −37.0 — the HAL's sign convention is backwards. A positive magnitude in the plausible band is believed, negated.
+            Some(s) if (25.0..=50.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((-s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity (vendor sign flipped)"),
             Some(_) => (TX_CAL_VOICED, "default (sensitivity implausible)"),
             None => (TX_CAL_VOICED, "default"),
         },
