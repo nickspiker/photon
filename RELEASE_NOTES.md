@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The other person is properly loud: a fixed 4-stop output pad from the pre-normalization era was silently cancelling the level normalizer's entire lift, so a quiet mic arrived at its raw level no matter the rocker.
 - Audio arithmetic is exact: every gain in the playback path is one integer scale that carries its remainder to the next sample, so quiet audio keeps its bottom bits and a gain of one is provably untouched. Image previews fold the same way.
 - The other person's voice is brought up to a steady level on your side, whatever their mic gives, and the volume rocker now governs the wave while it rides the earpiece.
 - Your voice reaches the other end exactly as your mic heard it. Nothing on the sending side touches it any more: no gate, no ducking, no automatic level. Echo is handled on the listening side instead — while your mic is hot, the other person's voice is turned down in your speaker for that moment, and nothing of that is recorded. A kept wave holds every party as they sounded.
