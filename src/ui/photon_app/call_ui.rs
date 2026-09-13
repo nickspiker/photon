@@ -1632,9 +1632,20 @@ impl PhotonApp {
             peer_addr: addr,
             spool: spool_param,
             cal: self.ringback_seeded_cal(),
-            plaid_allowed: is_lan_addr(addr),
+            plaid_allowed: self.is_lan_for_plaid(addr),
         });
         (Some(handle), ticket)
+    }
+
+    /// LAN for the plaid gate (Nick 2026-09-13: "calls haven't been switching to plaid"): the waves connect on the router's GLOBAL IPv6 even in the same room, so the private-v4-only test never armed plaid. Same rule as the call screen's cyan ring — private/link-local v4, ULA/link-local v6, or a global v6 on OUR OWN /64.
+    fn is_lan_for_plaid(&self, a: std::net::SocketAddr) -> bool {
+        if is_lan_addr(a) {
+            return true;
+        }
+        match (a.ip().to_canonical(), self.our_reflexive.map(|o| o.ip().to_canonical())) {
+            (std::net::IpAddr::V6(v6), Some(std::net::IpAddr::V6(ours))) => ours.segments()[..4] == v6.segments()[..4],
+            _ => false,
+        }
     }
 
     /// The engine's calibration seed, ringback-first: a coupling this device measured on THIS route seconds ago outranks a stored profile measured on another day (the field-wave-1/2 failure was exactly a stale seed the in-call learner never had time to correct). The voice half (mic gain, floor) still comes from the stored profile — the ringback measures the room, not the user's voice, since the whole point is that nobody is talking during it.
@@ -1665,6 +1676,7 @@ impl PhotonApp {
 }
 
 /// A LAN-class direct address: RFC 1918 / link-local IPv4, or link-local / unique-local IPv6 — the plaid rung's licence (raw PCM only where bandwidth is free and the path is one hop of radio).
+#[allow(dead_code)]
 fn is_lan_addr(a: std::net::SocketAddr) -> bool {
     match a.ip() {
         std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),

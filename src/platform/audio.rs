@@ -221,9 +221,9 @@ pub fn set_speaker_duck(armed: bool) {
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
 }
 
-/// The pure duck law: `UNITY − near·k·2^7`, clamped to [0, UNITY]. At k = 1/16 this is the old `1 − near/8192` exactly.
-pub fn duck_gain_q32(near: i64, k_q16: i64) -> i64 {
-    (crate::call::qgain::UNITY - ((near * k_q16) << 7)).clamp(0, crate::call::qgain::UNITY)
+/// The duck law: the FIXED presence slope `UNITY − near·2^19` (full duck at plan-unit mic 8192 — the field-passed 0.95.21 behavior). k is measured and PRINTED but deliberately out of the gain path (2026-09-13 23:30: the 35× mic makeup sits INSIDE the echo loop, so true plan-unit coupling on a normal earpiece is ~0.3-1.0 — feeding measured k in as the slope silenced the far voice at any k ≈ 0.4; the coupling-aware law needs the margin form, gain ≤ ε·near/(k·far), designed against k telemetry across rocker positions, not another guessed slope).
+pub fn duck_gain_q32(near: i64, _k_q16: i64) -> i64 {
+    (crate::call::qgain::UNITY - (near << 19)).clamp(0, crate::call::qgain::UNITY)
 }
 
 /// The engine notes the plan-unit mean |sample| of each captured mic frame here; the k estimator and the Q32 duck gain both run HERE (capture cadence) so the render pull only loads. Muted zeros keep k untouched and the gain at unity.
