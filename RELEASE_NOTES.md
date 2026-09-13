@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave on the timeline is its waveform and nothing else, hairline to hairline. Tap it to select it, and the options appear: play, wave back, beam back, export, replicate, discard. Playing takes those two taps and never starts from a scroll or a stray touch on the band.
 - A wave row shows only its waveform until you tap it; the label and the play button appear with the options, and tapping away from a playing wave stops it.
 - Your voice no longer cuts out when you talk over the other side: the echo gate can mute your mic for at most half a second at a stretch before it softens, and if the echo canceller gives up mid-wave the gate stops trusting its prediction and works from what it can actually hear.
 - A wave that is already carrying audio keeps its working path: a moment of silence no longer makes either side re-aim at a different address, which was breaking same-network waves that had connected fine.

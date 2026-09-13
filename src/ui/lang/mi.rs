@@ -273,6 +273,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "tuku anō".into(),
         Msg::FetchPill => "tiki".into(),
         Msg::SavePill => "tiaki".into(),
+        Msg::ExportPill => "kawe atu".into(),
+        Msg::DiscardPill => "whakarere".into(),
         Msg::AttachStats { name, kind, size, dims } => {
             let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
             let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };

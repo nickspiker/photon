@@ -248,6 +248,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ResendPill => "resend".into(),
         Msg::FetchPill => "fetch".into(),
         Msg::SavePill => "save".into(),
+        Msg::ExportPill => "export".into(),
+        Msg::DiscardPill => "discard".into(),
         Msg::AttachStats { name, kind, size, dims } => {
             let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
             let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };

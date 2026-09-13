@@ -1341,6 +1341,21 @@ impl FluorApp for PhotonApp {
                 if let Some((sci, ts, out)) = self.selected_msg {
                     match slot {
                         // PLAY/STOP for a music pigeon (slot 9) — the action-row twin of the wave card's glyph.
+                        // PLAY / STOP the wave's recording (slot 11): the only way a wave starts playing.
+                        11 => {
+                            let rec_hash = self.conv_of(sci).and_then(|v| {
+                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts)).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                            });
+                            if let Some(hash) = rec_hash {
+                                if crate::storage::blob_present(&hash) {
+                                    self.toggle_recording_playback(hash);
+                                } else {
+                                    self.attach_fetch(sci, &hash);
+                                    self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
+                                }
+                            }
+                            self.scene_dirty = true;
+                        }
                         9 => {
                             if let Some(hash) = self.conv_of(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| crate::types::parse_attachment_content(&m.content)).map(|(h, _, _)| h) {
                                 match self.music_play.as_ref().filter(|m| m.hash == hash) {
@@ -1688,21 +1703,8 @@ impl FluorApp for PhotonApp {
                     }
                 }
                 // A tap inside a wave card's band: the glyph toggles play/stop (or fetches the blob); the waveform itself was handled as a scrub on the release edge — never a row select either way.
-                if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
-                    let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
-                    if band.contains(px, py) {
-                        if px < band.glyph_x1 {
-                            if band.held {
-                                self.toggle_recording_playback(band.hash);
-                            } else if let Some(ci) = self.active_contact() {
-                                self.attach_fetch(ci, &band.hash);
-                                self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
-                            }
-                        }
-                        ctx.window.request_redraw();
-                        return EventResponse::Handled;
-                    }
-                }
+                // A tap on a wave's band is a ROW tap (select / deselect) — never play (2026-09-12: play is the strip's button, two steps, and fluor's arbiter already drops the release after a scroll). A scrub while playing was handled on the release edge and never reaches here.
+                let _ = self.msg_wave_bands.get(vis);
                 if let (Some(ci), Some((ts, out, ref_band))) =
                     (self.active_contact(), self.msg_hit_rows.get(vis).copied().flatten())
                 {
@@ -2182,7 +2184,8 @@ impl FluorApp for PhotonApp {
                     let vis = (hit_id - self.msg_hit_base) as usize;
                     if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
                         let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
-                        if band.held && band.contains(px, py) && px >= band.glyph_x1 {
+                        let playing_this = self.call_playback.is_some() && self.call_playback_hash == Some(band.hash);
+                        if band.held && playing_this && band.contains(px, py) && px >= band.glyph_x1 {
                             self.wave_scrub = Some(WaveScrub { band, frac: band.frac_at(px) });
                             self.scene_dirty = true;
                             ctx.window.request_redraw();

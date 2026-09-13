@@ -301,6 +301,9 @@ pub enum Msg<'a> {
     ResendPill,
     FetchPill,
     SavePill,
+    /// A wave's recording to a file (the wave card's word for save) and a wave off the timeline (its word for delete), Nick 2026-09-12.
+    ExportPill,
+    DiscardPill,
     /// The details strip's stats for an attachment row (Nick 2026-09-12: "stats up top: name, time, size, type"): pre-formatted parts, the age follows on the same line.
     AttachStats { name: &'a str, kind: &'a str, size: &'a str, dims: &'a str },
     /// The kind as a word for the stats line.

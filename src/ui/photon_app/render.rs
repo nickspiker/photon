@@ -3002,7 +3002,7 @@ impl PhotonApp {
                         let peer_handle_hash = self.contacts.get(ci).map(|c| c.handle_hash).unwrap_or([0u8; 32]);
                         // The decoded-picture count rides the key: a preview blob landing grows its row's band.
                         let wrap_key =
-                            (ci, n, raw_msgs.len() + (self.img_cache.len() << 20), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
+                            (ci, n, raw_msgs.len() + (self.img_cache.len() << 20) + sel_key.map_or(0, |(t, o)| (t as usize) ^ (o as usize)), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
@@ -3016,10 +3016,14 @@ impl PhotonApp {
                                 // A wave row's one line is its header (outcome + duration, base-aware); a LIVE wave reserves two more for the waveform band beneath it.
                                 let lines = match m.wave {
                                     Some(w) => {
+                                        // A live wave's row is its band alone until selected — hairline to hairline, no header line above it (Nick 2026-09-12: "when not selected, don't show the duration, what it is or the play button").
+                                        let selected = sel_key.is_some_and(|(ts, out)| m.timestamp == ts && m.is_outgoing == out);
                                         if w.outcome.was_live() {
                                             total += 2;
+                                            if selected { vec![super::call_ui::wave_header(w)] } else { Vec::new() }
+                                        } else {
+                                            vec![super::call_ui::wave_header(w)]
                                         }
-                                        vec![super::call_ui::wave_header(w)]
                                     }
                                     None => {
                                         let body = body_of(m);
@@ -3379,17 +3383,18 @@ impl PhotonApp {
                                 // A WAVE CARD's options (Nick 2026-09-09): wave back (place a wave to this contact) and beam back (a stub, greyed until video lands), then delete — reply/edit/copy make no sense on a wave.
                                 let is_wave_row = msg.wave.is_some();
                                 let mut pills: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = if is_wave_row {
-                                    let mut v = vec![
-                                        (tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)),
-                                        (tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE),
-                                    ];
-                                    // The recording's options, when one folds into this card: save (held) or fetch (missing), and replicate among the fleet.
+                                    // PLAY IS A BUTTON ON THIS ROW (Nick 2026-09-12: "to play requires two steps and no scrolling"): select the row, then press play — the band itself never starts playback. Then wave back, beam back, export, and discard sits with delete below.
+                                    let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
+                                    if let Some(rec) = rec_over.get(&msg.timestamp) {
+                                        let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present(&h), self.call_playback.is_some() && self.call_playback_hash == Some(h))).unwrap_or((false, false));
+                                        v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, self.msg_action_base.wrapping_add(11)));
+                                    }
+                                    v.push((tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)));
+                                    v.push((tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE));
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
                                         let held = crate::types::parse_attachment_content(&rec.content).is_some_and(|(h, _, _)| crate::storage::blob_present(&h));
                                         if held {
-                                            v.push((tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
-                                        } else {
-                                            v.push((tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(7)));
+                                            v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
                                         }
                                         v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(8)));
                                     }
@@ -3456,6 +3461,8 @@ impl PhotonApp {
                                 pills.push((
                                     tr(if deleting {
                                         Msg::DeletingPill
+                                    } else if is_wave_row {
+                                        Msg::DiscardPill
                                     } else {
                                         Msg::DeletePill
                                     }),
@@ -3638,7 +3645,7 @@ impl PhotonApp {
                                 let hy = y - react_off - wave_band_h;
                                 // THE WAVE IS THE ROW (Nick 2026-09-12: "only the wave itself should show when not selected"): the header line (☎ wave · duration) and the play glyph draw only while this row is selected; unselected, the band alone. A wave with no band (missed, declined, rejected) keeps its one-line header, or the row would be empty.
                                 let wave_selected = sel_key.is_some_and(|(ts, out)| msg.timestamp == ts && msg.is_outgoing == out);
-                                let show_head = wave_selected || wave_band_h <= 0.0;
+                                let show_head = !lines.is_empty();
                                 // A rejected wave reads SMALL: it is a record for you, never a fuss.
                                 let head_size = if w.outcome == crate::types::WaveOutcome::Rejected { msg_size * 0.75 } else { msg_size };
                                 let head_style = TextStyle::new(head_size, colour).weight(500).font("Oxanium");
@@ -3651,9 +3658,11 @@ impl PhotonApp {
                                 if wave_band_h > 0.0 {
                                     let bx0 = pad_x;
                                     let bx1 = buf_w as f32 - pad_x;
-                                    let by0 = hy + msg_size * 0.7;
-                                    let by1 = y - react_off + msg_size * 0.5;
-                                    let glyph_x1 = bx0 + msg_size * 1.5;
+                                    // The band spans its two lines from divider to divider: the row's top (the divider above) to the divider below, less a hair each side so the crests never touch the hairlines.
+                                    let by0 = if show_head { hy + msg_size * 0.7 } else { y - react_off - wave_band_h - msg_size * 0.5 + ctx.viewport.ru.max(1.0) * 2.0 };
+                                    let by1 = y - react_off + msg_size * 0.8 - ctx.viewport.ru.max(1.0) * 2.0;
+                                    // No play glyph on the band (2026-09-12: play is a button on the action row; a tap on the band selects the row and nothing more). The band's left edge is the waveform's start.
+                                    let glyph_x1 = bx0;
                                     let bcy = (by0 + by1) * 0.5;
                                     let half = (by1 - by0) * 0.5;
                                     let hair = ctx.viewport.ru.max(1.0);
@@ -3796,12 +3805,7 @@ impl PhotonApp {
                                                     ctx.text.draw_text_right(&mut canvas, &pos_label, buf_w as f32 - pad_x, hy, &small, Some(list_clip), None);
                                                 }
                                             }
-                                            // The glyph: ▶ to play, ■ while playing, the hourglass colour's ▶ until the blob is held (a tap fetches) — drawn only while the row is selected; the tap target stays either way.
-                                            if wave_selected {
-                                                let glyph = if playing { "\u{25A0}" } else { "\u{25B6}\u{FE0E}" };
-                                                let glyph_style = TextStyle::new(msg_size, if held { colour } else { *theme::HOURGLASS_COLOUR }).weight(500).font("Oxanium");
-                                                ctx.text.draw_text_left(&mut canvas, glyph, bx0, bcy + msg_size * 0.35, &glyph_style, Some(list_clip), None);
-                                            }
+                                            let _ = wave_selected;
                                             // Hand the band to the input path (slot-indexed beside the row hit).
                                             if wave_slot < self.msg_wave_bands.len() {
                                                 self.msg_wave_bands[wave_slot] = Some(super::WaveBand { hash, held, x0: bx0, glyph_x1, x1: bx1, y0: by0.max(list_top), y1: by1.min(list_bottom), total: total_slots });
