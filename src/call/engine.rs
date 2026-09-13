@@ -104,9 +104,11 @@ const DUCK_FAR_HALF: f32 = 400.0;
 /// Hard floor so the SOFT duck (double-talk) never fully mutes the mic (the near talker stays audible under echo).
 const DUCK_GAIN_FLOOR: f32 = 0.15;
 /// SIDE-AWARE ECHO GATE (Nick's call 2026-09-01: "a block when the other is talking, PID reduction for the silence"). When the far end is talking and the near mic is quieter than a plausible ECHO of it — i.e. the near human is NOT talking, the mic is carrying only speaker bleed — hard-gate the mic toward silence instead of the 0.15 soft floor. Real near speech on a close mic runs comparable to or above the far render level, so `near < far × ratio` cleanly separates echo-only from double-talk. Below the ratio = pure echo = gate; above = double-talk = keep the soft floor so an interruption survives.
-const ECHO_GATE_RATIO: f32 = 0.5;
-/// The hard-gate target gain for echo-only frames — near-mute (~-34 dB). The existing slew (0.19/frame at 5ms) eases in/out over ~60ms so the gate never clicks, and the applied-gain clamp already reaches this low (GAIN_MIN×DUCK_GAIN_FLOOR ≈ 0.019); the old code just never asked for it.
-const ECHO_GATE_GAIN: f32 = 0.02;
+const ECHO_GATE_RATIO: f32 = COUPLING_CAP;
+/// THE COUPLING THE GATE BELIEVES IS CAPPED (field 2026-09-13, Brittany/Nick wave c617a36f: Nick's chirp read g 6.1 on the earpiece with his mic at 67 against her playback at 1534 — the "expected echo" was two orders above his voice, so every sound from her end silenced him: "her hearing me clearly, then absolutely nothing for a while, then repeats"). Above this ratio the number is not a linear echo path, it is the earpiece and the phone body buzzing into the mic, and a gate threshold built on it mutes the person; the gate clamps its effective coupling (g × volume) here and the seed logs the overshoot as a rocker warning. The reactive fallback compares against the same ratio.
+const COUPLING_CAP: f32 = 0.3;
+/// The gate target gain for echo-only frames — a DUCK, never a mute (−12 dB; was 0.02 ≈ −34 dB until 2026-09-13, which is the "absolutely nothing" the far end heard). The existing slew (0.19/frame at 5ms) eases in/out over ~60ms so the gate never clicks. Worst case the near talker is quiet under the far end, never gone.
+const ECHO_GATE_GAIN: f32 = 0.25;
 /// PID gains on the log2-domain level error, evaluated per 5ms frame (the 2026-09-08 flag day doubled the eval rate; KI halved and KD doubled to keep the same time-domain response — integral accumulates per eval, derivative reads a half-sized per-eval delta).
 const PID_KP: f32 = 0.20;
 const PID_KI: f32 = 0.01;
@@ -599,7 +601,7 @@ fn run(
                 let duck_term = if let (Some((g_norm, delay)), true) = (applied, prediction_trusted) {
                     let far_del = learner.far_env_at(delay);
                     let far_talking = route_ducks && far_del > crate::call::learn::FAR_ACT;
-                    let pred = g_norm * vol_lin_now * far_del;
+                    let pred = (g_norm * vol_lin_now).min(COUPLING_CAP) * far_del;
                     match pred_gate.decide(mean, pred, live_floor, far_talking) {
                         crate::call::learn::GateVerdict::Full => {
                             gate_run = 0;
@@ -1230,18 +1232,29 @@ fn run(
                 win_rtt_n = 0;
                 win_losses_at = windows_lost as u32;
             }
-            if let Some(c) = nlms.as_ref() {
-                crate::logf!(
-                    "CALL: echo — filter recent {}dB lifetime {}dB, adapted {} of {} frames; gated {} ducked {} far-active {}",
+            // The gate tally prints with or without a filter (2026-09-13: after a disarm the line went silent, and the disarmed half of the wave is the half the field asks about); the effective coupling and volume say what the gate is comparing against.
+            let filter = match nlms.as_ref() {
+                Some(c) => format!(
+                    "filter recent {}dB lifetime {}dB, adapted {} of {} frames",
                     c.erle_recent_db().map_or("?".to_string(), |e| format!("{e:.1}")),
                     c.erle_db().map_or("?".to_string(), |e| format!("{e:.1}")),
                     c.adapted_frames,
-                    c.run_frames,
-                    gated_frames,
-                    ducked_frames,
-                    far_active_frames
-                );
-            }
+                    c.run_frames
+                ),
+                None => "no filter".to_string(),
+            };
+            crate::logf!(
+                "CALL: echo — {}; gated {} ducked {} far-active {}; coupling {} (cap {}) volume {} mic {} {}",
+                filter,
+                gated_frames,
+                ducked_frames,
+                far_active_frames,
+                applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
+                format!("{COUPLING_CAP:.2}"),
+                format!("{vol_lin_now:.3}"),
+                tx_energy / tx_frames.max(1),
+                if prediction_trusted { "predictive" } else { "reactive" }
+            );
         }
         // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
         if nlms.as_ref().is_some_and(|c| c.is_net_harmful()) {
@@ -1270,6 +1283,15 @@ fn run(
                         ir.1.len(),
                         ir.0
                     );
+                    let g_eff = g_norm * vol_lin_now;
+                    if g_eff > COUPLING_CAP {
+                        crate::logf!(
+                            "CALL: coupling {} at volume {} is beyond the {} cap — the gate believes the cap; the earpiece is driven into the mic (lower the rocker)",
+                            format!("{g_eff:.3}"),
+                            format!("{vol_lin_now:.3}"),
+                            format!("{COUPLING_CAP:.2}")
+                        );
+                    }
                     applied = Some((g_norm, delay_bins));
                     live_floor = floor.max(1.0);
                     nlms = Some(crate::call::nlms::Nlms::new(ir.0, ir.1));
