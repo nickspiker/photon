@@ -97,8 +97,14 @@ static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_DUCK_GAIN: AtomicI64 = AtomicI64::new(crate::call::qgain::UNITY);
 /// The duck kernel's carried remainder (see call/qgain.rs) — only the render thread touches it.
 static SPEAKER_DUCK_CARRY: AtomicI64 = AtomicI64::new(0);
-/// Mic mean |sample| at which the speaker is fully silent; half at half. A power of two so the gain is a subtract and a shift (Nick 2026-09-13: no division at the render pull). The one field knob of the speaker duck. In PLAN units since the level plan (the engine notes the post-makeup mean, voiced ≈ 4096): talking halves the speaker, a shout silences it.
-pub const SPEAKER_DUCK_MIC_FULL: i64 = 8192;
+/// THE COUPLING-AWARE DUCK LAW (Nick 2026-09-13 night: the duck should scale with what the speaker actually leaks into the mic — rocker down = less echo = less duck; and "we scale our values so we don't lose any data or have any hard discontinuities"). gain = UNITY − near·k·2^7, where `near` is the plan-unit mic mean and `k` (Q16) is the MEASURED echo-per-emitted: during frames where the far side is rendering and the near mic sits under the emitted level, the mic is mostly echo, so k ≈ near/emitted — an EMA (>>6 per qualifying frame, τ ≈ a third of a second of far-talk-alone). Passive, no chirp, no volume mirror (the mirror lies on exclusive-MMAP routes — Nick's reads −32 dB while sounding proper); a rocker change re-converges k over ~a second of their speech, CONTINUOUSLY — the gain never steps, and the render kernel's carried remainder stays exact across every gain change. At k = K_REF (1/16, the earpiece midpoint) the law is exactly the old FULL=8192 map: plan-level talking halves the speaker, a shout silences it.
+/// k's neutral seed in Q16 (1/16), and its clamp: 1/256 (a clean earpiece barely ducks) to 1/2 (a hot loudspeaker ducks hard).
+pub const DUCK_K_REF_Q16: i64 = 1 << 12;
+const DUCK_K_MIN_Q16: i64 = 1 << 8;
+const DUCK_K_MAX_Q16: i64 = 1 << 15;
+static DUCK_K_Q16: AtomicI64 = AtomicI64::new(DUCK_K_REF_Q16);
+/// Mean |sample| of the newest frame handed to the DAC (post-duck — what the room actually receives), the k estimator's denominator. Reuses the FAR_LEVEL sum.
+static EMITTED_LEVEL: AtomicUsize = AtomicUsize::new(0);
 /// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
 static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_HALF: AtomicUsize = AtomicUsize::new(0);
@@ -209,15 +215,34 @@ pub fn far_level() -> u32 {
     FAR_LEVEL.load(Ordering::Relaxed) as u32
 }
 
-/// Arm (routes with an acoustic path) or disarm (headset) the speaker duck.
+/// Arm (routes with an acoustic path) or disarm (headset) the speaker duck. Arming re-seeds k at the reference — a route swap is new physics, the estimator starts from neutral and re-learns.
 pub fn set_speaker_duck(armed: bool) {
     SPEAKER_DUCK_ARMED.store(armed, Ordering::Relaxed);
+    DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
 }
 
-/// The engine notes the mean |sample| of each captured mic frame here; the Q32 duck gain is computed HERE (capture cadence) and the render pull only loads it. `(FULL − near) << (32 − log2(FULL))` — a subtract and a shift, clamped at silence.
+/// The pure duck law: `UNITY − near·k·2^7`, clamped to [0, UNITY]. At k = 1/16 this is the old `1 − near/8192` exactly.
+pub fn duck_gain_q32(near: i64, k_q16: i64) -> i64 {
+    (crate::call::qgain::UNITY - ((near * k_q16) << 7)).clamp(0, crate::call::qgain::UNITY)
+}
+
+/// The engine notes the plan-unit mean |sample| of each captured mic frame here; the k estimator and the Q32 duck gain both run HERE (capture cadence) so the render pull only loads. Muted zeros keep k untouched and the gain at unity.
 pub fn note_near_level(mean: u32) {
-    let g = (SPEAKER_DUCK_MIC_FULL - (mean as i64).min(SPEAKER_DUCK_MIC_FULL)) << 19;
+    let near = mean as i64;
+    let emitted = EMITTED_LEVEL.load(Ordering::Relaxed) as i64;
+    // k learns on far-talk-alone: the speaker is carrying real level and the mic sits under it (mostly echo, not our voice). The EMA drifts — never steps — so a rocker change slides the duck to its new depth over ~a second of far speech.
+    if SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) && emitted > 512 && near < emitted {
+        let sample = ((near << 16) / emitted).clamp(DUCK_K_MIN_Q16, DUCK_K_MAX_Q16);
+        let k = DUCK_K_Q16.load(Ordering::Relaxed);
+        DUCK_K_Q16.store(k + ((sample - k) >> 6), Ordering::Relaxed);
+    }
+    let g = duck_gain_q32(near, DUCK_K_Q16.load(Ordering::Relaxed));
     SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
+}
+
+/// The duck's live coupling estimate (Q16) — the echo line prints it beside the tallies.
+pub fn duck_k_q16() -> i64 {
+    DUCK_K_Q16.load(Ordering::Relaxed)
 }
 
 /// `(render frames pulled, frames at or under half gain, mean gain over them as a per-mille)` since the last audio reset.
@@ -339,6 +364,8 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / frame.len().max(1) as u64) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
     FAR_LEVEL.store(lvl.max(old - old / 8), Ordering::Relaxed);
+    // The k estimator's denominator: this mean is POST-duck — what the room actually receives — so k = near/emitted stays consistent whatever the duck is doing (both sides of the ratio scale together).
+    EMITTED_LEVEL.store(lvl, Ordering::Relaxed);
     {
         let mut r = RENDER_REF.lock().unwrap();
         if r.len() >= RENDER_REF_MAX {
@@ -412,6 +439,8 @@ fn clear_queues() {
     FAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_GAIN.store(crate::call::qgain::UNITY, Ordering::Relaxed);
     SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);
+    DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
+    EMITTED_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_ARMED.store(false, Ordering::Relaxed);
     SPEAKER_FRAMES.store(0, Ordering::Relaxed);
     SPEAKER_HALF.store(0, Ordering::Relaxed);

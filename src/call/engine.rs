@@ -962,10 +962,11 @@ fn run(
             }
             let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; volume {} wire {}",
+                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; k {} volume {} wire {}",
                 spk_mean,
                 spk_frames,
                 spk_half,
+                format!("{:.4}", crate::platform::audio::duck_k_q16() as f64 / 65536.0),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
             );
