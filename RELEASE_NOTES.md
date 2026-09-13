@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The other person's voice is brought up to a steady level on your side, whatever their mic gives, and the volume rocker now governs the wave while it rides the earpiece.
 - Your voice reaches the other end exactly as your mic heard it. Nothing on the sending side touches it any more: no gate, no ducking, no automatic level. Echo is handled on the listening side instead — while your mic is hot, the other person's voice is turned down in your speaker for that moment, and nothing of that is recorded. A kept wave holds every party as they sounded.
 - Android remembers your zoom. The pinch scale you set was saved but never applied on the next launch; it is now.
 - The top-left orb is half again as large; the text beside it is unchanged.

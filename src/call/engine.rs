@@ -99,6 +99,11 @@ const fn tier_window_bytes(tier: usize) -> usize {
 const COUPLING_WARN: f32 = 0.3;
 /// Live-playback output pad in stops — defined beside the ringback that shares it (see [`super::OUTPUT_PAD_STOPS`]).
 use super::OUTPUT_PAD_STOPS;
+// THE INCOMING LEVEL IS NORMALIZED ON THE SPEAKER SIDE (Nick 2026-09-13: "how do we normalize the incoming mic level?" — Brittany: "quite quiet"). The wire carries every mic raw (a phone mic's talking frames run ~200-800 mean |sample|, 15-25 dB under the old TX setpoint), so the listener lifts it: a slow estimate of the far talker's voiced level (frames above RX_VOICED_FLOOR, τ ≈ 0.5 s) sets a gain toward RX_TARGET_LEVEL, clamped to RX_GAIN_MIN..RX_GAIN_MAX, slewed per frame; silence holds the gain (an AGC regulating silence learns to amplify room hiss). Applied to the decoded frame before the output pad and never spooled — the keep's remote channel is what arrived, and the speaker duck reads the same frame after it.
+const RX_TARGET_LEVEL: f32 = 4000.0;
+const RX_VOICED_FLOOR: f32 = 60.0;
+const RX_GAIN_MIN: f32 = 0.125;
+const RX_GAIN_MAX: f32 = 16.0;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
@@ -264,6 +269,9 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
+    // RX normalizer state (see RX_TARGET_LEVEL): the far talker's voiced level estimate and the applied gain.
+    let mut rx_level: f32 = 0.0;
+    let mut rx_gain: f32 = 1.0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
         crate::platform::audio::route(),
@@ -837,6 +845,18 @@ fn run(
                         if probing {
                             continue;
                         }
+                        // RX normalizer (RX_TARGET_LEVEL): the far talker's level, lifted or trimmed toward the setpoint on voiced frames, held on silence.
+                        let mean = f.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32 / f.len().max(1) as f32;
+                        if mean > RX_VOICED_FLOOR {
+                            rx_level = if rx_level <= 0.0 { mean } else { rx_level + (mean - rx_level) * 0.02 };
+                            let want = (RX_TARGET_LEVEL / rx_level.max(1.0)).clamp(RX_GAIN_MIN, RX_GAIN_MAX);
+                            rx_gain += (want - rx_gain) * 0.05;
+                        }
+                        if (rx_gain - 1.0).abs() > 0.005 {
+                            for s in &mut f {
+                                *s = (*s as f32 * rx_gain).clamp(-32768.0, 32767.0) as i16;
+                            }
+                        }
                         // Output pad: 4 stops down on live wave playback (Nick 2026-09-03) — the headset default now that the speaker toggle is parked; the loudspeaker at max media volume ran ~2.5 stops hot in the field and near-unity echo coupling came with it. The duck drops further from here when the physics demand it. Ritual prompts and recording preview enqueue directly and stay unpadded; the RENDER_ENV/RENDER_REF taps sit downstream, so the learner still measures the true emitted level.
                         for s in &mut f {
                             *s >>= OUTPUT_PAD_STOPS;
@@ -1055,10 +1075,12 @@ fn run(
             }
             let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; coupling {} volume {} mic {}",
+                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; rx gain {} (far voiced {}); coupling {} volume {} mic {}",
                 spk_mean,
                 spk_frames,
                 spk_half,
+                format!("{rx_gain:.2}"),
+                rx_level as u32,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
@@ -1235,6 +1257,12 @@ fn run(
     );
     // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
+    crate::logf!(
+        "CALL: rx normalizer — far voiced level {} gain {} at teardown (target {})",
+        rx_level as u32,
+        format!("{rx_gain:.2}"),
+        RX_TARGET_LEVEL as u32
+    );
     crate::logf!(
         "CALL: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",
         if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },

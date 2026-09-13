@@ -918,6 +918,13 @@ class PhotonConnectionService : Service() {
                 earpieceRouted = false
             }
         } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route change failed", e) }
+        // THE ROCKER GOVERNS THE WAVE (field 2026-09-13, Brittany: "the volume adjust on the phone didn't seem to actually adjust the volume of my voice"): our render track carries USAGE_VOICE_COMMUNICATION on the earpiece, which the voice-call stream controls, but without an in-communication mode the rocker keeps adjusting the media stream. Binding the Activity's volume control stream to the voice stream while the wave rides the earpiece points the rocker at the stream the wave plays on; cleared back to the default when the route clears.
+        val routed = earpieceRouted
+        PhotonActivity.live?.let { a ->
+            a.runOnUiThread {
+                a.volumeControlStream = if (routed) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
+            }
+        }
         pushVolumeMirror()
     }
 
