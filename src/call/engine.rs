@@ -850,11 +850,18 @@ fn run(
                             continue;
                         }
                         // RX normalizer (RX_TARGET_LEVEL, integer): the far talker's level steers the gain on voiced frames, silence holds it; the output pad (Nick 2026-09-03, the loudspeaker ran ~2.5 stops hot) composes in as a shift and the frame is scaled once, remainder carried.
+                        // The level statistic is fast-attack slow-decay (field 2026-09-13 wave at 19:19, Brittany's side ended at gain 16.00 on a far-voiced estimate of 119: a symmetric EMA tracked the trailing syllables and breath DOWN between phrases, so the gain pumped to the clamp in every pause and lifted the far room 16× until the next loud syllable blasted thru). Loud speech pulls the estimate up in ~20 ms (>>2); it decays thru quiet voiced frames 64× slower (>>8), so a pause holds the gain the sentence earned. The gain mirrors it: down fast (>>2, an onset never blasts), up slow (>>5).
                         let mean = f.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / f.len().max(1) as i64;
                         if mean > RX_VOICED_FLOOR {
-                            rx_voiced = if rx_voiced <= 0 { mean } else { rx_voiced + ((mean - rx_voiced) >> 6) };
+                            rx_voiced = if rx_voiced <= 0 {
+                                mean
+                            } else if mean > rx_voiced {
+                                rx_voiced + ((mean - rx_voiced) >> 2)
+                            } else {
+                                rx_voiced + ((mean - rx_voiced) >> 8)
+                            };
                             let want = ((RX_TARGET_LEVEL << 32) / rx_voiced.max(1)).clamp(RX_GAIN_MIN_Q32, RX_GAIN_MAX_Q32);
-                            rx_gain_q32 += (want - rx_gain_q32) >> 4;
+                            rx_gain_q32 += if want < rx_gain_q32 { (want - rx_gain_q32) >> 2 } else { (want - rx_gain_q32) >> 5 };
                         }
                         rx_stage.g = rx_gain_q32 >> OUTPUT_PAD_STOPS;
                         rx_stage.apply_frame(&mut f);
