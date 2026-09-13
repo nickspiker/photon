@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waves connect instantly: the second the call is answered your voice is flowing. The measurement tone that used to hold the first couple of seconds is gone — the level plan made everything it measured unnecessary.
 - Audio arithmetic is exact: every gain in the playback path is one integer scale that carries its remainder to the next sample, so quiet audio keeps its bottom bits and a gain of one is provably untouched. Image previews fold the same way.
 - Waves now run a level plan, the way the telephone network did: the microphone is read raw and calibrated, scaled once by a fixed constant, and a shout rounds smoothly into the ceiling instead of crackling. Every wave transmits at the same known loudness; the volume rocker on the listening phone is the only adjustment, and it now actually governs the wave. What goes on the wire is what the archive keeps — nothing adaptive touches your voice anywhere.
 - Android remembers your zoom. The pinch scale you set was saved but never applied on the next launch; it is now.

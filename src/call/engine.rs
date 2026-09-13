@@ -45,8 +45,6 @@ const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
 const PLAID_LOSSES_TO_DROP: usize = 20;
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
 const LOSS_RING: usize = 256;
-/// A learner coupling at or below this (volume-normalized envelope ratio) is a CLEAN route: the duck retires to its floor and the canceller is dropped (engine 1 s control plane).
-const CLEAN_G_NORM: f32 = 0.02;
 const LOSS_SETPOINT: f32 = 1.0 / 256.0;
 const LOSS_KP: f32 = 1.0; // frames per stop of error, immediately
 const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
@@ -95,8 +93,6 @@ const fn tier_window_bytes(tier: usize) -> usize {
 }
 
 // THE MIC IS UNTOUCHED (Nick 2026-09-13: "mic needs untouched before it hits the wire, filtering is always done on the speaker side which is only temporary… if the mic level gets hot, drop the speaker volume right before it gets played, do not keep record of post filtered values"). No AGC, no canceller, no duck on the TX path: the captured frame is what the wire carries, so the wire copy IS the good copy of every party and a kept wave needs only its missed windows filled. The echo control is the SPEAKER duck in platform::audio (`SPEAKER_DUCK_MIC_FULL`): the render frame is scaled by the mic level of the moment, right before the DAC, and nothing records it. The PID level loop, the chirp-seeded NLMS subtract and the linear mic duck that lived here until this day are in the history.
-/// A chirp coupling (g × volume) above this is not a linear echo path — the earpiece is driven into the mic. Logged at the seed as a rocker warning and used as the canceller's "plausible echo" adapt ratio when no calibration is applied; the duck does not read it.
-const COUPLING_WARN: f32 = 0.3;
 // NO OUTPUT PAD ON THE WAVE (2026-09-13 19:53 wave, Brittany: "quiet even at max volume" — her normalizer rode its gain to the 16× clamp against Nick's 147-mean mic, and the 4-stop pad composed into the same stage capped the EFFECTIVE lift at 16/16 = 1.0: her rx(play) tallied 148, bit-for-bit his raw level). The pad predates the normalizer (raw full-scale plaid ran the loudspeaker hot, 2026-09-03); now the RX_TARGET_LEVEL IS the output level control (~−18 dBFS mean), the rocker governs the rest, and padding the normalizer's output four stops only threw away the headroom it exists to provide. The ringback keeps its own pad (it is a full-scale clip, not a normalized stream — super::OUTPUT_PAD_STOPS lives on for it).
 // THE LEVEL PLAN (Nick 2026-09-13 night: "keep the levels fixed if the mic is calibrated and let the user listening do the volume adjustment with the rocker… calibrated mic level goes on the wire and in the archive"). Bell ran the telephone network exactly this way — every link at a defined level, the earpiece knob the only variable — and calibrated capture brings it back: the Unprocessed preset is CDD-calibrated (94 dB SPL ≡ ~520 RMS), so the mic's number MEANS an SPL. TX applies ONE fixed makeup constant (a recording level — deterministic, invertible, not an AGC) and the cubic rail shaper (qgain::cubic_rail: slope 3/2 at the origin, folded in below; slope 0 at the rails; 3rd-order-only distortion; exactly invertible), and that shaped calibrated signal IS the wire and the archive. RX applies NOTHING adaptive: decode → speaker duck → DAC, the rocker is the only adjustment, per call, thru the OS voice stream. A quiet talker is quiet, like standing next to them. The RX normalizer (one afternoon of life, three field waves) is deleted, not demoted — its whole job was unknown mic levels, and the plan makes them known.
 /// The wire's voiced-speech mean |sample| — Bell's plan level, ~−18 dBFS. The shaper's origin slope is 3/2, so the pre-shaper target is ×⅔ of this.
@@ -279,21 +275,9 @@ fn run(
     );
     crate::platform::audio::set_speaker_duck(route_ducks);
 
-    // In-call calibration learner: fed every raw envelope ABOVE the mute/uncalibrated skip on purpose — a muted user is GUARANTEED silent, the cleanest echo windows there are (envelope-only, the mic session is already open — no new privacy surface). Its estimates drive the PREDICTIVE duck below (Cal 4) and persist at teardown; the ritual snapshot in params seeds it.
     let start_route = crate::platform::audio::route_id();
-    let mut learner = crate::call::learn::Learner::new(
-        start_route.starts_with("bt:"),
-        params.cal.as_ref().map(|c| c.delay_bins),
-        params.cal.as_ref().map(|c| c.floor),
-    );
-    let mut renv_cursor = 0usize;
-    // LEARNER CADENCE ADAPTER (flag day 2026-09-08): the learner's KAT-locked contract is ONE envelope per 10ms bin (its stamp regularizer advances a bin per push — two 5ms pushes would run its lattice at 2× time and re-anchor forever). The engine pairs adjacent 5ms envelopes: (osc of the first half, mean env) per 10ms.
-    let mut far_pair: Option<(i64, f32)> = None;
-    let mut mic_pair: Option<(i64, f32)> = None;
-    // The APPLIED calibration the duck predicts from: (g_norm, delay_bins). Seeded by the stored profile; the live learner slews it (τ≈2s at the 1s update cadence) once Usable — so an uncalibrated route arms itself mid-call. Live floor rides the learner's minimum-statistics tracker.
-    let mut applied: Option<(f32, usize)> = params.cal.as_ref().map(|c| (c.g_norm, c.delay_bins));
-    let mut clean_declared = false;
     let mut live_route = start_route.clone();
+    // 1 s control cadence — since the chirp cut (2026-09-13 night) this drives only route tracking and the volume mirror refresh.
     let mut last_est = std::time::Instant::now();
     // Echo stats cadence: a line every ten seconds while a filter is armed (recent + lifetime ERLE, adapt ratio) — the field's view of the whitener at work.
     let mut last_echo_stats = std::time::Instant::now();
@@ -368,38 +352,13 @@ fn run(
             .unwrap_or_else(|| "?".into())
     );
 
-    // V-CHIRP CONNECT PROBE (Nick 2026-09-07, docs/audio-paths.md §5): the call's first sound is the probe — queued before the first loop pass, played unpadded on the live route while BOTH directions hold (no mic TX, RX decoded but not rendered), so the chirp is the only thing in the room and the only render in RENDER_ENV. Both sides run the same window off their own connect edge, so the holds overlap and nobody's voice is lost. When the capture closes, audio connects immediately and the fit seeds the duck a beat later; the deadline covers a mic that never grants (Android prompts at the call).
+    // NO CONNECT PROBE (Nick 2026-09-13 night: "Drop it! I'd connect right away"): the wave's first sound is the caller's voice — no chirp, no probe hold, TX from the first captured frame. The chirp existed to measure coupling/delay/floor for subtraction and prediction, all deleted under the level plan; vchirp/learn stay as modules for the calibration ritual and future loudspeaker work.
     let start_instant = std::time::Instant::now();
-    let mut probing = true;
-    let mut probe_cap: Vec<i16> = Vec::with_capacity(crate::call::vchirp::CAPTURE_SAMPLES);
-    let mut probe_render_osc: Option<i64> = None;
-    let mut probe_anchor_osc: Option<i64> = None;
-    let probe_deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
-    let _ = crate::call::vchirp::take_verdict(); // a prior call's late fit must never seed this one
-    // Drought baseline + stale-state drain: the UI measures receive drought against max(start, last rx), and a previous call's redirect must never re-point this one.
+    // Drought baseline + stale-state drain: the UI measures receive drought against max(start, last rx), and a previous call's redirect must never re-point this one. The ringback left LOCAL_SOURCE set — network audio owns the queue from the first pass.
     super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
     super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed);
     let _ = super::take_peer_redirect();
-    // LOCAL SOURCE while the probe owns the queue, and the chirp FEEDS PACED from the loop (never dumped): every bounded stage ahead of the DAC (queue drop-oldest, ceiling trims) beheads a bulk dump — both field beheadings. Top-up keeps ≤200ms queued; the 1ms loop never starves the drain.
-    crate::platform::audio::set_local_source(true);
-    let mut chirp_frames = crate::call::vchirp::frames();
-    let mut chirp_idx = 0usize;
-    // LOW-VOLUME PROBE BOOST (field 2026-09-08, Nick at 1/3 media = −43dB device curve: the chirp emitted at whisper level, psr scraping the gate): below −20dB the digital level rises toward full scale (+9dB of SNR headroom above the −9dBFS default). The fit correlates against the UNSCALED template, so g/taps inflate by the boost — finish() divides it back out.
-    let chirp_scale: f32 = {
-        let vol_db = crate::platform::audio::current_volume_db().unwrap_or(0.0);
-        if vol_db <= -20.0 { 32_760.0 / 11_585.0 } else { 1.0 }
-    };
-    if chirp_scale > 1.0 {
-        // Q32 with the carried remainder like every other scale (the ratio is the two i16 levels themselves, integer).
-        let mut boost = crate::call::qgain::QGain::new((32_760i64 << 32) / 11_585);
-        for f in &mut chirp_frames {
-            boost.apply_frame(f);
-        }
-        crate::logf!(
-            "CALL: v-chirp digital boost x{} (low media volume)",
-            format!("{chirp_scale:.2}")
-        );
-    }
+    crate::platform::audio::set_local_source(false);
 
     loop {
         // STOP → DRAIN (recording fills): audio is over, but a fill-capable peer can still hand us the windows we lost — and wants ours. Both engines stay up on the fill plane until both are satisfied or the deadline passes. A peer that never spoke the fill plane ends the engine at once, exactly as before.
@@ -436,52 +395,17 @@ fn run(
                 break;
             }
         }
-        // Paced chirp feed (probe phase): top the queue up to 40 frames (200ms) per pass.
-        if probing {
-            while chirp_idx < chirp_frames.len() && crate::platform::audio::playback_depth() < 40 {
-                crate::platform::audio::queue_playback(chirp_frames[chirp_idx].clone());
-                chirp_idx += 1;
-            }
-        }
-        // Learner far feed: drain the render-envelope tap (post-jitter post-splice, osc-stamped at DAC-enqueue).
-        {
-            let (entries, cur) = crate::platform::audio::render_env_since(renv_cursor);
-            renv_cursor = cur;
-            for (osc, env) in entries {
-                // Probe render anchor: RX is held while probing, so the first audible render IS the chirp's first frame at DAC-enqueue.
-                if probing && probe_render_osc.is_none() && env > 100.0 {
-                    probe_render_osc = Some(osc);
-                }
-                match far_pair.take() {
-                    None => far_pair = Some((osc, env)),
-                    Some((o, e)) => learner.push_far(o, (e + env) * 0.5),
-                }
-            }
-        }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
         for (cap_osc, frame) in crate::platform::audio::captured_frames() {
             if draining.is_some() {
                 continue; // audio is over — the mic is closed, anything left in the queue is not part of the wave
             }
+            if cap_first_osc.is_none() {
+                crate::log("CALL: audio connected — voice from the first captured frame (no probe)");
+            }
             cap_first_osc.get_or_insert(cap_osc);
             cap_last_osc = cap_osc;
-            // Learner mic feed FIRST — raw pre-gain pre-duck envelope (the separation invariant), stamped at drain, unconditionally (muted frames are the cleanest echo windows). Paired to the learner's 10ms cadence (see far_pair).
-            {
-                let e = crate::call::calibrate::env(&frame);
-                match mic_pair.take() {
-                    None => mic_pair = Some((cap_osc, e)),
-                    Some((o, e0)) => learner.push_mic(o, (e0 + e) * 0.5),
-                }
-            }
-            // Probe capture: raw samples into the fit buffer, and NO voice TX until the window closes. The anchor marks the first frame's start (drain stamp minus one frame); later frames extend the lattice by index — drain wobble is ±ms against a 10ms-bin consumer.
-            if probing {
-                if probe_anchor_osc.is_none() {
-                    probe_anchor_osc = Some(cap_osc);
-                }
-                probe_cap.extend_from_slice(&frame);
-                continue;
-            }
             if frame.len() != FRAME_SAMPLES {
                 continue;
             }
@@ -849,11 +773,7 @@ fn run(
             let mut np = np;
             loop {
                 if let Some(frames) = rx_done.remove(&np) {
-                    for mut f in frames {
-                        // Probe hold: the far end's early frames (their own probe window — silence) are dropped, not rendered, so the chirp stays the only sound in the room.
-                        if probing {
-                            continue;
-                        }
+                    for f in frames {
                         // THE LEVEL PLAN: nothing adaptive on RX — the wire arrived at plan level, the speaker duck and the rocker are the only hands on it.
                         if draining.is_some() {
                             continue;
@@ -878,7 +798,7 @@ fn run(
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, true, TIER_FRAMES[tier]);
                     // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
-                    if !probing && draining.is_none() {
+                    if draining.is_none() {
                         if let Some(prev) = last_played.take() {
                             let len = prev.len().max(1) as i32;
                             let fade: Vec<i16> = prev.iter().enumerate().map(|(i, s)| ((*s as i32) * (len - i as i32) / len) as i16).collect();
@@ -1001,33 +921,6 @@ fn run(
             }
         }
 
-        // Probe close: capture full → audio connects NOW, the fit runs off-thread and seeds a beat later. Deadline = mic never granted / device never spun up — connect anyway, the duck runs on its prior seed.
-        if probing {
-            if probe_cap.len() >= crate::call::vchirp::CAPTURE_SAMPLES {
-                probing = false;
-                crate::platform::audio::set_local_source(false); // network audio owns the queue from here
-                let cap = std::mem::take(&mut probe_cap);
-                match (probe_render_osc, probe_anchor_osc) {
-                    (Some(r), Some(a)) => {
-                        crate::logf!(
-                            "CALL: v-chirp played + sampled ({} samples) — audio connected, fit running",
-                            cap.len()
-                        );
-                        crate::call::vchirp::finish(cap, vol_lin_now, r, a, live_route.clone(), chirp_scale);
-                    }
-                    _ => crate::log("CALL: v-chirp probe had no render anchor — abandoned, audio connected"),
-                }
-            } else if std::time::Instant::now() >= probe_deadline {
-                probing = false;
-                crate::platform::audio::set_local_source(false);
-                crate::logf!(
-                    "CALL: v-chirp probe abandoned at deadline ({} of {} samples) — audio connected",
-                    probe_cap.len(),
-                    crate::call::vchirp::CAPTURE_SAMPLES
-                );
-                probe_cap = Vec::new();
-            }
-        }
         // Live readout once a second (the call panel's stats line on every build); the log line keeps its 10 s cadence below.
         if last_live_stats.elapsed() >= std::time::Duration::from_secs(1) {
             last_live_stats = std::time::Instant::now();
@@ -1069,94 +962,26 @@ fn run(
             }
             let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; coupling {} volume {} wire {}",
+                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; volume {} wire {}",
                 spk_mean,
                 spk_frames,
                 spk_half,
-                applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
             );
         }
-        // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
-        if let Some(v) = crate::call::vchirp::take_verdict() {
-            match v {
-                crate::call::vchirp::Verdict::Coupled { g_norm, delay_bins, floor, ir } => {
-                    crate::logf!(
-                        "CALL: v-chirp measured the route — g {} delay {}ms{}; impulse response {} taps @ {} (kept for the learner, nothing subtracts)",
-                        format!("{g_norm:.4}"),
-                        delay_bins * 10,
-                        if applied.is_some() { " (overrode prior seed)" } else { "" },
-                        ir.1.len(),
-                        ir.0
-                    );
-                    let g_eff = g_norm * vol_lin_now;
-                    if g_eff > COUPLING_WARN {
-                        crate::logf!(
-                            "CALL: coupling {} at volume {} is beyond {} — not a linear echo path, the earpiece is driven into the mic (lower the rocker)",
-                            format!("{g_eff:.3}"),
-                            format!("{vol_lin_now:.3}"),
-                            format!("{COUPLING_WARN:.2}")
-                        );
-                    }
-                    applied = Some((g_norm, delay_bins));
-                    let _ = floor;
-                }
-                crate::call::vchirp::Verdict::Clean { floor: _ } => {}
-            }
-        }
-
-        // Learner estimator + the 1s control plane (estimate refresh, live floor, route tracking). The tick itself is internally cadence-gated; the Instant is a measurement cadence on the engine thread (like PT's RTO), not UI timing.
+        // 1 s control cadence: the volume mirror refresh and live route tracking.
         vol_lin_now = crate::platform::audio::current_volume_db()
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
-        learner.tick(vol_lin_now);
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
-            let est = learner.estimate();
-            // A Usable-or-better estimate refines (or ARMS) the predictive duck: slew g (τ≈2s at this cadence), step delay only between far bursts — a mid-burst delay step misaligns the prediction and mis-gates real speech.
-            // ACTIVE PROFILING → CLEAN (Nick 2026-09-10): a confident in-call estimate that finds no coupling worth a duck retires the predictive duck to its clean floor and drops the canceller — the route IS clean, whatever the chirp said (or failed to say).
-            if est.confidence >= crate::call::learn::Confidence::Usable {
-                if let Some(g) = est.g_norm {
-                    if g <= CLEAN_G_NORM && est.windows >= 3 && !clean_declared {
-                        clean_declared = true;
-                        crate::logf!("CALL: learner reads the route CLEAN (g {} over {} windows) — duck to floor, canceller off", format!("{g:.4}"), est.windows);
-                        applied = Some((0.0, est.delay_bins.unwrap_or(1)));
-                    } else if g > CLEAN_G_NORM * 2.0 && clean_declared {
-                        clean_declared = false;
-                        crate::logf!("CALL: learner sees coupling again (g {}) — duck back on its estimate", format!("{g:.4}"));
-                    }
-                }
-                if let (Some(g), Some(d)) = (est.g_norm, est.delay_bins) {
-                    match &mut applied {
-                        Some((ag, ad)) => {
-                            *ag += (g - *ag) * 0.4;
-                            if learner.far_env_at(0) < crate::call::learn::FAR_ACT {
-                                *ad = d;
-                            }
-                        }
-                        None => {
-                            crate::logf!(
-                                "CALL: learner armed the predictive duck — g {} delay {}ms ({} windows)",
-                                format!("{g:.4}"),
-                                d * 10,
-                                est.windows
-                            );
-                            applied = Some((g, d));
-                        }
-                    }
-                }
-            }
-            // Live route tracking (the cached-route bug — a mid-call BT swap was invisible): a swap finalizes the old route's learning, reverts the duck to reactive, and starts a fresh accumulator for the new physics.
             let rid = crate::platform::audio::route_id();
             if rid != live_route && !rid.is_empty() {
                 crate::logf!(
-                    "CALL: route swapped \"{}\" → \"{}\" — learning finalized, duck reverts to reactive until re-learned",
+                    "CALL: route swapped \"{}\" → \"{}\" — the speaker duck re-arms for the new route",
                     live_route,
                     rid
                 );
-                crate::call::calibrate::post_learned(learned_results(&learner.estimate(), &live_route));
-                learner = crate::call::learn::Learner::new(rid.starts_with("bt:"), None, None);
-                applied = None;
                 route_ducks = !matches!(
                     crate::platform::audio::route(),
                     crate::platform::audio::AudioRoute::Headset
@@ -1264,30 +1089,6 @@ fn run(
         spk_frames,
         spk_half
     );
-    // SHADOW learner readout (Stage 3 field telemetry): the learned physics beside the profile the ritual measured — the convergence proof the gate softening waits on. rejects = per-gate window rejections [short, skew, hole, inactive, quiet, xcorr, cluster-reserved, edge, badg, r].
-    {
-        let e = learner.estimate();
-        crate::logf!(
-            "CALL: learner — g {} delay {} conf {} over {} window(s); floor {} talk {} ({} voiced bins); rejects {:?}; route \"{}\"",
-            e.g_norm.map_or("?".into(), |g| format!("{g:.4}")),
-            e.delay_bins.map_or("?".into(), |d| format!("{}ms", d * 10)),
-            format!("{:?}", e.confidence),
-            e.windows,
-            format!("{:.0}", e.floor),
-            e.talk.map_or("?".into(), |t| format!("{t:.0}")),
-            e.voiced_bins,
-            format!("{:?}", e.rejects),
-            crate::platform::audio::route_id()
-        );
-        // The route measurement the call ended with (field forensics): the chirp's coupling and delay, or none when no probe landed on this route.
-        crate::logf!(
-            "CALL: route at teardown — {}{}",
-            if applied.is_some() { "measured" } else { "unmeasured" },
-            applied.map_or(String::new(), |(g, d)| format!(" (applied g {g:.4} delay {}ms)", d * 10))
-        );
-        // Persist what the call proved (Stage 4): echo posts only at SOLID confidence (the persisted tier); voice posts on its own evidence gate (≥5s of voiced far-quiet speech ⇒ talk is Some). The drain blends against the stored profile — ritual outranks, learned refines.
-        crate::call::calibrate::post_learned(learned_results(&e, &live_route));
-    }
     teardown(sink_gen);
     // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
 }
@@ -1310,45 +1111,6 @@ fn loss_loop_step(bits: &mut [u64; LOSS_RING / 64], pos: &mut u8, integ: &mut f3
     let target = (floor + LOSS_KP * err_stops + *integ).round().clamp(floor, JITTER_TARGET_CAP as f32) as usize;
     crate::platform::audio::set_jitter_target(target);
     target
-}
-
-/// Package a learner estimate as persistable results (used at teardown AND on a mid-call route swap). Echo requires SOLID (the persisted tier); voice requires its own ≥5s-voiced evidence (talk is Some). g is per-window vol-normalized, so the stored reference is 0dB where a volume mirror exists, absent on desktop.
-fn learned_results(
-    e: &crate::call::learn::Estimate,
-    route_id: &str,
-) -> Vec<crate::call::calibrate::LearnedResult> {
-    let mut learned: Vec<crate::call::calibrate::LearnedResult> = Vec::new();
-    if e.confidence == crate::call::learn::Confidence::Solid {
-        if let (Some(g), Some(d)) = (e.g_norm, e.delay_bins) {
-            learned.push(crate::call::calibrate::LearnedResult {
-                result: crate::call::calibrate::CalResult::Echo(
-                    crate::call::calibrate::EchoProfile {
-                        g_norm: g,
-                        delay_ms: (d * 10) as u32,
-                        cal_vol_db: crate::platform::audio::current_volume_db().map(|_| 0.0),
-                        route_id: route_id.to_string(),
-                    },
-                ),
-                windows: e.windows as u32,
-                solid: true,
-            });
-        }
-    }
-    if let Some(talk) = e.talk {
-        let mic_gain = (4000.0 / talk.max(1.0)).clamp(0.125, 8.0);
-        learned.push(crate::call::calibrate::LearnedResult {
-            result: crate::call::calibrate::CalResult::Voice(
-                crate::call::calibrate::VoiceProfile {
-                    mic_gain,
-                    floor: e.floor,
-                    mic_id: crate::platform::audio::mic_id(),
-                },
-            ),
-            windows: (e.voiced_bins / 100) as u32,
-            solid: e.confidence == crate::call::learn::Confidence::Solid,
-        });
-    }
-    learned
 }
 
 fn teardown(sink_gen: u64) {
