@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- A wave never mutes you. The echo gate now ducks to −12 dB at worst instead of near silence, and it no longer believes an earpiece coupling above 0.3, which is what made a quiet mic vanish the moment the other end made a sound.
+- A wave never gates you. The echo gate is gone; the mic is ducked by one continuous linear map of what your speaker is emitting, frame by frame, with no floor and no hold. The quiet mic that vanished the moment the other end made a sound now dips with their level and comes straight back.
 - Android remembers your zoom. The pinch scale you set was saved but never applied on the next launch; it is now.
 - The top-left orb is half again as large; the text beside it is unchanged.
 - A wave on the timeline is its waveform and nothing else, hairline to hairline. Tap it to select it, and the options appear: play, wave back, beam back, export, replicate, discard. Playing takes those two taps and never starts from a scroll or a stray touch on the band.

@@ -95,20 +95,14 @@ const fn tier_window_bytes(tier: usize) -> usize {
 }
 
 // INLINE PID LEVEL + DUCK (echo layer 2 + level management in ONE loop — Nick's call 2026-09-01: "auto ducking, level management we can do with a PID loop in line, basically another 1ms for the adjustment pass"; actual cost is microseconds per 20ms frame). Replaces the disarmed two-coefficient glide, whose peak-hold trigger smeared timing and clipped double-talk.
-// The loop tracks ONE target gain per frame: AGC term (mic mean-|sample| toward TX_TARGET_LEVEL in the log domain — quiet talkers lift, shouters trim, error is symmetrical in dB) × duck term (far-end energy squashes the target continuously — no binary gate, so double-talk dips instead of chopping). PID output slews the applied gain; the integrator is clamped (anti-windup) so a long silence doesn't bank gain and blast the first syllable.
+// The loop tracks a LEVEL gain per frame (AGC term: mic mean-|sample| toward TX_TARGET_LEVEL in the log domain — quiet talkers lift, shouters trim, error is symmetrical in dB; PID output slews it, the integrator is clamped (anti-windup) so a long silence doesn't bank gain and blast the first syllable) and multiplies it by the duck term of THIS frame (see DUCK_FAR_FULL) — the duck never slews.
 const PID_DUCK_ENABLED: bool = true;
 /// Mic AGC setpoint: mean |sample| of a talking frame lands here (~-18 dBFS of i16 — comfortable headroom above the floor window's repair math, below clipping).
 const TX_TARGET_LEVEL: f32 = 4000.0;
-/// Far-end energy that squashes the duck term to half — continuous, not a threshold. Also the "far end is talking" line for the side-aware gate.
-const DUCK_FAR_HALF: f32 = 400.0;
-/// Hard floor so the SOFT duck (double-talk) never fully mutes the mic (the near talker stays audible under echo).
-const DUCK_GAIN_FLOOR: f32 = 0.15;
-/// SIDE-AWARE ECHO GATE (Nick's call 2026-09-01: "a block when the other is talking, PID reduction for the silence"). When the far end is talking and the near mic is quieter than a plausible ECHO of it — i.e. the near human is NOT talking, the mic is carrying only speaker bleed — hard-gate the mic toward silence instead of the 0.15 soft floor. Real near speech on a close mic runs comparable to or above the far render level, so `near < far × ratio` cleanly separates echo-only from double-talk. Below the ratio = pure echo = gate; above = double-talk = keep the soft floor so an interruption survives.
-const ECHO_GATE_RATIO: f32 = COUPLING_CAP;
-/// THE COUPLING THE GATE BELIEVES IS CAPPED (field 2026-09-13, Brittany/Nick wave c617a36f: Nick's chirp read g 6.1 on the earpiece with his mic at 67 against her playback at 1534 — the "expected echo" was two orders above his voice, so every sound from her end silenced him: "her hearing me clearly, then absolutely nothing for a while, then repeats"). Above this ratio the number is not a linear echo path, it is the earpiece and the phone body buzzing into the mic, and a gate threshold built on it mutes the person; the gate clamps its effective coupling (g × volume) here and the seed logs the overshoot as a rocker warning. The reactive fallback compares against the same ratio.
-const COUPLING_CAP: f32 = 0.3;
-/// The gate target gain for echo-only frames — a DUCK, never a mute (−12 dB; was 0.02 ≈ −34 dB until 2026-09-13, which is the "absolutely nothing" the far end heard). The existing slew (0.19/frame at 5ms) eases in/out over ~60ms so the gate never clicks. Worst case the near talker is quiet under the far end, never gone.
-const ECHO_GATE_GAIN: f32 = 0.25;
+/// THE DUCK IS ONE LINEAR MAP (Nick 2026-09-13: "map a gain based on the speaker output… a nice linear, no floors, no delays, straight up fast and no gate"): gain = 1 − emitted / DUCK_FAR_FULL clamped to [0, 1], where emitted = linear volume × the far envelope one acoustic delay ago (the chirp's delay when it measured one, the peak-hold render level otherwise). Applied per 5 ms frame with no slew, no floor and no hysteresis. The gate that sat on top (mic against an expected echo, a bounded hard run, a reactive fallback) silenced Nick whenever Brittany's end made a sound (c617a36f) and is gone. This is the emitted level (mean |sample| × linear volume) at which the mic is fully ducked; half at half. The first field tweak lives here.
+const DUCK_FAR_FULL: f32 = 800.0;
+/// A chirp coupling (g × volume) above this is not a linear echo path — the earpiece is driven into the mic. Logged at the seed as a rocker warning and used as the canceller's "plausible echo" adapt ratio when no calibration is applied; the duck does not read it.
+const COUPLING_WARN: f32 = 0.3;
 /// PID gains on the log2-domain level error, evaluated per 5ms frame (the 2026-09-08 flag day doubled the eval rate; KI halved and KD doubled to keep the same time-domain response — integral accumulates per eval, derivative reads a half-sized per-eval delta).
 const PID_KP: f32 = 0.20;
 const PID_KI: f32 = 0.01;
@@ -284,17 +278,12 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // PID state: applied gain + (integral, last-error) on the log2 level error; route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
+    // PID state: the slewed level gain + (integral, last-error) on the log2 level error; `duck_gain` is the gain applied to the frame (level × duck term); route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
+    let mut level_gain: f32 = 1.0;
     let mut duck_gain: f32 = 1.0;
     let mut pid_i: f32 = 0.0;
     let mut pid_last_e: f32 = 0.0;
     let mut ducked_frames: u64 = 0;
-    let mut gated_frames: u64 = 0;
-    // THE HARD MUTE IS BOUNDED (field 2026-09-12: Brittany could not hear Nick for the last fifteen seconds — his mic sat under the predicted echo for the whole tail and the gate held it at 0.02, and the canceller that could have demoted it had disarmed). A run of consecutive Gate verdicts longer than this is double-talk, not echo: a person talking over the far end. Past the bound the verdict demotes to the soft duck until a frame comes in clearly under the prediction again.
-    const GATE_RUN_MAX: u32 = 100; // 100 × 5 ms = half a second
-    let mut gate_run: u32 = 0;
-    // When the canceller disarms, the chirp's prediction it was meant to verify is unverified: gate REACTIVELY (the measured far level, not the predicted echo) for the rest of the wave.
-    let mut prediction_trusted = true;
     let mut far_active_frames: u64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
@@ -326,7 +315,6 @@ fn run(
     let mut applied: Option<(f32, usize)> = params.cal.as_ref().map(|c| (c.g_norm, c.delay_bins));
     let fixed_mic_gain: Option<f32> = params.cal.as_ref().and_then(|c| c.mic_gain);
     let mut live_floor: f32 = params.cal.as_ref().map_or(40.0, |c| c.floor);
-    let mut pred_gate = crate::call::learn::PredGate::new();
     let mut clean_declared = false;
     let mut live_route = start_route.clone();
     let mut last_est = std::time::Instant::now();
@@ -568,7 +556,7 @@ fn run(
                                 let pred = g_norm * vol_lin_now * far_del;
                                 far_del > crate::call::learn::FAR_ACT && raw_mean < (pred * 2.0).max(live_floor * 2.0)
                             }
-                            None => far_now > DUCK_FAR_HALF && raw_mean < far_now * ECHO_GATE_RATIO,
+                            None => far_now > DUCK_FAR_FULL * 0.5 && raw_mean < far_now * COUPLING_WARN,
                         };
                     let ref_gain = (vol_lin_now / nlms_seed_vol.max(1e-6)).clamp(0.05, 20.0);
                     c.cancel_frame(&mut frame, &ref_ring, pos, adapt, ref_gain);
@@ -587,89 +575,48 @@ fn run(
             tx_frames += 1;
             // PID level+duck (see the PID_DUCK_ENABLED consts): one inline loop regulates mic level toward the setpoint and squashes it under far-end energy.
             let mut frame = frame;
-            let far = crate::platform::audio::far_level() as f32;
-            if route_ducks && far > DUCK_FAR_HALF {
+            // Emitted level: what the speaker put into the room at the moment the mic hears it — the far envelope one acoustic delay ago when the chirp measured a delay, else the peak-hold render level — times the linear volume.
+            let far_at_mic = match applied {
+                Some((_, delay)) => learner.far_env_at(delay),
+                None => crate::platform::audio::far_level() as f32,
+            };
+            let emitted = vol_lin_now * far_at_mic;
+            if route_ducks && emitted > DUCK_FAR_FULL * 0.5 {
                 far_active_frames += 1;
             }
             if PID_DUCK_ENABLED {
                 // Frame mean |sample| — the level the AGC regulates. Silence (below a hair above the noise floor) freezes the loop: regulating silence toward TX_TARGET_LEVEL is how AGCs learn to amplify room hiss.
                 let mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
                     / frame.len().max(1) as f32;
-                // Duck term, two modes:
-                //   PREDICTIVE (Cal 4, an applied calibration exists): expected echo = g_norm × vol_lin × far_env(t−delay) from the learner's delay-aligned bins — the gate compares the mic against what the SPEAKER PHYSICALLY EMITTED one acoustic round-trip ago, not the peak-hold of what's rendering now; hysteresis kills threshold chatter.
-                //   REACTIVE (uncalibrated fallback): the peak-hold far_level + absolute ratio gate, exactly the pre-calibration behavior — until the live learner reaches Usable and arms the predictive path itself.
-                let duck_term = if let (Some((g_norm, delay)), true) = (applied, prediction_trusted) {
-                    let far_del = learner.far_env_at(delay);
-                    let far_talking = route_ducks && far_del > crate::call::learn::FAR_ACT;
-                    let pred = (g_norm * vol_lin_now).min(COUPLING_CAP) * far_del;
-                    match pred_gate.decide(mean, pred, live_floor, far_talking) {
-                        crate::call::learn::GateVerdict::Full => {
-                            gate_run = 0;
-                            1.0
-                        }
-                        crate::call::learn::GateVerdict::Gate if gate_run >= GATE_RUN_MAX => {
-                            // Bounded: half a second of "echo only" is a person talking — soft duck, never the mute.
-                            proc_verdict = 1;
-                            (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
-                        }
-                        crate::call::learn::GateVerdict::Gate => {
-                            gated_frames += 1;
-                            gate_run += 1;
-                            proc_verdict = 2;
-                            if nlms.as_ref().is_some_and(|c| c.erle_recent_db().is_some_and(|e| e >= 6.0)) {
-                                // A filter that has PROVEN itself (≥6dB recent ERLE) has already subtracted the echo — the hard near-mute demotes to the soft residual duck, and double-talk survives (full duplex). An armed-but-weak filter keeps the gate (2026-09-09: a 2dB filter demoting the gate to a −16dB duck was the field's "echoey").
-                                (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
-                            } else {
-                                ECHO_GATE_GAIN
-                            }
-                        }
-                        crate::call::learn::GateVerdict::Duck => {
-                            gate_run = 0;
-                            proc_verdict = 1;
-                            (1.0 / (1.0 + far_del / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
-                        }
-                    }
+                // The duck term of THIS frame: linear in the emitted level, no floor, no slew (DUCK_FAR_FULL).
+                let duck_term = if route_ducks {
+                    (1.0 - emitted / DUCK_FAR_FULL).clamp(0.0, 1.0)
                 } else {
-                    let far_talking = route_ducks && far > DUCK_FAR_HALF;
-                    let echo_only = far_talking && mean < far * ECHO_GATE_RATIO;
-                    if !route_ducks || !far_talking {
-                        gate_run = 0;
-                        1.0
-                    } else if echo_only && gate_run >= GATE_RUN_MAX {
-                        proc_verdict = 1;
-                        (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
-                    } else if echo_only {
-                        gated_frames += 1;
-                        gate_run += 1;
-                        proc_verdict = 2;
-                        ECHO_GATE_GAIN
-                    } else {
-                        proc_verdict = 1;
-                        (1.0 / (1.0 + far / DUCK_FAR_HALF)).max(DUCK_GAIN_FLOOR)
-                    }
+                    1.0
                 };
+                if duck_term < 0.995 {
+                    proc_verdict = 1;
+                }
                 if let Some(fg) = fixed_mic_gain {
-                    // Cal 4: the voice profile's FIXED gain replaces the chasing PID — the AGC fighting the duck was the field's "tx(mic) 279 against a 4000 target". The duck term still scales it; the same slew keeps onsets pump-free.
-                    let target = (fg * duck_term).clamp(GAIN_MIN * DUCK_GAIN_FLOOR, GAIN_MAX);
-                    duck_gain += (target - duck_gain) * 0.19;
+                    // Cal 4: the voice profile's FIXED gain replaces the chasing PID — the AGC fighting the duck was the field's "tx(mic) 279 against a 4000 target". The same slew keeps onsets pump-free.
+                    level_gain += (fg.clamp(GAIN_MIN, GAIN_MAX) - level_gain) * 0.19;
                 } else if mean > 40.0 {
-                    // Log2-domain level error toward the setpoint, PID'd, then the duck term scales the RESULT — level management and echo duck in the one inline loop (+~µs per 20ms frame).
-                    let e = (TX_TARGET_LEVEL / (mean / duck_gain).max(1.0)).log2().clamp(-4.0, 4.0);
+                    // Log2-domain level error toward the setpoint, PID'd — level management in the one inline loop (+~µs per 20ms frame).
+                    let e = (TX_TARGET_LEVEL / (mean / level_gain).max(1.0)).log2().clamp(-4.0, 4.0);
                     pid_i = (pid_i + e * PID_KI).clamp(-PID_I_CLAMP, PID_I_CLAMP);
                     let d = e - pid_last_e;
                     pid_last_e = e;
-                    let target = (PID_KP * e + pid_i + PID_KD * d).exp2().clamp(GAIN_MIN, GAIN_MAX)
-                        * duck_term;
+                    let target = (PID_KP * e + pid_i + PID_KD * d).exp2().clamp(GAIN_MIN, GAIN_MAX);
                     // Slew toward the PID target (one step per 5ms frame keeps onsets pump-free; 0.19 at 5ms = the old 0.35 at 10ms).
-                    duck_gain += (target - duck_gain) * 0.19;
+                    level_gain += (target - level_gain) * 0.19;
                 } else {
-                    // Silence: hold gain, bleed the derivative memory, still honour the duck squash.
+                    // Silence: hold the level gain, bleed the derivative memory.
                     pid_last_e = 0.0;
-                    duck_gain += (duck_gain.min(duck_gain * duck_term) - duck_gain) * 0.19;
                 }
-                duck_gain = duck_gain.clamp(GAIN_MIN * DUCK_GAIN_FLOOR, GAIN_MAX);
+                level_gain = level_gain.clamp(GAIN_MIN, GAIN_MAX);
+                duck_gain = level_gain * duck_term;
                 if (duck_gain - 1.0).abs() > 0.005 {
-                    if duck_gain < 1.0 {
+                    if duck_term < 0.995 {
                         ducked_frames += 1;
                     }
                     for s in frame.iter_mut() {
@@ -1244,16 +1191,13 @@ fn run(
                 None => "no filter".to_string(),
             };
             crate::logf!(
-                "CALL: echo — {}; gated {} ducked {} far-active {}; coupling {} (cap {}) volume {} mic {} {}",
+                "CALL: echo — {}; ducked {} far-active {}; coupling {} volume {} mic {}",
                 filter,
-                gated_frames,
                 ducked_frames,
                 far_active_frames,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
-                format!("{COUPLING_CAP:.2}"),
                 format!("{vol_lin_now:.3}"),
-                tx_energy / tx_frames.max(1),
-                if prediction_trusted { "predictive" } else { "reactive" }
+                tx_energy / tx_frames.max(1)
             );
         }
         // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
@@ -1265,11 +1209,6 @@ fn run(
                 crate::logf!("CALL: nlms disarmed — net harmful (recent {:.1}dB), duck carries", erle);
             }
             nlms = None;
-            // The prediction the canceller was meant to verify is unverified: reactive gating from here on.
-            if prediction_trusted {
-                prediction_trusted = false;
-                crate::log("CALL: gate falls back to reactive (measured far level) — the predictive seed is unverified without the canceller");
-            }
         }
         // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
         if let Some(v) = crate::call::vchirp::take_verdict() {
@@ -1284,12 +1223,12 @@ fn run(
                         ir.0
                     );
                     let g_eff = g_norm * vol_lin_now;
-                    if g_eff > COUPLING_CAP {
+                    if g_eff > COUPLING_WARN {
                         crate::logf!(
-                            "CALL: coupling {} at volume {} is beyond the {} cap — the gate believes the cap; the earpiece is driven into the mic (lower the rocker)",
+                            "CALL: coupling {} at volume {} is beyond {} — not a linear echo path, the earpiece is driven into the mic (lower the rocker)",
                             format!("{g_eff:.3}"),
                             format!("{vol_lin_now:.3}"),
-                            format!("{COUPLING_CAP:.2}")
+                            format!("{COUPLING_WARN:.2}")
                         );
                     }
                     applied = Some((g_norm, delay_bins));
@@ -1357,7 +1296,6 @@ fn run(
                 learner = crate::call::learn::Learner::new(rid.starts_with("bt:"), None, None);
                 applied = None;
                 nlms = None; // the taps are the OLD route's physics — duck-only until the next call's chirp
-                pred_gate = crate::call::learn::PredGate::new();
                 route_ducks = !matches!(
                     crate::platform::audio::route(),
                     crate::platform::audio::AudioRoute::Headset
@@ -1447,14 +1385,13 @@ fn run(
         rx_level,
         rx_frames
     );
-    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and the echo numbers — `gated` = hard near-mutes (echo-only frames), `ducked` = any attenuation, `far-active` = frames the far end was talking. A healthy speakerphone call wants gated ≈ (far-active − double-talk): most far-talk-alone frames should hard-gate.
+    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and the echo numbers — `ducked` = frames the linear duck attenuated, `far-active` = frames the emitted level sat above the half-duck point.
     crate::logf!(
-        "CALL: ladder — ended {}, {} up(s), {} down(s); duck {} — gated {}, ducked {}, far-active {} of {} frames",
+        "CALL: ladder — ended {}, {} up(s), {} down(s); duck {} — ducked {}, far-active {} of {} frames",
         if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },
         tier_ups,
         tier_downs,
-        if PID_DUCK_ENABLED { "PID+gate" } else { "disarmed" },
-        gated_frames,
+        if PID_DUCK_ENABLED { "linear" } else { "disarmed" },
         ducked_frames,
         far_active_frames,
         tx_frames
@@ -1489,10 +1426,10 @@ fn run(
                 c.adapted_frames
             );
         }
-        // Which duck ran (field forensics): pred = the calibrated prediction gated the mic; reactive = the peak-hold fallback (uncalibrated, or a mid-call route swap reset it).
+        // Which far envelope the duck read (field forensics): aligned = the chirp's delay-aligned far envelope; peak-hold = the render-level fallback (uncalibrated, or a mid-call route swap reset it).
         crate::logf!(
-            "CALL: duck mode at teardown — {}{}",
-            if applied.is_some() { "predictive" } else { "reactive" },
+            "CALL: duck envelope at teardown — {}{}",
+            if applied.is_some() { "aligned" } else { "peak-hold" },
             applied.map_or(String::new(), |(g, d)| format!(" (applied g {g:.4} delay {}ms)", d * 10))
         );
         // Persist what the call proved (Stage 4): echo posts only at SOLID confidence (the persisted tier); voice posts on its own evidence gate (≥5s of voiced far-quiet speech ⇒ talk is Some). The drain blends against the stored profile — ritual outranks, learned refines.
