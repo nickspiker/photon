@@ -73,7 +73,7 @@
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — Conversation party colours are placeholder; swap to perceptual L≈50% via vsf spectral/LMS
 - [project_presence_vs_online.md](project_presence_vs_online.md) — presence ≠ online (online = avatar ring, always); "show my presence" = busy/song/mood broadcast, DEFAULTS OFF
 - [project_theme_rec2020.md](project_theme_rec2020.md) — fluor+photon theme.rs colours = VSF RGB lazily passed thru; convert via vsf_rgb_to_bt2020 + target Rec.2020 output on ALL platforms
-- [project_incall_learner.md](project_incall_learner.md) — in-call learner + V-CHIRP probe SHIPPED; field rounds 1-5 logged; 2x-TX double capture FIXED 2026-09-08
+- [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE 2026-09-13: mic UNTOUCHED on TX (no AGC/NLMS/duck); speaker ducks on mic level before the DAC, recorded nowhere; SPEAKER_DUCK_MIC_FULL=1500 knob
 - [project_languages.md](project_languages.md) — language catalog SHIPPED 2026-09-03: exhaustive-match Msg enum (en+es+mi), every numeral thru fmt_num, You-page picker
 - [project_numeral_forms.md](project_numeral_forms.md) — 2026-09-11 number forms: counts linear, magnitudes DMS (floor log2, dozenal), proportions dot-fraction; hex linear everywhere; per-scale anchors incl. hydrogen-line length; docs/dozenal.md
 - [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs (Stelor ≈ an hour (pure log since 2026-09-11)); Dozenal settings page (rail reads Dozenal/Hexadecimal/Arabic) holds 3 base pills+why+cheat sheet+legend; NumBase/display.base

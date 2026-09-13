@@ -97,9 +97,10 @@ static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 static NEAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 /// Mic mean |sample| at which the speaker is fully silent; half at half. The one field knob of the speaker duck.
 pub const SPEAKER_DUCK_MIC_FULL: f32 = 1500.0;
-/// Render frames the speaker duck scaled (gain under 0.995) and render frames pulled, since the last audio reset — the engine's echo line and teardown tally.
-static SPEAKER_DUCKED: AtomicUsize = AtomicUsize::new(0);
+/// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
 static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
+static SPEAKER_HALF: AtomicUsize = AtomicUsize::new(0);
+static SPEAKER_GAIN_SUM: AtomicUsize = AtomicUsize::new(0);
 /// The engine arms the speaker duck for routes with an acoustic path (earpiece, loudspeaker, unknown) and disarms it for a headset, at engine start and on a mid-call route swap.
 static SPEAKER_DUCK_ARMED: AtomicBool = AtomicBool::new(false);
 
@@ -216,11 +217,14 @@ pub fn note_near_level(mean: u32) {
     NEAR_LEVEL.store(mean as usize, Ordering::Relaxed);
 }
 
-/// `(render frames the speaker duck scaled, render frames pulled)` since the last audio reset.
-pub fn speaker_duck_stats() -> (u64, u64) {
+/// `(render frames pulled, frames at or under half gain, mean gain over them as a per-mille)` since the last audio reset.
+pub fn speaker_duck_stats() -> (u64, u64, u64) {
+    let frames = SPEAKER_FRAMES.load(Ordering::Relaxed) as u64;
+    let sum = SPEAKER_GAIN_SUM.load(Ordering::Relaxed) as u64;
     (
-        SPEAKER_DUCKED.load(Ordering::Relaxed) as u64,
-        SPEAKER_FRAMES.load(Ordering::Relaxed) as u64,
+        frames,
+        SPEAKER_HALF.load(Ordering::Relaxed) as u64,
+        if frames == 0 { 1000 } else { sum * 1000 / (frames * 1024) },
     )
 }
 
@@ -313,8 +317,11 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
         SPEAKER_FRAMES.fetch_add(1, Ordering::Relaxed);
         let near = NEAR_LEVEL.load(Ordering::Relaxed) as f32;
         let gain = (1.0 - near / SPEAKER_DUCK_MIC_FULL).clamp(0.0, 1.0);
+        SPEAKER_GAIN_SUM.fetch_add((gain * 1024.0) as usize, Ordering::Relaxed);
+        if gain <= 0.5 {
+            SPEAKER_HALF.fetch_add(1, Ordering::Relaxed);
+        }
         if gain < 0.995 {
-            SPEAKER_DUCKED.fetch_add(1, Ordering::Relaxed);
             for s in frame.iter_mut() {
                 *s = (*s as f32 * gain) as i16;
             }
@@ -398,8 +405,9 @@ fn clear_queues() {
     FAR_LEVEL.store(0, Ordering::Relaxed);
     NEAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_ARMED.store(false, Ordering::Relaxed);
-    SPEAKER_DUCKED.store(0, Ordering::Relaxed);
     SPEAKER_FRAMES.store(0, Ordering::Relaxed);
+    SPEAKER_HALF.store(0, Ordering::Relaxed);
+    SPEAKER_GAIN_SUM.store(0, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------

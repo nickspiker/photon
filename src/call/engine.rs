@@ -1053,11 +1053,12 @@ fn run(
                 win_rtt_n = 0;
                 win_losses_at = windows_lost as u32;
             }
-            let (spk_ducked, spk_frames) = crate::platform::audio::speaker_duck_stats();
+            let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — speaker ducked {} of {} render frames; coupling {} volume {} mic {}",
-                spk_ducked,
+                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; coupling {} volume {} mic {}",
+                spk_mean,
                 spk_frames,
+                spk_half,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
@@ -1233,14 +1234,15 @@ fn run(
         rx_frames
     );
     // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
-    let (spk_ducked, spk_frames) = crate::platform::audio::speaker_duck_stats();
+    let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
     crate::logf!(
-        "CALL: ladder — ended {}, {} up(s), {} down(s); speaker ducked {} of {} render frames",
+        "CALL: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",
         if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },
         tier_ups,
         tier_downs,
-        spk_ducked,
-        spk_frames
+        spk_mean,
+        spk_frames,
+        spk_half
     );
     // SHADOW learner readout (Stage 3 field telemetry): the learned physics beside the profile the ritual measured — the convergence proof the gate softening waits on. rejects = per-gate window rejections [short, skew, hole, inactive, quiet, xcorr, cluster-reserved, edge, badg, r].
     {
