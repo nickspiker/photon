@@ -230,11 +230,12 @@ pub fn duck_gain_q32(near: i64, k_q16: i64) -> i64 {
 pub fn note_near_level(mean: u32) {
     let near = mean as i64;
     let emitted = EMITTED_LEVEL.load(Ordering::Relaxed) as i64;
-    // k learns on far-talk-alone: the speaker is carrying real level and the mic sits under it (mostly echo, not our voice). The EMA drifts — never steps — so a rocker change slides the duck to its new depth over ~a second of far speech.
-    if SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) && emitted > 512 && near < emitted {
+    // k is a MINIMUM statistic, not a mean (field 2026-09-13 23:00, two waves: the EMA version could not tell echo from Emma's loud room — room/emitted ≈ 0.3 fed k as if it were coupling, and deeper duck → smaller emitted → bigger ratio was a RUNAWAY to k 0.37-0.46 that silenced the far voice outright). True echo scales WITH the emitted level, so near/emitted ≈ k in every echo-only instant, ducked or not; room and voice sit ON TOP, so every sample is ≥ k and the min over far-active frames converges to the truth in the quiet gaps. Down instantly; up by k>>9 per far-active frame (τ ≈ 2.5 s of far speech) so a rocker-up re-learns without ever stepping.
+    if SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) && emitted > 512 {
         let sample = ((near << 16) / emitted).clamp(DUCK_K_MIN_Q16, DUCK_K_MAX_Q16);
         let k = DUCK_K_Q16.load(Ordering::Relaxed);
-        DUCK_K_Q16.store(k + ((sample - k) >> 6), Ordering::Relaxed);
+        let next = if sample < k { sample } else { (k + (k >> 9)).min(DUCK_K_MAX_Q16) };
+        DUCK_K_Q16.store(next, Ordering::Relaxed);
     }
     let g = duck_gain_q32(near, DUCK_K_Q16.load(Ordering::Relaxed));
     SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
