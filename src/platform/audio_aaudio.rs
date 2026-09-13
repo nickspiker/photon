@@ -59,6 +59,8 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::A
         .map_err(|e| format!("builder: {e:?}"))?
         .direction(direction)
         .usage(if matches!(direction, AudioDirection::Output) && VOICE_USAGE_OK.load(Ordering::Relaxed) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
+        // UNPROCESSED INPUT (field 2026-09-13 19:53 wave, Brittany couldn't hear Nick's first ten seconds and the keep's waveform shows it: his capture came up at mean 11 and ramped 11→72→137→139→145 over ~20 s — AAudio's default preset is VoiceRecognition, the VENDOR's processed path, whose AGC wakes at zero and ramps). The mic-untouched doctrine wants the element itself: no vendor AGC, no vendor effects, deterministic from frame one; a quiet raw mic is exactly what the far side's RX normalizer is for.
+        .input_preset(ndk::audio::AudioInputPreset::Unprocessed)
         .sharing_mode(sharing)
         .performance_mode(AudioPerformanceMode::LowLatency)
         .sample_rate(SAMPLE_RATE)
