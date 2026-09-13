@@ -45,6 +45,7 @@ fn fold_i32_to_edge(lin: &[i32], w: usize, h: usize, max_edge: usize) -> (usize,
     out.par_chunks_mut(tw * 3).enumerate().for_each(|(ty, row)| {
         let y0 = ty * h / th;
         let y1 = ((ty + 1) * h / th).max(y0 + 1).min(h);
+        let mut rem = [0i64; 3];
         for tx in 0..tw {
             let x0 = tx * w / tw;
             let x1 = ((tx + 1) * w / tw).max(x0 + 1).min(w);
@@ -60,9 +61,13 @@ fn fold_i32_to_edge(lin: &[i32], w: usize, h: usize, max_edge: usize) -> (usize,
                 }
             }
             let n = n.max(1);
-            row[tx * 3] = (acc[0] / n) as i32;
-            row[tx * 3 + 1] = (acc[1] / n) as i32;
-            row[tx * 3 + 2] = (acc[2] / n) as i32;
+            // The division remainder rides along the row per channel (the same carried-remainder law as call/qgain.rs): floor here, deficit into the next pixel — the row's sum is exact instead of every pixel sitting up to an LSB low.
+            for ch in 0..3 {
+                let t = acc[ch] + rem[ch];
+                let q = t.div_euclid(n);
+                rem[ch] = t - q * n;
+                row[tx * 3 + ch] = q as i32;
+            }
         }
     });
     (tw, th, out)

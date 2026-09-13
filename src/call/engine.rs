@@ -99,11 +99,14 @@ const fn tier_window_bytes(tier: usize) -> usize {
 const COUPLING_WARN: f32 = 0.3;
 /// Live-playback output pad in stops — defined beside the ringback that shares it (see [`super::OUTPUT_PAD_STOPS`]).
 use super::OUTPUT_PAD_STOPS;
-// THE INCOMING LEVEL IS NORMALIZED ON THE SPEAKER SIDE (Nick 2026-09-13: "how do we normalize the incoming mic level?" — Brittany: "quite quiet"). The wire carries every mic raw (a phone mic's talking frames run ~200-800 mean |sample|, 15-25 dB under the old TX setpoint), so the listener lifts it: a slow estimate of the far talker's voiced level (frames above RX_VOICED_FLOOR, τ ≈ 0.5 s) sets a gain toward RX_TARGET_LEVEL, clamped to RX_GAIN_MIN..RX_GAIN_MAX, slewed per frame; silence holds the gain (an AGC regulating silence learns to amplify room hiss). Applied to the decoded frame before the output pad and never spooled — the keep's remote channel is what arrived, and the speaker duck reads the same frame after it.
-const RX_TARGET_LEVEL: f32 = 4000.0;
-const RX_VOICED_FLOOR: f32 = 60.0;
-const RX_GAIN_MIN: f32 = 0.125;
-const RX_GAIN_MAX: f32 = 16.0;
+// THE INCOMING LEVEL IS NORMALIZED ON THE SPEAKER SIDE (Nick 2026-09-13: "how do we normalize the incoming mic level?" — Brittany: "quite quiet"). The wire carries every mic raw, so the listener lifts it, all integer (see call/qgain.rs): a voiced-level EMA of the far talker (frames above RX_VOICED_FLOOR, level += (mean−level)>>6) sets a Q32 gain want = (RX_TARGET << 32)/level clamped to [RX_GAIN_MIN_Q32, RX_GAIN_MAX_Q32], slewed g += (want−g)>>4 per frame; silence holds the gain (an AGC regulating silence learns to amplify room hiss). The output pad (2^-OUTPUT_PAD_STOPS, exact in Q32) composes into the SAME gain, so the decoded frame is scaled ONCE with a carried remainder — the old chain (float truncate, then >>4 dropping four bits off the quietest signal in the path) is gone. Never spooled: the keep's remote channel is what arrived.
+/// The far talker's mean |sample| the normalizer steers toward — a power of two, every knob in the chain is a shift.
+const RX_TARGET_LEVEL: i64 = 4096;
+/// Frames at or under this mean are unvoiced: they hold the gain and never feed the level estimate.
+const RX_VOICED_FLOOR: i64 = 64;
+/// Gain clamp in Q32: 1/8× to 16×.
+const RX_GAIN_MIN_Q32: i64 = crate::call::qgain::UNITY >> 3;
+const RX_GAIN_MAX_Q32: i64 = crate::call::qgain::UNITY << 4;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
@@ -269,9 +272,10 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // RX normalizer state (see RX_TARGET_LEVEL): the far talker's voiced level estimate and the applied gain.
-    let mut rx_level: f32 = 0.0;
-    let mut rx_gain: f32 = 1.0;
+    // RX normalizer state (see RX_TARGET_LEVEL): the far talker's voiced level estimate, and ONE gain stage (normalizer ∘ pad) with its carried remainder.
+    let mut rx_voiced: i64 = 0;
+    let mut rx_gain_q32: i64 = crate::call::qgain::UNITY;
+    let mut rx_stage = crate::call::qgain::QGain::new(rx_gain_q32 >> OUTPUT_PAD_STOPS);
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
         crate::platform::audio::route(),
@@ -390,10 +394,10 @@ fn run(
         if vol_db <= -20.0 { 32_760.0 / 11_585.0 } else { 1.0 }
     };
     if chirp_scale > 1.0 {
+        // Q32 with the carried remainder like every other scale (the ratio is the two i16 levels themselves, integer).
+        let mut boost = crate::call::qgain::QGain::new((32_760i64 << 32) / 11_585);
         for f in &mut chirp_frames {
-            for s in f.iter_mut() {
-                *s = (*s as f32 * chirp_scale).clamp(-32768.0, 32767.0) as i16;
-            }
+            boost.apply_frame(f);
         }
         crate::logf!(
             "CALL: v-chirp digital boost x{} (low media volume)",
@@ -845,22 +849,15 @@ fn run(
                         if probing {
                             continue;
                         }
-                        // RX normalizer (RX_TARGET_LEVEL): the far talker's level, lifted or trimmed toward the setpoint on voiced frames, held on silence.
-                        let mean = f.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32 / f.len().max(1) as f32;
+                        // RX normalizer (RX_TARGET_LEVEL, integer): the far talker's level steers the gain on voiced frames, silence holds it; the output pad (Nick 2026-09-03, the loudspeaker ran ~2.5 stops hot) composes in as a shift and the frame is scaled once, remainder carried.
+                        let mean = f.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / f.len().max(1) as i64;
                         if mean > RX_VOICED_FLOOR {
-                            rx_level = if rx_level <= 0.0 { mean } else { rx_level + (mean - rx_level) * 0.02 };
-                            let want = (RX_TARGET_LEVEL / rx_level.max(1.0)).clamp(RX_GAIN_MIN, RX_GAIN_MAX);
-                            rx_gain += (want - rx_gain) * 0.05;
+                            rx_voiced = if rx_voiced <= 0 { mean } else { rx_voiced + ((mean - rx_voiced) >> 6) };
+                            let want = ((RX_TARGET_LEVEL << 32) / rx_voiced.max(1)).clamp(RX_GAIN_MIN_Q32, RX_GAIN_MAX_Q32);
+                            rx_gain_q32 += (want - rx_gain_q32) >> 4;
                         }
-                        if (rx_gain - 1.0).abs() > 0.005 {
-                            for s in &mut f {
-                                *s = (*s as f32 * rx_gain).clamp(-32768.0, 32767.0) as i16;
-                            }
-                        }
-                        // Output pad: 4 stops down on live wave playback (Nick 2026-09-03) — the headset default now that the speaker toggle is parked; the loudspeaker at max media volume ran ~2.5 stops hot in the field and near-unity echo coupling came with it. The duck drops further from here when the physics demand it. Ritual prompts and recording preview enqueue directly and stay unpadded; the RENDER_ENV/RENDER_REF taps sit downstream, so the learner still measures the true emitted level.
-                        for s in &mut f {
-                            *s >>= OUTPUT_PAD_STOPS;
-                        }
+                        rx_stage.g = rx_gain_q32 >> OUTPUT_PAD_STOPS;
+                        rx_stage.apply_frame(&mut f);
                         if draining.is_some() {
                             continue;
                         }
@@ -1079,8 +1076,8 @@ fn run(
                 spk_mean,
                 spk_frames,
                 spk_half,
-                format!("{rx_gain:.2}"),
-                rx_level as u32,
+                format!("{:.2}", rx_gain_q32 as f64 / crate::call::qgain::UNITY as f64),
+                rx_voiced,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
@@ -1259,9 +1256,9 @@ fn run(
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
     crate::logf!(
         "CALL: rx normalizer — far voiced level {} gain {} at teardown (target {})",
-        rx_level as u32,
-        format!("{rx_gain:.2}"),
-        RX_TARGET_LEVEL as u32
+        rx_voiced,
+        format!("{:.2}", rx_gain_q32 as f64 / crate::call::qgain::UNITY as f64),
+        RX_TARGET_LEVEL
     );
     crate::logf!(
         "CALL: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",

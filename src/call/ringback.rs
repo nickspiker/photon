@@ -89,12 +89,19 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
     let ring = chirp::Chirp::ring_from_hash(digest);
     let cadence = to_call_rate(ring.samples(), chirp::SAMPLE_RATE_HZ);
     let pad = 1.0 / (1u32 << super::OUTPUT_PAD_STOPS) as f32;
+    // Synthesis is float; the CAST is the boundary and it carries its remainder (floor + fraction to the next sample, zero-mean) like every other quantize in the path.
+    let mut cast_carry: f64 = 0.0;
     let frames: Vec<Vec<i16>> = cadence
         .chunks(audio::FRAME_SAMPLES)
         .map(|c| {
             let mut f: Vec<i16> = c
                 .iter()
-                .map(|&s| (s * pad * i16::MAX as f32) as i16)
+                .map(|&s| {
+                    let acc = (s * pad * i16::MAX as f32) as f64 + cast_carry;
+                    let out = acc.floor();
+                    cast_carry = acc - out;
+                    out as i16
+                })
                 .collect();
             f.resize(audio::FRAME_SAMPLES, 0);
             f

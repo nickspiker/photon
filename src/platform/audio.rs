@@ -9,7 +9,7 @@
 //! Queues are bounded drop-oldest: realtime audio must never block and never balloon — a stalled consumer costs the oldest 5ms, not memory or latency.
 
 use std::collections::VecDeque;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
 /// The call engine's sample rate — everything above the device edge is 48kHz mono.
@@ -93,10 +93,12 @@ pub fn jitter_stats() -> (usize, usize, usize, usize, usize, usize, usize) {
 /// Peak-held mean |sample| of what the device is rendering (~80ms decay) — the engine's soft duck reads this as the far-end activity signal, covering the device-buffer + acoustic lag without sample-accurate alignment.
 static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 // THE SPEAKER DUCK (Nick 2026-09-13: "if the mic level gets hot, drop the speaker volume right before it gets played, do not keep record of post filtered values"). The mic goes to the wire untouched; the only echo control is here, on the render frame, in the moment: gain = 1 − near / SPEAKER_DUCK_MIC_FULL clamped to [0, 1], where `near` is the mean |sample| of the newest captured mic frame (the engine notes it per frame). No slew, no floor, no hold, and nothing downstream records the scaled frame — the learner's envelope tap and the canceller reference read what was emitted, which is the point of them.
-/// Mean |sample| of the newest captured mic frame — the speaker duck's input. Zero outside a call and while the mic is muted (the engine notes the muted zeros).
-static NEAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
-/// Mic mean |sample| at which the speaker is fully silent; half at half. The one field knob of the speaker duck.
-pub const SPEAKER_DUCK_MIC_FULL: f32 = 1500.0;
+/// The duck gain in Q32, PRE-COMPUTED on the capture side (`note_near_level` does the subtract-and-shift once per captured frame) so the render pull carries zero arithmetic beyond load + kernel. Unity outside a call and while the mic is muted.
+static SPEAKER_DUCK_GAIN: AtomicI64 = AtomicI64::new(crate::call::qgain::UNITY);
+/// The duck kernel's carried remainder (see call/qgain.rs) — only the render thread touches it.
+static SPEAKER_DUCK_CARRY: AtomicI64 = AtomicI64::new(0);
+/// Mic mean |sample| at which the speaker is fully silent; half at half. A power of two so the gain is a subtract and a shift (Nick 2026-09-13: no division at the render pull). The one field knob of the speaker duck.
+pub const SPEAKER_DUCK_MIC_FULL: i64 = 2048;
 /// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
 static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_HALF: AtomicUsize = AtomicUsize::new(0);
@@ -212,9 +214,10 @@ pub fn set_speaker_duck(armed: bool) {
     SPEAKER_DUCK_ARMED.store(armed, Ordering::Relaxed);
 }
 
-/// The engine notes the mean |sample| of each captured mic frame here — the speaker duck reads it at the next render pull.
+/// The engine notes the mean |sample| of each captured mic frame here; the Q32 duck gain is computed HERE (capture cadence) and the render pull only loads it. `(FULL − near) << (32 − log2(FULL))` — a subtract and a shift, clamped at silence.
 pub fn note_near_level(mean: u32) {
-    NEAR_LEVEL.store(mean as usize, Ordering::Relaxed);
+    let g = (SPEAKER_DUCK_MIC_FULL - (mean as i64).min(SPEAKER_DUCK_MIC_FULL)) << 21;
+    SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
 }
 
 /// `(render frames pulled, frames at or under half gain, mean gain over them as a per-mille)` since the last audio reset.
@@ -311,20 +314,24 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             }
         }
     };
-    // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
+    // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC — Q32 with the carried remainder (call/qgain.rs), the gain pre-shifted at capture time, so this path is load + mul-add-shift-and per sample. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
     let mut frame = frame;
     if !LOCAL_SOURCE.load(Ordering::Relaxed) && SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) {
         SPEAKER_FRAMES.fetch_add(1, Ordering::Relaxed);
-        let near = NEAR_LEVEL.load(Ordering::Relaxed) as f32;
-        let gain = (1.0 - near / SPEAKER_DUCK_MIC_FULL).clamp(0.0, 1.0);
-        SPEAKER_GAIN_SUM.fetch_add((gain * 1024.0) as usize, Ordering::Relaxed);
-        if gain <= 0.5 {
+        let g = SPEAKER_DUCK_GAIN.load(Ordering::Relaxed);
+        SPEAKER_GAIN_SUM.fetch_add((g >> 22) as usize, Ordering::Relaxed);
+        if g <= crate::call::qgain::UNITY / 2 {
             SPEAKER_HALF.fetch_add(1, Ordering::Relaxed);
         }
-        if gain < 0.995 {
+        if g != crate::call::qgain::UNITY {
+            // Inline kernel (single render thread owns the carry): acc = s·g + carry; out = acc >> 32; carry = the low mask, exactly the residue. No saturation arm — g ≤ unity here, the product can only shrink.
+            let mut carry = SPEAKER_DUCK_CARRY.load(Ordering::Relaxed);
             for s in frame.iter_mut() {
-                *s = (*s as f32 * gain) as i16;
+                let acc = *s as i64 * g + carry;
+                *s = (acc >> 32) as i16;
+                carry = acc & 0xFFFF_FFFF;
             }
+            SPEAKER_DUCK_CARRY.store(carry, Ordering::Relaxed);
         }
     }
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
@@ -403,7 +410,8 @@ fn clear_queues() {
     SPLICE_DROPPED.store(0, Ordering::Relaxed);
     SPLICE_DUPED.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
-    NEAR_LEVEL.store(0, Ordering::Relaxed);
+    SPEAKER_DUCK_GAIN.store(crate::call::qgain::UNITY, Ordering::Relaxed);
+    SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_ARMED.store(false, Ordering::Relaxed);
     SPEAKER_FRAMES.store(0, Ordering::Relaxed);
     SPEAKER_HALF.store(0, Ordering::Relaxed);
@@ -516,6 +524,8 @@ mod desktop {
     {
         let mut rs = Resampler::new(src_rate, SAMPLE_RATE);
         let mut pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 2);
+        // The float-cast carry (see the map below) — lives in the closure, one per stream.
+        let mut cast_carry: f64 = 0.0;
         let stream = dev
             .build_input_stream(
                 &cfg,
@@ -528,7 +538,13 @@ mod desktop {
                     while pending.len() >= FRAME_SAMPLES {
                         let frame: Vec<i16> = pending
                             .drain(..FRAME_SAMPLES)
-                            .map(|s| (s * 32767.0).clamp(-32768.0, 32767.0) as i16)
+                            .map(|s| {
+                                // The one float boundary (the OS hands f32): error-feedback the cast — floor with the fraction carried to the next sample, zero-mean instead of a truncation bias.
+                                let acc = (s * 32767.0).clamp(-32768.0, 32767.0) as f64 + cast_carry;
+                                let out = acc.floor();
+                                cast_carry = acc - out;
+                                out as i16
+                            })
                             .collect();
                         push_captured(vsf::eagle_time_oscillations(), frame);
                     }
