@@ -92,6 +92,16 @@ pub fn jitter_stats() -> (usize, usize, usize, usize, usize, usize, usize) {
 
 /// Peak-held mean |sample| of what the device is rendering (~80ms decay) — the engine's soft duck reads this as the far-end activity signal, covering the device-buffer + acoustic lag without sample-accurate alignment.
 static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
+// THE SPEAKER DUCK (Nick 2026-09-13: "if the mic level gets hot, drop the speaker volume right before it gets played, do not keep record of post filtered values"). The mic goes to the wire untouched; the only echo control is here, on the render frame, in the moment: gain = 1 − near / SPEAKER_DUCK_MIC_FULL clamped to [0, 1], where `near` is the mean |sample| of the newest captured mic frame (the engine notes it per frame). No slew, no floor, no hold, and nothing downstream records the scaled frame — the learner's envelope tap and the canceller reference read what was emitted, which is the point of them.
+/// Mean |sample| of the newest captured mic frame — the speaker duck's input. Zero outside a call and while the mic is muted (the engine notes the muted zeros).
+static NEAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
+/// Mic mean |sample| at which the speaker is fully silent; half at half. The one field knob of the speaker duck.
+pub const SPEAKER_DUCK_MIC_FULL: f32 = 1500.0;
+/// Render frames the speaker duck scaled (gain under 0.995) and render frames pulled, since the last audio reset — the engine's echo line and teardown tally.
+static SPEAKER_DUCKED: AtomicUsize = AtomicUsize::new(0);
+static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
+/// The engine arms the speaker duck for routes with an acoustic path (earpiece, loudspeaker, unknown) and disarms it for a headset, at engine start and on a mid-call route swap.
+static SPEAKER_DUCK_ARMED: AtomicBool = AtomicBool::new(false);
 
 /// What the far end is acoustically coupled to — the echo-layer dispatcher. `Headset` = no acoustic path, bypass everything.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,6 +206,24 @@ pub fn far_level() -> u32 {
     FAR_LEVEL.load(Ordering::Relaxed) as u32
 }
 
+/// Arm (routes with an acoustic path) or disarm (headset) the speaker duck.
+pub fn set_speaker_duck(armed: bool) {
+    SPEAKER_DUCK_ARMED.store(armed, Ordering::Relaxed);
+}
+
+/// The engine notes the mean |sample| of each captured mic frame here — the speaker duck reads it at the next render pull.
+pub fn note_near_level(mean: u32) {
+    NEAR_LEVEL.store(mean as usize, Ordering::Relaxed);
+}
+
+/// `(render frames the speaker duck scaled, render frames pulled)` since the last audio reset.
+pub fn speaker_duck_stats() -> (u64, u64) {
+    (
+        SPEAKER_DUCKED.load(Ordering::Relaxed) as u64,
+        SPEAKER_FRAMES.load(Ordering::Relaxed) as u64,
+    )
+}
+
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
@@ -279,6 +307,19 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             }
         }
     };
+    // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
+    let mut frame = frame;
+    if !LOCAL_SOURCE.load(Ordering::Relaxed) && SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) {
+        SPEAKER_FRAMES.fetch_add(1, Ordering::Relaxed);
+        let near = NEAR_LEVEL.load(Ordering::Relaxed) as f32;
+        let gain = (1.0 - near / SPEAKER_DUCK_MIC_FULL).clamp(0.0, 1.0);
+        if gain < 0.995 {
+            SPEAKER_DUCKED.fetch_add(1, Ordering::Relaxed);
+            for s in frame.iter_mut() {
+                *s = (*s as f32 * gain) as i16;
+            }
+        }
+    }
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
     // frame.len(), not FRAME_SAMPLES: the sample splice can hand back 479/481-sample frames.
     let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / frame.len().max(1) as u64) as usize;
@@ -355,6 +396,10 @@ fn clear_queues() {
     SPLICE_DROPPED.store(0, Ordering::Relaxed);
     SPLICE_DUPED.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
+    NEAR_LEVEL.store(0, Ordering::Relaxed);
+    SPEAKER_DUCK_ARMED.store(false, Ordering::Relaxed);
+    SPEAKER_DUCKED.store(0, Ordering::Relaxed);
+    SPEAKER_FRAMES.store(0, Ordering::Relaxed);
 }
 
 // ---------------------------------------------------------------------------

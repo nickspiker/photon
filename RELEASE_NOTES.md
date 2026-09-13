@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- A wave never gates you. The echo gate is gone; the mic is ducked by one continuous linear map of what your speaker is emitting, frame by frame, with no floor and no hold. The quiet mic that vanished the moment the other end made a sound now dips with their level and comes straight back.
+- Your voice reaches the other end exactly as your mic heard it. Nothing on the sending side touches it any more: no gate, no ducking, no automatic level. Echo is handled on the listening side instead — while your mic is hot, the other person's voice is turned down in your speaker for that moment, and nothing of that is recorded. A kept wave holds every party as they sounded.
 - Android remembers your zoom. The pinch scale you set was saved but never applied on the next launch; it is now.
 - The top-left orb is half again as large; the text beside it is unchanged.
 - A wave on the timeline is its waveform and nothing else, hairline to hairline. Tap it to select it, and the options appear: play, wave back, beam back, export, replicate, discard. Playing takes those two taps and never starts from a scroll or a stray touch on the band.

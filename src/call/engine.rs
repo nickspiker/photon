@@ -94,23 +94,9 @@ const fn tier_window_bytes(tier: usize) -> usize {
     TIER_FRAMES[tier] * tier_slot(tier)
 }
 
-// INLINE PID LEVEL + DUCK (echo layer 2 + level management in ONE loop — Nick's call 2026-09-01: "auto ducking, level management we can do with a PID loop in line, basically another 1ms for the adjustment pass"; actual cost is microseconds per 20ms frame). Replaces the disarmed two-coefficient glide, whose peak-hold trigger smeared timing and clipped double-talk.
-// The loop tracks a LEVEL gain per frame (AGC term: mic mean-|sample| toward TX_TARGET_LEVEL in the log domain — quiet talkers lift, shouters trim, error is symmetrical in dB; PID output slews it, the integrator is clamped (anti-windup) so a long silence doesn't bank gain and blast the first syllable) and multiplies it by the duck term of THIS frame (see DUCK_FAR_FULL) — the duck never slews.
-const PID_DUCK_ENABLED: bool = true;
-/// Mic AGC setpoint: mean |sample| of a talking frame lands here (~-18 dBFS of i16 — comfortable headroom above the floor window's repair math, below clipping).
-const TX_TARGET_LEVEL: f32 = 4000.0;
-/// THE DUCK IS ONE LINEAR MAP (Nick 2026-09-13: "map a gain based on the speaker output… a nice linear, no floors, no delays, straight up fast and no gate"): gain = 1 − emitted / DUCK_FAR_FULL clamped to [0, 1], where emitted = linear volume × the far envelope one acoustic delay ago (the chirp's delay when it measured one, the peak-hold render level otherwise). Applied per 5 ms frame with no slew, no floor and no hysteresis. The gate that sat on top (mic against an expected echo, a bounded hard run, a reactive fallback) silenced Nick whenever Brittany's end made a sound (c617a36f) and is gone. This is the emitted level (mean |sample| × linear volume) at which the mic is fully ducked; half at half. The first field tweak lives here.
-const DUCK_FAR_FULL: f32 = 800.0;
+// THE MIC IS UNTOUCHED (Nick 2026-09-13: "mic needs untouched before it hits the wire, filtering is always done on the speaker side which is only temporary… if the mic level gets hot, drop the speaker volume right before it gets played, do not keep record of post filtered values"). No AGC, no canceller, no duck on the TX path: the captured frame is what the wire carries, so the wire copy IS the good copy of every party and a kept wave needs only its missed windows filled. The echo control is the SPEAKER duck in platform::audio (`SPEAKER_DUCK_MIC_FULL`): the render frame is scaled by the mic level of the moment, right before the DAC, and nothing records it. The PID level loop, the chirp-seeded NLMS subtract and the linear mic duck that lived here until this day are in the history.
 /// A chirp coupling (g × volume) above this is not a linear echo path — the earpiece is driven into the mic. Logged at the seed as a rocker warning and used as the canceller's "plausible echo" adapt ratio when no calibration is applied; the duck does not read it.
 const COUPLING_WARN: f32 = 0.3;
-/// PID gains on the log2-domain level error, evaluated per 5ms frame (the 2026-09-08 flag day doubled the eval rate; KI halved and KD doubled to keep the same time-domain response — integral accumulates per eval, derivative reads a half-sized per-eval delta).
-const PID_KP: f32 = 0.20;
-const PID_KI: f32 = 0.01;
-const PID_KD: f32 = 0.16;
-const PID_I_CLAMP: f32 = 2.0;
-/// Applied-gain bounds: ±3 octaves of AGC authority.
-const GAIN_MIN: f32 = 0.125;
-const GAIN_MAX: f32 = 8.0;
 /// Live-playback output pad in stops — defined beside the ringback that shares it (see [`super::OUTPUT_PAD_STOPS`]).
 use super::OUTPUT_PAD_STOPS;
 
@@ -278,18 +264,12 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // PID state: the slewed level gain + (integral, last-error) on the log2 level error; `duck_gain` is the gain applied to the frame (level × duck term); route is cached at engine start (Headset = no acoustic path = never duck; Unknown ducks, the safe default).
-    let mut level_gain: f32 = 1.0;
-    let mut duck_gain: f32 = 1.0;
-    let mut pid_i: f32 = 0.0;
-    let mut pid_last_e: f32 = 0.0;
-    let mut ducked_frames: u64 = 0;
-    let mut far_active_frames: u64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
         crate::platform::audio::route(),
         crate::platform::audio::AudioRoute::Headset
     );
+    crate::platform::audio::set_speaker_duck(route_ducks);
 
     // In-call calibration learner: fed every raw envelope ABOVE the mute/uncalibrated skip on purpose — a muted user is GUARANTEED silent, the cleanest echo windows there are (envelope-only, the mic session is already open — no new privacy surface). Its estimates drive the PREDICTIVE duck below (Cal 4) and persist at teardown; the ritual snapshot in params seeds it.
     let start_route = crate::platform::audio::route_id();
@@ -299,22 +279,11 @@ fn run(
         params.cal.as_ref().map(|c| c.floor),
     );
     let mut renv_cursor = 0usize;
-    // NLMS canceller (Nick 2026-09-08: "go for the NLMS" — subtract first, duck the residual). Armed ONLY by a chirp Coupled verdict (the profile IS the license); a route swap disarms (new physics, next call's chirp re-seeds). Alignment: mic and reference advance by pure sample count from one-time osc anchors — stamp wobble never smears the taps (it folds into the PRE-roll window once).
-    let mut nlms: Option<crate::call::nlms::Nlms> = None;
-    let mut nlms_seed_vol: f32 = 1.0;
-    let mut ref_ring = crate::call::nlms::RefRing::new(96_000); // 2s of rendered reference
-    // Start the reference cursor at NOW, not zero: on the caller the audio session carries over from the ringback ("engine has the session"), and the render reference ring already holds the ringback's audible frames — the chirp's render anchor then landed 3.7s early and the fit rejected its own seed at the grid bound (Nick 2026-09-10, no filter on his side of an otherwise clean wave).
-    let mut ref_cursor = crate::platform::audio::render_ref_since(usize::MAX).1;
-    let mut ref_anchor_osc: Option<i64> = None;
-    let mut mic_abs: u64 = 0;
-    let mut mic_anchor_osc: Option<i64> = None;
     // LEARNER CADENCE ADAPTER (flag day 2026-09-08): the learner's KAT-locked contract is ONE envelope per 10ms bin (its stamp regularizer advances a bin per push — two 5ms pushes would run its lattice at 2× time and re-anchor forever). The engine pairs adjacent 5ms envelopes: (osc of the first half, mean env) per 10ms.
     let mut far_pair: Option<(i64, f32)> = None;
     let mut mic_pair: Option<(i64, f32)> = None;
     // The APPLIED calibration the duck predicts from: (g_norm, delay_bins). Seeded by the stored profile; the live learner slews it (τ≈2s at the 1s update cadence) once Usable — so an uncalibrated route arms itself mid-call. Live floor rides the learner's minimum-statistics tracker.
     let mut applied: Option<(f32, usize)> = params.cal.as_ref().map(|c| (c.g_norm, c.delay_bins));
-    let fixed_mic_gain: Option<f32> = params.cal.as_ref().and_then(|c| c.mic_gain);
-    let mut live_floor: f32 = params.cal.as_ref().map_or(40.0, |c| c.floor);
     let mut clean_declared = false;
     let mut live_route = start_route.clone();
     let mut last_est = std::time::Instant::now();
@@ -383,13 +352,7 @@ fn run(
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
-        if !PID_DUCK_ENABLED {
-            "disarmed (raw echo run)"
-        } else if route_ducks {
-            "PID (level+duck inline)"
-        } else {
-            "PID (level only — headset)"
-        },
+        if route_ducks { "mic untouched, speaker ducks on the mic level" } else { "mic untouched, no duck — headset" },
         // Calibration substrate readout: WHICH output path + volume this call runs on — the profile key the calibrated duck will look up, loggable now so field logs start naming routes before the calibration lands.
         crate::platform::audio::route_id(),
         crate::platform::audio::current_volume_db()
@@ -487,17 +450,6 @@ fn run(
                 }
             }
         }
-        // NLMS reference feed: every frame the DAC pulled, flattened into the absolute-indexed ring.
-        {
-            let (frames, cur) = crate::platform::audio::render_ref_since(ref_cursor);
-            ref_cursor = cur;
-            for (osc, f) in frames {
-                if ref_anchor_osc.is_none() {
-                    ref_anchor_osc = Some(osc);
-                }
-                ref_ring.push(&f);
-            }
-        }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
         for (cap_osc, frame) in crate::platform::audio::captured_frames() {
@@ -530,38 +482,9 @@ fn run(
             if muted.load(Ordering::Relaxed) {
                 frame.fill(0);
             }
-            // THE MIC AS CAPTURED (Nick 2026-09-12, the ordering fix): the clean pre-canceller pre-duck frame feeds the ARCHIVE encoder below; the verdict the live path applies rides beside it as the ducking profile.
+            // THE MIC AS CAPTURED: the archive encoder below takes the same frame the wire does (nothing between the ADC and the encoder); the proc fields ride as unity until the flag day that drops them.
             let pre_frame: Vec<i16> = frame.clone();
-            let mut proc_verdict: u8 = 0;
-            // NLMS SUBTRACT — before the tally and the duck, so both see the residual (the duck is the RESIDUAL suppressor once a filter is armed). Mic timeline: pure frame count from a one-time anchor.
-            if mic_anchor_osc.is_none() {
-                mic_anchor_osc = Some(cap_osc);
-            }
-            let this_mic_abs = mic_abs;
-            mic_abs += frame.len() as u64;
-            if let Some(c) = nlms.as_mut() {
-                if let (Some(m0), Some(r0)) = (mic_anchor_osc, ref_anchor_osc) {
-                    // One-time anchor offset maps the mic count onto the reference timeline; the chirp's ir_start carries the same osc-anchored convention, and the PRE-roll absorbs the wobble.
-                    let off_samples = (m0 - r0) * crate::call::vchirp::SAMPLE_RATE as i64
-                        / vsf::OSCILLATIONS_PER_SECOND as i64;
-                    let pos = this_mic_abs as i64 + off_samples;
-                    // Adapt only in far-talks-alone (the side-aware law): far active AND the raw mic no louder than a plausible echo. Double-talk freezes the taps. "Plausible echo" is the PREDICTION when a calibration is applied (2026-09-09: the raw-far ratio never opened on a phone whose echo path gain sits near 7 — the echo itself failed the ratio, the filter adapted for a second or two per call and died) — the same enter line the gate uses; the raw-far ratio stays as the uncalibrated fallback.
-                    let raw_mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
-                        / frame.len().max(1) as f32;
-                    let far_now = crate::platform::audio::far_level() as f32;
-                    let adapt = route_ducks
-                        && match applied {
-                            Some((g_norm, delay)) => {
-                                let far_del = learner.far_env_at(delay);
-                                let pred = g_norm * vol_lin_now * far_del;
-                                far_del > crate::call::learn::FAR_ACT && raw_mean < (pred * 2.0).max(live_floor * 2.0)
-                            }
-                            None => far_now > DUCK_FAR_FULL * 0.5 && raw_mean < far_now * COUPLING_WARN,
-                        };
-                    let ref_gain = (vol_lin_now / nlms_seed_vol.max(1e-6)).clamp(0.05, 20.0);
-                    c.cancel_frame(&mut frame, &ref_ring, pos, adapt, ref_gain);
-                }
-            }
+            let proc_verdict: u8 = 0;
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
             if frames_in_window == 0 && pending_tier != tier {
                 tier = pending_tier;
@@ -570,60 +493,11 @@ fn run(
                     let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier]));
                 }
             }
-            // Mic health level BEFORE the duck, so a heavy duck never reads as a dead mic in the tally.
-            tx_energy += frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
+            // Mic level: the health tally, and the level the SPEAKER duck reads (mean |sample| of this frame — the muted zeros read as silence, so a muted mic never ducks the speaker).
+            let frame_sum = frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
+            tx_energy += frame_sum;
             tx_frames += 1;
-            // PID level+duck (see the PID_DUCK_ENABLED consts): one inline loop regulates mic level toward the setpoint and squashes it under far-end energy.
-            let mut frame = frame;
-            // Emitted level: what the speaker put into the room at the moment the mic hears it — the far envelope one acoustic delay ago when the chirp measured a delay, else the peak-hold render level — times the linear volume.
-            let far_at_mic = match applied {
-                Some((_, delay)) => learner.far_env_at(delay),
-                None => crate::platform::audio::far_level() as f32,
-            };
-            let emitted = vol_lin_now * far_at_mic;
-            if route_ducks && emitted > DUCK_FAR_FULL * 0.5 {
-                far_active_frames += 1;
-            }
-            if PID_DUCK_ENABLED {
-                // Frame mean |sample| — the level the AGC regulates. Silence (below a hair above the noise floor) freezes the loop: regulating silence toward TX_TARGET_LEVEL is how AGCs learn to amplify room hiss.
-                let mean = frame.iter().map(|s| s.unsigned_abs() as u32).sum::<u32>() as f32
-                    / frame.len().max(1) as f32;
-                // The duck term of THIS frame: linear in the emitted level, no floor, no slew (DUCK_FAR_FULL).
-                let duck_term = if route_ducks {
-                    (1.0 - emitted / DUCK_FAR_FULL).clamp(0.0, 1.0)
-                } else {
-                    1.0
-                };
-                if duck_term < 0.995 {
-                    proc_verdict = 1;
-                }
-                if let Some(fg) = fixed_mic_gain {
-                    // Cal 4: the voice profile's FIXED gain replaces the chasing PID — the AGC fighting the duck was the field's "tx(mic) 279 against a 4000 target". The same slew keeps onsets pump-free.
-                    level_gain += (fg.clamp(GAIN_MIN, GAIN_MAX) - level_gain) * 0.19;
-                } else if mean > 40.0 {
-                    // Log2-domain level error toward the setpoint, PID'd — level management in the one inline loop (+~µs per 20ms frame).
-                    let e = (TX_TARGET_LEVEL / (mean / level_gain).max(1.0)).log2().clamp(-4.0, 4.0);
-                    pid_i = (pid_i + e * PID_KI).clamp(-PID_I_CLAMP, PID_I_CLAMP);
-                    let d = e - pid_last_e;
-                    pid_last_e = e;
-                    let target = (PID_KP * e + pid_i + PID_KD * d).exp2().clamp(GAIN_MIN, GAIN_MAX);
-                    // Slew toward the PID target (one step per 5ms frame keeps onsets pump-free; 0.19 at 5ms = the old 0.35 at 10ms).
-                    level_gain += (target - level_gain) * 0.19;
-                } else {
-                    // Silence: hold the level gain, bleed the derivative memory.
-                    pid_last_e = 0.0;
-                }
-                level_gain = level_gain.clamp(GAIN_MIN, GAIN_MAX);
-                duck_gain = level_gain * duck_term;
-                if (duck_gain - 1.0).abs() > 0.005 {
-                    if duck_term < 0.995 {
-                        ducked_frames += 1;
-                    }
-                    for s in frame.iter_mut() {
-                        *s = (*s as f32 * duck_gain).clamp(-32768.0, 32767.0) as i16;
-                    }
-                }
-            }
+            crate::platform::audio::note_near_level((frame_sum / frame.len().max(1) as u64) as u32);
             let (enc, n) = if tier == RAW_TIER {
                 // Plaid: the frame IS the payload — little-endian i16, no codec in the path.
                 let mut raw = Vec::with_capacity(RAW_FRAME_BYTES);
@@ -644,7 +518,7 @@ fn run(
             };
             if let Some(w) = spool.as_mut() {
                 let osc = vsf::eagle_time_oscillations();
-                let gain_q8 = (duck_gain * 256.0).round().clamp(0.0, 65535.0) as u16;
+                let gain_q8: u16 = 256;
                 // The archive stream: clean mic pairs encode once at the high rung, the ducking profile rides the record's proc fields (10ms resolution — the gain slews far slower than that).
                 if arch_buf.is_empty() {
                     arch_meta = Some((osc, window_id, frames_in_window as u8));
@@ -1179,43 +1053,22 @@ fn run(
                 win_rtt_n = 0;
                 win_losses_at = windows_lost as u32;
             }
-            // The gate tally prints with or without a filter (2026-09-13: after a disarm the line went silent, and the disarmed half of the wave is the half the field asks about); the effective coupling and volume say what the gate is comparing against.
-            let filter = match nlms.as_ref() {
-                Some(c) => format!(
-                    "filter recent {}dB lifetime {}dB, adapted {} of {} frames",
-                    c.erle_recent_db().map_or("?".to_string(), |e| format!("{e:.1}")),
-                    c.erle_db().map_or("?".to_string(), |e| format!("{e:.1}")),
-                    c.adapted_frames,
-                    c.run_frames
-                ),
-                None => "no filter".to_string(),
-            };
+            let (spk_ducked, spk_frames) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — {}; ducked {} far-active {}; coupling {} volume {} mic {}",
-                filter,
-                ducked_frames,
-                far_active_frames,
+                "CALL: echo — speaker ducked {} of {} render frames; coupling {} volume {} mic {}",
+                spk_ducked,
+                spk_frames,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
             );
-        }
-        // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
-        if nlms.as_ref().is_some_and(|c| c.is_net_harmful()) {
-            if nlms.as_ref().is_some_and(|c| c.diverged) {
-                crate::log("CALL: nlms disarmed — taps DIVERGED (non-finite), raw audio passed thru, duck carries");
-            } else {
-                let erle = nlms.as_ref().and_then(|c| c.erle_recent_db()).unwrap_or(0.0);
-                crate::logf!("CALL: nlms disarmed — net harmful (recent {:.1}dB), duck carries", erle);
-            }
-            nlms = None;
         }
         // Fit verdict: a fresh measurement of THIS route outranks any stored/ringback seed; Clean keeps the duck reactive (a headset-class route barely ducks anyway) but takes the measured floor.
         if let Some(v) = crate::call::vchirp::take_verdict() {
             match v {
                 crate::call::vchirp::Verdict::Coupled { g_norm, delay_bins, floor, ir } => {
                     crate::logf!(
-                        "CALL: v-chirp seeded the predictive duck — g {} delay {}ms{}; nlms armed ({} taps @ {})",
+                        "CALL: v-chirp measured the route — g {} delay {}ms{}; impulse response {} taps @ {} (kept for the learner, nothing subtracts)",
                         format!("{g_norm:.4}"),
                         delay_bins * 10,
                         if applied.is_some() { " (overrode prior seed)" } else { "" },
@@ -1232,13 +1085,9 @@ fn run(
                         );
                     }
                     applied = Some((g_norm, delay_bins));
-                    live_floor = floor.max(1.0);
-                    nlms = Some(crate::call::nlms::Nlms::new(ir.0, ir.1));
-                    nlms_seed_vol = vol_lin_now.max(1e-6);
+                    let _ = floor;
                 }
-                crate::call::vchirp::Verdict::Clean { floor } => {
-                    live_floor = floor.max(1.0);
-                }
+                crate::call::vchirp::Verdict::Clean { floor: _ } => {}
             }
         }
 
@@ -1249,7 +1098,6 @@ fn run(
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
             let est = learner.estimate();
-            live_floor = est.floor;
             // A Usable-or-better estimate refines (or ARMS) the predictive duck: slew g (τ≈2s at this cadence), step delay only between far bursts — a mid-burst delay step misaligns the prediction and mis-gates real speech.
             // ACTIVE PROFILING → CLEAN (Nick 2026-09-10): a confident in-call estimate that finds no coupling worth a duck retires the predictive duck to its clean floor and drops the canceller — the route IS clean, whatever the chirp said (or failed to say).
             if est.confidence >= crate::call::learn::Confidence::Usable {
@@ -1258,7 +1106,6 @@ fn run(
                         clean_declared = true;
                         crate::logf!("CALL: learner reads the route CLEAN (g {} over {} windows) — duck to floor, canceller off", format!("{g:.4}"), est.windows);
                         applied = Some((0.0, est.delay_bins.unwrap_or(1)));
-                        nlms = None;
                     } else if g > CLEAN_G_NORM * 2.0 && clean_declared {
                         clean_declared = false;
                         crate::logf!("CALL: learner sees coupling again (g {}) — duck back on its estimate", format!("{g:.4}"));
@@ -1295,11 +1142,11 @@ fn run(
                 crate::call::calibrate::post_learned(learned_results(&learner.estimate(), &live_route));
                 learner = crate::call::learn::Learner::new(rid.starts_with("bt:"), None, None);
                 applied = None;
-                nlms = None; // the taps are the OLD route's physics — duck-only until the next call's chirp
                 route_ducks = !matches!(
                     crate::platform::audio::route(),
                     crate::platform::audio::AudioRoute::Headset
                 );
+                crate::platform::audio::set_speaker_duck(route_ducks);
                 live_route = rid;
             }
         }
@@ -1385,16 +1232,15 @@ fn run(
         rx_level,
         rx_frames
     );
-    // Ladder + duck field-tuning readout: where the call ended up, how it moved, and the echo numbers — `ducked` = frames the linear duck attenuated, `far-active` = frames the emitted level sat above the half-duck point.
+    // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
+    let (spk_ducked, spk_frames) = crate::platform::audio::speaker_duck_stats();
     crate::logf!(
-        "CALL: ladder — ended {}, {} up(s), {} down(s); duck {} — ducked {}, far-active {} of {} frames",
+        "CALL: ladder — ended {}, {} up(s), {} down(s); speaker ducked {} of {} render frames",
         if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },
         tier_ups,
         tier_downs,
-        if PID_DUCK_ENABLED { "linear" } else { "disarmed" },
-        ducked_frames,
-        far_active_frames,
-        tx_frames
+        spk_ducked,
+        spk_frames
     );
     // SHADOW learner readout (Stage 3 field telemetry): the learned physics beside the profile the ritual measured — the convergence proof the gate softening waits on. rejects = per-gate window rejections [short, skew, hole, inactive, quiet, xcorr, cluster-reserved, edge, badg, r].
     {
@@ -1411,25 +1257,10 @@ fn run(
             format!("{:?}", e.rejects),
             crate::platform::audio::route_id()
         );
-        // The canceller's report card: honest ERLE measured only over far-talks-alone frames (where echo dominates the mic).
-        if let Some(c) = &nlms {
-            crate::logf!(
-                "CALL: nlms — recent {}dB over {} adapted of {} frames; whitener scales {}",
-                c.erle_recent_db().map_or("?".to_string(), |e| format!("{e:.1}")),
-                c.adapted_frames,
-                c.run_frames,
-                format!("{:?}", crate::call::nlms::WHITEN_SCALES)
-            );
-            crate::logf!(
-                "CALL: nlms — erle {} over {} adapted frame(s)",
-                c.erle_db().map_or("?".into(), |d| format!("{d:.1}dB")),
-                c.adapted_frames
-            );
-        }
-        // Which far envelope the duck read (field forensics): aligned = the chirp's delay-aligned far envelope; peak-hold = the render-level fallback (uncalibrated, or a mid-call route swap reset it).
+        // The route measurement the call ended with (field forensics): the chirp's coupling and delay, or none when no probe landed on this route.
         crate::logf!(
-            "CALL: duck envelope at teardown — {}{}",
-            if applied.is_some() { "aligned" } else { "peak-hold" },
+            "CALL: route at teardown — {}{}",
+            if applied.is_some() { "measured" } else { "unmeasured" },
             applied.map_or(String::new(), |(g, d)| format!(" (applied g {g:.4} delay {}ms)", d * 10))
         );
         // Persist what the call proved (Stage 4): echo posts only at SOLID confidence (the persisted tier); voice posts on its own evidence gate (≥5s of voiced far-quiet speech ⇒ talk is Some). The drain blends against the stored profile — ritual outranks, learned refines.
