@@ -7,10 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- The other person is properly loud: a fixed 4-stop output pad from the pre-normalization era was silently cancelling the level normalizer's entire lift, so a quiet mic arrived at its raw level no matter the rocker.
 - Audio arithmetic is exact: every gain in the playback path is one integer scale that carries its remainder to the next sample, so quiet audio keeps its bottom bits and a gain of one is provably untouched. Image previews fold the same way.
-- The other person's voice is brought up to a steady level on your side, whatever their mic gives, and the volume rocker now governs the wave while it rides the earpiece.
-- Your voice reaches the other end exactly as your mic heard it. Nothing on the sending side touches it any more: no gate, no ducking, no automatic level. Echo is handled on the listening side instead — while your mic is hot, the other person's voice is turned down in your speaker for that moment, and nothing of that is recorded. A kept wave holds every party as they sounded.
+- Waves now run a level plan, the way the telephone network did: the microphone is read raw and calibrated, scaled once by a fixed constant, and a shout rounds smoothly into the ceiling instead of crackling. Every wave transmits at the same known loudness; the volume rocker on the listening phone is the only adjustment, and it now actually governs the wave. What goes on the wire is what the archive keeps — nothing adaptive touches your voice anywhere.
 - Android remembers your zoom. The pinch scale you set was saved but never applied on the next launch; it is now.
 - The top-left orb is half again as large; the text beside it is unchanged.
 - A wave on the timeline is its waveform and nothing else, hairline to hairline. Tap it to select it, and the options appear: play, wave back, beam back, export, replicate, discard. Playing takes those two taps and never starts from a scroll or a stray touch on the band.

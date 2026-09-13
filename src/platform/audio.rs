@@ -97,8 +97,8 @@ static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_DUCK_GAIN: AtomicI64 = AtomicI64::new(crate::call::qgain::UNITY);
 /// The duck kernel's carried remainder (see call/qgain.rs) — only the render thread touches it.
 static SPEAKER_DUCK_CARRY: AtomicI64 = AtomicI64::new(0);
-/// Mic mean |sample| at which the speaker is fully silent; half at half. A power of two so the gain is a subtract and a shift (Nick 2026-09-13: no division at the render pull). The one field knob of the speaker duck.
-pub const SPEAKER_DUCK_MIC_FULL: i64 = 2048;
+/// Mic mean |sample| at which the speaker is fully silent; half at half. A power of two so the gain is a subtract and a shift (Nick 2026-09-13: no division at the render pull). The one field knob of the speaker duck. In PLAN units since the level plan (the engine notes the post-makeup mean, voiced ≈ 4096): talking halves the speaker, a shout silences it.
+pub const SPEAKER_DUCK_MIC_FULL: i64 = 8192;
 /// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
 static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_HALF: AtomicUsize = AtomicUsize::new(0);
@@ -216,7 +216,7 @@ pub fn set_speaker_duck(armed: bool) {
 
 /// The engine notes the mean |sample| of each captured mic frame here; the Q32 duck gain is computed HERE (capture cadence) and the render pull only loads it. `(FULL − near) << (32 − log2(FULL))` — a subtract and a shift, clamped at silence.
 pub fn note_near_level(mean: u32) {
-    let g = (SPEAKER_DUCK_MIC_FULL - (mean as i64).min(SPEAKER_DUCK_MIC_FULL)) << 21;
+    let g = (SPEAKER_DUCK_MIC_FULL - (mean as i64).min(SPEAKER_DUCK_MIC_FULL)) << 19;
     SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
 }
 

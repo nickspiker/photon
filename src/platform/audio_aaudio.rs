@@ -59,8 +59,8 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::A
         .map_err(|e| format!("builder: {e:?}"))?
         .direction(direction)
         .usage(if matches!(direction, AudioDirection::Output) && VOICE_USAGE_OK.load(Ordering::Relaxed) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
-        // VOICE-PERFORMANCE INPUT (two field waves, 2026-09-13). The default preset (VoiceRecognition) is the vendor's processed path: its AGC woke at zero and ramped Nick's mic 11→145 over twenty seconds — Brittany's silent first ten. Unprocessed swung the other way: it bypasses the analog gain staging too, both mics arrived at mean 3-7 (voiced ~75, ~30 dB down), the chirp could not hear itself and the 16× normalizer clamp cannot span 55×. VoicePerformance is the preset FOR apps that own their own chain: real gain staging, minimal vendor effects, no ramping comm-AGC, latency-first (api-level-29; on a device that ignores the hint the stream still opens).
-        .input_preset(ndk::audio::AudioInputPreset::VoicePerformance)
+        // UNPROCESSED, CALIBRATED INPUT (the level plan, 2026-09-13 night). The default preset's vendor AGC woke at zero and ramped 11→145 over twenty seconds (Brittany's silent first ten); Unprocessed is the CDD-calibrated raw feed — 94 dB SPL ≡ ~520 RMS, no AGC, no effects, deterministic from frame one — and its quiet number is exactly what the engine's fixed TX makeup (TX_MAKEUP_Q32) is precomputed for. VoicePerformance lived one unpublished hour between the two.
+        .input_preset(ndk::audio::AudioInputPreset::Unprocessed)
         .sharing_mode(sharing)
         .performance_mode(AudioPerformanceMode::LowLatency)
         .sample_rate(SAMPLE_RATE)

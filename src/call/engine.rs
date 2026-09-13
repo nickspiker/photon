@@ -98,14 +98,13 @@ const fn tier_window_bytes(tier: usize) -> usize {
 /// A chirp coupling (g × volume) above this is not a linear echo path — the earpiece is driven into the mic. Logged at the seed as a rocker warning and used as the canceller's "plausible echo" adapt ratio when no calibration is applied; the duck does not read it.
 const COUPLING_WARN: f32 = 0.3;
 // NO OUTPUT PAD ON THE WAVE (2026-09-13 19:53 wave, Brittany: "quiet even at max volume" — her normalizer rode its gain to the 16× clamp against Nick's 147-mean mic, and the 4-stop pad composed into the same stage capped the EFFECTIVE lift at 16/16 = 1.0: her rx(play) tallied 148, bit-for-bit his raw level). The pad predates the normalizer (raw full-scale plaid ran the loudspeaker hot, 2026-09-03); now the RX_TARGET_LEVEL IS the output level control (~−18 dBFS mean), the rocker governs the rest, and padding the normalizer's output four stops only threw away the headroom it exists to provide. The ringback keeps its own pad (it is a full-scale clip, not a normalized stream — super::OUTPUT_PAD_STOPS lives on for it).
-// THE INCOMING LEVEL IS NORMALIZED ON THE SPEAKER SIDE (Nick 2026-09-13: "how do we normalize the incoming mic level?" — Brittany: "quite quiet"). The wire carries every mic raw, so the listener lifts it, all integer (see call/qgain.rs): a voiced-level EMA of the far talker (frames above RX_VOICED_FLOOR, level += (mean−level)>>6) sets a Q32 gain want = (RX_TARGET << 32)/level clamped to [RX_GAIN_MIN_Q32, RX_GAIN_MAX_Q32], slewed g += (want−g)>>4 per frame; silence holds the gain (an AGC regulating silence learns to amplify room hiss). The decoded frame is scaled ONCE with a carried remainder — the old chain (float truncate, then >>4 dropping four bits off the quietest signal in the path) is gone, and since 2026-09-13 evening there is NO output pad on the wave (the target is the level control; the pad capped the effective lift at 1.0 and Brittany heard raw-mic level at max rocker). Never spooled: the keep's remote channel is what arrived.
-/// The far talker's mean |sample| the normalizer steers toward — a power of two, every knob in the chain is a shift.
-const RX_TARGET_LEVEL: i64 = 4096;
-/// Frames at or under this mean are unvoiced: they hold the gain and never feed the level estimate.
-const RX_VOICED_FLOOR: i64 = 64;
-/// Gain clamp in Q32: 1/8× to 16×.
-const RX_GAIN_MIN_Q32: i64 = crate::call::qgain::UNITY >> 3;
-const RX_GAIN_MAX_Q32: i64 = crate::call::qgain::UNITY << 4;
+// THE LEVEL PLAN (Nick 2026-09-13 night: "keep the levels fixed if the mic is calibrated and let the user listening do the volume adjustment with the rocker… calibrated mic level goes on the wire and in the archive"). Bell ran the telephone network exactly this way — every link at a defined level, the earpiece knob the only variable — and calibrated capture brings it back: the Unprocessed preset is CDD-calibrated (94 dB SPL ≡ ~520 RMS), so the mic's number MEANS an SPL. TX applies ONE fixed makeup constant (a recording level — deterministic, invertible, not an AGC) and the cubic rail shaper (qgain::cubic_rail: slope 3/2 at the origin, folded in below; slope 0 at the rails; 3rd-order-only distortion; exactly invertible), and that shaped calibrated signal IS the wire and the archive. RX applies NOTHING adaptive: decode → speaker duck → DAC, the rocker is the only adjustment, per call, thru the OS voice stream. A quiet talker is quiet, like standing next to them. The RX normalizer (one afternoon of life, three field waves) is deleted, not demoted — its whole job was unknown mic levels, and the plan makes them known.
+/// The wire's voiced-speech mean |sample| — Bell's plan level, ~−18 dBFS. The shaper's origin slope is 3/2, so the pre-shaper target is ×⅔ of this.
+const TX_WIRE_TARGET: i64 = 4096;
+/// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
+const TX_CAL_VOICED: i64 = 78;
+/// The one fixed TX gain, Q32: (wire target × ⅔) / calibrated voiced ≈ 35×. Precomputed for the calibrated mic; per-mic refinement (MicrophoneInfo sensitivity) can sharpen the constant later.
+const TX_MAKEUP_Q32: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / TX_CAL_VOICED;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
@@ -271,10 +270,8 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // RX normalizer state (see RX_TARGET_LEVEL): the far talker's voiced level estimate, and ONE gain stage (normalizer ∘ pad) with its carried remainder.
-    let mut rx_voiced: i64 = 0;
-    let mut rx_gain_q32: i64 = crate::call::qgain::UNITY;
-    let mut rx_stage = crate::call::qgain::QGain::new(rx_gain_q32);
+    // The TX level plan (see TX_MAKEUP_Q32): the fixed makeup with its carried remainder; the cubic rail rides per sample after it.
+    let mut tx_stage = crate::call::qgain::QGain::new(TX_MAKEUP_Q32);
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
         crate::platform::audio::route(),
@@ -493,7 +490,16 @@ fn run(
             if muted.load(Ordering::Relaxed) {
                 frame.fill(0);
             }
-            // THE MIC AS CAPTURED: the archive encoder below takes the same frame the wire does (nothing between the ADC and the encoder); the proc fields ride as unity until the flag day that drops them.
+            // THE LEVEL PLAN'S ONE MAP (see TX_MAKEUP_Q32): fixed makeup (Q32, remainder carried, i32 headroom kept thru the shaper) then the cubic rail — a shout tapers into the rail instead of squaring off. Wire and archive carry the SAME shaped calibrated signal: the wire copy is the good copy of every party.
+            {
+                let mut carry = tx_stage.take_carry();
+                for s in frame.iter_mut() {
+                    let acc = *s as i64 * TX_MAKEUP_Q32 + carry;
+                    carry = acc & 0xFFFF_FFFF;
+                    *s = crate::call::qgain::cubic_rail(acc >> 32) as i16;
+                }
+                tx_stage.set_carry(carry);
+            }
             let pre_frame: Vec<i16> = frame.clone();
             let proc_verdict: u8 = 0;
             // Rung switches land only between windows — a window's slot geometry is fixed at its first frame.
@@ -504,7 +510,7 @@ fn run(
                     let _ = encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier]));
                 }
             }
-            // Mic level: the health tally, and the level the SPEAKER duck reads (mean |sample| of this frame — the muted zeros read as silence, so a muted mic never ducks the speaker).
+            // Wire level: the health tally ("tx(mic)" now reads the PLAN level, comparable to the far side's rx tally), and the level the SPEAKER duck reads (post-makeup, so the duck's FULL constant is in plan units; muted zeros read as silence and never duck the speaker).
             let frame_sum = frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
             tx_energy += frame_sum;
             tx_frames += 1;
@@ -848,22 +854,7 @@ fn run(
                         if probing {
                             continue;
                         }
-                        // RX normalizer (RX_TARGET_LEVEL, integer): the far talker's level steers the gain on voiced frames, silence holds it; the frame is scaled once, remainder carried (no pad — see the note at the top of the file).
-                        // The level statistic is fast-attack slow-decay (field 2026-09-13 wave at 19:19, Brittany's side ended at gain 16.00 on a far-voiced estimate of 119: a symmetric EMA tracked the trailing syllables and breath DOWN between phrases, so the gain pumped to the clamp in every pause and lifted the far room 16× until the next loud syllable blasted thru). Loud speech pulls the estimate up in ~20 ms (>>2); it decays thru quiet voiced frames 64× slower (>>8), so a pause holds the gain the sentence earned. The gain mirrors it: down fast (>>2, an onset never blasts), up slow (>>5).
-                        let mean = f.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / f.len().max(1) as i64;
-                        if mean > RX_VOICED_FLOOR {
-                            rx_voiced = if rx_voiced <= 0 {
-                                mean
-                            } else if mean > rx_voiced {
-                                rx_voiced + ((mean - rx_voiced) >> 2)
-                            } else {
-                                rx_voiced + ((mean - rx_voiced) >> 8)
-                            };
-                            let want = ((RX_TARGET_LEVEL << 32) / rx_voiced.max(1)).clamp(RX_GAIN_MIN_Q32, RX_GAIN_MAX_Q32);
-                            rx_gain_q32 += if want < rx_gain_q32 { (want - rx_gain_q32) >> 2 } else { (want - rx_gain_q32) >> 5 };
-                        }
-                        rx_stage.g = rx_gain_q32;
-                        rx_stage.apply_frame(&mut f);
+                        // THE LEVEL PLAN: nothing adaptive on RX — the wire arrived at plan level, the speaker duck and the rocker are the only hands on it.
                         if draining.is_some() {
                             continue;
                         }
@@ -1078,12 +1069,10 @@ fn run(
             }
             let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; rx gain {} (far voiced {}); coupling {} volume {} mic {}",
+                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; coupling {} volume {} wire {}",
                 spk_mean,
                 spk_frames,
                 spk_half,
-                format!("{:.2}", rx_gain_q32 as f64 / crate::call::qgain::UNITY as f64),
-                rx_voiced,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
                 tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
@@ -1261,10 +1250,10 @@ fn run(
     // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
     crate::logf!(
-        "CALL: rx normalizer — far voiced level {} gain {} at teardown (target {})",
-        rx_voiced,
-        format!("{:.2}", rx_gain_q32 as f64 / crate::call::qgain::UNITY as f64),
-        RX_TARGET_LEVEL
+        "CALL: level plan — makeup {} fixed toward wire {} (cal voiced {}); the rocker did the rest",
+        format!("{:.1}x", TX_MAKEUP_Q32 as f64 / crate::call::qgain::UNITY as f64),
+        TX_WIRE_TARGET,
+        TX_CAL_VOICED
     );
     crate::logf!(
         "CALL: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",

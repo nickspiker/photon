@@ -38,6 +38,14 @@ impl QGain {
         out as i16
     }
 
+    /// Hand the carry to an inline kernel (a loop that fuses this gain with a shaper) and take it back after.
+    pub fn take_carry(&mut self) -> i64 {
+        std::mem::take(&mut self.carry)
+    }
+    pub fn set_carry(&mut self, c: i64) {
+        self.carry = c;
+    }
+
     /// Scale a frame in place. Unity with no pending carry is a true no-op.
     pub fn apply_frame(&mut self, frame: &mut [i16]) {
         if self.g == UNITY && self.carry == 0 {
@@ -47,6 +55,13 @@ impl QGain {
             *s = self.apply(*s);
         }
     }
+}
+
+/// The wire shaper: `y = (3x − x³) >> 1` on the i16 domain (Nick 2026-09-13). Odd (sign is free), branchless, C² inside, slope 3/2 at the origin (folded into the makeup constant: pre-shaper target = wire target × ⅔), slope 0 exactly at the rails, and its only distortion product is 3rd-order — the least-aliasing memoryless saturator there is. Exactly invertible below the rails (`x = 2·sin(asin(y)/3)`), so a kept wave can be un-warped to the bit offline. The input clamp is load-bearing: beyond |x| = FS the cubic FOLDS BACK (f(1.2·FS) < FS), so overs pin to the rail, where the slope is already zero and the join is seamless.
+#[inline]
+pub fn cubic_rail(x: i64) -> i64 {
+    let x = x.clamp(-32768, 32767);
+    ((3 * x - ((x * x * x) >> 30)) >> 1).clamp(-32768, 32767)
 }
 
 /// Compose two Q32 gains into one: `(a·b) >> 32` thru i128 (one widening multiply).
@@ -100,6 +115,25 @@ mod kat {
         assert_eq!(q.apply(i16::MIN), i16::MIN);
         assert_eq!(q.apply(0), 0);
         assert_eq!(q.carry, 0);
+    }
+
+    /// The cubic rail: exact at the rails, identity-slope 3/2 at the origin, odd, monotone.
+    #[test]
+    fn cubic_rail_kat() {
+        assert_eq!(cubic_rail(0), 0);
+        assert_eq!(cubic_rail(32767), 32767);
+        assert_eq!(cubic_rail(-32768), -32768);
+        assert_eq!(cubic_rail(1000), 1500, "origin slope is 3/2 (the x³ term is sub-LSB down here)");
+        assert_eq!(cubic_rail(400_000), 32767, "an over pins to the rail — never folds back");
+        assert_eq!(cubic_rail(-400_000), -32768);
+        let mut last = i64::MIN;
+        for x in (-33000..=33000).step_by(7) {
+            let y = cubic_rail(x);
+            assert!(y >= last, "monotone violated at {x}");
+            last = y;
+            let odd = cubic_rail(-x);
+            assert!((y + odd).abs() <= 1, "odd within one LSB of shift asymmetry at {x}");
+        }
     }
 
     /// Composed gain equals the two stages run back to back, within one carry of resolution — on a source the intermediate i16 doesn't clip (past full scale the cascade saturates where the composed gain sails thru, which is exactly WHY stages compose).
