@@ -1665,7 +1665,7 @@ impl PhotonApp {
         Some(crate::call::engine::CalSnapshot {
             g_norm: p.g_norm,
             delay_bins: p.delay_bins,
-            mic_gain: stored.as_ref().and_then(|c| c.mic_gain),
+            voiced: stored.as_ref().and_then(|c| c.voiced),
             floor: stored.as_ref().map(|c| c.floor).unwrap_or(p.floor),
         })
     }

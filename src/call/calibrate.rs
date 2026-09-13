@@ -16,12 +16,12 @@ pub struct EchoProfile {
     pub route_id: String,
 }
 
-/// The voice profile: how the user's natural speech lands on this MIC.
+/// The voice profile: how the user's natural speech lands on this MIC — since the level plan, the RAW voiced mean |sample| that sets the fixed TX makeup, keyed by route + input so a headset's mic never pollutes the earpiece's number.
 #[derive(Debug, Clone, PartialEq)]
 pub struct VoiceProfile {
-    /// Fixed mic gain toward the engine's TX target (replaces the chasing AGC).
-    pub mic_gain: f32,
-    /// Room noise floor (mean |sample| per frame).
+    /// Measured raw voiced mean |sample| on this input (pre-makeup).
+    pub voiced: f32,
+    /// Room noise floor (mean |sample| per frame, raw).
     pub floor: f32,
     pub mic_id: String,
 }

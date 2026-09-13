@@ -99,8 +99,8 @@ const fn tier_window_bytes(tier: usize) -> usize {
 const TX_WIRE_TARGET: i64 = 4096;
 /// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
 const TX_CAL_VOICED: i64 = 78;
-/// The one fixed TX gain, Q32: (wire target × ⅔) / calibrated voiced ≈ 35×. Precomputed for the calibrated mic; per-mic refinement (MicrophoneInfo sensitivity) can sharpen the constant later.
-const TX_MAKEUP_Q32: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / TX_CAL_VOICED;
+/// The CDD reference: Unprocessed puts 94 dB SPL at ~520 RMS ≈ −36 dBFS; TX_CAL_VOICED (78) is conversation at that reference. A reported per-mic sensitivity S shifts it: voiced_est = 78 · 10^((S+36)/20).
+const CDD_REF_SENS_DBFS: f32 = -36.0;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
@@ -114,14 +114,13 @@ pub struct EngineParams {
     pub plaid_allowed: bool,
 }
 
-/// The profile snapshot the predictive duck starts from (Cal 4). g is volume-normalized (the engine re-scales by live vol_lin); delay in 10ms bins.
+/// The stored profile snapshot for this route/mic. Since the level plan, the engine reads ONE field: `voiced`, this device's measured raw voiced level, which sets the fixed TX makeup for the whole call. g/delay/floor ride along for the log and future loudspeaker work.
 #[derive(Debug, Clone, Copy)]
 pub struct CalSnapshot {
     pub g_norm: f32,
     pub delay_bins: usize,
-    /// Fixed mic gain from the voice profile — replaces the chasing PID when present.
-    pub mic_gain: Option<f32>,
-    /// Room floor from the voice profile — the gate's second leg until the live learner refines it.
+    /// This mic's measured raw voiced mean |sample| (blended across calls, fleet-synced per device+input) — the makeup's denominator. None until the first call measures it.
+    pub voiced: Option<f32>,
     pub floor: f32,
 }
 
@@ -266,8 +265,27 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // The TX level plan (see TX_MAKEUP_Q32): the fixed makeup with its carried remainder; the cubic rail rides per sample after it.
-    let mut tx_stage = crate::call::qgain::QGain::new(TX_MAKEUP_Q32);
+    // The TX level plan: the makeup denominator resolves ONCE, at engine start — stored per-input voiced profile (measured on past calls, fleet-synced) beats the vendor's reported sensitivity beats the CDD default. Fixed for the whole call; never adapted inside one.
+    let (cal_voiced, cal_src) = match params.cal.as_ref().and_then(|c| c.voiced).filter(|v| *v >= 8.0) {
+        Some(v) => (v as i64, "stored"),
+        None => match crate::platform::audio::mic_sensitivity_dbfs() {
+            Some(s) => (((TX_CAL_VOICED as f32) * 10f32.powf((s - CDD_REF_SENS_DBFS) / 20.0)).clamp(8.0, 2048.0) as i64, "sensitivity"),
+            None => (TX_CAL_VOICED, "default"),
+        },
+    };
+    let tx_makeup_q32: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
+    crate::logf!(
+        "CALL: level plan — makeup {} toward wire {} (cal voiced {}, {})",
+        format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
+        TX_WIRE_TARGET,
+        cal_voiced,
+        cal_src
+    );
+    let mut tx_stage = crate::call::qgain::QGain::new(tx_makeup_q32);
+    // This call's own measurement of the raw mic (pre-makeup): a min-statistic floor and the voiced mean above it — posted at teardown as the NEXT call's makeup denominator, blended and fleet-synced per input.
+    let mut raw_floor: i64 = i64::MAX;
+    let mut voiced_sum: i64 = 0;
+    let mut voiced_frames: i64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
         crate::platform::audio::route(),
@@ -416,9 +434,17 @@ fn run(
             }
             // THE LEVEL PLAN'S ONE MAP (see TX_MAKEUP_Q32): fixed makeup (Q32, remainder carried, i32 headroom kept thru the shaper) then the cubic rail — a shout tapers into the rail instead of squaring off. Wire and archive carry the SAME shaped calibrated signal: the wire copy is the good copy of every party.
             {
+                let raw_mean = frame.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame.len().max(1) as i64;
+                if raw_mean > 0 && raw_mean < raw_floor {
+                    raw_floor = raw_mean;
+                }
+                if raw_floor != i64::MAX && raw_mean > (raw_floor * 3).max(12) {
+                    voiced_sum += raw_mean;
+                    voiced_frames += 1;
+                }
                 let mut carry = tx_stage.take_carry();
                 for s in frame.iter_mut() {
-                    let acc = *s as i64 * TX_MAKEUP_Q32 + carry;
+                    let acc = *s as i64 * tx_makeup_q32 + carry;
                     carry = acc & 0xFFFF_FFFF;
                     *s = crate::call::qgain::cubic_rail(acc >> 32) as i16;
                 }
@@ -1076,11 +1102,26 @@ fn run(
     // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
     crate::logf!(
-        "CALL: level plan — makeup {} fixed toward wire {} (cal voiced {}); the rocker did the rest",
-        format!("{:.1}x", TX_MAKEUP_Q32 as f64 / crate::call::qgain::UNITY as f64),
-        TX_WIRE_TARGET,
-        TX_CAL_VOICED
+        "CALL: level plan — makeup {} ({}, cal voiced {}); this call measured voiced {} floor {} over {} frames",
+        format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
+        cal_src,
+        cal_voiced,
+        if voiced_frames > 0 { (voiced_sum / voiced_frames).to_string() } else { "?".into() },
+        if raw_floor == i64::MAX { "?".to_string() } else { raw_floor.to_string() },
+        voiced_frames
     );
+    // ≥3 s of voiced speech earns a profile post: the blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
+    if voiced_frames >= 600 {
+        crate::call::calibrate::post_learned(vec![crate::call::calibrate::LearnedResult {
+            result: crate::call::calibrate::CalResult::Voice(crate::call::calibrate::VoiceProfile {
+                voiced: (voiced_sum / voiced_frames) as f32,
+                floor: if raw_floor == i64::MAX { 0.0 } else { raw_floor as f32 },
+                mic_id: crate::platform::audio::mic_id(),
+            }),
+            windows: (voiced_frames / 200) as u32,
+            solid: voiced_frames >= 2400,
+        }]);
+    }
     crate::logf!(
         "CALL: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",
         if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },

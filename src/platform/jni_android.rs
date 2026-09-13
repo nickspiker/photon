@@ -707,6 +707,20 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeVolume
     crate::platform::audio::on_volume_mirror(db);
 }
 
+/// Kotlin's mic introspection at call-audio start: the CDD Unprocessed declaration, the chosen input's 94 dB SPL sensitivity (NaN = unknown), and the input inventory (type:address:location:sensitivity per mic).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeMicInfo(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    unprocessed_declared: jni::sys::jboolean,
+    sensitivity_dbfs: jni::sys::jfloat,
+    desc: JString<'_>,
+) {
+    let d: String = env.get_string(&desc).map(|s| s.into()).unwrap_or_default();
+    crate::platform::audio::set_mic_info(unprocessed_declared != 0, sensitivity_dbfs, d);
+}
+
 /// Per-frame poll: the staged self-update APK path, or null. Non-null exactly once per staged update — Kotlin fires the system installer intent with it (the update flow's second click). Mirrors take_picker_request's one-shot pattern.
 #[cfg(target_os = "android")]
 #[no_mangle]

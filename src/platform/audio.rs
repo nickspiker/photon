@@ -159,6 +159,24 @@ static VOLUME_DB: Mutex<Option<f32>> = Mutex::new(None);
 /// Identity of the current INPUT (mic) — the voice-profile key (Nick 2026-09-02: the voice measurement is a property of the MIC + user, not the output route; splitting the keys means switching speaker→earpiece keeps your voice profile). `builtin-mic` / `bt:<name>` / `mic:<device>`; empty until mirrored.
 static MIC_ID: Mutex<String> = Mutex::new(String::new());
 
+/// Kotlin's mic introspection at call-audio start (Android): whether the vendor DECLARES the CDD Unprocessed calibration, the chosen input's 94 dB SPL sensitivity in dBFS (NaN = vendor reports unknown), and the input inventory string. The makeup's second-priority source; the log's ground truth for "is this raw feed calibrated or lawless".
+static MIC_INFO: Mutex<Option<(bool, f32, String)>> = Mutex::new(None);
+
+pub fn set_mic_info(unprocessed_declared: bool, sensitivity_dbfs: f32, desc: String) {
+    crate::logf!(
+        "AUDIO: mic introspection — unprocessed calibration {}, sensitivity {} dBFS @ 94 dB SPL, inputs [{}]",
+        if unprocessed_declared { "DECLARED" } else { "NOT declared (the raw feed's gain is vendor-lawless)" },
+        if sensitivity_dbfs.is_finite() { format!("{sensitivity_dbfs:.1}") } else { "unknown".into() },
+        desc
+    );
+    *MIC_INFO.lock().unwrap() = Some((unprocessed_declared, sensitivity_dbfs, desc));
+}
+
+/// The chosen input's sensitivity (dBFS at 94 dB SPL), when the vendor reports one.
+pub fn mic_sensitivity_dbfs() -> Option<f32> {
+    MIC_INFO.lock().unwrap().as_ref().map(|(_, s, _)| *s).filter(|s| s.is_finite())
+}
+
 pub fn mic_id() -> String {
     MIC_ID.lock().unwrap().clone()
 }

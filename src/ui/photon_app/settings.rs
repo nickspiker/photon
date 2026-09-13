@@ -621,14 +621,14 @@ impl PhotonApp {
             .unwrap_or(0) as usize
             / 10;
         let mic = crate::platform::audio::mic_id();
-        let mic_gain = fs
-            .device_local(&format!("audio.cal.voice.{mic}.gain"))
+        let voiced = fs
+            .device_local(&format!("audio.cal.voice.{mic}.voiced"))
             .and_then(crate::storage::fleet_settings::as_f32);
         let floor = fs
             .device_local(&format!("audio.cal.voice.{mic}.floor"))
             .and_then(crate::storage::fleet_settings::as_f32)
             .unwrap_or(40.0);
-        Some(crate::call::engine::CalSnapshot { g_norm, delay_bins, mic_gain, floor })
+        Some(crate::call::engine::CalSnapshot { g_norm, delay_bins, voiced, floor })
     }
 
     /// Blend one LEARNED profile into the stored one (the v-chirp probe and the in-call learner both post thru this). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count.
@@ -682,9 +682,9 @@ impl PhotonApp {
                 let stored_n = read_n(fs, &format!("{base}.n"));
                 let w = lr.windows as f32;
                 let alpha = w / (w + stored_n + 20.0);
-                let gain = match read_f32(fs, &format!("{base}.gain")) {
-                    Some(g0) => g0 + alpha * (p.mic_gain - g0),
-                    None => p.mic_gain,
+                let voiced = match read_f32(fs, &format!("{base}.voiced")) {
+                    Some(v0) => v0 + alpha * (p.voiced - v0),
+                    None => p.voiced,
                 };
                 let floor = match read_f32(fs, &format!("{base}.floor")) {
                     Some(f0) => f0 + alpha * (p.floor - f0),
@@ -692,14 +692,14 @@ impl PhotonApp {
                 };
                 let n = (stored_n + w).min(100.0);
                 crate::logf!(
-                    "CAL: learned voice blended — mic \"{}\" gain {} floor {} n {}",
+                    "CAL: learned voice blended — mic \"{}\" voiced {} floor {} n {} (the next call's makeup denominator; fleet-synced device-local)",
                     p.mic_id,
-                    format!("{gain:.2}"),
+                    format!("{voiced:.0}"),
                     format!("{floor:.0}"),
                     format!("{n:.0}")
                 );
                 vec![
-                    (format!("{base}.gain"), vsf::VsfType::f5(gain)),
+                    (format!("{base}.voiced"), vsf::VsfType::f5(voiced)),
                     (format!("{base}.floor"), vsf::VsfType::f5(floor)),
                     (format!("{base}.n"), vsf::VsfType::u(n as usize, false)),
                 ]

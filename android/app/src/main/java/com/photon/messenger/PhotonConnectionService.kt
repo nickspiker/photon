@@ -112,7 +112,8 @@ class PhotonConnectionService : Service() {
     private external fun nativeClearSessionBroadcast(context: android.content.Context)
     private external fun nativeCallAction(answer: Boolean)  // Answer/Decline from the call notification → Rust's pending-action latch (the app tick drains it)
     private external fun nativeAudioRoute(kind: Int, id: String)  // Route mirror: routed output device kind + calibration-profile identity (AudioDeviceCallback)
-    private external fun nativeVolumeDb(db: Float)  // Volume mirror: voice-call stream dB, at start + on VOLUME_CHANGED
+    private external fun nativeVolumeDb(db: Float)
+    private external fun nativeMicInfo(unprocessedDeclared: Boolean, sensitivityDbfs: Float, desc: String)  // Volume mirror: voice-call stream dB, at start + on VOLUME_CHANGED
     private external fun nativeAudioMic(id: String)  // Mic mirror: routed input identity (the voice-profile key)
 
 
@@ -931,6 +932,20 @@ class PhotonConnectionService : Service() {
     fun startCallAudio() {
         if (callAudioRunning) return
         callAudioRunning = true
+        // Mic introspection for the level plan (Nick 2026-09-13: "how are we getting absolute levels on the mic in question?"): does this vendor DECLARE the CDD Unprocessed calibration, and what sensitivity does each input report. Mirrored to Rust, logged there, and the makeup's second-priority source after the stored per-input voiced profile.
+        try {
+            val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+            val declared = am.getProperty(android.media.AudioManager.PROPERTY_SUPPORT_AUDIO_SOURCE_UNPROCESSED) == "true"
+            val mics = am.microphones
+            val desc = mics.joinToString(", ") { m ->
+                val s = if (m.sensitivity == android.media.MicrophoneInfo.SENSITIVITY_UNKNOWN) "?" else "%.1f".format(m.sensitivity)
+                "${m.type}:${m.address}:loc${m.location}:${s}dBFS"
+            }
+            // The bottom main-body mic is the voice input on a phone held to the ear; fall back to any mic reporting a sensitivity.
+            val chosen = mics.filter { it.sensitivity != android.media.MicrophoneInfo.SENSITIVITY_UNKNOWN }
+                .minByOrNull { if (it.location == android.media.MicrophoneInfo.LOCATION_MAINBODY) 0 else 1 }
+            nativeMicInfo(declared, chosen?.sensitivity ?: Float.NaN, desc)
+        } catch (e: Throwable) { PhotonLog.w(TAG, "mic introspection failed: ${e.message}") }
         routeEarpiece(true)
         acquireWaveWifiLock()
         try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
