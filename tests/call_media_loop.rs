@@ -10,12 +10,10 @@ use photon_messenger::call::keys::{derive_call_secret, Direction, StepChain};
 use photon_messenger::call::packet;
 use std::collections::BTreeMap;
 
-/// The shared friendship material both fleets hold (stand-ins for lane_root + history_key + the offer's
-/// doomed lane key). In a real call these come from FriendshipChains; here they're the agreed inputs.
+/// The shared call material both fleets hold (the offer's doomed lane key + the id and nonces).
+/// v2 signature (2026-09-10): the friendship's current lane_root/history_key are no longer ingredients — era skew between two fleets must not fork the call secret.
 fn basket() -> [u8; 32] {
     derive_call_secret(
-        &[0xA1; 32], // lane_root
-        &[0xB2; 32], // history_key
         &[0xC3; 32], // offer_lane_key (doomed egg)
         &[0x11; 16], // call_id
         &[0x44; 32], // caller_nonce
@@ -199,7 +197,7 @@ fn media_survives_datagram_loss_via_piggybacked_repair() {
 #[test]
 fn foreign_baskets_stay_sealed() {
     let secret = basket();
-    let foreign = derive_call_secret(&[9; 32], &[9; 32], &[9; 32], &[9; 16], &[9; 32], &[9; 32]);
+    let foreign = derive_call_secret(&[9; 32], &[9; 16], &[9; 32], &[9; 32]);
     let foreign_tx = StepChain::new(&foreign, Direction::CalleeToCaller);
     let wire = packet::seal(&foreign_tx, 0, b"not ours, plenty long enough").unwrap();
     let (h, sealed) = packet::parse_header(&wire).unwrap();
