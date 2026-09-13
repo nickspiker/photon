@@ -1197,7 +1197,7 @@ fn run(
                 far_active_frames,
                 applied.map_or("none".to_string(), |(g, _)| format!("{:.3}", g * vol_lin_now)),
                 format!("{vol_lin_now:.3}"),
-                tx_energy / tx_frames.max(1)
+                tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
             );
         }
         // NLMS self-check: a canceller that measured itself making echo WORSE across its probation window disarms — the duck (unchanged, still running on the same frames) carries alone. A garbage seed (a barely-passed low-volume fit) can't keep injecting.
