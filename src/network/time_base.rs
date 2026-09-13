@@ -111,9 +111,19 @@ pub fn offset_now() -> Option<(i64, i64)> {
 mod tests {
     use super::*;
 
+    /// ANCHOR and LAST_ISSUED are process globals and the harness runs tests on parallel threads — each test holds the gate and starts from a clean slate (the flake: floor_from_storage's ±1ms adopt landing mid-flight displaced a_worse_measurement's anchor).
+    static GATE: Mutex<()> = Mutex::new(());
+    fn hold_clean() -> std::sync::MutexGuard<'static, ()> {
+        let g = GATE.lock().unwrap_or_else(|p| p.into_inner());
+        *ANCHOR.lock().unwrap() = None;
+        LAST_ISSUED.store(i64::MIN, Ordering::Relaxed);
+        g
+    }
+
     /// Stamps never repeat and never regress, even when the anchor is corrected backward mid-stream — the row-identity guarantee.
     #[test]
     fn stamps_are_strictly_increasing_across_a_backward_correction() {
+        let _g = hold_clean();
         adopt(crate::OSC_PER_SEC * 10, crate::OSC_PER_SEC / 100, vsf::eagle_time_oscillations());
         let a = stamp_osc();
         let b = stamp_osc();
@@ -127,6 +137,7 @@ mod tests {
     /// The restart hole: a floor raised from stored rows keeps a post-restart corrected stamp from landing behind them.
     #[test]
     fn floor_from_storage_prevents_post_restart_inversion() {
+        let _g = hold_clean();
         let high = vsf::eagle_time_oscillations() + crate::OSC_PER_SEC * 30;
         raise_floor(high);
         // A correction pulling "now" well behind the stored row (the ahead-clock case after restart).
@@ -138,6 +149,7 @@ mod tests {
     /// A looser reading never displaces a tighter fresh one; the anchor keeps the best measurement it has.
     #[test]
     fn a_worse_measurement_does_not_replace_a_better_fresh_one() {
+        let _g = hold_clean();
         let local = vsf::eagle_time_oscillations();
         adopt(crate::OSC_PER_SEC / 2, crate::OSC_PER_SEC / 1000, local); // ±1ms
         let (tight, _) = offset_now().expect("anchor set");
