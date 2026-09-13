@@ -3750,6 +3750,8 @@ async fn run_checker(
                                     // An unsolicited PUSH (one record, the sender's own) rather than an answer to our request.
                                     let is_push = peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes();
                                     let mut merged = 0usize;
+                                    // PUSH ECHOES DON'T RE-AIM, COUNTER-PUSH, OR GET ANSWERED (field 2026-09-13 22:08, the re-aim storm: one real drought push entered the reciprocity pair — re-aim + request-back on receive, answer-with-ourselves on push — and with no damping the two phones ping-ponged pushes at 1 Hz for the rest of the wave, re-aiming at the SAME address every second while the transport drowned). A push naming the address media already aims at changes nothing: it is the reflection of our own push, and every reciprocal action stops at it.
+                                    let mut push_echo = false;
                                     {
                                         let call_peer = crate::call::call_peer_device();
                                         let mut store = peer_store_recv.lock().unwrap();
@@ -3761,7 +3763,13 @@ async fn run_checker(
                                             if store.merge_peer(rec) {
                                                 merged += 1;
                                                 let lan_scope = matches!(moved_to.ip().to_canonical(), std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4));
-                                                if live && !lan_scope && !crate::network::traverse::gather::is_bogus_addr(&moved_to) {
+                                                let unchanged = crate::call::call_tx_addr().is_some_and(|cur| {
+                                                    cur.port() == moved_to.port() && cur.ip().to_canonical() == moved_to.ip().to_canonical()
+                                                });
+                                                if live && unchanged {
+                                                    push_echo = true;
+                                                }
+                                                if live && !unchanged && !lan_scope && !crate::network::traverse::gather::is_bogus_addr(&moved_to) {
                                                     crate::logf!("CALL: the wave's peer pushed a new address — media re-aimed at {}", moved_to);
                                                     crate::call::set_peer_redirect(moved_to);
                                                     // THE OTHER HALF (field 2026-09-12, wifi off mid-wave): we re-aimed at their new cellular address, a carrier NAT that opens only for flows THEY start — and they were still probing our old door. The UI pushes OUR freshest record to this device on the next tick (the store reply below can be stale).
@@ -3778,7 +3786,7 @@ async fn run_checker(
                                         );
                                     }
                                     // ANSWER A PUSH WITH OURSELVES (push reroute, step two, 2026-09-11): the device that just told us where it moved is the one most likely to hold nothing for us. Reply with our own signed record over the relay — only when the push was NEW to us, so the exchange settles after one round each way (our reply is not new to them a second time).
-                                    if is_push && merged > 0 {
+                                    if is_push && merged > 0 && !push_echo {
                                         let ours = peer_store_recv
                                             .lock()
                                             .unwrap()

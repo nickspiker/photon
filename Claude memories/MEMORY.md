@@ -109,6 +109,7 @@
 - [feedback_commit_attribution.md](feedback_commit_attribution.md) — Built-With: Claude Opus <version> trailer is wanted; never Co-Authored-By Claude (tool, not author)
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho, and colour spelled British; the rest United Statesian
 - [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD RULE: never dev.sh/deploy reload the desktop mid-CLUTCH (era split + lane fork, 2026-09-10); check the log for a round in flight, batch fixes
+- [feedback_test_discipline.md](feedback_test_discipline.md) — publish IS the compile gate; ONE full cargo test per batch (never --lib: it skips tests/, call_media_loop sat broken 3 days)
 - [feedback_build_dev_script.md](feedback_build_dev_script.md) — Use ./scripts/dev.sh to compile/check photon, not bare cargo build (thrashes the machine); android dev = scripts/android/dev-adb.sh
 - [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes, dir renamed, package still "custodes")
 - [project_device_identity_model.md](project_device_identity_model.md) — tohu device-identity crate (oracle + frozen v0 derivation); Security/Recovery axes; deferred handle-salt collision fix
