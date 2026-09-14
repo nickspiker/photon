@@ -46,6 +46,11 @@ const PLAID_LOSSES_TO_DROP: usize = 20;
 // PLAID ANYWHERE THE PATH HAS HEADROOM (Nick 2026-09-14: "my calls from here to Pennsylvania on my 350 megabit interwebs and his gig interwebs should be plaid all the way down"). The LAN gate was a proxy for bandwidth; the honest gate is the path itself: a queue that is filling shows up as RTT GROWTH before it shows up as loss (bufferbloat's tell), so the raw rung is earned only while the RTT floor has not risen, and one loss cluster at plaid steps straight back to the codec (drop-hold waived for that edge). Plaid's loss behaviour is BETTER than Opus's (memoryless: one lost 5 ms datagram is exactly 5 ms of hole with a fade at each edge; CELT's overlap-add damages the neighbour and synthesizes the splice) — the only thing the 768 kbps costs is headroom, and headroom is what this measures.
 /// The raw rung is off the table while the recent RTT floor sits this far above the call's own floor: a queue is building somewhere on the path.
 const PLAID_RTT_GROWTH_MS: u32 = 40;
+/// Off-LAN, the raw rung also wants a LOSS-FREE recent history — the RTT floor is blind to radio loss (field 2026-09-14, Nick/Emma on cellular: eight 16↔32 kbps flaps with 876 windows lost in twenty seconds, then a clean second and the ladder climbed 32→64→128→plaid in three seconds, and Nick's cellular uplink drowned under 768 kbps — Emma's receive fell to 152 fps with nothing to declare lost). No loss cluster inside this window, and the loss ring near-empty, before plaid is earned away from home.
+const PLAID_OFF_LAN_LOSS_QUIET: std::time::Duration = std::time::Duration::from_secs(30);
+const PLAID_OFF_LAN_RING_MAX: usize = 2;
+/// Off-LAN plaid on probation also drops on RECEIVE STARVATION: a window at plaid whose underruns grew by this many is a drowned uplink on the far side (its packets never arrive, so no hole is ever declared to trip the loss drop).
+const PLAID_PROBATION_UNDERRUNS: u32 = 5;
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
 const LOSS_RING: usize = 256;
 const LOSS_SETPOINT: f32 = 1.0 / 256.0;
@@ -814,7 +819,10 @@ fn run(
                     // Plaid climbs anywhere the path has headroom: the recent RTT floor must sit within PLAID_RTT_GROWTH_MS of the call's own floor.
                     // The floor in hand: the current window's min once it has a hundred samples (~half a second), else the last closed window's.
                     let floor_now = if win_rtt_n >= 100 { win_rtt_min } else { recent_rtt_floor };
-                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS;
+                    let loss_quiet = last_tier_drop.map_or(true, |t| now.duration_since(t) >= PLAID_OFF_LAN_LOSS_QUIET)
+                        && recent_losses.iter().all(|t| now.duration_since(*t) >= PLAID_OFF_LAN_LOSS_QUIET)
+                        && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
+                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet;
                     let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
                     if clean_rx_windows >= need && held && allowed {
                         pending_tier = next;
@@ -855,6 +863,17 @@ fn run(
                     // Loss loop: a played window slot (an underrun since the last slot counts as lost — silence reached the ear either way).
                     let underruns = crate::platform::audio::jitter_stats().2;
                     let lost = underruns > last_underruns;
+                    // PROBATION STARVATION DROP: plaid off-LAN with underruns piling up is the far uplink drowning under 768 kbps — nothing arrives, so no hole is ever declared and the loss drop never trips. Step back to the codec and mark the drop so the loss-quiet window holds plaid off for a while.
+                    if pending_tier == RAW_TIER && !plaid_allowed && underruns.saturating_sub(last_underruns) as u32 >= PLAID_PROBATION_UNDERRUNS {
+                        pending_tier = RAW_TIER - 1;
+                        tier_downs += 1;
+                        let now = std::time::Instant::now();
+                        last_tier_change = now;
+                        last_tier_drop = Some(now);
+                        recent_losses.clear();
+                        clean_rx_windows = 0;
+                        crate::logf!("CALL: tier down → {} kbps (plaid on probation: {} underruns in one window — the far uplink is drowning)", TIER_RATES[pending_tier] / 1000, underruns - last_underruns);
+                    }
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, lost, TIER_FRAMES[tier]);
                     np = np.wrapping_add(1);
