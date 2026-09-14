@@ -5865,6 +5865,45 @@ impl PhotonApp {
                             flow.line(&mut canvas, ctx.text, &tr(Msg::VaultReading), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
+                    // WHAT HOLDS THE SPACE (Nick 2026-09-14): per-conversation totals for the active filter, largest first — a row-record walk, no disk. The active pill wears the found-green fill; the sizes ride dms_size like everything above.
+                    flow.gap(hspan2 * 0.6);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::VaultSpaceHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    let fvals = [
+                        super::VaultFilter::All,
+                        super::VaultFilter::Waves,
+                        super::VaultFilter::Pictures,
+                        super::VaultFilter::Songs,
+                        super::VaultFilter::Files,
+                        super::VaultFilter::Kept,
+                    ];
+                    let labels: [String; 6] = [
+                        tr(Msg::VaultFilterAll).into_owned(),
+                        tr(Msg::VaultFilterWaves).into_owned(),
+                        tr(Msg::VaultFilterPictures).into_owned(),
+                        tr(Msg::VaultFilterSongs).into_owned(),
+                        tr(Msg::VaultFilterFiles).into_owned(),
+                        tr(Msg::VaultFilterKept).into_owned(),
+                    ];
+                    let active_fill = (theme::near_black(*theme::SEARCH_FOUND_COLOUR, 0.35), theme::near_black(*theme::SEARCH_FOUND_COLOUR, 0.5));
+                    let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = fvals
+                        .iter()
+                        .zip(labels.iter())
+                        .enumerate()
+                        .map(|(i, (f, l))| (l.as_str(), btn_base.wrapping_add(1 + i as u16), true, (self.vault_filter == *f).then_some(active_fill)))
+                        .collect();
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &pills, "Open Sans");
+                    match self.vault_breakdown.as_ref() {
+                        Some(rows) if !rows.is_empty() => {
+                            for (name, bytes, count) in rows {
+                                let size = crate::dms_size(*bytes);
+                                let n = crate::fmt_num64(*count);
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::VaultConvLine { size: &size, name, count: &n }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            }
+                        }
+                        _ => {
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::VaultBinEmpty), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        }
+                    }
                     flow.gap(hspan2 * 0.6);
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                         (&tr(Msg::VaultRefresh), btn_base.wrapping_add(0), true, None),

@@ -517,6 +517,17 @@ pub enum Msg<'a> {
     VaultDegraded,
     VaultRefresh,
     VaultReading,
+    /// "What holds the space" — the per-conversation breakdown section head on the Vault page.
+    VaultSpaceHead,
+    VaultFilterAll,
+    VaultFilterWaves,
+    VaultFilterPictures,
+    VaultFilterSongs,
+    VaultFilterFiles,
+    VaultFilterKept,
+    /// One breakdown row: a conversation's total for the active filter, its name, and its row count.
+    VaultConvLine { size: &'a str, name: &'a str, count: &'a str },
+    VaultBinEmpty,
     LogTitle,
     DiagBack,
     DiagClear,

@@ -806,6 +806,19 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     true
 }
 
+/// The Vault page's space-breakdown filter — which rows count toward the per-conversation list (Nick 2026-09-14, "sizes of each chat/contact, waves, etc — filter and see what's taking up space"). Session state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub(crate) enum VaultFilter {
+    #[default]
+    All,
+    Waves,
+    Pictures,
+    Songs,
+    Files,
+    /// Starred rows of any kind — the winnow-exempt bin.
+    Kept,
+}
+
 /// The conversation stream filter — the cycling pill in the top bar (all → waves → text → all). Session state, never persisted; resets to All on every conversation open.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub(crate) enum ChatFilter {
@@ -1909,6 +1922,9 @@ pub struct PhotonApp {
     /// The Vault page's snapshot (fetched on page entry and on Refresh — event edges, never a cadence) and its worker channel.
     vault_stats: Option<crate::storage::VaultStatsView>,
     vault_stats_rx: Option<std::sync::mpsc::Receiver<Option<crate::storage::VaultStatsView>>>,
+    /// The Vault page's space breakdown for the active filter: (contact name, bytes, rows), largest first — a pure in-memory walk over the row records (every attachment row carries its size), recomputed on page entry, Refresh, and filter taps.
+    vault_filter: VaultFilter,
+    vault_breakdown: Option<Vec<(String, u64, u64)>>,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
     settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
@@ -2551,6 +2567,8 @@ impl PhotonApp {
             settings_btn_base: HIT_NONE,
             vault_stats: None,
             vault_stats_rx: None,
+            vault_filter: VaultFilter::default(),
+            vault_breakdown: None,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
             attach_progress: Vec::new(),

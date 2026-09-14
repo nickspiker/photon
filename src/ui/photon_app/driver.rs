@@ -876,9 +876,10 @@ impl FluorApp for PhotonApp {
                     if *p == SettingsPage::Fleet {
                         self.refresh_fleet_retired();
                     }
-                    // Opening the Vault page snapshots the engine off-thread (the librarian's mailbox queues behind commits — never read it on the UI thread).
+                    // Opening the Vault page snapshots the engine off-thread (the librarian's mailbox queues behind commits — never read it on the UI thread) and walks the in-memory rows for the space breakdown.
                     if *p == SettingsPage::Vault {
                         self.request_vault_stats();
+                        self.compute_vault_breakdown();
                     }
                     // Navigating away abandons a rename in progress (Nick 2026-09-10): the box goes, nothing written.
                     if self.fleet_rename.is_some() && self.state != AppState::Settings(*p) {
@@ -1157,6 +1158,13 @@ impl FluorApp for PhotonApp {
                 } else if page == SettingsPage::Vault {
                     if slot == 0 {
                         self.request_vault_stats();
+                        self.compute_vault_breakdown();
+                        ctx.window.request_redraw();
+                    } else if (1..=6).contains(&slot) {
+                        // Breakdown filter pills: everything / waves / pictures / songs / files / kept.
+                        use super::VaultFilter;
+                        self.vault_filter = [VaultFilter::All, VaultFilter::Waves, VaultFilter::Pictures, VaultFilter::Songs, VaultFilter::Files, VaultFilter::Kept][(slot - 1) as usize];
+                        self.compute_vault_breakdown();
                         ctx.window.request_redraw();
                     }
                 } else if page == SettingsPage::Diagnostics {

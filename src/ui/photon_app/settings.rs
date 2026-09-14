@@ -615,6 +615,54 @@ impl PhotonApp {
         }
     }
 
+    /// The Vault page's space breakdown (Nick 2026-09-14, "sizes of each chat/contact, waves, etc"): per-conversation byte totals for the active filter, largest first. A pure in-memory walk over the row records — every attachment row carries its size in its content record, a wave card its envelope — so this touches no disk and runs on the UI thread at tap speed. What it counts is what the rows CLAIM, which is the honest per-conversation story; the engine's occupied number above it stays the ground truth for the whole vault.
+    pub(super) fn compute_vault_breakdown(&mut self) {
+        use crate::types::AttachKind;
+        use super::VaultFilter;
+        let filter = self.vault_filter;
+        let mut rows: Vec<(String, u64, u64)> = Vec::new();
+        for (ci, contact) in self.contacts.iter().enumerate() {
+            let Some(conv) = self.conv_of(ci) else { continue };
+            let mut bytes = 0u64;
+            let mut count = 0u64;
+            for m in &conv.messages {
+                if m.deleted || crate::types::is_control_content(&m.content) {
+                    continue;
+                }
+                let (sz, cat) = if let Some((_, name, size)) = crate::types::parse_attachment_content(&m.content) {
+                    if name == "call.audio" {
+                        (size, VaultFilter::Waves)
+                    } else {
+                        match m.attach.map(|a| a.kind) {
+                            Some(AttachKind::Image) | Some(AttachKind::RawImage) => (size, VaultFilter::Pictures),
+                            Some(AttachKind::Audio) => (size, VaultFilter::Songs),
+                            _ => (size, VaultFilter::Files),
+                        }
+                    }
+                } else if m.wave.is_some() {
+                    (m.envelope.len() as u64, VaultFilter::Waves)
+                } else {
+                    ((m.content.len() + m.envelope.len() + m.preview.len()) as u64, VaultFilter::All)
+                };
+                let keep = match filter {
+                    VaultFilter::All => true,
+                    VaultFilter::Kept => m.star_osc > 0,
+                    f => cat == f,
+                };
+                if keep {
+                    bytes += sz;
+                    count += 1;
+                }
+            }
+            if bytes > 0 {
+                rows.push((contact.display_name(), bytes, count));
+            }
+        }
+        rows.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+        rows.truncate(12);
+        self.vault_breakdown = Some(rows);
+    }
+
     /// The stored calibration for the CURRENT route/mic as an engine snapshot — read here on the UI thread at call start (the engine can't touch settings). None when no echo profile exists (the engine then runs reactive + learner).
     /// Snapshot the vault's stats on a worker; the drain lands it and repaints. Event-edged: page entry and the Refresh pill call this, nothing polls.
     pub(super) fn request_vault_stats(&mut self) {
