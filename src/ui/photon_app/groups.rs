@@ -138,6 +138,50 @@ impl PhotonApp {
             .unwrap_or(false)
     }
 
+    /// Send (or refresh) a group invite to a contact over the pairwise braid (§4 Invite): the era-pinned secrets ride the hidden control text (sealed end-to-end by the braid), the roster snapshot rides the package's gpl field so the invitee sees who is in it before consenting. The pending ledger's stored ciphertext carries retransmits; a new era means the sponsor calls this again (§8b refresh-on-mint). The invitee's consent posts back as its member record.
+    pub(super) fn send_group_invite(&mut self, gid: crate::types::group::GroupId, ci: usize) -> bool {
+        let Some(contact) = self.contacts.get(ci) else {
+            return false;
+        };
+        if contact.is_sibling {
+            crate::log("GROUP: a sibling is already every group we are — invite refused");
+            return false;
+        }
+        let fp = crate::fp(&contact.handle_proof);
+        let Some(our_pid) = self.our_party_id(contact) else {
+            return false;
+        };
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let Some((era_index, era_lineage, root, hk)) = self
+            .friendship_chains
+            .iter()
+            .find(|(id, _)| *id == fid)
+            .and_then(|(_, c)| Some((c.era_index, c.era_lineage, *c.lane_root()?, *c.history_key()?)))
+        else {
+            crate::logf!("GROUP: {} holds no root here — cannot sponsor an invite", hex::encode(&gid.0[..4]));
+            return false;
+        };
+        let blob = {
+            let Some((_, roster)) = self.group_rosters.iter().find(|(g, _)| *g == gid) else {
+                crate::logf!("GROUP: no roster for {} — cannot invite", hex::encode(&gid.0[..4]));
+                return false;
+            };
+            match crate::storage::group::roster_to_vsf_bytes(&gid, roster) {
+                Ok(b) => b,
+                Err(e) => {
+                    crate::logf!("GROUP: roster snapshot for {} failed to encode: {}", hex::encode(&gid.0[..4]), e);
+                    return false;
+                }
+            }
+        };
+        let content = crate::types::group::GroupSignal::Invite { era_index, group_root: root, group_history_key: hk, era_lineage }.to_content();
+        let wire = crate::network::message_package::GroupWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob) };
+        let ts = vsf::eagle_time_oscillations();
+        let sent = self.chain_transmit_with(ci, &content, ts, None, None, None, Some(&wire));
+        crate::logf!("GROUP: invite for {} (era {}) {} to {}", hex::encode(&gid.0[..4]), era_index, if sent { "sent" } else { "NOT sent — the next edge retries" }, fp);
+        sent
+    }
+
     /// Persist a group's index entry + roster. Chains persist thru the standard chains path on their own mutation edges.
     fn persist_group(&mut self, gid: &GroupId) {
         let Some(storage) = self.storage.as_ref() else {
