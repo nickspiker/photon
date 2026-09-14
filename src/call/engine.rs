@@ -65,6 +65,13 @@ const LINK_TAIL: usize = 10;
 const LINK_TAIL_V2: usize = 11;
 /// A plaid-probation sender being asked for this many fill windows in one second IS the peer saying "I am not receiving you" — the belt-and-suspenders far-loss signal that works even against a peer whose tail bytes cannot get thru (and against v96 peers).
 const PLAID_FILL_ASK_DROP_PER_SEC: u32 = 20;
+// DELAY-GRADIENT GOVERNANCE (Nick 2026-09-14: "if it's 20,22,24,26,28,31 then I know I'm over" — exactly LEDBAT/BBR's observation, made quantitative): a queue growing at slope s seconds-per-second means send rate R exceeds capacity C with s = (R−C)/C, so C = R/(1+s). The RTT is min-filtered per 100 ms bucket (cellular grant jitter is spike noise; the min is immune), the slope is the endpoints' gradient over ~1 s of buckets, and a drop jumps DIRECTLY to the rung under 0.85·C — one right-sized step instead of a staircase, and it fires while the queue is still BUILDING, seconds before the ema-over-floor check or any loss.
+/// Slope above this (ms of RTT growth per second) convicts a building queue and computes the drop.
+const SLOPE_DROP_MS_PER_SEC: f32 = 50.0;
+/// Climbs need the slope calmer than this.
+const SLOPE_CLIMB_MS_PER_SEC: f32 = 10.0;
+/// Safety margin under the computed capacity.
+const SLOPE_CAPACITY_MARGIN: f32 = 0.85;
 /// BUFFERBLOAT'S OTHER TELL (field 2026-09-14 17:30, the double-plaid cellular wave: per-window loss near zero yet RTT ema climbed 60 ms → 3.5 s while the FLOOR held 38 — under a standing queue the min slips thru but the mean drowns): off-LAN plaid drops, and the raw rung is barred, while the RTT ema sits this far above the call's floor.
 const PLAID_RTT_EMA_BLOAT_MS: f32 = 250.0;
 // RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
@@ -354,6 +361,11 @@ fn run(
     let mut peer_sends_loss = false;
     let mut last_peer_loss_at: Option<std::time::Instant> = None;
     let mut fill_asks_sec: u32 = 0;
+    // Delay-gradient state: the current 100 ms bucket's min RTT, its start, and the last ~1 s of bucket minima.
+    let mut slope_bucket_min: u32 = u32::MAX;
+    let mut slope_bucket_at = std::time::Instant::now();
+    let mut slope_buckets: std::collections::VecDeque<u32> = std::collections::VecDeque::with_capacity(10);
+    let mut last_slope_drop = std::time::Instant::now() - std::time::Duration::from_secs(10);
     let (mut rtt_min, mut rtt_max, mut rtt_ema, mut rtt_n) = (u32::MAX, 0u32, 0f32, 0u64);
     // The plaid headroom tell: the min RTT over the last ~1 s of samples (a floor that has risen = a queue standing on the path). Rebuilt per window from `win_rtt_min`.
     let mut recent_rtt_floor: u32 = u32::MAX;
@@ -752,6 +764,21 @@ fn run(
                         win_rtt_min = win_rtt_min.min(rtt);
                         win_rtt_max = win_rtt_max.max(rtt);
                         win_rtt_n += 1;
+                        // Delay-gradient buckets: min per 100 ms; a stale ring (no samples for >1 s) restarts.
+                        slope_bucket_min = slope_bucket_min.min(rtt);
+                        let aged = slope_bucket_at.elapsed();
+                        if aged >= std::time::Duration::from_secs(1) {
+                            slope_buckets.clear();
+                            slope_bucket_at = std::time::Instant::now();
+                            slope_bucket_min = rtt;
+                        } else if aged >= std::time::Duration::from_millis(100) {
+                            if slope_buckets.len() >= 10 {
+                                slope_buckets.pop_front();
+                            }
+                            slope_buckets.push_back(slope_bucket_min);
+                            slope_bucket_at = std::time::Instant::now();
+                            slope_bucket_min = u32::MAX;
+                        }
                     }
                 }
             }
@@ -856,7 +883,12 @@ fn run(
                     let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && ema_calm && plaid_strikes < PLAID_PROBATION_STRIKES;
                     let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
                     let peer_ok = if next == RAW_TIER { peer_quiet(std::time::Duration::from_secs(10)) } else { peer_quiet(CLIMB_HOLD) };
-                    if clean_rx_windows >= need && held && allowed && peer_ok {
+                    // Delay-gradient climb gate: a building queue (slope past calm) bars every climb — the earliest congestion signal there is.
+                    let slope_calm = slope_buckets.len() < 5 || {
+                        let (f, b) = (*slope_buckets.front().unwrap() as f32, *slope_buckets.back().unwrap() as f32);
+                        (b - f) / ((slope_buckets.len() - 1) as f32 * 0.1) <= SLOPE_CLIMB_MS_PER_SEC
+                    };
+                    if clean_rx_windows >= need && held && allowed && peer_ok && slope_calm {
                         pending_tier = next;
                         clean_rx_windows = 0;
                         tier_ups += 1;
@@ -1122,6 +1154,35 @@ fn run(
                     last_tier_drop = Some(now);
                     clean_rx_windows = 0;
                     crate::logf!("CALL: tier down → {} kbps (the peer reported {} lost in their last second — their receive governs our tier)", TIER_RATES[pending_tier] / 1000, peer_loss_sec_max);
+                }
+                // DELAY-GRADIENT DROP: the slope convicts a building queue and C = R/(1+s) names the rung — one right-sized jump, fired while the queue is still growing (see SLOPE_DROP_MS_PER_SEC).
+                if slope_buckets.len() >= 5 && last_slope_drop.elapsed() >= std::time::Duration::from_secs(2) && pending_tier > 0 {
+                    let (f, b) = (*slope_buckets.front().unwrap() as f32, *slope_buckets.back().unwrap() as f32);
+                    let slope_ms = (b - f) / ((slope_buckets.len() - 1) as f32 * 0.1);
+                    if slope_ms > SLOPE_DROP_MS_PER_SEC {
+                        let s = slope_ms / 1000.0;
+                        let r = TIER_RATES[pending_tier] as f32;
+                        let budget = r / (1.0 + s) * SLOPE_CAPACITY_MARGIN;
+                        let mut target = 0usize;
+                        for (i, &rate) in TIER_RATES.iter().enumerate() {
+                            if i != RAW_TIER && (rate as f32) <= budget {
+                                target = i;
+                            }
+                        }
+                        if target < pending_tier {
+                            if pending_tier == RAW_TIER && !plaid_allowed {
+                                plaid_strikes += 1;
+                            }
+                            tier_downs += 1;
+                            pending_tier = target;
+                            last_tier_change = now;
+                            last_tier_drop = Some(now);
+                            last_slope_drop = now;
+                            clean_rx_windows = 0;
+                            slope_buckets.clear();
+                            crate::logf!("CALL: tier down → {} kbps (rtt slope {:.0} ms/s: the queue is building — capacity ≈ {:.0} kbps, one jump to the rung under it)", TIER_RATES[pending_tier] / 1000, slope_ms, r / (1.0 + s) / 1000.0);
+                        }
+                    }
                 }
                 // BUFFERBLOAT DROP: at off-LAN plaid with the ema drowned over the floor, step down and strike — the standing queue is ours to drain.
                 if pending_tier == RAW_TIER && !plaid_allowed && rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > PLAID_RTT_EMA_BLOAT_MS {
