@@ -106,8 +106,8 @@ const DUCK_K_MAX_Q16: i64 = 1 << 15;
 static DUCK_K_Q16: AtomicI64 = AtomicI64::new(DUCK_K_REF_Q16);
 /// The receive loss plan's echo bound, Q16: k·speaker_gain is held at or under this (0.05 ≈ −26 dB).
 const RX_ECHO_MARGIN_Q16: i64 = 3277;
-/// The downward expander's knee in plan units (voiced speech ≈ 4096; 512 is −18 dB under it): frames below taper linearly toward silence.
-const RX_EXPAND_KNEE: i64 = 512;
+/// The downward expander's knee in plan units (voiced speech ≈ 2048; 256 is −18 dB under it): frames below taper linearly toward silence.
+const RX_EXPAND_KNEE: i64 = 256;
 /// Mean |sample| of the newest frame handed to the DAC (post-duck — what the room actually receives), the k estimator's denominator. Reuses the FAR_LEVEL sum.
 static EMITTED_LEVEL: AtomicUsize = AtomicUsize::new(0);
 /// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
@@ -244,9 +244,9 @@ pub fn set_speaker_duck(armed: bool) {
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
 }
 
-/// The duck law: the FIXED presence slope `UNITY − near·2^19` (full duck at plan-unit mic 8192 — the field-passed 0.95.21 behavior). k is measured and PRINTED but deliberately out of the gain path (2026-09-13 23:30: the 35× mic makeup sits INSIDE the echo loop, so true plan-unit coupling on a normal earpiece is ~0.3-1.0 — feeding measured k in as the slope silenced the far voice at any k ≈ 0.4; the coupling-aware law needs the margin form, gain ≤ ε·near/(k·far), designed against k telemetry across rocker positions, not another guessed slope).
+/// The duck law: the FIXED presence slope `UNITY − near·2^20` (full duck at plan-unit mic 4096 = twice the plan level, as 8192 was to the old 4096 plan — the field-passed 0.95.21 shape). k is measured and PRINTED but deliberately out of the gain path (2026-09-13 23:30: the 35× mic makeup sits INSIDE the echo loop, so true plan-unit coupling on a normal earpiece is ~0.3-1.0 — feeding measured k in as the slope silenced the far voice at any k ≈ 0.4; the coupling-aware law needs the margin form, gain ≤ ε·near/(k·far), designed against k telemetry across rocker positions, not another guessed slope).
 pub fn duck_gain_q32(near: i64, _k_q16: i64) -> i64 {
-    (crate::call::qgain::UNITY - (near << 19)).clamp(0, crate::call::qgain::UNITY)
+    (crate::call::qgain::UNITY - (near << 20)).clamp(0, crate::call::qgain::UNITY)
 }
 
 /// The engine notes the plan-unit mean |sample| of each captured mic frame here; the k estimator and the Q32 duck gain both run HERE (capture cadence) so the render pull only loads. Muted zeros keep k untouched and the gain at unity.
@@ -254,7 +254,7 @@ pub fn note_near_level(mean: u32) {
     let near = mean as i64;
     let emitted = EMITTED_LEVEL.load(Ordering::Relaxed) as i64;
     // k is a MINIMUM statistic, not a mean (field 2026-09-13 23:00, two waves: the EMA version could not tell echo from Emma's loud room — room/emitted ≈ 0.3 fed k as if it were coupling, and deeper duck → smaller emitted → bigger ratio was a RUNAWAY to k 0.37-0.46 that silenced the far voice outright). True echo scales WITH the emitted level, so near/emitted ≈ k in every echo-only instant, ducked or not; room and voice sit ON TOP, so every sample is ≥ k and the min over far-active frames converges to the truth in the quiet gaps. Down instantly; up by k>>9 per far-active frame (τ ≈ 2.5 s of far speech) so a rocker-up re-learns without ever stepping.
-    if SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) && emitted > 512 {
+    if SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) && emitted > 256 {
         let sample = ((near << 16) / emitted).clamp(DUCK_K_MIN_Q16, DUCK_K_MAX_Q16);
         let k = DUCK_K_Q16.load(Ordering::Relaxed);
         let next = if sample < k { sample } else { (k + (k >> 9)).min(DUCK_K_MAX_Q16) };
