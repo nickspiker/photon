@@ -1431,14 +1431,18 @@ impl PhotonApp {
                 recv_seal_idx = Some(contact_idx);
                 call_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
             } else
-            // Hidden DELETE marker: the friend tombstoned a message — apply it here (either direction, matched by timestamp), persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
+            // Hidden DELETE marker: the friend tombstoned a message — apply it here, persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
+            // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): a friend's marker may tombstone ONLY rows THEY authored (incoming here) and never a wave — their delete can't reach into our words or our archive of a shared call.
             if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
                 let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
                 {
                     let conv = &mut self.conversations[conv_pos];
                     let mut tombstoned: Option<ChatMessage> = None;
                     if let Some(m) = conv.messages.iter_mut().find(|m| {
-                        m.timestamp == target_ts && !crate::types::is_control_content(&m.content)
+                        m.timestamp == target_ts
+                            && !m.is_outgoing
+                            && m.wave.is_none()
+                            && !crate::types::is_control_content(&m.content)
                     }) {
                         if !m.deleted {
                             m.deleted = true;

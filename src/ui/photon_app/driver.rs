@@ -314,7 +314,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(12); // reply/edit/resend/delete/open-or-fetch/stop/wave back/save-or-fetch (wave)/replicate/(9 free)/save original + room
+        self.hit_counter = self.hit_counter.wrapping_add(13); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft
         self.react_strip_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -475,6 +475,17 @@ impl FluorApp for PhotonApp {
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::HardLogs),
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            false,
+        ));
+        // Show edit history (chat.history, linked, default OFF): a selected edited bubble's meta lists every prior version.
+        self.settings_history_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            tr(Msg::KeepEditHistory),
             0.,
             0.,
             1.,
@@ -1336,7 +1347,7 @@ impl FluorApp for PhotonApp {
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
-                && hit_id < self.msg_action_base.wrapping_add(12)
+                && hit_id < self.msg_action_base.wrapping_add(13)
             {
                 let slot = hit_id - self.msg_action_base;
                 // STOP (slot 5, the bridge locus strip's pill): no selected row needed — it always targets the in-flight command; each press escalates the signal.
@@ -1349,6 +1360,18 @@ impl FluorApp for PhotonApp {
                 }
                 if let Some((sci, ts, out)) = self.selected_msg {
                     match slot {
+                        // LOFT (slot 12): shred the LOCAL blob only — no tombstone, no marker, no sibling push; the row stays and its pill flips to fetch. Incoming pigeons only (the sender's fleet holds the original).
+                        12 => {
+                            let hash = self
+                                .conv_of(sci)
+                                .and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.is_outgoing && !m.deleted))
+                                .and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h));
+                            if let Some(h) = hash {
+                                queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
+                                crate::log("msg-details: pigeon lofted — local bytes dropped, the row and re-fetch stay");
+                            }
+                            self.scene_dirty = true;
+                        }
                         // PLAY/STOP for a music pigeon (slot 9) — the action-row twin of the wave card's glyph.
                         // PLAY / STOP the wave's recording (slot 11): the only way a wave starts playing.
                         11 => {
@@ -2966,13 +2989,16 @@ impl FluorApp for PhotonApp {
                 self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
                 // Send the marker only where there is someone to send it TO. Zero remote participants (our own notes) means the row is already gone everywhere it exists; a sibling is our own fleet, which the push above already covered.
+                // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): the marker rides ONLY for a row WE authored — deleting the friend's message or a wave is decluttering OUR fleet, never a reach into theirs (a wave is a shared event; each side's archive is their own memory of it).
                 let has_remote = self
                     .contacts
                     .get(sci)
                     .and_then(|c| self.our_party_id(c).map(|us| (c, us)))
                     .is_some_and(|(c, us)| c.remote_count(&us) > 0);
                 let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
-                if has_remote && !is_sib {
+                if has_remote && !is_sib && !row.is_outgoing {
+                    crate::log("msg-details: their row (or a shared record) — fleet tombstone only, the friend keeps their copy");
+                } else if has_remote && !is_sib && row.wave.is_none() {
                     let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
                     if self.send_chain_message(sci, &marker, true, None, None) {
                         crate::log(

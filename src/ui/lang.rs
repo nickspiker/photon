@@ -265,6 +265,8 @@ pub enum Msg<'a> {
     DeliverySending,
     RecoveredSuffix,
     EditedSuffix,
+    /// One prior version of an edited row in the selected meta (chat.history on): its text as it stood, stamped with its age.
+    EditWasLine { age: &'a str, text: &'a str },
     BlobDeliveredSuffix,
     BlobSendingSuffix,
     BlobNotHereSuffix,
@@ -305,6 +307,8 @@ pub enum Msg<'a> {
     /// A wave's recording to a file (the wave card's word for save) and a wave off the timeline (its word for delete), Nick 2026-09-12.
     ExportPill,
     DiscardPill,
+    /// "Keep it, but not here": drop this device's copy of an incoming pigeon's bytes — the row and re-fetch stay.
+    LoftPill,
     /// The details strip's stats for an attachment row (Nick 2026-09-12: "stats up top: name, time, size, type"): pre-formatted parts, the age follows on the same line.
     AttachStats { name: &'a str, kind: &'a str, size: &'a str, dims: &'a str },
     /// The kind as a word for the stats line.
@@ -455,6 +459,7 @@ pub enum Msg<'a> {
     RingIncomingCall,
     /// Notifications page: hold every wave recording on this device (replication by default).
     HoldWavesOnDevice,
+    KeepEditHistory,
     VibrateIncomingCall,
     PresenceCheckbox,
     PerContactOverride,

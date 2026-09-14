@@ -1862,6 +1862,8 @@ pub struct PhotonApp {
     selected_msg: Option<(usize, i64, bool)>,
     /// The selected message's wrapped META section height, measured at draw — the extent walk reads it (a frame late on selection change; settles like any overshoot).
     sel_meta_h: f32,
+    /// Wrap overflow of the selected message's ACTION ROW (extra lines × pill height): measured in the pill loop, consumed by the next frame's detail_h — the sel_meta_h pattern.
+    sel_action_extra_h: f32,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
     /// Deferred delete: ((contact idx, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
@@ -1959,6 +1961,10 @@ pub struct PhotonApp {
     settings_wave_hold_check: Option<fluor::widgets::Checkbox>,
     /// The live value of `waves.hold` for the merge path.
     wave_hold: bool,
+    /// Notifications-page "Show edit history" (`chat.history`, LINKED, default OFF — Nick 2026-09-14, "set it to remember history"): ON = a selected edited bubble's meta lists every prior version. A view toggle only: the rows persist either way (braid key material).
+    settings_history_check: Option<fluor::widgets::Checkbox>,
+    /// The live value of `chat.history` for the meta renderer.
+    chat_history: bool,
     /// Desktop "Run in background" toggle (Notifications page): the OS autostart artifact IS the stored state (`platform::autostart` — no vault setting to desync), and `resident_mode` follows it live. Never built on Android (the OS owns app lifecycle there).
     settings_background_check: Option<fluor::widgets::Checkbox>,
     /// Bulletproof-bridge (headless lifeline) enrolment checkbox — Linux/macOS only (the --lifeline flag is unix-desktop).
@@ -2521,6 +2527,7 @@ impl PhotonApp {
             painted_compose_lines: 1,
             selected_msg: None,
             sel_meta_h: 0.0,
+            sel_action_extra_h: 0.0,
             selected_msg_copied: false,
             pending_delete: None,
             compose_reply_to: None,
@@ -2573,6 +2580,8 @@ impl PhotonApp {
             settings_hardlogs_check: None,
             settings_wave_hold_check: None,
             wave_hold: true,
+            settings_history_check: None,
+            chat_history: false,
             diag_log_view: false,
             diag_log_rows: Vec::new(),
             diag_log_consumed: 0,
@@ -3220,6 +3229,9 @@ impl PhotonApp {
                         f(cb);
                     }
                     if let Some(cb) = self.settings_wave_hold_check.as_mut() {
+                        f(cb);
+                    }
+                    if let Some(cb) = self.settings_history_check.as_mut() {
                         f(cb);
                     }
                     // presence COMMENTED OUT (Nick 2026-09-01) — restore alongside the render + layout rows.

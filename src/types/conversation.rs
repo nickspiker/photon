@@ -139,10 +139,11 @@ impl Conversation {
 
     /// The newest live edit row targeting `target_ts` → (edit row's ts, new body). Render-time supersede: the original row is braid key material and never mutates, so "the current text" is a question about edit rows, answered newest-wins. A deleted edit row stops counting — deleting an edit reverts to the previous edit or the original.
     pub fn latest_edit_for(&self, target_ts: i64) -> Option<(i64, String)> {
+        // Authorship law (2026-09-14): only OUR edit rows resolve here — the one caller prefills OUR edit box, and a peer's row can never be the "current" text of ours.
         self.messages
             .iter()
             .rev()
-            .filter(|m| !m.deleted)
+            .filter(|m| !m.deleted && m.is_outgoing)
             .find(|m| m.reference == Some((crate::types::RefKind::Edit, target_ts)))
             .map(|m| (m.timestamp, m.content.clone()))
     }

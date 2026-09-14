@@ -464,6 +464,19 @@ impl PhotonApp {
         }
 
 
+        // Show edit history: LINKED write (a view preference follows the person across their fleet); the live flag flips immediately so the open strip re-renders this frame.
+        let history_toggle = self
+            .settings_history_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = history_toggle {
+            self.chat_history = checked;
+            if self.settings_set("chat.history", vsf::VsfType::u0(checked)) {
+                crate::logf!("SETTINGS: chat.history = {} (linked write)", checked);
+            }
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
+
         // Hard-logs toggle: arm THIS device for 24h (the value stored is the arm time; the sink self-expires) — device-local via unlink, mirroring the display.zoom pattern. Arming flips the sink NOW (a flush edge).
         // Hold every wave on this device: device-local (unlinked) bool, default ON; the merge path reads `wave_hold` live.
         let wave_hold_toggle = self

@@ -2887,12 +2887,13 @@ impl PhotonApp {
                         let raw_msgs: &[crate::types::ChatMessage] =
                             conv.map(|v| v.messages.as_slice()).unwrap_or(&[]);
                         // Newest live edit row per target — render-time supersede (the original row is braid key material and never mutates; see EDIT_MARKER_PREFIX). Deleting an edit row reverts to the previous edit or the original.
-                        let mut edit_over: std::collections::HashMap<i64, (i64, String)> =
+                        // Keyed by (target, DIRECTION): only the author edits their own words — an edit row supersedes only rows travelling its own way, so a peer's edit targeting OUR timestamp can never repaint our bubble (the authorship law, Nick 2026-09-14).
+                        let mut edit_over: std::collections::HashMap<(i64, bool), (i64, String)> =
                             std::collections::HashMap::new();
                         for m in raw_msgs.iter().filter(|m| !m.deleted) {
                             if let Some((crate::types::RefKind::Edit, t)) = m.reference {
                                 let e = edit_over
-                                    .entry(t)
+                                    .entry((t, m.is_outgoing))
                                     .or_insert_with(|| (m.timestamp, m.content.clone()));
                                 if m.timestamp >= e.0 {
                                     *e = (m.timestamp, m.content.clone());
@@ -2924,7 +2925,7 @@ impl PhotonApp {
                         });
                         let body_of = |m: &crate::types::ChatMessage| -> String {
                             if crate::types::parse_attachment_content(&m.content).is_none() {
-                                if let Some((_, b)) = edit_over.get(&m.timestamp) {
+                                if let Some((_, b)) = edit_over.get(&(m.timestamp, m.is_outgoing)) {
                                     return b.clone();
                                 }
                             }
@@ -2996,7 +2997,8 @@ impl PhotonApp {
                                     .map(|m| (m.timestamp, m.is_outgoing))
                                     .filter(|&(ts, out)| self.strip_dismissed != Some((ci, ts, out)))
                             });
-                        let detail_h = line_h * 2.5; // two strip lines BELOW the media, padded: the action row (reply · edit · copy · resend · delete) and the reaction row (ranked glyphs + the circled "+"). The META section lives ABOVE the media now (Nick 2026-09-12, the four-section block) and wraps, so its height is dynamic (self.sel_meta_h).
+                        // Two strip lines BELOW the media, padded — the action row and the reaction row — PLUS the action row's wrap overflow: the pills WRAP to more lines instead of walking off a narrow screen (Nick 2026-09-14), and the extra height is measured in the pill loop and fed back thru self.sel_action_extra_h exactly like sel_meta_h (one frame late on a selection change; settles like any overshoot). The META section lives ABOVE the media (Nick 2026-09-12, the four-section block) and wraps too.
+                        let detail_h = line_h * 2.5 + self.sel_action_extra_h;
                         let sel_in_stream = sel_key.is_some_and(|(ts, out)| {
                             visible
                                 .iter()
@@ -3261,24 +3263,26 @@ impl PhotonApp {
                             if sel_key.is_some_and(|(ts, out)| {
                                 msg.timestamp == ts && msg.is_outgoing == out
                             }) {
-                                let secs = ((vsf::eagle_time_oscillations() - msg.timestamp)
-                                    / crate::OSC_PER_SEC)
-                                    .max(0);
-                                // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve.
-                                let dms = crate::dms_age(secs);
-                                let age = if crate::dms_ui() {
-                                    tr(Msg::AgoDms(&dms))
-                                } else {
-                                    tr(if secs >= 86400 {
-                                        Msg::AgoDays((secs / 86400) as u32)
-                                    } else if secs >= 3600 {
-                                        Msg::AgoHours((secs / 3600) as u32)
-                                    } else if secs >= 60 {
-                                        Msg::AgoMinutes((secs / 60) as u32)
+                                // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve. A closure because the edit-history lines below stamp each prior version's age too.
+                                let fmt_age = |ts: i64| -> String {
+                                    let secs = ((vsf::eagle_time_oscillations() - ts) / crate::OSC_PER_SEC).max(0);
+                                    if crate::dms_ui() {
+                                        let dms = crate::dms_age(secs);
+                                        tr(Msg::AgoDms(&dms)).into_owned()
                                     } else {
-                                        Msg::AgoSeconds(secs as u32)
-                                    })
+                                        tr(if secs >= 86400 {
+                                            Msg::AgoDays((secs / 86400) as u32)
+                                        } else if secs >= 3600 {
+                                            Msg::AgoHours((secs / 3600) as u32)
+                                        } else if secs >= 60 {
+                                            Msg::AgoMinutes((secs / 60) as u32)
+                                        } else {
+                                            Msg::AgoSeconds(secs as u32)
+                                        })
+                                        .into_owned()
+                                    }
                                 };
+                                let age = fmt_age(msg.timestamp);
                                 // The delivery ladder (sending → replicated ∥ delivered): "delivered" = the friend's fleet ACKed (the line — nothing beyond it exists, ever; "seen" is only a human's explicit reaction); "replicated" = our own fleet holds it but their ACK hasn't landed yet.
                                 let mut detail = if msg.is_outgoing {
                                     let state = tr(if msg.delivered {
@@ -3299,9 +3303,32 @@ impl PhotonApp {
                                     detail.push_str(" \u{00B7} \u{2605}");
                                 }
                                 if crate::types::parse_attachment_content(&msg.content).is_none()
-                                    && edit_over.contains_key(&msg.timestamp)
+                                    && edit_over.contains_key(&(msg.timestamp, msg.is_outgoing))
                                 {
                                     detail.push_str(&tr(Msg::EditedSuffix));
+                                    // EDIT HISTORY (Nick 2026-09-14, "set it to remember history"): with chat.history on, the meta lists every prior version, oldest first — the rows all persist regardless (braid key material), so the toggle is a view, never storage.
+                                    if self.chat_history {
+                                        let mut vers: Vec<(i64, String)> = raw_msgs
+                                            .iter()
+                                            .filter(|x| !x.deleted && x.is_outgoing == msg.is_outgoing)
+                                            .filter_map(|x| match x.reference {
+                                                Some((crate::types::RefKind::Edit, t)) if t == msg.timestamp => Some((x.timestamp, x.content.clone())),
+                                                _ => None,
+                                            })
+                                            .collect();
+                                        vers.sort_unstable_by_key(|v| v.0);
+                                        vers.pop(); // the newest IS the bubble
+                                        vers.insert(0, (msg.timestamp, msg.content.clone()));
+                                        for (vt, vtext) in vers {
+                                            let vage = fmt_age(vt);
+                                            let mut t: String = vtext.chars().take(120).collect();
+                                            if vtext.chars().count() > 120 {
+                                                t.push('\u{2026}');
+                                            }
+                                            detail.push('\n');
+                                            detail.push_str(&tr(Msg::EditWasLine { age: &vage, text: &t }));
+                                        }
+                                    }
                                 }
                                 // Attachment blob state joins the meta line: held/confirmed vs still travelling.
                                 if let Some((hash, _, _)) =
@@ -3374,7 +3401,8 @@ impl PhotonApp {
                                 let meta_tint = if dev { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
                                 let action_tint = if dev { fluor::theme::fmt(0x20_FF_00_00) } else { theme::RAIL_ACTIVE_COLOUR };
                                 let react_tint = if dev { fluor::theme::fmt(0x20_00_FF_FF) } else { theme::RAIL_ACTIVE_COLOUR };
-                                let hl_actions_top = media_edges.map(|(_, b)| b).unwrap_or(y - line_h * 2.0).max(list_top);
+                                // No media: the highlight's action region starts at the strip's own top — detail_h carries the wrapped action lines, so the veil grows with them.
+                                let hl_actions_top = media_edges.map(|(_, b)| b).unwrap_or(y - detail_h + line_h * 0.5).max(list_top);
                                 let hl_react_top = (y - line_h * 0.7).max(list_top);
                                 if hl_media_top > hl_meta_top {
                                     paint::fill_rect(&mut canvas, 0, hl_meta_top as isize, buf_w as isize, (hl_media_top - hl_meta_top) as isize, meta_tint, Some(list_clip), None);
@@ -3460,6 +3488,10 @@ impl PhotonApp {
                                         (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
                                     pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
+                                    // LOFT (Nick 2026-09-14, "keep it, but not here"): drop THIS device's copy of an incoming pigeon's bytes — the row, preview and fetch stay, and the sender's fleet holds the original. Incoming only in v1 (no custody proof exists yet for our own uploads — the device-sync phase), and never a call recording (each fleet's archive is its own memory of the wave).
+                                    if held && !msg.is_outgoing && !is_rec {
+                                        pills.push((tr(Msg::LoftPill), *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(12)));
+                                    }
                                 }
                                 // ★ — mark important, never prune (the retention design reads it; the glyph needs no translation).
                                 {
@@ -3490,18 +3522,36 @@ impl PhotonApp {
                                     }
                                 }
                                 // ACTUAL BUTTONS (Nick 2026-09-12: "each option, like wave back, beam back, fetch, should be actual buttons"): every option is a filled pill thru the one pill renderer, tinted by its verb, a greyed one (no hit) for a stub like beam back.
+                                // WRAPPED (Nick 2026-09-14, "buttons should wrap rather than going off the screen"): pills are measured into lines first, then drawn stacked UPWARD so the LAST line sits in the classic slot and earlier lines grow the strip (detail_h carries the extra thru self.sel_action_extra_h).
                                 let pill_h = line_h * 0.9;
                                 let pad_hit = detail_size;
+                                let max_px = buf_w as f32 - pad_x;
+                                let mut pill_lines: Vec<Vec<(std::borrow::Cow<'static, str>, u32, HitId, f32)>> = vec![Vec::new()];
                                 let mut px_cursor = pad_x;
                                 for (label, colour, hid) in pills {
                                     let style = TextStyle::new(detail_size, colour).weight(600).font("Oxanium");
                                     let w = ctx.text.measure_text(&label, &style) + pad_hit * 1.4;
-                                    let rect = fluor::region::Region::new(px_cursor, y - line_h * 1.4 - pill_h * 0.5, w, pill_h);
-                                    if rect.y + rect.h >= list_top && rect.y <= list_bottom {
-                                        let fill = Some((theme::near_black(colour, 0.15), theme::near_black(colour, 0.3)));
-                                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
+                                    if px_cursor + w > max_px && !pill_lines.last().is_some_and(|l| l.is_empty()) {
+                                        pill_lines.push(Vec::new());
+                                        px_cursor = pad_x;
                                     }
+                                    pill_lines.last_mut().expect("seeded above").push((label, colour, hid, w));
                                     px_cursor += w + pad_hit;
+                                }
+                                let pill_gap_v = pill_h * 0.35;
+                                let n_lines = pill_lines.len();
+                                self.sel_action_extra_h = (n_lines - 1) as f32 * (pill_h + pill_gap_v);
+                                for (li, line) in pill_lines.into_iter().enumerate() {
+                                    let ry = y - line_h * 1.4 - pill_h * 0.5 - (n_lines - 1 - li) as f32 * (pill_h + pill_gap_v);
+                                    let mut px = pad_x;
+                                    for (label, colour, hid, w) in line {
+                                        let rect = fluor::region::Region::new(px, ry, w, pill_h);
+                                        if rect.y + rect.h >= list_top && rect.y <= list_bottom {
+                                            let fill = Some((theme::near_black(colour, 0.15), theme::near_black(colour, 0.3)));
+                                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, hid != HIT_NONE, fill, "Oxanium");
+                                        }
+                                        px += w + pad_hit;
+                                    }
                                 }
                                 // Bottom strip line: the REACTION ROW — as many ranked glyphs as fit, our current one highlighted green (tap it again to retract; tap another to replace), then the circled "+" for anything the keyboard can type. Drawn order is snapshotted so the tap handler maps slot → glyph even as the ranking shifts.
                                 let ours_now: Option<String> = raw_msgs
@@ -5488,12 +5538,14 @@ impl PhotonApp {
                     let ring_call = tr(Msg::RingIncomingCall);
                     let vib_call = tr(Msg::VibrateIncomingCall);
                     let wave_hold = tr(Msg::HoldWavesOnDevice);
-                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 5] = [
+                    let edit_hist = tr(Msg::KeepEditHistory);
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 6] = [
                         (self.settings_chime_check.as_mut(), &*chime),
                         (self.settings_vibrate_msg_check.as_mut(), &*vib_msg),
                         (self.settings_ring_call_check.as_mut(), &*ring_call),
                         (self.settings_vibrate_call_check.as_mut(), &*vib_call),
                         (self.settings_wave_hold_check.as_mut(), &*wave_hold),
+                        (self.settings_history_check.as_mut(), &*edit_hist),
                     ];
                     for (cb, label) in boxes {
                         let Some(cb) = cb else { continue };

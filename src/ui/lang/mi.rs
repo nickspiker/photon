@@ -260,6 +260,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliverySending => "e tuku ana".into(),
         Msg::RecoveredSuffix => " \u{00b7} kua whakaorangia".into(),
         Msg::EditedSuffix => " \u{00b7} kua whakatikaina".into(),
+        Msg::EditWasLine { age, text } => format!("i mua \u{00b7} {age}: {text}").into(),
         Msg::BlobDeliveredSuffix => " \u{00b7} kua tae te blob".into(),
         Msg::BlobSendingSuffix => " \u{00b7} e tuku ana te blob".into(),
         Msg::BlobNotHereSuffix => " \u{00b7} kāore anō te blob kia tae".into(),
@@ -277,6 +278,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SavePill => "tiaki".into(),
         Msg::ExportPill => "kawe atu".into(),
         Msg::DiscardPill => "whakarere".into(),
+        Msg::LoftPill => "whata".into(),
         Msg::AttachStats { name, kind, size, dims } => {
             let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
             let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
@@ -447,6 +449,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VibrateNewMessage => "He wiri mō te karere hou".into(),
         Msg::RingIncomingCall => "He tangi mō te ngaru mai".into(),
         Msg::HoldWavesOnDevice => "Puritia ia hopukanga ngaru ki tēnei pūrere".into(),
+        Msg::KeepEditHistory => "Whakaatu i ngā whakatikanga o mua".into(),
         Msg::VibrateIncomingCall => "He wiri mō te ngaru mai".into(),
         Msg::PresenceCheckbox => "Whakaaturia tōku noho ki ōku hoa".into(),
         Msg::PerContactOverride => "Kei ia kōrerorero tōna ake tautuhinga mō ia hoa.".into(),

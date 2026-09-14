@@ -234,6 +234,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliverySending => "sending".into(),
         Msg::RecoveredSuffix => " \u{00b7} recovered".into(),
         Msg::EditedSuffix => " \u{00b7} edited".into(),
+        Msg::EditWasLine { age, text } => format!("was \u{00b7} {age}: {text}").into(),
         Msg::BlobDeliveredSuffix => " \u{00b7} blob delivered".into(),
         Msg::BlobSendingSuffix => " \u{00b7} blob sending".into(),
         Msg::BlobNotHereSuffix => " \u{00b7} blob not here yet".into(),
@@ -251,6 +252,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SavePill => "save".into(),
         Msg::ExportPill => "export".into(),
         Msg::DiscardPill => "discard".into(),
+        Msg::LoftPill => "loft".into(),
         Msg::AttachStats { name, kind, size, dims } => {
             let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
             let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
@@ -421,6 +423,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VibrateNewMessage => "Vibrate on new message".into(),
         Msg::RingIncomingCall => "Ring on incoming wave".into(),
         Msg::HoldWavesOnDevice => "Hold every wave recording on this device".into(),
+        Msg::KeepEditHistory => "Show edit history".into(),
         Msg::VibrateIncomingCall => "Vibrate on incoming wave".into(),
         Msg::PresenceCheckbox => "Show my presence to contacts".into(),
         Msg::PerContactOverride => "Per-contact override lives in each conversation.".into(),
