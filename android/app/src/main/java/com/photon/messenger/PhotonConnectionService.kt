@@ -920,6 +920,13 @@ class PhotonConnectionService : Service() {
             }
         } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route change failed", e) }
         // THE ROCKER GOVERNS THE WAVE (field 2026-09-13, Brittany: "the volume adjust on the phone didn't seem to actually adjust the volume of my voice"): our render track carries USAGE_VOICE_COMMUNICATION on the earpiece, which the voice-call stream controls, but without an in-communication mode the rocker keeps adjusting the media stream. Binding the Activity's volume control stream to the voice stream while the wave rides the earpiece points the rocker at the stream the wave plays on; cleared back to the default when the route clears.
+        // The proximity lock follows the route (mid-call swaps included): earpiece holds it, anything else releases it (waiting for the sensor to clear so the screen never flashes at the ear).
+        if (callAudioRunning) {
+            try {
+                if (earpieceRouted) proximityLock?.acquire()
+                else proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) }
+            } catch (e: Exception) { PhotonLog.w(TAG, "proximity follow-route failed", e) }
+        }
         val routed = earpieceRouted
         PhotonActivity.live?.let { a ->
             a.runOnUiThread {
@@ -948,7 +955,10 @@ class PhotonConnectionService : Service() {
         } catch (e: Throwable) { PhotonLog.w(TAG, "mic introspection failed: ${e.message}") }
         routeEarpiece(true)
         acquireWaveWifiLock()
-        try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
+        // Proximity blanks the screen ONLY on the earpiece route (2026-09-14, "still being a bugger"): on speaker/headset a hand or pocket over the sensor was turning the screen off mid-wave. Earpiece = at the ear = blanking is right.
+        if (earpieceRouted) {
+            try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
+        }
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (hasMic) {
@@ -965,7 +975,8 @@ class PhotonConnectionService : Service() {
         callAudioRunning = false
         routeEarpiece(false)
         releaseWaveWifiLock()
-        try { proximityLock?.let { if (it.isHeld) it.release() } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
+        // RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY: the screen comes back only once the sensor clears — a bare release() mid-cover flashed the screen on against the ear at hangup.
+        try { proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
         // The call surface no longer needs to sit over the keyguard.
         PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }
         // Drop the microphone FGS type the moment the call ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).

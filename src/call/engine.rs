@@ -65,6 +65,8 @@ const LINK_TAIL: usize = 10;
 const LINK_TAIL_V2: usize = 11;
 /// A plaid-probation sender being asked for this many fill windows in one second IS the peer saying "I am not receiving you" — the belt-and-suspenders far-loss signal that works even against a peer whose tail bytes cannot get thru (and against v96 peers).
 const PLAID_FILL_ASK_DROP_PER_SEC: u32 = 20;
+/// BUFFERBLOAT'S OTHER TELL (field 2026-09-14 17:30, the double-plaid cellular wave: per-window loss near zero yet RTT ema climbed 60 ms → 3.5 s while the FLOOR held 38 — under a standing queue the min slips thru but the mean drowns): off-LAN plaid drops, and the raw rung is barred, while the RTT ema sits this far above the call's floor.
+const PLAID_RTT_EMA_BLOAT_MS: f32 = 250.0;
 // RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
 /// Window seqs asked per fill datagram.
 const FILL_REQ_PER_PACKET: usize = 8;
@@ -850,7 +852,8 @@ fn run(
                     let loss_quiet = last_tier_drop.map_or(true, |t| now.duration_since(t) >= PLAID_OFF_LAN_LOSS_QUIET)
                         && recent_losses.iter().all(|t| now.duration_since(*t) >= PLAID_OFF_LAN_LOSS_QUIET)
                         && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
-                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && plaid_strikes < PLAID_PROBATION_STRIKES;
+                    let ema_calm = rtt_n == 0 || rtt_min == u32::MAX || rtt_ema - rtt_min as f32 <= PLAID_RTT_EMA_BLOAT_MS;
+                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && ema_calm && plaid_strikes < PLAID_PROBATION_STRIKES;
                     let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
                     let peer_ok = if next == RAW_TIER { peer_quiet(std::time::Duration::from_secs(10)) } else { peer_quiet(CLIMB_HOLD) };
                     if clean_rx_windows >= need && held && allowed && peer_ok {
@@ -1119,6 +1122,16 @@ fn run(
                     last_tier_drop = Some(now);
                     clean_rx_windows = 0;
                     crate::logf!("CALL: tier down → {} kbps (the peer reported {} lost in their last second — their receive governs our tier)", TIER_RATES[pending_tier] / 1000, peer_loss_sec_max);
+                }
+                // BUFFERBLOAT DROP: at off-LAN plaid with the ema drowned over the floor, step down and strike — the standing queue is ours to drain.
+                if pending_tier == RAW_TIER && !plaid_allowed && rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > PLAID_RTT_EMA_BLOAT_MS {
+                    plaid_strikes += 1;
+                    pending_tier = RAW_TIER - 1;
+                    tier_downs += 1;
+                    last_tier_change = now;
+                    last_tier_drop = Some(now);
+                    clean_rx_windows = 0;
+                    crate::logf!("CALL: tier down → {} kbps (plaid on probation: rtt ema {:.0} ms over a {} ms floor — a standing queue is building)", TIER_RATES[pending_tier] / 1000, rtt_ema, rtt_min);
                 }
                 // FILL-ASK PRESSURE (works against v96 peers and thru one-way tails): a plaid-probation sender hammered with fill requests IS the far side saying "I am not receiving you".
                 if pending_tier == RAW_TIER && !plaid_allowed && fill_asks_sec >= PLAID_FILL_ASK_DROP_PER_SEC {

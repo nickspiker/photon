@@ -845,6 +845,8 @@ impl PhotonApp {
             reconnect_probe: 0,
                         });
                         self.ring_alert(ci);
+                        // The keyboard has no business over a ring (Nick 2026-09-14): drop focus, which also posts the one-shot IME hide the Android shell polls.
+                        self.change_focus(None);
                         crate::logf!(
                             "CALL: RING from {} (id {})",
                             crate::fp(&peer),
