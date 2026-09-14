@@ -51,6 +51,8 @@ const PLAID_OFF_LAN_LOSS_QUIET: std::time::Duration = std::time::Duration::from_
 const PLAID_OFF_LAN_RING_MAX: usize = 2;
 /// Off-LAN plaid on probation also drops on RECEIVE STARVATION: a window at plaid whose underruns grew by this many is a drowned uplink on the far side (its packets never arrive, so no hole is ever declared to trip the loss drop).
 const PLAID_PROBATION_UNDERRUNS: u32 = 5;
+/// Two probation failures in one wave and plaid is off for the rest of it: the path has said what it can carry (Nick's link measured 0.93/1.03 Mbps during the cellular wave — 768 kbps of raw PCM is the whole pipe). The codec rungs stay live; only the raw rung retires.
+const PLAID_PROBATION_STRIKES: u32 = 2;
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
 const LOSS_RING: usize = 256;
 const LOSS_SETPOINT: f32 = 1.0 / 256.0;
@@ -258,6 +260,8 @@ fn run(
     let mut peer = params.peer_addr;
     // The plaid gate as the engine LIVES it: seeded by the spawn's read of the initial address, re-evaluated on every media re-point (see "PLAID FOLLOWS THE PATH").
     let mut plaid_allowed = params.plaid_allowed;
+    // Off-LAN plaid probation failures this wave (see PLAID_PROBATION_STRIKES).
+    let mut plaid_strikes: u32 = 0;
     // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
@@ -822,7 +826,7 @@ fn run(
                     let loss_quiet = last_tier_drop.map_or(true, |t| now.duration_since(t) >= PLAID_OFF_LAN_LOSS_QUIET)
                         && recent_losses.iter().all(|t| now.duration_since(*t) >= PLAID_OFF_LAN_LOSS_QUIET)
                         && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
-                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet;
+                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && plaid_strikes < PLAID_PROBATION_STRIKES;
                     let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
                     if clean_rx_windows >= need && held && allowed {
                         pending_tier = next;
@@ -867,6 +871,7 @@ fn run(
                     if pending_tier == RAW_TIER && !plaid_allowed && underruns.saturating_sub(last_underruns) as u32 >= PLAID_PROBATION_UNDERRUNS {
                         pending_tier = RAW_TIER - 1;
                         tier_downs += 1;
+                        plaid_strikes += 1;
                         let now = std::time::Instant::now();
                         last_tier_change = now;
                         last_tier_drop = Some(now);
@@ -910,6 +915,9 @@ fn run(
                     let need = if pending_tier == RAW_TIER && !plaid_probation { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
                     let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                     if recent_losses.len() >= need && pending_tier > 0 && drop_held {
+                        if plaid_probation {
+                            plaid_strikes += 1;
+                        }
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
                         last_tier_change = now;

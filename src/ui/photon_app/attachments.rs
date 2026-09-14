@@ -461,6 +461,13 @@ impl PhotonApp {
     /// Drain attachment blobs a worker verified + stored off-thread: send the attach_have confirm (needs the keypair + checker, which is why it can't run in the worker) so the pusher's pill flips to delivered, then clear the compose wrap and repaint.
     pub(super) fn drain_attach_installed(&mut self) {
         while let Ok(r) = self.attach_installed_rx.try_recv() {
+            // A manifest landed: seed the progress bar and repaint; nothing is installed yet.
+            if let Some((held, total)) = r.manifest {
+                self.attach_chunk_progress.insert(r.content_hash, (held, total));
+                self.msg_wrap = None;
+                self.scene_dirty = true;
+                continue;
+            }
             // A chunk: count it toward the bar; only the LAST one is an install (attach_have + re-sniff below).
             let mut complete = true;
             if let Some((idx, total, done)) = r.chunk {

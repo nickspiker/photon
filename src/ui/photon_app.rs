@@ -695,6 +695,8 @@ struct AttachPrepared {
 struct AttachInstalled {
     /// The receiver's own sniff of the stored bytes (None when the name was unknown to the worker).
     sniffed: Option<crate::types::AttachKind>,
+    /// A MANIFEST landed (stored off the UI thread): (chunks already held, total). The drain seeds the progress bar; nothing is installed yet. 2026-09-14: the manifest store ran on the UI thread and each one waited on the vault mutex behind the chunk worker's fsyncs — 128 manifests at launch = a two-minute hang on Nick's desktop.
+    manifest: Option<(u32, u32)>,
     /// A chunked blob's chunk landed: (index, total chunks, the blob is now complete). None = a whole-value blob landed.
     chunk: Option<(u32, u32, bool)>,
     conversation_token: [u8; 32],

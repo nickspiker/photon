@@ -3365,6 +3365,7 @@ impl PhotonApp {
                                         Ok(()) => {
                                             let _ = tx.send(AttachInstalled {
                                                 sniffed: Some(crate::types::sniff(&plain, &sniff_name)),
+                                                manifest: None,
                                                 chunk: None,
                                                 conversation_token,
                                                 content_hash,
@@ -3390,7 +3391,7 @@ impl PhotonApp {
                     content_hash,
                     sealed,
                     sender_pubkey,
-                    sender_addr: _,
+                    sender_addr: raw_sender_addr,
                 } => {
                     let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
@@ -3398,24 +3399,35 @@ impl PhotonApp {
                     if !known {
                         crate::log("ATTACH: manifest from unknown device — dropped");
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
-                        match kete::decrypt_bytes(&sealed, &wire_key).ok().and_then(|p| crate::storage::BlobManifest::from_bytes(&p)) {
-                            Some(m) if m.size <= super::attachments::MAX_ATTACH as u64 && m.chunk_size as usize == crate::storage::BLOB_CHUNK_SIZE => {
-                                let total = m.chunks.len() as u32;
-                                match crate::storage::blob_manifest_store(&seed, &content_hash, &m) {
-                                    Ok(()) => {
-                                        let held = crate::storage::blob_chunks_held(&content_hash).map_or(0, |h| h.iter().filter(|x| **x).count()) as u32;
-                                        crate::logf!("ATTACH: manifest stored — {} chunk(s), {} bytes, {} already held", total, m.size, held);
-                                        self.attach_chunk_progress.insert(content_hash, (held, total));
-                                        self.msg_wrap = None;
-                                        self.scene_dirty = true;
-                                        changed = true;
+                        // OFF THE UI THREAD (2026-09-14, Nick's desktop launch hang: 128 manifests arrived in a burst and every store waited on the vault mutex behind the chunk worker's 200-5000 ms fsyncs — 49 s of UI stalls). The seal open, the store and the held-count all ride the seal worker; the drain seeds the progress bar.
+                        let tx = self.attach_installed_tx.clone();
+                        let sender_addr = raw_sender_addr;
+                        queue_job(&self.seal_job_tx, move || {
+                            match kete::decrypt_bytes(&sealed, &wire_key).ok().and_then(|p| crate::storage::BlobManifest::from_bytes(&p)) {
+                                Some(m) if m.size <= super::attachments::MAX_ATTACH as u64 && m.chunk_size as usize == crate::storage::BLOB_CHUNK_SIZE => {
+                                    let total = m.chunks.len() as u32;
+                                    match crate::storage::blob_manifest_store(&seed, &content_hash, &m) {
+                                        Ok(()) => {
+                                            let held = crate::storage::blob_chunks_held(&content_hash).map_or(0, |h| h.iter().filter(|x| **x).count()) as u32;
+                                            crate::logf!("ATTACH: manifest stored — {} chunk(s), {} bytes, {} already held", total, m.size, held);
+                                            let _ = tx.send(AttachInstalled {
+                                                sniffed: None,
+                                                manifest: Some((held, total)),
+                                                chunk: None,
+                                                conversation_token,
+                                                content_hash,
+                                                sender_pubkey,
+                                                sender_addr,
+                                                len: 0,
+                                            });
+                                        }
+                                        Err(e) => crate::logf!("ATTACH: manifest store failed: {}", e),
                                     }
-                                    Err(e) => crate::logf!("ATTACH: manifest store failed: {}", e),
                                 }
+                                Some(_) => crate::log("ATTACH: manifest refused — size or chunk geometry out of bounds"),
+                                None => crate::log("ATTACH: manifest seal open / decode failed — dropped"),
                             }
-                            Some(_) => crate::log("ATTACH: manifest refused — size or chunk geometry out of bounds"),
-                            None => crate::log("ATTACH: manifest seal open / decode failed — dropped"),
-                        }
+                        });
                     } else {
                         crate::log("ATTACH: no wire key / no session for the manifest's conversation — dropped");
                     }
@@ -3459,6 +3471,7 @@ impl PhotonApp {
                                             let complete = crate::storage::blob_present(&content_hash);
                                             let _ = tx.send(AttachInstalled {
                                                 sniffed: (index == 0).then(|| crate::types::sniff(&plain, &sniff_name)),
+                                                manifest: None,
                                                 chunk: Some((index, m.chunks.len() as u32, complete)),
                                                 conversation_token,
                                                 content_hash,
