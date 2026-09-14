@@ -96,6 +96,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Updates) => "Settings:Updates",
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
+                AppState::Settings(SettingsPage::Vault) => "Settings:Vault",
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::ContactPanel(_) => "ContactPanel",
@@ -5761,6 +5762,56 @@ impl PhotonApp {
                             );
                         }
                     }
+                }
+                SettingsPage::Vault => {
+                    // THE VAULT'S PHYSIQUE (Nick 2026-09-14: "would be nice to see the stats"). Read-only; the snapshot is fetched off-thread on page entry and on Refresh (the librarian's mailbox queues behind commits). Sizes ride dms_size (DMS dozenal / hex bits / arabic), counts ride fmt_num64 — the number doctrine end to end.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::VaultIntro), hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.4);
+                    match self.vault_stats.as_ref() {
+                        Some(v) => {
+                            let bb = v.engine.block_bytes;
+                            let occupied_blocks = v.engine.plow.saturating_sub(v.engine.reap);
+                            let dead_blocks = occupied_blocks.saturating_sub(v.engine.live_blocks);
+                            let cap = crate::dms_size(v.engine.tract_blocks * bb);
+                            let odo = crate::dms_size(v.engine.plow * bb);
+                            let now = crate::dms_size(occupied_blocks * bb);
+                            let live = crate::dms_size(v.engine.live_blocks * bb);
+                            let dead = crate::dms_size(dead_blocks * bb);
+                            let entries = crate::fmt_num64(v.engine.live_entries);
+                            let commits = crate::fmt_num64(v.engine.generation);
+                            for line in [
+                                tr(Msg::VaultCapacity(&cap)),
+                                tr(Msg::VaultOccupied { now: &now, live: &live, dead: &dead }),
+                                tr(Msg::VaultLiveEntries(&entries)),
+                                tr(Msg::VaultOdometer(&odo)),
+                                tr(Msg::VaultCommits(&commits)),
+                            ] {
+                                flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            }
+                            flow.gap(hspan2 * 0.3);
+                            let (health, colour) = if v.degraded {
+                                (tr(Msg::VaultDegraded), *theme::DEGRADED_TEXT)
+                            } else if v.repaired > 0 {
+                                let n = crate::fmt_num64(v.repaired as u64);
+                                (std::borrow::Cow::Owned(tr(Msg::VaultHealed(&n)).into_owned()), *theme::CONTACT_NAME_COLOUR)
+                            } else {
+                                (tr(Msg::VaultHealthOk), *theme::LABEL_COLOUR)
+                            };
+                            flow.line(&mut canvas, ctx.text, &health, hspan2 * 0.95, colour, 400);
+                        }
+                        None => {
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::VaultReading), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                    }
+                    flow.gap(hspan2 * 0.6);
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                        (&tr(Msg::VaultRefresh), btn_base.wrapping_add(0), true, None),
+                    ], "Open Sans");
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Diagnostics => {
                     // DIAGNOSTICS on the Flow (2026-09-09): the log line and the note prompt wrap at the pane edge like every other page; the four actions are a wrapping pill row; the note box and the hard-logs box sit inline.

@@ -606,6 +606,36 @@ impl PhotonApp {
     }
 
     /// The stored calibration for the CURRENT route/mic as an engine snapshot — read here on the UI thread at call start (the engine can't touch settings). None when no echo profile exists (the engine then runs reactive + learner).
+    /// Snapshot the vault's stats on a worker; the drain lands it and repaints. Event-edged: page entry and the Refresh pill call this, nothing polls.
+    pub(super) fn request_vault_stats(&mut self) {
+        if self.vault_stats_rx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.vault_stats_rx = Some(rx);
+            let wake = self.event_proxy.clone();
+            let _ = std::thread::Builder::new().name("vault-stats".into()).spawn(move || {
+                let _ = tx.send(crate::storage::vault_stats_view());
+                if let Some(w) = wake {
+                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                }
+            });
+        }
+    }
+
+    pub(super) fn drain_vault_stats(&mut self) -> bool {
+        let got = self.vault_stats_rx.as_ref().and_then(|rx| rx.try_recv().ok());
+        match got {
+            Some(view) => {
+                self.vault_stats_rx = None;
+                if let Some(v) = view {
+                    self.vault_stats = Some(v);
+                }
+                self.scene_dirty = true;
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(super) fn cal_snapshot(&self) -> Option<crate::call::engine::CalSnapshot> {
         let fs = self.fleet_settings.as_ref()?;
         let route = crate::platform::audio::route_id();

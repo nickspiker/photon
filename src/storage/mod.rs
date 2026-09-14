@@ -68,6 +68,20 @@ static DEVICE_VAULT: std::sync::Mutex<Option<([u8; 32], std::sync::Arc<FlatStora
     std::sync::Mutex::new(None);
 
 /// The device vault if it is ALREADY open — never opens one, never waits on an open in progress. The UI thread's per-tick callers (the orphan-wave sweep, the reboot capsule) must use this: `device_vault()` holds the registry mutex across the whole open, and a tick that asked while the vault-open worker was inside it blocked for the full open (field 2026-09-12: "Input dispatching timed out — waited 5003 ms", main in lock_contended under status::check_status_updates, the ANR nag back one build after the open moved off the UI thread).
+/// The Settings Vault page's snapshot: the manifestus engine's physique plus kete's health verdicts. Read OFF the UI thread (the librarian answers from RAM, but its mailbox queues behind any commit in flight — a 5 s fsync would become a 5 s hang).
+pub struct VaultStatsView {
+    pub engine: manifestus::VaultStats,
+    pub repaired: usize,
+    pub degraded: bool,
+}
+
+/// Snapshot the device vault's stats, or None while the vault isn't open. Worker-thread only (see VaultStatsView).
+pub fn vault_stats_view() -> Option<VaultStatsView> {
+    let v = device_vault_if_open()?;
+    let engine = v.vault_stats().ok()?;
+    Some(VaultStatsView { engine, repaired: v.repaired_lost_values(), degraded: v.degraded() })
+}
+
 pub fn device_vault_if_open() -> Option<std::sync::Arc<FlatStorage>> {
     let secret = resolved_device_secret()?;
     let g = DEVICE_VAULT.try_lock().ok()?;

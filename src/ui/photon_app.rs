@@ -1903,6 +1903,9 @@ pub struct PhotonApp {
     lane_pushed_pos: std::collections::HashMap<[u8; 64], u64>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
+    /// The Vault page's snapshot (fetched on page entry and on Refresh — event edges, never a cadence) and its worker channel.
+    vault_stats: Option<crate::storage::VaultStatsView>,
+    vault_stats_rx: Option<std::sync::mpsc::Receiver<Option<crate::storage::VaultStatsView>>>,
     /// Appearance-page theme selector — a real fluor `Dropdown`. Only in the widget walk while the Settings/Appearance page is up.
     settings_theme_dropdown: Option<fluor::widgets::Dropdown>,
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
@@ -2538,6 +2541,8 @@ impl PhotonApp {
             era_peer_seen: std::collections::HashMap::new(),
             lane_pushed_pos: std::collections::HashMap::new(),
             settings_btn_base: HIT_NONE,
+            vault_stats: None,
+            vault_stats_rx: None,
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
             attach_progress: Vec::new(),

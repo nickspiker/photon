@@ -298,7 +298,7 @@ impl FluorApp for PhotonApp {
         // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_nav_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(10); // rows 0..=9 (SettingsPage::ALL is 10 pages)
+        self.hit_counter = self.hit_counter.wrapping_add(SettingsPage::ALL.len() as HitId); // one rail row per page
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.settings_btn_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(39); // pills 0..=39 — the Fleet page's fourth band (32+ Lock-out) lives at the top of the block
@@ -865,6 +865,10 @@ impl FluorApp for PhotonApp {
                     if *p == SettingsPage::Fleet {
                         self.refresh_fleet_retired();
                     }
+                    // Opening the Vault page snapshots the engine off-thread (the librarian's mailbox queues behind commits — never read it on the UI thread).
+                    if *p == SettingsPage::Vault {
+                        self.request_vault_stats();
+                    }
                     // Navigating away abandons a rename in progress (Nick 2026-09-10): the box goes, nothing written.
                     if self.fleet_rename.is_some() && self.state != AppState::Settings(*p) {
                         self.fleet_rename = None;
@@ -1138,6 +1142,11 @@ impl FluorApp for PhotonApp {
                         self.spawn_update_apply(Channel::Release);
                     } else if slot == 2 {
                         self.spawn_update_apply(Channel::Dev);
+                    }
+                } else if page == SettingsPage::Vault {
+                    if slot == 0 {
+                        self.request_vault_stats();
+                        ctx.window.request_redraw();
                     }
                 } else if page == SettingsPage::Diagnostics {
                     if slot == 3 {
@@ -3343,6 +3352,9 @@ impl FluorApp for PhotonApp {
             } else if m.playing() {
                 self.scene_dirty = true;
             }
+        }
+        if self.drain_vault_stats() {
+            ctx.window.request_redraw();
         }
         if self.drain_wave_env() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
