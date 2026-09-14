@@ -219,6 +219,59 @@ pub fn verify_record(signing_bytes: &[u8], signature: &[u8; 64], signer_device: 
     vk.verify(&blake3::hash(signing_bytes).as_bytes()[..], &sig).is_ok()
 }
 
+/// Everything a founder mints at birth (§4 Genesis): the id, the era-0 secrets, the signed birth certificate, and the founder's own member record (the founder sponsors itself). The caller builds `FriendshipChains::from_group_root` with the secrets, persists the roster, and posts both records as the group's first control rows. The secrets are here transiently — they live on in the chains blob, nowhere else.
+pub struct GroupBirth {
+    pub group_id: GroupId,
+    pub group_root: [u8; 32],
+    pub group_history_key: [u8; 32],
+    pub era_lineage: [u8; 32],
+    pub genesis: GenesisRecord,
+    pub founder_member: MemberRecord,
+}
+
+/// Found a group: mint the nonce, the era-0 root and history key (fresh randomness — no ceremony, nothing derived from any friendship), and sign genesis + the founder's member record with this device's key.
+pub fn found_group(founder: PartyId, founder_proof: [u8; 32], name_grant: &str, avatar_pin: [u8; 32], title: &str, history_from_genesis: bool, device_seed: &[u8; 32]) -> GroupBirth {
+    use rand::RngCore;
+    let mut nonce = [0u8; 32];
+    let mut group_root = [0u8; 32];
+    let mut group_history_key = [0u8; 32];
+    rand::thread_rng().fill_bytes(&mut nonce);
+    rand::thread_rng().fill_bytes(&mut group_root);
+    rand::thread_rng().fill_bytes(&mut group_history_key);
+    let group_id = GroupId::from_nonce(&nonce);
+    let signer_device = device_pubkey(device_seed);
+    let now = vsf::eagle_time_oscillations();
+    let mut genesis = GenesisRecord {
+        group_id,
+        founder,
+        genesis_osc: now,
+        history_from_genesis,
+        title: title.to_string(),
+        signature: [0u8; 64],
+        signer_device,
+    };
+    genesis.signature = sign_record(&genesis.signing_bytes(), device_seed);
+    let mut founder_member = MemberRecord {
+        party: founder,
+        handle_proof: founder_proof,
+        name: name_grant.to_string(),
+        avatar_pin,
+        signed_osc: now,
+        sponsor: founder,
+        signature: [0u8; 64],
+        signer_device,
+    };
+    founder_member.signature = sign_record(&founder_member.signing_bytes(), device_seed);
+    GroupBirth {
+        group_id,
+        group_root,
+        group_history_key,
+        era_lineage: crate::crypto::clutch::era_lineage(&group_root),
+        genesis,
+        founder_member,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
