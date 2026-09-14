@@ -53,7 +53,10 @@ fn frame_time(stream: &AudioStream, pos: i64) -> Option<i64> {
 /// Whether the output opens with the voice-communication usage (the earpiece route's label). Field 2026-09-12: Nick's Pixel kept Exclusive/LowLatency at 4 ms under it, Emma's phone came up Shared/None at 40 ms on every wave — the vendor policy there hands voice-usage streams to its voice pipeline. So the usage is tried first and DROPPED for the process when it costs the fast path (the loudspeaker at 4 ms beats the earpiece at 40).
 static VOICE_USAGE_OK: AtomicBool = AtomicBool::new(true);
 
-fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::AudioStreamDataCallback) -> Result<AudioStream, String> {
+/// The input opens 24-bit: I32 (the codec's 24 left-justified — a true integer route) first, float (an exact 24-bit significand) second, I16 last; each format Exclusive then Shared. The callback reads the stream's actual format and lands every source in the 24-bit domain. Output stays I16 — what the wire and the DAC speak.
+const INPUT_FORMATS: [i32; 3] = [ndk_sys::AAUDIO_FORMAT_PCM_I32 as i32, ndk_sys::AAUDIO_FORMAT_PCM_FLOAT as i32, ndk_sys::AAUDIO_FORMAT_PCM_I16 as i32];
+
+fn build(direction: AudioDirection, sharing: AudioSharingMode, format: i32, cb: ndk::audio::AudioStreamDataCallback) -> Result<AudioStream, String> {
     // VOICE USAGE ON THE OUTPUT (Nick 2026-09-12, "exclusive earpiece without losing latency"): the earpiece route (Kotlin's setCommunicationDevice) attaches to voice-usage streams, and usage is only a policy label — sharing mode, performance mode and burst size are set here and untouched by it. The August 80 ms floor came from the IN_COMMUNICATION audio MODE waking the vendor voice pipeline; the mode is never entered. The "AAudio out up" line is the proof: Exclusive/LowLatency at 4 ms, or it isn't.
     let b = AudioStreamBuilder::new()
         .map_err(|e| format!("builder: {e:?}"))?
@@ -65,7 +68,7 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::A
         .performance_mode(AudioPerformanceMode::LowLatency)
         .sample_rate(SAMPLE_RATE)
         .channel_count(1)
-        .format(AudioFormat::PCM_I16)
+        .format(AudioFormat::from(format))
         .data_callback(cb)
         .error_callback(Box::new(move |_s, e| on_stream_error(direction, e)));
     b.open_stream().map_err(|e| format!("{sharing:?}: {e:?}"))
@@ -73,13 +76,25 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, cb: ndk::audio::A
 
 /// Exclusive first (the MMAP fast path the tester measured at 20 ms), shared as the fallback.
 fn open_with_fallback(direction: AudioDirection, make_cb: &dyn Fn() -> ndk::audio::AudioStreamDataCallback) -> Result<AudioStream, String> {
-    match build(direction, AudioSharingMode::Exclusive, make_cb()) {
-        Ok(s) => Ok(s),
-        Err(first) => {
-            crate::logf!("AUDIO: AAudio {} exclusive open failed ({}) — falling back to shared", format!("{direction:?}"), first);
-            build(direction, AudioSharingMode::Shared, make_cb())
+    let formats: &[i32] = if matches!(direction, AudioDirection::Input) { &INPUT_FORMATS } else { &[ndk_sys::AAUDIO_FORMAT_PCM_I16 as i32] };
+    let mut last = String::new();
+    for &f in formats {
+        match build(direction, AudioSharingMode::Exclusive, f, make_cb()) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                crate::logf!("AUDIO: AAudio {} exclusive open failed at format {} ({}) — trying shared", format!("{direction:?}"), f, e);
+                last = e;
+            }
+        }
+        match build(direction, AudioSharingMode::Shared, f, make_cb()) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                crate::logf!("AUDIO: AAudio {} shared open failed at format {} ({}) — next format", format!("{direction:?}"), f, e);
+                last = e;
+            }
         }
     }
+    Err(last)
 }
 
 fn output_callback() -> ndk::audio::AudioStreamDataCallback {
@@ -113,18 +128,32 @@ fn output_callback() -> ndk::audio::AudioStreamDataCallback {
 
 fn input_callback() -> ndk::audio::AudioStreamDataCallback {
     let mut pos: i64 = 0;
-    let mut acc: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES * 2);
+    let mut acc: Vec<i32> = Vec::with_capacity(FRAME_SAMPLES * 2);
     let mut acc_start: i64 = 0;
     Box::new(move |stream: &AudioStream, data: *mut c_void, num_frames: i32| {
         let n = num_frames.max(0) as usize;
-        let samples = unsafe { std::slice::from_raw_parts(data as *const i16, n) };
         if acc.is_empty() {
             acc_start = pos;
         }
-        acc.extend_from_slice(samples);
+        // Land every source format in the 24-bit domain: I32 is the codec's 24 left-justified (>> 8 exact), float × 2^23 is exact for 24-bit values (a 24-bit significand), I16 shifts up 8.
+        let fmt: i32 = stream.format().into();
+        match fmt {
+            f if f == ndk_sys::AAUDIO_FORMAT_PCM_I32 as i32 => {
+                let s = unsafe { std::slice::from_raw_parts(data as *const i32, n) };
+                acc.extend(s.iter().map(|v| v >> 8));
+            }
+            f if f == ndk_sys::AAUDIO_FORMAT_PCM_FLOAT as i32 => {
+                let s = unsafe { std::slice::from_raw_parts(data as *const f32, n) };
+                acc.extend(s.iter().map(|v| (v * 8_388_608.0).clamp(-8_388_608.0, 8_388_607.0) as i32));
+            }
+            _ => {
+                let s = unsafe { std::slice::from_raw_parts(data as *const i16, n) };
+                acc.extend(s.iter().map(|v| (*v as i32) << 8));
+            }
+        }
         pos += n as i64;
         while acc.len() >= FRAME_SAMPLES {
-            let frame: Vec<i16> = acc.drain(..FRAME_SAMPLES).collect();
+            let frame: Vec<i32> = acc.drain(..FRAME_SAMPLES).collect();
             // The stamp is when this frame's FIRST sample left the ADC — the HAL's clock, not our arrival.
             let at = frame_time(stream, acc_start).unwrap_or_else(vsf::eagle_time_oscillations);
             push_captured(at, frame);
@@ -135,11 +164,13 @@ fn input_callback() -> ndk::audio::AudioStreamDataCallback {
 }
 
 fn describe(stream: &AudioStream, what: &str) {
+    let fmt: i32 = stream.format().into();
     crate::logf!(
-        "AUDIO: AAudio {} up — {}/{}, burst {} fr, buffer {} fr ({} ms), rate {}",
+        "AUDIO: AAudio {} up — {}/{}, format {}, burst {} fr, buffer {} fr ({} ms), rate {}",
         what,
         format!("{:?}", stream.sharing_mode()),
         format!("{:?}", stream.performance_mode()),
+        match fmt { 4 => "I32 (24-bit)", 2 => "FLOAT (24-bit)", 1 => "I16", _ => "?" },
         stream.frames_per_burst(),
         stream.buffer_size_in_frames(),
         stream.buffer_size_in_frames() as i64 * 1000 / SAMPLE_RATE as i64,

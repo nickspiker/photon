@@ -145,10 +145,11 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
             }
         }
         for (_, frame) in audio::captured_frames() {
+            // 24-bit capture; the learner's envelope contract is 16-bit units.
             let mean = if frame.is_empty() {
                 0.0
             } else {
-                frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() as f32 / frame.len() as f32
+                (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() >> 8) as f32 / frame.len() as f32
             };
             match mic_pair.take() {
                 None => mic_pair = Some((vsf::eagle_time_oscillations(), mean)),

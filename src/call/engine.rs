@@ -433,14 +433,18 @@ fn run(
             if frame.len() != FRAME_SAMPLES {
                 continue;
             }
+            // 24-BIT CAPTURE (2026-09-14): `frame` arrives as i32 in the 24-bit domain; the makeup below consumes the extra 8 bits straight into the i16 wire (acc >> 40) — a calibrated mic's quiet signal is lifted, its dither is not. The frame that leaves this block is the i16 wire frame.
+            let frame24 = frame;
             // MUTE TRANSMITS ZEROS, NOT ABSENCE (2026-09-08, the drought tick's contract): the CBR cadence never breaks — a muted stretch is invisible to a traffic observer, NAT pinholes stay held open, and the peer's receive-drought measurement can't mistake a long mute for a dead path. Zeroed BEFORE the energy tally so tx(mic) honestly reads what was transmitted.
-            let mut frame = frame;
+            let mut frame24 = frame24;
             if muted.load(Ordering::Relaxed) {
-                frame.fill(0);
+                frame24.fill(0);
             }
+            let mut frame: Vec<i16> = vec![0i16; frame24.len()];
             // THE LEVEL PLAN'S ONE MAP (see TX_MAKEUP_Q32): fixed makeup (Q32, remainder carried, i32 headroom kept thru the shaper) then the cubic rail — a shout tapers into the rail instead of squaring off. Wire and archive carry the SAME shaped calibrated signal: the wire copy is the good copy of every party.
             {
-                let raw_mean = frame.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame.len().max(1) as i64;
+                // The calibration statistics stay in 16-bit units (the stored profiles, TX_CAL_VOICED and the plan constants all are): the 24-bit sum shifts down 8.
+                let raw_mean = (frame24.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() >> 8) / frame24.len().max(1) as i64;
                 if raw_mean > 0 && raw_mean < raw_floor {
                     raw_floor = raw_mean;
                 }
@@ -449,11 +453,12 @@ fn run(
                     voiced_sum += raw_mean;
                     voiced_frames += 1;
                 }
+                // The kernel at 24-bit: s24 · g(Q32) is Q40 against the i16 domain, so the shift is 40 and the carry keeps 40 bits. Budget: 2^23 · 2^39 (128× makeup) + carry < 2^63.
                 let mut carry = tx_stage.take_carry();
-                for s in frame.iter_mut() {
+                for (o, s) in frame.iter_mut().zip(frame24.iter()) {
                     let acc = *s as i64 * tx_makeup_q32 + carry;
-                    carry = acc & 0xFFFF_FFFF;
-                    *s = crate::call::qgain::cubic_rail(acc >> 32) as i16;
+                    carry = acc & 0xFF_FFFF_FFFF;
+                    *o = crate::call::qgain::cubic_rail(acc >> 40) as i16;
                 }
                 tx_stage.set_carry(carry);
             }

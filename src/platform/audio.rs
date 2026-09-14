@@ -18,7 +18,8 @@ pub const SAMPLE_RATE: u32 = 48_000;
 pub const FRAME_SAMPLES: usize = 240;
 
 /// Mic frames waiting for the engine (drop-oldest past ~500ms), each stamped with the eagle time its FIRST sample left the ADC — the HAL's clock on Android (audio_aaudio), the capture callback on desktop.
-static CAPTURE_Q: Mutex<VecDeque<(i64, Vec<i16>)>> = Mutex::new(VecDeque::new());
+/// Captured mic frames at 24-BIT depth (i32 holding −2^23..2^23−1; a 16-bit source is shifted up 8 — Nick 2026-09-14: "are we not doing 24 bit voice capture?"). The engine's fixed makeup consumes the extra bits directly (acc >> 40 into the i16 wire), so a calibrated Unprocessed mic at 40 LSB16 arrives as 10240 LSB24 and the makeup lifts SIGNAL, not dither.
+static CAPTURE_Q: Mutex<VecDeque<(i64, Vec<i32>)>> = Mutex::new(VecDeque::new());
 /// Decoded far-end frames waiting for the device (drop-oldest past ~1s).
 static PLAYBACK_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
 /// The AEC far-end reference: (eagle osc at enqueue-to-device, samples) per frame, last ~500ms. The canceller/duck reads this; nothing else does.
@@ -103,6 +104,10 @@ pub const DUCK_K_REF_Q16: i64 = 1 << 12;
 const DUCK_K_MIN_Q16: i64 = 1 << 8;
 const DUCK_K_MAX_Q16: i64 = 1 << 15;
 static DUCK_K_Q16: AtomicI64 = AtomicI64::new(DUCK_K_REF_Q16);
+/// The receive loss plan's echo bound, Q16: k·speaker_gain is held at or under this (0.05 ≈ −26 dB).
+const RX_ECHO_MARGIN_Q16: i64 = 3277;
+/// The downward expander's knee in plan units (voiced speech ≈ 4096; 512 is −18 dB under it): frames below taper linearly toward silence.
+const RX_EXPAND_KNEE: i64 = 512;
 /// Mean |sample| of the newest frame handed to the DAC (post-duck — what the room actually receives), the k estimator's denominator. Reuses the FAR_LEVEL sum.
 static EMITTED_LEVEL: AtomicUsize = AtomicUsize::new(0);
 /// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
@@ -203,7 +208,7 @@ pub(crate) fn set_volume_db(db: Option<f32>) {
 }
 
 /// Drain every captured frame since the last call (5ms 48kHz mono each). Engine-side, any thread.
-pub fn captured_frames() -> Vec<(i64, Vec<i16>)> {
+pub fn captured_frames() -> Vec<(i64, Vec<i32>)> {
     let mut q = CAPTURE_Q.lock().unwrap();
     q.drain(..).collect()
 }
@@ -287,7 +292,7 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-pub(crate) fn push_captured(at_osc: i64, frame: Vec<i16>) {
+pub(crate) fn push_captured(at_osc: i64, frame: Vec<i32>) {
     let mut q = CAPTURE_Q.lock().unwrap();
     if q.len() >= CAPTURE_Q_MAX {
         q.pop_front();
@@ -370,11 +375,18 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     let mut frame = frame;
     if !LOCAL_SOURCE.load(Ordering::Relaxed) && SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) {
         SPEAKER_FRAMES.fetch_add(1, Ordering::Relaxed);
-        let g = SPEAKER_DUCK_GAIN.load(Ordering::Relaxed);
-        SPEAKER_GAIN_SUM.fetch_add((g >> 22) as usize, Ordering::Relaxed);
-        if g <= crate::call::qgain::UNITY / 2 {
+        let duck = SPEAKER_DUCK_GAIN.load(Ordering::Relaxed);
+        SPEAKER_GAIN_SUM.fetch_add((duck >> 22) as usize, Ordering::Relaxed);
+        if duck <= crate::call::qgain::UNITY / 2 {
             SPEAKER_HALF.fetch_add(1, Ordering::Relaxed);
         }
+        // THE RECEIVE LOSS PLAN (2026-09-14, the echo-ey waves at 40-70× makeup: k 0.2 in plan units = a fifth of the earpiece back on the wire, the far talker hearing themselves at −14 dB). POTS bounded echo with static loss per link; ours is `min(1, RX_ECHO_MARGIN / k)` — the speaker is held where k·gain ≤ margin, so echo returns at −26 dB at worst whatever the rocker does (rocker up raises k, which lowers this). Loudness becomes physics-bounded, which is honest.
+        let k = DUCK_K_Q16.load(Ordering::Relaxed).max(1);
+        let loss = ((RX_ECHO_MARGIN_Q16 << 32) / k).min(crate::call::qgain::UNITY);
+        // THE DOWNWARD EXPANDER (Nick: "keep the ambient no talking level from screaming"): a continuous linear taper below a knee — the far room's floor and returning echo residue sink, speech above the knee passes at unity. Speaker-side, temporary, never recorded; no gate, no hold.
+        let level = (frame.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame.len().max(1) as i64).max(0);
+        let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::call::qgain::UNITY);
+        let g = crate::call::qgain::compose(crate::call::qgain::compose(duck, loss), expand);
         if g != crate::call::qgain::UNITY {
             // Inline kernel (single render thread owns the carry): acc = s·g + carry; out = acc >> 32; carry = the low mask, exactly the residue. No saturation arm — g ≤ unity here, the product can only shrink.
             let mut carry = SPEAKER_DUCK_CARRY.load(Ordering::Relaxed);
@@ -592,14 +604,14 @@ mod desktop {
                     rs.run(&mono, &mut out);
                     pending.extend(out);
                     while pending.len() >= FRAME_SAMPLES {
-                        let frame: Vec<i16> = pending
+                        let frame: Vec<i32> = pending
                             .drain(..FRAME_SAMPLES)
                             .map(|s| {
-                                // The one float boundary (the OS hands f32): error-feedback the cast — floor with the fraction carried to the next sample, zero-mean instead of a truncation bias.
-                                let acc = (s * 32767.0).clamp(-32768.0, 32767.0) as f64 + cast_carry;
+                                // The one float boundary (the OS hands f32): error-feedback the cast at 24-bit — floor with the fraction carried to the next sample, zero-mean instead of a truncation bias.
+                                let acc = (s as f64 * 8_388_608.0).clamp(-8_388_608.0, 8_388_607.0) + cast_carry;
                                 let out = acc.floor();
                                 cast_carry = acc - out;
-                                out as i16
+                                out as i32
                             })
                             .collect();
                         push_captured(vsf::eagle_time_oscillations(), frame);
@@ -838,7 +850,7 @@ mod tests {
         // Bounded drop-oldest capture.
         clear_queues();
         for i in 0..(CAPTURE_Q_MAX + 10) {
-            push_captured(0, vec![i as i16; FRAME_SAMPLES]);
+            push_captured(0, vec![i as i32; FRAME_SAMPLES]);
         }
         let drained = captured_frames();
         assert_eq!(drained.len(), CAPTURE_Q_MAX);
