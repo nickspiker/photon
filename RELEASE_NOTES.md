@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v96
+
 - Waves connect the instant they are answered: your voice flows from the first captured frame, and an answer now always reaches the caller (it rides the relay like the ring does), so "answered on one side, silent on the other" is gone.
 - The level plan, the way the telephone network ran it: the microphone is read raw at 24-bit and calibrated per device and per input (the calibration follows your device through your fleet settings, so it survives a reinstall), scaled once by a fixed constant, and a shout rounds smoothly into the ceiling instead of crackling. Every wave transmits at the same known loudness; the volume rocker on the listening phone is the only adjustment, and it governs the wave while it rides the earpiece.
 - Nothing touches your voice on the way out: no gate, no ducking, no automatic level. Echo is handled on the listening side — while your mic is hot the other person is turned down in your speaker for that moment, the speaker is held where their echo stays under −36 dB, and the far room's quiet is quiet. None of it is recorded; a kept wave holds every party as they sounded.
