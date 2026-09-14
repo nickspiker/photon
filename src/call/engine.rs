@@ -61,6 +61,10 @@ const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
 const JITTER_TARGET_CAP: usize = 24;
 /// Every bundle carries a 10-byte LINK TAIL: [our send stamp ms u32][echo of the peer's newest stamp u32][ms we held it u16] — an RTT measured on every packet, no separate probe.
 const LINK_TAIL: usize = 10;
+// PEER LOSS IN THE TAIL (Nick 2026-09-14, "go for both"): the 11th byte is MY windows-lost count over the last second — the one signal the SENDER needs, because a sender's tier affects what the PEER receives, and until today every tier decision keyed on the local receive side (the cellular wave: Emma's clean rx held her plaid at 768 kbps while Nick lost 500 windows per 10 s, and Nick's drowning rx flapped his innocent tx 11-up/8-down). A 10-byte tail (v96 and earlier) still parses — the byte is simply absent and the old local-loss governance carries.
+const LINK_TAIL_V2: usize = 11;
+/// A plaid-probation sender being asked for this many fill windows in one second IS the peer saying "I am not receiving you" — the belt-and-suspenders far-loss signal that works even against a peer whose tail bytes cannot get thru (and against v96 peers).
+const PLAID_FILL_ASK_DROP_PER_SEC: u32 = 20;
 // RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
 /// Window seqs asked per fill datagram.
 const FILL_REQ_PER_PACKET: usize = 8;
@@ -342,6 +346,12 @@ fn run(
     let mut jitter_target: usize = TIER_FRAMES[0];
     // Link tail state: the peer's newest stamp + when it arrived (for the hold), and RTT statistics (min / EMA / max, sample count) over the call and over the last stats window.
     let mut peer_stamp: Option<(u32, std::time::Instant)> = None;
+    // Peer-loss governance state (see LINK_TAIL_V2): the tail byte's per-second baseline, the peer's max reported loss this local second, whether this peer speaks the byte at all, the last moment they reported loss, and the fill-ask pressure counter.
+    let mut tail_lost_base: u64 = 0;
+    let mut peer_loss_sec_max: u32 = 0;
+    let mut peer_sends_loss = false;
+    let mut last_peer_loss_at: Option<std::time::Instant> = None;
+    let mut fill_asks_sec: u32 = 0;
     let (mut rtt_min, mut rtt_max, mut rtt_ema, mut rtt_n) = (u32::MAX, 0u32, 0f32, 0u64);
     // The plaid headroom tell: the min RTT over the last ~1 s of samples (a floor that has risen = a queue standing on the path). Rebuilt per window from `win_rtt_min`.
     let mut recent_rtt_floor: u32 = u32::MAX;
@@ -580,6 +590,8 @@ fn run(
                     payload.extend_from_slice(&now_ms.to_le_bytes());
                     payload.extend_from_slice(&echo.to_le_bytes());
                     payload.extend_from_slice(&hold.to_le_bytes());
+                    // The peer-loss byte: OUR windows lost over the last second (the 1 s cadence resets the baseline) — what the peer's tier should answer to.
+                    payload.push(windows_lost.saturating_sub(tail_lost_base).min(255) as u8);
                 }
                 let seq = window_id;
                 tx_chain.advance_to(StepChain::step_for_seq(seq));
@@ -620,6 +632,7 @@ fn run(
                 peer_windows = Some(msg.windows);
                 peer_draining = msg.draining;
                 peer_satisfied = msg.satisfied;
+                fill_asks_sec = fill_asks_sec.saturating_add(msg.reqs.len() as u32);
                 for r in msg.reqs {
                     if serve_queue.len() < FILL_WANTED_CAP {
                         serve_queue.insert(r);
@@ -706,17 +719,26 @@ fn run(
             }
             let src_len = tier_window_bytes(tier_src);
             let expected = 1 + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
-            if payload.len() != expected && payload.len() != expected + LINK_TAIL {
+            if payload.len() != expected && payload.len() != expected + LINK_TAIL && payload.len() != expected + LINK_TAIL_V2 {
                 rx_drop_shape += 1;
                 continue;
             }
-            // Link tail (a pre-tail peer sends none — every shape still parses): remember their stamp for our echo, and turn their echo of ours into an RTT sample.
-            if payload.len() == expected + LINK_TAIL {
+            // Link tail (a pre-tail peer sends none, a v96 peer sends 10 bytes, a loss-byte peer 11 — every shape still parses): remember their stamp for our echo, and turn their echo of ours into an RTT sample.
+            if payload.len() >= expected + LINK_TAIL {
                 let t = &payload[expected..];
                 let stamp = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
                 let echo = u32::from_le_bytes([t[4], t[5], t[6], t[7]]);
                 let hold = u16::from_le_bytes([t[8], t[9]]) as u32;
                 peer_stamp = Some((stamp, std::time::Instant::now()));
+                // The peer-loss byte: their receive of OUR transmit over their last second. >0 = our tier is too hot for the path RIGHT NOW.
+                if t.len() >= LINK_TAIL_V2 {
+                    peer_sends_loss = true;
+                    let lost = t[10] as u32;
+                    if lost > 0 {
+                        peer_loss_sec_max = peer_loss_sec_max.max(lost);
+                        last_peer_loss_at = Some(std::time::Instant::now());
+                    }
+                }
                 if echo != 0 {
                     let now_ms = start_instant.elapsed().as_millis() as u32;
                     let rtt = now_ms.wrapping_sub(echo).wrapping_sub(hold);
@@ -818,6 +840,8 @@ fn run(
                     let now = std::time::Instant::now();
                     let held = now.duration_since(last_tier_change) >= CLIMB_HOLD
                         && last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                    // PEER-CLEAN gates every climb from a loss-byte peer: their receive of us, quiet for the hold (10 s for the raw rung) — our own clean rx says nothing about the direction this tier controls.
+                    let peer_quiet = |d: std::time::Duration| !peer_sends_loss || last_peer_loss_at.map_or(true, |t| now.duration_since(t) >= d);
                     let next = pending_tier + 1;
                     let need = if next == RAW_TIER { PLAID_CLIMB_CLEAN_WINDOWS } else { CLIMB_CLEAN_WINDOWS };
                     // Plaid climbs anywhere the path has headroom: the recent RTT floor must sit within PLAID_RTT_GROWTH_MS of the call's own floor.
@@ -828,7 +852,8 @@ fn run(
                         && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
                     let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && plaid_strikes < PLAID_PROBATION_STRIKES;
                     let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
-                    if clean_rx_windows >= need && held && allowed {
+                    let peer_ok = if next == RAW_TIER { peer_quiet(std::time::Duration::from_secs(10)) } else { peer_quiet(CLIMB_HOLD) };
+                    if clean_rx_windows >= need && held && allowed && peer_ok {
                         pending_tier = next;
                         clean_rx_windows = 0;
                         tier_ups += 1;
@@ -914,7 +939,8 @@ fn run(
                     let plaid_probation = pending_tier == RAW_TIER && !plaid_allowed;
                     let need = if pending_tier == RAW_TIER && !plaid_probation { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
                     let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
-                    if recent_losses.len() >= need && pending_tier > 0 && drop_held {
+                    // Against a loss-byte peer, OUR rx loss no longer drops OUR tier (the cross-wired loop that flapped Nick's innocent tx while his rx drowned) — the peer's byte drives the drop in the 1 s cadence below. A v96 peer keeps the old local governance.
+                    if !peer_sends_loss && recent_losses.len() >= need && pending_tier > 0 && drop_held {
                         if plaid_probation {
                             plaid_strikes += 1;
                         }
@@ -1078,6 +1104,36 @@ fn run(
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
+            // PEER-LOSS TIER GOVERNANCE (the 1 s verdict): the max loss byte the peer reported this second is their receive of OUR transmit. ≥2 = the AIMD drop edge for OUR tier — the direction this tier actually controls.
+            {
+                let now = std::time::Instant::now();
+                let plaid_probation = pending_tier == RAW_TIER && !plaid_allowed;
+                let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held {
+                    if plaid_probation {
+                        plaid_strikes += 1;
+                    }
+                    pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
+                    tier_downs += 1;
+                    last_tier_change = now;
+                    last_tier_drop = Some(now);
+                    clean_rx_windows = 0;
+                    crate::logf!("CALL: tier down → {} kbps (the peer reported {} lost in their last second — their receive governs our tier)", TIER_RATES[pending_tier] / 1000, peer_loss_sec_max);
+                }
+                // FILL-ASK PRESSURE (works against v96 peers and thru one-way tails): a plaid-probation sender hammered with fill requests IS the far side saying "I am not receiving you".
+                if pending_tier == RAW_TIER && !plaid_allowed && fill_asks_sec >= PLAID_FILL_ASK_DROP_PER_SEC {
+                    plaid_strikes += 1;
+                    pending_tier = RAW_TIER - 1;
+                    tier_downs += 1;
+                    last_tier_change = now;
+                    last_tier_drop = Some(now);
+                    clean_rx_windows = 0;
+                    crate::logf!("CALL: tier down → {} kbps (plaid on probation: {} fill asks in one second — the far side is not receiving us)", TIER_RATES[pending_tier] / 1000, fill_asks_sec);
+                }
+                peer_loss_sec_max = 0;
+                fill_asks_sec = 0;
+                tail_lost_base = windows_lost;
+            }
             let rid = crate::platform::audio::route_id();
             if rid != live_route && !rid.is_empty() {
                 crate::logf!(
