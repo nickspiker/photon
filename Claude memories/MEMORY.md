@@ -75,6 +75,7 @@
 - [project_identity_storage_model.md](project_identity_storage_model.md) — device identity deterministic from fingerprint; vault app-private only
 - [project_device_identity_model.md](project_device_identity_model.md) — tohu crate (oracle + frozen v0 derivation); deferred handle-salt collision fix
 - [project_vault_roadmap.md](project_vault_roadmap.md) — vault ring tooling/GC/resurrection/bulk content wait for device-sync phase
+- [project_retention_winnow.md](project_retention_winnow.md) — retention DESIGNED (docs/retention.md): winnow waits for device-sync; keep/loft/discard + sync law + Vault breakdown SHIPPED 2026-09-14
 - [project_storage_layering.md](project_storage_layering.md) — 3 layers: vault / chain-state / rārangi conversation DB
 - [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — rows: table=friendship_id, pk=monotonic u64; fleet=a conversation
 - [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars v'e'-encrypted per-handle; admin can't decrypt
