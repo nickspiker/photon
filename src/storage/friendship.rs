@@ -70,6 +70,14 @@ fn chains_schema() -> SectionSchema {
         .field("pending_root", TypeConstraint::AnyHash)
         .field("pending_history_key", TypeConstraint::AnyHash)
         .field("pending_resp_osc", TypeConstraint::Any)
+        // GROUP state (v9, docs/groups.md, additive: a friendship blob never writes these, so its bytes stay v8-identical and an old sibling adopts it unchanged). The flag marks the blob as a GROUP's chain state: id = group id, token = group token, participant set mutable behind the id.
+        .field("group", TypeConstraint::AnyUnsigned)
+        // OUR device's published KEM decapsulation bundles (§3), index-aligned rows: the wrap that carries a new era's fresh secret targets the bundle we published in our member record, possibly minted while we slept — so the secrets persist here, the same custody class as the lane links beside them.
+        .field("kem_published_era", TypeConstraint::Any)
+        .field("kem_set", TypeConstraint::AnyUnsigned)
+        .field("kem_mlkem_sk", TypeConstraint::Wrapped(b'K')) // vK: ML-KEM-1024 decapsulation key (empty when the set excludes it)
+        .field("kem_x_sk", TypeConstraint::AnyHash) // hb 32: X25519 secret scalar
+        .field("kem_hqc_sk", TypeConstraint::Wrapped(b'K')) // vK: HQC-256 decapsulation key (empty when the set excludes it)
 }
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -105,9 +113,11 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
 
     // Build VSF section
     let schema = chains_schema();
+    // v8: lanes flag-day — lane_root joins; v≤7 blobs are REJECTED at read (re-clutch re-mints everything). v9: GROUP state, additive — ONLY a group blob writes it (with the group/kem fields), so every friendship blob stays byte-identical v8 and an old sibling's schema never meets a field name it doesn't know.
+    let version: u8 = if chains.group { 9 } else { 8 };
     let mut builder = schema
         .build()
-        .set("version", 8u8) // v8: lanes flag-day — lane_root joins; v≤7 blobs are REJECTED at read (re-clutch re-mints everything)
+        .set("version", version)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set(
             "friendship_id",
@@ -312,6 +322,25 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         if let Some(o) = pe.resp_osc {
             builder = builder
                 .set("pending_resp_osc", e6(o))
+                .map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
+    }
+    // === GROUP state (v9, docs/groups.md) — a friendship blob writes NONE of this ===
+    if chains.group {
+        builder = builder
+            .set("group", VsfType::u(1, false))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        for kem in chains.group_kems() {
+            builder = builder
+                .append_multi("kem_published_era", vec![e6(kem.published_era as i64)])
+                .map_err(|e| StorageError::Parse(e.to_string()))?
+                .append_multi("kem_set", vec![VsfType::u(kem.kem_set as usize, false)])
+                .map_err(|e| StorageError::Parse(e.to_string()))?
+                .append_multi("kem_mlkem_sk", vec![VsfType::v(b'K', kem.mlkem_sk.clone())])
+                .map_err(|e| StorageError::Parse(e.to_string()))?
+                .append_multi("kem_x_sk", vec![VsfType::hb(kem.x_sk.to_vec())])
+                .map_err(|e| StorageError::Parse(e.to_string()))?
+                .append_multi("kem_hqc_sk", vec![VsfType::v(b'K', kem.hqc_sk.clone())])
                 .map_err(|e| StorageError::Parse(e.to_string()))?;
         }
     }
@@ -712,6 +741,74 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         );
     }
     chains.mutated_osc = mutated_osc;
+    // === GROUP state (v9, docs/groups.md) — absent on every friendship blob ===
+    // Width-agnostic flag read (never variant-match a parsed integer).
+    let is_group = section
+        .get_fields("group")
+        .first()
+        .and_then(|f| f.values.first())
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0)
+        != 0;
+    if is_group {
+        chains.group = true;
+        // The token a friendship derives from its participants is WRONG for a group (membership moves; the token must not): recompute the group token from the id, which IS the group id.
+        chains.conversation_token = crate::types::group::GroupId(fid_bytes).token();
+        // KEM bundle rows, index-aligned; a short or torn multi truncates to the complete rows.
+        let eras: Vec<u64> = section
+            .get_fields("kem_published_era")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .map(|v| match v {
+                VsfType::e(vsf::types::EtType::e6(o)) => (*o).max(0) as u64,
+                other => other.as_u64().unwrap_or(0),
+            })
+            .collect();
+        let sets: Vec<u8> = section
+            .get_fields("kem_set")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
+            .collect();
+        let mlkems: Vec<Vec<u8>> = section
+            .get_fields("kem_mlkem_sk")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| match v {
+                VsfType::v(b'K', d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        let xs: Vec<[u8; 32]> = section
+            .get_fields("kem_x_sk")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| match v {
+                VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+                _ => None,
+            })
+            .collect();
+        let hqcs: Vec<Vec<u8>> = section
+            .get_fields("kem_hqc_sk")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| match v {
+                VsfType::v(b'K', d) => Some(d.clone()),
+                _ => None,
+            })
+            .collect();
+        let n = eras.len().min(sets.len()).min(mlkems.len()).min(xs.len()).min(hqcs.len());
+        let kems: Vec<crate::crypto::era::EraDecapKeys> = (0..n)
+            .map(|i| crate::crypto::era::EraDecapKeys {
+                published_era: eras[i],
+                kem_set: sets[i],
+                mlkem_sk: mlkems[i].clone(),
+                x_sk: xs[i],
+                hqc_sk: hqcs[i].clone(),
+            })
+            .collect();
+        chains.set_group_kems(kems);
+    }
     Ok(chains)
 }
 
@@ -874,6 +971,54 @@ mod tests {
             load_friendship_chains(&fid, &storage).is_err(),
             "post-migration, a headerless vault blob must fail the strict read — no silent fallback"
         );
+    }
+
+    /// The v9 GROUP blob round-trips: flag, group token (recomputed from the id, never participant-derived), root custody, a minted lane, and the persisted KEM decapsulation bundle — which must still OPEN A WRAP after the trip, because surviving a restart between publish and mint is the whole reason it persists (docs/groups.md §3).
+    #[test]
+    fn group_chains_round_trip_with_kem_custody() {
+        use crate::crypto::era::{era_decapsulate_group, era_encapsulate, era_keygen, KEM_SET_DEFAULT};
+        use crate::types::group::GroupId;
+        let gid = GroupId::from_nonce(&[0x5Au8; 32]);
+        let root = [0x11u8; 32];
+        let hk = [0x22u8; 32];
+        let lineage = crate::crypto::clutch::era_lineage(&root);
+        let members = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let mut chains = FriendshipChains::from_group_root(gid, &members, root, hk, 0, lineage);
+        let ours = chains.mint_our_lane().expect("lane mints off the delivered root");
+        let et = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
+        chains.advance(&ours, &et, &[7u8; 16], &[]);
+        let eph = era_keygen(1, 0, KEM_SET_DEFAULT);
+        chains.push_group_kem(eph.export_decaps(0));
+
+        let bytes = chains_to_vsf_bytes(&chains).expect("encode");
+        let back = chains_from_vsf_bytes(&bytes).expect("decode");
+        assert!(back.group, "the flag survives");
+        assert_eq!(back.conversation_token, gid.token(), "group token, recomputed from the id");
+        assert_eq!(back.id().as_bytes(), &gid.0);
+        assert_eq!(back.lane_root(), chains.lane_root());
+        assert_eq!(back.history_key(), chains.history_key());
+        assert_eq!(back.era_lineage, lineage);
+        assert_eq!(back.current_key(&ours), chains.current_key(&ours));
+        assert_eq!(back.group_kems().len(), 1);
+        let k = &back.group_kems()[0];
+        assert_eq!((k.published_era, k.kem_set), (0, KEM_SET_DEFAULT));
+        let (resp, f) = era_encapsulate(&eph.init_wire, KEM_SET_DEFAULT).expect("wrap");
+        assert_eq!(era_decapsulate_group(k, &resp), Some(f), "the reloaded bundle opens the wrap");
+    }
+
+    /// A FRIENDSHIP blob must not change by a byte for the group work: it stays version 8 and writes none of the v9 fields, so a fielded sibling running an older schema adopts it exactly as before.
+    #[test]
+    fn a_friendship_blob_writes_no_group_fields() {
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let chains = FriendshipChains::from_clutch(&[[1u8; 32], [2u8; 32]], &eggs);
+        let bytes = chains_to_vsf_bytes(&chains).expect("encode");
+        let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &bytes, None).expect("parse");
+        assert_eq!(section.get_value::<u8>("version").expect("version"), 8, "friendships stay v8");
+        assert!(section.get_fields("group").is_empty(), "no group flag on a friendship");
+        assert!(section.get_fields("kem_published_era").is_empty(), "no KEM custody rows either");
+        let back = chains_from_vsf_bytes(&bytes).expect("decode");
+        assert!(!back.group);
+        assert!(back.group_kems().is_empty());
     }
 
     #[test]

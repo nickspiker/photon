@@ -136,6 +136,67 @@ pub fn era_decapsulate(eph: &EraEphemeral, resp: &EraKemWire) -> Option<[u8; 32]
     Some(fresh)
 }
 
+/// A PERSISTED decapsulation bundle for the GROUP era ratchet (docs/groups.md §3). A friendship's EraEphemeral is RAM-only because its ratchet completes in one wire round trip; a group device PUBLISHES its bundle in its member record and must still open a wrap minted while it slept — so these secrets ride the group chains blob, the same custody class as the lane links beside them. Replaced on our first frame of each new era; the superseded bundle zeroizes.
+#[derive(Clone)]
+pub struct EraDecapKeys {
+    /// The era we were IN when the bundle published — the minter always encapsulates to each device's newest published bundle, whatever index it mints.
+    pub published_era: u64,
+    pub kem_set: u8,
+    pub mlkem_sk: Vec<u8>,
+    pub x_sk: [u8; 32],
+    pub hqc_sk: Vec<u8>,
+}
+
+impl std::fmt::Debug for EraDecapKeys {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "EraDecapKeys(published@{} set {})", self.published_era, self.kem_set)
+    }
+}
+
+impl Drop for EraDecapKeys {
+    fn drop(&mut self) {
+        self.mlkem_sk.zeroize();
+        self.x_sk.zeroize();
+        self.hqc_sk.zeroize();
+    }
+}
+
+impl EraEphemeral {
+    /// Export the decapsulation half for GROUP custody (the chains blob). The friendship path never calls this — its ephemerals die in RAM by design.
+    pub fn export_decaps(&self, published_era: u64) -> EraDecapKeys {
+        EraDecapKeys {
+            published_era,
+            kem_set: self.kem_set,
+            mlkem_sk: self.mlkem_sk.clone(),
+            x_sk: self.x_sk,
+            hqc_sk: self.hqc_sk.clone(),
+        }
+    }
+}
+
+/// Decapsulate a group-era wrap against a PERSISTED bundle — `era_decapsulate` for keys that outlived their keygen call. Returns F. None on malformed material.
+pub fn era_decapsulate_group(keys: &EraDecapKeys, resp: &EraKemWire) -> Option<[u8; 32]> {
+    let mut secrets: Vec<(&'static str, Vec<u8>)> = Vec::new();
+    if keys.kem_set & KEM_MLKEM1024 != 0 {
+        secrets.push(("mlkem1024", mlkem1024_decapsulate(&keys.mlkem_sk, &resp.mlkem)?));
+    }
+    if keys.kem_set & KEM_X25519 != 0 {
+        let their: [u8; 32] = resp.x25519.as_slice().try_into().ok()?;
+        secrets.push(("x25519", x25519_ecdh(&keys.x_sk, &their).to_vec()));
+    }
+    if keys.kem_set & KEM_HQC256 != 0 {
+        secrets.push(("hqc256", hqc256_decapsulate(&keys.hqc_sk, &resp.hqc)?));
+    }
+    if secrets.is_empty() {
+        return None;
+    }
+    let fresh = derive_era_fresh(&secrets);
+    for (_, s) in secrets.iter_mut() {
+        s.zeroize();
+    }
+    Some(fresh)
+}
+
 /// Fold the labeled KEM secrets into one fresh secret — the labeled-egg discipline: `DOMAIN ‖ count ‖ (label_len ‖ label ‖ secret_len ‖ secret)*`, injective framing, thru spaghettify. Input zeroized.
 pub fn derive_era_fresh(secrets: &[(&str, Vec<u8>)]) -> [u8; 32] {
     let mut input = Vec::with_capacity(ERA_FRESH_DOMAIN.len() + 4 + secrets.iter().map(|(l, s)| 8 + l.len() + s.len()).sum::<usize>());
@@ -287,6 +348,17 @@ mod tests {
         // Index sensitivity and history-key presence are both bound.
         assert_ne!(a, derive_era_keys(&fid, 2, &old_root, Some(&old_hk), &f_init, &t));
         assert_ne!(a, derive_era_keys(&fid, 1, &old_root, None, &f_init, &t));
+    }
+
+    /// The GROUP custody path: a persisted decapsulation bundle opens exactly the wrap its live ephemeral would have — surviving the keygen call is the whole point (docs/groups.md §3: a device offline thru a mint reads the wrap from re-serve later).
+    #[test]
+    fn exported_decaps_open_the_same_wrap() {
+        let eph = era_keygen(5, 0x1111_2222, KEM_SET_DEFAULT);
+        let keys = eph.export_decaps(4);
+        let (resp, f_resp) = era_encapsulate(&eph.init_wire, KEM_SET_DEFAULT).expect("encapsulate");
+        assert_eq!(era_decapsulate(&eph, &resp), Some(f_resp));
+        assert_eq!(era_decapsulate_group(&keys, &resp), Some(f_resp), "the persisted bundle IS the ephemeral's decap half");
+        assert_eq!(keys.published_era, 4);
     }
 
     /// A tampered ciphertext never agrees — and the HQC-256 ciphertext size is pinned so a library bump that changes it fails loudly here rather than on a phone.

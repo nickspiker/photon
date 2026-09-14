@@ -299,4 +299,29 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(a, crate::crypto::clutch::derive_lane_active(&group_root, &[1; 32]));
     }
+
+    /// Writer discipline in a GROUP (§3, the step-1 unit): two member devices holding only the delivered root agree on any lane from its label alone, stay in lockstep thru an advance, and each writes its OWN lane — the same one-writer-per-lane invariant a friendship holds, off a root no ceremony minted.
+    #[test]
+    fn writer_discipline_two_members_one_root() {
+        use crate::types::friendship::FriendshipChains;
+        let gid = GroupId::from_nonce(&[9u8; 32]);
+        let root = [0x33u8; 32];
+        let hk = [0x44u8; 32];
+        let lineage = crate::crypto::clutch::era_lineage(&root);
+        let members = [[1u8; 32], [2u8; 32], [3u8; 32]];
+        let mut a = FriendshipChains::from_group_root(gid, &members, root, hk, 0, lineage);
+        let mut b = FriendshipChains::from_group_root(gid, &members, root, hk, 0, lineage);
+        assert!(a.group);
+        assert_eq!(a.conversation_token, gid.token());
+        assert_eq!(a.id().as_bytes(), &gid.0, "the conversation id IS the group id");
+        let a_label = a.mint_our_lane().expect("root present — the lane mints");
+        b.ensure_lane(&a_label).expect("the label alone derives the lane on any member device");
+        assert_eq!(a.current_key(&a_label), b.current_key(&a_label), "receive-anywhere off the group root");
+        let et = vsf::EagleTime::from_oscillations(vsf::eagle_time_oscillations());
+        a.advance(&a_label, &et, &[1u8; 16], &[]);
+        b.advance(&a_label, &et, &[1u8; 16], &[]);
+        assert_eq!(a.current_key(&a_label), b.current_key(&a_label), "advance is a pure function of the row — writer and reader stay in lockstep");
+        let b_label = b.mint_our_lane().expect("b mints its own");
+        assert_ne!(a_label, b_label, "one writer per lane: b's sends never touch a's ratchet");
+    }
 }

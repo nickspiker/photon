@@ -261,6 +261,12 @@ pub struct FriendshipChains {
     pending: Option<PendingEra>,
     /// Rows exchanged on the current era since it began — the standing-cadence ratchet edge (never a timer).
     pub rows_since_ratchet: u32,
+
+    // ==================== GROUP STATE (docs/groups.md, schema v9 additive) ====================
+    /// True when this blob is a GROUP's chain state: the friendship_id IS the group id (stable, never participant-derived), the token is the group token, the participant set is mutable behind the id, and inbound trust for its frames consults GroupPeer instead of Contact.
+    pub group: bool,
+    /// OUR device's published group-scoped KEM decapsulation bundles (docs/groups.md §3): a group era's fresh secret arrives as a wrap encapsulated to the bundle we published in our member record, possibly minted while we slept — so unlike a friendship's RAM-only EraEphemeral these persist here, the same custody class as the lane links beside them. Newest-last; superseded bundles zeroize on rotation.
+    group_kems: Vec<crate::crypto::era::EraDecapKeys>,
 }
 
 /// A retired era: root + history key held only so straggler frames on its lanes still decrypt and ACK. Dropped (zeroized) on an observed edge — never a timer.
@@ -530,6 +536,45 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
+            group: false,
+            group_kems: Vec::new(),
+        }
+    }
+
+    /// A GROUP's chain state (docs/groups.md): the root arrives from the founder or a sponsor over an existing pairwise braid — there is NO ceremony, nothing derives from eggs. The friendship id IS the group id, the token is the group token, and lanes grow from the delivered root exactly as a friendship's do (`derive_lane_active` is root-agnostic — pinned in types::group tests). `era_lineage` comes from the genesis record (the founder computes `clutch::era_lineage(&root)` at mint; a joiner adopts it from the invite, whatever era it lands in).
+    pub fn from_group_root(group_id: crate::types::group::GroupId, participants: &[[u8; 32]], group_root: [u8; 32], group_history_key: [u8; 32], era_index: u64, era_lineage: [u8; 32]) -> Self {
+        let mut sorted_participants = participants.to_vec();
+        sorted_participants.sort();
+        Self {
+            friendship_id: FriendshipId::from_bytes(group_id.0),
+            conversation_token: group_id.token(),
+            chains: Vec::new(),
+            participants: sorted_participants,
+            lane_labels: Vec::new(),
+            lane_positions: Vec::new(),
+            our_label: None,
+            last_plaintexts: Vec::new(),
+            pending_messages: Vec::new(),
+            last_received_times: Vec::new(),
+            first_message_anchors: Vec::new(),
+            last_received_hashes: Vec::new(),
+            last_sent_hash: None,
+            last_received_weave: None,
+            last_sent_weave: None,
+            last_incorporated_hp: None,
+            gap_buffer: Vec::new(),
+            history_key: Some(group_history_key),
+            lane_root: Some(group_root),
+            genesis_osc: vsf::eagle_time_oscillations(),
+            mutated_osc: 0,
+            era_index,
+            era_lineage,
+            lane_eras: Vec::new(),
+            retired: None,
+            pending: None,
+            rows_since_ratchet: 0,
+            group: true,
+            group_kems: Vec::new(),
         }
     }
 
@@ -610,6 +655,8 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
+            group: false,
+            group_kems: Vec::new(),
         })
     }
 
@@ -689,6 +736,8 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
+            group: false,
+            group_kems: Vec::new(),
         })
     }
 
@@ -728,6 +777,24 @@ impl FriendshipChains {
             k.zeroize();
         }
         self.lane_root = None;
+    }
+
+    /// OUR device's published group KEM decapsulation bundles, newest-last (docs/groups.md §3). Empty on a friendship, and on a group device that has not yet published its member record.
+    pub fn group_kems(&self) -> &[crate::crypto::era::EraDecapKeys] {
+        &self.group_kems
+    }
+
+    /// Install the persisted bundle set wholesale (the storage loader). Replaced bundles zeroize in their Drop.
+    pub fn set_group_kems(&mut self, kems: Vec<crate::crypto::era::EraDecapKeys>) {
+        self.group_kems = kems;
+    }
+
+    /// Publish a fresh bundle: newest-last, keeping ONE superseded bundle beside it — a wrap minted before our rotation frame landed still targets the old one; anything older zeroizes on the spot.
+    pub fn push_group_kem(&mut self, keys: crate::crypto::era::EraDecapKeys) {
+        self.group_kems.push(keys);
+        while self.group_kems.len() > 2 {
+            self.group_kems.remove(0);
+        }
     }
 
     /// Serialize all chains to bytes (for storage).
@@ -1369,6 +1436,9 @@ impl FriendshipChains {
             retired: self.retired.clone(),
             pending: self.pending.clone(),
             rows_since_ratchet: self.rows_since_ratchet,
+            group: self.group,
+            // Per-DEVICE, like our_label: every device publishes its own bundle in its member record, so a sibling never adopts ours.
+            group_kems: Vec::new(),
         }
     }
 
