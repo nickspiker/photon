@@ -1,3 +1,5 @@
+pub mod group;
+pub use group::*;
 pub mod attach_kind;
 pub mod contact;
 pub mod conversation;

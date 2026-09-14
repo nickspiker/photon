@@ -28,10 +28,12 @@ pub type ConversationId = FriendshipId;
 /// Deliberately holds NOTHING about people. A participant's name, avatar, address and presence live on their `Contact`; a conversation only knows the ids. That separation is what lets a conversation exist with zero contacts (notes-to-self) or many (a group) without changing shape.
 #[derive(Clone, Debug)]
 pub struct Conversation {
-    /// Sorted, deduplicated party ids — INCLUDING our own. Sorted because the id derives from it and both sides must agree; deduplicated because a participant set is a set, and the old code expressed self-notes as `[our_pid, our_pid]`, which would make a binary search over the participant vec ambiguous.
+    /// Sorted, deduplicated party ids — INCLUDING our own. Sorted because a derived id must agree on both sides; deduplicated because a participant set is a set.
     participants: Vec<PartyId>,
-    /// Cached id — `participants` is immutable after construction, so this can never drift from it.
+    /// The id. For a derived conversation (notes/DM) it is a pure function of the immutable participant set; for a GROUP it is the stable random `GroupId` and the set is mutable behind it (docs/groups.md §2 D2).
     id: ConversationId,
+    /// TRUE = the id is stable and the participant set may move (a group); FALSE = the id derives from the set, which is therefore immutable.
+    group: bool,
     /// Messages, oldest first.
     pub messages: Vec<ChatMessage>,
     /// Count of real inbound rows that landed while this conversation was NOT front-of-eyes. Drives the contacts-list unread treatment (inner coloured ring + heavier name + float-to-top — never a count glyph). Cleared and re-persisted the moment the conversation becomes the active view.
@@ -56,6 +58,7 @@ impl Conversation {
         Self {
             participants,
             id,
+            group: false,
             messages: Vec::new(),
             unread_count: 0,
             scroll_offset: 0.0,
@@ -63,6 +66,43 @@ impl Conversation {
             digest_cache: None,
             hydrated: false,
         }
+    }
+
+    /// A GROUP conversation: the stable minted id, the CURRENT standing set behind it. The set follows the roster (set_participants on every merge edge); the id never moves.
+    pub fn new_group(group_id: crate::types::group::GroupId, participants: impl IntoIterator<Item = PartyId>) -> Self {
+        let mut participants: Vec<PartyId> = participants.into_iter().collect();
+        participants.sort_unstable();
+        participants.dedup();
+        Self {
+            participants,
+            id: FriendshipId(group_id.0),
+            group: true,
+            messages: Vec::new(),
+            unread_count: 0,
+            scroll_offset: 0.0,
+            history_recovery: None,
+            digest_cache: None,
+            hydrated: false,
+        }
+    }
+
+    pub fn is_group(&self) -> bool {
+        self.group
+    }
+
+    /// Replace the participant set — GROUPS ONLY (the roster's standing set on a merge edge). A derived conversation refuses: its id IS its set, and mutating one without the other is how a conversation forks. Returns whether anything changed.
+    pub fn set_participants(&mut self, participants: impl IntoIterator<Item = PartyId>) -> bool {
+        if !self.group {
+            return false;
+        }
+        let mut next: Vec<PartyId> = participants.into_iter().collect();
+        next.sort_unstable();
+        next.dedup();
+        if next == self.participants {
+            return false;
+        }
+        self.participants = next;
+        true
     }
 
     /// The anti-entropy digest `(count, digest)` over the syncable rows, ORDER-DEPENDENT and sorted by eagle_time. `digest = rolling H(prev ‖ H(timestamp ‖ H(content)))` walking rows oldest-first (the order `insert_message_sorted` maintains). Order matters ON PURPOSE: two sides holding the same messages in the same sequence hash identically; a mismatch means one side is MISSING or has REORDERED a message — which an order-free XOR fold would have hidden (its whole point was to reveal exactly that). Probe/control rows and tombstones are excluded (they never sync / carry no content to compare). Cached; recomputed only after a mutation invalidates it.

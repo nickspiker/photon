@@ -409,6 +409,7 @@ pub fn is_control_content(content: &str) -> bool {
         || content.starts_with(DELETE_MARKER_PREFIX)
         || content.starts_with(CALL_PREFIX)
         || content.starts_with(ERA_PREFIX)
+        || content.starts_with(crate::types::group::GROUP_PREFIX)
 }
 
 /// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
