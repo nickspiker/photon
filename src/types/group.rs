@@ -219,6 +219,74 @@ pub fn verify_record(signing_bytes: &[u8], signature: &[u8; 64], signer_device: 
     vk.verify(&blake3::hash(signing_bytes).as_bytes()[..], &sig).is_ok()
 }
 
+/// The group control-row grammar (§4, the `EraSignal` shape): a hidden text row `GROUP_PREFIX kind ‖ ␂-separated fields`, with the record payload — a roster-codec VSF blob — riding the message package's typed `gpl` field beside it, never inside the text. Small fixed-width values (the invite's era-pinned secrets) ride the text hex-encoded: the row travels sealed inside the pairwise braid, so the text IS end-to-end encrypted; hex is framing, not protection.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GroupSignal {
+    /// The sponsor's pairwise invite (§4 Invite): era-pinned secrets + lineage in the text, the roster snapshot in `gpl` so the invitee sees who is in it before consenting. Refreshed by the sponsor on every era mint (§8b); consent IS the invitee's member record, posted into the group as its first frame.
+    Invite {
+        era_index: u64,
+        group_root: [u8; 32],
+        group_history_key: [u8; 32],
+        era_lineage: [u8; 32],
+    },
+    /// Records posted INSIDE the group — genesis, member, leave, in any mix — as a roster-codec blob in `gpl`. History re-serve REBUILDS the blob from the roster at serve time (records never delete, so the roster always holds them — the plaid-fill doctrine: derived bytes are reconstructed, never archived twice).
+    Records,
+}
+
+impl GroupSignal {
+    pub fn to_content(&self) -> String {
+        match self {
+            GroupSignal::Invite { era_index, group_root, group_history_key, era_lineage } => format!(
+                "{}invite\u{2}{}\u{2}{}\u{2}{}\u{2}{}",
+                GROUP_PREFIX,
+                era_index,
+                hex::encode(group_root),
+                hex::encode(group_history_key),
+                hex::encode(era_lineage)
+            ),
+            GroupSignal::Records => format!("{}records", GROUP_PREFIX),
+        }
+    }
+
+    pub fn parse(content: &str) -> Option<GroupSignal> {
+        let rest = content.strip_prefix(GROUP_PREFIX)?;
+        let mut parts = rest.split('\u{2}');
+        match parts.next()? {
+            "invite" => {
+                let era_index: u64 = parts.next()?.parse().ok()?;
+                let dec32 = |s: &str| -> Option<[u8; 32]> {
+                    let v = hex::decode(s).ok()?;
+                    <[u8; 32]>::try_from(v.as_slice()).ok()
+                };
+                Some(GroupSignal::Invite {
+                    era_index,
+                    group_root: dec32(parts.next()?)?,
+                    group_history_key: dec32(parts.next()?)?,
+                    era_lineage: dec32(parts.next()?)?,
+                })
+            }
+            "records" => Some(GroupSignal::Records),
+            _ => None,
+        }
+    }
+}
+
+/// Mint a member record for a JOIN (§4: consent IS this record, posted into the group as the joiner's first frame) or a re-grant (name/avatar change re-signs at a newer stamp — newest-wins in the merge).
+pub fn join_record(party: PartyId, handle_proof: [u8; 32], name_grant: &str, avatar_pin: [u8; 32], sponsor: PartyId, device_seed: &[u8; 32]) -> MemberRecord {
+    let mut rec = MemberRecord {
+        party,
+        handle_proof,
+        name: name_grant.to_string(),
+        avatar_pin,
+        signed_osc: vsf::eagle_time_oscillations(),
+        sponsor,
+        signature: [0u8; 64],
+        signer_device: device_pubkey(device_seed),
+    };
+    rec.signature = sign_record(&rec.signing_bytes(), device_seed);
+    rec
+}
+
 /// Everything a founder mints at birth (§4 Genesis): the id, the era-0 secrets, the signed birth certificate, and the founder's own member record (the founder sponsors itself). The caller builds `FriendshipChains::from_group_root` with the secrets, persists the roster, and posts both records as the group's first control rows. The secrets are here transiently — they live on in the chains blob, nowhere else.
 pub struct GroupBirth {
     pub group_id: GroupId,
@@ -376,5 +444,61 @@ mod tests {
         assert_eq!(a.current_key(&a_label), b.current_key(&a_label), "advance is a pure function of the row — writer and reader stay in lockstep");
         let b_label = b.mint_our_lane().expect("b mints its own");
         assert_ne!(a_label, b_label, "one writer per lane: b's sends never touch a's ratchet");
+    }
+
+    /// The control-row grammar round-trips and stays hidden; a bogus kind is None, never a panic.
+    #[test]
+    fn group_signals_round_trip_and_are_control() {
+        let inv = GroupSignal::Invite { era_index: 3, group_root: [1; 32], group_history_key: [2; 32], era_lineage: [3; 32] };
+        assert_eq!(GroupSignal::parse(&inv.to_content()), Some(inv.clone()));
+        assert_eq!(GroupSignal::parse(&GroupSignal::Records.to_content()), Some(GroupSignal::Records));
+        assert!(crate::types::is_control_content(&inv.to_content()));
+        assert!(crate::types::is_control_content(&GroupSignal::Records.to_content()));
+        assert_eq!(GroupSignal::parse(&format!("{}bogus\u{2}1", GROUP_PREFIX)), None);
+        assert_eq!(GroupSignal::parse("plain text"), None);
+    }
+
+    /// The full pairwise-invite arc (§4): founder mints, the invite signal + roster snapshot travel the braid, the invitee adopts — same token, same lanes off the delivered root — and its consent record merges both sides to the same standing set.
+    #[test]
+    fn invite_arc_founder_to_joiner() {
+        use crate::types::friendship::FriendshipChains;
+        let f_seed = [0x01u8; 32];
+        let j_seed = [0x02u8; 32];
+        let founder_party = [0xF0u8; 32];
+        let joiner_party = [0x10u8; 32];
+        let birth = found_group(founder_party, [0xF1; 32], "founder", [0; 32], "turtles", false, &f_seed);
+        let mut f_roster = Roster::default();
+        f_roster.merge_genesis(birth.genesis.clone());
+        f_roster.merge_member(birth.founder_member.clone());
+        let mut f_chains = FriendshipChains::from_group_root(birth.group_id, &f_roster.standing(), birth.group_root, birth.group_history_key, 0, birth.era_lineage);
+
+        // The wire: the signal text + the roster snapshot blob (rides the package's gpl field).
+        let sig = GroupSignal::Invite { era_index: 0, group_root: birth.group_root, group_history_key: birth.group_history_key, era_lineage: birth.era_lineage };
+        let content = sig.to_content();
+        let blob = crate::storage::group::roster_to_vsf_bytes(&birth.group_id, &f_roster).expect("snapshot");
+
+        // The invitee's side: parse, inspect who is in it, verify the birth, consent.
+        let Some(GroupSignal::Invite { era_index, group_root, group_history_key, era_lineage }) = GroupSignal::parse(&content) else {
+            panic!("invite parses");
+        };
+        let (gid, mut j_roster) = crate::storage::group::roster_from_vsf_bytes(&blob).expect("snapshot decodes");
+        assert_eq!(gid, birth.group_id);
+        let g = j_roster.genesis.as_ref().expect("the invitee sees the birth certificate");
+        assert!(verify_record(&g.signing_bytes(), &g.signature, &g.signer_device));
+        let mut j_chains = FriendshipChains::from_group_root(gid, &j_roster.standing(), group_root, group_history_key, era_index, era_lineage);
+        assert_eq!(j_chains.conversation_token, f_chains.conversation_token, "one token, minted from the id");
+
+        // The founder speaks; the joiner derives the lane from the label alone.
+        let f_lane = f_chains.mint_our_lane().expect("founder's lane");
+        j_chains.ensure_lane(&f_lane).expect("derived from root ‖ label");
+        assert_eq!(f_chains.current_key(&f_lane), j_chains.current_key(&f_lane));
+
+        // Consent IS the member record (the joiner's first frame); both rosters converge.
+        let rec = join_record(joiner_party, [0x11; 32], "cousin", [0; 32], founder_party, &j_seed);
+        assert!(verify_record(&rec.signing_bytes(), &rec.signature, &rec.signer_device));
+        assert!(j_roster.merge_member(rec.clone()));
+        assert!(f_roster.merge_member(rec));
+        assert_eq!(f_roster.standing(), j_roster.standing());
+        assert_eq!(f_roster.standing().len(), 2);
     }
 }

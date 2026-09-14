@@ -29,6 +29,8 @@ pub struct MessagePackage {
     pub era_kem: Option<crate::crypto::era::EraKemWire>,
     /// Typed attachment fields (2026-09-10): the sender's sniffed kind, dims, preview-blob hash and the row's micro preview. None on every non-attachment row.
     pub attach: Option<AttachWire>,
+    /// Group record payload (docs/groups.md §4): the roster-codec VSF blob riding a GROUP_PREFIX control row — a record posting carries just its records, an invite carries the roster snapshot. Typed bytes beside the text, never inside it (the era-KEM doctrine). None on every non-group row.
+    pub group_blob: Option<Vec<u8>>,
 }
 
 /// The attachment row's typed extras on the friend wire — kind (AttachKind wire value), pixel dims (0 = unknown), the preview-blob hash, and the micro preview bytes.
@@ -97,6 +99,7 @@ fn msg_schema() -> SectionSchema {
         .field("ah", TypeConstraint::AnyUnsigned)
         .field("aph", TypeConstraint::Any)
         .field("apv", TypeConstraint::Any)
+        .field("gpl", TypeConstraint::Any) // hR group record payload (roster-codec blob) on a GROUP_PREFIX row; old parsers discard the unknown name
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -109,7 +112,7 @@ pub fn build_message_package(
     marks: &[(u8, usize, usize, String)],
     pad: &[u8],
 ) -> Result<Vec<u8>, String> {
-    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None, None)
+    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None, None, None)
 }
 
 /// The full builder: an era-ratchet row also carries its KEM material as typed fields.
@@ -124,6 +127,7 @@ pub fn build_message_package_era(
     pad: &[u8],
     era_kem: Option<&crate::crypto::era::EraKemWire>,
     attach: Option<&AttachWire>,
+    group_blob: Option<&[u8]>,
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
         .build()
@@ -213,6 +217,11 @@ pub fn build_message_package_era(
         }
         if !a.preview.is_empty() {
             builder = builder.set("apv", VsfType::hR(a.preview.clone())).map_err(|e| e.to_string())?;
+        }
+    }
+    if let Some(g) = group_blob {
+        if !g.is_empty() {
+            builder = builder.set("gpl", VsfType::hR(g.to_vec())).map_err(|e| e.to_string())?;
         }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
@@ -375,6 +384,10 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             preview: bytes_field("apv"),
         }),
     };
+    let group_blob = {
+        let g = bytes_field("gpl");
+        (!g.is_empty()).then_some(g)
+    };
     Ok(MessagePackage {
         body,
         incorporated_hp,
@@ -387,6 +400,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         marks,
         era_kem,
         attach,
+        group_blob,
     })
 }
 
@@ -398,11 +412,22 @@ mod tests {
     #[test]
     fn era_kem_fields_round_trip_and_are_absent_on_plain_rows() {
         let wire = crate::crypto::era::EraKemWire { mlkem: vec![1u8; 1568], x25519: vec![2u8; 32], hqc: Vec::new() };
-        let built = build_message_package_era("\u{1}\u{2}photon-era\u{2}\u{1}init\u{2}1\u{2}00\u{2}0000000a\u{2}3", &[0u8; 32], &[], None, None, &[], &[], Some(&wire), None).unwrap();
+        let built = build_message_package_era("\u{1}\u{2}photon-era\u{2}\u{1}init\u{2}1\u{2}00\u{2}0000000a\u{2}3", &[0u8; 32], &[], None, None, &[], &[], Some(&wire), None, None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.era_kem, Some(wire));
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().era_kem, None);
+    }
+
+    /// The group record payload rides as typed bytes beside the control text (the era-KEM doctrine) and is absent on every ordinary row.
+    #[test]
+    fn group_blob_rides_and_is_absent_on_plain_rows() {
+        let blob = vec![7u8; 300];
+        let built = build_message_package_era("\u{1}\u{2}photon-group\u{2}\u{1}records", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&blob)).unwrap();
+        let pkg = parse_message_package(&built).unwrap();
+        assert_eq!(pkg.group_blob.as_deref(), Some(blob.as_slice()));
+        let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
+        assert_eq!(parse_message_package(&plain).unwrap().group_blob, None);
     }
 
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).
@@ -442,7 +467,7 @@ mod tests {
     #[test]
     fn attach_fields_round_trip_typed() {
         let a = AttachWire { kind: 1, w: 4000, h: 3000, preview_hash: Some([7u8; 32]), preview: vec![2, 2, 9, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6] };
-        let built = build_message_package_era("\u{1}\u{2}photon-attach\u{2}\u{1}00", &[0u8; 32], &[], None, None, &[], &[], None, Some(&a)).unwrap();
+        let built = build_message_package_era("\u{1}\u{2}photon-attach\u{2}\u{1}00", &[0u8; 32], &[], None, None, &[], &[], None, Some(&a), None).unwrap();
         assert_eq!(parse_message_package(&built).unwrap().attach, Some(a));
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
         assert!(parse_message_package(&plain).unwrap().attach.is_none());

@@ -286,7 +286,7 @@ impl PhotonApp {
         let ts = vsf::eagle_time_oscillations();
         if !initiator {
             let content = EraSignal::Nudge { prior_tag: tag }.to_content();
-            let sent = self.chain_transmit_with(ci, &content, ts, None, None, None);
+            let sent = self.chain_transmit_with(ci, &content, ts, None, None, None, None);
             crate::logf!("ERA: {} is the initiating identity — Nudge {} from era#{} ({:08x})", fp, if sent { "sent" } else { "NOT sent" }, era_next - 1, tag);
             return sent;
         }
@@ -297,7 +297,7 @@ impl PhotonApp {
         let bytes = wire.mlkem.len() + wire.x25519.len() + wire.hqc.len();
         let nonce_s = hex::encode(&eph.nonce[..4]);
         self.contacts[ci].era_ephemeral = Some(eph);
-        let sent = self.chain_transmit_with(ci, &content, ts, None, None, Some(&wire));
+        let sent = self.chain_transmit_with(ci, &content, ts, None, None, Some(&wire), None);
         if sent {
             crate::logf!("ERA: {} era#{} → era#{} Init sent on {:08x} (nonce {}…, {} B of public keys) — chatting on the current era until the Resp lands", fp, era_next - 1, era_next, tag, nonce_s, bytes);
         } else {
@@ -324,7 +324,7 @@ impl PhotonApp {
                     if n == nonce {
                         let content = EraSignal::Resp { era_next, nonce, prior_tag }.to_content();
                         let resp_ts = self.friendship_chains[pos].1.pending_era().and_then(|p| p.resp_osc).unwrap_or_else(vsf::eagle_time_oscillations);
-                        let sent = self.chain_transmit_with(ci, &content, resp_ts, None, None, Some(&cached));
+                        let sent = self.chain_transmit_with(ci, &content, resp_ts, None, None, Some(&cached), None);
                         crate::logf!("ERA: {} duplicate Init (nonce {}…) — cached Resp {}", fp, hex::encode(&nonce[..4]), if sent { "re-sent" } else { "not re-sent (in flight or window full)" });
                         return;
                     }
@@ -362,7 +362,7 @@ impl PhotonApp {
                 self.persist_chains_async(&fid);
                 self.contacts[ci].era_resp_cache = Some((nonce, resp.clone()));
                 let content = EraSignal::Resp { era_next, nonce, prior_tag }.to_content();
-                let sent = self.chain_transmit_with(ci, &content, resp_ts, None, None, Some(&resp));
+                let sent = self.chain_transmit_with(ci, &content, resp_ts, None, None, Some(&resp), None);
                 crate::logf!(
                     "ERA: {} era#{} → era#{} Resp {} — {:08x} installed PENDING{}; cut over on its ACK or the peer's first tagged frame",
                     fp,
