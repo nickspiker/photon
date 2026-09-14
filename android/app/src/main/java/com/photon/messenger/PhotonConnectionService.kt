@@ -897,6 +897,16 @@ class PhotonConnectionService : Service() {
         try { nativeMicGranted() } catch (e: Throwable) { PhotonLog.w(TAG, "callAudio: nativeMicGranted failed", e) }
     }
 
+    /** Called from Rust as the call goes ACTIVE: the ring's keyguard flags (showWhenLocked + turnScreenOn) have done their job, and a STICKY turnScreenOn fights the proximity blank for the rest of the wave (2026-09-14, "screen doesn't blank at the ear" — the OS keeps re-lighting a turnScreenOn activity). Clearing them re-arms the blank; the proximity lock is already held.
+    fun callWentActive() {
+        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }
+        // Re-assert the lock on the active edge too: an answer that raced the route change can have skipped the acquire.
+        if (callAudioRunning && earpieceRouted) {
+            try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
+        }
+        PhotonLog.i(TAG, "callAudio: active — keyguard flags cleared, proximity blank armed (earpiece=${'$'}earpieceRouted, held=${'$'}{proximityLock?.isHeld}}")
+    }
+
     /** Called from Rust (call_service_void) as a call goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
     // THE EARPIECE, WITHOUT THE VOICE PIPELINE (Nick 2026-09-12): setCommunicationDevice (API 31) routes this app's voice-usage streams to the device named, with no audio-mode change — the streams stay on the fast path. Wired/BT stays wherever the OS put it; only the built-in speaker becomes the earpiece. Cleared at hangup so media plays from the loudspeaker again.
     @Volatile var earpieceRouted = false

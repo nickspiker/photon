@@ -381,6 +381,8 @@ impl PhotonApp {
             call.spool = spool;
             call.ring = None; // Ringing → Active keeps the ActiveCall, so the guard needs an explicit stop here
         }
+        #[cfg(target_os = "android")]
+        let _ = crate::platform::jni_android::call_service_void("callWentActive");
         crate::logf!("CALL: answered (id {})", hex::encode(&call_id[..4]));
         Self::stop_ring_alert_platform();
         self.scene_dirty = true;
@@ -934,6 +936,8 @@ impl PhotonApp {
                             call.engine = engine;
                             call.spool = spool;
                         }
+                        #[cfg(target_os = "android")]
+                        let _ = crate::platform::jni_android::call_service_void("callWentActive");
                         crate::logf!("CALL: answered by {} — active", crate::fp(&peer));
                         self.scene_dirty = true;
                     }
