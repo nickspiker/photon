@@ -4736,6 +4736,9 @@ impl PhotonApp {
                         if moved {
                             self.our_reflexive = None;
                             crate::network::traverse::request_reflexive_reset();
+                        }
+                        // A move — or the FIRST learn after a network change wiped everything (18:51: the flip cleared our_lan_ip, so the new interface's address read as a first learn, not a move, and the reseed edge never fired) — re-asks FGTW while we hold nothing public.
+                        if moved || self.our_reflexive.is_none() {
                             reseed_after = true;
                         }
                         // Interface change = our NAT mapping likely changed too — re-arm the reflect-beside-pings bootstrap so the published record re-learns the TRUE mapping.

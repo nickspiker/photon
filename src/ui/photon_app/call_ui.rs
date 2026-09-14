@@ -244,6 +244,10 @@ impl PhotonApp {
             crate::log("CALL: already in a call");
             return;
         }
+        // The CALLER's identity check (2026-09-14 18:51: Nick dialed 3 s after leaving his LAN with no public address — the push that followed carried the carrier-NAT interface and the peer had nothing real to aim back at): dialing with no public reflexive asks FGTW right now, so the push exchange carries something routable.
+        if self.our_reflexive.map_or(true, |h| crate::network::traverse::is_lan_scope(&h)) {
+            self.reseed_reflexive_from_fgtw();
+        }
         let Some(contact) = self.contacts.get(ci) else {
             return;
         };
@@ -561,16 +565,21 @@ impl PhotonApp {
             std::thread::Builder::new()
                 .name("reflexive-reseed".into())
                 .spawn(move || {
-                    let r = crate::network::http::runtime().block_on(crate::network::fgtw::bootstrap::load_bootstrap_peers(&kp, hp, port, &seed));
-                    match r.observed_addr {
-                        Some(a) => {
-                            crate::logf!("TRAVERSE: FGTW re-observed us at {} after the interface change", a);
-                            crate::network::traverse::post_reflexive_seed(a);
-                            if let Some(w) = wake {
-                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                    // RETRY LADDER (field 2026-09-14 18:51: the one-shot fired 88 ms after the interface flip — inside the handover window where cellular is not yet routable — failed "Couldn't reach FGTW" and the wave that followed had no public identity). 1/3/9 s between attempts spans any sane handover.
+                    for (i, wait_ms) in [0u64, 1000, 3000, 9000].iter().enumerate() {
+                        std::thread::sleep(std::time::Duration::from_millis(*wait_ms));
+                        let r = crate::network::http::runtime().block_on(crate::network::fgtw::bootstrap::load_bootstrap_peers(&kp, hp, port, &seed));
+                        match r.observed_addr {
+                            Some(a) => {
+                                crate::logf!("TRAVERSE: FGTW re-observed us at {} after the interface change (attempt {})", a, i + 1);
+                                crate::network::traverse::post_reflexive_seed(a);
+                                if let Some(w) = wake.as_ref() {
+                                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                                }
+                                return;
                             }
+                            None => crate::logf!("TRAVERSE: FGTW re-announce attempt {} gave no observation{}", i + 1, r.error.map_or(String::new(), |e| format!(" ({e})"))),
                         }
-                        None => crate::logf!("TRAVERSE: FGTW re-announce after the interface change gave no observation{}", r.error.map_or(String::new(), |e| format!(" ({e})"))),
                     }
                 })
                 .ok();
