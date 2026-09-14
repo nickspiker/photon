@@ -275,6 +275,12 @@ impl PhotonApp {
                         self.conversations.len()
                     );
                 }
+                // Group rosters the load worker read thru the group index (their chains and conversations rode the two merges above). Never clobber: an in-session roster has seen merge edges the disk copy may lack.
+                for (gid, roster) in data.groups {
+                    if !self.group_rosters.iter().any(|(g, _)| *g == gid) {
+                        self.group_rosters.push((gid, roster));
+                    }
+                }
                 // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could learn, which needs a published record -- a cycle nothing could enter, which is why `PHONEBOOK:` never appeared in a log and gossip carried zero records.
                 //
                 // Deliberately does NOT overwrite an address we already hold: a peer echo comes off the live UDP data socket and is quorum-corroborated, while the seed sees a TLS flow and is only exactly right for a cone NAT. Seed first, correct later.

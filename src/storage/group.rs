@@ -239,6 +239,52 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), Stor
     Ok((group_id, roster))
 }
 
+/// Schema for the group index: one `group` field per group id. The vault is flat and content-addressed — nothing enumerates — so membership is discoverable at boot ONLY thru this list, exactly as contacts are thru theirs. Vault-internal (FlatStorage encrypts it); never travels.
+fn group_list_schema() -> SectionSchema {
+    SectionSchema::new("group_list").field("group", TypeConstraint::AnyHash)
+}
+
+/// Save the group index at `vault_key("groups", vault_seed)`.
+pub fn save_group_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), StorageError> {
+    let mut builder = group_list_schema().build();
+    for id in ids {
+        builder = builder
+            .append_multi("group", vec![VsfType::hb(id.0.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    let vsf_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
+    storage.write_addr(&crate::storage::vault_key("groups", &storage.vault_seed()), &vsf_bytes)
+}
+
+/// Load the group index. Empty = this device belongs to no groups.
+pub fn load_group_list(storage: &FlatStorage) -> Result<Vec<GroupId>, StorageError> {
+    let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("groups", &storage.vault_seed()))? else {
+        return Ok(Vec::new());
+    };
+    let section = vsf::schema::SectionBuilder::parse(group_list_schema(), &vsf_bytes)
+        .map_err(|e| StorageError::Parse(format!("group list parse: {e}")))?;
+    Ok(section
+        .get_fields("group")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok().map(GroupId),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Add one group to the index iff absent. Returns whether the list changed (caller persists rosters/chains beside it).
+pub fn index_group(group_id: &GroupId, storage: &FlatStorage) -> Result<bool, StorageError> {
+    let mut ids = load_group_list(storage)?;
+    if ids.contains(group_id) {
+        return Ok(false);
+    }
+    ids.push(*group_id);
+    save_group_list(&ids, storage)?;
+    Ok(true)
+}
+
 /// Save a group's roster to the vault.
 pub fn save_roster(group_id: &GroupId, roster: &Roster, storage: &FlatStorage) -> Result<(), StorageError> {
     let bytes = roster_to_vsf_bytes(group_id, roster)?;
@@ -255,6 +301,46 @@ pub fn load_roster(group_id: &GroupId, storage: &FlatStorage) -> Result<Option<R
         return Err(StorageError::Parse("roster id mismatch at its own address".to_string()));
     }
     Ok(Some(roster))
+}
+
+/// Load every group this device belongs to — index → (roster, chains, materialized conversation). The one boot enumeration for groups, shared by the attest worker and the resume loader (the friendship analogue is contacts → load_all_friendships). A group whose roster is missing is skipped loudly; a chains-blob failure still yields the conversation (rows render, sending waits for the root to re-arrive via a refreshed invite).
+pub fn load_all_groups(storage: &FlatStorage) -> Vec<(GroupId, Roster, Option<crate::types::FriendshipChains>, crate::types::Conversation)> {
+    let ids = match load_group_list(storage) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::logf!("GROUP: index load failed: {}", e);
+            return Vec::new();
+        }
+    };
+    let mut out = Vec::new();
+    for id in ids {
+        let roster = match load_roster(&id, storage) {
+            Ok(Some(r)) => r,
+            Ok(None) => {
+                crate::logf!("GROUP: {} indexed but roster missing — skipped", hex::encode(&id.0[..4]));
+                continue;
+            }
+            Err(e) => {
+                crate::logf!("GROUP: roster load failed for {}: {}", hex::encode(&id.0[..4]), e);
+                continue;
+            }
+        };
+        let fid = crate::types::FriendshipId::from_bytes(id.0);
+        let chains = match crate::storage::friendship::load_friendship_chains(&fid, storage) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                crate::logf!("GROUP: chains load failed for {}: {}", hex::encode(&id.0[..4]), e);
+                None
+            }
+        };
+        let mut conv = crate::types::Conversation::new_group(id, roster.standing());
+        crate::storage::contacts::load_conversation_state(&mut conv, &id.0, storage);
+        if let Err(e) = crate::storage::contacts::load_messages(&mut conv, storage) {
+            crate::logf!("GROUP: message load failed for {}: {}", hex::encode(&id.0[..4]), e);
+        }
+        out.push((id, roster, chains, conv));
+    }
+    out
 }
 
 #[cfg(test)]
@@ -326,5 +412,19 @@ mod tests {
         let loaded = load_roster(&birth.group_id, &storage).expect("load").expect("present");
         assert_eq!(loaded.standing(), roster.standing());
         assert_eq!(loaded.genesis, roster.genesis);
+    }
+
+    /// The index is the ONLY enumeration the flat vault offers: boot discovers membership thru it, and index_group is idempotent.
+    #[test]
+    fn group_index_enumerates_membership() {
+        crate::storage::isolate_test_storage();
+        let storage = FlatStorage::new(crate::storage::APP, [0xE1; 32], [0xE2; 32]).expect("storage");
+        assert!(load_group_list(&storage).expect("empty vault").is_empty());
+        let a = crate::types::group::GroupId::from_nonce(&[1; 32]);
+        let b = crate::types::group::GroupId::from_nonce(&[2; 32]);
+        assert!(index_group(&a, &storage).expect("index a"));
+        assert!(index_group(&b, &storage).expect("index b"));
+        assert!(!index_group(&a, &storage).expect("idempotent"), "a second index of the same group is a no-op");
+        assert_eq!(load_group_list(&storage).expect("load"), vec![a, b]);
     }
 }

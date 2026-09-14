@@ -4077,6 +4077,21 @@ impl PhotonApp {
                                 self.friendship_chains.push((fid, chains));
                             }
                         }
+                        // GROUPS (docs/groups.md §5): the index is the vault's only enumeration — chains join the same registry (the token scan treats them identically), conversations and rosters ride beside. Same never-clobber rule as the friendship pass.
+                        for (gid, roster, chains, conv) in crate::storage::group::load_all_groups(&s) {
+                            if let Some(chains) = chains {
+                                let fid = *chains.id();
+                                if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
+                                    self.friendship_chains.push((fid, chains));
+                                }
+                            }
+                            if !self.conversations.iter().any(|v| v.id().as_bytes() == &gid.0) {
+                                self.conversations.push(conv);
+                            }
+                            if !self.group_rosters.iter().any(|(g, _)| *g == gid) {
+                                self.group_rosters.push((gid, roster));
+                            }
+                        }
                         // Anything the loader REJECTED (pre-v8 blobs, the lanes flag-day) leaves its contact keyed-but-chainless — reset those ceremonies now, while every chain that CAN load already has.
                         self.reclutch_chainless_contacts("resume load");
                         self.update_sync_records();

@@ -33,6 +33,8 @@ pub struct AttestationData {
         crate::types::friendship::FriendshipId,
         crate::types::friendship::FriendshipChains,
     )>,
+    /// Group rosters (docs/groups.md §5), loaded thru the group index; the groups' chains and conversations ride the two vectors above under FriendshipId(group_id).
+    pub groups: Vec<(crate::types::group::GroupId, crate::types::group::Roster)>,
     pub avatar_pixels: Option<Vec<u8>>, // Local avatar if exists
     pub peers: Vec<PeerRecord>,
     /// The address FGTW OBSERVED this announce arriving from, straight off the signed `announce_ok` ack.
@@ -732,7 +734,7 @@ impl HandleQuery {
                         crate::log("Network: Loading friendship chains...");
                         let friendship_ids: Vec<crate::types::FriendshipId> =
                             contacts.iter().filter_map(|c| c.friendship_id).collect();
-                        let friendships = crate::storage::friendship::load_all_friendships(
+                        let mut friendships = crate::storage::friendship::load_all_friendships(
                             &friendship_ids,
                             &storage,
                         );
@@ -856,6 +858,17 @@ impl HandleQuery {
                             }
                             conversations.push(conv);
                         }
+                        // GROUPS (docs/groups.md §5): enumerate thru the index — chains and conversations ride the same vectors the UI already adopts, rosters ride beside.
+                        let mut groups: Vec<(crate::types::group::GroupId, crate::types::group::Roster)> = Vec::new();
+                        for (gid, roster, chains, conv) in crate::storage::group::load_all_groups(&storage) {
+                            if let Some(c) = chains {
+                                friendships.push((*c.id(), c));
+                            }
+                            if !conversations.iter().any(|v| v.id() == conv.id()) {
+                                conversations.push(conv);
+                            }
+                            groups.push((gid, roster));
+                        }
                         crate::log("Network: Background loading complete");
 
                         QueryResult::Success(Box::new(AttestationData {
@@ -864,6 +877,7 @@ impl HandleQuery {
                             contacts,
                             conversations,
                             friendships,
+                            groups,
                             avatar_pixels,
                             peers: result.peers,
                             observed_addr: result.observed_addr,

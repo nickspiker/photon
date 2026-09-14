@@ -1380,11 +1380,13 @@ pub struct PhotonApp {
     blind_flip: std::collections::HashMap<([u8; 32], [u8; 32]), ([u8; 32], u32)>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
     history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
-    /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume.
+    /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume. GROUP chains (docs/groups.md) live here too under FriendshipId(group_id) — the token scan and era routing treat them identically; only trust and attribution branch.
     friendship_chains: Vec<(
         crate::types::friendship::FriendshipId,
         crate::types::friendship::FriendshipChains,
     )>,
+    /// Group rosters, keyed by group id (docs/groups.md §4): the membership truth every group-frame gate and standing set reads. Persisted via `save_roster`; loaded on attest/resume thru the group index.
+    group_rosters: Vec<(crate::types::group::GroupId, crate::types::group::Roster)>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
     chord_lb_press: Option<Instant>,
     /// Last `[` Release timestamp. `None` until first release.
@@ -2313,6 +2315,7 @@ impl PhotonApp {
             blind_flip: std::collections::HashMap::new(),
             history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
+            group_rosters: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
             chord_rb_press: None,
