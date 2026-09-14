@@ -767,19 +767,26 @@ impl PhotonApp {
                         }
                     }
                     _ => {
-                        // Active in-call screen: a secondary row (+Handle / ‹ Contact) above the primary End call. Add-handle is a stub; ‹ Contact minimizes. Speaker toggle PARKED (Nick 2026-09-03, headset-only + engine output pad) — restore the third slot when a real speaker route lands.
+                        // Active in-call screen: a secondary row (+Handle / ‹ Contact) above the primary End call. Add-handle is a stub; ‹ Contact minimizes.
                         let sw = w * 0.29;
                         let sh = unit * 2.0;
                         let sfont = unit * 0.58;
                         let sy = by - bh - unit * 0.6;
-                        // let spk_on = self.call_speaker_on;
-                        // if let Some(b) = self.call_speaker_btn.as_mut() {
-                        //     b.set_rect(w * 0.5 - sw - unit * 0.4, sy, sw, sh);
-                        //     b.set_font_size(sfont);
-                        //     b.set_label(tr(if spk_on { Msg::SpeakerToggleOn } else { Msg::SpeakerToggleOff }));
-                        //     let id = b.hit_id();
-                        //     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        // }
+                        // The route pill (Android, field 2026-09-14 "it wasn't using the bluetooth headset at all — how do we control that?"): labelled with the device the wave is playing on (the Kotlin route mirror), a tap cycles to the next available output. Left seat of the beam-toggle row.
+                        #[cfg(target_os = "android")]
+                        if let Some(b) = self.call_speaker_btn.as_mut() {
+                            b.set_rect(w * 0.5 - sw - unit * 0.2, sy - sh - unit * 0.4, sw, sh);
+                            b.set_font_size(sfont);
+                            let route = crate::platform::audio::route_id();
+                            let label = match route.as_str() {
+                                "speaker" => tr(Msg::SpeakerPlain).into_owned(),
+                                "earpiece" => tr(Msg::EarpiecePlain).into_owned(),
+                                _ => route.split_once(':').map_or_else(|| route.clone(), |(_, name)| name.to_string()),
+                            };
+                            b.set_label(label);
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
                         // Beam toggle — switch this side to video mid-wave; a STUB greyed out until video lands, one row above the secondary pair.
                         if let Some(b) = self.call_beam_back_btn.as_mut() {
                             b.set_rect(w * 0.5, sy - sh - unit * 0.4, sw, sh);
@@ -6350,7 +6357,11 @@ impl PhotonApp {
             if call_fullscreen {
                 match call_overlay.as_ref().map(|t| t.0) {
                     Some(crate::call::CallPhase::Active) => {
-                        // call_speaker_btn stays out of the stamp list while the toggle is parked — an unstamped rect is stale from whenever it last rendered.
+                        // The route pill stamps only where it renders (Android).
+                        #[cfg(target_os = "android")]
+                        if let Some(b) = self.call_speaker_btn.as_ref() {
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        }
                         for b in [
                             self.call_addhandle_btn.as_ref(),
                             self.call_back_btn.as_ref(),

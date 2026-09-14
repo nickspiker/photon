@@ -107,6 +107,7 @@ pub enum Msg<'a> {
     SpeakerToggleOn,
     SpeakerToggleOff,
     SpeakerPlain,
+    EarpiecePlain,
     AddHandle,
     AddHandlePlain,
     BackToContact,

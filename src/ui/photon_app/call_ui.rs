@@ -135,24 +135,19 @@ impl PhotonApp {
                 any = true;
             }
         }
-        // Speaker toggle PARKED (Nick 2026-09-03): headset is the only mode for now — a fixed 4-stop output pad in the engine (OUTPUT_PAD_STOPS) with the duck dropping further from there; re-arm this handler when a real speaker route lands.
-        // if self
-        //     .call_speaker_btn
-        //     .as_mut()
-        //     .map(|b| b.take_click())
-        //     .unwrap_or(false)
-        // {
-        //     if matches!(phase, Some(CallPhase::Active)) {
-        //         self.call_speaker_on = !self.call_speaker_on;
-        //         let route = if self.call_speaker_on {
-        //             crate::platform::audio::AudioRoute::Speaker
-        //         } else {
-        //             crate::platform::audio::AudioRoute::Earpiece
-        //         };
-        //         crate::platform::audio::set_route(route);
-        //     }
-        //     any = true;
-        // }
+        // The route pill (Android, field 2026-09-14 "how do we control that?"): each tap asks the service to advance the wave's output to the next available device; the label re-reads the route mirror on the next frame.
+        #[cfg(target_os = "android")]
+        if self
+            .call_speaker_btn
+            .as_mut()
+            .map(|b| b.take_click())
+            .unwrap_or(false)
+        {
+            if matches!(phase, Some(CallPhase::Active)) {
+                let _ = crate::platform::jni_android::call_service_void("cycleCallRoute");
+            }
+            any = true;
+        }
         // Add-handle (Active) — stubbed; multi-party call join is a follow-up.
         if self
             .call_addhandle_btn
@@ -278,9 +273,8 @@ impl PhotonApp {
             .and_then(|fs| fs.effective("notify.ring_call"))
             .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
-        // Fresh call: clear any stale minimize / speaker state and stop a recording preview (the call owns the audio session).
+        // Fresh call: clear any stale minimize state and stop a recording preview (the call owns the audio session).
         self.call_minimized = false;
-        self.call_speaker_on = false;
         self.call_playback.take();
         let now = vsf::eagle_time_oscillations();
         // THIS device placed this call — the only license to loud-kill a strayed answer for it later (see the Answer arm's sibling law).
@@ -370,10 +364,9 @@ impl PhotonApp {
             self.scene_dirty = true;
             return;
         }
-        // Answering owns the audio session — stop any recording preview, and clear stale minimize/speaker state.
+        // Answering owns the audio session — stop any recording preview, and clear stale minimize state.
         self.call_playback.take();
         self.call_minimized = false;
-        self.call_speaker_on = false;
         let secret = self.derive_secret_for(ci, &offer_key, &call_id, &caller_nonce, &callee_nonce);
         let (engine, spool) = self.spawn_call_engine(ci, &call_id, secret, false);
         if let Some(call) = self.active_call.as_mut() {

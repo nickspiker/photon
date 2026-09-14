@@ -1604,14 +1604,12 @@ pub struct PhotonApp {
     call_beam_back_btn: Option<Button>,
     call_action_btn: Option<Button>,
     call_decline_btn: Option<Button>,
-    /// In-call full-screen (Active) controls — same retained-Button pattern as the four above. `call_speaker_btn` = speaker toggle (stubbed route intent); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"). (The Ended keep/delete panel + its play button died with record-by-default, 2026-09-08 — playback lives on the recording bubble.)
+    /// In-call full-screen (Active) controls — same retained-Button pattern as the four above. `call_speaker_btn` = the route pill (Android: label = the playing device, tap cycles thru the available outputs); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"). (The Ended keep/delete panel + its play button died with record-by-default, 2026-09-08 — playback lives on the recording bubble.)
     call_speaker_btn: Option<Button>,
     call_addhandle_btn: Option<Button>,
     call_back_btn: Option<Button>,
     /// The Active call is minimized to a strip (Phase 3) / compact bar — the full-screen call panel yields to the screen underneath so messaging + navigation stay live. Reset on every phase start and forced false on Ringing/Ended (always full-screen).
     call_minimized: bool,
-    /// Speaker-toggle visual state (stub — no real device route switch in v1).
-    call_speaker_on: bool,
     /// Live recording-playback handle (end-screen preview + history rows). Held so the worker keeps running (dropping the handle stops it); a new play or a starting call replaces/stops it.
     call_playback: Option<crate::call::playback::PlaybackHandle>,
     /// Which kept-recording blob the live playback belongs to — so its conversation bubble renders ■ + progress and a re-tap stops IT (not restart). None when nothing plays.
@@ -2434,7 +2432,6 @@ impl PhotonApp {
             call_addhandle_btn: None,
             call_back_btn: None,
             call_minimized: false,
-            call_speaker_on: false,
             call_playback: None,
             call_playback_hash: None,
             conv_filter: ChatFilter::All,
@@ -3088,7 +3085,11 @@ impl PhotonApp {
                 }
                 // Active full-screen in-call controls; a minimized Active call yields only the action (the strip / compact bar's End).
                 CallPhase::Active if !self.call_minimized => {
-                    // call_speaker_btn out of the walk while the toggle is parked (headset-only, engine output pad).
+                    // The route pill (Android): cycle the wave's output among the available devices.
+                    #[cfg(target_os = "android")]
+                    if let Some(b) = self.call_speaker_btn.as_mut() {
+                        f(b);
+                    }
                     if let Some(b) = self.call_addhandle_btn.as_mut() {
                         f(b);
                     }

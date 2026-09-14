@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave on Android now starts on your headset when one is connected — wired first, then Bluetooth, then the earpiece — instead of ignoring it, and a new pill on the call screen shows the device that is playing and cycles through the available outputs when you tap it.
+
 ## v96
 
 - Waves connect the instant they are answered: your voice flows from the first captured frame, and an answer now always reaches the caller (it rides the relay like the ring does), so "answered on one side, silent on the other" is gone.

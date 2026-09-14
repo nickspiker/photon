@@ -162,56 +162,58 @@ class PhotonConnectionService : Service() {
     /** Calibration substrate (docs plan 2026-09-02): mirror the routed OUTPUT device + the voice-call volume down to Rust, edge-driven — an AudioDeviceCallback for route changes and the system VOLUME_CHANGED broadcast for the knob. Rust keys calibration profiles on the route identity and scales the echo prediction by the dB delta from calibration time. */
     private fun registerAudioMirrors() {
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
-        fun pushRoute() {
-            // The device the call audio actually routes to: prefer BT SCO/A2DP, then wired, then earpiece/speaker — mirroring Android's own routing priority.
-            val outs = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
-            var kind = -1
-            var id = "unknown"
-            fun rank(t: Int): Int = when (t) {
-                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> 4
-                android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 3
-                android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 2
-                android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 1
-                else -> 0
-            }
-            val dev = outs.maxByOrNull { rank(it.type) }
-            if (dev != null) {
-                when (rank(dev.type)) {
-                    4 -> { kind = 3; id = "bt:${dev.productName}" }
-                    3 -> { kind = 2; id = "headset:${dev.productName}" }
-                    2 -> { kind = 1; id = "earpiece" }
-                    1 -> { kind = 0; id = "speaker" }
-                    else -> { kind = -1; id = "unknown:${dev.productName}" }
-                }
-            }
-            try { nativeAudioRoute(kind, id) } catch (e: Throwable) { PhotonLog.w(TAG, "route mirror failed: ${e.message}") }
-            // INPUT side (the voice-profile key): BT mic > wired mic > builtin.
-            val ins = am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
-            fun rankIn(t: Int): Int = when (t) {
-                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> 3
-                android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 2
-                android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC -> 1
-                else -> 0
-            }
-            val mic = ins.maxByOrNull { rankIn(it.type) }
-            val micId = when (mic?.let { rankIn(it.type) } ?: 0) {
-                3 -> "bt:${mic?.productName}"
-                2 -> "headset:${mic?.productName}"
-                1 -> "builtin-mic"
-                else -> "builtin-mic"
-            }
-            try { nativeAudioMic(micId) } catch (e: Throwable) { PhotonLog.w(TAG, "mic mirror failed: ${e.message}") }
-        }
-        fun pushVolume() = pushVolumeMirror()
         am.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
-            override fun onAudioDevicesAdded(added: Array<out android.media.AudioDeviceInfo>?) { pushRoute() }
-            override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>?) { pushRoute() }
+            override fun onAudioDevicesAdded(added: Array<out android.media.AudioDeviceInfo>?) { pushRouteMirror() }
+            override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>?) { pushRouteMirror() }
         }, null)
         registerReceiver(object : android.content.BroadcastReceiver() {
-            override fun onReceive(c: android.content.Context?, i: Intent?) { pushVolume() }
+            override fun onReceive(c: android.content.Context?, i: Intent?) { pushVolumeMirror() }
         }, android.content.IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
-        pushRoute()
-        pushVolume()
+        pushRouteMirror()
+        pushVolumeMirror()
+    }
+
+    /** The routed OUTPUT + INPUT identities, mirrored to Rust (calibration-profile key + the call-screen route pill). While a wave holds a communication device, THAT device is the truth (2026-09-14: the old static ranking said "bt:X15" while the forced earpiece was actually playing); otherwise the static ranking mirrors Android's own media routing priority. */
+    fun pushRouteMirror() {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val outs = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
+        var kind = -1
+        var id = "unknown"
+        fun rank(t: Int): Int = when (t) {
+            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_HEARING_AID -> 4
+            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 3
+            android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 2
+            android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 1
+            else -> 0
+        }
+        val comm = if (callAudioRunning && Build.VERSION.SDK_INT >= 31) am.communicationDevice else null
+        val dev = comm ?: outs.maxByOrNull { rank(it.type) }
+        if (dev != null) {
+            when (rank(dev.type)) {
+                4 -> { kind = 3; id = "bt:${dev.productName}" }
+                3 -> { kind = 2; id = "headset:${dev.productName}" }
+                2 -> { kind = 1; id = "earpiece" }
+                1 -> { kind = 0; id = "speaker" }
+                else -> { kind = -1; id = "unknown:${dev.productName}" }
+            }
+        }
+        try { nativeAudioRoute(kind, id) } catch (e: Throwable) { PhotonLog.w(TAG, "route mirror failed: ${e.message}") }
+        // INPUT side (the voice-profile key): BT mic > wired mic > builtin.
+        val ins = am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
+        fun rankIn(t: Int): Int = when (t) {
+            android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET -> 3
+            android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 2
+            android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC -> 1
+            else -> 0
+        }
+        val mic = ins.maxByOrNull { rankIn(it.type) }
+        val micId = when (mic?.let { rankIn(it.type) } ?: 0) {
+            3 -> "bt:${mic?.productName}"
+            2 -> "headset:${mic?.productName}"
+            1 -> "builtin-mic"
+            else -> "builtin-mic"
+        }
+        try { nativeAudioMic(micId) } catch (e: Throwable) { PhotonLog.w(TAG, "mic mirror failed: ${e.message}") }
     }
 
     /** The routed volume in dB, mirrored to Rust (the chirp's level estimate): the voice stream at the earpiece while a wave rides it, the media stream at the loudspeaker otherwise. A member so the route change can call it (2026-09-12). */
@@ -908,29 +910,56 @@ class PhotonConnectionService : Service() {
     }
 
     /** Called from Rust (call_service_void) as a call goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
-    // THE EARPIECE, WITHOUT THE VOICE PIPELINE (Nick 2026-09-12): setCommunicationDevice (API 31) routes this app's voice-usage streams to the device named, with no audio-mode change — the streams stay on the fast path. Wired/BT stays wherever the OS put it; only the built-in speaker becomes the earpiece. Cleared at hangup so media plays from the loudspeaker again.
+    // THE EARPIECE, WITHOUT THE VOICE PIPELINE (Nick 2026-09-12): setCommunicationDevice (API 31) routes this app's voice-usage streams to the device named, with no audio-mode change — the streams stay on the fast path. Cleared at hangup so media plays from the loudspeaker again.
+    // CALL-START POLICY (field 2026-09-14, Nick: "took me a minute to figure out it wasn't using the bluetooth headset at all"): the old arm forced the BUILT-IN earpiece over a connected headset — its keep-the-current-device guard never fired because no communication device is set at call start. The start route now prefers wired > bluetooth > earpiece from availableCommunicationDevices, and cycleCallRoute() (the in-call route pill) walks the full list mid-wave.
     @Volatile var earpieceRouted = false
-    private fun routeEarpiece(on: Boolean) {
+    private fun routeCallAudio(on: Boolean) {
         if (Build.VERSION.SDK_INT < 31) return
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         try {
             if (on) {
-                val current = am.communicationDevice
-                if (current != null && current.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER && current.type != android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE) {
-                    PhotonLog.i(TAG, "callAudio: route stays on ${current.productName} (type ${current.type})")
-                    return
+                fun pref(t: Int): Int = when (t) {
+                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 3
+                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_HEARING_AID -> 2
+                    android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 1
+                    else -> 0
                 }
-                val ear = am.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
-                if (ear == null) { PhotonLog.i(TAG, "callAudio: no earpiece on this device — loudspeaker"); return }
-                earpieceRouted = am.setCommunicationDevice(ear)
-                PhotonLog.i(TAG, "callAudio: earpiece route ${if (earpieceRouted) "set" else "REFUSED"}")
+                val pick = am.availableCommunicationDevices.maxByOrNull { pref(it.type) }
+                if (pick == null || pref(pick.type) == 0) {
+                    PhotonLog.i(TAG, "callAudio: no headset or earpiece to route — loudspeaker")
+                    earpieceRouted = false
+                } else {
+                    val ok = am.setCommunicationDevice(pick)
+                    earpieceRouted = ok && pick.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    PhotonLog.i(TAG, "callAudio: start route ${pick.productName} (type ${pick.type}) ${if (ok) "set" else "REFUSED"}")
+                }
             } else {
                 am.clearCommunicationDevice()
                 earpieceRouted = false
             }
         } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route change failed", e) }
-        // THE ROCKER GOVERNS THE WAVE (field 2026-09-13, Brittany: "the volume adjust on the phone didn't seem to actually adjust the volume of my voice"): our render track carries USAGE_VOICE_COMMUNICATION on the earpiece, which the voice-call stream controls, but without an in-communication mode the rocker keeps adjusting the media stream. Binding the Activity's volume control stream to the voice stream while the wave rides the earpiece points the rocker at the stream the wave plays on; cleared back to the default when the route clears.
-        // The proximity lock follows the route (mid-call swaps included): earpiece holds it, anything else releases it (waiting for the sensor to clear so the screen never flashes at the ear).
+        applyRouteSideEffects()
+    }
+
+    /** The in-call route pill (Rust: call_service_void "cycleCallRoute"): advance the wave's output to the next available communication device — earpiece → speaker → headset → bluetooth, whatever the list holds this moment. */
+    fun cycleCallRoute() {
+        if (Build.VERSION.SDK_INT < 31) return
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        try {
+            val avail = am.availableCommunicationDevices
+            if (avail.isEmpty()) return
+            val cur = am.communicationDevice
+            val idx = avail.indexOfFirst { cur != null && it.id == cur.id }
+            val next = avail[(idx + 1) % avail.size]
+            val ok = am.setCommunicationDevice(next)
+            earpieceRouted = ok && next.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+            PhotonLog.i(TAG, "callAudio: route cycled to ${next.productName} (type ${next.type})${if (ok) "" else " — REFUSED"}")
+        } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route cycle failed", e) }
+        applyRouteSideEffects()
+    }
+
+    /** Everything that follows a communication-device change, start / cycle / clear alike. THE ROCKER GOVERNS THE WAVE (field 2026-09-13, Brittany: "the volume adjust on the phone didn't seem to actually adjust the volume of my voice"): our render track carries USAGE_VOICE_COMMUNICATION on the earpiece, which the voice-call stream controls, but without an in-communication mode the rocker keeps adjusting the media stream — binding the Activity's volume control stream to the voice stream while the wave rides the earpiece points the rocker at the stream the wave plays on; cleared back to the default otherwise. The proximity lock follows the route (mid-call swaps included): earpiece holds it — at the ear, blanking is right — anything else releases it, waiting for the sensor to clear so the screen never flashes at the ear. The mirrors re-push so Rust's calibration identity and the route pill's label track the device actually playing. */
+    private fun applyRouteSideEffects() {
         if (callAudioRunning) {
             try {
                 if (earpieceRouted) proximityLock?.acquire()
@@ -944,6 +973,7 @@ class PhotonConnectionService : Service() {
             }
         }
         pushVolumeMirror()
+        pushRouteMirror()
     }
 
     fun startCallAudio() {
@@ -963,7 +993,7 @@ class PhotonConnectionService : Service() {
                 .minByOrNull { if (it.location == android.media.MicrophoneInfo.LOCATION_MAINBODY) 0 else 1 }
             nativeMicInfo(declared, chosen?.sensitivity ?: Float.NaN, desc)
         } catch (e: Throwable) { PhotonLog.w(TAG, "mic introspection failed: ${e.message}") }
-        routeEarpiece(true)
+        routeCallAudio(true)
         acquireWaveWifiLock()
         // Proximity blanks the screen ONLY on the earpiece route (2026-09-14, "still being a bugger"): on speaker/headset a hand or pocket over the sensor was turning the screen off mid-wave. Earpiece = at the ear = blanking is right.
         if (earpieceRouted) {
@@ -983,7 +1013,7 @@ class PhotonConnectionService : Service() {
     /** Called from Rust at hangup, after its streams are closed. */
     fun stopCallAudio() {
         callAudioRunning = false
-        routeEarpiece(false)
+        routeCallAudio(false)
         releaseWaveWifiLock()
         // RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY: the screen comes back only once the sensor clears — a bare release() mid-cover flashed the screen on against the ear at hangup.
         try { proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
