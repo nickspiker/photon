@@ -104,8 +104,8 @@ pub const DUCK_K_REF_Q16: i64 = 1 << 12;
 const DUCK_K_MIN_Q16: i64 = 1 << 8;
 const DUCK_K_MAX_Q16: i64 = 1 << 15;
 static DUCK_K_Q16: AtomicI64 = AtomicI64::new(DUCK_K_REF_Q16);
-/// The receive loss plan's echo bound, Q16: k·speaker_gain is held at or under this (0.05 ≈ −26 dB).
-const RX_ECHO_MARGIN_Q16: i64 = 3277;
+/// The receive loss plan's echo bound, Q16: k·speaker_gain is held at or under this. 1/64 ≈ −36 dB (0.05/−26 dB until 2026-09-14: "still a bit echo-ey and loud" on a wave with k 0.03 — at our ~100 ms acoustic round trip the ear wants echo under −40 dB, the same figure the POTS hybrid standards settled on; the loss this costs is loudness at the ceiling, which was the other complaint).
+const RX_ECHO_MARGIN_Q16: i64 = 1024;
 /// The downward expander's knee in plan units (voiced speech ≈ 2048; 256 is −18 dB under it): frames below taper linearly toward silence.
 const RX_EXPAND_KNEE: i64 = 256;
 /// Mean |sample| of the newest frame handed to the DAC (post-duck — what the room actually receives), the k estimator's denominator. Reuses the FAR_LEVEL sum.
