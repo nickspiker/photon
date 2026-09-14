@@ -1,6 +1,6 @@
 ---
 name: project-groups-build
-description: Groups implementation status — steps 1 + 2a–2d-ii SHIPPED as local commits (NO PUSH until Nick clears call tuning); next = the send side
+description: Groups implementation status — steps 1 + 2a–2d-iii(invite send) PUSHED 2026-09-14; next = found-group action + group-message fan-out
 metadata: 
   node_type: memory
   type: project
