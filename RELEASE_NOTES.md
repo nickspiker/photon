@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v97
+
 - A wave on Android now starts on your headset when one is connected — wired first, then Bluetooth, then the earpiece — instead of ignoring it, and a new pill on the call screen shows the device that is playing and cycles through the available outputs when you tap it.
 - Waves connect away from home: when your phone changes networks — leaving the house, dropping to cellular, carrier-shared addresses — it re-learns its public address right away, and again at the moment you dial if it still has none, where before both sides could sit silent for half a minute aiming at a dead address.
 - Waves ride congestion by watching delay the way it actually behaves: a steadily climbing round trip means the link is over capacity, so the wave drops its rate in one jump to just under what the link measured, and it will not climb again until the delay flattens out.
