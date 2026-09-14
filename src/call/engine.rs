@@ -248,6 +248,8 @@ fn run(
         crate::log("CALL: no spool — this call is not being recorded");
     }
     let mut peer = params.peer_addr;
+    // The plaid gate as the engine LIVES it: seeded by the spawn's read of the initial address, re-evaluated on every media re-point (see "PLAID FOLLOWS THE PATH").
+    let mut plaid_allowed = params.plaid_allowed;
     // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
@@ -364,7 +366,7 @@ fn run(
         peer,
         TIER_RATES[0] / 1000,
         TIER_RATES[TIER_RATES.len() - 1] / 1000,
-        if params.plaid_allowed { ", plaid armed" } else { ", plaid off — not a LAN path" },
+        if plaid_allowed { ", plaid armed" } else { ", plaid off — not a LAN path" },
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
@@ -658,6 +660,20 @@ fn run(
                     crate::logf!("CALL: peer media now from {} (was {})", src, peer);
                     peer = src;
                     super::set_call_tx_addr(Some(peer));
+                    // PLAID FOLLOWS THE PATH (field 2026-09-14 01:42, Emma/Nick: the callee's engine started aimed at 0.0.0.0 — "plaid off — not a LAN path" — and stayed off for the whole wave after media re-pointed to the caller's LAN address; the caller ran plaid the other way). The gate is re-evaluated on every re-point: a LAN-class peer arms it, a WAN one disarms it (the ladder's next climb or drop honours the new answer).
+                    let lan = match peer.ip().to_canonical() {
+                        std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
+                        std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00,
+                    };
+                    if lan != plaid_allowed {
+                        crate::logf!("CALL: plaid {} — the path is now {}", if lan { "armed" } else { "off" }, if lan { "LAN-class" } else { "not LAN-class" });
+                        plaid_allowed = lan;
+                        if !lan && pending_tier == RAW_TIER {
+                            // Raw PCM must not ride a WAN path: step down to the top codec rung at the next window boundary.
+                            pending_tier = RAW_TIER - 1;
+                            last_tier_change = std::time::Instant::now();
+                        }
+                    }
                 }
             }
             // Bundle payload: [ctrl:1][source(seq)][repair(seq−1) if flagged]. seq IS the window id; the ctrl byte names both rungs (a rung switch between windows makes the two symbols different sizes, so length alone is ambiguous). The EXACT-length check is LOAD-BEARING: raptorq panics on mis-sized symbols, so nothing unchecked may reach a decoder.
@@ -790,7 +806,7 @@ fn run(
                         && last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                     let next = pending_tier + 1;
                     let need = if next == RAW_TIER { PLAID_CLIMB_CLEAN_WINDOWS } else { CLIMB_CLEAN_WINDOWS };
-                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || params.plaid_allowed);
+                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || plaid_allowed);
                     if clean_rx_windows >= need && held && allowed {
                         pending_tier = next;
                         clean_rx_windows = 0;
