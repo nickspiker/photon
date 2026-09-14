@@ -239,12 +239,15 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), Stor
     Ok((group_id, roster))
 }
 
+/// The group-index section name, shared by the builder and the TOC lookup — the two must never drift.
+const GROUP_LIST_SECTION: &str = "group_list";
+
 /// Schema for the group index: one `group` field per group id. The vault is flat and content-addressed — nothing enumerates — so membership is discoverable at boot ONLY thru this list, exactly as contacts are thru theirs. Vault-internal (FlatStorage encrypts it); never travels.
 fn group_list_schema() -> SectionSchema {
-    SectionSchema::new("group_list").field("group", TypeConstraint::AnyHash)
+    SectionSchema::new(GROUP_LIST_SECTION).field("group", TypeConstraint::AnyHash)
 }
 
-/// Save the group index at `vault_key("groups", vault_seed)`.
+/// Save the group index at `vault_key("groups", vault_seed)` — a complete VSF document (provenance header + section), the same shape as the roster, so the load side is a verified read.
 pub fn save_group_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), StorageError> {
     let mut builder = group_list_schema().build();
     for id in ids {
@@ -252,7 +255,13 @@ pub fn save_group_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), Sto
             .append_multi("group", vec![VsfType::hb(id.0.to_vec())])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
-    let vsf_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
+    let section_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(GROUP_LIST_SECTION, section_bytes)
+        .build()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
     storage.write_addr(&crate::storage::vault_key("groups", &storage.vault_seed()), &vsf_bytes)
 }
 
@@ -261,8 +270,8 @@ pub fn load_group_list(storage: &FlatStorage) -> Result<Vec<GroupId>, StorageErr
     let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("groups", &storage.vault_seed()))? else {
         return Ok(Vec::new());
     };
-    let section = vsf::schema::SectionBuilder::parse(group_list_schema(), &vsf_bytes)
-        .map_err(|e| StorageError::Parse(format!("group list parse: {e}")))?;
+    let section = vsf::schema::SectionBuilder::parse_document(group_list_schema(), &vsf_bytes, None)
+        .map_err(|e| StorageError::Parse(format!("group list failed verified read: {e}")))?;
     Ok(section
         .get_fields("group")
         .iter()

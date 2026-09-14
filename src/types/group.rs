@@ -12,7 +12,7 @@ pub const GROUP_PREFIX: &str = "\u{1}\u{2}photon-group\u{2}\u{1}";
 pub struct GroupId(pub [u8; 32]);
 
 impl GroupId {
-    /// Mint a fresh group id: `blake3("PHOTON_GROUP_v1" ‖ genesis_nonce)` over 32 random bytes.
+    /// Mint a fresh group id: `blake3("PHOTON_GROUP_v" ‖ 0x01 ‖ genesis_nonce)` over 32 random bytes (the version is a binary numeral after the text — the numbers-binary-at-rest doctrine).
     pub fn mint() -> Self {
         let nonce: [u8; 32] = rand::random();
         Self::from_nonce(&nonce)
@@ -20,7 +20,7 @@ impl GroupId {
     /// The deterministic half of the mint, split out so tests can pin vectors.
     pub fn from_nonce(genesis_nonce: &[u8; 32]) -> Self {
         let mut h = blake3::Hasher::new();
-        h.update(b"PHOTON_GROUP_v1");
+        h.update(b"PHOTON_GROUP_v\x01");
         h.update(genesis_nonce);
         GroupId(*h.finalize().as_bytes())
     }
@@ -33,7 +33,7 @@ impl GroupId {
 /// FOUNDER-SCOPED group proof (settled 2026-09-14): the group's registry face, unique PER FOUNDER — global squatting is impossible by construction ("I can't have three purple turtle groups but you could have one too"). Domain-separated from every personal proof so the knock router always knows what kind of thing it is routing. v1 registers nothing; this is the derivation the attach layer will use.
 pub fn founder_scoped_proof(founder_proof: &[u8; 32], name: &str) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
-    h.update(b"PHOTON_GROUP_v1");
+    h.update(b"PHOTON_GROUP_v\x01");
     h.update(founder_proof);
     h.update(name.as_bytes());
     *h.finalize().as_bytes()
@@ -63,7 +63,7 @@ impl MemberRecord {
     /// The canonical signed bytes: every field in fixed order, signature omitted. One derivation for sign and verify so the two can never disagree.
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 4 + 8 + self.name.len() + 16);
-        b.extend_from_slice(b"PHOTON_GROUP_MEMBER_v1");
+        b.extend_from_slice(b"PHOTON_GROUP_MEMBER_v\x01");
         b.extend_from_slice(&self.party);
         b.extend_from_slice(&self.handle_proof);
         b.extend_from_slice(&(self.name.len() as u32).to_le_bytes());
@@ -88,7 +88,7 @@ pub struct LeaveRecord {
 impl LeaveRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 2 + 8 + 24);
-        b.extend_from_slice(b"PHOTON_GROUP_LEAVE_v1");
+        b.extend_from_slice(b"PHOTON_GROUP_LEAVE_v\x01");
         b.extend_from_slice(&self.party);
         b.extend_from_slice(&self.signed_osc.to_le_bytes());
         b.extend_from_slice(&self.signer_device);
@@ -113,7 +113,7 @@ pub struct GenesisRecord {
 impl GenesisRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 3 + 16 + self.title.len());
-        b.extend_from_slice(b"PHOTON_GROUP_GENESIS_v1");
+        b.extend_from_slice(b"PHOTON_GROUP_GENESIS_v\x01");
         b.extend_from_slice(&self.group_id.0);
         b.extend_from_slice(&self.founder);
         b.extend_from_slice(&self.genesis_osc.to_le_bytes());
