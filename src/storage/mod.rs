@@ -799,6 +799,8 @@ mod tests {
     fn census_sweep_auto_nukes_strays() {
         let _g = serial();
         isolate_test_storage();
+        // Spend log_dir's ONE-SHOT old-log migration (OLD_LOG_SWEPT) before planting the log: that Once fires on the process's first sink open and deletes photon.log.vsf from the config dir — racing it here read as "the census ate the log" (the census never touches it; its keep list names the log).
+        crate::logf!("census test: opening the log sink so the old-log migration is already spent");
         let secret = [0x9Du8; 32];
         let dir = photon_config_dir().unwrap();
         std::fs::create_dir_all(dir.join("junkdir")).unwrap();

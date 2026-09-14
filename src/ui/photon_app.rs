@@ -46,6 +46,7 @@ mod call_ui;
 mod ceremony;
 mod era;
 mod conversation;
+mod groups;
 mod devices;
 mod driver;
 mod input;

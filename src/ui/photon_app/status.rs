@@ -1164,12 +1164,27 @@ impl PhotonApp {
                             crate::log("CHAT: we are not a participant in these chains");
                             continue;
                         };
-                        // For 2-party chats, infer sender as the "other" participant
-                        let from_handle_hash = match chains.other_participant(&our_handle_hash) {
-                            Some(h) => *h,
-                            None => {
-                                crate::log("CHAT: Could not determine sender (not a 2-party chat or we're not a participant)");
-                                continue;
+                        // For 2-party chats, infer sender as the "other" participant. A GROUP frame (docs/groups.md §2) has no "other": the sender is whichever STANDING member's folded devices include the signer — v1 resolves thru the Contact fold (field-test members are mutual friends); the GroupPeer fold for never-friended members layers in with eras. Post-decrypt attribution (pkg.group.from) must agree with this resolution or the row is refused there.
+                        let from_handle_hash = if chains.group {
+                            let gid = crate::types::group::GroupId(*fid_ref.as_bytes());
+                            match self.contacts.iter().find(|c| {
+                                !c.is_sibling
+                                    && c.knows_device(&sender_pubkey.key)
+                                    && self.group_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
+                            }) {
+                                Some(c) => c.handle_hash,
+                                None => {
+                                    crate::logf!("GROUP: dropped frame — signer {}... is no standing member's device of {}", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
+                                    continue;
+                                }
+                            }
+                        } else {
+                            match chains.other_participant(&our_handle_hash) {
+                                Some(h) => *h,
+                                None => {
+                                    crate::log("CHAT: Could not determine sender (not a 2-party chat or we're not a participant)");
+                                    continue;
+                                }
                             }
                         };
 
@@ -1233,8 +1248,17 @@ impl PhotonApp {
                             continue;
                         }
 
-                        // The conversation this frame lands in — resolved THRU THE CONTACT (see the braid drain's SHADOW SEAM note: chains-derived resolution minted an unpersisted shadow object when the chains carry a stale-era participant set). Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here).
-                        let conv_pos = {
+                        // The conversation this frame lands in — resolved THRU THE CONTACT (see the braid drain's SHADOW SEAM note: chains-derived resolution minted an unpersisted shadow object when the chains carry a stale-era participant set). Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here). A GROUP resolves by its stable id — no derivation, no shadow seam possible.
+                        let conv_pos = if chains.group {
+                            match self.conversations.iter().position(|v| v.id().as_bytes() == fid_ref.as_bytes()) {
+                                Some(p) => p,
+                                None => {
+                                    let gid = crate::types::group::GroupId(*fid_ref.as_bytes());
+                                    self.conversations.push(crate::types::Conversation::new_group(gid, chains.participants().iter().copied()));
+                                    self.conversations.len() - 1
+                                }
+                            }
+                        } else {
                             let conv_our_pid = if self.contacts[contact_idx].is_sibling {
                                 match our_sibling_pid {
                                     Some(p) => p,
@@ -1349,7 +1373,8 @@ impl PhotonApp {
                                 c.last_pinged = None;
                             }
                             // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a call ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
-                            if !self.contacts[contact_idx].is_sibling {
+                            if !self.contacts[contact_idx].is_sibling && !chains.group {
+                                // Groups: the friend-history walk is a pairwise protocol; a group gap waits on the sender's retransmit and (later) group re-serve — never a friendship walk against a group conversation.
                                 let conv = &mut self.conversations[conv_pos];
                                 if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {
                                     crate::log("CHAT: gap arms the history walk — the friend holds the missing row(s)");
@@ -1434,8 +1459,11 @@ impl PhotonApp {
                             "CHAT: No friendship found for conversation_token {}...",
                             hex::encode(&conversation_token[..8])
                         );
-                        // A frame we can't even ROUTE is evidence, not just noise: if this token's contact claims the ceremony is Complete, the state is lying (chains wiped, claim resurrected) and nothing else will ever trigger the repair. Recorded here, judged post-drain.
-                        if !rekey_probe.contains(&conversation_token) {
+                        // A frame we can't even ROUTE is evidence, not just noise: if this token's contact claims the ceremony is Complete, the state is lying (chains wiped, claim resurrected) and nothing else will ever trigger the repair. Recorded here, judged post-drain. A GROUP token is excluded — no ceremony exists to repair; the root re-arrives by a refreshed invite, never a re-clutch.
+                        let group_token = self.group_rosters.iter().any(|(g, _)| g.token() == conversation_token);
+                        if group_token {
+                            crate::logf!("GROUP: frame for token {}... arrived before its chains loaded — dropped (no rekey probe)", hex::encode(&conversation_token[..8]));
+                        } else if !rekey_probe.contains(&conversation_token) {
                             rekey_probe.push(conversation_token);
                         }
                     }

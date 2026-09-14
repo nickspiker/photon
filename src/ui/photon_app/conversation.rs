@@ -1012,6 +1012,8 @@ impl PhotonApp {
         let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
         let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
+        // Group control row landed (docs/groups.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
+        let mut group_signal_evt: Option<(usize, usize, crate::types::group::GroupSignal, Option<Vec<u8>>, i64)> = None;
         // The 256-row cadence edge (crypto/era.rs): the contact whose peer-row count just crossed a multiple of the cadence.
         let mut cadence_ci: Option<usize> = None;
         let mut recv_seal_idx: Option<usize> = None;
@@ -1042,7 +1044,19 @@ impl PhotonApp {
             // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. The UNSHADOWED identity pid is kept for the conversation resolution below, which must NOT follow the chains' expression of us.
             let identity_hh = our_handle_hash;
             // TOTAL identity resolution — no silent exits. The normal path: one of our pids is a participant, the other participant is a known contact. EITHER half can be stale-era (a pre-flag-day ceremony's expression of us, OR a contact whose key has since migrated) — and the frame still DECRYPTED, because lanes key on wire labels, not participants: the crypto is fine, only the naming is stale. Breaking silently on any half was the field's decrypts-forever-never-ACKs loop (2026-08-11: one device re-decrypted the same retransmitted frame every ~15s for six-plus HOURS — no row, no ACK, no persist, nothing in its log). The fallback resolves the peer by matching participants against the contact list; only a set matching NO known contact drops, loudly.
-            let (our_handle_hash, from_handle_hash, contact_idx) = {
+            let (our_handle_hash, from_handle_hash, contact_idx) = if chains.group {
+                // GROUP resolution (docs/groups.md §2): the sender is whichever STANDING member's folded devices include the signer — the same verdict dispatch reached, re-run against current state. No other-participant, no shadow seam: the id is minted, never derived.
+                let gid = crate::types::group::GroupId(*chains.friendship_id.as_bytes());
+                let Some(idx) = self.contacts.iter().position(|c| {
+                    !c.is_sibling
+                        && c.knows_device(&sender_pubkey.key)
+                        && self.group_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
+                }) else {
+                    crate::logf!("GROUP: decrypted frame's signer is no standing member's device — dropped (token {}...)", hex::encode(&conversation_token[..8]));
+                    break 'commit;
+                };
+                (identity_hh, self.contacts[idx].handle_hash, idx)
+            } else {
                 let in_set = |p: &[u8; 32]| chains.participants().contains(p);
                 let us = if in_set(&identity_hh) {
                     Some(identity_hh)
@@ -1094,8 +1108,17 @@ impl PhotonApp {
             }
             // DUPLICATE STAMP (eagle_time <= last received on this lane) that nonetheless LINKED our current head (the CAS above proved it): a RE-ENCRYPT of an old row at its original stamp — a sender that re-encrypted after missing our ACK, or a re-serve. The sender's chain has PROVABLY advanced onto this frame's hash, so we must follow it: the chain mutations below run for this frame too (salt, mixing, advance, head, gap drain — minus the contiguous-tip mark, whose stamp is already covered), then the branch at the commit snapshot re-ACKs from THIS copy's plaintext (the stateless lost-ACK heal, Nick's "hidden anchor") and stops before any row/UI/bridge semantics — dedup proved we hold the content. The old early-exit here re-ACKed WITHOUT following, which forked the lane permanently: our head stayed at the original while every successor linked the re-encrypt's — "expected prev X, got Y" buffering forever (field 2026-08-23: bridge outputs #2 and #3 never displayed, wedged behind a re-encrypted output #1).
             let is_dup_frame = chains.is_duplicate(&lane, timestamp);
-            // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth.
-            let conv_pos = {
+            // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth. A GROUP resolves by its stable id — minted, never derived.
+            let conv_pos = if chains.group {
+                match self.conversations.iter().position(|v| v.id().as_bytes() == chains.friendship_id.as_bytes()) {
+                    Some(p) => p,
+                    None => {
+                        let gid = crate::types::group::GroupId(*chains.friendship_id.as_bytes());
+                        self.conversations.push(crate::types::Conversation::new_group(gid, chains.participants().iter().copied()));
+                        self.conversations.len() - 1
+                    }
+                }
+            } else {
                 let conv_our_pid = if self.contacts[contact_idx].is_sibling {
                     match our_sibling_pid {
                         Some(p) => p,
@@ -1183,6 +1206,21 @@ impl PhotonApp {
                 .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
             let bridge_wire = pkg.bridge;
             let mut pkg_era_kem = pkg.era_kem;
+            let pkg_group = pkg.group;
+            // GROUP attribution must AGREE with the transport verdict (docs/groups.md §3): the signer proved standing membership as from_handle_hash; a package claiming another party is spoofed attribution, refused before any row exists.
+            if chains.group {
+                match pkg_group.as_ref() {
+                    Some(g) if g.from == from_handle_hash => {}
+                    Some(g) => {
+                        crate::logf!("GROUP: attribution mismatch — signer resolves {} but the package claims {}; dropped", crate::fp(&from_handle_hash), crate::fp(&g.from));
+                        break 'commit;
+                    }
+                    None => {
+                        crate::log("GROUP: frame without attribution — dropped");
+                        break 'commit;
+                    }
+                }
+            }
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
             let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
@@ -1376,6 +1414,13 @@ impl PhotonApp {
                 self.conversations[conv_pos].insert_message_sorted(era_row);
                 persist_ci = Some(contact_idx);
                 era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
+            } else if let Some(sig) = crate::types::group::GroupSignal::parse(&message_text) {
+                // Group control row (docs/groups.md §4): an INVITE rides a friendship conversation, RECORDS ride the group's own — both land as hidden rows (ACK durability, the probe pattern) and dispatch after the borrow.
+                let row = ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
+                    .with_ack_hash(plaintext_hash);
+                self.conversations[conv_pos].insert_message_sorted(row);
+                persist_ci = Some(contact_idx);
+                group_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.as_ref().and_then(|g| g.blob.clone()), timestamp));
             } else if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
                 let sig_row =
                     ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
@@ -1508,6 +1553,10 @@ impl PhotonApp {
                 .with_ack_hash(plaintext_hash);
                 // The wire's typed reference lands ON THE ROW — without this the sender saw its own reply hint (the send path stamps its row) while the receiver's copy arrived bare (field, 2026-08-09: "responses don't show the hinted message on the receive side").
                 msg.reference = wire_reference;
+                // GROUP attribution lands on the row (docs/groups.md §5) — the verified sender party id (the agreement check above already refused a mismatch). Pairwise rows stay authorless.
+                if chains.group {
+                    msg.author = pkg_group.as_ref().map(|g| g.from);
+                }
                 // The wire's typed marks land too — validated against the body (the receiver renders ONLY explicit marks, never a regex of its own).
                 msg.marks = crate::types::valid_marks(&msg.content, &pkg
                     .marks
@@ -1774,6 +1823,9 @@ impl PhotonApp {
         }
         if let Some((ci, sig, kem, ts)) = era_signal_evt {
             self.on_era_signal(ci, sig, kem, ts);
+        }
+        if let Some((ci, cp, sig, blob, ts)) = group_signal_evt {
+            self.on_group_signal(ci, cp, sig, blob, ts);
         }
         if let Some(ci) = cadence_ci {
             self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached);
