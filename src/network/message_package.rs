@@ -29,8 +29,16 @@ pub struct MessagePackage {
     pub era_kem: Option<crate::crypto::era::EraKemWire>,
     /// Typed attachment fields (2026-09-10): the sender's sniffed kind, dims, preview-blob hash and the row's micro preview. None on every non-attachment row.
     pub attach: Option<AttachWire>,
-    /// Group record payload (docs/groups.md §4): the roster-codec VSF blob riding a GROUP_PREFIX control row — a record posting carries just its records, an invite carries the roster snapshot. Typed bytes beside the text, never inside it (the era-KEM doctrine). None on every non-group row.
-    pub group_blob: Option<Vec<u8>>,
+    /// Typed group extras (docs/groups.md §3/§4): attribution, weave authors, and the record payload. None on every friendship row.
+    pub group: Option<GroupWire>,
+}
+
+/// The group frame's typed extras (docs/groups.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a GROUP_PREFIX control row (invite snapshot or record posting).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupWire {
+    pub from: [u8; 32],
+    pub woven_authors: Vec<[u8; 32]>,
+    pub blob: Option<Vec<u8>>,
 }
 
 /// The attachment row's typed extras on the friend wire — kind (AttachKind wire value), pixel dims (0 = unknown), the preview-blob hash, and the micro preview bytes.
@@ -100,6 +108,8 @@ fn msg_schema() -> SectionSchema {
         .field("aph", TypeConstraint::Any)
         .field("apv", TypeConstraint::Any)
         .field("gpl", TypeConstraint::Any) // hR group record payload (roster-codec blob) on a GROUP_PREFIX row; old parsers discard the unknown name
+        .field("gfrom", TypeConstraint::AnyHash) // hb 32 group attribution: the sender's party id (docs/groups.md §3); presence marks a group frame
+        .field("gwa", TypeConstraint::AnyHash) // hb 32 weave author per wt entry (group weave refs are (author, eagle_time)); count must match wt
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -127,7 +137,7 @@ pub fn build_message_package_era(
     pad: &[u8],
     era_kem: Option<&crate::crypto::era::EraKemWire>,
     attach: Option<&AttachWire>,
-    group_blob: Option<&[u8]>,
+    group: Option<&GroupWire>,
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
         .build()
@@ -219,9 +229,15 @@ pub fn build_message_package_era(
             builder = builder.set("apv", VsfType::hR(a.preview.clone())).map_err(|e| e.to_string())?;
         }
     }
-    if let Some(g) = group_blob {
-        if !g.is_empty() {
-            builder = builder.set("gpl", VsfType::hR(g.to_vec())).map_err(|e| e.to_string())?;
+    if let Some(g) = group {
+        builder = builder.set("gfrom", VsfType::hb(g.from.to_vec())).map_err(|e| e.to_string())?;
+        for a in &g.woven_authors {
+            builder = builder.append_multi("gwa", vec![VsfType::hb(a.to_vec())]).map_err(|e| e.to_string())?;
+        }
+        if let Some(b) = g.blob.as_ref() {
+            if !b.is_empty() {
+                builder = builder.set("gpl", VsfType::hR(b.clone())).map_err(|e| e.to_string())?;
+            }
         }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
@@ -384,10 +400,32 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             preview: bytes_field("apv"),
         }),
     };
-    let group_blob = {
-        let g = bytes_field("gpl");
-        (!g.is_empty()).then_some(g)
-    };
+    // Group extras: `gfrom` is the presence flag (a group frame always attributes). Weave authors must pair 1:1 with woven times — a mismatch drops the AUTHORS (the times still drive the braid advance; the receive path treats authorless refs as unresolvable and parks nothing on them).
+    let group = section
+        .get_fields("gfrom")
+        .first()
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+            _ => None,
+        })
+        .map(|from| {
+            let authors: Vec<[u8; 32]> = section
+                .get_fields("gwa")
+                .iter()
+                .filter_map(|f| f.values.first())
+                .filter_map(|v| match v {
+                    VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+                    _ => None,
+                })
+                .collect();
+            let blob = bytes_field("gpl");
+            GroupWire {
+                from,
+                woven_authors: if authors.len() == woven_times.len() { authors } else { Vec::new() },
+                blob: (!blob.is_empty()).then_some(blob),
+            }
+        });
     Ok(MessagePackage {
         body,
         incorporated_hp,
@@ -400,7 +438,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         marks,
         era_kem,
         attach,
-        group_blob,
+        group,
     })
 }
 
@@ -419,15 +457,23 @@ mod tests {
         assert_eq!(parse_message_package(&plain).unwrap().era_kem, None);
     }
 
-    /// The group record payload rides as typed bytes beside the control text (the era-KEM doctrine) and is absent on every ordinary row.
+    /// The group extras ride typed beside the text (the era-KEM doctrine): attribution, paired weave authors, the record blob — absent on every friendship row, and a wa/wt count mismatch drops the authors while the times keep driving the braid.
     #[test]
-    fn group_blob_rides_and_is_absent_on_plain_rows() {
-        let blob = vec![7u8; 300];
-        let built = build_message_package_era("\u{1}\u{2}photon-group\u{2}\u{1}records", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&blob)).unwrap();
+    fn group_wire_rides_and_is_absent_on_plain_rows() {
+        let g = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]) };
+        let built = build_message_package_era("\u{1}\u{2}photon-group\u{2}\u{1}records", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
-        assert_eq!(pkg.group_blob.as_deref(), Some(blob.as_slice()));
+        assert_eq!(pkg.group, Some(g.clone()));
+        assert_eq!(pkg.woven_times, vec![5, 9]);
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
-        assert_eq!(parse_message_package(&plain).unwrap().group_blob, None);
+        assert_eq!(parse_message_package(&plain).unwrap().group, None);
+        // Mismatched pairing: one author for two times — authors drop, attribution and blob stay.
+        let bad = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None };
+        let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad)).unwrap();
+        let pkg = parse_message_package(&built).unwrap();
+        assert_eq!(pkg.group.as_ref().unwrap().from, [0xAA; 32]);
+        assert!(pkg.group.as_ref().unwrap().woven_authors.is_empty());
+        assert_eq!(pkg.woven_times, vec![5, 9]);
     }
 
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).

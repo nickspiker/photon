@@ -819,7 +819,7 @@ impl PhotonApp {
         self.chain_transmit_with(ci, text, eagle_time, reference, bridge, None, None)
     }
 
-    /// The full transmit: an era-ratchet row (crypto/era.rs) also carries its KEM material as typed package fields, and a GROUP control row (types/group.rs GroupSignal) its roster-codec blob — the pending ledger persists the built ciphertext, so retransmits keep both without row custody.
+    /// The full transmit: an era-ratchet row (crypto/era.rs) also carries its KEM material as typed package fields, and a GROUP frame (types/group.rs) its attribution + weave authors + roster-codec blob — the pending ledger persists the built ciphertext, so retransmits keep all of it without row custody.
     pub(super) fn chain_transmit_with(
         &mut self,
         ci: usize,
@@ -828,7 +828,7 @@ impl PhotonApp {
         reference: Option<(crate::types::RefKind, i64)>,
         bridge: Option<&crate::network::message_package::BridgeWire>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
-        group_blob: Option<&[u8]>,
+        group: Option<&crate::network::message_package::GroupWire>,
     ) -> bool {
         // Read before any chains borrow: the row's own marks (a tagged phrase carries a destination the text cannot rebuild — a re-serve reads the row, 2026-09-09).
         let row_marks: Vec<crate::types::MessageMark> = self
@@ -1016,7 +1016,7 @@ impl PhotonApp {
                 &pad,
                 era_kem,
                 row_attach.as_ref(),
-                group_blob,
+                group,
             ) {
                 Ok(p) => p,
                 Err(e) => {

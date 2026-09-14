@@ -197,6 +197,86 @@ impl GroupPeer {
     }
 }
 
+/// A group weave reference: (author party id, eagle_time) — §3 The weave. Eagle times are unique per device, not per group, so the author disambiguates.
+pub type StrandRef = (PartyId, i64);
+
+/// What one offer/serve edge produced: rows now applicable (the offered row first when it applied directly, then the unpark cascade in discovery order), and the strands to PULL — addressed to the offered row's SENDER, who necessarily holds what it wove.
+#[derive(Default, Debug, PartialEq)]
+pub struct StrandOutcome {
+    pub applied: Vec<StrandRef>,
+    pub pulls: Vec<StrandRef>,
+}
+
+/// The receive-side confluence engine for a group stream (§3 The weave): a row applies when every strand it weaves is already held; a row missing one PARKS and pulls it from its own sender. Weave references point strictly backwards in causality, so the pull graph is a DAG and parking always terminates in applies, whatever the delivery order — braid §1.4's confluence promise, kept in groups. Edge-driven: state moves only on offer/serve edges, never a timer. The wiring seeds `applied` from the conversation DB at load; a served strand is just another offer.
+#[derive(Default, Clone, Debug)]
+pub struct StrandLedger {
+    applied: std::collections::HashSet<StrandRef>,
+    /// Parked rows with their unmet refs; a row parks once and unparks when its last ref lands.
+    parked: Vec<(StrandRef, Vec<StrandRef>)>,
+    /// Strands already asked for — one pull per missing edge; a re-park of the same gap stays quiet until served (retransmit pressure lives in the pending ledger, not here).
+    requested: std::collections::HashSet<StrandRef>,
+}
+
+impl StrandLedger {
+    /// Seed a strand as already held (conversation DB rows at load; our own sends).
+    pub fn seed(&mut self, row: StrandRef) {
+        self.applied.insert(row);
+    }
+
+    /// True when the strand has been applied.
+    pub fn holds(&self, row: &StrandRef) -> bool {
+        self.applied.contains(row)
+    }
+
+    /// Rows currently parked (missing strands outstanding).
+    pub fn parked_count(&self) -> usize {
+        self.parked.len()
+    }
+
+    /// Offer a row (fresh arrival OR a served pull — the two are one edge). Duplicate offers are no-ops.
+    pub fn offer(&mut self, row: StrandRef, woven: &[StrandRef]) -> StrandOutcome {
+        let mut out = StrandOutcome::default();
+        if self.applied.contains(&row) {
+            return out;
+        }
+        let missing: Vec<StrandRef> = woven.iter().filter(|r| !self.applied.contains(*r)).copied().collect();
+        if missing.is_empty() {
+            self.apply_cascade(row, &mut out);
+            return out;
+        }
+        for m in &missing {
+            if self.requested.insert(*m) {
+                out.pulls.push(*m);
+            }
+        }
+        if !self.parked.iter().any(|(r, _)| *r == row) {
+            self.parked.push((row, missing));
+        }
+        out
+    }
+
+    /// Apply one row, then drain every parked row it (transitively) completes.
+    fn apply_cascade(&mut self, row: StrandRef, out: &mut StrandOutcome) {
+        let mut worklist = vec![row];
+        while let Some(r) = worklist.pop() {
+            if !self.applied.insert(r) {
+                continue;
+            }
+            out.applied.push(r);
+            self.requested.remove(&r);
+            let mut i = 0;
+            while i < self.parked.len() {
+                self.parked[i].1.retain(|m| *m != r);
+                if self.parked[i].1.is_empty() {
+                    worklist.push(self.parked.swap_remove(i).0);
+                } else {
+                    i += 1;
+                }
+            }
+        }
+    }
+}
+
 /// The device pubkey a seed signs as — fill `signer_device` with this BEFORE building signing bytes (the device is part of what's signed, so it must be in place first).
 pub fn device_pubkey(device_seed: &[u8; 32]) -> [u8; 32] {
     ed25519_dalek::SigningKey::from_bytes(device_seed).verifying_key().to_bytes()
@@ -500,5 +580,69 @@ mod tests {
         assert!(f_roster.merge_member(rec));
         assert_eq!(f_roster.standing(), j_roster.standing());
         assert_eq!(f_roster.standing().len(), 2);
+    }
+
+    /// The step-1 unit (§9): strand-pull on a simulated three-member stream. Weave refs point strictly backwards, so the pull graph is a DAG — every delivery order (in-order, fully reversed, deterministically shuffled) converges to the same fully-applied stream, pulls only ever name earlier rows, one pull per missing edge, and duplicate offers are no-ops. Braid §1.4 confluence, kept in groups.
+    #[test]
+    fn strand_pull_dag_three_member_stream() {
+        let members: [PartyId; 3] = [[0xA0; 32], [0xB0; 32], [0xC0; 32]];
+        // A deterministic LCG (no wall-clock randomness in tests) drives both the weave choices and the shuffle.
+        let mut lcg: u64 = 0x9E37_79B9_7F4A_7C15;
+        let mut next = move || {
+            lcg = lcg.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            lcg >> 33
+        };
+        // The stream: 30 rows, author round-robin, each weaving up to two strictly-earlier rows.
+        let mut stream: Vec<(StrandRef, Vec<StrandRef>)> = Vec::new();
+        for i in 0..30u64 {
+            let row: StrandRef = (members[(i % 3) as usize], 1000 + i as i64);
+            let mut woven = Vec::new();
+            if i > 0 {
+                for _ in 0..(next() % 3) {
+                    woven.push(stream[(next() % i) as usize].0);
+                }
+                woven.dedup();
+            }
+            stream.push((row, woven));
+        }
+        let orders: Vec<Vec<usize>> = vec![
+            (0..30).collect(),
+            (0..30).rev().collect(),
+            {
+                let mut v: Vec<usize> = (0..30).collect();
+                for i in (1..30).rev() {
+                    v.swap(i, (next() % (i as u64 + 1)) as usize);
+                }
+                v
+            },
+        ];
+        for order in orders {
+            let mut ledger = StrandLedger::default();
+            let mut pulls_seen = 0usize;
+            for &i in &order {
+                let (row, woven) = &stream[i];
+                let out = ledger.offer(*row, woven);
+                // Serve every pull immediately from the stream (the sender necessarily holds it) — served strands are just offers, and their own missing refs pull recursively.
+                let mut queue = out.pulls;
+                while let Some(want) = queue.pop() {
+                    pulls_seen += 1;
+                    assert!(want.1 < row.1 || want.0 != row.0, "a pull can only name a causally earlier strand");
+                    let (prow, pwoven) = stream.iter().find(|(r, _)| *r == want).expect("the sender holds what it wove");
+                    assert!(prow.1 <= row.1, "weave refs point strictly backwards — the DAG never asks forward");
+                    queue.extend(ledger.offer(*prow, pwoven).pulls);
+                }
+            }
+            assert_eq!(ledger.parked_count(), 0, "every delivery order converges — nothing stays parked");
+            for (row, _) in &stream {
+                assert!(ledger.holds(row));
+            }
+            // Duplicate offers after convergence are no-ops.
+            let out = ledger.offer(stream[7].0, &stream[7].1);
+            assert!(out.applied.is_empty() && out.pulls.is_empty());
+            // Reverse delivery must actually exercise the parking machinery.
+            if order[0] == 29 {
+                assert!(pulls_seen > 0, "reverse order parks and pulls");
+            }
+        }
     }
 }
