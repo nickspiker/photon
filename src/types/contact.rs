@@ -569,6 +569,8 @@ pub struct Contact {
     pub device_about: Option<String>,
     /// Latched once proof retransmission gave up (lifetime cap hit) — the peer answered but can never place our proof (token mismatch: a stale-identity ghost, or an interrupted re-genesis). Freezes the resend storm; the UI reads it as "can't complete — remove and re-add". Runtime-only; a fresh session re-tries once (the peer may have re-attested correctly).
     pub clutch_proof_gave_up: bool,
+    /// YIELD MEANS YIELD (2026-09-14): set when a same-round proof-mismatch streak convicts a competing ceremony instance. While set this device never CLAIMS a round for the contact (no keygen pickup, no proof retransmit) — it only ANSWERS: the peer's next offer clears it (they own the round), and a completion adopted by replication clears it. Runtime only.
+    pub clutch_yielded: bool,
     /// When we last DISCARDED our round to adopt a peer's fresh-keyed mid-ceremony offer (§4.2 wholesale adoption). Rate-limits adoption: a peer that can't hear our responses (one-way reachability — live pair 2026-07-25) re-offers with new keys every ~25s, and unthrottled adoption re-ran keygen+encap on the UI thread each time (a hitch storm). While the last adoption is fresh we hold our round and ignore further re-offers; the peer only needs ONE of our responses to land. Runtime-only, never persisted.
     pub clutch_last_adoption: Option<std::time::Instant>,
     /// When this device DEFERRED a §4.2 responder claim to a lower online sibling (fan-out tie-break). The deference is time-boxed: past one round TTL with the friend's offer still waiting, the winner evidently failed and the rescue falls to us. Runtime-only, never persisted — a restart re-defers from scratch, which only costs the winner another TTL of grace.
@@ -770,6 +772,7 @@ impl Contact {
             clutch_mismatch_streak: 0, // Same-round mismatch streak (runtime only)
             device_about: None,        // Learned from the sealed pong tail (runtime only)
             clutch_proof_gave_up: false, // Latched when the lifetime cap is hit (runtime only)
+            clutch_yielded: false,
             clutch_last_adoption: None,
             clutch_claim_deferred: None,
             clutch_keygen_in_progress: false, // No keygen running yet

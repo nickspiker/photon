@@ -652,6 +652,7 @@ impl PhotonApp {
                 && c.clutch_our_keypairs.is_none()
                 && !c.clutch_keygen_in_progress
                 && !c.locked_out
+                && !c.clutch_yielded
                 && c.clutch_round_started
                     .map_or(true, |t| now - t >= CLUTCH_ROUND_TTL_OSC)
                 && !ceremony_parked_by(c, our_device, &siblings)
@@ -1992,6 +1993,8 @@ impl PhotonApp {
                 if newly_enabled {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                     contact.chain_woven = true;
+                    // A completion adopted by replication is the other instance winning — the yield served its purpose.
+                    contact.clutch_yielded = false;
                     if let Some(storage) = self.storage.as_ref() {
                         let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
                     }

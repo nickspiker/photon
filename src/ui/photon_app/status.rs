@@ -1954,6 +1954,10 @@ impl PhotonApp {
                                         contact.completed_their_hqc_prefix = None;
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));
+                                    } else if contact.get_slot(&their_handle_hash).and_then(|s| s.offer_device).is_some_and(|od| od != sender_pubkey) {
+                                        // SLOTS ARE KEYED BY DEVICE (2026-09-14): a DIFFERENT device of the same identity offering different keys mid-round is a second instance — refused, the round stays with the device that claimed it. (The same device re-offering new keys below is a genuine restart and is adopted.)
+                                        crate::logf!("CLUTCH: offer from device {} but this round is device {}'s — refused (one instance per round)", crate::fp(&sender_pubkey), crate::fp(&contact.get_slot(&their_handle_hash).and_then(|s| s.offer_device).unwrap_or_default()));
+                                        continue;
                                     } else {
                                         // Not Complete and they minted NEW keys — their side is running a FRESH ceremony instance (their §4.2 ceremony owner changed, or they discarded and restarted). The old "keep our keys, swap their offer" splice welded half of OUR round onto half of THEIRS: the friend then held offers/completes from mixed instances and dropped the odd one out as "unknown conversation_token" forever. Adopt their new round wholesale instead — discard ours completely; the fallthrough below re-inits slots and stores their fresh offer + provenance; fresh keys of ours arrive via keygen and the drain sends our offer.
                                         // ADOPTION COOLDOWN: a peer that can't HEAR our responses (one-way reachability) re-offers with fresh keys every ~25s; unthrottled adoption re-ran keygen+encap per round (a UI-thread hitch storm, live-pair livelock 2026-07-25). Hold the recently-adopted round instead — our response to it is already in flight/on the relay, and the peer only needs one to land. A genuinely new ceremony attempt survives the ignore (it persists past the window).
@@ -1986,6 +1990,11 @@ impl PhotonApp {
                                 contact.init_clutch_slots(our_handle_hash);
                             }
 
+                            // A yielded contact answers the peer's claim: their offer is the round, our yield ends here.
+                            if contact.clutch_yielded {
+                                crate::logf!("CLUTCH: {} claimed a round (device {}) — yield released, answering", crate::fp(&contact.handle_proof), crate::fp(&sender_pubkey));
+                                contact.clutch_yielded = false;
+                            }
                             // Store their offer in their slot, with its SIGNING device — the eggs bind the offer-origin device pair, never the pinned one (PartySlot::offer_device).
                             if let Some(slot) = contact.get_slot_mut(&their_handle_hash) {
                                 slot.offer = Some(their_offer.clone());
@@ -2549,6 +2558,13 @@ impl PhotonApp {
                                 }
                             }
 
+                            // SLOTS ARE KEYED BY DEVICE (2026-09-14, the competing-instance wedge): the round belongs to the device whose OFFER sits in the slot; a KEM response signed by any other device of the same identity is a second instance and is dropped, never merged into this basket. First device wins; the peer completes exactly one instance per round.
+                            if let Some(od) = contact.get_slot(&their_handle_hash).and_then(|s| s.offer_device) {
+                                if od != sender_pubkey {
+                                    crate::logf!("CLUTCH: KEM response from device {} but this round is device {}'s — dropped (one instance per round)", crate::fp(&sender_pubkey), crate::fp(&od));
+                                    break;
+                                }
+                            }
                             // Duplicate KEM response (peer retransmit): the slot already holds their secrets — drop before spending anything. Pre-2026-08-15 every duplicate re-ran all 8 decapsulations INLINE, so a retransmit storm compounded the very UI freeze that was stalling our reply.
                             if contact
                                 .get_slot(&their_handle_hash)
@@ -2773,8 +2789,9 @@ impl PhotonApp {
                                             contact.clutch_mismatch_streak += 1;
                                             const MISMATCH_YIELD_STREAK: u16 = 3;
                                             if contact.clutch_mismatch_streak >= MISMATCH_YIELD_STREAK {
-                                                crate::logf!("CLUTCH: competing ceremony instance with {} ({} same-round mismatches) — yielding this round; replication or a fresh claimed round converges", crate::fp(&contact.handle_proof), contact.clutch_mismatch_streak);
+                                                crate::logf!("CLUTCH: competing ceremony instance with {} (device {}, {} same-round mismatches) — YIELDED: this device answers the peer's next offer and never claims a round for this contact until then (2026-09-14: the old yield discarded and re-ran, colliding again with the instance still running)", crate::fp(&contact.handle_proof), crate::fp(&sender_pubkey), MISMATCH_YIELD_STREAK);
                                                 contact.clutch_mismatch_streak = 0;
+                                                contact.clutch_yielded = true;
                                                 contact.discard_clutch_round();
                                                 // Stand down for a JITTERED slice of the round TTL (50-100%): the yield exists to make room for adoption, not to race a fresh keygen into the same collision — and two devices yielding on identical fixed timers would re-collide on the same beat forever.
                                                 contact.clutch_round_started =

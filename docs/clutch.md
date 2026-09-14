@@ -767,6 +767,14 @@ An attacker must compromise **ALL** of:
 
 ---
 
+## 10.1 One instance per round — the peer decides (2026-09-14)
+
+Field, the oceaned-phone test (Nick left a dead device in his fleet on purpose): the fleet elected the dead phone as ceremony owner for the self-conversation, every live device fell through to running the round itself, and the desktop merged two siblings' answers into one basket — a same-round proof mismatch that retransmitted forever ("competing ceremony instance", eleven times in one desktop session). Nick's conclusion, adopted here: an election over liveness *estimates* is naive (a device a week silent and one a week and a day silent are indistinguishable, and any estimate is a race); the only party that knows who is alive is the peer, at the moment it answers. So:
+- **Every live device may send.** No owner election gates the claim.
+- **The peer completes exactly one instance per round.** The round belongs to the device whose OFFER the peer holds in the slot (`PartySlot::offer_device`); an offer or a KEM response signed by any other device of the same identity is refused or dropped — first device wins, nothing is ever merged. A losing device simply is not the runner this round.
+- **Yield means yield.** A same-round mismatch streak sets `clutch_yielded`: the device never claims a round for that contact (no keygen pickup, no proof retransmit) until the peer's next offer (they own the round; we answer) or a completion adopted by replication clears it. The old yield discarded and re-ran, colliding again with the instance still running.
+A dead device is thereby inert without being removed — "identity never dies" and a lost phone cannot hold a job. The remaining bandwidth cost of N offers per round is nothing at fleet sizes today; a provenance-first handshake (the peer pulls the full offer from the one it picks) is the answer if fleets grow.
+
 ## 11. License
 
 MIT OR Apache-2.0 (dual licensed)
