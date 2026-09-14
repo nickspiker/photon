@@ -4690,7 +4690,11 @@ impl PhotonApp {
 
                 StatusUpdate::ReflexiveLearned { addr } => {
                     // Our own public address, learned via peer-echoed reflection on the live UDP data socket. Store it for candidate gathering and the announce to publish (so our `PeerRecord.ip` is the real data-socket address, not fgtw.org's cone-only TLS view).
-                    if self.our_reflexive != Some(addr) {
+                    // PUBLIC BEATS PRIVATE, here too (field 2026-09-14: the phone re-seeded a global v6 from FGTW and 0.8 s later a same-LAN pong's echo of 192.168.1.170 replaced it — the fgtw slot keeps v4 and v6 apart, this single field did not).
+                    let demotes = crate::network::traverse::is_lan_scope(&addr) && self.our_reflexive.is_some_and(|held| !crate::network::traverse::is_lan_scope(&held));
+                    if demotes {
+                        crate::logf!("TRAVERSE: LAN echo {} does not unseat our public reflexive", addr);
+                    } else if self.our_reflexive != Some(addr) {
                         self.our_reflexive = Some(addr);
                         crate::logf!("TRAVERSE: our reflexive address = {}", addr);
                         // The re-publish happens in tick, not here: this arm sits inside a borrow of `status_checker`, and publishing also needs `handle_proof`, which can arrive AFTER the first reflexive echo. Comparing against `self_record_published_for` there makes it idempotent and self-retrying instead of a one-shot that could fire too early.

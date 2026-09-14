@@ -548,7 +548,7 @@ impl PhotonApp {
     }
 
     /// Re-announce to FGTW off the UI thread: the ack carries what the server saw as our source — the only public address a carrier-NAT phone can learn before any peer reaches it, and the only one a home phone whose peers are all on its LAN ever learns (a LAN echo is never adopted as reflexive). Seeded by call_drought_tick from the mailbox. Fired on the interface-change edge and on a LAN-address move.
-    pub(super) fn reseed_reflexive_from_fgtw(&mut self) {
+    pub(super) fn reseed_reflexive_from_fgtw(&self) {
         if let (Some(kp), Some(hp), Some(seed), Some(port)) = (
             self.device_keypair.clone(),
             self.our_handle_proof(),
@@ -582,7 +582,9 @@ impl PhotonApp {
             self.on_network_changed();
         }
         if let Some(a) = crate::network::traverse::take_reflexive_seed() {
-            if self.our_reflexive.is_none() && !crate::network::traverse::gather::is_bogus_addr(&a) {
+            // The seed lands when we hold nothing, or only a LAN-scope echo (a home phone whose peers are all on its LAN).
+            let held_public = self.our_reflexive.is_some_and(|h| !crate::network::traverse::is_lan_scope(&h));
+            if !held_public && !crate::network::traverse::gather::is_bogus_addr(&a) && !crate::network::traverse::is_lan_scope(&a) {
                 self.our_reflexive = Some(a);
                 crate::logf!("TRAVERSE: reflexive address seeded from FGTW's re-observation = {} (a peer echo will refine it)", a);
                 if let Some(dev) = self.active_call.as_ref().and_then(|c| c.peer_device) {
@@ -1655,6 +1657,10 @@ impl PhotonApp {
         if let Some(dev) = peer_dev {
             if addr == crate::network::status::RELAY_ADDR {
                 crate::logf!("CALL: no reachable address for the answering device {} — TX waits for its first packet", crate::fp(&dev));
+                // A wave with no path and no public address of our own to offer: ask FGTW what it sees, now — the push that follows carries something the peer can actually aim at (2026-09-14, two waves that sat on 0.0.0.0 for thirty seconds).
+                if self.our_reflexive.map_or(true, |h| crate::network::traverse::is_lan_scope(&h)) {
+                    self.reseed_reflexive_from_fgtw();
+                }
                 // CALL-TIME ADDRESS EXCHANGE (field 2026-09-11 20:47: the wave carried media both ways 18 s after answer, because our new public address was learned from a pong on the presence cadence mid-call, and they hung up the second it connected). Push whatever we hold to the answering device now — its answer is their record — and sweep presence at once so the pong that teaches our reflexive lands this tick; that edge pushes again with the public address.
                 self.call_needs_addresses.set(Some(dev)); // drained by call_drought_tick (this fn holds only &self)
             } else {

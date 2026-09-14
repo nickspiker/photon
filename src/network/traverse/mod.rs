@@ -34,6 +34,14 @@ pub fn take_reflexive_reset() -> bool {
 /// THE FGTW-OBSERVED ADDRESS AFTER A NETWORK CHANGE (field 2026-09-14, Nick on cellular: the interface change forgot the reflexive, no peer could reach him to reflect a new one, and his push carried the carrier-NAT interface address — the wave never found a path). A worker re-announces to FGTW over TLS (that works from anywhere) and parks the server's observation here; the UI tick seeds `our_reflexive` from it and pushes the record to the live wave's peer.
 static REFLEXIVE_SEED: std::sync::Mutex<Option<std::net::SocketAddr>> = std::sync::Mutex::new(None);
 
+/// LAN-scope: an address only a same-network observer can report (RFC 1918 + 6598 v4, ULA/link-local v6). Never the address the internet reaches us at.
+pub fn is_lan_scope(addr: &std::net::SocketAddr) -> bool {
+    match addr.ip().to_canonical() {
+        std::net::IpAddr::V4(v4) => gather::is_private_ipv4(v4) || v4.is_link_local() || v4.is_loopback(),
+        std::net::IpAddr::V6(v6) => v6.is_unique_local() || v6.is_unicast_link_local() || v6.is_loopback(),
+    }
+}
+
 pub fn post_reflexive_seed(addr: std::net::SocketAddr) {
     *REFLEXIVE_SEED.lock().unwrap() = Some(addr);
 }
