@@ -255,8 +255,16 @@ pub fn note_near_level(mean: u32) {
         let next = if sample < k { sample } else { (k + (k >> 9)).min(DUCK_K_MAX_Q16) };
         DUCK_K_Q16.store(next, Ordering::Relaxed);
     }
-    let g = duck_gain_q32(near, DUCK_K_Q16.load(Ordering::Relaxed));
+    // The duck keys on the mic level ABOVE plausible echo (field 2026-09-14 00:15, the echo-ey wave: at 65-76x makeup the far side's own echo inflated `near` while they talked, so each talker was ducked BY their echo — chop with zero loss). k is the min-statistic lower bound, doubled for margin; the subtraction is continuous, no gate: echo-only mic → input ~0 → full duplex; real speech → input ≈ the voice.
+    let k = DUCK_K_Q16.load(Ordering::Relaxed);
+    let echo_est = (2 * k * emitted) >> 16;
+    let g = duck_gain_q32((near - echo_est).max(0), k);
     SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
+}
+
+/// Mean |sample| of the newest frame handed to the DAC — the engine gates the voiced-calibration accumulator on far-quiet with it.
+pub fn emitted_level() -> i64 {
+    EMITTED_LEVEL.load(Ordering::Relaxed) as i64
 }
 
 /// The duck's live coupling estimate (Q16) — the echo line prints it beside the tallies.

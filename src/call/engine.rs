@@ -318,6 +318,8 @@ fn run(
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
     // Plaid forensics: raw frames each way, and the holes the fade covered.
     let (mut raw_out, mut raw_in, mut holes_faded) = (0u64, 0u64, 0u64);
+    // The fade's exit half: the first real frame after a hole ramps up from silence (see the RESUME UP-RAMP comment).
+    let mut resume_ramp = false;
     // Loss-rate loop state: the 256-bit ring, its cursor, the integral, the last underrun count sampled, and the target we last set.
     let mut loss_bits = [0u64; LOSS_RING / 64];
     let mut loss_pos: u8 = 0;
@@ -442,7 +444,8 @@ fn run(
                 if raw_mean > 0 && raw_mean < raw_floor {
                     raw_floor = raw_mean;
                 }
-                if raw_floor != i64::MAX && raw_mean > (raw_floor * 3).max(12) {
+                // Voiced calibration accumulates only while the far side is QUIET (00:15 field wave: Emma's "measured voiced 185" was mostly Nick — her earpiece and, same-room, his actual mouth — which would drift the stored number; echo must never calibrate the mic).
+                if raw_floor != i64::MAX && raw_mean > (raw_floor * 3).max(12) && crate::platform::audio::emitted_level() < 256 {
                     voiced_sum += raw_mean;
                     voiced_frames += 1;
                 }
@@ -803,7 +806,15 @@ fn run(
             let mut np = np;
             loop {
                 if let Some(frames) = rx_done.remove(&np) {
-                    for f in frames {
+                    for mut f in frames {
+                        // RESUME UP-RAMP (Nick 2026-09-13, the fade's other half): the first real frame after a hole starts at an arbitrary value — silence up to it is a step, a click on every hole EXIT. Ramp it up over its own length; no lookahead needed, the hole already happened.
+                        if resume_ramp && !f.is_empty() {
+                            resume_ramp = false;
+                            let len = f.len() as i32;
+                            for (i, s) in f.iter_mut().enumerate() {
+                                *s = ((*s as i32) * (i as i32 + 1) / len) as i16;
+                            }
+                        }
                         // THE LEVEL PLAN: nothing adaptive on RX — the wire arrived at plan level, the speaker duck and the rocker are the only hands on it.
                         if draining.is_some() {
                             continue;
@@ -827,7 +838,8 @@ fn run(
                     let underruns = crate::platform::audio::jitter_stats().2;
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, true, TIER_FRAMES[tier]);
-                    // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
+                    resume_ramp = true;
+                    // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero; the matching up-ramp rides the first REAL frame after the hole. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
                     if draining.is_none() {
                         if let Some(prev) = last_played.take() {
                             let len = prev.len().max(1) as i32;
