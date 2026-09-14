@@ -43,6 +43,9 @@ const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
 /// Lost windows inside LOSS_WINDOW that push a plaid call back to 128 kbps: 20 of ~400 = a 5 % loss rate. Below that the crispies are the price of the hot buffer.
 const PLAID_LOSSES_TO_DROP: usize = 20;
+// PLAID ANYWHERE THE PATH HAS HEADROOM (Nick 2026-09-14: "my calls from here to Pennsylvania on my 350 megabit interwebs and his gig interwebs should be plaid all the way down"). The LAN gate was a proxy for bandwidth; the honest gate is the path itself: a queue that is filling shows up as RTT GROWTH before it shows up as loss (bufferbloat's tell), so the raw rung is earned only while the RTT floor has not risen, and one loss cluster at plaid steps straight back to the codec (drop-hold waived for that edge). Plaid's loss behaviour is BETTER than Opus's (memoryless: one lost 5 ms datagram is exactly 5 ms of hole with a fade at each edge; CELT's overlap-add damages the neighbour and synthesizes the splice) — the only thing the 768 kbps costs is headroom, and headroom is what this measures.
+/// The raw rung is off the table while the recent RTT floor sits this far above the call's own floor: a queue is building somewhere on the path.
+const PLAID_RTT_GROWTH_MS: u32 = 40;
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
 const LOSS_RING: usize = 256;
 const LOSS_SETPOINT: f32 = 1.0 / 256.0;
@@ -331,6 +334,8 @@ fn run(
     // Link tail state: the peer's newest stamp + when it arrived (for the hold), and RTT statistics (min / EMA / max, sample count) over the call and over the last stats window.
     let mut peer_stamp: Option<(u32, std::time::Instant)> = None;
     let (mut rtt_min, mut rtt_max, mut rtt_ema, mut rtt_n) = (u32::MAX, 0u32, 0f32, 0u64);
+    // The plaid headroom tell: the min RTT over the last ~1 s of samples (a floor that has risen = a queue standing on the path). Rebuilt per window from `win_rtt_min`.
+    let mut recent_rtt_floor: u32 = u32::MAX;
     let (mut win_rtt_min, mut win_rtt_max, mut win_rtt_n) = (u32::MAX, 0u32, 0u64);
     let mut win_losses_at = 0u32;
     let mut last_played: Option<Vec<i16>> = None;
@@ -366,7 +371,7 @@ fn run(
         peer,
         TIER_RATES[0] / 1000,
         TIER_RATES[TIER_RATES.len() - 1] / 1000,
-        if plaid_allowed { ", plaid armed" } else { ", plaid off — not a LAN path" },
+        if plaid_allowed { ", plaid armed (LAN)" } else { ", plaid on headroom (RTT floor must hold)" },
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
@@ -806,7 +811,11 @@ fn run(
                         && last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                     let next = pending_tier + 1;
                     let need = if next == RAW_TIER { PLAID_CLIMB_CLEAN_WINDOWS } else { CLIMB_CLEAN_WINDOWS };
-                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || plaid_allowed);
+                    // Plaid climbs anywhere the path has headroom: the recent RTT floor must sit within PLAID_RTT_GROWTH_MS of the call's own floor.
+                    // The floor in hand: the current window's min once it has a hundred samples (~half a second), else the last closed window's.
+                    let floor_now = if win_rtt_n >= 100 { win_rtt_min } else { recent_rtt_floor };
+                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS;
+                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
                     if clean_rx_windows >= need && held && allowed {
                         pending_tier = next;
                         clean_rx_windows = 0;
@@ -877,8 +886,10 @@ fn run(
                         recent_losses.pop_front();
                     }
                     // Plaid drops on a loss RATE (the crispies are the deal); every Opus rung drops on a clustered pair — and never twice inside DROP_HOLD (2026-09-10: one burst of lost windows cascaded plaid → 128 → 64 → 32 → 16 in a single tick; one rung per burst is the rule).
-                    let need = if pending_tier == RAW_TIER { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
-                    let drop_held = last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                    // Plaid on a LAN-class path tolerates the crispies (a loss RATE); plaid on any other path is on probation — the first clustered pair steps it back to the codec, drop-hold waived.
+                    let plaid_probation = pending_tier == RAW_TIER && !plaid_allowed;
+                    let need = if pending_tier == RAW_TIER && !plaid_probation { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
+                    let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                     if recent_losses.len() >= need && pending_tier > 0 && drop_held {
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
@@ -1018,6 +1029,7 @@ fn run(
                     js.1,
                     js.2
                 );
+                recent_rtt_floor = if win_rtt_n > 0 { win_rtt_min } else { u32::MAX };
                 win_rtt_min = u32::MAX;
                 win_rtt_max = 0;
                 win_rtt_n = 0;
