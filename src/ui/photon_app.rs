@@ -847,6 +847,8 @@ impl AttachVisual {
 pub(crate) struct WaveBand {
     pub hash: [u8; 32],
     pub held: bool,
+    /// The row is the selected one — a press on the band SEEKS (2026-09-14, Nick: "seeking needs to work whilst selected and playing"); unselected, a press is a row tap.
+    pub selected: bool,
     pub x0: f32,
     pub glyph_x1: f32,
     pub x1: f32,
@@ -1909,6 +1911,8 @@ pub struct PhotonApp {
     attach_progress: Vec<(std::net::SocketAddr, u32, u32, bool)>,
     /// Chunked-blob arrival progress keyed by the WHOLE-FILE hash: (chunks held, chunks total) — the pill bar's first source (typed attachments Phase 1; the PT snapshot above stays the fallback for whole-value blobs).
     attach_chunk_progress: std::collections::HashMap<[u8; 32], (u32, u32)>,
+    /// OUTBOUND chunked sends this device dispatched: hash → total chunks. The render derives overall send progress from it and the PT snapshot (chunks no longer in flight are done); cleared when the peer's attach_have lands. 2026-09-14 (Nick: "drag/drop for sending pigeons has no indication of progress") — the bar used to show one chunk's transfer at a time, 0→100 % over and over.
+    attach_send_total: std::collections::HashMap<[u8; 32], u32>,
     /// Blob pushes confirmed landed (attach_have), this session.
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
@@ -2538,6 +2542,7 @@ impl PhotonApp {
             settings_zoom_slider: None,
             attach_progress: Vec::new(),
             attach_chunk_progress: std::collections::HashMap::new(),
+            attach_send_total: std::collections::HashMap::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]

@@ -288,6 +288,7 @@ impl PhotonApp {
         let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
         let dispatch = checker.history_dispatch();
         let content_hash = *content_hash;
+        self.attach_send_total.insert(content_hash, m.chunks.len() as u32);
         queue_job(&self.seal_job_tx, move || {
             let send = |vsf_bytes: Vec<u8>| {
                 let _ = dispatch.send(crate::network::status::HistorySendRequest {

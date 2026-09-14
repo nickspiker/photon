@@ -2187,8 +2187,8 @@ impl FluorApp for PhotonApp {
                     let vis = (hit_id - self.msg_hit_base) as usize;
                     if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
                         let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
-                        let playing_this = self.call_playback.is_some() && self.call_playback_hash == Some(band.hash);
-                        if band.held && playing_this && band.contains(px, py) && px >= band.glyph_x1 {
+                        // A press on a SELECTED, held wave's band picks the playhead up whether or not it is playing yet (the release seeks, and play_recording_from starts playback from there if it wasn't) — the old playing-only gate made seeking impossible on a selected wave that hadn't started (Nick 2026-09-14).
+                        if band.held && band.selected && band.contains(px, py) && px >= band.glyph_x1 {
                             self.wave_scrub = Some(WaveScrub { band, frac: band.frac_at(px) });
                             self.scene_dirty = true;
                             ctx.window.request_redraw();

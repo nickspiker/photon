@@ -3510,6 +3510,7 @@ impl PhotonApp {
                         .any(|c| c.knows_device(&sender_pubkey.key))
                     {
                         self.attach_confirmed.insert(content_hash);
+                        self.attach_send_total.remove(&content_hash);
                         self.msg_wrap = None;
                         self.scene_dirty = true;
                         changed = true;

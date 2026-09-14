@@ -3198,8 +3198,14 @@ impl PhotonApp {
                                 } else {
                                     !crate::storage::blob_present(&hash)
                                 };
-                                // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback.
-                                let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| *have as f32 / (*total).max(1) as f32);
+                                // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback. OUTBOUND chunked: (total − in flight) done, plus the in-flight transfers' own fractions, over the total we dispatched.
+                                let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| *have as f32 / (*total).max(1) as f32).or_else(|| {
+                                    (want_outbound).then(|| self.attach_send_total.get(&hash).copied()).flatten().map(|total| {
+                                        let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| *d as f32 / (*t).max(1) as f32).collect();
+                                        let done = total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>();
+                                        (done / total.max(1) as f32).clamp(0.0, 1.0)
+                                    })
+                                });
                                 if relevant {
                                     if let Some(frac) = chunk_frac.or_else(|| {
                                         self.attach_progress
@@ -3805,10 +3811,9 @@ impl PhotonApp {
                                                     ctx.text.draw_text_right(&mut canvas, &pos_label, buf_w as f32 - pad_x, hy, &small, Some(list_clip), None);
                                                 }
                                             }
-                                            let _ = wave_selected;
                                             // Hand the band to the input path (slot-indexed beside the row hit).
                                             if wave_slot < self.msg_wave_bands.len() {
-                                                self.msg_wave_bands[wave_slot] = Some(super::WaveBand { hash, held, x0: bx0, glyph_x1, x1: bx1, y0: by0.max(list_top), y1: by1.min(list_bottom), total: total_slots });
+                                                self.msg_wave_bands[wave_slot] = Some(super::WaveBand { hash, held, selected: wave_selected, x0: bx0, glyph_x1, x1: bx1, y0: by0.max(list_top), y1: by1.min(list_bottom), total: total_slots });
                                             }
                                         }
                                     }
@@ -3822,6 +3827,7 @@ impl PhotonApp {
                                     (None, Some((w, h, px))) => Some((w, h, std::borrow::Cow::Owned(px))),
                                     _ => None,
                                 };
+                                let hash_of_row: [u8; 32] = crate::types::parse_attachment_content(&msg.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                 if let Some((tw, th, pixels)) = picture {
                                     // A picture row has no body text (the picture IS the row), so the band anchors straight off the baseline with symmetric insets — the text-row offset left dead padding under every image (Nick 2026-09-12, same fix as the audio band).
                                     let reply_off = if reply_target.is_some() { intra } else { 0.0 };
@@ -3837,7 +3843,16 @@ impl PhotonApp {
                                     let cx = if right_aligned { buf_w as f32 - pad_x - bw * 0.5 } else { pad_x + bw * 0.5 };
                                     let cy = band_bot - bh * 0.5;
                                     if cy + bh * 0.5 >= list_top && cy - bh * 0.5 <= list_bottom {
-                                        paint::draw_image(&mut canvas, &pixels, tw, th, cx, cy, bw, bh, Some(list_clip));
+                                        // A PIGEON IN FLIGHT FILLS IN (Nick 2026-09-14): an outgoing picture still being sent shows only the slice that has gone — the preview wipes in from the left as the chunks land, the rest of the band stays bare until it does.
+                                        let send_frac = if msg.is_outgoing && !self.attach_confirmed.contains(&hash_of_row) { self.attach_send_total.get(&hash_of_row).map(|total| {
+                                            let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| *d as f32 / (*t).max(1) as f32).collect();
+                                            ((total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>()) / (*total).max(1) as f32).clamp(0.0, 1.0)
+                                        }) } else { None };
+                                        let clip = match send_frac {
+                                            Some(f) if f < 1.0 => fluor::paint::Clip::new(list_clip.x_start, list_clip.y_start, ((cx - bw * 0.5 + bw * f) as usize).min(list_clip.x_end), list_clip.y_end),
+                                            _ => list_clip,
+                                        };
+                                        paint::draw_image(&mut canvas, &pixels, tw, th, cx, cy, bw, bh, Some(clip));
                                     }
                                     // The picture is its own tap target: inside opens the viewer, the rest of the row opens the actions.
                                     if let (Some(a), Some((hash, _, _))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
