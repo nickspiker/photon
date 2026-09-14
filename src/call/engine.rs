@@ -72,6 +72,10 @@ const SLOPE_DROP_MS_PER_SEC: f32 = 50.0;
 const SLOPE_CLIMB_MS_PER_SEC: f32 = 10.0;
 /// Safety margin under the computed capacity.
 const SLOPE_CAPACITY_MARGIN: f32 = 0.85;
+/// LOSS IS ONLY CONGESTION WHEN DELAY AGREES (field 2026-09-14 18:08, the sawtooth wave: the peer reported 2-10 lost EVERY second at every tier from 32 to 128 — the same loss rate regardless of rate, with the RTT flat at 55 ms — pure radio fades, not a queue; the loss-driven drops sawtoothed both ladders for 76 s and changed nothing about the loss). A peer-loss drop needs a corroborating queue: the ema over the floor, or a positive slope. Loss past this per second is catastrophic and drops regardless.
+const PEER_LOSS_CATASTROPHIC: u32 = 20;
+/// The corroborating-queue threshold for a loss drop: ema this far over the floor says the loss is congestion's.
+const LOSS_BLOAT_CORROBORATION_MS: f32 = 100.0;
 /// BUFFERBLOAT'S OTHER TELL (field 2026-09-14 17:30, the double-plaid cellular wave: per-window loss near zero yet RTT ema climbed 60 ms → 3.5 s while the FLOOR held 38 — under a standing queue the min slips thru but the mean drowns): off-LAN plaid drops, and the raw rung is barred, while the RTT ema sits this far above the call's floor.
 const PLAID_RTT_EMA_BLOAT_MS: f32 = 250.0;
 // RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
@@ -1144,7 +1148,16 @@ fn run(
                 let now = std::time::Instant::now();
                 let plaid_probation = pending_tier == RAW_TIER && !plaid_allowed;
                 let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
-                if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held {
+                // Radio loss vs congestion loss: flat delay = fades, and a lower tier would lose just as much — hold and let the fills carry it. Delay agreeing (ema over floor, or a building slope) = a queue = drop.
+                let queue_agrees = (rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > LOSS_BLOAT_CORROBORATION_MS)
+                    || (slope_buckets.len() >= 5 && {
+                        let (f, b) = (*slope_buckets.front().unwrap() as f32, *slope_buckets.back().unwrap() as f32);
+                        (b - f) / ((slope_buckets.len() - 1) as f32 * 0.1) > SLOPE_CLIMB_MS_PER_SEC
+                    });
+                if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && !queue_agrees && peer_loss_sec_max < PEER_LOSS_CATASTROPHIC {
+                    crate::logf!("CALL: peer reported {} lost with a flat queue (ema {:.0} over floor {}) — radio loss, holding {} kbps", peer_loss_sec_max, rtt_ema, if rtt_min == u32::MAX { 0 } else { rtt_min }, TIER_RATES[pending_tier] / 1000);
+                }
+                if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC) {
                     if plaid_probation {
                         plaid_strikes += 1;
                     }
