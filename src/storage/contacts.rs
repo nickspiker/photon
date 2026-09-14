@@ -993,6 +993,7 @@ pub fn save_messages(
         rec = set_wave_fields(rec, msg);
         rec = set_attach_fields(rec, msg);
         rec = set_star_field(rec, msg);
+        rec = set_author_field(rec, msg);
         let row_key = message_row_key(msg.timestamp, &msg.content);
         // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
         if db
@@ -1102,6 +1103,7 @@ pub fn load_messages(
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
             star_osc: rec.time("star").unwrap_or(0),
+            author: record_author(&rec),
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             marks: record_marks(&rec, content),
@@ -1159,6 +1161,18 @@ fn record_reference(rec: &Record) -> Option<(crate::types::RefKind, i64)> {
 /// The star stamp, written only when the row was ever touched (0 = the absent default).
 fn set_star_field(rec: Record, msg: &ChatMessage) -> Record {
     if msg.star_osc != 0 { rec.set("star", Value::Time(msg.star_osc)) } else { rec }
+}
+
+/// The author party id (groups), written only when present — a pairwise row derives it from direction.
+fn set_author_field(rec: Record, msg: &ChatMessage) -> Record {
+    match msg.author {
+        Some(a) => rec.set("author", Value::Bytes(a.to_vec())),
+        None => rec,
+    }
+}
+
+fn record_author(rec: &Record) -> Option<crate::types::PartyId> {
+    rec.bytes("author").and_then(|b| <[u8; 32]>::try_from(b).ok())
 }
 
 fn set_wave_fields(mut rec: Record, msg: &ChatMessage) -> Record {
@@ -1407,6 +1421,7 @@ pub fn load_message_page_before(
             recovered: rec.uint("recovered").unwrap_or(0) != 0,
             deleted: rec.uint("deleted").unwrap_or(0) != 0,
             star_osc: rec.time("star").unwrap_or(0),
+            author: record_author(&rec),
             reference: record_reference(&rec),
             notified: rec.uint("unnotified").unwrap_or(0) == 0,
             marks: record_marks(&rec, content),
@@ -1568,6 +1583,7 @@ mod tests {
                 recovered: false,
                 deleted: false,
                 star_osc: 0,
+                author: None,
                 reference: None,
                 notified: true,
                 wave: None,
@@ -1588,6 +1604,7 @@ mod tests {
                 recovered: false,
                 deleted: false,
                 star_osc: 0,
+                author: None,
                 reference: None,
                 notified: true,
                 wave: None,
@@ -1608,6 +1625,7 @@ mod tests {
                 recovered: true, // friend-attested provenance must survive the round-trip,
                 deleted: false,
                 star_osc: 0,
+                author: None,
                 reference: None,
                 notified: true,
                 wave: None,
@@ -1899,6 +1917,7 @@ mod tests {
             recovered: t <= 60, // the "older, recovered" half
             deleted: false,
             star_osc: 0,
+            author: None,
             reference: None,
             notified: true,
             wave: None,

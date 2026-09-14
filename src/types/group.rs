@@ -178,6 +178,25 @@ impl Roster {
     }
 }
 
+/// A member seen thru the group's SECOND trust source (§2 "transport trust, scoped"): party id → folded devices, consulted ONLY for frames carrying that group's token. Deliberately NOT a Contact — no presence standing, no address-book row; a non-friend member's pings still drop, membership grants nothing outside the group.
+#[derive(Clone, Debug, Default)]
+pub struct GroupPeer {
+    pub party: PartyId,
+    /// The proof the fold verifies their public membership chain under, and the registry key for addressing.
+    pub handle_proof: [u8; 32],
+    /// Folded from the public membership chain — never trusted from a roster record.
+    pub devices: Vec<[u8; 32]>,
+    /// The fold's tip eagle time — the same freshness anchor a Contact's fleet_members_ts carries, so the ftip tripwire generalizes.
+    pub fold_ts: i64,
+}
+
+impl GroupPeer {
+    /// The group-scoped device gate — the `knows_device` of this trust source.
+    pub fn knows_device(&self, dev: &[u8; 32]) -> bool {
+        self.devices.iter().any(|d| d == dev)
+    }
+}
+
 /// The device pubkey a seed signs as — fill `signer_device` with this BEFORE building signing bytes (the device is part of what's signed, so it must be in place first).
 pub fn device_pubkey(device_seed: &[u8; 32]) -> [u8; 32] {
     ed25519_dalek::SigningKey::from_bytes(device_seed).verifying_key().to_bytes()

@@ -35,6 +35,8 @@ pub struct HistoryRow {
     pub preview: Vec<u8>,
     /// Star stamp (signed eagle osc; positive = starred, negative = unstarred, 0 = never touched) — absent on pre-feature pages ⇒ 0. Merge = larger |osc| wins.
     pub star_osc: i64,
+    /// The author's party id (groups, docs/groups.md §5) — absent on pairwise/pre-feature pages ⇒ None (derive from direction).
+    pub author: Option<[u8; 32]>,
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -61,6 +63,8 @@ fn page_schema() -> SectionSchema {
         .field("m_out", TypeConstraint::AnyUnsigned) // bool, one per row (sender's is_outgoing)
         .field("m_del", TypeConstraint::AnyUnsigned) // bool, one per row
         .field("m_str", TypeConstraint::Any) // e6 star stamp, one per row: 0 = never starred
+        .field("m_aun", TypeConstraint::AnyUnsigned) // author presence, one per row (0 = pairwise row)
+        .field("m_auv", TypeConstraint::Any) // hb author party id, one per row that has one
         .field("m_tomb", TypeConstraint::AnyUnsigned) // bool, one per row: the deleted-for-everyone tombstone (absent on pre-feature pages → all false)
         .field("m_ntf", TypeConstraint::AnyUnsigned) // notified flag, one per row (absent column on pre-feature pages = all true)
         .field("m_refk", TypeConstraint::AnyUnsigned) // reference kind, one per row: 0 = none, else RefKind wire value (absent on pre-feature pages → all none)
@@ -113,6 +117,8 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             .map_err(|e| e.to_string())?
             .append_multi("m_str", vec![VsfType::e(vsf::types::EtType::e6(row.star_osc))])
             .map_err(|e| e.to_string())?
+            .append_multi("m_aun", vec![VsfType::u(row.author.is_some() as usize, false)])
+            .map_err(|e| e.to_string())?
             .append_multi("m_ntf", vec![VsfType::u(row.notified as usize, false)])
             .map_err(|e| e.to_string())?
             .append_multi(
@@ -149,6 +155,11 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
         if !row.envelope.is_empty() {
             builder = builder
                 .append_multi("m_wve", row.envelope.iter().map(|&b| VsfType::u(b as usize, false)).collect())
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(a) = row.author {
+            builder = builder
+                .append_multi("m_auv", vec![VsfType::hb(a.to_vec())])
                 .map_err(|e| e.to_string())?;
         }
         if let Some(ph) = row.attach.and_then(|(_, _, _, ph)| ph) {
@@ -325,6 +336,15 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             _ => None,
         })
         .collect();
+    let au_present = flat_u("m_aun");
+    let au_vals: Vec<Option<[u8; 32]>> = section
+        .get_fields("m_auv")
+        .iter()
+        .map(|f| match f.values.first() {
+            Some(VsfType::hb(h)) => <[u8; 32]>::try_from(h.as_slice()).ok(),
+            _ => None,
+        })
+        .collect();
     let pv_counts = flat_u("m_apn");
     let pv_fields: Vec<Vec<u8>> = section
         .get_fields("m_apv")
@@ -341,7 +361,15 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
     let mut ecur = 0usize;
     let mut hcur = 0usize;
     let mut pcur = 0usize;
+    let mut aucur = 0usize;
     for i in 0..n {
+        let row_author = if au_present.get(i).copied().unwrap_or(0) != 0 {
+            let a = au_vals.get(aucur).copied().flatten();
+            aucur += 1;
+            a
+        } else {
+            None
+        };
         let row_attach = match att_kinds.get(i).copied().unwrap_or(0) {
             0 => None,
             k => {
@@ -389,6 +417,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             Vec::new()
         };
         rows.push(HistoryRow {
+            author: row_author,
             star_osc: stars.get(i).copied().unwrap_or(0),
             timestamp: times[i],
             content: texts[i].clone(),
@@ -433,7 +462,8 @@ mod tests {
         HistoryPagePlain {
             rows: vec![
                 HistoryRow {
-                    star_osc: 0,
+                    author: Some([0xAB; 32]),
+                    star_osc: 777,
                     timestamp: 1_000,
                     content: "oldest in page 👋 unicode".to_string(),
                     sender_outgoing: true,
@@ -450,6 +480,7 @@ mod tests {
                     notified: true,
                 },
                 HistoryRow {
+                    author: None,
                     star_osc: 0,
                     timestamp: 2_000,
                     content: "".to_string(), // empty content is a legal row
@@ -465,6 +496,7 @@ mod tests {
                     notified: true,
                 },
                 HistoryRow {
+                    author: None,
                     star_osc: 0,
                     timestamp: 3_000,
                     content: "newest".to_string(),
@@ -520,6 +552,7 @@ mod tests {
         let key = [4u8; 32];
         let page = HistoryPagePlain {
             rows: vec![HistoryRow {
+                author: None,
                 star_osc: 0,
                 timestamp: 7,
                 content: "hi".to_string(),

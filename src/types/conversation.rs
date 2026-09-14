@@ -219,6 +219,10 @@ impl Conversation {
             if msg.star_osc.unsigned_abs() > existing.star_osc.unsigned_abs() {
                 existing.star_osc = msg.star_osc;
             }
+            // Author is immutable per row: adopt when absent, never overwrite.
+            if existing.author.is_none() && msg.author.is_some() {
+                existing.author = msg.author;
+            }
             return;
         }
         // A recovered PLACEHOLDER at this timestamp yields to an authoritative (live/witnessed) row even if the text differs — what we saw on the wire outranks friend-attested content.

@@ -2220,6 +2220,10 @@ impl PhotonApp {
                             existing.star_osc = row.star_osc;
                             upgraded = true;
                         }
+                        if existing.author.is_none() && row.author.is_some() {
+                            existing.author = row.author;
+                            upgraded = true;
+                        }
                         if upgraded {
                             fresh.push(existing.clone());
                         }
@@ -2227,6 +2231,7 @@ impl PhotonApp {
                     }
                     to_insert.push(crate::types::ChatMessage {
                         star_osc: row.star_osc,
+                        author: row.author,
                         content: row.content.clone(),
                         timestamp: row.timestamp,
                         is_outgoing,

@@ -255,6 +255,8 @@ pub struct ChatMessage {
     pub ack_hash: Option<[u8; 32]>,
     /// `true` when this row was RECOVERED from a friend's copy of the conversation (history recovery after a client reset) rather than witnessed by this device as a signed wire frame. Friend-attested provenance: the friend could in principle have altered it. Persisted so phase-2 fleet recovery (self-attested rows) can supersede friend-attested ones, and so a UI cue can exist later. No UI treatment yet.
     pub recovered: bool,
+    /// AUTHOR (groups, docs/groups.md §5): the sender's party id as an additive column. Absent = a pairwise row — derive the author from `is_outgoing` and the conversation's two parties. In a group it is attribution, verified at ingress against the roster's folded devices.
+    pub author: Option<crate::types::PartyId>,
     /// STARRED (Nick 2026-09-12, "mark important and not to prune"): 0 = never touched; positive = starred at that eagle osc; negative = UNstarred at |osc|. Merge = larger |osc| wins, so the latest toggle propagates thru fleet sync. The retention-horizon design reads it as "this row never ages out".
     pub star_osc: i64,
     /// TOMBSTONE: the message is deleted-for-everyone — hidden from every UI, propagated monotonically (true wins) thru fleet sync AND to the friend via the hidden delete marker. The CONTENT IS PRESERVED internally on purpose: the braid weaves prior message content into future keys, so blanking it would fork chains that later weave this row — true content shredding needs a braid-safe redaction design (ticketed). Persisted.
@@ -292,6 +294,7 @@ impl ChatMessage {
             recovered: false,
             deleted: false,
             star_osc: 0,
+            author: None,
             reference: None,
             notified: is_outgoing,
             marks: Vec::new(),
@@ -316,6 +319,7 @@ impl ChatMessage {
             recovered: false,
             deleted: false,
             star_osc: 0,
+            author: None,
             reference: None,
             notified: is_outgoing,
             marks: Vec::new(),
