@@ -8,6 +8,16 @@ One sentence per line, however long; plain language for the person who installs 
 ## Upcoming
 
 - A wave on Android now starts on your headset when one is connected — wired first, then Bluetooth, then the earpiece — instead of ignoring it, and a new pill on the call screen shows the device that is playing and cycles through the available outputs when you tap it.
+- Waves connect away from home: when your phone changes networks — leaving the house, dropping to cellular, carrier-shared addresses — it re-learns its public address right away, and again at the moment you dial if it still has none, where before both sides could sit silent for half a minute aiming at a dead address.
+- Waves ride congestion by watching delay the way it actually behaves: a steadily climbing round trip means the link is over capacity, so the wave drops its rate in one jump to just under what the link measured, and it will not climb again until the delay flattens out.
+- The two ends of a wave now tell each other what actually arrived: your send rate answers to the far side's losses instead of your own, loss with no delay building behind it is treated as radio noise rather than congestion, and raw uncompressed audio only runs after a clean loss-free stretch and steps back down the moment the listener starts starving.
+- Settings has a Vault page: capacity, the space occupied with its live and reclaimable split, entries held, the lifetime write odometer, commits survived, and a plain health verdict.
+- Seeking works on a wave that is selected and playing — press picks the playhead up, release plays from there.
+- Sending a picture shows its progress: the preview wipes in from the left as the pieces land, and the bar tracks the whole transfer instead of repeating one piece's.
+- The keyboard gets out of the way when a wave or beam rings in.
+- The screen blanks at your ear and only at your ear: on the earpiece the proximity sensor turns the display off, on speaker or headset it never does, and answering no longer leaves the screen fighting to stay lit for the rest of the wave.
+- Desktop launch no longer hangs while attachments settle into the vault — the two-minute freeze on a large vault is gone.
+- Groundwork for group conversations — one shared root delivered over the friendships you already have, membership as signed records — is landing under the hood; nothing visible in the app yet.
 
 ## v96
 
