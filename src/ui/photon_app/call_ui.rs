@@ -1121,7 +1121,8 @@ impl PhotonApp {
         // AN ANCHOR NEVER TRUSTS THE VALIDATED PATH (field 2026-09-11, Nick/Emma: a deliberate LAN→WAN switch mid-wave — the validated path stayed Some but was dead, so every anchor went to two stale addresses with no relay copy, and the wave dropped at the 30 s deadline with both sides still reachable over the relay). An anchor is fired precisely when the direct path is in doubt, so it goes to every candidate endpoint AND over the relay, always.
         // RELAY-CARRIED EXPRESS (field 2026-09-11, Brittany/Nick: three rings failed in a row — no direct UDP path between the phones, so every express beat and answer vanished, the lane offer sat behind an undelivered text row, and the one ring that did land died at 3 s for want of beats). When the contact has no validated DIRECT path, every express frame also goes to each of their devices thru the relay pipe; an injected pipe frame lands in the same express drain as a datagram would.
         // The relay copy rides with every frame that MUST land whatever the path (an offer rings, an anchor heals, a hangup ends): a contact-level validated path proves nothing about the device in the wave (2026-09-11 23:02: Emma's path to Nick was his desktop, her ring-back and hangup went there, his phone on cellular heard neither).
-        let must_land = matches!(sig, CallSignal::Offer { .. } | CallSignal::Anchor { .. } | CallSignal::Hangup { .. });
+        // …and an ANSWER connects (field 2026-09-14 01:07, Brittany/Nick wave b65d6dd7: her answer went to two direct paths and never opened on Nick's side; he re-fired the offer for twenty seconds and she hung up on a wave she had already answered — one side connected, the other never knew). The relay copy is the difference between "answered" and "connected".
+        let must_land = matches!(sig, CallSignal::Offer { .. } | CallSignal::Answer { .. } | CallSignal::Anchor { .. } | CallSignal::Hangup { .. });
         let direct_ok = !must_land && contact.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR);
         let relay_devs: Vec<[u8; 32]> = if direct_ok { Vec::new() } else { contact.relay_device_list() };
         if targets.is_empty() && relay_devs.is_empty() {
@@ -1146,7 +1147,15 @@ impl PhotonApp {
                 }
             }
         }
-        crate::logf!("CALL: express {} fired → {} path(s) + {} relay device(s) × {} era key(s)", sig.kind(), targets.len(), relay_devs.len(), frames.len());
+        crate::logf!(
+            "CALL: express {} fired → {} path(s) [{}] + {} relay device(s) × {} era key(s) (id {})",
+            sig.kind(),
+            targets.len(),
+            targets.iter().map(|a| a.to_string()).collect::<Vec<_>>().join(" "),
+            relay_devs.len(),
+            frames.len(),
+            hex::encode(&sig.call_id()[..4])
+        );
     }
 
     /// Drain express frames the recv worker parked: trial-open against every friendship (a wrong key just fails the AEAD tag), dispatch as a direct non-merge signal, and remember the source address as the call's freshest direct path. Idempotent against the lane copy arriving later — dup call_ids are no-ops in `on_call_signal`.
@@ -1205,9 +1214,12 @@ impl PhotonApp {
             }
             self.express_seen.push(nonce);
             crate::logf!(
-                "CALL: express {} from {} (jumped the lane)",
+                "CALL: express {} from {} via {} (jumped the lane; id {}, active {})",
                 sig.kind(),
-                crate::fp(&self.contacts[ci].handle_hash)
+                crate::fp(&self.contacts[ci].handle_hash),
+                src,
+                hex::encode(&sig.call_id()[..4]),
+                self.active_call.as_ref().map_or("none".to_string(), |c| hex::encode(&c.call_id[..4]))
             );
             self.on_call_signal(ci, sig, lane_key, ts, false, false);
             // An express offer beat for the ringing call: the lease may run on the express cadence from here on.

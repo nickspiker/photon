@@ -65,14 +65,16 @@ pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
 
 /// Express-signal ingress (signal.rs EXPRESS frames): the recv worker parks magic-matched datagrams here raw; the UI tick drains + trial-opens them against its friendships (it owns the keys). Bounded — signals are rare, and anything beyond the cap is flood noise.
 static EXPRESS_RX: Mutex<Vec<(Vec<u8>, SocketAddr)>> = Mutex::new(Vec::new());
-const EXPRESS_RX_CAP: usize = 32;
+/// Sized for a UI stall (2026-09-14: a 2.9 s vault commit blocked the drain while a peer's anchors fanned 7 copies every 2 s); drop-OLDEST, so the newest signal — the one that still matters — always survives.
+const EXPRESS_RX_CAP: usize = 128;
 
 /// Recv-worker side: park one express frame for the UI drain. Cheap, lock-push-unlock.
 pub fn deliver_express(bytes: &[u8], src: SocketAddr) {
     let mut q = EXPRESS_RX.lock().unwrap();
-    if q.len() < EXPRESS_RX_CAP {
-        q.push((bytes.to_vec(), src));
+    if q.len() >= EXPRESS_RX_CAP {
+        q.remove(0);
     }
+    q.push((bytes.to_vec(), src));
 }
 
 /// UI-tick side: take everything parked since the last drain.
