@@ -30,3 +30,14 @@ pub fn request_reflexive_reset() {
 pub fn take_reflexive_reset() -> bool {
     REFLEXIVE_RESET.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
+
+/// THE FGTW-OBSERVED ADDRESS AFTER A NETWORK CHANGE (field 2026-09-14, Nick on cellular: the interface change forgot the reflexive, no peer could reach him to reflect a new one, and his push carried the carrier-NAT interface address — the wave never found a path). A worker re-announces to FGTW over TLS (that works from anywhere) and parks the server's observation here; the UI tick seeds `our_reflexive` from it and pushes the record to the live wave's peer.
+static REFLEXIVE_SEED: std::sync::Mutex<Option<std::net::SocketAddr>> = std::sync::Mutex::new(None);
+
+pub fn post_reflexive_seed(addr: std::net::SocketAddr) {
+    *REFLEXIVE_SEED.lock().unwrap() = Some(addr);
+}
+
+pub fn take_reflexive_seed() -> Option<std::net::SocketAddr> {
+    REFLEXIVE_SEED.lock().unwrap().take()
+}

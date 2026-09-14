@@ -544,6 +544,35 @@ impl PhotonApp {
             self.call_needs_addresses.set(Some(dev));
         }
         self.force_presence_sweep();
+        self.reseed_reflexive_from_fgtw();
+    }
+
+    /// Re-announce to FGTW off the UI thread: the ack carries what the server saw as our source — the only public address a carrier-NAT phone can learn before any peer reaches it, and the only one a home phone whose peers are all on its LAN ever learns (a LAN echo is never adopted as reflexive). Seeded by call_drought_tick from the mailbox. Fired on the interface-change edge and on a LAN-address move.
+    pub(super) fn reseed_reflexive_from_fgtw(&mut self) {
+        if let (Some(kp), Some(hp), Some(seed), Some(port)) = (
+            self.device_keypair.clone(),
+            self.our_handle_proof(),
+            self.session.as_ref().map(|s| s.identity_seed),
+            self.handle_query.as_ref().map(|hq| hq.port()),
+        ) {
+            let wake = self.event_proxy.clone();
+            std::thread::Builder::new()
+                .name("reflexive-reseed".into())
+                .spawn(move || {
+                    let r = crate::network::http::runtime().block_on(crate::network::fgtw::bootstrap::load_bootstrap_peers(&kp, hp, port, &seed));
+                    match r.observed_addr {
+                        Some(a) => {
+                            crate::logf!("TRAVERSE: FGTW re-observed us at {} after the interface change", a);
+                            crate::network::traverse::post_reflexive_seed(a);
+                            if let Some(w) = wake {
+                                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            }
+                        }
+                        None => crate::logf!("TRAVERSE: FGTW re-announce after the interface change gave no observation{}", r.error.map_or(String::new(), |e| format!(" ({e})"))),
+                    }
+                })
+                .ok();
+        }
     }
 
     pub(super) fn call_drought_tick(&mut self) {
@@ -551,6 +580,15 @@ impl PhotonApp {
         #[cfg(target_os = "android")]
         if crate::platform::jni_android::take_network_changed() {
             self.on_network_changed();
+        }
+        if let Some(a) = crate::network::traverse::take_reflexive_seed() {
+            if self.our_reflexive.is_none() && !crate::network::traverse::gather::is_bogus_addr(&a) {
+                self.our_reflexive = Some(a);
+                crate::logf!("TRAVERSE: reflexive address seeded from FGTW's re-observation = {} (a peer echo will refine it)", a);
+                if let Some(dev) = self.active_call.as_ref().and_then(|c| c.peer_device) {
+                    self.call_needs_addresses.set(Some(dev));
+                }
+            }
         }
         if let Some(dev) = self.call_needs_addresses.take() {
             self.push_address_record_to(vec![dev]);

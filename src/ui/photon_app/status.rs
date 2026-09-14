@@ -217,6 +217,8 @@ impl PhotonApp {
 
         // Deferred probe-before-generate verdict (maybe_generate_s needs &mut self; the loop holds the checker borrow) — set when a blind_srv miss lands while S is None.
         let mut check_s_genesis = false;
+        // A LAN-address move forgot our reflexive: re-seed it from FGTW after the borrow of the checker ends (see reseed_reflexive_from_fgtw).
+        let mut reseed_after = false;
 
         // Chain-weave probe deferrals — the loop holds an immutable `checker` borrow of `self`, so the `&mut self` seal/probe helpers can't run inline; collect contact indices and process them after the loop, like ceremony_completions / lan_ping_indices already do.
         let mut chain_seal_indices: Vec<usize> = Vec::new(); // seal_chain_if_ready after loop
@@ -4730,6 +4732,7 @@ impl PhotonApp {
                         if moved {
                             self.our_reflexive = None;
                             crate::network::traverse::request_reflexive_reset();
+                            reseed_after = true;
                         }
                         // Interface change = our NAT mapping likely changed too — re-arm the reflect-beside-pings bootstrap so the published record re-learns the TRUE mapping.
                         checker.set_reflect_needed(true);
@@ -5226,6 +5229,9 @@ impl PhotonApp {
         }
 
         // Deferred probe-before-generate verdict (a blind_srv miss landed while S was None).
+        if reseed_after {
+            self.reseed_reflexive_from_fgtw();
+        }
         if check_s_genesis {
             self.maybe_generate_s();
         }
