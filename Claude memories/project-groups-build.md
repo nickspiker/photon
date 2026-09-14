@@ -5,7 +5,7 @@ metadata:
   node_type: memory
   type: project
   originSessionId: 792ef7a0-4bc0-434e-8067-5676343cc470
-  modified: 2026-09-14T19:21:32.856Z
+  modified: 2026-09-14T19:24:33.128Z
 ---
 
 Groups (docs/groups.md, §8b settled decisions) build state as of 2026-09-14. **ALL LOCAL COMMITS, NOT PUSHED** — Nick has concurrent call-tuning work; ask before any push.
@@ -19,6 +19,8 @@ Shipped (9 commits, 38058175 → 074d0c4a, all tests green incl. full-suite gate
 - 2d-ii: receive path — both token scans branch on chains.group; sender = standing member's folded device (v1 thru Contact fold; GroupPeer fold = step 3); pkg.group.from must agree with transport verdict; msg.author fed; conv resolves by minted id; group tokens excluded from rekey_probe + friend-history walk; ui/photon_app/groups.rs on_group_signal (invite adopts LOCALLY — consent = our member record posts on FIRST SEND in the group; records merge signature-checked under roster law).
 
 NEXT (2d-iii, the send side): chain_transmit is contact-indexed (peer_addr/recipient_pubkey from the contact) — a group send must encrypt ONCE on our lane then fan the same ciphertext to every standing member's devices. Pieces: found-group UI action + invite send (control row on the sponsor↔invitee friendship carrying GroupSignal::Invite text + GroupWire{from: our pid, blob: roster snapshot}); group text send (GroupWire from/woven_authors, prepend join_record Records row on our first send); per-member ACK ledger (§8b: pending keeps any-ACK bool, per-member set in sender's ledger). Then step 3 eras, step 4 UI.
+
+Send-path seams mapped (messaging.rs, chain_transmit_with ~line 824): gates = contact Complete-or-lane_capable, our_party_id, device_key, race_addrs (None + relay_to → RELAY_ADDR sentinel), in-flight window keyed by fid (control frames bypass), idempotent-per-eagle_time pending guard, send_encrypt_busy keyed by fid; weave picks ≤2 non-control incoming rows via conv_of(ci) (anchor_only for siblings — groups weave normally + carry gwa authors); encrypt job posts BraidTxEncrypted{friendship_id, token, eagle_time, salt_text, woven_strands, peer_addr, alt_addr, recipient_pubkey, relay_to, ...} → drain_braid_tx commits (CAS + advance + pending + transmit). GROUP REFACTOR: make the recipient a Vec<(recipient_pubkey, peer_addr, alt_addr, relay_to)> on BraidTxEncrypted (single-element for friendships), drain_braid_tx loops the transmit, and the retransmit sweep resolves recipients from the roster's standing set at sweep time (per-member ACK ledger decides who still gets copies). Invites are ordinary friendship control sends — chain_transmit_with(ci_of_sponsor_friendship, invite_content, ..., Some(&GroupWire{from, blob})) works TODAY, no refactor needed; the invite send + found_group action can land before the fan-out.
 
 Known deferred: chains.participants stale on roster change for groups (informational only); tier-1 network-thread allowlist (network/status.rs:3305 contacts_recv) blocks never-friended members — needs group-device union or token-scoped bypass, with GroupPeer fold in step 3; strand-miss parking wiring into the live gap buffer.
 
