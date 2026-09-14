@@ -82,6 +82,13 @@ My devices see a group as one more conversation: chains blob (lanes, eras, KEM d
 - **D5 Newcomer history.** Sponsor serves history from genesis vs from join. Recommend a genesis flag, default FROM JOIN: earlier writers never consented to a future member reading them. The founder flips it for a family group.
 - **D6 Weave in groups.** Weave with strand-pull vs weave nothing. Recommend the pull; weave-nothing is the fallback if the pull proves costly in the field.
 
+## 8b. Settled in conversation (2026-09-14, Nick + Claude)
+
+- The five build questions: era-pinned invites with sponsor refresh on mint; a JOIN also mints an era when the genesis policy is from-join (crypto boundary, not serve-policy); GroupEra wraps ride ONE ROW PER RECIPIENT DEVICE (a fat N×device row would ride the multi-packet PT path); per-member ACKs persist in the sender's pending ledger (the row keeps its any-ACK bool; an m_ack column can layer later); a never-friended member is addressed by folding their devices under the handle_proof and fetching the registry record by hp — retransmit runs on ACK absence, never liveness.
+- Namespace: FOUNDER-SCOPED group proofs — `handle_proof("PHOTON_GROUP_v1" ‖ founder_proof ‖ name)` — name unique per founder, global squatting impossible by construction ("I can't have three purple turtle groups but you could have one too"). Free-floating global group handles stay possible as keys-not-names but never the default.
+- Attach tokens for join-by-link: bearer capability (knock route + sponsor), era-bound so it dies at the next mint; carried as ROUNDCODES (chameleon/verichrome — never QR) for optical desktop→phone, and NFC-tag programmable for standing invites. Registry learns only that a group proof exists and where a knock goes — roster and history never touch infrastructure.
+- v1 ships registry-free exactly as §4 stands; names and tokens are the later attach layer.
+
 ## 9. Build order
 
 1. Substrate: `GroupId`, roster records and merge, `author` column, chains blob off a group root, `GroupPeer` trust. Unit: lane derivation from a group root, roster merge, writer discipline in a group, strand-pull DAG on a simulated three-member stream.
