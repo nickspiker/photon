@@ -8,7 +8,7 @@ metadata:
   modified: 2026-09-14T19:24:33.128Z
 ---
 
-Groups (docs/groups.md, §8b settled decisions) build state as of 2026-09-14. **ALL LOCAL COMMITS, NOT PUSHED** — Nick has concurrent call-tuning work; ask before any push.
+Groups (docs/groups.md, §8b settled decisions) build state as of 2026-09-14. PUSHED 2026-09-14 (rebased onto the v0.96.12 call-tuning line at Nick's request).
 
 Shipped (9 commits, 38058175 → 074d0c4a, all tests green incl. full-suite gate):
 - Step 1: types/group.rs (GroupId/token/founder_scoped_proof, sovereign Roster merge, GroupPeer, sign/verify), ChatMessage.author thru all four codecs (m_aun/m_auv page columns), chains blob v9 (ADDITIVE, group-only — friendship blobs stay byte-identical v8, pinned by test), FriendshipChains::from_group_root (no ceremony), EraDecapKeys in crypto/era.rs (persisted group KEM custody, export_decaps/era_decapsulate_group).
