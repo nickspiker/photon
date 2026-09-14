@@ -25,3 +25,5 @@ Send-path seams mapped (messaging.rs, chain_transmit_with ~line 824): gates = co
 Known deferred: chains.participants stale on roster change for groups (informational only); tier-1 network-thread allowlist (network/status.rs:3305 contacts_recv) blocks never-friended members — needs group-device union or token-scoped bypass, with GroupPeer fold in step 3; strand-miss parking wiring into the live gap buffer.
 
 Also fixed en route: census_sweep_auto_nukes_strays raced log_dir()'s one-shot OLD_LOG_SWEPT Once (first log-sink open deletes the config-dir log) — test now spends the Once before planting its log.
+
+VSF-gate remediation d9359966 (2026-09-14, the v97 deploy's gate blocked on the fresh code): the group_list index is now a complete VSF document (provenance header + section, verified read thru parse_document) like the roster beside it, and all five hash domains end in a binary version byte (b"PHOTON_GROUP_v\x01" etc., never ASCII "v1") — safe flag-day, nothing shipped had minted a group. The substrate rode out publicly in release v97 (groundwork only, no UI surface).
