@@ -7,16 +7,18 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- Waves connect instantly: the second the call is answered your voice is flowing. The measurement tone that used to hold the first couple of seconds is gone — the level plan made everything it measured unnecessary.
+- Waves connect the instant they are answered: your voice flows from the first captured frame, and an answer now always reaches the caller (it rides the relay like the ring does), so "answered on one side, silent on the other" is gone.
+- The level plan, the way the telephone network ran it: the microphone is read raw at 24-bit and calibrated per device and per input (the calibration follows your device through your fleet settings, so it survives a reinstall), scaled once by a fixed constant, and a shout rounds smoothly into the ceiling instead of crackling. Every wave transmits at the same known loudness; the volume rocker on the listening phone is the only adjustment, and it governs the wave while it rides the earpiece.
+- Nothing touches your voice on the way out: no gate, no ducking, no automatic level. Echo is handled on the listening side — while your mic is hot the other person is turned down in your speaker for that moment, the speaker is held where their echo stays under −36 dB, and the far room's quiet is quiet. None of it is recorded; a kept wave holds every party as they sounded.
+- Raw PCM ("plaid") runs wherever the path has headroom, not only on a LAN: a wave climbs to it while the round trip holds steady and steps back to the codec at the first sign of loss. Same-room waves now run it in both directions.
 - Audio arithmetic is exact: every gain in the playback path is one integer scale that carries its remainder to the next sample, so quiet audio keeps its bottom bits and a gain of one is provably untouched. Image previews fold the same way.
-- Waves now run a level plan, the way the telephone network did: the microphone is read raw and calibrated, scaled once by a fixed constant, and a shout rounds smoothly into the ceiling instead of crackling. Every wave transmits at the same known loudness; the volume rocker on the listening phone is the only adjustment, and it now actually governs the wave. What goes on the wire is what the archive keeps — nothing adaptive touches your voice anywhere.
+- A lost stretch of audio fades out and fades back in instead of clicking at either edge.
 - Android remembers your zoom. The pinch scale you set was saved but never applied on the next launch; it is now.
 - The top-left orb is half again as large; the text beside it is unchanged.
 - A wave on the timeline is its waveform and nothing else, hairline to hairline. Tap it to select it, and the options appear: play, wave back, beam back, export, replicate, discard. Playing takes those two taps and never starts from a scroll or a stray touch on the band.
-- A wave row shows only its waveform until you tap it; the label and the play button appear with the options, and tapping away from a playing wave stops it.
-- Your voice no longer cuts out when you talk over the other side: the echo gate can mute your mic for at most half a second at a stretch before it softens, and if the echo canceller gives up mid-wave the gate stops trusting its prediction and works from what it can actually hear.
-- A wave that is already carrying audio keeps its working path: a moment of silence no longer makes either side re-aim at a different address, which was breaking same-network waves that had connected fine.
-- Opening the vault is instant again: it reads the index and nothing else, where it had been reading every kept wave in full at every launch, six seconds on a phone with a season of waves.
+- Playing a wave you recorded on this very device no longer says "fetching from your devices".
+- A wave that is already carrying audio keeps its working path: a moment of silence no longer makes either side re-aim at a different address, and an address push that names the address already in use is ignored instead of bouncing between the two phones.
+- Opening the vault is instant again: it reads the index and nothing else, where it had been reading every kept wave in full at every launch.
 ## v95
 
 - Waveforms are rendered a new way, everywhere they appear: every stored sample lands in its screen column at its own height, and the edge pixels are shaded by how many of them reach that row, so the contour is smooth at any width with nothing invented and nothing thrown away.
