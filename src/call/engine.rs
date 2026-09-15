@@ -308,13 +308,20 @@ fn run(
             None => (TX_CAL_VOICED, "default"),
         },
     };
-    let tx_makeup_q32: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
+    // Clamped to qgain's 16× budget (field 2026-09-15, the crackling wave: Nick's stored voiced 45 — calibrated on quiet afternoon test waves — minted a 30.3× makeup against real speech at 165, wire ran ~6000 against the 2048 target, and every syllable's peaks sat on the rail; Brittany mirror-imaged it at 16.4× on voiced 83 vs 490). A too-low cap means a quiet wave and a rocker; a too-high makeup means crackle — quiet errs safe.
+    let tx_makeup_uncapped: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
+    let tx_makeup_q32: i64 = tx_makeup_uncapped.min(16 * crate::call::qgain::UNITY);
     crate::logf!(
-        "CALL: level plan — makeup {} toward wire {} (cal voiced {}, {})",
+        "CALL: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
         format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
         TX_WIRE_TARGET,
         cal_voiced,
-        cal_src
+        cal_src,
+        if tx_makeup_uncapped > tx_makeup_q32 {
+            format!("; capped from {:.1}x", tx_makeup_uncapped as f64 / crate::call::qgain::UNITY as f64)
+        } else {
+            String::new()
+        }
     );
     let mut tx_stage = crate::call::qgain::QGain::new(tx_makeup_q32);
     // This call's own measurement of the raw mic (pre-makeup): a min-statistic floor and the voiced mean above it — posted at teardown as the NEXT call's makeup denominator, blended and fleet-synced per input.

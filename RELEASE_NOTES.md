@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The crackling wave is fixed: a voice calibration learned from quiet test calls could drive the send level far past the plan and pin every syllable against the ceiling — the gain is now capped, and a calibration that a real call proves badly wrong is replaced on the spot instead of nudged toward the truth over many calls.
+
 ## v97
 
 - A wave on Android now starts on your headset when one is connected — wired first, then Bluetooth, then the earpiece — instead of ignoring it, and a new pill on the call screen shows the device that is playing and cycles through the available outputs when you tap it.

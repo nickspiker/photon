@@ -771,7 +771,9 @@ impl PhotonApp {
                 let stored_voiced = read_f32(fs, &format!("{base}.voiced"));
                 let stored_n = if stored_voiced.is_some() { read_n(fs, &format!("{base}.n")) } else { 0.0 };
                 let w = lr.windows as f32;
-                let alpha = w / (w + stored_n + 20.0);
+                // RE-SEED on a gross mismatch (field 2026-09-15, the crackling wave): a measurement ≥2× off the store means the store is WRONG, not noisy — Nick's quiet-test-wave profile (45, n 100) met real speech at 165 and the inertial blend moved it to 65, leaving the next wave still ~21× hot. A wrong calibration is replaced, not nudged; the count restarts so the next calls own the evidence.
+                let reseed = stored_voiced.is_some_and(|v0| v0 > 0.0 && (p.voiced >= v0 * 2.0 || p.voiced <= v0 * 0.5));
+                let alpha = if reseed { 1.0 } else { w / (w + stored_n + 20.0) };
                 let voiced = match stored_voiced {
                     Some(v0) => v0 + alpha * (p.voiced - v0),
                     None => p.voiced,
@@ -780,9 +782,11 @@ impl PhotonApp {
                     Some(f0) => f0 + alpha * (p.floor - f0),
                     None => p.floor,
                 };
-                let n = (stored_n + w).min(100.0);
+                // The count caps at 40 (was 100 — Nick's profile had become immovable): a full call still moves a settled store meaningfully, a short one still barely dents it.
+                let n = if reseed { w.min(40.0) } else { (stored_n + w).min(40.0) };
                 crate::logf!(
-                    "CAL: learned voice blended — mic \"{}\" voiced {} floor {} n {} (the next call's makeup denominator; fleet-synced device-local)",
+                    "CAL: learned voice {} — mic \"{}\" voiced {} floor {} n {} (the next call's makeup denominator; fleet-synced device-local)",
+                    if reseed { "RE-SEEDED (measurement ≥2x off the store)" } else { "blended" },
                     p.mic_id,
                     format!("{voiced:.0}"),
                     format!("{floor:.0}"),
