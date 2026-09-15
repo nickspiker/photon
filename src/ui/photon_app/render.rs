@@ -6366,7 +6366,7 @@ impl PhotonApp {
                     let mut y = inset.y - settings_content_scroll;
                     ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
                     y += line_h * 1.4;
-                    // Fleet-wide base pills (display.base — linked, so a preference follows the identity): dozenal, hexadecimal, arabic, the chosen one filled. Dozenal and hex fill green; arabic fills the shame red — the disapproval rides the pill, no scold line needed.
+                    // Fleet-wide base pills (display.base — linked, so a preference follows the identity): dozenal, hexadecimal, arabic, the chosen one filled green whichever it is (Nick 2026-09-15: "no arabic shaming").
                     let base = crate::num_base();
                     {
                         // Flow-aware pills (the Security-page helper): each sizes to its label and they wrap onto further lines when the pane is narrow or the zoom is big (Nick 2026-09-09: "base choice buttons don't wrap upon scale").
