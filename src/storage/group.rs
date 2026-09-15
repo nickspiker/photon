@@ -8,7 +8,7 @@ use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::VsfType;
 
 use crate::storage::{FlatStorage, StorageError};
-use crate::types::group::{GenesisRecord, GroupId, LeaveRecord, MemberRecord, Roster};
+use crate::types::group::{BundleRecord, GenesisRecord, GroupId, LeaveRecord, MemberRecord, Roster, TitleRecord, VouchRecord};
 
 /// The section name, shared by the builder and the TOC lookup — the two must never drift.
 const ROSTER_SECTION: &str = "group_roster";
@@ -38,6 +38,27 @@ fn roster_schema() -> SectionSchema {
         .field("l_osc", TypeConstraint::Any)
         .field("l_sig", TypeConstraint::AnyHash) // hb 64
         .field("l_signer", TypeConstraint::AnyHash)
+        // v2 (2026-09-15): the shared title (single), per-device KEM bundles and vouches (index-aligned multis). A v1 blob simply lacks them.
+        .field("t_party", TypeConstraint::AnyHash)
+        .field("t_title", TypeConstraint::Utf8Text)
+        .field("t_osc", TypeConstraint::Any)
+        .field("t_sig", TypeConstraint::AnyHash) // hb 64
+        .field("t_signer", TypeConstraint::AnyHash)
+        .field("b_party", TypeConstraint::AnyHash)
+        .field("b_device", TypeConstraint::AnyHash)
+        .field("b_era", TypeConstraint::AnyUnsigned)
+        .field("b_set", TypeConstraint::AnyUnsigned)
+        .field("b_mlkem", TypeConstraint::Any) // hR public key
+        .field("b_x", TypeConstraint::Any) // hR public key
+        .field("b_hqc", TypeConstraint::Any) // hR public key
+        .field("b_osc", TypeConstraint::Any)
+        .field("b_sig", TypeConstraint::AnyHash) // hb 64
+        .field("v_voucher", TypeConstraint::AnyHash)
+        .field("v_subject", TypeConstraint::AnyHash)
+        .field("v_osc", TypeConstraint::Any)
+        .field("v_withdrawn", TypeConstraint::AnyUnsigned)
+        .field("v_sig", TypeConstraint::AnyHash) // hb 64
+        .field("v_signer", TypeConstraint::AnyHash)
 }
 
 /// Vault address for a group's roster — beside its chains blob, same scope bytes.
@@ -50,7 +71,7 @@ pub fn roster_to_vsf_bytes(group_id: &GroupId, roster: &Roster) -> Result<Vec<u8
     let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
     let mut builder = roster_schema()
         .build()
-        .set("version", 1u8)
+        .set("version", 2u8)
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("group_id", VsfType::hb(group_id.0.to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -102,6 +123,59 @@ pub fn roster_to_vsf_bytes(group_id: &GroupId, roster: &Roster) -> Result<Vec<u8
             .append_multi("l_sig", vec![VsfType::hb(l.signature.to_vec())])
             .map_err(|e| StorageError::Parse(e.to_string()))?
             .append_multi("l_signer", vec![VsfType::hb(l.signer_device.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    if let Some(t) = roster.title.as_ref() {
+        builder = builder
+            .set("t_party", VsfType::hb(t.party.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("t_title", VsfType::x(t.title.clone()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("t_osc", e6(t.signed_osc))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("t_sig", VsfType::hb(t.signature.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .set("t_signer", VsfType::hb(t.signer_device.to_vec()))
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    let mut bundles: Vec<&BundleRecord> = roster.bundles.values().collect();
+    bundles.sort_unstable_by_key(|b| (b.party, b.device));
+    for b in bundles {
+        builder = builder
+            .append_multi("b_party", vec![VsfType::hb(b.party.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_device", vec![VsfType::hb(b.device.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_era", vec![VsfType::u(b.published_era as usize, false)])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_set", vec![VsfType::u(b.kem_set as usize, false)])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_mlkem", vec![VsfType::hR(b.mlkem_pk.clone())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_x", vec![VsfType::hR(b.x_pk.clone())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_hqc", vec![VsfType::hR(b.hqc_pk.clone())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_osc", vec![e6(b.signed_osc)])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("b_sig", vec![VsfType::hb(b.signature.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    let mut vouches: Vec<&VouchRecord> = roster.vouches.values().flatten().collect();
+    vouches.sort_unstable_by_key(|v| (v.voucher, v.subject, v.signed_osc));
+    for v in vouches {
+        builder = builder
+            .append_multi("v_voucher", vec![VsfType::hb(v.voucher.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("v_subject", vec![VsfType::hb(v.subject.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("v_osc", vec![e6(v.signed_osc)])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("v_withdrawn", vec![VsfType::u(v.withdrawn as usize, false)])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("v_sig", vec![VsfType::hb(v.signature.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("v_signer", vec![VsfType::hb(v.signer_device.to_vec())])
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
     let section_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
@@ -161,6 +235,20 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), Stor
                 _ => None,
             })
             .collect()
+    };
+    let col_bytes = |name: &str| -> Vec<Vec<u8>> {
+        section
+            .get_fields(name)
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| match v {
+                VsfType::hR(b) => Some(b.clone()),
+                _ => None,
+            })
+            .collect()
+    };
+    let col_u = |name: &str| -> Vec<u64> {
+        section.get_fields(name).iter().filter_map(|f| f.values.first()).filter_map(|v| v.as_u64()).collect()
     };
 
     let mut roster = Roster::default();
@@ -223,6 +311,50 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), Stor
             signature: msig[i],
             signer_device: msd[i],
         });
+    }
+
+    // Vouches BEFORE leaves: merge_vouch needs genesis (present above); standing is derived, so order among the rest is immaterial.
+    let (vv, vs, vo, vw, vsig, vsd) = (col32("v_voucher"), col32("v_subject"), col_osc("v_osc"), col_u("v_withdrawn"), col64("v_sig"), col32("v_signer"));
+    let n = vv.len().min(vs.len()).min(vo.len()).min(vw.len()).min(vsig.len()).min(vsd.len());
+    for i in 0..n {
+        roster.merge_vouch(VouchRecord { voucher: vv[i], subject: vs[i], signed_osc: vo[i], withdrawn: vw[i] != 0, signature: vsig[i], signer_device: vsd[i] });
+    }
+
+    let (bp, bd, be, bs, bm, bx, bh, bo, bsig) = (
+        col32("b_party"),
+        col32("b_device"),
+        col_u("b_era"),
+        col_u("b_set"),
+        col_bytes("b_mlkem"),
+        col_bytes("b_x"),
+        col_bytes("b_hqc"),
+        col_osc("b_osc"),
+        col64("b_sig"),
+    );
+    let n = bp.len().min(bd.len()).min(be.len()).min(bs.len()).min(bm.len()).min(bx.len()).min(bh.len()).min(bo.len()).min(bsig.len());
+    for i in 0..n {
+        roster.merge_bundle(BundleRecord {
+            party: bp[i],
+            device: bd[i],
+            published_era: be[i],
+            kem_set: bs[i] as u8,
+            mlkem_pk: bm[i].clone(),
+            x_pk: bx[i].clone(),
+            hqc_pk: bh[i].clone(),
+            signed_osc: bo[i],
+            signature: bsig[i],
+        });
+    }
+
+    if let Ok(party) = section.get_value::<[u8; 32]>("t_party") {
+        if let (Some(title), Some(osc), Some(sig), Ok(signer)) = (
+            col_text("t_title").into_iter().next(),
+            section.get_fields("t_osc").first().and_then(|f| f.values.first()).and_then(e6_of),
+            section.get_fields("t_sig").first().and_then(|f| f.values.first()).and_then(hb64),
+            section.get_value::<[u8; 32]>("t_signer"),
+        ) {
+            roster.merge_title(TitleRecord { party, title, signed_osc: osc, signature: sig, signer_device: signer });
+        }
     }
 
     let (lp, lo, lsig, lsd) = (col32("l_party"), col_osc("l_osc"), col64("l_sig"), col32("l_signer"));
@@ -352,6 +484,238 @@ pub fn load_all_groups(storage: &FlatStorage) -> Vec<(GroupId, Roster, Option<cr
     out
 }
 
+/// GROUP-LOCAL state (D12): what this DEVICE holds about a group that must never replicate — the mute, and the phase this device is in. Lives beside the roster at `vault_key("group-local", gid)`; the roster replicates and this does not.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupLocal {
+    pub muted: bool,
+    pub phase: GroupPhase,
+}
+
+/// The phase this device is in for a group (docs/groups.md §10.1). Offered/Expired live on the parked offer, not here; None = not held.
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum GroupPhase {
+    /// Join sent, waiting on the sponsor's wrap.
+    Joining,
+    /// The normal state (alone is standing with nobody else — derived from the roster, not stored).
+    #[default]
+    Standing,
+    /// A current-era frame we cannot open while no wrap for our device has arrived.
+    CatchingUp,
+    /// We posted our leave and zeroized the root; read-only.
+    Left,
+}
+
+impl GroupPhase {
+    fn to_u8(self) -> u8 {
+        match self {
+            GroupPhase::Joining => 1,
+            GroupPhase::Standing => 2,
+            GroupPhase::CatchingUp => 3,
+            GroupPhase::Left => 4,
+        }
+    }
+    fn from_u64(v: u64) -> GroupPhase {
+        match v {
+            1 => GroupPhase::Joining,
+            3 => GroupPhase::CatchingUp,
+            4 => GroupPhase::Left,
+            _ => GroupPhase::Standing,
+        }
+    }
+}
+
+const GROUP_LOCAL_SECTION: &str = "group_local";
+
+fn group_local_schema() -> SectionSchema {
+    SectionSchema::new(GROUP_LOCAL_SECTION).field("muted", TypeConstraint::AnyUnsigned).field("phase", TypeConstraint::AnyUnsigned)
+}
+
+fn group_local_key(group_id: &GroupId) -> [u8; 32] {
+    crate::storage::vault_key("group-local", &group_id.0)
+}
+
+pub fn save_group_local(group_id: &GroupId, local: &GroupLocal, storage: &FlatStorage) -> Result<(), StorageError> {
+    let section_bytes = group_local_schema()
+        .build()
+        .set("muted", VsfType::u(local.muted as usize, false))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("phase", VsfType::u(local.phase.to_u8() as usize, false))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .encode()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    let bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(GROUP_LOCAL_SECTION, section_bytes)
+        .build()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    storage.write_addr(&group_local_key(group_id), &bytes)
+}
+
+/// Load; absent = default (not muted, standing).
+pub fn load_group_local(group_id: &GroupId, storage: &FlatStorage) -> Result<GroupLocal, StorageError> {
+    let Some(bytes) = storage.read_addr(&group_local_key(group_id))? else {
+        return Ok(GroupLocal::default());
+    };
+    let section = vsf::schema::SectionBuilder::parse_document(group_local_schema(), &bytes, None)
+        .map_err(|e| StorageError::Parse(format!("group local failed verified read: {e}")))?;
+    let u = |name: &str| section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0);
+    Ok(GroupLocal { muted: u("muted") != 0, phase: GroupPhase::from_u64(u("phase")) })
+}
+
+/// A PARKED OFFER (§10.1 Offered): a friend's offer we have not answered — the roster snapshot they sent and who sent it. No secret rides here (D10). Persisted so a relaunch between offer and Join keeps the row alive; deleted on Join or expiry.
+#[derive(Clone, Debug)]
+pub struct GroupOffer {
+    pub group_id: GroupId,
+    /// The sponsor's party id (a contact's handle_hash).
+    pub sponsor: crate::types::PartyId,
+    /// The eagle time of the offer row in the friendship conversation — the card the Join pill lives on.
+    pub row_osc: i64,
+    pub snapshot: Roster,
+}
+
+const GROUP_OFFER_SECTION: &str = "group_offer";
+
+fn group_offer_schema() -> SectionSchema {
+    SectionSchema::new(GROUP_OFFER_SECTION)
+        .field("sponsor", TypeConstraint::AnyHash)
+        .field("row_osc", TypeConstraint::Any)
+        .field("snapshot", TypeConstraint::Any) // hR: the roster-codec blob, verbatim
+}
+
+fn group_offer_key(group_id: &GroupId) -> [u8; 32] {
+    crate::storage::vault_key("goffer", &group_id.0)
+}
+
+pub fn save_group_offer(offer: &GroupOffer, storage: &FlatStorage) -> Result<(), StorageError> {
+    let snapshot = roster_to_vsf_bytes(&offer.group_id, &offer.snapshot)?;
+    let section_bytes = group_offer_schema()
+        .build()
+        .set("sponsor", VsfType::hb(offer.sponsor.to_vec()))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("row_osc", VsfType::e(vsf::types::EtType::e6(offer.row_osc)))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("snapshot", VsfType::hR(snapshot))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .encode()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    let bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(GROUP_OFFER_SECTION, section_bytes)
+        .build()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    storage.write_addr(&group_offer_key(&offer.group_id), &bytes)
+}
+
+pub fn load_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<Option<GroupOffer>, StorageError> {
+    let Some(bytes) = storage.read_addr(&group_offer_key(group_id))? else {
+        return Ok(None);
+    };
+    let section = vsf::schema::SectionBuilder::parse_document(group_offer_schema(), &bytes, None)
+        .map_err(|e| StorageError::Parse(format!("group offer failed verified read: {e}")))?;
+    let sponsor = section.get_value::<[u8; 32]>("sponsor").map_err(|e| StorageError::Parse(format!("sponsor: {e}")))?;
+    let row_osc = section
+        .get_fields("row_osc")
+        .first()
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
+            other => other.as_i64(),
+        })
+        .unwrap_or(0);
+    let blob = section
+        .get_fields("snapshot")
+        .first()
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hR(b) => Some(b.clone()),
+            _ => None,
+        })
+        .ok_or_else(|| StorageError::Parse("offer without a snapshot".to_string()))?;
+    let (gid, snapshot) = roster_from_vsf_bytes(&blob)?;
+    if gid != *group_id {
+        return Err(StorageError::Parse("offer snapshot names another group".to_string()));
+    }
+    Ok(Some(GroupOffer { group_id: gid, sponsor, row_osc, snapshot }))
+}
+
+pub fn delete_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<(), StorageError> {
+    storage.delete_addr(&group_offer_key(group_id))
+}
+
+/// The parked-offer index at `vault_key("goffers", vault_seed)` — offers, like groups, are discoverable at boot only thru a list.
+pub fn save_offer_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), StorageError> {
+    let mut builder = group_list_schema().build();
+    for id in ids {
+        builder = builder.append_multi("group", vec![VsfType::hb(id.0.to_vec())]).map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    let section_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(GROUP_LIST_SECTION, section_bytes)
+        .build()
+        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    storage.write_addr(&crate::storage::vault_key("goffers", &storage.vault_seed()), &vsf_bytes)
+}
+
+pub fn load_offer_list(storage: &FlatStorage) -> Result<Vec<GroupId>, StorageError> {
+    let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("goffers", &storage.vault_seed()))? else {
+        return Ok(Vec::new());
+    };
+    let section = vsf::schema::SectionBuilder::parse_document(group_list_schema(), &vsf_bytes, None)
+        .map_err(|e| StorageError::Parse(format!("offer list failed verified read: {e}")))?;
+    Ok(section
+        .get_fields("group")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok().map(GroupId),
+            _ => None,
+        })
+        .collect())
+}
+
+/// Park an offer: write it and index it. Replaces an older offer for the same group (a refreshed snapshot).
+pub fn park_group_offer(offer: &GroupOffer, storage: &FlatStorage) -> Result<(), StorageError> {
+    save_group_offer(offer, storage)?;
+    let mut ids = load_offer_list(storage)?;
+    if !ids.contains(&offer.group_id) {
+        ids.push(offer.group_id);
+        save_offer_list(&ids, storage)?;
+    }
+    Ok(())
+}
+
+/// Unpark: delete the offer and drop it from the index.
+pub fn unpark_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<(), StorageError> {
+    delete_group_offer(group_id, storage)?;
+    let ids: Vec<GroupId> = load_offer_list(storage)?.into_iter().filter(|g| g != group_id).collect();
+    save_offer_list(&ids, storage)
+}
+
+/// Every parked offer this device holds.
+pub fn load_all_offers(storage: &FlatStorage) -> Vec<GroupOffer> {
+    let ids = match load_offer_list(storage) {
+        Ok(v) => v,
+        Err(e) => {
+            crate::logf!("GROUP: offer index load failed: {}", e);
+            return Vec::new();
+        }
+    };
+    ids.iter()
+        .filter_map(|id| match load_group_offer(id, storage) {
+            Ok(Some(o)) => Some(o),
+            Ok(None) => None,
+            Err(e) => {
+                crate::logf!("GROUP: offer {} failed to load: {}", hex::encode(&id.0[..4]), e);
+                None
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -365,6 +729,7 @@ mod tests {
         let mut roster = Roster::default();
         assert!(roster.merge_genesis(birth.genesis.clone()));
         assert!(roster.merge_member(birth.founder_member.clone()));
+        assert!(roster.merge_vouch(birth.founder_vouch.clone()));
 
         let bytes = roster_to_vsf_bytes(&birth.group_id, &roster).expect("encode");
         assert!(bytes.starts_with(b"R\xc3\x85<"), "a complete VSF file, not a bare section");
@@ -389,7 +754,8 @@ mod tests {
         let mut roster = Roster::default();
         roster.merge_genesis(birth.genesis.clone());
         roster.merge_member(birth.founder_member.clone());
-        // A second member joins, then leaves at a later stamp.
+        roster.merge_vouch(birth.founder_vouch.clone());
+        // A second member joins (vouched by the founder), then leaves at a later stamp.
         let mut m2 = birth.founder_member.clone();
         m2.party = [0x0C; 32];
         m2.name = "cousin".into();
@@ -397,6 +763,7 @@ mod tests {
         m2.signer_device = device_pubkey(&seed);
         m2.signature = sign_record(&m2.signing_bytes(), &seed);
         roster.merge_member(m2.clone());
+        roster.merge_vouch(crate::types::group::vouch_record(birth.founder_member.party, m2.party, false, &seed));
         let mut l2 = crate::types::group::LeaveRecord {
             party: m2.party,
             signed_osc: 200,
@@ -421,6 +788,55 @@ mod tests {
         let loaded = load_roster(&birth.group_id, &storage).expect("load").expect("present");
         assert_eq!(loaded.standing(), roster.standing());
         assert_eq!(loaded.genesis, roster.genesis);
+    }
+
+    /// v2 round-trip: title, bundles and vouches survive with signatures verifiable; the group-local and parked-offer codecs round-trip beside it; a mute never enters the roster bytes.
+    #[test]
+    fn roster_v2_title_bundles_vouches_and_local_state_round_trip() {
+        let seed = [0x31u8; 32];
+        let birth = found_group([0x0A; 32], [0x0B; 32], "founder", [0; 32], "t", false, &seed);
+        let mut roster = Roster::default();
+        roster.merge_genesis(birth.genesis.clone());
+        roster.merge_member(birth.founder_member.clone());
+        roster.merge_vouch(birth.founder_vouch.clone());
+        let eph = crate::crypto::era::era_keygen(0, 0, crate::crypto::era::KEM_SET_DEFAULT);
+        let bundle = crate::types::group::bundle_record(birth.founder_member.party, 0, &eph, &seed);
+        roster.merge_bundle(bundle.clone());
+        let title = crate::types::group::title_record(birth.founder_member.party, "taco", &seed);
+        roster.merge_title(title.clone());
+        let bytes = roster_to_vsf_bytes(&birth.group_id, &roster).expect("encode");
+        let (_, back) = roster_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(back.title(), "taco");
+        assert_eq!(back.title.as_ref(), Some(&title));
+        let b = back.newest_bundle(&device_pubkey(&seed)).expect("bundle rides");
+        assert_eq!(b, &bundle);
+        assert!(verify_record(&b.signing_bytes(), &b.signature, &b.device));
+        let v = &back.vouches.get(&(birth.founder_member.party, birth.founder_member.party)).expect("self-vouch rides")[0];
+        assert!(verify_record(&v.signing_bytes(), &v.signature, &v.signer_device));
+        assert!(back.is_standing(&birth.founder_member.party));
+        assert_eq!(back.standing_bundles().len(), 1);
+
+        crate::storage::isolate_test_storage();
+        let storage = FlatStorage::new(crate::storage::APP, [0xD3; 32], [0xD4; 32]).expect("storage");
+        // Local state: default when absent; mute + phase persist; and the mute is NOT in the roster bytes.
+        assert_eq!(load_group_local(&birth.group_id, &storage).expect("absent"), GroupLocal::default());
+        let local = GroupLocal { muted: true, phase: GroupPhase::Joining };
+        save_group_local(&birth.group_id, &local, &storage).expect("save local");
+        assert_eq!(load_group_local(&birth.group_id, &storage).expect("load"), local);
+        assert!(!bytes.windows(5).any(|w| w == b"muted"), "a mute never replicates");
+        // Parked offer: park, enumerate, unpark.
+        let offer = GroupOffer { group_id: birth.group_id, sponsor: [0x0A; 32], row_osc: 777, snapshot: roster.clone() };
+        park_group_offer(&offer, &storage).expect("park");
+        let all = load_all_offers(&storage);
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].sponsor, offer.sponsor);
+        assert_eq!(all[0].row_osc, 777);
+        assert_eq!(all[0].snapshot.standing(), roster.standing());
+        park_group_offer(&offer, &storage).expect("re-park replaces");
+        assert_eq!(load_offer_list(&storage).expect("list").len(), 1);
+        unpark_group_offer(&birth.group_id, &storage).expect("unpark");
+        assert!(load_all_offers(&storage).is_empty());
+        assert!(load_group_offer(&birth.group_id, &storage).expect("gone").is_none());
     }
 
     /// The index is the ONLY enumeration the flat vault offers: boot discovers membership thru it, and index_group is idempotent.

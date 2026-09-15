@@ -4132,6 +4132,15 @@ impl PhotonApp {
                             if !self.group_rosters.iter().any(|(g, _)| *g == gid) {
                                 self.group_rosters.push((gid, roster));
                             }
+                            if !self.group_locals.iter().any(|(g, _)| *g == gid) {
+                                let local = crate::storage::group::load_group_local(&gid, &s).unwrap_or_default();
+                                self.group_locals.push((gid, local));
+                            }
+                        }
+                        for offer in crate::storage::group::load_all_offers(&s) {
+                            if !self.group_offers.iter().any(|o| o.group_id == offer.group_id) {
+                                self.group_offers.push(offer);
+                            }
                         }
                         // Anything the loader REJECTED (pre-v8 blobs, the lanes flag-day) leaves its contact keyed-but-chainless — reset those ceremonies now, while every chain that CAN load already has.
                         self.reclutch_chainless_contacts("resume load");

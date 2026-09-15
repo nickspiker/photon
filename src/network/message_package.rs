@@ -33,29 +33,35 @@ pub struct MessagePackage {
     pub group: Option<GroupWire>,
 }
 
-/// The group frame's typed extras (docs/groups.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a GROUP_PREFIX control row (invite snapshot or record posting); `invite` is the era-pinned secret set on an INVITE row — typed fields, consumed at ingress, never part of the row.
+/// The group frame's typed extras (docs/groups.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a GROUP_PREFIX control row (offer snapshot, join records, record posting); `wrap` is the sealed era secret on a WRAP row — typed fields, consumed at ingress, never part of the row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroupWire {
     pub from: [u8; 32],
     pub woven_authors: Vec<[u8; 32]>,
     pub blob: Option<Vec<u8>>,
-    pub invite: Option<GroupInviteWire>,
+    pub wrap: Option<GroupWrapWire>,
 }
 
-/// The invite's era-pinned secrets (docs/groups.md §4 Invite), riding as typed fields beside the text — the era-KEM doctrine, and here it is load-bearing: the row TEXT is what persists, replicates to siblings and re-serves as history, so a secret in the text would outlive the era it belongs to and defeat the retired-era zeroize. These fields are read once by the invite handler and dropped; the row that lands carries only the kind marker. Zeroized on drop.
+/// A group WRAP's typed fields (docs/groups.md §3 Eras, D10 "secrets only ever move as wraps"): one era secret sealed to ONE device's published KEM bundle. The KEM ciphertexts ride the existing `ekn`/`ekx`/`ekh` fields beside these; `sealed` is the secret under the KEM-derived key. Read once by the wrap handler and dropped; the row that persists is the bare kind marker. Zeroized on drop. Never in the text — the text is the row, and the row persists, replicates and re-serves.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GroupInviteWire {
-    pub era_index: u64,
-    pub group_root: [u8; 32],
-    pub group_history_key: [u8; 32],
+pub struct GroupWrapWire {
+    /// The device this wrap opens for — every other device ignores the row.
+    pub recipient_device: [u8; 32],
+    /// The published bundle it was sealed to (`EraKemWire::bundle_id`) — matched before any decapsulation runs.
+    pub bundle_id: [u8; 32],
+    /// The era the sealed secret installs.
+    pub era: u64,
     pub era_lineage: [u8; 32],
+    /// The minter's nonce — folded into the transcript so two mints of the same index never derive alike.
+    pub nonce: [u8; 32],
+    /// The sealed payload: `fresh` (a mint: the recipient derives N+1 from its own old era) or `root ‖ history_key` (a join answer: the recipient installs the era whole).
+    pub sealed: Vec<u8>,
 }
 
-impl Drop for GroupInviteWire {
+impl Drop for GroupWrapWire {
     fn drop(&mut self) {
         use zeroize::Zeroize;
-        self.group_root.zeroize();
-        self.group_history_key.zeroize();
+        self.sealed.zeroize();
     }
 }
 
@@ -128,10 +134,12 @@ fn msg_schema() -> SectionSchema {
         .field("gpl", TypeConstraint::Any) // hR group record payload (roster-codec blob) on a GROUP_PREFIX row; old parsers discard the unknown name
         .field("gfrom", TypeConstraint::AnyHash) // hb 32 group attribution: the sender's party id (docs/groups.md §3); presence marks a group frame
         .field("gwa", TypeConstraint::AnyHash) // hb 32 weave author per wt entry (group weave refs are (author, eagle_time)); count must match wt
-        .field("gei", TypeConstraint::AnyUnsigned) // invite: the era index the secrets below open (auto-sized; readers widen)
-        .field("groot", TypeConstraint::AnyHash) // hb 32 invite: the group root of that era — consumed at ingress, never stored in the row
-        .field("ghk", TypeConstraint::AnyHash) // hb 32 invite: the group history key of that era — consumed at ingress, never stored
-        .field("glin", TypeConstraint::AnyHash) // hb 32 invite: the era lineage (public — the one-way image of the era-0 root)
+        .field("grcpt", TypeConstraint::AnyHash) // hb 32 wrap: the recipient device
+        .field("gbid", TypeConstraint::AnyHash) // hb 32 wrap: the bundle it was sealed to
+        .field("gera", TypeConstraint::AnyUnsigned) // wrap: the era the sealed secret installs (auto-sized; readers widen)
+        .field("glin", TypeConstraint::AnyHash) // hb 32 wrap: the era lineage (public — the one-way image of the era-0 root)
+        .field("gnonce", TypeConstraint::AnyHash) // hb 32 wrap: the minter's nonce
+        .field("gwrap", TypeConstraint::Any) // hR wrap: the sealed secret — consumed at ingress, never stored in the row
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -261,11 +269,13 @@ pub fn build_message_package_era(
                 builder = builder.set("gpl", VsfType::hR(b.clone())).map_err(|e| e.to_string())?;
             }
         }
-        if let Some(inv) = g.invite.as_ref() {
-            builder = builder.set("gei", VsfType::u(inv.era_index as usize, false)).map_err(|e| e.to_string())?;
-            builder = builder.set("groot", VsfType::hb(inv.group_root.to_vec())).map_err(|e| e.to_string())?;
-            builder = builder.set("ghk", VsfType::hb(inv.group_history_key.to_vec())).map_err(|e| e.to_string())?;
-            builder = builder.set("glin", VsfType::hb(inv.era_lineage.to_vec())).map_err(|e| e.to_string())?;
+        if let Some(w) = g.wrap.as_ref() {
+            builder = builder.set("grcpt", VsfType::hb(w.recipient_device.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("gbid", VsfType::hb(w.bundle_id.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("gera", VsfType::u(w.era as usize, false)).map_err(|e| e.to_string())?;
+            builder = builder.set("glin", VsfType::hb(w.era_lineage.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("gnonce", VsfType::hb(w.nonce.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("gwrap", VsfType::hR(w.sealed.clone())).map_err(|e| e.to_string())?;
         }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
@@ -448,22 +458,23 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
                 })
                 .collect();
             let blob = bytes_field("gpl");
-            // The invite secret set is all-or-nothing: three hashes and an index, or no invite at all (a partial set is a malformed invite, never a guess).
+            // The wrap set is all-or-nothing: recipient, era, lineage, nonce and the sealed bytes, or no wrap at all (a partial set is malformed, never a guess).
             let hash32 = |name: &str| -> Option<[u8; 32]> {
                 section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| match v {
                     VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
                     _ => None,
                 })
             };
-            let invite = match (u_field("gei"), hash32("groot"), hash32("ghk"), hash32("glin")) {
-                (Some(era_index), Some(group_root), Some(group_history_key), Some(era_lineage)) => Some(GroupInviteWire { era_index, group_root, group_history_key, era_lineage }),
+            let sealed = bytes_field("gwrap");
+            let wrap = match (hash32("grcpt"), hash32("gbid"), u_field("gera"), hash32("glin"), hash32("gnonce"), !sealed.is_empty()) {
+                (Some(recipient_device), Some(bundle_id), Some(era), Some(era_lineage), Some(nonce), true) => Some(GroupWrapWire { recipient_device, bundle_id, era, era_lineage, nonce, sealed }),
                 _ => None,
             };
             GroupWire {
                 from,
                 woven_authors: if authors.len() == woven_times.len() { authors } else { Vec::new() },
                 blob: (!blob.is_empty()).then_some(blob),
-                invite,
+                wrap,
             }
         });
     Ok(MessagePackage {
@@ -500,7 +511,7 @@ mod tests {
     /// The group extras ride typed beside the text (the era-KEM doctrine): attribution, paired weave authors, the record blob — absent on every friendship row, and a wa/wt count mismatch drops the authors while the times keep driving the braid.
     #[test]
     fn group_wire_rides_and_is_absent_on_plain_rows() {
-        let g = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), invite: None };
+        let g = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), wrap: None };
         let built = build_message_package_era("\u{1}\u{2}photon-group\u{2}\u{1}records", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.group, Some(g.clone()));
@@ -508,7 +519,7 @@ mod tests {
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().group, None);
         // Mismatched pairing: one author for two times — authors drop, attribution and blob stay.
-        let bad = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, invite: None };
+        let bad = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, wrap: None };
         let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.group.as_ref().unwrap().from, [0xAA; 32]);
@@ -516,20 +527,22 @@ mod tests {
         assert_eq!(pkg.woven_times, vec![5, 9]);
     }
 
-    /// The invite's secrets ride as TYPED fields (all four, or none) and never appear in the text — the row that persists is the bare kind marker.
+    /// A wrap's sealed secret rides as TYPED fields (all five, or none) beside the KEM ciphertexts and never appears in the text — the row that persists is the bare kind marker.
     #[test]
-    fn group_invite_secrets_ride_typed_never_in_text() {
-        let inv = GroupInviteWire { era_index: 300, group_root: [0x11; 32], group_history_key: [0x22; 32], era_lineage: [0x33; 32] };
-        let g = GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: Some(vec![1u8; 40]), invite: Some(inv.clone()) };
-        let text = crate::types::group::GroupSignal::Invite.to_content();
-        let built = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&g)).unwrap();
+    fn group_wrap_rides_typed_never_in_text() {
+        let w = GroupWrapWire { recipient_device: [0x11; 32], bundle_id: [0x22; 32], era: 300, era_lineage: [0x33; 32], nonce: [0x44; 32], sealed: vec![0x55; 80] };
+        let kem = crate::crypto::era::EraKemWire { mlkem: vec![1; 8], x25519: vec![2; 32], hqc: vec![3; 8] };
+        let g = GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: Some(w.clone()) };
+        let text = crate::types::group::GroupSignal::Wrap.to_content();
+        let built = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], Some(&kem), None, Some(&g)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
-        assert_eq!(pkg.group.as_ref().unwrap().invite, Some(inv));
+        assert_eq!(pkg.group.as_ref().unwrap().wrap, Some(w));
+        assert_eq!(pkg.era_kem, Some(kem));
         assert_eq!(pkg.body, text);
-        assert!(!pkg.body.contains("11111111"), "no secret material in the row text");
-        // A partial set (root without history key) is no invite at all.
-        let section_only = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, invite: None })).unwrap();
-        assert_eq!(parse_message_package(&section_only).unwrap().group.as_ref().unwrap().invite, None);
+        assert!(!pkg.body.contains("5555"), "no secret material in the row text");
+        // A partial set (attribution without the wrap fields) is no wrap at all.
+        let plain = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None })).unwrap();
+        assert_eq!(parse_message_package(&plain).unwrap().group.as_ref().unwrap().wrap, None);
     }
 
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).

@@ -35,6 +35,18 @@ pub struct EraKemWire {
     pub hqc: Vec<u8>,
 }
 
+impl EraKemWire {
+    /// A public fingerprint of a bundle (length-framed blake3 over the three keys) — what a wrap names, what a device matches before it decapsulates.
+    pub fn bundle_id(&self) -> [u8; 32] {
+        let mut h = Hasher::new_derive_key("photon.group.bundle.v1");
+        for part in [&self.mlkem, &self.x25519, &self.hqc] {
+            h.update(&(part.len() as u32).to_le_bytes());
+            h.update(part);
+        }
+        *h.finalize().as_bytes()
+    }
+}
+
 /// The initiator's in-flight ratchet: ephemeral decapsulation keys plus the parameters a Resp must echo (the nonce CAS). RUNTIME ONLY — never persisted; a restart aborts the ratchet and a late Resp is dropped by nonce mismatch. Zeroized on drop.
 #[derive(Clone)]
 pub struct EraEphemeral {
@@ -141,6 +153,8 @@ pub fn era_decapsulate(eph: &EraEphemeral, resp: &EraKemWire) -> Option<[u8; 32]
 pub struct EraDecapKeys {
     /// The era we were IN when the bundle published — the minter always encapsulates to each device's newest published bundle, whatever index it mints.
     pub published_era: u64,
+    /// `EraKemWire::bundle_id` of the PUBLIC half — a wrap names the bundle it was sealed to, and only the matching keys ever decapsulate it (the HQC decapsulator aborts on a foreign key rather than failing soft).
+    pub bundle_id: [u8; 32],
     pub kem_set: u8,
     pub mlkem_sk: Vec<u8>,
     pub x_sk: [u8; 32],
@@ -149,7 +163,7 @@ pub struct EraDecapKeys {
 
 impl std::fmt::Debug for EraDecapKeys {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(f, "EraDecapKeys(published@{} set {})", self.published_era, self.kem_set)
+        write!(f, "EraDecapKeys(published@{} set {} id {})", self.published_era, self.kem_set, hex::encode(&self.bundle_id[..4]))
     }
 }
 
@@ -166,6 +180,7 @@ impl EraEphemeral {
     pub fn export_decaps(&self, published_era: u64) -> EraDecapKeys {
         EraDecapKeys {
             published_era,
+            bundle_id: self.init_wire.bundle_id(),
             kem_set: self.kem_set,
             mlkem_sk: self.mlkem_sk.clone(),
             x_sk: self.x_sk,
@@ -195,6 +210,38 @@ pub fn era_decapsulate_group(keys: &EraDecapKeys, resp: &EraKemWire) -> Option<[
         s.zeroize();
     }
     Some(fresh)
+}
+
+/// GROUP WRAP (docs/groups.md D10): seal a chosen secret to one device's published bundle. `era_encapsulate` mints a KEM-derived key K and its ciphertexts; the payload is sealed under `KDF("photon.group.wrap.v1", K ‖ recipient ‖ era ‖ nonce)` with kete's AEAD, so a wrap is bound to exactly one recipient device and one era and cannot be replayed at another. Returns the ciphertexts (for `ekn`/`ekx`/`ekh`) and the sealed bytes (for `gwrap`).
+pub fn wrap_to_bundle(bundle: &EraKemWire, kem_set: u8, recipient: &[u8; 32], era: u64, nonce: &[u8; 32], payload: &[u8]) -> Option<(EraKemWire, Vec<u8>)> {
+    let (cts, mut k) = era_encapsulate(bundle, kem_set)?;
+    let mut key = wrap_key(&k, recipient, era, nonce);
+    k.zeroize();
+    let sealed = kete::encrypt_bytes(payload, &key).ok();
+    key.zeroize();
+    sealed.map(|s| (cts, s))
+}
+
+/// Open a wrap addressed to this device against its PERSISTED bundle keys. None on any mismatch — a wrap for another bundle, another device, another era, or a tampered payload all fail the same way. The bundle id is checked FIRST: the HQC decapsulator aborts the process on a foreign key, so the caller must never hand it one.
+pub fn unwrap_from_bundle(keys: &EraDecapKeys, bundle_id: &[u8; 32], cts: &EraKemWire, recipient: &[u8; 32], era: u64, nonce: &[u8; 32], sealed: &[u8]) -> Option<Vec<u8>> {
+    if keys.bundle_id != *bundle_id {
+        return None;
+    }
+    let mut k = era_decapsulate_group(keys, cts)?;
+    let mut key = wrap_key(&k, recipient, era, nonce);
+    k.zeroize();
+    let out = kete::decrypt_bytes(sealed, &key).ok();
+    key.zeroize();
+    out
+}
+
+fn wrap_key(k: &[u8; 32], recipient: &[u8; 32], era: u64, nonce: &[u8; 32]) -> [u8; 32] {
+    let mut h = Hasher::new_derive_key("photon.group.wrap.v1");
+    h.update(k);
+    h.update(recipient);
+    h.update(&era.to_le_bytes());
+    h.update(nonce);
+    *h.finalize().as_bytes()
 }
 
 /// Fold the labeled KEM secrets into one fresh secret — the labeled-egg discipline: `DOMAIN ‖ count ‖ (label_len ‖ label ‖ secret_len ‖ secret)*`, injective framing, thru spaghettify. Input zeroized.
@@ -362,6 +409,26 @@ mod tests {
     }
 
     /// A tampered ciphertext never agrees — and the HQC-256 ciphertext size is pinned so a library bump that changes it fails loudly here rather than on a phone.
+    /// A group wrap opens only for its recipient, era and nonce — and only against the bundle it was sealed to.
+    #[test]
+    fn group_wrap_opens_only_for_its_recipient_and_era() {
+        let eph = era_keygen(4, 0, KEM_SET_DEFAULT);
+        let keys = eph.export_decaps(3);
+        let other = era_keygen(4, 0, KEM_SET_DEFAULT).export_decaps(3);
+        let bid = eph.init_wire.bundle_id();
+        assert_eq!(keys.bundle_id, bid);
+        assert_ne!(other.bundle_id, bid);
+        let payload = [0x5Au8; 64];
+        let (cts, sealed) = wrap_to_bundle(&eph.init_wire, KEM_SET_DEFAULT, &[7; 32], 4, &[9; 32], &payload).expect("wraps");
+        assert!(!sealed.windows(8).any(|w| w == &payload[..8]), "sealed, not plaintext");
+        assert_eq!(unwrap_from_bundle(&keys, &bid, &cts, &[7; 32], 4, &[9; 32], &sealed).as_deref(), Some(&payload[..]));
+        assert!(unwrap_from_bundle(&keys, &bid, &cts, &[8; 32], 4, &[9; 32], &sealed).is_none(), "another recipient");
+        assert!(unwrap_from_bundle(&keys, &bid, &cts, &[7; 32], 5, &[9; 32], &sealed).is_none(), "another era");
+        assert!(unwrap_from_bundle(&keys, &bid, &cts, &[7; 32], 4, &[1; 32], &sealed).is_none(), "another nonce");
+        // A foreign bundle is refused by id BEFORE any decapsulation runs (the HQC decapsulator would abort on a foreign key).
+        assert!(unwrap_from_bundle(&other, &bid, &cts, &[7; 32], 4, &[9; 32], &sealed).is_none(), "another bundle");
+    }
+
     #[test]
     fn tamper_rejects_and_sizes_are_pinned() {
         let eph = era_keygen(3, 1, KEM_SET_DEFAULT);

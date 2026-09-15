@@ -1403,6 +1403,14 @@ pub struct PhotonApp {
     )>,
     /// Group rosters, keyed by group id (docs/groups.md §4): the membership truth every group-frame gate and standing set reads. Persisted via `save_roster`; loaded on attest/resume thru the group index.
     group_rosters: Vec<(crate::types::group::GroupId, crate::types::group::Roster)>,
+    /// This DEVICE's local state per group (D12: mute, phase) — beside the roster, never inside it. Persisted at vault_key("group-local", gid).
+    group_locals: Vec<(crate::types::group::GroupId, crate::storage::group::GroupLocal)>,
+    /// Parked offers (§10.1 Offered): a friend's snapshot awaiting our Join. Persisted; no secret rides here.
+    group_offers: Vec<crate::storage::group::GroupOffer>,
+    /// Group-scoped trust source (§2): never-friended members' folded devices, consulted only for frames carrying that group's token. Runtime, re-folded at boot (step 5 wires the fold).
+    group_peers: Vec<crate::types::group::GroupPeer>,
+    /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
+    pending_group_posts: Vec<groups::GroupPost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
     chord_lb_press: Option<Instant>,
     /// Last `[` Release timestamp. `None` until first release.
@@ -2340,6 +2348,10 @@ impl PhotonApp {
             history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
             group_rosters: Vec::new(),
+            group_locals: Vec::new(),
+            group_offers: Vec::new(),
+            group_peers: Vec::new(),
+            pending_group_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
             chord_rb_press: None,

@@ -74,6 +74,7 @@ fn chains_schema() -> SectionSchema {
         .field("group", TypeConstraint::AnyUnsigned)
         // OUR device's published KEM decapsulation bundles (§3), index-aligned rows: the wrap that carries a new era's fresh secret targets the bundle we published in our member record, possibly minted while we slept — so the secrets persist here, the same custody class as the lane links beside them.
         .field("kem_published_era", TypeConstraint::Any)
+        .field("kem_bundle_id", TypeConstraint::AnyHash) // hb 32: the public bundle's fingerprint (what a wrap names)
         .field("kem_set", TypeConstraint::AnyUnsigned)
         .field("kem_mlkem_sk", TypeConstraint::Wrapped(b'K')) // vK: ML-KEM-1024 decapsulation key (empty when the set excludes it)
         .field("kem_x_sk", TypeConstraint::AnyHash) // hb 32: X25519 secret scalar
@@ -333,6 +334,8 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         for kem in chains.group_kems() {
             builder = builder
                 .append_multi("kem_published_era", vec![e6(kem.published_era as i64)])
+                .map_err(|e| StorageError::Parse(e.to_string()))?
+                .append_multi("kem_bundle_id", vec![VsfType::hb(kem.bundle_id.to_vec())])
                 .map_err(|e| StorageError::Parse(e.to_string()))?
                 .append_multi("kem_set", vec![VsfType::u(kem.kem_set as usize, false)])
                 .map_err(|e| StorageError::Parse(e.to_string()))?
@@ -797,10 +800,20 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
                 _ => None,
             })
             .collect();
-        let n = eras.len().min(sets.len()).min(mlkems.len()).min(xs.len()).min(hqcs.len());
+        let bids: Vec<[u8; 32]> = section
+            .get_fields("kem_bundle_id")
+            .iter()
+            .filter_map(|f| f.values.first())
+            .filter_map(|v| match v {
+                VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+                _ => None,
+            })
+            .collect();
+        let n = eras.len().min(sets.len()).min(mlkems.len()).min(xs.len()).min(hqcs.len()).min(bids.len());
         let kems: Vec<crate::crypto::era::EraDecapKeys> = (0..n)
             .map(|i| crate::crypto::era::EraDecapKeys {
                 published_era: eras[i],
+                bundle_id: bids[i],
                 kem_set: sets[i],
                 mlkem_sk: mlkems[i].clone(),
                 x_sk: xs[i],
