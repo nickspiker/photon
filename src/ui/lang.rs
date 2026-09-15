@@ -348,6 +348,20 @@ pub enum Msg<'a> {
     /// The unit of account: what "one" is on every scale, and what happens below it.
     DmsUnitsHead,
     DmsUnitsProse,
+    /// REPUTATION, the reason the scaling exists (docs/dozenal.md): five sections on the Base page's dozenal arm — what a grade is, how one fills, why the set never totals, and what stands behind it.
+    /// The grade is a SHARE (the third numeral form: a radix point and up to two digits), and its support is a DOUBLING COUNT — two axes that deliberately cannot be added into one, because any single scalar is a score once people sort by it.
+    RepHead,
+    RepProse,
+    RepOneHead,
+    RepOneProse,
+    RepFillHead,
+    RepFillProse,
+    /// One rung of the fill ladder, keyed by the EVIDENCE count behind the grade (1, 2, 3, 4, 6, 12, 144) — every rung a unit fraction, which is why they land exactly in dozenal and repeat forever in decimal.
+    RepLadderReading(u32),
+    RepNoTotalHead,
+    RepNoTotalProse,
+    RepBehindHead,
+    RepBehindProse,
     /// The length legend: doublings of the hydrogen line's wavelength; the reading takes the signed doubling count.
     DmsLengthHead,
     DmsLengthIntro,

@@ -175,6 +175,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "A size, an age, a rate or a length shows as one number: how many times its unit has doubled, written in dozenal digits. One reads Zil, two Zila, four Zilor, eight Ter. No unit word, because the digits say which scale they are on.\nHalving and doubling is the only step people feel, and a logarithm puts a bit and a terabyte, a second and the age of the universe, in two digits each. The same digits mean the same thing on every scale.\nThree forms, and the kind of number decides which: a count is plain digits (Tera peers is four), a magnitude is this scaling (Tera of size is sixteen bits), a share of a whole is one fraction digit after a dot (.Lun is a half).".into(),
         Msg::DmsUnitsHead => "what one is".into(),
         Msg::DmsUnitsProse => "Every scale counts doublings of one physical thing: a bit for size, an Eagle second for time, one hertz for a link, and for length one wavelength of the hydrogen line, the distance light travels in one Eagle oscillation, twenty-one centimetres. Each is chosen so that the range people care about sits above it. Below one, a minus counts halvings; where the interesting range would sit below one, the quantity is turned over instead, which is why a link reads as a frequency.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "grades, not a score".into(),
+        Msg::RepProse => "A score is a single number that goes up, and whoever holds the most wins. This is not that, and it cannot quietly turn into that.\nWhat you hold is a set of grades. Each one is about a single claim, given by a single person who agreed to give it, and it stays attached to both of them. Nothing is spent, nothing transfers, and nobody owns your grades except the people who gave them.".into(),
+        Msg::RepOneHead => "what one grade is".into(),
+        Msg::RepOneProse => "A grade is a share of a whole \u{2014} a radix point and up to two digits \u{2014} so it cannot pass one. Nobody can be a thousand times anybody.\nIt is about one thing, and that is the point, not a limitation. The same engineer can be graded high on a protocol question and low on the souffl\u{e9}, and the cook the other way round, and every one of those grades is correct. A grade that tried to cover a whole person would be true about nothing.".into(),
+        Msg::RepFillHead => "how a grade fills up".into(),
+        Msg::RepFillProse => "What fills is not the grade. It is the gap underneath one, and every doubling of the evidence halves what is left \u{2014} so a grade approaches one and never arrives. There is no finishing it, and the last digit costs as much as everything before it did.\nRead the other way, a grade tells you its own evidence: one digit has a dozen behind it, two digits a gross. So a digit you have not earned is not modesty to leave off \u{2014} it is the only honest width.\nEvery rung below is a unit fraction, and twelve divides by two, three, four and six. They land exactly in dozenal. In base ten they repeat forever, which is to say base ten cannot write down what a reputation is.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "nothing yet",
+            2 => "half way",
+            3 => "two thirds",
+            4 => "three quarters",
+            6 => "five sixths",
+            12 => "eleven twelfths",
+            144 => "as far as two digits reach",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "why there is no total".into(),
+        Msg::RepNoTotalProse => "The grades do not add up, because they are not measurements of the same thing. High marks for protocol work and low marks for cooking do not average into a person \u{2014} the average would be a lie about both halves.\nSo there is no total, no rank and no leaderboard. There is a set, and the set is the reputation. Anything that collapsed it into one number would be a score again, whatever it was called.".into(),
+        Msg::RepBehindHead => "what stands behind it".into(),
+        Msg::RepBehindProse => "Beside every grade is how much stands behind it, counted in doublings: how many distinct people, over how long.\nDistinct is the part volume cannot buy. One person is one piece of evidence however many messages they send, so breadth needs other people, and other people have to agree. Duration cannot be hurried at all. You can send a thousand messages in a day; you cannot have known two dozen people for five years in a day.".into(),
         Msg::DmsLengthHead => "length".into(),
         Msg::DmsLengthIntro => "Lengths count doublings of the hydrogen line's wavelength, which is how far light travels in one Eagle oscillation. A minus counts halvings below it.".into(),
         Msg::DmsLengthReading(k) => match k {

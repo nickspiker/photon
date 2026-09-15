@@ -205,6 +205,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Rozmiar, wiek, tempo albo długość pokazuje się jako jedna liczba: ile razy podwoiła się jej jednostka, zapisane cyframi dwunastkowymi. Jeden czyta się Zil, dwa Zila, cztery Zilor, osiem Ter. Bez słowa jednostki, bo cyfry same mówią, na której skali są.\nPołowienie i podwajanie to jedyny krok, który ludzie czują, a logarytm mieści bit i terabajt, sekundę i wiek wszechświata, w dwóch cyfrach każde. Te same cyfry znaczą to samo na każdej skali.\nTrzy formy, a rodzaj liczby decyduje która: zliczenie to zwykłe cyfry (Tera peerów to cztery), wielkość to właśnie to skalowanie (Tera rozmiaru to szesnaście bitów), udział w całości to jedna cyfra ułamka po kropce (.Lun to połowa).".into(),
         Msg::DmsUnitsHead => "czym jest jeden".into(),
         Msg::DmsUnitsProse => "Każda skala liczy podwojenia jednej fizycznej rzeczy: bitu dla rozmiaru, sekundy Orła dla czasu, jednego herca dla łącza, a dla długości jednej długości fali linii wodoru, czyli drogi, którą światło przebywa w jednej oscylacji Orła, dwadzieścia jeden centymetrów. Każda jest dobrana tak, by zakres, na którym ludziom zależy, leżał powyżej niej. Poniżej jedynki minus liczy połowienia; tam, gdzie ciekawy zakres leżałby poniżej jedynki, wielkość jest odwracana — i dlatego łącze czyta się jako częstotliwość.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "oceny, nie punktacja".into(),
+        Msg::RepProse => "Punktacja to jedna liczba, która rośnie, a wygrywa ten, kto ma jej najwięcej. To nie jest to i nie może się w to po cichu zamienić.\nTo, co masz, to zbiór ocen. Każda dotyczy jednego twierdzenia, wystawił ją jeden człowiek, który zgodził się ją wystawić, i zostaje przypięta do obojga. Nic się nie wydaje, nic się nie przenosi i nikt nie posiada twoich ocen poza ludźmi, którzy je wystawili.".into(),
+        Msg::RepOneHead => "czym jest jedna ocena".into(),
+        Msg::RepOneProse => "Ocena to udział w całości \u{2014} punkt bazowy i najwyżej dwie cyfry \u{2014} więc nie może przekroczyć jedynki. Nikt nie może przewyższyć kogokolwiek tysiąc razy.\nDotyczy jednej rzeczy i o to właśnie chodzi, to nie ograniczenie. Ta sama inżynierka może dostać wysoką ocenę za pytanie o protokół i niską za suflet, a kucharka odwrotnie, i każda z tych ocen jest poprawna. Ocena, która próbowałaby objąć całego człowieka, nie byłaby prawdziwa o niczym.".into(),
+        Msg::RepFillHead => "jak ocena się zapełnia".into(),
+        Msg::RepFillProse => "Zapełnia się nie ocena. Zapełnia się luka pod jedynką, a każde podwojenie dowodów połowi to, co zostało \u{2014} więc ocena zbliża się do jedynki i nigdy nie dochodzi. Nie da się jej skończyć, a ostatnia cyfra kosztuje tyle, co wszystko przed nią.\nCzytana w drugą stronę ocena sama mówi, ile ma za sobą dowodów: za jedną cyfrą stoi tuzin, za dwiema gros. Pominięcie cyfry, na którą nie zapracowałeś, to więc nie skromność \u{2014} to jedyna uczciwa szerokość.\nKażdy szczebel niżej to ułamek jednostkowy, a dwanaście dzieli się przez dwa, trzy, cztery i sześć. Dwunastkowo wychodzą dokładnie. W bazie dziesięć powtarzają się bez końca, czyli baza dziesięć nie potrafi zapisać, czym jest reputacja.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "jeszcze nic",
+            2 => "połowa drogi",
+            3 => "dwie trzecie",
+            4 => "trzy czwarte",
+            6 => "pięć szóstych",
+            12 => "jedenaście dwunastych",
+            144 => "tak daleko, jak sięgają dwie cyfry",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "dlaczego nie ma sumy".into(),
+        Msg::RepNoTotalProse => "Oceny się nie sumują, bo nie są pomiarami tego samego. Wysokie oceny za pracę nad protokołem i niskie za gotowanie nie uśredniają się w człowieka \u{2014} średnia byłaby kłamstwem o obu połowach.\nWięc nie ma sumy, nie ma rangi i nie ma rankingu. Jest zbiór, i ten zbiór jest reputacją. Cokolwiek zwinęłoby go do jednej liczby, znów byłoby punktacją, jakkolwiek by to nazwać.".into(),
+        Msg::RepBehindHead => "co za tym stoi".into(),
+        Msg::RepBehindProse => "Obok każdej oceny stoi to, ile za nią stoi, liczone w podwojeniach: ilu różnych ludzi, przez jak długo.\nRóżni to ta część, której nie kupi sama ilość. Jeden człowiek to jeden dowód, ile by wiadomości nie wysłał, więc szerokość potrzebuje innych ludzi, a inni ludzie muszą się zgodzić. Czasu trwania nie da się w ogóle przyspieszyć. W jeden dzień możesz wysłać tysiąc wiadomości; nie możesz w jeden dzień znać dwóch tuzinów ludzi od pięciu lat.".into(),
         Msg::DmsLengthHead => "długość".into(),
         Msg::DmsLengthIntro => "Długości liczą podwojenia długości fali linii wodoru, czyli drogi, którą światło przebywa w jednej oscylacji Orła. Minus liczy połowienia poniżej niej.".into(),
         Msg::DmsLengthReading(k) => match k {

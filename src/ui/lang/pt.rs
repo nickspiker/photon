@@ -199,6 +199,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Um tamanho, uma idade, uma taxa ou um comprimento aparece como um único número: quantas vezes a unidade dele duplicou, escrito em dígitos duodecimais. Um se lê Zil, dois Zila, quatro Zilor, oito Ter. Nenhuma palavra de unidade, porque os dígitos dizem em que escala estão.\nDobrar e partir ao meio é o único passo que as pessoas sentem, e um logaritmo põe um bit e um terabyte, um segundo e a idade do universo, em dois dígitos cada. Os mesmos dígitos significam a mesma coisa em toda escala.\nTrês formas, e o tipo de número decide qual: uma contagem são dígitos simples (Tera pares são quatro), uma magnitude é esta escala (Tera de tamanho são dezesseis bits), uma parte de um todo é um dígito de fração depois de um ponto (.Lun é a metade).".into(),
         Msg::DmsUnitsHead => "o que é um".into(),
         Msg::DmsUnitsProse => "Cada escala conta duplicações de uma única coisa física: um bit para tamanho, um segundo Águia para tempo, um hertz para uma ligação, e para comprimento um comprimento de onda da linha do hidrogênio, a distância que a luz percorre em uma oscilação Águia, vinte e um centímetros. Cada uma foi escolhida para que a faixa que interessa às pessoas fique acima dela. Abaixo de um, um sinal de menos conta divisões pela metade; onde a faixa interessante ficaria abaixo de um, a grandeza é invertida, e é por isso que uma ligação se lê como frequência.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "notas, não uma pontuação".into(),
+        Msg::RepProse => "Uma pontuação é um único número que sobe, e ganha quem junta mais. Isto não é isso, e não pode virar isso sem ninguém perceber.\nO que você tem é um conjunto de notas. Cada uma é sobre uma única afirmação, dada por uma única pessoa que concordou em dar, e fica presa às duas. Nada se gasta, nada se transfere, e ninguém é dono das suas notas a não ser quem as deu.".into(),
+        Msg::RepOneHead => "o que é uma nota".into(),
+        Msg::RepOneProse => "Uma nota é uma parte de um todo \u{2014} um ponto de base e no máximo dois dígitos \u{2014} então ela não pode passar de um. Ninguém pode valer mil vezes mais que outra pessoa.\nEla é sobre uma coisa só, e é justamente isso que a torna útil, não uma limitação. A mesma engenheira pode tirar nota alta numa pergunta de protocolo e nota baixa no suflê, e a cozinheira o contrário, e cada uma dessas notas está certa. Uma nota que tentasse cobrir uma pessoa inteira não seria verdadeira sobre nada.".into(),
+        Msg::RepFillHead => "como uma nota se enche".into(),
+        Msg::RepFillProse => "O que se enche não é a nota. É a lacuna debaixo de um, e cada duplicação das provas corta pela metade o que falta \u{2014} então uma nota se aproxima de um e nunca chega. Não há como terminá-la, e o último dígito custa tanto quanto tudo o que veio antes.\nLida ao contrário, uma nota conta as próprias provas: um dígito tem uma dúzia atrás, dois dígitos uma grosa. Então deixar de fora um dígito que você não ganhou não é modéstia \u{2014} é a única largura honesta.\nCada degrau abaixo é uma fração unitária, e doze se divide por dois, três, quatro e seis. Eles caem exatos em duodecimal. Em base dez se repetem para sempre, que é o mesmo que dizer que a base dez não consegue escrever o que uma reputação é.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "nada ainda",
+            2 => "na metade",
+            3 => "dois terços",
+            4 => "três quartos",
+            6 => "cinco sextos",
+            12 => "onze doze avos",
+            144 => "até onde dois dígitos alcançam",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "por que não há total".into(),
+        Msg::RepNoTotalProse => "As notas não se somam, porque não são medidas da mesma coisa. Notas altas em trabalho de protocolo e notas baixas em cozinha não viram a média de uma pessoa \u{2014} a média seria mentira sobre as duas metades.\nEntão não há total, nem posição, nem placar. Há um conjunto, e o conjunto é a reputação. Qualquer coisa que o reduzisse a um único número seria pontuação de novo, com o nome que fosse.".into(),
+        Msg::RepBehindHead => "o que está por trás".into(),
+        Msg::RepBehindProse => "Ao lado de cada nota está quanto há por trás dela, contado em duplicações: quantas pessoas distintas, por quanto tempo.\nDistintas é a parte que o volume não compra. Uma pessoa é uma prova só por mais mensagens que mande, então a amplitude precisa de outras pessoas, e as outras pessoas têm que concordar. A duração não dá para apressar de jeito nenhum. Você pode mandar mil mensagens num dia; você não pode conhecer duas dúzias de pessoas há cinco anos num dia.".into(),
         Msg::DmsLengthHead => "comprimento".into(),
         Msg::DmsLengthIntro => "Os comprimentos contam duplicações do comprimento de onda da linha do hidrogênio, que é o quanto a luz percorre em uma oscilação Águia. Um sinal de menos conta divisões pela metade abaixo dele.".into(),
         Msg::DmsLengthReading(k) => match k {

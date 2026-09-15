@@ -14,3 +14,22 @@ Decided with Nick 2026-09-11 and shipped in photon (docs/dozenal.md is the canon
 
 **Why:** Nick's "where do we draw the line" question; the same word (Tera) meant four peers, sixteen bits or a third depending on scale.
 **How to apply:** before formatting any new numeral, ask which of the three kinds it is; magnitudes go thru a dms_* helper, counts thru fmt_num/fmt_num64, and hex must never see a scaled or M:SS value. Related: [[project_dms_age]], [[project_languages]], [[feedback_numbers_binary_at_rest]].
+
+## Reputation, and why the scaling exists (2026-09-15)
+
+Nick's frame: **"Reputation != Score. Arabic keeps score. USD keeps score."** Linear notation is the ledger's notation — it rewards accumulation and makes "how much more than me" legible. DMS resists both by construction, which is WHY dozenal-DMS is the default and arabic is the opt-out. His argument for DMS-as-the-only-count: "a billion dollars and a thousand move, do I notice? a million users to a million and ten, vs ten to twenty?" — perceived change is always relative. (Backed by Weber-Fechner + the log-number-line studies: linear counting is the SCHOOLED artifact, log is native.)
+
+**The boundary I raised and he accepted:** subitizing. Below ~4 humans enumerate exactly rather than estimate — a different faculty, not an exception. So the line is PERCEPTION vs ENUMERATION: "can the user point at each one?" Yours-and-enumerable (devices, contacts, unread) = linear count; the world's-and-bulk (swarm peers, bytes, seconds) = magnitude. NOTE he then sharpened it further: with FRACTIONAL DMS the low end isn't lossy at all (3 = log2 1.58 = Zila·Luna vs 2 = bare Zila), so the word-floor idea is mostly unnecessary — only ZERO still needs a word, having no logarithm.
+
+**PEERS should become a magnitude** (his catch): 20 peers = log2 4.32 = Tera. And `DmsScaleProse` currently teaches the count form with "Tera peers is four" — the one quantity that breaks the rule. Swap its illustration to something enumerable ("Tera devices is four"). Zero peers needs a word ("alone"). NOT YET BUILT.
+
+**THE MATH (shipped as Base-page prose 2026-09-15, all 16 languages):**
+- A grade is a BOUNDED share: radix point + ≤2 dozenal digits. Nobody can be a thousand times anybody.
+- What fills is the SHORTFALL, not the grade: `1 − G = 1/E`, so **G = 1 − 1/E** (the "reciprocal" Nick intuited, falling out of "each doubling halves what's left").
+- Two dozenal fraction digits = 144 levels, and `1 − 1/144 = 143/144 = .ƐƐ` EXACTLY. So the evidence denominator IS the display: a dozen behind you shows one digit, a gross shows two. **Displayed precision = support**, and an unearned digit is visibly false.
+- Every rung is a unit fraction and 12 divides by 2/3/4/6, so all land exactly in dozenal and REPEAT FOREVER in decimal — base ten literally cannot write down a reputation. That table IS the dozenal argument, not an illustration of it.
+- Quality rides too or volume buys the top: `G = q · (1 − 1/E)`, E weighted by DISTINCT people × duration (the two inputs volume cannot fake).
+- **Never one scalar.** Grades are per-domain and don't add — averaging protocol marks with cooking marks is a lie about both. Two axes (grade = how well, doublings = how much to trust it) kept visibly separate, because any single number becomes a score once people sort by it.
+- Helper: `crate::rep_grade_glyphs(evidence)` renders the ladder live (lib.rs).
+
+**HELD, deliberately not in the prose** (Nick: "don't write that in but do mentally note"): this leads to voting, employment, insurance credibility — DOMAIN-WEIGHTED authority, heavy on a telecom protocol change, light on a food additive. Symbiosis/game theory. The prose sets it up without naming it via "it is about one thing, and that is the point, not a limitation" and "the average would be a lie about both halves".

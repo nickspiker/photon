@@ -202,6 +202,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Ka whakaatuhia te rahi, te tawhito, te tere, te roa rānei hei tau kotahi: e hia ngā wā i rearua ai tōna waeine, kua tuhia ki ngā mati tekau-mā-rua. Ko te tahi ka pānuitia Zil, te rua Zila, te whā Zilor, te waru Ter. Kāore he kupu waeine, nā te mea mā ngā mati e kī ko tēhea te ine.\nKo te rearua me te haurua anake ngā hīkoi e rongohia ana e te tangata, ā, mā te taukī ka uru te moka me te terapaita, te hēkona me te pakeke o te ao whānui, ki ngā mati e rua ia. He ōrite te tikanga o aua mati i ia ine.\nE toru ngā āhua, ā, mā te momo tau e whiriwhiri: ko te tatau he mati māmā (Tera hoa he whā), ko te nui ko tēnei ine (Tera o te rahi he tekau mā ono ngā moka), ko te wāhanga o te katoa he mati hautanga kotahi i muri i te ira (.Lun he haurua).".into(),
         Msg::DmsUnitsHead => "he aha te tahi".into(),
         Msg::DmsUnitsProse => "Ka tatau ia ine i ngā rearuatanga o te mea ōkiko kotahi: he moka mō te rahi, he hēkona Ēkara mō te wā, he hēti kotahi mō te hono, ā, mō te roa he roa-ngaru kotahi o te rārangi hauwai, te tawhiti e haere ai te māramatanga i te kaurori Ēkara kotahi, e rua tekau mā tahi henemita. Kua kōwhiria ia kia noho te awhe e whai take ana ki runga. I raro i te tahi, mā te tohu tango e tatau ngā hauruatanga; ki te noho te awhe whai take ki raro, ka hurihia kē te rahinga, koia te take ka pānuitia te hono hei auau.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "he māka, ehara i te piro".into(),
+        Msg::RepProse => "He tau kotahi e piki haere ana te piro, ā, ko te tangata nui rawa tōna ka toa. Ehara tēnei i tērā, ā, e kore e taea te huri puku hei tērā.\nKo tāu e pupuri ana, he huinga māka. Mō te kerēme kotahi ia māka, nā te tangata kotahi i whakaae ki te hoatu, ā, ka mau tonu ki a rāua tokorua. Kāore he mea e pau, kāore he mea e whakawhitia, ā, kāore he tangata nōna āu māka, ko te hunga anake nāna i hoatu.".into(),
+        Msg::RepOneHead => "he aha te māka kotahi".into(),
+        Msg::RepOneProse => "He wāhanga o te katoa te māka \u{2014} he ira pūtake me ngā mati e rua noa iho \u{2014} nō reira e kore e taea te hipa i te tahi. Kāore e taea e tētahi tangata te kotahi mano ngā wā te nui ake i tētahi atu.\nMō te mea kotahi noa ia, ā, koia tonu te take, ehara i te here. Ka taea te kaipūkaha kotahi te whiwhi māka teitei mō tētahi pātai kawa, me te māka pāpaku mō te souffl\u{e9}, ā, ko te kōaro mō te kaitunu kai, ā, he tika ia māka o ērā. Ko te māka e whai ana ki te kapi i te tangata katoa, kāore he mea e pono ai.".into(),
+        Msg::RepFillHead => "me pēhea te kī haere o te māka".into(),
+        Msg::RepFillProse => "Ehara te māka i te mea e kī haere ana. Ko te āputa kei raro i te tahi, ā, ka haurua ia rearuatanga o te taunakitanga i te toenga \u{2014} nō reira ka whakatata te māka ki te tahi, engari e kore e tae. Kāore he otinga, ā, he rite te utu o te mati whakamutunga ki te utu o ngā mea katoa i mua i a ia.\nIna pānuitia mai i tērā atu taha, ka kī mai te māka i tōna ake taunakitanga: kotahi tatini kei muri i te mati kotahi, tekau mā rua tatini kei muri i ngā mati e rua. Nō reira ko te whakarere i tētahi mati kāore anō kia riro i a koe, ehara i te ngākau māhaki \u{2014} koia anake te whānui pono.\nHe hautanga ko te tahi te tau o runga ia pae kei raro, ā, ka wehea tikahia te tekau mā rua e te rua, te toru, te whā, me te ono. Ka tau tōtika ēnei ki te tekau mā rua. Ki te pūtake tekau ka tāruarua mō ake tonu atu, arā, kāore e taea e te pūtake tekau te tuhi i te tikanga o te ingoa nui.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "kāore anō",
+            2 => "te haurua",
+            3 => "e rua hautoru",
+            4 => "e toru hauwhā",
+            6 => "e rima hauono",
+            12 => "tekau mā tahi o te tekau mā rua",
+            144 => "te tawhiti o ngā mati e rua",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "he aha i kore ai he tapeke".into(),
+        Msg::RepNoTotalProse => "Kāore ngā māka e tāpiritia hei tapeke, nā te mea ehara rātou i te ine o te mea kotahi. Ko ngā māka teitei mō te mahi kawa me ngā māka pāpaku mō te tunu kai, e kore e taea te toharite hei tangata \u{2014} he teka te toharite mō ngā taha e rua.\nNō reira kāore he tapeke, kāore he tūranga, kāore he papa tohu toa. He huinga kei kōnei, ā, ko te huinga te ingoa nui. Ko te mea e whakahoki ana i taua huinga ki te tau kotahi, he piro anō tērā, ahakoa te ingoa i tapaina ki a ia.".into(),
+        Msg::RepBehindHead => "he aha kei muri i a ia".into(),
+        Msg::RepBehindProse => "I te taha o ia māka ko te nui o te mea kei muri i a ia, e tatauria ana ki ngā rearuatanga: e hia ngā tāngata motuhake, mō te wā pēhea te roa.\nKo te motuhake te wāhanga e kore e taea te hoko ki te maha. Kotahi anake te taunakitanga o te tangata kotahi ahakoa te maha o ana karere, nō reira me whai tāngata kē te whānui, ā, me whakaae hoki aua tāngata. Kāore rawa e taea te whakatere i te roa o te wā. Ka taea e koe te tuku kotahi mano karere i te rā kotahi; e kore e taea i te rā kotahi te mōhio ki e rua tatini tāngata mō ngā tau e rima.".into(),
         Msg::DmsLengthHead => "roa".into(),
         Msg::DmsLengthIntro => "Ka tatau ngā roa i ngā rearuatanga o te roa-ngaru o te rārangi hauwai, arā te tawhiti e haere ai te māramatanga i te kaurori Ēkara kotahi. Mā te tohu tango e tatau ngā hauruatanga i raro.".into(),
         Msg::DmsLengthReading(k) => match k {

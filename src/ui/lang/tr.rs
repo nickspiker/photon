@@ -202,6 +202,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Bir boyut, bir yaş, bir hız ya da bir uzunluk tek bir sayı olarak görünür: biriminin kaç kez ikiye katlandığı, onikilik basamaklarla yazılmış. Bir Zil okunur, iki Zila, dört Zilor, sekiz Ter. Birim sözcüğü yok, çünkü hangi ölçekte olduklarını basamakların kendisi söyler.\nİkiye katlamak ve yarıya bölmek insanın hissettiği tek adımdır; bir logaritma ise bir biti ve bir terabaytı, bir saniyeyi ve evrenin yaşını ikişer basamağa sığdırır. Aynı basamaklar her ölçekte aynı şeyi söyler.\nÜç biçim var ve hangisi olacağına sayının türü karar verir: bir sayım düz basamaklardır (Tera eş dört eder), bir büyüklük bu ölçeklemedir (boyutta Tera on altı bit eder), bütünün bir payı ise noktadan sonra tek bir kesir basamağıdır (.Lun yarımdır).".into(),
         Msg::DmsUnitsHead => "bir nedir".into(),
         Msg::DmsUnitsProse => "Her ölçek tek bir fiziksel şeyin ikiye katlanmalarını sayar: boyut için bir bit, zaman için bir Kartal saniyesi, bir bağlantı için bir hertz ve uzunluk için hidrojen çizgisinin bir dalga boyu, yani ışığın bir Kartal salınımında aldığı yol, yirmi bir santimetre. Her biri, insanın önemsediği aralık onun üstünde kalacak şekilde seçilmiştir. Birin altında eksi işareti yarıya bölmeleri sayar; ilgi çekici aralık birin altına düşecek olsaydı nicelik ters çevrilir — bağlantının bir frekans olarak okunmasının sebebi budur.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "notlar, puan değil".into(),
+        Msg::RepProse => "Puan, yükselip duran tek bir sayıdır; en çoğunu tutan kazanır. Buradaki o değildir ve sessizce ona dönüşemez.\nElinde tuttuğun şey bir notlar kümesidir. Her not tek bir iddia hakkındadır, onu vermeye razı olan tek bir kişinin verdiğidir ve ikisine de bağlı kalır. Hiçbir şey harcanmaz, hiçbir şey devredilmez ve notlarının sahibi, onları verenlerden başkası değildir.".into(),
+        Msg::RepOneHead => "bir not nedir".into(),
+        Msg::RepOneProse => "Bir not bütünün bir payıdır \u{2014} bir taban noktası ve en çok iki basamak \u{2014} bu yüzden biri geçemez. Kimse kimsenin bin katı olamaz.\nTek bir şey hakkındadır; bu bir kısıt değil, asıl mesele budur. Aynı mühendis bir protokol sorusunda yüksek, sufle konusunda düşük not alabilir, aşçı ise tam tersini alır ve bu notların her biri doğrudur. Bütün bir insanı kapsamaya çalışan bir not, hiçbir şey hakkında doğru olmazdı.".into(),
+        Msg::RepFillHead => "bir not nasıl dolar".into(),
+        Msg::RepFillProse => "Dolan şey not değildir. Dolan, birin altında kalan boşluktur; kanıtın her ikiye katlanması geriye kalanı yarıya indirir \u{2014} böylece bir not bire yaklaşır ama asla varmaz. Onu bitirmek diye bir şey yoktur ve son basamak, kendinden öncekilerin tamamı kadar pahalıya gelir.\nTers yönden okununca bir not kendi kanıtını söyler: bir basamağın arkasında bir düzine vardır, iki basamağın arkasında on iki düzine. Yani hak etmediğin bir basamağı yazmamak alçakgönüllülük değildir \u{2014} dürüst olan tek genişlik odur.\nAşağıdaki her kademe bir birim kesirdir ve on iki; iki, üç, dört ve altıya bölünür. Onikilikte tam otururlar. On tabanında sonsuza kadar devrederler, yani on tabanı bir itibarın ne olduğunu yazamaz.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "henüz hiç",
+            2 => "yarı yol",
+            3 => "üçte iki",
+            4 => "dörtte üç",
+            6 => "altıda beş",
+            12 => "on ikide on bir",
+            144 => "iki basamağın yettiği yere kadar",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "neden toplam yok".into(),
+        Msg::RepNoTotalProse => "Notlar toplanmaz, çünkü aynı şeyin ölçümleri değildir. Protokol işinde yüksek, yemek pişirmede düşük notlar ortalanıp bir insan etmez \u{2014} o ortalama iki yarı hakkında da yalan olurdu.\nBu yüzden toplam yok, sıralama yok, liderlik tablosu yok. Bir küme var ve itibar o kümedir. Onu tek bir sayıya indirgeyen her şey, adı ne konursa konsun, yeniden bir puan olurdu.".into(),
+        Msg::RepBehindHead => "arkasında ne duruyor".into(),
+        Msg::RepBehindProse => "Her notun yanında, arkasında ne kadarının durduğu yazar, ikiye katlanmalarla sayılmış: kaç ayrı kişi, ne kadar zamandır.\nAyrı olmak, hacmin satın alamayacağı kısımdır. Bir kişi, kaç mesaj gönderirse göndersin tek bir kanıttır; bu yüzden genişlik başka insanlara muhtaçtır ve o insanların da razı olması gerekir. Süre ise hiç acele ettirilemez. Bir günde bin mesaj gönderebilirsin; iki düzine kişiyi bir günde beş yıldır tanıyor olamazsın.".into(),
         Msg::DmsLengthHead => "uzunluk".into(),
         Msg::DmsLengthIntro => "Uzunluklar hidrojen çizgisinin dalga boyunun ikiye katlanmalarını sayar; o dalga boyu ışığın bir Kartal salınımında aldığı yoldur. Eksi işareti onun altındaki yarıya bölmeleri sayar.".into(),
         Msg::DmsLengthReading(k) => match k {

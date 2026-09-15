@@ -202,6 +202,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Una dimensione, un’età, un ritmo o una lunghezza si mostra come un solo numero: quante volte la sua unità si è raddoppiata, scritto in cifre duodecimali. Uno si legge Zil, due Zila, quattro Zilor, otto Ter. Nessuna parola di unità, perché sono le cifre a dire su quale scala stanno.\nDimezzare e raddoppiare è l’unico passo che le persone sentono, e un logaritmo mette un bit e un terabyte, un secondo e l’età dell’universo, in due cifre ciascuno. Le stesse cifre vogliono dire la stessa cosa su ogni scala.\nTre forme, e il tipo di numero decide quale: un conteggio sono cifre semplici (Tera pari sono quattro), una magnitudine è questa scalatura (Tera di dimensione sono sedici bit), una parte di un intero è una cifra di frazione dopo un punto (.Lun è una metà).".into(),
         Msg::DmsUnitsHead => "che cos’è uno".into(),
         Msg::DmsUnitsProse => "Ogni scala conta i raddoppi di una sola cosa fisica: un bit per la dimensione, un secondo Aquila per il tempo, un hertz per un collegamento, e per la lunghezza una lunghezza d’onda della riga dell’idrogeno, la distanza che la luce percorre in un’oscillazione Aquila, ventun centimetri. Ognuna è scelta perché l’intervallo che interessa alle persone stia sopra di essa. Sotto l’uno, un segno meno conta i dimezzamenti; dove l’intervallo interessante starebbe sotto l’uno, la grandezza viene invece rovesciata, ed è per questo che un collegamento si legge come una frequenza.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "voti, non un punteggio".into(),
+        Msg::RepProse => "Un punteggio è un solo numero che sale, e vince chi ne ha di più. Questo non è quello, e non può diventarlo di soppiatto.\nQuello che hai è un insieme di voti. Ognuno riguarda una sola affermazione, lo dà una sola persona che ha accettato di darlo, e resta attaccato a tutte e due. Niente si spende, niente si trasferisce, e nessuno possiede i tuoi voti tranne le persone che li hanno dati.".into(),
+        Msg::RepOneHead => "che cos’è un voto".into(),
+        Msg::RepOneProse => "Un voto è una parte di un intero \u{2014} un punto di base e al più due cifre \u{2014} quindi non può superare uno. Nessuno può valere mille volte più di un altro.\nRiguarda una cosa sola, ed è proprio questo il punto, non un limite. La stessa ingegnera può prendere un voto alto su una domanda di protocollo e un voto basso sul soufflé, e la cuoca il contrario, e ognuno di quei voti è giusto. Un voto che provasse a coprire una persona intera non sarebbe vero su niente.".into(),
+        Msg::RepFillHead => "come si riempie un voto".into(),
+        Msg::RepFillProse => "Quello che si riempie non è il voto. È lo spazio che resta sotto uno, e ogni raddoppio delle prove dimezza quello che manca \u{2014} così un voto si avvicina a uno e non ci arriva mai. Non c’è modo di finirlo, e l’ultima cifra costa quanto tutto quello che è venuto prima.\nLetto al contrario, un voto dice le proprie prove: una cifra ha una dozzina dietro, due cifre una grossa. Quindi lasciare fuori una cifra che non ti sei guadagnata non è modestia \u{2014} è l’unica larghezza onesta.\nOgni gradino più in basso è una frazione unitaria, e dodici si divide per due, tre, quattro e sei. Cadono esatte in duodecimale. In base dieci si ripetono all’infinito, che è come dire che la base dieci non sa scrivere che cos’è una reputazione.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "ancora niente",
+            2 => "a metà",
+            3 => "due terzi",
+            4 => "tre quarti",
+            6 => "cinque sesti",
+            12 => "undici dodicesimi",
+            144 => "fin dove arrivano due cifre",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "perché non c’è un totale".into(),
+        Msg::RepNoTotalProse => "I voti non si sommano, perché non misurano la stessa cosa. Voti alti sul lavoro di protocollo e voti bassi in cucina non fanno la media di una persona \u{2014} la media sarebbe una bugia su tutte e due le metà.\nQuindi nessun totale, nessuna posizione e nessuna classifica. C’è un insieme, e l’insieme è la reputazione. Qualunque cosa lo riducesse a un solo numero tornerebbe a essere un punteggio, comunque la si chiami.".into(),
+        Msg::RepBehindHead => "che cosa c’è dietro".into(),
+        Msg::RepBehindProse => "Accanto a ogni voto c’è quanto gli sta dietro, contato in raddoppi: quante persone distinte, per quanto tempo.\nDistinte è la parte che il volume non può comprare. Una persona è una prova sola per quanti messaggi mandi, quindi l’ampiezza ha bisogno di altre persone, e le altre persone devono accettare. La durata non si può affrettare per niente. Puoi mandare mille messaggi in un giorno; non puoi conoscere due dozzine di persone da cinque anni in un giorno.".into(),
         Msg::DmsLengthHead => "lunghezza".into(),
         Msg::DmsLengthIntro => "Le lunghezze contano i raddoppi della lunghezza d’onda della riga dell’idrogeno, cioè quanto percorre la luce in un’oscillazione Aquila. Un segno meno conta i dimezzamenti al di sotto.".into(),
         Msg::DmsLengthReading(k) => match k {

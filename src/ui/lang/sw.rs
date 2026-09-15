@@ -205,6 +205,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Ukubwa, umri, kasi au urefu huonyeshwa kama namba moja: mara ngapi kipimo chake kimerudufu, kikiandikwa kwa tarakimu za kumi na mbili. Moja husomeka Zil, mbili Zila, nne Zilor, nane Ter. Hakuna neno la kipimo, kwa sababu tarakimu zenyewe husema ni mizani ipi.\nKugawa nusu na kurudufu ndiyo hatua pekee ambayo watu huihisi, na logarithimu huweka biti na terabaiti, sekunde na umri wa ulimwengu, katika tarakimu mbili kila kimoja. Tarakimu zile zile humaanisha kitu kile kile katika kila mizani.\nKuna maumbo matatu, na aina ya namba huamua lipi: hesabu ni tarakimu tupu (Tera washirika ni wanne), ukubwa ni mizani hii (Tera ya ukubwa ni biti kumi na sita), sehemu ya jumla ni tarakimu moja ya sehemu baada ya nukta (.Lun ni nusu).".into(),
         Msg::DmsUnitsHead => "moja ni nini".into(),
         Msg::DmsUnitsProse => "Kila mizani huhesabu marudufu ya kitu kimoja halisi: biti kwa ukubwa, sekunde ya Tai kwa muda, herzi moja kwa muunganisho, na kwa urefu urefu mmoja wa wimbi la mstari wa hidrojeni, umbali ambao mwanga husafiri katika mtetemo mmoja wa Tai, sentimita ishirini na moja. Kila kimoja kimechaguliwa ili safu ambayo watu huijali ikae juu yake. Chini ya moja, alama ya kutoa huhesabu nusu; pale ambapo safu muhimu ingekaa chini ya moja, kiasi hupinduliwa badala yake, ndiyo maana muunganisho husomeka kama masafa.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "madaraja, si alama".into(),
+        Msg::RepProse => "Alama ni namba moja inayopanda, na anayeshikilia kubwa zaidi ndiye hushinda. Hii si hiyo, wala haiwezi kugeuka kimyakimya kuwa hiyo.\nUnachoshikilia ni seti ya madaraja. Kila moja linahusu dai moja, limetolewa na mtu mmoja aliyekubali kulitoa, nalo hubaki limeambatana na wote wawili. Hakuna kinachotumika, hakuna kinachohamishwa, na hakuna anayemiliki madaraja yako isipokuwa watu walioyatoa.".into(),
+        Msg::RepOneHead => "daraja moja ni nini".into(),
+        Msg::RepOneProse => "Daraja ni sehemu ya jumla \u{2014} nukta ya msingi na tarakimu zisizozidi mbili \u{2014} kwa hivyo haliwezi kupita moja. Hakuna anayeweza kuwa mara elfu moja zaidi ya mwingine.\nLinahusu jambo moja, na hilo ndilo lengo lenyewe, si upungufu. Mhandisi yuleyule anaweza kupewa daraja la juu kwenye swali la itifaki na la chini kwenye souffl\u{e9}, na mpishi kinyume chake, na kila moja ya madaraja hayo ni sahihi. Daraja linalojaribu kumfunika mtu mzima halingekuwa kweli kuhusu chochote.".into(),
+        Msg::RepFillHead => "jinsi daraja linavyojaa".into(),
+        Msg::RepFillProse => "Kinachojaa si daraja. Ni pengo lililo chini ya moja, na kila kurudufu kwa ushahidi hukata nusu kilichobaki \u{2014} hivyo daraja hulikaribia moja na kamwe halilifikii. Hakuna kulimaliza, na tarakimu ya mwisho hugharimu kadiri ya zote zilizotangulia.\nUkilisoma upande mwingine, daraja hukuambia ushahidi wake mwenyewe: tarakimu moja ina dazeni nyuma yake, tarakimu mbili zina dazeni kumi na mbili. Hivyo tarakimu ambayo hujaichuma si unyenyekevu kuiacha \u{2014} ndiyo upana pekee wa kweli.\nKila ngazi iliyo chini ni sehemu yenye moja juu, na kumi na mbili hugawanyika sawasawa kwa mbili, tatu, nne na sita. Hutua sawasawa katika msingi wa kumi na mbili. Katika msingi wa kumi hujirudia milele, yaani msingi wa kumi hauwezi kuandika sifa ni nini.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "bado hakuna kitu",
+            2 => "nusu",
+            3 => "theluthi mbili",
+            4 => "robo tatu",
+            6 => "sehemu tano kati ya sita",
+            12 => "sehemu kumi na moja kati ya kumi na mbili",
+            144 => "kadiri tarakimu mbili zinavyofika",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "kwa nini hakuna jumla".into(),
+        Msg::RepNoTotalProse => "Madaraja hayajumuishwi, kwa sababu si vipimo vya kitu kimoja. Madaraja ya juu kwa kazi ya itifaki na ya chini kwa upishi hayawezi kupigwa wastani yakawa mtu \u{2014} wastani huo ungekuwa uongo kuhusu pande zote mbili.\nHivyo hakuna jumla, hakuna cheo na hakuna orodha ya washindi. Kuna seti, na seti ndiyo sifa. Chochote kingeyabana yote yakawa namba moja kingekuwa alama tena, kiitwe jina lolote.".into(),
+        Msg::RepBehindHead => "kinachosimama nyuma yake".into(),
+        Msg::RepBehindProse => "Kando ya kila daraja kuna kiasi cha ushahidi kinachosimama nyuma yake, kikihesabiwa kwa marudufu: watu tofauti wangapi, kwa muda gani.\nKuwa tofauti ndiyo sehemu ambayo wingi hauwezi kuinunua. Mtu mmoja ni ushahidi mmoja hata atume jumbe ngapi, hivyo upana unahitaji watu wengine, na watu wengine lazima wakubali. Muda wenyewe hauwezi kuharakishwa hata kidogo. Unaweza kutuma jumbe elfu moja kwa siku moja; huwezi kuwa umewafahamu watu dazeni mbili kwa miaka mitano ndani ya siku moja.".into(),
         Msg::DmsLengthHead => "urefu".into(),
         Msg::DmsLengthIntro => "Urefu huhesabu marudufu ya urefu wa wimbi la mstari wa hidrojeni, yaani umbali ambao mwanga husafiri katika mtetemo mmoja wa Tai. Alama ya kutoa huhesabu nusu chini yake.".into(),
         Msg::DmsLengthReading(k) => match k {

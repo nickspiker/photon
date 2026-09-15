@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age/dms_size/dms_length DMS doubling counts as a pure logarithm, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age/dms_size/dms_length DMS doubling counts as a pure logarithm, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, rep_grade_glyphs (the reputation ladder: 1 − 1/evidence as a dozenal fraction, exact on every unit-fraction rung), dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
@@ -293,6 +293,25 @@ pub fn dms_age(secs: i64) -> String {
             None => crate::ui::lang::tr(crate::ui::lang::Msg::DmsNow).into_owned(),
         },
     }
+}
+
+/// One rung of the REPUTATION ladder: the grade `1 − 1/evidence`, as a dozenal fraction — a radix point and up to two digits.
+/// Every rung the Base page shows is a unit fraction, and twelve divides by two, three, four and six, so each one lands EXACTLY. The identical values repeat forever in base ten, which is the argument the ladder exists to make rather than merely assert.
+/// Read backwards it is the confidence: one digit means a dozen behind the grade, two digits a gross. A digit that was not earned is not modesty to omit, it is the only honest width.
+pub fn rep_grade_glyphs(evidence: u32) -> String {
+    if evidence == 0 {
+        return String::new();
+    }
+    // The grade over a gross: 1 − 1/E is (144 − 144/E)/144, and 144 is exactly what two dozenal fraction digits hold.
+    let n = 144u32.saturating_sub(144 / evidence);
+    let (high, low) = (n / 12, n % 12);
+    let mut s = String::from(".");
+    s.push(char::from(0x10 + high as u8));
+    // A trailing Zil is a digit nobody earned — one dozen of evidence shows one digit, not two.
+    if low != 0 {
+        s.push(char::from(0x10 + low as u8));
+    }
+    s
 }
 
 /// A LATENCY as a DOZENAL METRIC FREQUENCY (1 Hz reads Zil, 2 Hz Zila, 4 Hz Zilor, 8 Hz Ter): the bit length of the frequency in hertz — each digit a doubling — rendered in the current base (hex reads the plain hertz, arabic the milliseconds).

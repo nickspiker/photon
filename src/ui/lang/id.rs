@@ -199,6 +199,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Sebuah ukuran, usia, laju atau panjang tampil sebagai satu angka: berapa kali satuannya sudah berlipat dua, ditulis dengan digit duodesimal. Satu terbaca Zil, dua Zila, empat Zilor, delapan Ter. Tanpa kata satuan, karena digitnya sendiri yang mengatakan ia ada di skala mana.\nMembagi dua dan melipatduakan adalah satu-satunya langkah yang benar-benar dirasakan orang, dan sebuah logaritma menaruh satu bit dan satu terabyte, satu detik dan usia alam semesta, masing-masing dalam dua digit. Digit yang sama berarti hal yang sama di setiap skala.\nAda tiga bentuk, dan jenis angkanya yang menentukan: hitungan adalah digit biasa (Tera rekan berarti empat), magnitudo memakai penskalaan ini (Tera untuk ukuran berarti enam belas bit), bagian dari suatu keseluruhan adalah satu digit pecahan setelah titik (.Lun berarti setengah).".into(),
         Msg::DmsUnitsHead => "satu itu apa".into(),
         Msg::DmsUnitsProse => "Setiap skala menghitung pelipatan satu benda fisik: satu bit untuk ukuran, satu detik Elang untuk waktu, satu hertz untuk sambungan, dan untuk panjang satu panjang gelombang garis hidrogen, yaitu jarak tempuh cahaya dalam satu osilasi Elang, dua puluh satu sentimeter. Masing-masing dipilih supaya rentang yang orang pedulikan berada di atasnya. Di bawah satu, tanda minus menghitung pembagian dua; kalau rentang yang menarik justru jatuh di bawah satu, besarannya dibalik, dan karena itulah sambungan terbaca sebagai frekuensi.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "nilai, bukan skor".into(),
+        Msg::RepProse => "Skor adalah satu angka yang naik, dan siapa yang paling banyak, dialah yang menang. Ini bukan itu, dan ini tidak bisa diam-diam berubah menjadi itu.\nYang kamu pegang adalah sehimpunan nilai. Masing-masing tentang satu klaim, diberikan oleh satu orang yang setuju memberikannya, dan tetap melekat pada keduanya. Tidak ada yang habis terpakai, tidak ada yang berpindah tangan, dan tidak ada yang memiliki nilaimu selain orang-orang yang memberikannya.".into(),
+        Msg::RepOneHead => "satu nilai itu apa".into(),
+        Msg::RepOneProse => "Sebuah nilai adalah bagian dari suatu keseluruhan \u{2014} sebuah titik radiks dan paling banyak dua digit \u{2014} jadi ia tidak bisa melewati satu. Tidak ada orang yang bisa seribu kali lipat orang lain.\nIa tentang satu hal, dan justru itulah maksudnya, bukan keterbatasannya. Insinyur yang sama bisa bernilai tinggi pada pertanyaan protokol dan rendah pada souffl\u{e9}, dan si juru masak justru sebaliknya, dan setiap nilai itu benar. Nilai yang mencoba mencakup satu orang seutuhnya tidak akan benar tentang apa pun.".into(),
+        Msg::RepFillHead => "bagaimana sebuah nilai terisi".into(),
+        Msg::RepFillProse => "Yang terisi bukanlah nilainya. Yang terisi adalah celah di bawah satu, dan setiap pelipatan bukti memangkas setengah dari sisanya \u{2014} jadi sebuah nilai mendekati satu dan tidak pernah sampai. Tidak ada yang namanya selesai, dan digit terakhir berharga sama mahal dengan semua yang mendahuluinya.\nDibaca dari arah lain, sebuah nilai menyebutkan buktinya sendiri: satu digit punya satu lusin di belakangnya, dua digit satu gros. Jadi digit yang belum kamu peroleh bukanlah kerendahan hati untuk ditinggalkan \u{2014} itulah satu-satunya lebar yang jujur.\nSetiap anak tangga di bawahnya adalah pecahan satuan, dan dua belas terbagi rata oleh dua, tiga, empat dan enam. Semuanya jatuh persis dalam duodesimal. Dalam basis sepuluh semuanya berulang selamanya, artinya basis sepuluh tidak bisa menuliskan apa itu reputasi.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "belum apa-apa",
+            2 => "setengah jalan",
+            3 => "dua pertiga",
+            4 => "tiga perempat",
+            6 => "lima perenam",
+            12 => "sebelas perdua belas",
+            144 => "sejauh dua digit menjangkau",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "kenapa tidak ada total".into(),
+        Msg::RepNoTotalProse => "Nilai-nilai itu tidak bisa dijumlahkan, karena bukan pengukuran atas hal yang sama. Nilai tinggi untuk kerja protokol dan nilai rendah untuk memasak tidak bisa dirata-ratakan menjadi seorang manusia \u{2014} rata-ratanya akan jadi kebohongan tentang kedua sisinya.\nJadi tidak ada total, tidak ada peringkat dan tidak ada papan juara. Yang ada sehimpunan, dan himpunan itulah reputasinya. Apa pun yang memampatkannya menjadi satu angka akan jadi skor lagi, apa pun namanya.".into(),
+        Msg::RepBehindHead => "apa yang berdiri di belakangnya".into(),
+        Msg::RepBehindProse => "Di samping setiap nilai ada seberapa banyak yang berdiri di belakangnya, dihitung dalam pelipatan: berapa banyak orang yang berbeda, selama berapa lama.\nBerbeda adalah bagian yang tidak bisa dibeli dengan volume. Satu orang adalah satu bukti, sebanyak apa pun pesan yang ia kirim, jadi keluasan butuh orang lain, dan orang lain harus setuju. Lamanya sama sekali tidak bisa diburu-buru. Kamu bisa mengirim seribu pesan dalam sehari; kamu tidak bisa mengenal dua lusin orang selama lima tahun dalam sehari.".into(),
         Msg::DmsLengthHead => "panjang".into(),
         Msg::DmsLengthIntro => "Panjang menghitung pelipatan panjang gelombang garis hidrogen, yaitu jarak tempuh cahaya dalam satu osilasi Elang. Tanda minus menghitung pembagian dua di bawahnya.".into(),
         Msg::DmsLengthReading(k) => match k {

@@ -199,6 +199,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Eine Größe, ein Alter, eine Rate oder eine Länge zeigt sich als eine einzige Zahl: wie oft sich ihre Einheit verdoppelt hat, geschrieben in duodezimalen Ziffern. Eins liest sich Zil, zwei Zila, vier Zilor, acht Ter. Kein Einheitenwort, denn die Ziffern sagen selbst, auf welcher Skala sie stehen.\nHalbieren und Verdoppeln ist der einzige Schritt, den Menschen spüren, und ein Logarithmus bringt ein Bit und ein Terabyte, eine Sekunde und das Alter des Universums auf je zwei Ziffern. Dieselben Ziffern bedeuten auf jeder Skala dasselbe.\nDrei Formen, und die Art der Zahl entscheidet, welche: eine Anzahl sind schlichte Ziffern (Tera Peers sind vier), eine Größenordnung ist diese Skalierung (Tera an Größe sind sechzehn Bit), ein Anteil an einem Ganzen ist eine Bruchziffer hinter einem Punkt (.Lun ist die Hälfte).".into(),
         Msg::DmsUnitsHead => "was eins ist".into(),
         Msg::DmsUnitsProse => "Jede Skala zählt Verdopplungen einer physikalischen Sache: ein Bit für die Größe, eine Adler-Sekunde für die Zeit, ein Hertz für eine Verbindung, und für die Länge eine Wellenlänge der Wasserstofflinie, die Strecke, die Licht in einer Adler-Schwingung zurücklegt, einundzwanzig Zentimeter. Jede ist so gewählt, dass der Bereich, der Menschen interessiert, darüber liegt. Unter eins zählt ein Minus die Halbierungen; wo der interessante Bereich darunter läge, wird die Größe stattdessen umgedreht, und darum liest sich eine Verbindung als Frequenz.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "Noten, keine Punktzahl".into(),
+        Msg::RepProse => "Eine Punktzahl ist eine einzige Zahl, die steigt, und wer am meisten davon hält, gewinnt. Das hier ist das nicht, und es kann auch nicht leise dazu werden.\nWas du hältst, ist eine Menge von Noten. Jede handelt von einer einzigen Aussage, gegeben von einem einzigen Menschen, der zugestimmt hat, sie zu geben, und sie bleibt an beiden hängen. Nichts wird ausgegeben, nichts geht über, und niemandem gehören deine Noten außer den Menschen, die sie gegeben haben.".into(),
+        Msg::RepOneHead => "was eine Note ist".into(),
+        Msg::RepOneProse => "Eine Note ist ein Anteil an einem Ganzen \u{2014} ein Basispunkt und höchstens zwei Ziffern \u{2014} also kann sie eins nicht überschreiten. Niemand kann tausendmal so viel sein wie jemand anderes.\nSie handelt von einer Sache, und das ist der Punkt, keine Beschränkung. Dieselbe Ingenieurin bekommt auf eine Protokollfrage eine hohe Note und auf das Souffl\u{e9} eine niedrige, und die Köchin umgekehrt, und jede einzelne dieser Noten stimmt. Eine Note, die einen ganzen Menschen abdecken wollte, wäre über nichts wahr.".into(),
+        Msg::RepFillHead => "wie sich eine Note füllt".into(),
+        Msg::RepFillProse => "Was sich füllt, ist nicht die Note. Es ist die Lücke unter eins, und jede Verdopplung der Belege halbiert, was davon übrig ist \u{2014} so nähert sich eine Note der Eins und kommt nie an. Fertig wird sie nie, und die letzte Ziffer kostet so viel wie alles davor zusammen.\nAndersherum gelesen nennt eine Note ihre eigenen Belege: hinter einer Ziffer steht ein Dutzend, hinter zwei Ziffern ein Gros. Eine Ziffer wegzulassen, die du nicht verdient hast, ist deshalb keine Bescheidenheit \u{2014} es ist die einzig ehrliche Breite.\nJede Sprosse darunter ist ein Stammbruch, und zwölf lässt sich durch zwei, drei, vier und sechs teilen. Duodezimal gehen sie genau auf. Zur Basis zehn wiederholen sie sich endlos, und das heißt: die Basis zehn kann nicht aufschreiben, was ein Ansehen ist.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "noch nichts",
+            2 => "zur Hälfte",
+            3 => "zwei Drittel",
+            4 => "drei Viertel",
+            6 => "fünf Sechstel",
+            12 => "elf Zwölftel",
+            144 => "so weit zwei Ziffern reichen",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "warum es keine Summe gibt".into(),
+        Msg::RepNoTotalProse => "Die Noten addieren sich nicht, denn sie messen nicht dasselbe. Hohe Noten für Protokollarbeit und niedrige fürs Kochen mitteln sich nicht zu einem Menschen \u{2014} der Mittelwert wäre über beide Hälften gelogen.\nAlso gibt es keine Summe, keinen Rang und keine Bestenliste. Es gibt eine Menge, und die Menge ist das Ansehen. Alles, was sie zu einer einzigen Zahl zusammenzöge, wäre wieder eine Punktzahl, wie immer es hieße.".into(),
+        Msg::RepBehindHead => "was dahintersteht".into(),
+        Msg::RepBehindProse => "Neben jeder Note steht, wie viel hinter ihr steht, gezählt in Verdopplungen: wie viele verschiedene Menschen, über wie lange.\nVerschieden ist der Teil, den bloße Masse nicht kaufen kann. Ein Mensch ist ein Beleg, wie viele Nachrichten er auch schickt, also braucht Breite andere Menschen, und andere Menschen müssen zustimmen. Dauer lässt sich überhaupt nicht beschleunigen. Du kannst an einem Tag tausend Nachrichten schicken; du kannst nicht an einem Tag zwei Dutzend Menschen seit fünf Jahren kennen.".into(),
         Msg::DmsLengthHead => "Länge".into(),
         Msg::DmsLengthIntro => "Längen zählen Verdopplungen der Wellenlänge der Wasserstofflinie, also der Strecke, die Licht in einer Adler-Schwingung zurücklegt. Ein Minus zählt die Halbierungen darunter.".into(),
         Msg::DmsLengthReading(k) => match k {

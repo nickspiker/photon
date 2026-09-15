@@ -199,6 +199,28 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DmsScaleProse => "Một kích thước, một tuổi, một tốc độ hay một chiều dài đều hiện ra thành một con số: đơn vị của nó đã nhân đôi bao nhiêu lần, viết bằng chữ số thập nhị phân. Một đọc là Zil, hai là Zila, bốn là Zilor, tám là Ter. Không có từ chỉ đơn vị, vì chính các chữ số đã nói chúng đang ở thang nào.\nChia đôi và nhân đôi là bậc duy nhất mà con người cảm được, và một lô-ga-rít đặt một bit và một terabyte, một giây và tuổi của vũ trụ, mỗi thứ vừa trong hai chữ số. Cùng những chữ số ấy mang cùng một nghĩa trên mọi thang.\nBa dạng, và loại số quyết định dạng nào: một phép đếm là chữ số trơn (Tera máy ngang hàng là bốn), một độ lớn là cách chia thang này (Tera của kích thước là mười sáu bit), một phần của tổng thể là một chữ số phân sau dấu chấm (.Lun là một nửa).".into(),
         Msg::DmsUnitsHead => "một là gì".into(),
         Msg::DmsUnitsProse => "Mỗi thang đếm số lần nhân đôi của một thứ vật lý: một bit cho kích thước, một giây Đại bàng cho thời gian, một hertz cho một đường liên kết, và cho chiều dài là một bước sóng của vạch hydro, quãng đường ánh sáng đi trong một dao động Đại bàng, hai mươi mốt xăng-ti-mét. Mỗi đơn vị được chọn sao cho khoảng mà người ta quan tâm nằm phía trên nó. Dưới một, dấu trừ đếm số lần chia đôi; ở đâu khoảng đáng chú ý lại rơi xuống dưới một thì đại lượng được lật ngược lại, và đó là lý do một đường liên kết đọc ra thành tần số.".into(),
+        // ---- reputation: what the scaling is FOR ----
+        Msg::RepHead => "điểm cho từng việc, không phải một điểm số".into(),
+        Msg::RepProse => "Điểm số là một con số duy nhất cứ tăng lên, ai giữ nhiều nhất thì thắng. Đây không phải thứ đó, và nó cũng không thể lặng lẽ biến thành thứ đó.\nThứ bạn giữ là một tập hợp các điểm. Mỗi điểm nói về một lời tuyên bố duy nhất, do một người duy nhất đã đồng ý cho nó đưa ra, và nó gắn với cả hai người. Không có gì bị tiêu đi, không có gì chuyển nhượng được, và không ai sở hữu điểm của bạn ngoài chính những người đã cho.".into(),
+        Msg::RepOneHead => "một điểm là gì".into(),
+        Msg::RepOneProse => "Một điểm là một phần của tổng thể \u{2014} một dấu cơ số và nhiều nhất hai chữ số \u{2014} nên nó không thể vượt quá một. Không ai có thể gấp một nghìn lần ai.\nNó nói về một việc, và đó chính là chủ ý chứ không phải một giới hạn. Cùng một kỹ sư có thể được điểm cao cho một câu hỏi về giao thức và điểm thấp cho món souffl\u{e9}, còn người đầu bếp thì ngược lại, và mỗi điểm trong số đó đều đúng. Một điểm cố bao trọn cả một con người thì chẳng đúng được về điều gì.".into(),
+        Msg::RepFillHead => "một điểm đầy lên thế nào".into(),
+        Msg::RepFillProse => "Thứ đầy lên không phải là điểm. Đó là khoảng trống bên dưới một, và mỗi lần nhân đôi bằng chứng lại chia đôi phần còn lại \u{2014} nên một điểm tiến tới một mà không bao giờ tới nơi. Không có chuyện làm xong nó, và chữ số cuối cùng tốn bằng tất cả những gì trước nó gộp lại.\nĐọc theo chiều ngược lại, một điểm tự nói ra bằng chứng của chính nó: một chữ số có một tá đứng sau, hai chữ số có mười hai tá. Vậy nên bỏ đi một chữ số bạn chưa kiếm được không phải là khiêm tốn \u{2014} đó là bề rộng trung thực duy nhất.\nMỗi bậc bên dưới là một phân số đơn vị, và mười hai chia hết cho hai, ba, bốn và sáu. Chúng ra chẵn trong thập nhị phân. Trong cơ số mười chúng lặp vô tận, tức là cơ số mười không viết nổi danh tiếng là cái gì.".into(),
+        Msg::RepLadderReading(e) => match e {
+            1 => "chưa có gì",
+            2 => "được một nửa",
+            3 => "hai phần ba",
+            4 => "ba phần tư",
+            6 => "năm phần sáu",
+            12 => "mười một phần mười hai",
+            144 => "xa hết mức hai chữ số với tới",
+            _ => "",
+        }
+        .into(),
+        Msg::RepNoTotalHead => "vì sao không có tổng".into(),
+        Msg::RepNoTotalProse => "Các điểm không cộng lại được, vì chúng không phải là phép đo của cùng một thứ. Điểm cao cho việc giao thức và điểm thấp cho việc nấu ăn không trung bình ra thành một con người \u{2014} con số trung bình ấy sẽ là lời nói dối về cả hai nửa.\nNên không có tổng, không có thứ hạng, không có bảng xếp hạng. Chỉ có một tập hợp, và tập hợp ấy chính là danh tiếng. Bất cứ thứ gì gom nó lại thành một con số thì lại là một điểm số, dù có gọi bằng tên gì.".into(),
+        Msg::RepBehindHead => "đằng sau nó là gì".into(),
+        Msg::RepBehindProse => "Bên cạnh mỗi điểm là chuyện có bao nhiêu thứ đứng sau nó, đếm bằng số lần nhân đôi: bao nhiêu người khác nhau, trong bao lâu.\nKhác nhau là phần mà số lượng không mua được. Một người là một bằng chứng dù họ gửi bao nhiêu tin nhắn đi nữa, nên muốn rộng thì cần tới người khác, và người khác còn phải đồng ý. Thời gian dài thì không giục được chút nào. Bạn có thể gửi một nghìn tin nhắn trong một ngày; bạn không thể quen hai tá người suốt năm năm chỉ trong một ngày.".into(),
         Msg::DmsLengthHead => "chiều dài".into(),
         Msg::DmsLengthIntro => "Chiều dài đếm số lần nhân đôi bước sóng của vạch hydro, tức quãng đường ánh sáng đi trong một dao động Đại bàng. Dấu trừ đếm số lần chia đôi phía dưới nó.".into(),
         Msg::DmsLengthReading(k) => match k {

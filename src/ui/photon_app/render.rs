@@ -6347,10 +6347,9 @@ impl PhotonApp {
                     {
                         // Flow-aware pills (the Security-page helper): each sizes to its label and they wrap onto further lines when the pane is narrow or the zoom is big (Nick 2026-09-09: "base choice buttons don't wrap upon scale").
                         let fill_for = |this: crate::NumBase| -> Option<(u32, u32)> {
+                            // EVERY base gets the same green when it is the chosen one (Nick 2026-09-15: "no arabic shaming"). Arabic used to light up a colour literally named SCOLD, which marked the user's own choice as a fault — the one place photon told a category of person that a mode was not for them.
                             if this != base {
                                 None
-                            } else if this == crate::NumBase::Arabic {
-                                Some((*theme::DOZENAL_SCOLD_BOX, *theme::DOZENAL_SCOLD_BOX))
                             } else {
                                 Some(*theme::PILL_GREEN)
                             }
@@ -6384,6 +6383,32 @@ impl PhotonApp {
                             }
                             // THE SCALING, EXPLAINED (Nick 2026-09-11): what one number for how much means, why doublings, the three forms; then what "one" is on every scale.
                             for (head, prose) in [(Msg::DmsScaleHead, Msg::DmsScaleProse), (Msg::DmsUnitsHead, Msg::DmsUnitsProse)] {
+                                y += line_h * 0.4;
+                                ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                                y += line_h;
+                                for line in tr(prose).lines() {
+                                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                    y += line_h * 0.3;
+                                }
+                            }
+                            // WHAT THE SCALING IS FOR (Nick 2026-09-15): reputation. The three sections before the ladder say what a grade is and how one fills; the two after say why the set never totals and what stands behind each grade.
+                            // The ladder sits INSIDE the fill section because it is the argument, not an illustration of it: every rung is a unit fraction, exact in dozenal and repeating in base ten, so base ten cannot write down what a reputation is.
+                            for (head, prose) in [(Msg::RepHead, Msg::RepProse), (Msg::RepOneHead, Msg::RepOneProse), (Msg::RepFillHead, Msg::RepFillProse)] {
+                                y += line_h * 0.4;
+                                ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                                y += line_h;
+                                for line in tr(prose).lines() {
+                                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                                    y += line_h * 0.3;
+                                }
+                            }
+                            y += line_h * 0.3;
+                            for evidence in [1u32, 2, 3, 4, 6, 12, 144] {
+                                let row = format!("{}  {}", crate::rep_grade_glyphs(evidence), tr(Msg::RepLadderReading(evidence)));
+                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
+                                y += line_h * 0.9;
+                            }
+                            for (head, prose) in [(Msg::RepNoTotalHead, Msg::RepNoTotalProse), (Msg::RepBehindHead, Msg::RepBehindProse)] {
                                 y += line_h * 0.4;
                                 ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
                                 y += line_h;
