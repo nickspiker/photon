@@ -492,6 +492,8 @@ pub enum StatusUpdate {
         acked_eagle_time: i64,
         /// BLAKE3 hash of decrypted plaintext - proves they decrypted our message
         plaintext_hash: [u8; 32],
+        /// The signing device — the only identity an ACK carries; a GROUP resolves it to the acking party for the per-member ledger (docs/groups.md step 4).
+        sender_pubkey: [u8; 32],
     },
     /// Avatar request received from a peer - they want our avatar (verified signature)
     AvatarRequestReceived {
@@ -3423,6 +3425,7 @@ async fn run_checker(
                                             conversation_token,
                                             acked_eagle_time,
                                             plaintext_hash,
+                                            sender_pubkey: sender_pubkey.key,
                                         },
                                         &event_proxy_recv,
                                     );

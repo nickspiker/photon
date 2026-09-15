@@ -73,6 +73,8 @@ fn chains_schema() -> SectionSchema {
         // GROUP state (v9, docs/groups.md, additive: a friendship blob never writes these, so its bytes stay v8-identical and an old sibling adopts it unchanged). The flag marks the blob as a GROUP's chain state: id = group id, token = group token, participant set mutable behind the id.
         .field("group", TypeConstraint::AnyUnsigned)
         // OUR device's published KEM decapsulation bundles (§3), index-aligned rows: the wrap that carries a new era's fresh secret targets the bundle we published in our member record, possibly minted while we slept — so the secrets persist here, the same custody class as the lane links beside them.
+        .field("pending_targets", TypeConstraint::Any) // hR: N×32 party ids this pending has to reach (group blobs only)
+        .field("pending_acked", TypeConstraint::Any) // hR: N×32 party ids whose ACK arrived (group blobs only)
         .field("kem_published_era", TypeConstraint::Any)
         .field("kem_bundle_id", TypeConstraint::AnyHash) // hb 32: the public bundle's fingerprint (what a wrap names)
         .field("kem_set", TypeConstraint::AnyUnsigned)
@@ -331,6 +333,13 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         builder = builder
             .set("group", VsfType::u(1, false))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
+        for pending in chains.pending_messages() {
+            builder = builder
+                .append_multi("pending_targets", vec![VsfType::hR(pending.targets.iter().flat_map(|p: &[u8; 32]| p.iter().copied()).collect::<Vec<u8>>())])
+                .map_err(|e| StorageError::Parse(e.to_string()))?
+                .append_multi("pending_acked", vec![VsfType::hR(pending.acked_by.iter().flat_map(|p: &[u8; 32]| p.iter().copied()).collect::<Vec<u8>>())])
+                .map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
         for kem in chains.group_kems() {
             builder = builder
                 .append_multi("kem_published_era", vec![e6(kem.published_era as i64)])
@@ -568,6 +577,18 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         .min(msg_hps.len())
         .min(ciphertexts.len());
 
+    let split32 = |name: &str| -> Vec<Vec<[u8; 32]>> {
+        section
+            .get_fields(name)
+            .iter()
+            .filter_map(|f| f.values.first())
+            .map(|v| match v {
+                VsfType::hR(b) => b.chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).collect(),
+                _ => Vec::new(),
+            })
+            .collect()
+    };
+    let (pending_targets, pending_acked) = (split32("pending_targets"), split32("pending_acked"));
     let pending_messages: Vec<PendingMessage> = (0..pending_count)
         .map(|i| PendingMessage {
             eagle_time: eagle_times[i],
@@ -581,6 +602,8 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             // Attempts SURVIVE the restart (floor 1): exhaustion is cumulative lane evidence — resetting it every launch meant the anchor-wedge detector could never arm inside a short session and a dead lane stayed undiagnosed forever. The deadline is still immediate: a reloaded pending resends right away (or, if already exhausted, sits as the standing evidence the next sync record reads).
             attempts: attempts_persisted.get(i).copied().unwrap_or(1).max(1),
             next_retry_osc: eagle_times[i],
+            targets: pending_targets.get(i).cloned().unwrap_or_default(),
+            acked_by: pending_acked.get(i).cloned().unwrap_or_default(),
         })
         .collect();
 

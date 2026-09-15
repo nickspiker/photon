@@ -192,6 +192,10 @@ impl PhotonApp {
             if self.drain_pending_chain_sends() {
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
+            // GROUP posts (docs/groups.md step 4): chat rows and control rows, same frame fence, fanned to every standing member.
+            if self.drain_group_posts() {
+                { needs_redraw = true; self.note_redraw(line!()); }
+            }
         }
 
         self.tick_prof_add("proto: refold+spine+refetch", __r.elapsed().as_secs_f32() * 1000.0);

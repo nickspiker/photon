@@ -489,6 +489,8 @@ pub fn load_all_groups(storage: &FlatStorage) -> Vec<(GroupId, Roster, Option<cr
 pub struct GroupLocal {
     pub muted: bool,
     pub phase: GroupPhase,
+    /// Offers THIS device sent: (invitee party, the offer row's eagle time in that friendship conversation) — what labels the sponsor-side row "waiting" / "joined" and what a roster edge refreshes.
+    pub offered: Vec<([u8; 32], i64)>,
 }
 
 /// The phase this device is in for a group (docs/groups.md §10.1). Offered/Expired live on the parked offer, not here; None = not held.
@@ -527,7 +529,11 @@ impl GroupPhase {
 const GROUP_LOCAL_SECTION: &str = "group_local";
 
 fn group_local_schema() -> SectionSchema {
-    SectionSchema::new(GROUP_LOCAL_SECTION).field("muted", TypeConstraint::AnyUnsigned).field("phase", TypeConstraint::AnyUnsigned)
+    SectionSchema::new(GROUP_LOCAL_SECTION)
+        .field("muted", TypeConstraint::AnyUnsigned)
+        .field("phase", TypeConstraint::AnyUnsigned)
+        .field("offered_party", TypeConstraint::AnyHash)
+        .field("offered_osc", TypeConstraint::Any)
 }
 
 fn group_local_key(group_id: &GroupId) -> [u8; 32] {
@@ -535,14 +541,20 @@ fn group_local_key(group_id: &GroupId) -> [u8; 32] {
 }
 
 pub fn save_group_local(group_id: &GroupId, local: &GroupLocal, storage: &FlatStorage) -> Result<(), StorageError> {
-    let section_bytes = group_local_schema()
+    let mut builder = group_local_schema()
         .build()
         .set("muted", VsfType::u(local.muted as usize, false))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("phase", VsfType::u(local.phase.to_u8() as usize, false))
-        .map_err(|e| StorageError::Parse(e.to_string()))?
-        .encode()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
+    for (party, osc) in &local.offered {
+        builder = builder
+            .append_multi("offered_party", vec![VsfType::hb(party.to_vec())])
+            .map_err(|e| StorageError::Parse(e.to_string()))?
+            .append_multi("offered_osc", vec![VsfType::e(vsf::types::EtType::e6(*osc))])
+            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    }
+    let section_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
     let bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
@@ -560,7 +572,26 @@ pub fn load_group_local(group_id: &GroupId, storage: &FlatStorage) -> Result<Gro
     let section = vsf::schema::SectionBuilder::parse_document(group_local_schema(), &bytes, None)
         .map_err(|e| StorageError::Parse(format!("group local failed verified read: {e}")))?;
     let u = |name: &str| section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0);
-    Ok(GroupLocal { muted: u("muted") != 0, phase: GroupPhase::from_u64(u("phase")) })
+    let parties: Vec<[u8; 32]> = section
+        .get_fields("offered_party")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+            _ => None,
+        })
+        .collect();
+    let oscs: Vec<i64> = section
+        .get_fields("offered_osc")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
+            other => other.as_i64(),
+        })
+        .collect();
+    let offered = parties.into_iter().zip(oscs).collect();
+    Ok(GroupLocal { muted: u("muted") != 0, phase: GroupPhase::from_u64(u("phase")), offered })
 }
 
 /// A PARKED OFFER (§10.1 Offered): a friend's offer we have not answered — the roster snapshot they sent and who sent it. No secret rides here (D10). Persisted so a relaunch between offer and Join keeps the row alive; deleted on Join or expiry.
@@ -572,6 +603,8 @@ pub struct GroupOffer {
     /// The eagle time of the offer row in the friendship conversation — the card the Join pill lives on.
     pub row_osc: i64,
     pub snapshot: Roster,
+    /// Join was tapped: the offer stays parked (it names the group the row is about) but the pill reads "joined" and no second Join goes out.
+    pub accepted: bool,
 }
 
 const GROUP_OFFER_SECTION: &str = "group_offer";
@@ -580,6 +613,7 @@ fn group_offer_schema() -> SectionSchema {
     SectionSchema::new(GROUP_OFFER_SECTION)
         .field("sponsor", TypeConstraint::AnyHash)
         .field("row_osc", TypeConstraint::Any)
+        .field("accepted", TypeConstraint::AnyUnsigned)
         .field("snapshot", TypeConstraint::Any) // hR: the roster-codec blob, verbatim
 }
 
@@ -594,6 +628,8 @@ pub fn save_group_offer(offer: &GroupOffer, storage: &FlatStorage) -> Result<(),
         .set("sponsor", VsfType::hb(offer.sponsor.to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("row_osc", VsfType::e(vsf::types::EtType::e6(offer.row_osc)))
+        .map_err(|e| StorageError::Parse(e.to_string()))?
+        .set("accepted", VsfType::u(offer.accepted as usize, false))
         .map_err(|e| StorageError::Parse(e.to_string()))?
         .set("snapshot", VsfType::hR(snapshot))
         .map_err(|e| StorageError::Parse(e.to_string()))?
@@ -633,11 +669,12 @@ pub fn load_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<Opt
             _ => None,
         })
         .ok_or_else(|| StorageError::Parse("offer without a snapshot".to_string()))?;
+    let accepted = section.get_fields("accepted").first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0) != 0;
     let (gid, snapshot) = roster_from_vsf_bytes(&blob)?;
     if gid != *group_id {
         return Err(StorageError::Parse("offer snapshot names another group".to_string()));
     }
-    Ok(Some(GroupOffer { group_id: gid, sponsor, row_osc, snapshot }))
+    Ok(Some(GroupOffer { group_id: gid, sponsor, row_osc, snapshot, accepted }))
 }
 
 pub fn delete_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<(), StorageError> {
@@ -820,12 +857,12 @@ mod tests {
         let storage = FlatStorage::new(crate::storage::APP, [0xD3; 32], [0xD4; 32]).expect("storage");
         // Local state: default when absent; mute + phase persist; and the mute is NOT in the roster bytes.
         assert_eq!(load_group_local(&birth.group_id, &storage).expect("absent"), GroupLocal::default());
-        let local = GroupLocal { muted: true, phase: GroupPhase::Joining };
+        let local = GroupLocal { muted: true, phase: GroupPhase::Joining, offered: vec![([0x0C; 32], 4242)] };
         save_group_local(&birth.group_id, &local, &storage).expect("save local");
         assert_eq!(load_group_local(&birth.group_id, &storage).expect("load"), local);
         assert!(!bytes.windows(5).any(|w| w == b"muted"), "a mute never replicates");
         // Parked offer: park, enumerate, unpark.
-        let offer = GroupOffer { group_id: birth.group_id, sponsor: [0x0A; 32], row_osc: 777, snapshot: roster.clone() };
+        let offer = GroupOffer { group_id: birth.group_id, sponsor: [0x0A; 32], row_osc: 777, snapshot: roster.clone(), accepted: false };
         park_group_offer(&offer, &storage).expect("park");
         let all = load_all_offers(&storage);
         assert_eq!(all.len(), 1);

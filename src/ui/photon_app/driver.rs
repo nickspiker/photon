@@ -314,7 +314,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(13); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft
+        self.hit_counter = self.hit_counter.wrapping_add(14); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/groups.md)
         self.react_strip_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -1440,9 +1440,22 @@ impl FluorApp for PhotonApp {
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
-                && hit_id < self.msg_action_base.wrapping_add(13)
+                && hit_id < self.msg_action_base.wrapping_add(14)
             {
                 let slot = hit_id - self.msg_action_base;
+                // JOIN (slot 13, a group offer card — docs/groups.md §10.1): the consent. The parked offer under the selected row names the group.
+                if slot == 13 {
+                    if let (Some(ci), Some((_, ts, false))) = (self.active_contact(), self.selected_msg) {
+                        let sponsor = self.contacts[ci].handle_hash;
+                        let gid = self.group_offers.iter().find(|o| o.sponsor == sponsor && o.row_osc == ts && !o.accepted).or_else(|| self.group_offers.iter().find(|o| o.sponsor == sponsor && !o.accepted)).map(|o| o.group_id);
+                        if let Some(gid) = gid {
+                            self.join_group_offer(gid);
+                        }
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 // STOP (slot 5, the bridge locus strip's pill): no selected row needed — it always targets the in-flight command; each press escalates the signal.
                 if slot == 5 {
                     if let Some(ci) = self.active_contact() {

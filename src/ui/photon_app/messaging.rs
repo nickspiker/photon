@@ -58,7 +58,7 @@ impl PhotonApp {
     }
 
     /// A message's marks at send: the tagged links stashed from the compose box (if this send is the compose send) plus every detected bare URL that does not overlap one, validated against the text.
-    fn marks_for_send(&mut self, text: &str) -> Vec<crate::types::MessageMark> {
+    pub(super) fn marks_for_send(&mut self, text: &str) -> Vec<crate::types::MessageMark> {
         let mut marks = std::mem::take(&mut self.compose_tagged_marks);
         for m in crate::types::detect_url_marks(text) {
             if marks.iter().any(|t| t.start < m.start + m.len && m.start < t.start + t.len) {
@@ -71,6 +71,37 @@ impl PhotonApp {
     }
 
     pub(super) fn submit_message(&mut self) {
+        // A GROUP conversation (docs/groups.md step 4): the same box, the group send.
+        if let Some(gi) = self.active_group() {
+            let gid = self.group_rosters[gi].0;
+            let text: String = match self.message_textbox.as_ref() {
+                Some(tb) => tb.chars.iter().collect(),
+                None => return,
+            };
+            if text.is_empty() {
+                if self.compose_reply_to.take().is_some() | self.compose_edit_of.take().is_some() | self.compose_react_to.take().is_some() {
+                    self.scene_dirty = true;
+                }
+                return;
+            }
+            if let Some(target) = self.compose_react_to.take() {
+                let glyph: String = text.chars().take(8).collect();
+                if self.send_group_message(gid, &glyph, Some((crate::types::RefKind::React, target))) {
+                    self.stamp_react_used(&glyph);
+                }
+            } else {
+                let reference = self.compose_edit_of.take().map(|t| (crate::types::RefKind::Edit, t)).or_else(|| self.compose_reply_to.take().map(|t| (crate::types::RefKind::Reply, t)));
+                self.compose_tagged_marks = self.take_compose_tagged_marks();
+                self.send_group_message(gid, &text, reference);
+                self.compose_tagged_marks.clear();
+            }
+            if let Some(tb) = self.message_textbox.as_mut() {
+                tb.clear();
+            }
+            self.pending_input_reset = true;
+            self.scene_dirty = true;
+            return;
+        }
         let Some(ci) = self.active_contact() else {
             return;
         };
@@ -261,6 +292,34 @@ impl PhotonApp {
     }
 
     /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed. `signal_rows` names rows whose bright flip + sibling push WAIT on this write (the zero-remote path): their verdict rides back over `persist_done`, and every early exit below answers it immediately — a row waiting on a write that never starts must fail LOUDLY, not sit faint forever.
+    /// Persist a conversation by ID (a group, or any conversation the caller already resolved) — the conversation-keyed twin of `persist_messages_async`, sharing the same hydration gate and coalescing writer.
+    pub(super) fn persist_conversation_async(&mut self, conv_id: crate::types::ConversationId) {
+        // A group conversation materialized empty (lazy) may hold rows the vault still has — same late-hydration rescue as the contact path.
+        if self.conversations.iter().any(|v| v.id() == conv_id && !v.hydrated) {
+            if let Some(storage) = self.storage.as_ref().cloned() {
+                if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == conv_id) {
+                    let mut fresh = if conv.is_group() {
+                        crate::types::Conversation::new_group(crate::types::group::GroupId(*conv_id.as_bytes()), conv.participants().iter().copied())
+                    } else {
+                        crate::types::Conversation::new(conv.participants().iter().copied())
+                    };
+                    if crate::storage::contacts::load_messages(&mut fresh, &storage).is_ok() {
+                        for m in conv.messages.drain(..) {
+                            fresh.insert_message_sorted(m);
+                        }
+                        conv.messages = std::mem::take(&mut fresh.messages);
+                        conv.hydrated = true;
+                    }
+                }
+            }
+        }
+        let Some(conv) = self.conversations.iter().find(|v| v.id() == conv_id).cloned() else {
+            crate::logf!("STORAGE: message persist SKIPPED — no conversation {} (rows live in RAM only)", hex::encode(&conv_id.as_bytes()[..4]));
+            return;
+        };
+        self.persist_conversation_snapshot(conv, Vec::new());
+    }
+
     pub(super) fn persist_messages_signalled(&mut self, ci: usize, signal_rows: Vec<i64>) {
         // BRIDGE rows are EPHEMERAL — the terminal keeps NO history at rest. Safe now because sibling frames are anchor-only (see the braid selection in send_chain_message): nothing weaves against a bridge row, so not persisting it can't produce a strand miss (the earlier ephemeral attempt DID break the braid precisely because frames still wove strands — field 2026-08-22, one reply resent 12× and never ACKed). Chain durability is untouched: lane positions, pending, and last_received_times live in friendship_chains (persisted separately), so retransmit/ACK/dedup and the is_new_row replay guard all still hold; only the display rows are transient.
         if self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
@@ -306,6 +365,11 @@ impl PhotonApp {
             }
             return;
         };
+        self.persist_conversation_snapshot(conv, signal_rows);
+    }
+
+    /// The writer half of every message persist: the hydration gate, the storage handle, the coalescing background writer, the durable verdict.
+    fn persist_conversation_snapshot(&mut self, conv: crate::types::Conversation, signal_rows: Vec<i64>) {
         // HYDRATION GATE (the 2026-08-21 relaunch erasure): a conversation that never successfully loaded its durable table holds a partial (often empty) row set, and persisting that snapshot re-puts only what RAM has — which the legacy sweep then treated as the whole table. Refuse until load_messages has succeeded for this conversation; the rows stay in RAM and the next hydrated persist carries them.
         if !conv.hydrated {
             crate::logf!("STORAGE: message persist REFUSED for conversation {} — never hydrated from the vault (a write now could shadow durable rows); rows stay in RAM", hex::encode(&conv.id().as_bytes()[..4]));
@@ -411,7 +475,7 @@ impl PhotonApp {
             // The writer thread is dead. Respawn and retry once — the fresh channel's receiver is alive by construction, so the retry cannot loop.
             crate::log("STORAGE: message persist writer was DEAD — respawning and retrying");
             self.persist_tx = None;
-            self.persist_messages_signalled(ci, signal_rows);
+            self.persist_conversation_snapshot(conv, signal_rows);
         } else {
             // Enqueue accounting for the quit drain (increment only on a SENT item — the respawn path above re-enters and counts its own retry).
             *self.durable_pending.0.lock().unwrap() += 1;
@@ -632,6 +696,11 @@ impl PhotonApp {
                 }
                 continue;
             }
+            // GROUP (docs/groups.md step 4): the pending just recorded learns WHO it has to reach — the per-member ACK ledger's target set.
+            let targets: Vec<[u8; 32]> = done.routes.iter().filter_map(|r| r.party).collect();
+            if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, c)| *id == done.friendship_id && c.group) {
+                chains.set_pending_targets(done.eagle_time, targets);
+            }
             // CALL basket capture (docs/calls.md): the offer's send COMMIT is where the CALLER sees the lane key its offer sealed under — the basket's doomed egg (the callee captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
             if let Ok(text) = std::str::from_utf8(&done.salt_text) {
                 if let Some(sig @ crate::call::signal::CallSignal::Offer { call_id, .. }) =
@@ -673,25 +742,34 @@ impl PhotonApp {
             let dispatch = self.status_checker.as_ref().map(|c| c.message_dispatch());
             match (snapshot, dispatch) {
                 (Some(snapshot), Some(dispatch)) => {
-                    let req = crate::network::status::MessageRequest {
-                        peer_addr: done.peer_addr,
-                        alt_addr: done.alt_addr,
-                        recipient_pubkey: done.recipient_pubkey,
-                        conversation_token: done.conversation_token,
-                        lane: wire.lane,
-                        prev_msg_hp: wire.prev_msg_hp,
-                        ciphertext: wire.ciphertext,
-                        eagle_time: done.eagle_time,
-                        relay_to: done.relay_to,
-                        era: wire.era,
-                    };
-                    self.persist_chains_then(
-                        snapshot,
-                        vec![ChainsPostDurable::Message(dispatch, req)],
-                    );
+                    // ONE ciphertext, every route (a friendship has exactly one; a group one per standing member's device) — all of them ride the same durable chains write.
+                    let actions: Vec<ChainsPostDurable> = done
+                        .routes
+                        .iter()
+                        .map(|r| {
+                            ChainsPostDurable::Message(
+                                dispatch.clone(),
+                                crate::network::status::MessageRequest {
+                                    peer_addr: r.peer_addr,
+                                    alt_addr: r.alt_addr,
+                                    recipient_pubkey: r.recipient_pubkey,
+                                    conversation_token: done.conversation_token,
+                                    lane: wire.lane,
+                                    prev_msg_hp: wire.prev_msg_hp,
+                                    ciphertext: wire.ciphertext.clone(),
+                                    eagle_time: done.eagle_time,
+                                    relay_to: r.relay_to.clone(),
+                                    era: wire.era,
+                                },
+                            )
+                        })
+                        .collect();
+                    let n = actions.len();
+                    self.persist_chains_then(snapshot, actions);
                     crate::logf!(
-                        "CHAT: message ({} chars) committed — transmit rides the durable chains write",
-                        done.text_len
+                        "CHAT: message ({} chars) committed — transmit to {} route(s) rides the durable chains write",
+                        done.text_len,
+                        n
                     );
                 }
                 (Some(snapshot), None) => {
@@ -785,6 +863,8 @@ impl PhotonApp {
                         && (!m.content.is_empty() || m.reference.is_some())
                         // An era-ratchet row is never re-served: its KEM material lived only in the original package, and a dead Init on the NEW era would be nonsense (the sender stores none anyway; belt and braces).
                         && !m.content.starts_with(crate::types::ERA_PREFIX)
+                        // A group control row (offer / join / wrap) is never re-served bare: its roster blob or sealed secret rode the original package only — the sponsor re-offers on the next roster edge, a joiner taps Join again (docs/groups.md step 4).
+                        && !m.content.starts_with(crate::types::group::GROUP_PREFIX)
                 })
                 .map(|m| (m.content.clone(), m.timestamp, m.reference))
                 .collect(),
@@ -830,15 +910,133 @@ impl PhotonApp {
         era_kem: Option<&crate::crypto::era::EraKemWire>,
         group: Option<&crate::network::message_package::GroupWire>,
     ) -> bool {
+        let (friendship_id, route, conv_id) = match self.route_for_contact(ci) {
+            Ok(v) => v,
+            Err(why) => {
+                // Silent falses in a send path hid a whole afternoon's diagnosis (2026-09-08) — every exit says why.
+                crate::logf!("CHAT: cannot send — {}", why);
+                return false;
+            }
+        };
+        let anchor_only = self.contacts.get(ci).map_or(false, |c| c.is_sibling);
+        self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, group)
+    }
+
+    /// The recipient half of a friendship send, split from the crypto (docs/groups.md step 4): the one route a contact resolves to, plus the ids the core needs. Every refusal names its reason.
+    pub(super) fn route_for_contact(&self, ci: usize) -> Result<(crate::types::FriendshipId, Route, crate::types::ConversationId), &'static str> {
+        let Some(contact) = self.contacts.get(ci) else {
+            return Err("contact index out of range");
+        };
+        let Some(fid) = contact.friendship_id else {
+            return Err("no friendship chain");
+        };
+        // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it alone made every non-owner device unable to send.
+        let lane_capable = !contact.is_sibling && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
+        if contact.clutch_state != crate::types::ClutchState::Complete && !lane_capable {
+            return Err("CLUTCH not complete");
+        }
+        // Party id per contact: identity seed for friends, device-derived pid for fleet siblings — the chain index in prepare_send must match what from_clutch was keyed with.
+        let Some(our_pid) = self.our_party_id(contact) else {
+            return Err("no party id (no session, or a sibling without a fleet pid)");
+        };
+        // No direct path → also relay this message over the pipe. CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer whose reflexive went stale) — the relay copy is cheap and the receiver dedups.
+        let relay_to = contact.relay_device_list();
+        // The wire recipient is a DEVICE key; a sendable contact always has one, but never fabricate for a keyless row.
+        let Some(recipient_pubkey) = contact.device_key() else {
+            return Err("no device key for contact");
+        };
+        // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the seam" never happened. The relay sentinel keeps the send alive.
+        let (peer_addr, alt_addr) = match contact.race_addrs() {
+            Some(pair) => pair,
+            None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
+            None => return Err("no known address for contact"),
+        };
+        let conv_id = contact.conversation(&our_pid).id();
+        Ok((fid, Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(contact.handle_hash) }, conv_id))
+    }
+
+    /// The recipient list of a GROUP send (docs/groups.md step 4): one route per standing member's addressable device — the contact fold for friends (their active device and race addresses, their fleet as relay copies), the GroupPeer fold for members we never friended (relay only, by device pubkey; step 5 wires the fold). We are never our own route. Empty = nobody reachable yet (the retransmit sweep re-resolves on every pass).
+    pub(super) fn routes_for_group(&self, gid: crate::types::group::GroupId) -> Vec<Route> {
+        let Some((_, roster)) = self.group_rosters.iter().find(|(g, _)| *g == gid) else {
+            return Vec::new();
+        };
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let mut routes: Vec<Route> = Vec::new();
+        for party in roster.standing() {
+            if Some(party) == us {
+                continue;
+            }
+            if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == party) {
+                let relay_to = c.relay_device_list();
+                let Some(recipient_pubkey) = c.device_key() else { continue };
+                let (peer_addr, alt_addr) = match c.race_addrs() {
+                    Some(pair) => pair,
+                    None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
+                    None => continue,
+                };
+                routes.push(Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(party) });
+            } else if let Some(peer) = self.group_peers.iter().find(|p| p.party == party) {
+                // Never friended: no LAN/WAN address known here — the relay carries it by device pubkey, every folded device a copy.
+                if let Some(first) = peer.devices.first() {
+                    routes.push(Route { peer_addr: crate::network::status::RELAY_ADDR, alt_addr: None, recipient_pubkey: *first, relay_to: peer.devices.clone(), party: Some(party) });
+                }
+            }
+        }
+        routes
+    }
+
+    /// A GROUP send (docs/groups.md step 4): the same braid encrypt on OUR lane in the group's chains, the one ciphertext fanned to every standing member's device. Refuses while we hold no root (Joining) or have left.
+    pub(super) fn group_transmit(
+        &mut self,
+        gid: crate::types::group::GroupId,
+        text: &str,
+        eagle_time: i64,
+        reference: Option<(crate::types::RefKind, i64)>,
+        era_kem: Option<&crate::crypto::era::EraKemWire>,
+        group: Option<&crate::network::message_package::GroupWire>,
+    ) -> bool {
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let phase = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+        if matches!(phase, crate::storage::group::GroupPhase::Joining | crate::storage::group::GroupPhase::Left) {
+            crate::logf!("GROUP: cannot send in {} — phase {}", hex::encode(&gid.0[..4]), format!("{:?}", phase));
+            return false;
+        }
+        if !self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable()) {
+            crate::logf!("GROUP: cannot send in {} — no root held", hex::encode(&gid.0[..4]));
+            return false;
+        }
+        let routes = self.routes_for_group(gid);
+        if routes.is_empty() {
+            crate::logf!("GROUP: {} has no reachable member right now — the row is held for the sweep", hex::encode(&gid.0[..4]));
+            return false;
+        }
+        // Groups weave like friendships once the strand pull is live (step 7); until then anchor-only, so a member missing a strand never parks a frame it cannot open.
+        self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, None, era_kem, group)
+    }
+
+    /// The crypto half every send shares (docs/groups.md step 4): the row's marks/attach, the in-flight and idempotency gates, the weave, the package, the off-thread braid encrypt — keyed on the conversation id, source-blind.
+    #[allow(clippy::too_many_arguments)]
+    fn transmit_core(
+        &mut self,
+        friendship_id: crate::types::FriendshipId,
+        conv_id: crate::types::ConversationId,
+        routes: Vec<Route>,
+        anchor_only: bool,
+        text: &str,
+        eagle_time: i64,
+        reference: Option<(crate::types::RefKind, i64)>,
+        bridge: Option<&crate::network::message_package::BridgeWire>,
+        era_kem: Option<&crate::crypto::era::EraKemWire>,
+        group: Option<&crate::network::message_package::GroupWire>,
+    ) -> bool {
+        let conv = self.conversations.iter().find(|v| v.id() == conv_id);
         // Read before any chains borrow: the row's own marks (a tagged phrase carries a destination the text cannot rebuild — a re-serve reads the row, 2026-09-09).
-        let row_marks: Vec<crate::types::MessageMark> = self
-            .conv_of(ci)
+        let row_marks: Vec<crate::types::MessageMark> = conv
             .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
             .map(|m| m.marks.clone())
             .unwrap_or_default();
         // The row's typed attachment extras ride the package the same way (a re-serve rebuilds them from the row too).
-        let row_attach: Option<crate::network::message_package::AttachWire> = self
-            .conv_of(ci)
+        let row_attach: Option<crate::network::message_package::AttachWire> = conv
             .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
             .and_then(|m| m.attach.map(|a| crate::network::message_package::AttachWire {
                 kind: a.kind as u8,
@@ -847,47 +1045,6 @@ impl PhotonApp {
                 preview_hash: a.preview_hash,
                 preview: m.preview.clone(),
             }));
-        // Contact must be CLUTCH-Complete with a friendship chain — OR hold the sibling-replicated chains with a live lane root. Local Complete is only the ceremony OWNER's shape (§4.2 parks every other device at Pending forever), and gating on it made the owner the single writer: every other device fleet-forwarded thru it, which parks messages behind a dead battery an ocean away (Nick, 2026-08-13). Per-device lanes end that: `prepare_send` mints THIS device's own lane, the friend materializes it from the wire label (`ensure_lane`), and the lane-wise CRDT merge converges every copy — so holding the root is the whole capability.
-        let (friendship_id, recipient_pubkey, addr_pair, _our_handle_hash, msg_relay_to) = {
-            let Some(contact) = self.contacts.get(ci) else {
-                crate::logf!("CHAT: cannot send — contact index {} out of range", ci);
-                return false;
-            };
-            let Some(fid) = contact.friendship_id else {
-                crate::log("CHAT: cannot send — no friendship chain");
-                return false;
-            };
-            let lane_capable = !contact.is_sibling
-                && self
-                    .friendship_chains
-                    .iter()
-                    .any(|(id, c)| *id == fid && c.lane_capable());
-            if contact.clutch_state != crate::types::ClutchState::Complete && !lane_capable {
-                crate::log("CHAT: cannot send — CLUTCH not complete");
-                return false;
-            }
-            // Party id per contact: identity seed for friends, device-derived pid for fleet siblings — the chain index in prepare_send must match what from_clutch was keyed with.
-            let Some(our_pid) = self.our_party_id(contact) else {
-                // Silent falses in a send path hid a whole afternoon's diagnosis (2026-09-08) — every exit says why.
-                crate::log("CHAT: cannot send — no party id (no session, or a sibling without a fleet pid)");
-                return false;
-            };
-            // No direct path → also relay this message over the pipe.
-            // CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer that left the LAN mid-session — messages gave up after 8 attempts while the always-relayed ACKs sailed thru, 2026-08-05). Receivers dedup by eagle_time, the well expires unclaimed copies, and a few hundred relayed bytes per message is nothing against a retransmit ladder burning minutes.
-            let relay_to = contact.relay_device_list();
-            // The wire recipient is a DEVICE key; a sendable contact always has one, but never fabricate for a keyless row.
-            let Some(recipient_key) = contact.device_key() else {
-                crate::log("CHAT: cannot send — no device key for contact");
-                return false;
-            };
-            (
-                fid,
-                recipient_key,
-                contact.race_addrs(),
-                our_pid,
-                relay_to,
-            )
-        };
         // IN-FLIGHT WINDOW: advance-on-send gives each message its own position, so pipelining is safe — but keep a bounded window so a burst can't outrun the receiver's gap buffer (and stays well under the count that tripped older receivers' fork detector). While the lane already holds the window's worth of un-ACKed sends, the row stays held and the ACK-advance flush sends the next as a slot frees.
         // CONTROL FRAMES BYPASS THE WINDOW. Call signals (offer/answer/decline/hangup), chain probes, and delete markers are rare, never bursty, and TIME-CRITICAL — pacing them behind bulk chat wedged a live call's answer the moment the lane hit its cap: "answer send failed" was every time preceded by "lane at the in-flight window", so a congested conversation made an incoming call literally unanswerable (decline worked only because it ignores the send result; field 2026-08-19, Emma↔Nick). The window is UI-level flow control for data, not a crypto invariant — a couple of extra control pendings stay far under the fork threshold and still ride advance-on-send + retransmit + relay like any frame.
         let is_control = crate::types::is_control_content(text);
@@ -922,22 +1079,11 @@ impl PhotonApp {
             return true;
         }
 
-        // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the secure channel" sat forever on a chain that provably worked one direction (live pair, 2026-08-06). Same shape as the retransmit sweep: hand the sentinel so the UDP leg sends nowhere harmlessly and the relay copy carries it.
-        let (peer_addr, alt_addr) = match addr_pair {
-            Some(pair) => pair,
-            None if !msg_relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
-            None => {
-                crate::log("CHAT: cannot send — no known address for contact");
-                return false;
-            }
-        };
-
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
         // BRIDGE lanes are ANCHOR-ONLY: a sibling command/output frame weaves ZERO strands and requires none on receive. The braid's extra entropy is a friend-conversation property; a fleet-internal bridge is already fleet-key secured and still ratchets via the incorporated hp each step, so dropping the weave costs no real secrecy. The payoff is what Nick wants: with no strand dependency the terminal rows can be EPHEMERAL (wiped on open, never persisted) without ever producing a "braid strand miss" that holds a reply forever (field 2026-08-22). Anchor is an already-supported case (0 eligible → weave nothing) — this just forces it for siblings.
-        let anchor_only = self.contacts.get(ci).map_or(false, |c| c.is_sibling);
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
             let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
-            if let Some(conv) = self.conv_of(ci).filter(|_| !anchor_only) {
+            if let Some(conv) = conv.filter(|_| !anchor_only) {
                 let window: Vec<&crate::types::ChatMessage> = conv
                     .messages
                     .iter()
@@ -1054,10 +1200,7 @@ impl PhotonApp {
                 eagle_time,
                 salt_text,
                 woven_strands,
-                peer_addr,
-                alt_addr,
-                recipient_pubkey,
-                relay_to: msg_relay_to,
+                routes,
                 text_len,
                 result,
             });

@@ -492,6 +492,18 @@ pub enum Msg<'a> {
     PendingMember,
     /// The compose bar's honest label while group sends are not yet wired.
     GroupComposeSoon,
+    /// The offer card (docs/groups.md §10.1), invitee side: "<sponsor> brought you into <title> · <n>".
+    OfferLine { sponsor: &'a str, title: &'a str, n: &'a str },
+    /// The card once joined.
+    OfferJoined { title: &'a str },
+    /// The card once the sponsor is gone.
+    OfferExpired,
+    /// The Join pill.
+    OfferJoin,
+    /// Sponsor side: waiting on the invitee.
+    OfferWaiting { name: &'a str, title: &'a str },
+    /// Sponsor side: the invitee stands.
+    OfferAccepted { name: &'a str, title: &'a str },
     BootRemovesEverywhere,
     BootOstracism,
     // ---- add device / pairing ----

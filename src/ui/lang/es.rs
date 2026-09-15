@@ -331,6 +331,12 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "te fuiste".into(),
         Msg::PendingMember => "Pendiente\u{2026}".into(),
         Msg::GroupComposeSoon => "Los mensajes de grupo llegan en la próxima versión".into(),
+        Msg::OfferLine { sponsor, title, n } => format!("{} te trajo a {} \u{00b7} {}", sponsor, title, n).into(),
+        Msg::OfferJoined { title } => format!("te uniste a {}", title).into(),
+        Msg::OfferExpired => "oferta vencida".into(),
+        Msg::OfferJoin => "Unirme".into(),
+        Msg::OfferWaiting { name, title } => format!("llevaste a {} a {} \u{00b7} esperando", name, title).into(),
+        Msg::OfferAccepted { name, title } => format!("llevaste a {} a {} \u{00b7} se unió", name, title).into(),
         Msg::BootRemovesEverywhere => "lo quita de todos los dispositivos de TU flota".into(),
         Msg::BootOstracism => "no se le avisa \u{2014} sus registros siguen siendo suyos (ostracismo, no borrado)".into(),
         // ---- add device / pairing ----

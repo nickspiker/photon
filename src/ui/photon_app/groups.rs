@@ -14,6 +14,12 @@ pub(super) struct GroupPost {
     pub blob: Option<Vec<u8>>,
     pub wrap: Option<crate::network::message_package::GroupWrapWire>,
     pub kem: Option<crate::crypto::era::EraKemWire>,
+    /// A chat row (text, stamp, reference) whose bubble already landed; `None` = a control row minted at drain time.
+    pub text: Option<(String, i64, Option<(crate::types::RefKind, i64)>)>,
+    /// The tick the post was queued on — the frame fence (a post drains one tick after its bubble rendered).
+    pub queued: u64,
+    /// A control row that was held after its row landed (so a retry re-sends the SAME row, never mints a second).
+    pub control: bool,
 }
 
 impl PhotonApp {
@@ -69,7 +75,7 @@ impl PhotonApp {
             return;
         }
         let members = snapshot.standing().len();
-        let offer = GroupOffer { group_id: gid, sponsor, row_osc, snapshot };
+        let offer = GroupOffer { group_id: gid, sponsor, row_osc, snapshot, accepted: false };
         self.group_offers.retain(|o| o.group_id != gid);
         self.group_offers.push(offer.clone());
         if let Some(storage) = self.storage.as_ref() {
@@ -95,6 +101,10 @@ impl PhotonApp {
             crate::logf!("GROUP: join of {} — no parked offer", hex::encode(&gid.0[..4]));
             return false;
         };
+        if offer.accepted && self.group_rosters.iter().any(|(g, _)| *g == gid) {
+            crate::logf!("GROUP: join of {} — already joined", hex::encode(&gid.0[..4]));
+            return false;
+        }
         let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == offer.sponsor && !c.is_sibling) else {
             crate::logf!("GROUP: join of {} — the sponsor is no longer a contact; offer expired", hex::encode(&gid.0[..4]));
             return false;
@@ -130,6 +140,12 @@ impl PhotonApp {
         if sent {
             self.set_group_local(&gid, |l| l.phase = GroupPhase::Joining);
             self.persist_chains_of(&fid);
+            if let Some(o) = self.group_offers.iter_mut().find(|o| o.group_id == gid) {
+                o.accepted = true;
+                if let Some(storage) = self.storage.as_ref() {
+                    let _ = crate::storage::group::save_group_offer(o, storage);
+                }
+            }
         }
         crate::logf!("GROUP: join of {} {} to {} — waiting for the wrap", hex::encode(&gid.0[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" }, crate::fp(&self.contacts[ci].handle_proof));
         sent
@@ -200,7 +216,7 @@ impl PhotonApp {
         self.persist_group(&gid);
         let from_genesis = self.group_rosters[pos].1.genesis.as_ref().map_or(false, |g| g.history_from_genesis);
         // The records go into the group for everyone; the joiner is standing from the merge above, so the fan-out reaches it too once it holds the era.
-        self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: Some(crate::storage::group::roster_to_vsf_bytes(&gid, &posted).ok().unwrap_or_default()), wrap: None, kem: None });
+        self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: Some(crate::storage::group::roster_to_vsf_bytes(&gid, &posted).ok().unwrap_or_default()), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
         if from_genesis {
             // Re-wrap the CURRENT era whole to each of the joiner's devices, over the friendship.
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
@@ -267,7 +283,7 @@ impl PhotonApp {
                 continue;
             };
             let wrap = crate::network::message_package::GroupWrapWire { recipient_device: b.device, bundle_id: b.pubkeys().bundle_id(), era: next, era_lineage: lineage, nonce, sealed };
-            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Wrap, blob: None, wrap: Some(wrap), kem: Some(cts) });
+            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Wrap, blob: None, wrap: Some(wrap), kem: Some(cts), text: None, queued: self.tick_serial, control: false });
             inside += 1;
         }
         let joiner_wraps = joiner.as_ref().map_or(0, |(_, b)| b.len());
@@ -330,12 +346,7 @@ impl PhotonApp {
         }
         self.group_rosters.retain(|(id, _)| *id != gid);
         self.group_rosters.push((gid, offer.snapshot.clone()));
-        self.group_offers.retain(|o| o.group_id != gid);
-        if let Some(storage) = self.storage.as_ref() {
-            if let Err(e) = crate::storage::group::unpark_group_offer(&gid, storage) {
-                crate::logf!("GROUP: offer unpark failed for {}: {}", hex::encode(&gid.0[..4]), e);
-            }
-        }
+        // The offer stays parked, accepted: it is what names the group the friendship row is about (the card reads "joined" from here on).
         self.set_group_local(&gid, |l| l.phase = GroupPhase::Standing);
         self.persist_group(&gid);
         self.persist_chains_of(&fid);
@@ -347,7 +358,7 @@ impl PhotonApp {
             if let Some(b) = self.group_rosters.iter().find(|(id, _)| *id == gid).and_then(|(_, r)| r.newest_bundle(&our_device).cloned()) {
                 ours.merge_bundle(b);
             }
-            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: crate::storage::group::roster_to_vsf_bytes(&gid, &ours).ok(), wrap: None, kem: None });
+            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: crate::storage::group::roster_to_vsf_bytes(&gid, &ours).ok(), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
         }
         crate::logf!("GROUP: joined \"{}\" ({}) via {} at era {}", offer.snapshot.title(), hex::encode(&gid.0[..4]), sponsor_fp, w.era);
     }
@@ -516,8 +527,18 @@ impl PhotonApp {
             }
         };
         let wire = crate::network::message_package::GroupWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None };
-        let ts = vsf::eagle_time_oscillations();
+        let ts = crate::network::time_base::stamp_osc();
+        // The offer row lands in the friendship conversation FIRST (the sponsor-side card: "you brought … into …"), then rides the wire.
+        let invitee = self.contacts[ci].handle_hash;
+        if let Some(conv) = self.conv_mut_of(ci) {
+            conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(GroupSignal::Offer.to_content(), true, ts));
+        }
+        self.persist_messages_async(ci);
         let sent = self.chain_transmit_with(ci, &GroupSignal::Offer.to_content(), ts, None, None, None, Some(&wire));
+        self.set_group_local(&gid, |l| {
+            l.offered.retain(|(p, _)| *p != invitee);
+            l.offered.push((invitee, ts));
+        });
         crate::logf!("GROUP: offer for {} {} to {}", hex::encode(&gid.0[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" }, fp);
         sent
     }
@@ -594,6 +615,128 @@ impl PhotonApp {
                 crate::logf!("GROUP: chains persist failed for {}: {}", hex::encode(&fid.as_bytes()[..4]), e);
             }
         }
+    }
+
+    /// A GROUP ACK (docs/groups.md step 4): resolve the acking device to a standing party (a friend's fold, else a GroupPeer's), mark it on the per-member ledger — the implied-ACK rule per party rides inside — and flip `delivered` on every row whose target set is now covered. Returns whether a row changed.
+    pub(super) fn on_group_ack(&mut self, gid: GroupId, device: [u8; 32], acked_eagle_time: i64) -> bool {
+        let Some(pos) = self.group_rosters.iter().position(|(g, _)| *g == gid) else {
+            return false;
+        };
+        let standing = self.group_rosters[pos].1.standing();
+        let party = self
+            .contacts
+            .iter()
+            .find(|c| !c.is_sibling && c.knows_device(&device) && standing.binary_search(&c.handle_hash).is_ok())
+            .map(|c| c.handle_hash)
+            .or_else(|| self.group_peers.iter().find(|p| p.knows_device(&device) && standing.binary_search(&p.party).is_ok()).map(|p| p.party));
+        let Some(party) = party else {
+            crate::logf!("GROUP: ACK for {} from device {} — no standing member's device; ignored", hex::encode(&gid.0[..4]), hex::encode(&device[..4]));
+            return false;
+        };
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) else {
+            return false;
+        };
+        let done = chains.process_group_ack(acked_eagle_time, party);
+        let progress = chains.pending_progress(acked_eagle_time);
+        crate::logf!("GROUP: ACK from {} for {} in {} — {}", crate::fp(&party), acked_eagle_time, hex::encode(&gid.0[..4]), match progress { Some((a, n)) => format!("{} of {}", a, n), None => "complete".to_string() });
+        self.persist_chains_async(&fid);
+        if done.is_empty() {
+            return false;
+        }
+        let mut changed = false;
+        if let Some(cp) = self.conversations.iter().position(|v| v.id() == fid) {
+            for m in self.conversations[cp].messages.iter_mut() {
+                if m.is_outgoing && !m.delivered && done.contains(&m.timestamp) {
+                    m.delivered = true;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.persist_conversation_async(fid);
+        }
+        changed
+    }
+
+    /// Compose in a GROUP (docs/groups.md step 4): bubble first, wire second — the row lands in the group conversation now, the encrypt + fan-out runs on the next tick thru `drain_group_posts` (the same frame fence the friendship path keeps).
+    pub(super) fn send_group_message(&mut self, gid: GroupId, text: &str, reference: Option<(crate::types::RefKind, i64)>) -> bool {
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            return false;
+        };
+        let eagle_time = crate::network::time_base::stamp_osc();
+        let mut msg = crate::types::ChatMessage::new_with_timestamp(text.to_string(), true, eagle_time);
+        msg.marks = self.marks_for_send(text);
+        msg.reference = reference;
+        msg.author = Some(our_pid);
+        if let Some((a, p)) = self.attach_stage.take() {
+            msg.attach = Some(a);
+            msg.preview = p;
+        }
+        let quiet = matches!(reference, Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _)));
+        if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == fid) {
+            conv.insert_message_sorted(msg);
+            if !quiet {
+                conv.scroll_offset = 0.0;
+            }
+        }
+        self.persist_conversation_async(fid);
+        self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: None, wrap: None, kem: None, text: Some((text.to_string(), eagle_time, reference)), queued: self.tick_serial, control: false });
+        true
+    }
+
+    /// Run the deferred wire half of every queued group post — chat rows and control rows alike — one tick after they were queued. A post that cannot go yet (no root, nobody reachable, the encrypt gate busy) stays queued; the retransmit sweep and the next edge retry it. Returns whether anything went out.
+    pub(super) fn drain_group_posts(&mut self) -> bool {
+        if self.pending_group_posts.is_empty() {
+            return false;
+        }
+        let serial = self.tick_serial;
+        let (ready, keep): (Vec<GroupPost>, Vec<GroupPost>) = std::mem::take(&mut self.pending_group_posts).into_iter().partition(|p| p.queued.wrapping_add(1) < serial);
+        self.pending_group_posts = keep;
+        if ready.is_empty() {
+            return false;
+        }
+        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            self.pending_group_posts.extend(ready);
+            return false;
+        };
+        let mut sent_any = false;
+        for post in ready {
+            let gid = post.gid;
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let (text, ts, reference) = match post.text.as_ref() {
+                Some((t, ts, r)) => (t.clone(), *ts, *r),
+                None => {
+                    // A control row: it lands in the group conversation as a hidden outgoing row FIRST (re-ACK durability, the era-row pattern), then rides the wire.
+                    let ts = crate::network::time_base::stamp_osc();
+                    let content = post.signal.to_content();
+                    let mut row = crate::types::ChatMessage::new_with_timestamp(content.clone(), true, ts);
+                    row.author = Some(our_pid);
+                    if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == fid) {
+                        conv.insert_message_sorted(row);
+                    }
+                    (content, ts, None)
+                }
+            };
+            let wire = crate::network::message_package::GroupWire { from: our_pid, woven_authors: Vec::new(), blob: post.blob.clone(), wrap: post.wrap.clone() };
+            if self.group_transmit(gid, &text, ts, reference, post.kem.as_ref(), Some(&wire)) {
+                sent_any = true;
+                if post.text.is_none() {
+                    self.persist_conversation_async(fid);
+                }
+            } else {
+                // Held: keep the post (with its stamp, so a control row re-sends as the SAME row) for the next drain edge.
+                let mut held = post;
+                if held.text.is_none() {
+                    held.text = Some((text, ts, None));
+                    held.control = true;
+                }
+                held.queued = serial;
+                self.pending_group_posts.push(held);
+            }
+        }
+        sent_any
     }
 
     /// Persist a group's index entry + roster. Chains persist thru the standard chains path on their own mutation edges.

@@ -237,6 +237,8 @@ impl PhotonApp {
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
         // Friendships whose chains changed in a SAFE-to-delay way (ACK pending-removal, chain-sync adopt) — persisted AFTER the loop via the coalescing chains writer. The `checker` borrow spans the loop, so a &mut self method can't run inside it (the same deferral every arm here uses).
         let mut chains_persist_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+        // GROUP ACKs (docs/groups.md step 4): (group, acking device, eagle time) — applied AFTER the loop to the per-member ledger.
+        let mut group_acks: Vec<(crate::types::group::GroupId, [u8; 32], i64)> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -1472,7 +1474,13 @@ impl PhotonApp {
                     conversation_token,
                     acked_eagle_time,
                     plaintext_hash,
+                    sender_pubkey,
                 } => {
+                    // GROUP ACK (docs/groups.md step 4): a group's token routes to the per-member ledger and never touches the friendship path below.
+                    if let Some(gid) = self.friendship_chains.iter().find(|(_, c)| c.group && c.conversation_token == conversation_token).map(|(id, _)| crate::types::group::GroupId(*id.as_bytes())) {
+                        group_acks.push((gid, sender_pubkey, acked_eagle_time));
+                        continue;
+                    }
                     // Get our handle_hash
                     let our_handle_hash = match self
                         .session
@@ -5289,6 +5297,11 @@ impl PhotonApp {
         // Coalesced off-thread chains persists (ACK pending-removals, chain-sync adopts) — the safe-to-delay saves, now that the checker borrow has ended.
         for fid in chains_persist_fids {
             self.persist_chains_async(&fid);
+        }
+        for (gid, device, ts) in group_acks {
+            if self.on_group_ack(gid, device, ts) {
+                changed = true;
+            }
         }
         // Sibling fork repair (deferred past the checker borrow): apply inbound resets first (each echoes once so the initiator converges), then fire any detector-initiated resets (mint nonce + apply + send).
         for (idx, nonce, echo) in chain_reset_apply {

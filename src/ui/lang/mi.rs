@@ -335,6 +335,12 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "kua wehe koe".into(),
         Msg::PendingMember => "E tatari ana\u{2026}".into(),
         Msg::GroupComposeSoon => "Ka tae mai ngā karere rōpū i te hanga e whai ake nei".into(),
+        Msg::OfferLine { sponsor, title, n } => format!("Nā {} koe i kawe ki {} \u{00b7} {}", sponsor, title, n).into(),
+        Msg::OfferJoined { title } => format!("kua uru ki {}", title).into(),
+        Msg::OfferExpired => "kua pau te tono".into(),
+        Msg::OfferJoin => "Uru".into(),
+        Msg::OfferWaiting { name, title } => format!("nāu a {} i kawe ki {} \u{00b7} e tatari ana", name, title).into(),
+        Msg::OfferAccepted { name, title } => format!("nāu a {} i kawe ki {} \u{00b7} kua uru", name, title).into(),
         Msg::BootRemovesEverywhere => "ka tangohia rātou i ngā pūrere katoa o TŌU kāhui".into(),
         Msg::BootOstracism => "kāore rātou e whakamōhiotia \u{2014} ka noho tonu ā rātou rēkoata ki a rātou (he whakahau, ehara i te muku)".into(),
         // ---- add device / pairing ----

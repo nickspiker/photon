@@ -482,6 +482,13 @@ impl PhotonApp {
 
     /// Can the open conversation dispatch from THIS device — a locally-woven chain, zero remote participants (loopback), a replicated chain this device writes on its own lane (per-device lanes), or COMPOSE-ANYWHERE (history + a fleet to forward thru)? THE one definition: the focus walk and the render both call it, where two hand-mirrored copies used to drift ("textbox appears but can't type", desktop 2026-07-26). A truly fresh un-clutched contact still answers false (nothing anywhere can transmit yet).
     pub(super) fn compose_ready(&self) -> bool {
+        // A GROUP composes once this device holds the root and stands (docs/groups.md §10.1: Standing or Catching up — a held row waits for the wrap; Joining/Left never compose).
+        if let Some(gi) = self.active_group() {
+            let gid = self.group_rosters[gi].0;
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let phase = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            return matches!(phase, crate::storage::group::GroupPhase::Standing | crate::storage::group::GroupPhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
+        }
         let Some(ci) = self.active_contact() else {
             return false;
         };
@@ -1079,6 +1086,8 @@ impl PhotonApp {
         let mut cadence_ci: Option<usize> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
+        // A GROUP row persists by its conversation id, never by the sender's contact (whose own conversation is a different table) — docs/groups.md step 4.
+        let mut persist_group_conv: Option<crate::types::ConversationId> = None;
         // BRIDGE host: a TYPED command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push; the i64 is the command row's eagle_time (what the streamed output frames target). A Stop press defers likewise.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         let mut bridge_run: Option<(usize, String, i64)> = None;
@@ -1171,6 +1180,7 @@ impl PhotonApp {
             let is_dup_frame = chains.is_duplicate(&lane, timestamp);
             // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth. A GROUP resolves by its stable id — minted, never derived.
             let conv_pos = if chains.group {
+                persist_group_conv = Some(chains.friendship_id);
                 match self.conversations.iter().position(|v| v.id().as_bytes() == chains.friendship_id.as_bytes()) {
                     Some(p) => p,
                     None => {
@@ -1904,14 +1914,19 @@ impl PhotonApp {
             };
             self.persist_chains_then(snapshot, actions);
         }
-        if let Some(ci) = persist_ci {
+        if let Some(id) = persist_group_conv {
+            self.persist_conversation_async(id);
+        } else if let Some(ci) = persist_ci {
             self.persist_messages_async(ci);
         }
         if let Some(pos) = conv_state_pos {
             self.persist_conv_state_async(pos);
         }
         if let Some((idx, m)) = sibling_push {
-            self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
+            // A GROUP row never rides the sender's FRIENDSHIP token to our siblings (they would merge it into the wrong conversation); the group's own sibling push lands with step 6.
+            if persist_group_conv.is_none() {
+                self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
+            }
         }
         if let Some(idx) = recv_seal_idx {
             self.seal_chain_if_ready(idx);

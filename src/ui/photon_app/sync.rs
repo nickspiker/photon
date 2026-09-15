@@ -869,13 +869,56 @@ impl PhotonApp {
                 Some((fid, primary, alt, recipient_key, relay_to))
             })
             .collect();
-        if routes.is_empty() {
+        // GROUP pass (docs/groups.md step 4): one route per standing member's device, resolved from the roster at sweep time, and a pending re-sends only to the parties whose ACK is still missing.
+        let group_routes: Vec<(crate::types::group::GroupId, Vec<super::Route>)> = self
+            .group_rosters
+            .iter()
+            .filter(|(g, _)| {
+                let fid = crate::types::FriendshipId::from_bytes(g.0);
+                self.friendship_chains.iter().any(|(id, c)| *id == fid && c.has_pending_messages())
+            })
+            .map(|(g, _)| (*g, self.routes_for_group(*g)))
+            .collect();
+        if routes.is_empty() && group_routes.is_empty() {
             return;
         }
 
         let Some(checker) = self.status_checker.as_ref() else {
             return;
         };
+
+        for (gid, groutes) in group_routes {
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) else {
+                continue;
+            };
+            let conversation_token = chains.conversation_token;
+            let Some(lane) = chains.our_label().copied() else {
+                continue;
+            };
+            let era = chains.era_tag();
+            let due = chains.collect_due_retransmits(now_osc);
+            for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in due {
+                let owed = chains.pending_unacked(eagle_time).unwrap_or_default();
+                let mut sent = 0usize;
+                for r in groutes.iter().filter(|r| r.party.map_or(false, |p| owed.contains(&p))) {
+                    checker.send_message(crate::network::status::MessageRequest {
+                        peer_addr: r.peer_addr,
+                        alt_addr: r.alt_addr,
+                        recipient_pubkey: r.recipient_pubkey,
+                        conversation_token,
+                        lane,
+                        prev_msg_hp,
+                        ciphertext: ciphertext.clone(),
+                        eagle_time,
+                        relay_to: r.relay_to.clone(),
+                        era,
+                    });
+                    sent += 1;
+                }
+                crate::logf!("GROUP: retransmit {} in {} (attempt {}) to {} of {} owed{}", eagle_time, hex::encode(&gid.0[..4]), attempts, sent, owed.len(), if exhausted { " — GAVE UP" } else { "" });
+            }
+        }
 
         let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
         let mut gave_up_fids: Vec<crate::types::FriendshipId> = Vec::new();

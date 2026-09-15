@@ -139,6 +139,43 @@ impl PhotonApp {
         let group_names: Vec<([u8; 32], String)> = active_gi
             .map(|gi| self.group_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
             .unwrap_or_default();
+        // OFFER CARDS in the open friendship conversation (docs/groups.md §10.5): per offer row, its label and — for an unaccepted incoming offer — the group a Join would enter.
+        let offer_cards: Vec<(i64, bool, String, Option<crate::types::group::GroupId>)> = active_ci
+            .and_then(|ci| self.contacts.get(ci).map(|c| (ci, c.handle_hash)))
+            .map(|(ci, party)| {
+                let their_name = super::contact_visible_name(&self.contacts[ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
+                let mut cards = Vec::new();
+                if let Some(conv) = self.conv_of(ci) {
+                    for m in conv.messages.iter().filter(|m| is_group_offer_row(m)) {
+                        if m.is_outgoing {
+                            // Sponsor side: which group we offered this contact into, and whether they stand yet.
+                            let found = self.group_locals.iter().find(|(_, l)| l.offered.iter().any(|(p, ts)| *p == party && *ts == m.timestamp)).map(|(g, _)| *g);
+                            let (title, joined) = found
+                                .and_then(|g| self.group_rosters.iter().find(|(id, _)| *id == g))
+                                .map(|(_, r)| (r.title(), r.is_standing(&party)))
+                                .unwrap_or_else(|| (String::new(), false));
+                            let label = if joined { tr(Msg::OfferAccepted { name: &their_name, title: &title }).into_owned() } else { tr(Msg::OfferWaiting { name: &their_name, title: &title }).into_owned() };
+                            cards.push((m.timestamp, true, label, None));
+                        } else {
+                            let offer = self.group_offers.iter().find(|o| o.sponsor == party && o.row_osc == m.timestamp).or_else(|| self.group_offers.iter().find(|o| o.sponsor == party));
+                            let (title, n, gid, accepted) = offer.map(|o| (o.snapshot.title(), o.snapshot.standing().len(), o.group_id, o.accepted)).unwrap_or_else(|| (String::new(), 0, crate::types::group::GroupId([0u8; 32]), false));
+                            let held = self.group_rosters.iter().any(|(g, _)| *g == gid);
+                            let expired = offer.is_none() || self.contacts[ci].identity_ended || self.contacts[ci].identity_superseded;
+                            let label = if held || accepted {
+                                tr(Msg::OfferJoined { title: &title }).into_owned()
+                            } else if expired {
+                                tr(Msg::OfferExpired).into_owned()
+                            } else {
+                                tr(Msg::OfferLine { sponsor: &their_name, title: &title, n: &crate::fmt_num64(n as u64) }).into_owned()
+                            };
+                            let joinable = (!held && !accepted && !expired && offer.is_some()).then_some(gid);
+                            cards.push((m.timestamp, false, label, joinable));
+                        }
+                    }
+                }
+                cards
+            })
+            .unwrap_or_default();
         let compose_ready = self.compose_ready();
         // Prompt-gate snapshot (same pre-chrome discipline): bridge command in flight → the send arrow dims and submit refuses.
         let bridge_held = active_ci.map_or(false, |ci| {
@@ -3039,6 +3076,9 @@ impl PhotonApp {
                             })
                         });
                         let body_of = |m: &crate::types::ChatMessage| -> String {
+                            if is_group_offer_row(m) {
+                                return offer_cards.iter().find(|(ts, out, _, _)| *ts == m.timestamp && *out == m.is_outgoing).map(|(_, _, l, _)| l.clone()).unwrap_or_else(|| tr(Msg::OfferExpired).into_owned());
+                            }
                             if crate::types::parse_attachment_content(&m.content).is_none() {
                                 if let Some((_, b)) = edit_over.get(&(m.timestamp, m.is_outgoing)) {
                                     return b.clone();
@@ -3561,6 +3601,14 @@ impl PhotonApp {
                                             v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
                                         }
                                         v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(8)));
+                                    }
+                                    v
+                                } else if is_group_offer_row(msg) {
+                                    // An OFFER card's one verb (docs/groups.md §10.1): Join, live only while the offer is parked and unanswered; a joined or expired card shows its state in the label and offers nothing.
+                                    let joinable = offer_cards.iter().find(|(ts, out, _, _)| *ts == msg.timestamp && *out == msg.is_outgoing).and_then(|(_, _, _, j)| *j);
+                                    let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
+                                    if joinable.is_some() {
+                                        v.push((tr(Msg::OfferJoin), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(13)));
                                     }
                                     v
                                 } else {

@@ -669,12 +669,20 @@ struct BraidTxEncrypted {
     eagle_time: i64,
     salt_text: Vec<u8>,
     woven_strands: Vec<Vec<u8>>,
-    peer_addr: std::net::SocketAddr,
-    alt_addr: Option<std::net::SocketAddr>,
-    recipient_pubkey: [u8; 32],
-    relay_to: Vec<[u8; 32]>,
+    /// Where the ONE ciphertext goes: exactly one route for a friendship, one per standing member for a group (docs/groups.md step 4 — encrypt once on our lane, fan the same bytes out).
+    routes: Vec<Route>,
     text_len: usize,
     result: Option<BraidTxWire>,
+}
+
+/// One recipient of a frame: the device the wire addresses, its race addresses, the relay copies, and (groups) the party it belongs to for the per-member ACK ledger.
+#[derive(Clone, Debug)]
+pub(crate) struct Route {
+    pub peer_addr: std::net::SocketAddr,
+    pub alt_addr: Option<std::net::SocketAddr>,
+    pub recipient_pubkey: [u8; 32],
+    pub relay_to: Vec<[u8; 32]>,
+    pub party: Option<[u8; 32]>,
 }
 
 /// The wire half a send encrypt produced: everything prepare_send_commit and the MessageRequest need.
@@ -747,6 +755,11 @@ const DEFAULT_REACTIONS: [&str; 5] = [
 ];
 
 /// The bubble text for a ROW. THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it"): a picture row has no text at all (the band above is the row), a code or text row shows its first lines, anything without a visual shows its bare filename. No kind glyph, no size, no hint — the size and the actions live in the details strip a tap on the row opens.
+/// The group offer row (docs/groups.md §10.1): the bare Offer kind marker, in either direction.
+fn is_group_offer_row(m: &crate::types::ChatMessage) -> bool {
+    m.content == crate::types::group::GroupSignal::Offer.to_content()
+}
+
 fn display_row(msg: &crate::types::ChatMessage) -> String {
     if let (Some(a), Some((hash, name, _size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
         if name.as_str() != "call.audio" {
@@ -792,6 +805,10 @@ fn display_content(content: &str) -> String {
 
 /// Is this row a BUBBLE in the stream? One source of truth for the renderer's visible-list filter AND the tap-to-jump scroll walk — the two must count identically or a jump lands off-target. Control rows and tombstones never draw; reaction rows resolve onto their target; an edit row hides while its target exists (renders standalone only when the target never synced).
 fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMessage, filter: ChatFilter) -> bool {
+    // A group OFFER row is the one control row that renders (docs/groups.md §10.5): the card the Join pill lives on.
+    if is_group_offer_row(m) {
+        return !m.deleted && filter != ChatFilter::Waves;
+    }
     if crate::types::is_control_content(&m.content) || m.deleted {
         return false;
     }
