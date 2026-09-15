@@ -453,6 +453,34 @@ fn relationship_digest(p: &[u8; 32], other: &[u8; 32]) -> [u8; 32] {
     ihi::spaghettify(&input)
 }
 
+/// A GROUP member's colour digest (docs/groups.md D14): `spaghettify(group_id ‖ author)` — keyed on the group, not on the viewer, so every member sees the same colour for the same person.
+fn group_digest(gid: &crate::types::group::GroupId, author: &[u8; 32]) -> [u8; 32] {
+    relationship_digest(&gid.0, author)
+}
+
+/// A group's list avatar: a pie of its standing members' gradients (each member's slice is `gradient_avatar_rgb` seeded from its group digest), so the row reads as "these people" without an orb of its own. One member = its whole gradient; none = the group id's.
+fn group_avatar_rgb(gid: &crate::types::group::GroupId, members: &[[u8; 32]], diam: usize) -> Vec<u8> {
+    if members.is_empty() {
+        return gradient_avatar_rgb(proof_gradient_seed(&gid.0), diam);
+    }
+    let slices: Vec<Vec<u8>> = members.iter().map(|m| gradient_avatar_rgb(proof_gradient_seed(&group_digest(gid, m)), diam)).collect();
+    if slices.len() == 1 {
+        return slices.into_iter().next().unwrap();
+    }
+    let n = slices.len() as f64;
+    let mut out = vec![0u8; diam * diam * 3];
+    let c = (diam as f64 - 1.0) * 0.5;
+    for py in 0..diam {
+        for px in 0..diam {
+            let ang = (py as f64 - c).atan2(px as f64 - c) + std::f64::consts::PI; // 0..2π, first slice starts at the left
+            let k = ((ang / (2.0 * std::f64::consts::PI)) * n).floor().clamp(0.0, n - 1.0) as usize;
+            let i = (py * diam + px) * 3;
+            out[i..i + 3].copy_from_slice(&slices[k][i..i + 3]);
+        }
+    }
+    out
+}
+
 /// Encode a LINEAR VSF RGB triple (party/relationship colours arrive already-linear, not γ2-encoded) for the framebuffer, matching theme.rs's display doctrine: macOS ships raw into its VSF-ICC-tagged surface; every other platform converts VSF→Rec.2020 primaries with a sqrt (γ2) transfer — never the sRGB OETF. Then fluor's α+darkness storage.
 fn vsf_rgb_to_stored(rgb_vsf: [f32; 3]) -> u32 {
     // macOS: surface is ICC-tagged VSF RGB, so sqrt-encode the raw linear value (γ2) with no matrix.
@@ -1025,6 +1053,8 @@ enum TextboxRole {
     FleetRename,
     /// The Fleet page's departure-approval words box — typing the leaver's on-screen words is the live-contact binding that gates the countersign.
     DepartWords,
+    /// The Manage page's New-group title box (docs/groups.md §10.5) — registry membership per the two-walk rule.
+    GroupTitle,
 }
 
 /// One editable profile field on the You page: a `field_id` (the VSF dictionary label, also the `profile.<id>` settings key), a human label, its taxonomy tier, and the text box holding the working value. Custom fields are user-added (registered in `profile._custom`) and grouped under a "Custom" header. See docs/contact-system.md "The field taxonomy".
@@ -1802,6 +1832,18 @@ pub struct PhotonApp {
     active_conversation: Option<crate::types::ConversationId>,
     /// Base hit ID for contact rows. Row `i` gets `contact_hit_base + i`. Allocated in `init` after the other widget IDs.
     contact_hit_base: HitId,
+    /// Ready-list GROUP rows: hit ids in [group_hit_base, +64) index `group_rosters` (docs/groups.md §10.5). Allocated at the END of the id run.
+    group_hit_base: HitId,
+    /// The group-picker inside a contact panel's Manage page ("Bring into a group"): rows in [group_pick_base, +16): 0 = New group, 1 = found (the New-group commit), 2 = from-genesis pill, 3 = from-join pill, 4.. = existing groups.
+    group_pick_base: HitId,
+    /// Wrapped title lines per group row (index = position in `group_rosters`), refreshed on the Ready pre-pass like `contact_row_lines`.
+    group_row_lines: Vec<Vec<String>>,
+    /// The Manage page's group picker is open for the panel's contact.
+    group_pick_open: bool,
+    /// New-group form state on the picker: history policy from genesis (true) or from join (false, the default).
+    group_pick_from_genesis: bool,
+    /// The New-group title box — registered in visit_app_widgets + textboxes_mut only.
+    group_title_textbox: Option<Textbox>,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
     back_btn_hit_id: HitId,
     /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
@@ -2513,6 +2555,12 @@ impl PhotonApp {
             avatar_set_rx: None,
             active_conversation: None,
             contact_hit_base: HIT_NONE,
+            group_hit_base: HIT_NONE,
+            group_pick_base: HIT_NONE,
+            group_row_lines: Vec::new(),
+            group_pick_open: false,
+            group_pick_from_genesis: false,
+            group_title_textbox: None,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
             join_copywords_hit_id: HIT_NONE,
@@ -3213,6 +3261,11 @@ impl PhotonApp {
                 }
             }
         }
+        if matches!(self.state, AppState::ContactPanel(crate::ui::state::ContactPage::Manage)) && self.group_pick_open {
+            if let Some(tb) = self.group_title_textbox.as_mut() {
+                f(tb);
+            }
+        }
         if let AppState::Settings(page) = self.state {
             // Only the stateful widgets on the SELECTED page enter the walk (dispatch + tab + hover + dropdown-popup). Immediate-mode action pills and the nav rail aren't Widgets — they're hit-stamped and handled directly in the Pressed arm.
             match page {
@@ -3441,6 +3494,17 @@ fn contact_page_rows(page: ContactPage) -> usize {
         ContactPage::About => 12,
         ContactPage::Stats => 9,
         ContactPage::Manage => 6,
+    }
+}
+
+impl PhotonApp {
+    /// The Manage page's row budget grows when the group picker is open: the fixed six, plus the New-group form (three rows) and one row per group we stand in (docs/groups.md §10.5). The render arm computes the same sum field-wise (it runs under the chrome borrow).
+    fn manage_page_rows(&self) -> usize {
+        let base = contact_page_rows(ContactPage::Manage);
+        if !self.group_pick_open {
+            return base;
+        }
+        base + 3 + self.group_rosters.len()
     }
 }
 

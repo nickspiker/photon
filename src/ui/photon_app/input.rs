@@ -526,8 +526,13 @@ impl PhotonApp {
             }
             // In a Conversation the orb wears the friend's avatar — it opens the friend panel (same doctrine: the orb is a panel entry, never a direct action).
             AppState::Conversation => {
+                // A GROUP conversation's panel lands with step 8 (docs/groups.md §10.5); until then the orb does nothing there rather than opening a contact panel over no contact.
+                if self.active_contact().is_none() {
+                    return false;
+                }
                 self.change_focus(None);
                 self.contact_boot_armed = false;
+                self.group_pick_open = false;
                 self.state = AppState::ContactPanel(ContactPage::About);
                 true
             }
@@ -560,6 +565,9 @@ impl PhotonApp {
             self.depart_words_entry
                 .as_mut()
                 .map(|(_, t)| (TextboxRole::DepartWords, t)),
+            self.group_title_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::GroupTitle, t)),
         ]
         .into_iter()
         .flatten()

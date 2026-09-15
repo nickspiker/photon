@@ -249,6 +249,53 @@ impl PhotonApp {
         })
     }
 
+    /// The GROUP the active conversation is, as an index into `group_rosters` — `None` when the open conversation is a friendship (or nothing is open).
+    pub(super) fn active_group(&self) -> Option<usize> {
+        let id = self.active_conversation?;
+        if !self.conversations.iter().any(|v| v.id() == id && v.is_group()) {
+            return None;
+        }
+        self.group_rosters.iter().position(|(g, _)| g.0 == *id.as_bytes())
+    }
+
+    /// Open a group conversation (docs/groups.md §10.5) — the same reset `open_conversation_with` does for a contact, keyed on the group's stable id.
+    pub(super) fn open_group_conversation(&mut self, gi: usize) {
+        let Some((gid, _)) = self.group_rosters.get(gi) else {
+            return;
+        };
+        let id = crate::types::FriendshipId::from_bytes(gid.0);
+        if !self.conversations.iter().any(|v| v.id() == id) {
+            let standing = self.group_rosters[gi].1.standing();
+            self.conversations.push(crate::types::Conversation::new_group(*gid, standing));
+        }
+        self.call_playback = None;
+        self.call_playback_hash = None;
+        self.active_conversation = Some(id);
+        self.compose_reply_to = None;
+        self.compose_edit_of = None;
+        self.compose_react_to = None;
+        self.conv_filter = ChatFilter::All;
+        self.wave_scrub = None;
+        // Focus claims are a friendship-token affair today (the token derives from the pair); a group claim rides the group token once the fleet notification design lands for groups.
+    }
+
+    /// The transient contact the conversation screen paints a group thru (`Contact::group_view`): the shared title, the standing count minus us, and online = any standing member's contact row is online.
+    pub(super) fn group_view_of(&self, gi: usize) -> Option<crate::types::Contact> {
+        let (gid, roster) = self.group_rosters.get(gi)?;
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let standing = roster.standing();
+        let remote = standing.iter().filter(|p| Some(**p) != us).count();
+        let online = standing.iter().any(|p| Some(*p) != us && self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p && c.is_online));
+        let title = match self.group_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase) {
+            Some(crate::storage::group::GroupPhase::Joining) => format!("{} · {}", roster.title(), tr(Msg::JoiningStatus)),
+            Some(crate::storage::group::GroupPhase::CatchingUp) => format!("{} · {}", roster.title(), tr(Msg::CatchingUpStatus)),
+            Some(crate::storage::group::GroupPhase::Left) => format!("{} · {}", roster.title(), tr(Msg::LeftStatus)),
+            _ if remote == 0 => format!("{} · {}", roster.title(), tr(Msg::GroupAlone)),
+            _ => format!("{} · {}", roster.title(), crate::fmt_num64((remote + 1) as u64)),
+        };
+        Some(crate::types::Contact::group_view(*gid, &title, remote, online))
+    }
+
     /// Open the conversation this contact row stands for.
     pub(super) fn open_conversation_with(&mut self, ci: usize) {
         // Switching conversations stops a wave that was playing in the one we leave.
@@ -857,6 +904,20 @@ impl PhotonApp {
     }
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
+    /// The group twin of `clear_unread`: opening a group conversation clears its ring.
+    pub(super) fn clear_group_unread(&mut self, gi: usize) {
+        let Some((gid, _)) = self.group_rosters.get(gi) else {
+            return;
+        };
+        let id = crate::types::FriendshipId::from_bytes(gid.0);
+        if let Some(pos) = self.conversations.iter().position(|v| v.id() == id) {
+            if self.conversations[pos].unread_count > 0 {
+                self.conversations[pos].unread_count = 0;
+                self.persist_conv_state_async(pos);
+            }
+        }
+    }
+
     pub(super) fn clear_unread(&mut self, ci: usize) {
         let dirty_id = match self.conv_mut_of(ci) {
             Some(conv) if conv.unread_count > 0 => {

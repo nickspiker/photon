@@ -468,6 +468,30 @@ pub enum Msg<'a> {
     OwnNotesCantBoot,
     SiblingSignsItselfOut,
     BootPill { armed: bool },
+    // ---- groups (docs/groups.md §10.5) ----
+    /// The Manage page pill that opens the group picker.
+    BringIntoGroup,
+    /// The picker's "start a new group" row.
+    NewGroup,
+    /// The New-group title box hint.
+    GroupTitlePrompt,
+    /// The New-group commit pill.
+    FoundGroupPill,
+    /// History policy pills, fixed at birth (D5).
+    HistoryFromGenesis,
+    HistoryFromJoin,
+    /// Header suffix when nobody else stands.
+    GroupAlone,
+    /// Header suffix while our Join awaits the sponsor's wrap.
+    JoiningStatus,
+    /// Header suffix while an era's wrap has not reached this device.
+    CatchingUpStatus,
+    /// Header suffix after we left.
+    LeftStatus,
+    /// A member whose fold has not yet succeeded — drawn as a contact without a name is.
+    PendingMember,
+    /// The compose bar's honest label while group sends are not yet wired.
+    GroupComposeSoon,
     BootRemovesEverywhere,
     BootOstracism,
     // ---- add device / pairing ----

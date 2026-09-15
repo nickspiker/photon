@@ -684,6 +684,10 @@ pub struct Contact {
     pub blind_in_flight: Option<([u8; 32], i64, bool)>,
     /// Runtime-only: this friend answered our probe with `found=0` (no deposit for this device). When every online+woven friend has missed AND no probe is in flight, S genuinely doesn't exist and genesis may run (probe-before-generate — a reset device must RECOVER S, never regenerate it while a deposit is reachable).
     pub blind_probe_missed: bool,
+    /// GROUP VIEW (docs/groups.md §10.5, runtime only, NEVER in `contacts`): a transient contact standing in for a group on the conversation screen, so the one render arm paints both. `Some(gid)` routes `conversation()` to the group form and `remote_count()` to `group_remote`. Persisted nowhere; constructed per frame by `Contact::group_view`.
+    pub group: Option<crate::types::group::GroupId>,
+    /// Standing members other than us (the group view's remote count).
+    pub group_remote: usize,
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
@@ -837,7 +841,22 @@ impl Contact {
             blind_deposited: false,       // Our blind not confirmed at this friend yet
             blind_in_flight: None,        // No blind op in flight
             blind_probe_missed: false,    // No probe answered found=0 yet
+            group: None,
+            group_remote: 0,
         }
+    }
+
+    /// The GROUP VIEW: a transient contact the conversation screen paints a group thru. Title as the published name (so the title bar and header read it, and "Pending…" never shows for a titled group), the group id as the gradient seed and the party id (the header colour), the standing count as the remote count. Runtime-only — never pushed into `contacts`, never persisted, never pinged.
+    pub fn group_view(gid: crate::types::group::GroupId, title: &str, remote: usize, online: bool) -> Self {
+        let mut c = Self::from_pin([0u8; 64], gid.0, gid.0, None);
+        c.published_name = title.to_string();
+        c.group = Some(gid);
+        c.group_remote = remote;
+        c.is_online = online;
+        c.friendship_id = Some(crate::types::FriendshipId::from_bytes(gid.0));
+        c.clutch_state = ClutchState::Complete;
+        c.chain_woven = true;
+        c
     }
 
     /// Construct a fleet-sibling contact: one of our OWN devices, discovered from our folded membership chain. Party id (in `handle_hash`) is device-derived so the ceremony machinery can't collide with the self/friend id space; `handle_proof` is OUR OWN so `refresh_contact_addrs_from_peers` matches the sibling's FGTW peer row (keyed hp + device pubkey — no handle string needed). Trust is implicit — the pubkey came from our own fold.
@@ -855,6 +874,9 @@ impl Contact {
     ///
     /// This is the seam the self special-casing lived in. A contact row for our own identity describes a conversation whose only participant is us, and one for a friend describes a conversation with two — the difference is the size of a set, not a mode to branch on. Callers ask `remote_participants()` and get the right answer for zero, one, or any number without knowing which case they are in.
     pub fn conversation(&self, our_party_id: &crate::types::PartyId) -> crate::types::Conversation {
+        if let Some(gid) = self.group {
+            return crate::types::Conversation::new_group(gid, std::iter::empty());
+        }
         crate::types::Conversation::new([*our_party_id, self.handle_hash])
     }
 
@@ -873,6 +895,9 @@ impl Contact {
 
     /// How many OTHER people a message here has to reach. `0` for our own notes — not because we checked for self, but because a set containing only us has nobody else in it.
     pub fn remote_count(&self, our_party_id: &crate::types::PartyId) -> usize {
+        if self.group.is_some() {
+            return self.group_remote;
+        }
         self.conversation(our_party_id).remote_count(our_party_id)
     }
 

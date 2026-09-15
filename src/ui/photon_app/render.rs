@@ -131,6 +131,14 @@ impl PhotonApp {
 
         // The open conversation's contact row + compose gate, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
         let active_ci = self.active_contact();
+        // A GROUP conversation paints thru a transient contact view (docs/groups.md §10.5) — resolved here, before the borrow, beside the contact index. Exactly one of the two is Some on the conversation screen.
+        let active_gi = self.active_group();
+        let group_view: Option<crate::types::Contact> = active_gi.and_then(|gi| self.group_view_of(gi));
+        let active_gid: Option<crate::types::group::GroupId> = active_gi.map(|gi| self.group_rosters[gi].0);
+        // A member's name grant by party id, for the author line above each incoming group row ("Pending…" until their fold names them).
+        let group_names: Vec<([u8; 32], String)> = active_gi
+            .map(|gi| self.group_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
+            .unwrap_or_default();
         let compose_ready = self.compose_ready();
         // Prompt-gate snapshot (same pre-chrome discipline): bridge command in flight → the send arrow dims and submit refuses.
         let bridge_held = active_ci.map_or(false, |ci| {
@@ -146,7 +154,8 @@ impl PhotonApp {
         ) {
             active_ci
                 .and_then(|ci| self.contacts.get(ci))
-                // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list). Siblings show their machine name.
+                .or(group_view.as_ref())
+                // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list). Siblings show their machine name; a group its shared title.
                 .map(|c| super::contact_visible_name(c, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()))
                 .unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned())
         } else if matches!(self.state, AppState::Ready) {
@@ -205,6 +214,15 @@ impl PhotonApp {
                 }
                 lines_by_ci.push(lines);
             }
+            // GROUP rows (docs/groups.md §10.5) wrap their shared title the same way; the filter matches on the title.
+            let mut lines_by_gi: Vec<Vec<String>> = Vec::with_capacity(self.group_rosters.len());
+            for (_, roster) in &self.group_rosters {
+                let mut lines = wrap_text_lines(ctx.text, &roster.title(), &wrap_style, name_w);
+                if lines.is_empty() {
+                    lines.push(String::new());
+                }
+                lines_by_gi.push(lines);
+            }
             let block_h: isize = self
                 .contacts
                 .iter()
@@ -215,8 +233,16 @@ impl PhotonApp {
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
                 .map(|(ci, _)| contact_row_height(row_h, lines_by_ci[ci].len()))
-                .sum();
+                .sum::<isize>()
+                + self
+                    .group_rosters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, r))| filter.is_empty() || r.title().to_lowercase().contains(&filter))
+                    .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
+                    .sum::<isize>();
             self.contact_row_lines = lines_by_ci;
+            self.group_row_lines = lines_by_gi;
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
@@ -265,7 +291,7 @@ impl PhotonApp {
             self.settings_rail_extent = (sl.nav_row_h() * (ContactPage::ALL.len() as Coord + 1.0)
                 - sl.rail_inset().h)
                 .max(0.0);
-            let n = contact_page_rows(cpage);
+            let n = if cpage == ContactPage::Manage { self.manage_page_rows() } else { contact_page_rows(cpage) };
             self.settings_content_extent =
                 (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
             (self.settings_rail_scroll, self.settings_content_scroll)
@@ -1655,7 +1681,7 @@ impl PhotonApp {
                 .as_ref()
                 .map(|t| t.chars.iter().collect::<String>().to_lowercase())
                 .unwrap_or_default();
-            let mut matching: Vec<usize> = self
+            let mut matching: Vec<ReadyRow> = self
                 .contacts
                 .iter()
                 .enumerate()
@@ -1664,7 +1690,15 @@ impl PhotonApp {
                     !c.is_sibling
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
-                .map(|(i, _)| i)
+                .map(|(i, _)| ReadyRow::Contact(i))
+                // GROUP rows (docs/groups.md §10.5): one list with the contacts, sorted by the same key.
+                .chain(
+                    self.group_rosters
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, (_, r))| filter.is_empty() || r.title().to_lowercase().contains(&filter))
+                        .map(|(gi, _)| ReadyRow::Group(gi)),
+                )
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
             let our_handle_hash = self
@@ -1672,9 +1706,11 @@ impl PhotonApp {
                 .as_ref()
                 .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                 .unwrap_or([0u8; 32]);
-            matching.sort_by_key(|&ci| {
-                let conv =
-                    dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]);
+            matching.sort_by_key(|row| {
+                let conv = match *row {
+                    ReadyRow::Contact(ci) => dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]),
+                    ReadyRow::Group(gi) => self.conversations.iter().find(|v| v.id().as_bytes() == &self.group_rosters[gi].0 .0),
+                };
                 let last_activity = conv
                     .map(|v| v.messages.as_slice())
                     .unwrap_or(&[])
@@ -1692,7 +1728,10 @@ impl PhotonApp {
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
             let block_h: isize = matching
                 .iter()
-                .map(|&ci| contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())))
+                .map(|row| match *row {
+                    ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())),
+                    ReadyRow::Group(gi) => contact_row_height(row_h, self.group_row_lines.get(gi).map_or(1, |l| l.len())),
+                })
                 .sum();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
             let block_end = block_bottom_at_zero + row_h * 2;
@@ -1710,8 +1749,23 @@ impl PhotonApp {
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
             // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero.
             let mut row_cursor = rows.y0 as isize;
-            for &ci in matching.iter() {
-                let name_lines: Vec<String> = self.contact_row_lines.get(ci).cloned().unwrap_or_default();
+            for row in matching.iter() {
+                // One row, two sources: a contact (the cached scaled avatar, the relationship colour, the presence tier) or a group (the members' gradient pie, the group's own colour, the best tier over its members' rows). Everything below reads the view, never a contact index, so a group row paints thru the identical geometry.
+                let rctx = ReadyCtx {
+                    contacts: &self.contacts,
+                    conversations: &self.conversations,
+                    contact_row_lines: &self.contact_row_lines,
+                    group_rosters: &self.group_rosters,
+                    group_locals: &self.group_locals,
+                    group_row_lines: &self.group_row_lines,
+                    contact_hit_base: self.contact_hit_base,
+                    group_hit_base: self.group_hit_base,
+                };
+                let view: RowView = match *row {
+                    ReadyRow::Contact(ci) => RowView::of_contact(&rctx, ci, &our_handle_hash),
+                    ReadyRow::Group(gi) => RowView::of_group(&rctx, gi, &our_handle_hash),
+                };
+                let name_lines: Vec<String> = view.name_lines.clone();
                 let rh = contact_row_height(row_h, name_lines.len().max(1));
                 let row_top_at_zero = row_cursor;
                 row_cursor += rh;
@@ -1721,75 +1775,70 @@ impl PhotonApp {
                     continue; // fully outside the visible content area (rows now scroll up to the top, not just `rows.y0`)
                 }
                 // Hover/press vocabulary (block tints vetoed): hover = the NAME goes heavier + the presence ring strokes 1px wider; press = the logo's white-glow halo blooms behind the name. No fills, no deltas — weight, stroke, and light.
-                let row_hit_here = self.contact_hit_base.wrapping_add(ci as HitId);
+                let row_hit_here = view.hit;
                 let row_pressed =
-                    ci < 256 && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
+                    view.hit != HIT_NONE && ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == row_hit_here;
                 let row_hovered = row_pressed
-                    || (ci < 256 && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
+                    || (view.hit != HIT_NONE && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
                 // The avatar centres on the WHOLE row block, so a wrapped name sits balanced beside it (Nick 2026-09-09).
                 let cy = (row_top + rh / 2) as f32;
 
-                // Build/refresh the contact's scaled-avatar cache at the row diameter.
-                let has_avatar = self.contacts[ci].avatar_pixels.is_some();
-                if has_avatar
-                    && (self.contacts[ci].avatar_scaled.is_none()
-                        || self.contacts[ci].avatar_scaled_diameter != diam)
-                {
-                    let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
-                    let scaled = crate::ui::avatar_render::update_avatar_scaled(
-                        base,
-                        crate::ui::avatar::AVATAR_SIZE,
-                        diam,
-                    );
-                    self.contacts[ci].avatar_scaled = Some(scaled);
-                    self.contacts[ci].avatar_scaled_diameter = diam;
+                // Build/refresh a contact's scaled-avatar cache at the row diameter (a group's pie is computed per frame — a few thousand pixels, no cache).
+                if let ReadyRow::Contact(ci) = *row {
+                    let has_avatar = self.contacts[ci].avatar_pixels.is_some();
+                    if has_avatar
+                        && (self.contacts[ci].avatar_scaled.is_none()
+                            || self.contacts[ci].avatar_scaled_diameter != diam)
+                    {
+                        let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
+                        let scaled = crate::ui::avatar_render::update_avatar_scaled(
+                            base,
+                            crate::ui::avatar::AVATAR_SIZE,
+                            diam,
+                        );
+                        self.contacts[ci].avatar_scaled = Some(scaled);
+                        self.contacts[ci].avatar_scaled_diameter = diam;
+                    }
                 }
 
                 // Avatar (or placeholder) is topmost; the presence ring paints UNDER it so only the rim shows.
-                if let Some(scaled) = self.contacts[ci].avatar_scaled.as_ref() {
-                    crate::ui::avatar_render::draw_avatar(
-                        &mut canvas,
-                        avatar_cx,
-                        cy,
-                        avatar_r,
-                        scaled,
-                        diam,
-                        Some(rows_clip),
-                    );
-                } else {
-                    // Default unset avatar: the contact's deterministic gradient (their public proof).
-                    let gd = (avatar_r * 2.0).max(1.0) as usize;
-                    let seed = proof_gradient_seed(&self.contacts[ci].handle_proof);
-                    crate::ui::avatar_render::draw_avatar(
-                        &mut canvas,
-                        avatar_cx,
-                        cy,
-                        avatar_r,
-                        &gradient_avatar_rgb(seed, gd),
-                        gd,
-                        Some(rows_clip),
-                    );
+                match (*row, view.pie.as_ref()) {
+                    (ReadyRow::Contact(ci), None) if self.contacts[ci].avatar_scaled.is_some() => {
+                        crate::ui::avatar_render::draw_avatar(
+                            &mut canvas,
+                            avatar_cx,
+                            cy,
+                            avatar_r,
+                            self.contacts[ci].avatar_scaled.as_ref().unwrap(),
+                            diam,
+                            Some(rows_clip),
+                        );
+                    }
+                    (_, Some((gid, members))) => {
+                        // The group's avatar: a pie of its members' gradients at the row diameter.
+                        let gd = (avatar_r * 2.0).max(1.0) as usize;
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &group_avatar_rgb(gid, members, gd), gd, Some(rows_clip));
+                    }
+                    _ => {
+                        // Default unset avatar: the deterministic gradient (a contact's public proof; a group's id).
+                        let gd = (avatar_r * 2.0).max(1.0) as usize;
+                        crate::ui::avatar_render::draw_avatar(
+                            &mut canvas,
+                            avatar_cx,
+                            cy,
+                            avatar_r,
+                            &gradient_avatar_rgb(view.gradient_seed, gd),
+                            gd,
+                            Some(rows_clip),
+                        );
+                    }
                 }
-                // The contact's relationship colour — computed ahead of the rings because the unread band below borrows it (ears and eyes and now the unread cue all agree on the one per-contact colour). A zero-remote row gets the neutral anchor (no other party, no relationship).
-                let row_colour = if self.contacts[ci].remote_count(&our_handle_hash) == 0 {
-                    self_colour()
-                } else {
-                    party_colour(&relationship_digest(
-                        &self.contacts[ci].handle_hash,
-                        &our_handle_hash,
-                    ))
-                };
-                let _ = row_colour;
+                // The row's colour — a contact's relationship colour (ears and eyes and the unread cue all agree on it), a group's own. A zero-remote row gets the neutral anchor.
+                let row_colour = view.colour;
                 // Presence ring at the rim (connectivity tier), then — if unread — a MAGENTA ring OUTSIDE it (the new-message cue never overlaps or recolours the connectivity ring). Under-composite paints topmost-first, so the presence disc is drawn before the larger magenta disc and the magenta only shows in its outer annulus. Event-shown, cleared on conversation-open.
-                let unread =
-                    dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci])
-                        .is_some_and(|v| v.unread_count > 0);
+                let unread = view.unread;
                 let unread_band = ring_thickness * 2.0;
-                let ring = row_ring_tier_in(
-                    &self.contacts,
-                    &self.contacts[ci],
-                    self.contacts[ci].remote_count(&our_handle_hash) > 0,
-                );
+                let ring = view.ring;
                 paint::draw_circle(
                     &mut canvas,
                     avatar_cx,
@@ -1812,7 +1861,7 @@ impl PhotonApp {
                 // Handle name, vertically centred in the row, clipped to the list region — in this contact's relationship colour (computed above).
                 // "Pending…" reads in SHEAR (the honest oblique — tan 12°): a name-shaped placeholder must not look like a name. Hover reads as WEIGHT (500 → 700), not a fill — and an unread row holds that same 700 weight until opened.
                 let row_weight = if row_hovered || unread { 700 } else { 500 };
-                let row_style = if self.contacts[ci].has_real_name() {
+                let row_style = if view.has_real_name {
                     TextStyle::new(text_size, row_colour)
                         .weight(row_weight)
                         .font("Oxanium")
@@ -1871,9 +1920,9 @@ impl PhotonApp {
                     }
                 }
 
-                // Stamp the row into the hit map so clicks dispatch to this contact.
-                if ci < 256 {
-                    let row_hit = self.contact_hit_base.wrapping_add(ci as HitId);
+                // Stamp the row into the hit map so clicks dispatch to this contact or group.
+                if view.hit != HIT_NONE {
+                    let row_hit = view.hit;
                     restamp_hit_rect(
                         &mut chrome.hit_test_map,
                         buf_w,
@@ -1928,6 +1977,8 @@ impl PhotonApp {
                     self.contacts[ci].avatar_scaled = Some(scaled);
                     self.contacts[ci].avatar_scaled_diameter = diam;
                 }
+                // The Manage page's row budget (grows with the group picker) — a method call, so it is bound before the `contact` borrow.
+                let manage_rows = contact_page_rows(ContactPage::Manage) + if self.group_pick_open { 3 + self.group_rosters.len() } else { 0 };
                 let contact = &self.contacts[ci];
                 // Our pid feeds the relationship digest below — a keyed colour, not a self-check. "Is this me" is the participant count.
                 let our_hh = self
@@ -2382,10 +2433,9 @@ impl PhotonApp {
                         );
                     }
                     ContactPage::Manage => {
-                        let n = contact_page_rows(ContactPage::Manage);
-                        let rows = layout
-                            .content_scrolled(n, settings_content_scroll)
-                            .split_v([1.0; 6]);
+                        let n = manage_rows;
+                        let all_rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
+                        let rows = &all_rows[..6];
                         settings_line(
                             &mut canvas,
                             ctx.text,
@@ -2438,6 +2488,44 @@ impl PhotonApp {
                                 400,
                             );
                             settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
+                            // BRING INTO A GROUP (docs/groups.md §10.5): pill slot 1. Opens the picker below: New group (title box, the history policy fixed at birth, Found) and every group we stand in.
+                            let pill2 = fluor::region::Region::new(rows[5].x + rows[5].w * 0.1, rows[5].y, rows[5].w * 0.5, rows[5].h * 0.95);
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BringIntoGroup), self.contact_panel_btn_base.wrapping_add(1), ctx.pressed_hit);
+                            if self.group_pick_open && all_rows.len() >= 9 {
+                                let pick = |i: u16| self.group_pick_base.wrapping_add(i as HitId);
+                                // Row 6: the title box, prefilled or empty, beside the "New group" label.
+                                let r6 = all_rows[6];
+                                settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r6.x, r6.y, r6.w * 0.3, r6.h), &tr(Msg::NewGroup), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                                if let Some(tb) = self.group_title_textbox.as_mut() {
+                                    let tb_left = r6.x + r6.w * 0.32;
+                                    let tb_w = (r6.w * 0.62).max(hspan2 * 6.0);
+                                    tb.set_rect(tb_left + tb_w * 0.5, r6.center_y(), tb_w, r6.h * 0.85);
+                                    tb.set_font_size(hspan2, ctx.text);
+                                    let id = tb.hit_id();
+                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                                }
+                                // Row 7: the history policy, two pills, the chosen one filled (a birth property — everyone who joins does so knowing it).
+                                let r7 = all_rows[7];
+                                let half = r7.w * 0.48;
+                                let from_gen = self.group_pick_from_genesis;
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r7.x, r7.y, half, r7.h * 0.9), &tr(Msg::HistoryFromJoin), pick(3), ctx.pressed_hit, true, if from_gen { None } else { Some(*theme::PILL_GREEN) }, "Oxanium");
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r7.x + r7.w * 0.52, r7.y, half, r7.h * 0.9), &tr(Msg::HistoryFromGenesis), pick(2), ctx.pressed_hit, true, if from_gen { Some(*theme::PILL_GREEN) } else { None }, "Oxanium");
+                                // Row 8: Found — enabled once the title box holds text.
+                                let r8 = all_rows[8];
+                                let has_title = self.group_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r8.x + r8.w * 0.1, r8.y, r8.w * 0.5, r8.h * 0.9), &tr(Msg::FoundGroupPill), if has_title { pick(1) } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
+                                // Rows 9..: every group we stand in — one tap offers this contact into it (already standing there = drawn disabled).
+                                let contact_pid = contact.handle_hash;
+                                for (gi, (gid, roster)) in self.group_rosters.iter().enumerate() {
+                                    let Some(r) = all_rows.get(9 + gi) else { break };
+                                    let n_standing = roster.standing().len();
+                                    let already = roster.is_standing(&contact_pid);
+                                    let label = format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n_standing as u64));
+                                    let hid = if already || gi + 4 >= 16 { HIT_NONE } else { pick((4 + gi) as u16) };
+                                    let _ = gid;
+                                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * 0.8, r.h * 0.9), &label, hid, ctx.pressed_hit, !already, None, "Oxanium");
+                                }
+                            }
                         }
                     }
                 }
@@ -2533,7 +2621,15 @@ impl PhotonApp {
                     }
                 }
             }
-            if let Some(ci) = active_ci.filter(|_| !viewer_open) {
+            // The one conversation arm paints a contact OR a group: `ci` is the contact index (usize::MAX for a group — it keys caches and strip-dismissal only, and never indexes `contacts` past the guards below), `contact` is the row or the group's transient view.
+            let active_peer: Option<(usize, Option<&crate::types::Contact>)> = if viewer_open {
+                None
+            } else if let Some(ci) = active_ci {
+                Some((ci, None))
+            } else {
+                group_view.as_ref().map(|v| (usize::MAX, Some(v)))
+            };
+            if let Some((ci, peer_view)) = active_peer {
                 {
                     let ru = ctx.viewport.ru;
                     // Build/refresh the contact's scaled-avatar cache at the CONVERSATION-HEADER diameter BEFORE the immutable borrow below. The header renders the avatar bigger than the contact-list rows, but it has no rebuild of its own — it used to draw whatever `avatar_scaled` happened to hold (built at the small row diameter) while telling draw_avatar the buffer was header-sized → it sampled past the smaller buffer → "index out of bounds: len 2028 (26²·3) but index 2307" panic on conversation-open. Rebuilding here at the header diameter keeps the cache and the claimed scaled_diameter in lockstep.
@@ -2541,7 +2637,8 @@ impl PhotonApp {
                         let (_, _, header_r) =
                             ReadyLayout::compute(buf_w, buf_h, ru).avatar_center_radius();
                         let header_diam = (header_r * 2.0) as usize;
-                        if self.contacts[ci].avatar_pixels.is_some()
+                        if ci < self.contacts.len()
+                            && self.contacts[ci].avatar_pixels.is_some()
                             && (self.contacts[ci].avatar_scaled.is_none()
                                 || self.contacts[ci].avatar_scaled_diameter != header_diam)
                         {
@@ -2555,7 +2652,10 @@ impl PhotonApp {
                             self.contacts[ci].avatar_scaled_diameter = header_diam;
                         }
                     }
-                    let contact = &self.contacts[ci];
+                    let contact: &crate::types::Contact = match peer_view {
+                        Some(v) => v,
+                        None => &self.contacts[ci],
+                    };
                     // Scale off the SAME span-based harmonic unit the contacts screen uses, so the conversation screen scales identically (aspect-ratio-robust, zoom-aware, no hardcoded pixels) instead of the old crude height-only `buf_h·0.04` with a magic 12px floor.
                     let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
                     let unit = conv_layout.unit_height;
@@ -2748,6 +2848,21 @@ impl PhotonApp {
                         self_colour()
                     } else {
                         party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
+                    };
+                    // A GROUP row's colour is its AUTHOR's (docs/groups.md D14: the group id ‖ author digest, the same on every member's screen); a friendship row is the friend's.
+                    let author_colour = |m: &crate::types::ChatMessage| -> u32 {
+                        match (active_gid.as_ref(), m.author.as_ref()) {
+                            (Some(gid), Some(a)) => party_colour(&group_digest(gid, a)),
+                            _ => their_colour,
+                        }
+                    };
+                    // The author line above an incoming group row: the member's name grant, or "Pending…".
+                    let author_line = |m: &crate::types::ChatMessage| -> Option<String> {
+                        if active_gid.is_none() || m.is_outgoing {
+                            return None;
+                        }
+                        let a = m.author.as_ref()?;
+                        Some(group_names.iter().find(|(p, _)| p == a).map(|(_, n)| n.clone()).unwrap_or_else(|| tr(Msg::PendingMember).into_owned()))
                     };
 
                     // Petname style for stream entry #0 (pending names shear italic like everywhere else).
@@ -3049,6 +3164,10 @@ impl PhotonApp {
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                                     total += 1;
                                 }
+                                // An incoming GROUP row reserves ONE extra line for its author above the body (docs/groups.md §10.5).
+                                if author_line(m).is_some() {
+                                    total += 1;
+                                }
                                 // A reacted row reserves ONE extra line for its reaction glyphs below the body.
                                 if react_line(m.timestamp).is_some() {
                                     total += 1;
@@ -3192,8 +3311,11 @@ impl PhotonApp {
                                     }
                                 }
                             }
+                            let author = author_line(msg);
+                            let author_off = if author.is_some() { intra } else { 0.0 };
                             let block_extra = (lines.len().max(1) as f32 - 1.0) * intra
                                 + if reply_target.is_some() { intra } else { 0.0 }
+                                + author_off
                                 + react_off
                                 + wave_band_h
                                 + img_band_h
@@ -3635,7 +3757,7 @@ impl PhotonApp {
                                     theme::dim_colour(our_colour)
                                 }
                             } else {
-                                their_colour
+                                author_colour(msg)
                             };
                             // call.audio rows render in Oxanium — matches the wrap-loop font so the dozenal size + ▶ glyph resolve (the default bubble font tofus both).
                             let msg_style = if crate::types::is_call_recording(&msg.content) {
@@ -3695,6 +3817,13 @@ impl PhotonApp {
                                         None,
                                     );
                                 }
+                            }
+                            // The AUTHOR line of an incoming group row (docs/groups.md §10.5): the member's name in their colour, one line above the body (above the reply reference when both exist), left-aligned like the body it names.
+                            if let Some(name) = author.as_ref() {
+                                let reply_off = if reply_target.is_some() { intra } else { 0.0 };
+                                let auth_y = y - react_off - lines.len() as f32 * intra - reply_off;
+                                let auth_style = TextStyle::new(msg_size * 0.85, colour).weight(700).font("Oxanium");
+                                ctx.text.draw_text_left(&mut canvas, name, pad_x, auth_y, &auth_style, Some(list_clip), None);
                             }
                             // Link projection: map validated marks onto the wrapped lines (each line = a contiguous source slice). Only when the drawn body IS the content (attachment/summary bodies differ, and their marks were never minted anyway).
                             let line_starts = if !msg.marks.is_empty() && body_of(msg) == msg.content {
@@ -4451,6 +4580,10 @@ impl PhotonApp {
                             if let Some(btn) = self.compose_attach_btn.as_ref() {
                                 btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
+                        } else if active_gid.is_some() {
+                            // A GROUP conversation before the fan-out send lands (docs/groups.md step 4): the compose slot carries an honest label instead of a box that would swallow text.
+                            let label_y = buf_h as f32 - ime_lift - compose_margin - unit * 0.9;
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::GroupComposeSoon), buf_w as f32 * 0.5, label_y, &TextStyle::new(unit * 0.55, *theme::LABEL_COLOUR).weight(500).font("Oxanium"), None, None);
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }
@@ -6552,6 +6685,95 @@ impl PhotonApp {
 /// A contact row's line step for a wrapped name: the name size is half the layout row, and lines stack at a quarter more than that.
 fn contact_line_step(row_h: isize) -> f32 {
     row_h as f32 * 0.5 * 1.25
+}
+
+/// Split a region into `n` equal vertical bands (the runtime-count twin of `Region::split_v`); the last band absorbs rounding.
+fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
+    let n = n.max(1);
+    let band_h = r.h / n as f32;
+    (0..n).map(|i| fluor::region::Region::new(r.x, r.y + band_h * i as f32, r.w, if i + 1 == n { r.bottom() - (r.y + band_h * i as f32) } else { band_h })).collect()
+}
+
+/// One entry of the Ready list (docs/groups.md §10.5): a contact row or a group row, in ONE sorted list.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum ReadyRow {
+    Contact(usize),
+    Group(usize),
+}
+
+/// What the Ready row loop needs to paint a row, resolved once per row from either source so the geometry below is source-blind.
+struct RowView {
+    name_lines: Vec<String>,
+    has_real_name: bool,
+    colour: u32,
+    unread: bool,
+    ring: u32,
+    hit: HitId,
+    /// A group row's pie: the group id and its standing members other than us (painted at the row diameter in the loop); `None` = a contact's scaled cache or the gradient seed.
+    pie: Option<(crate::types::group::GroupId, Vec<[u8; 32]>)>,
+    gradient_seed: u64,
+}
+
+/// The field-precise slice of the app the row views read — disjoint from the chrome borrow the row loop holds.
+struct ReadyCtx<'a> {
+    contacts: &'a [crate::types::Contact],
+    conversations: &'a [crate::types::Conversation],
+    contact_row_lines: &'a [Vec<String>],
+    group_rosters: &'a [(crate::types::group::GroupId, crate::types::group::Roster)],
+    group_locals: &'a [(crate::types::group::GroupId, crate::storage::group::GroupLocal)],
+    group_row_lines: &'a [Vec<String>],
+    contact_hit_base: HitId,
+    group_hit_base: HitId,
+}
+
+impl RowView {
+    fn of_contact(app: &ReadyCtx, ci: usize, our_handle_hash: &[u8; 32]) -> Self {
+        let c = &app.contacts[ci];
+        let colour = if c.remote_count(our_handle_hash) == 0 {
+            self_colour()
+        } else {
+            party_colour(&relationship_digest(&c.handle_hash, our_handle_hash))
+        };
+        RowView {
+            name_lines: app.contact_row_lines.get(ci).cloned().unwrap_or_default(),
+            has_real_name: c.has_real_name(),
+            colour,
+            unread: dm_conversation(app.conversations, our_handle_hash, c).is_some_and(|v| v.unread_count > 0),
+            ring: row_ring_tier_in(app.contacts, c, c.remote_count(our_handle_hash) > 0),
+            hit: if ci < 256 { app.contact_hit_base.wrapping_add(ci as HitId) } else { HIT_NONE },
+            pie: None,
+            gradient_seed: proof_gradient_seed(&c.handle_proof),
+        }
+    }
+
+    /// A group row: title lines, the group's colour (its digest with us — one colour per group per viewer, the header uses the same), unread from its conversation, the ring = the best connectivity tier over its standing members' contact rows (a member we never friended contributes nothing until the GroupPeer fold lands), the members' gradient pie as the avatar. Joining/Left phases read as a pending name (shear) so a row that cannot yet carry a message never looks like one that can.
+    fn of_group(app: &ReadyCtx, gi: usize, our_handle_hash: &[u8; 32]) -> Self {
+        let (gid, roster) = &app.group_rosters[gi];
+        let standing = roster.standing();
+        let members: Vec<[u8; 32]> = standing.iter().filter(|p| *p != our_handle_hash).copied().collect();
+        let phase = app.group_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+        let conv = app.conversations.iter().find(|v| v.id().as_bytes() == &gid.0);
+        let ring = match phase {
+            crate::storage::group::GroupPhase::Standing => members
+                .iter()
+                .filter_map(|p| app.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *p))
+                .map(|c| (contact_conn_tier(c), c))
+                .min_by_key(|(t, _)| *t)
+                .map(|(_, c)| ring_tier_colour(c, true))
+                .unwrap_or(*theme::RING_OFFLINE_COLOUR),
+            _ => *theme::RING_OFFLINE_COLOUR,
+        };
+        RowView {
+            name_lines: app.group_row_lines.get(gi).cloned().unwrap_or_default(),
+            has_real_name: matches!(phase, crate::storage::group::GroupPhase::Standing | crate::storage::group::GroupPhase::CatchingUp),
+            colour: party_colour(&group_digest(gid, our_handle_hash)),
+            unread: conv.is_some_and(|v| v.unread_count > 0),
+            ring,
+            hit: if gi < 64 { app.group_hit_base.wrapping_add(gi as HitId) } else { HIT_NONE },
+            pie: Some((*gid, members)),
+            gradient_seed: proof_gradient_seed(&gid.0),
+        }
+    }
 }
 
 /// A contact row's height: the layout row for a one-line name, plus one line step per extra wrapped line. The extent clamp and the row walk share it.

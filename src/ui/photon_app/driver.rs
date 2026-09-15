@@ -347,6 +347,11 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
+        // GROUPS (docs/groups.md §10.5): Ready-list group rows (64) and the Manage-page group picker (16) — appended here, never mid-run (the contiguous-id contract).
+        self.group_hit_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(64);
+        self.group_pick_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(16);
         // Call controls (docs/calls.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.call_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.call_start_btn = Some(Button::new(
@@ -535,6 +540,7 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.group_title_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Unattended-confirm handle box: built once here so its hit_id is stable (lazy creation at open time bumped hit_counter every open, drifting the id out from under the render's stamp — the box then took no input).
         self.unattended_confirm_tb = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
@@ -832,7 +838,65 @@ impl FluorApp for PhotonApp {
                     }
                     self.scene_dirty = true;
                     ctx.window.request_redraw();
+                } else if slot == 1 {
+                    // Bring into a group (docs/groups.md §10.5): toggle the picker; the title box takes focus so typing starts at once.
+                    self.group_pick_open = !self.group_pick_open;
+                    if self.group_pick_open {
+                        if let Some(tb) = self.group_title_textbox.as_mut() {
+                            tb.chars.clear();
+                            tb.cursor = 0;
+                        }
+                        let id = self.group_title_textbox.as_ref().map(|t| t.hit_id());
+                        self.change_focus(id);
+                    } else {
+                        self.change_focus(None);
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
                 }
+                return EventResponse::Handled;
+            }
+            // The group picker's rows (docs/groups.md §10.5): 1 = Found (new group with this contact), 2/3 = the history policy, 4.. = offer this contact into an existing group.
+            if self.group_pick_open
+                && self.group_pick_base != HIT_NONE
+                && hit_id >= self.group_pick_base
+                && hit_id < self.group_pick_base.wrapping_add(16)
+            {
+                let pick = (hit_id - self.group_pick_base) as usize;
+                if let Some(ci) = self.active_contact() {
+                    match pick {
+                        1 => {
+                            let title: String = self.group_title_textbox.as_ref().map(|t| t.chars.iter().collect::<String>()).unwrap_or_default();
+                            let title = title.trim().to_string();
+                            if !title.is_empty() {
+                                let from_genesis = self.group_pick_from_genesis;
+                                if self.found_group_with(ci, &title, from_genesis).is_some() {
+                                    self.group_pick_open = false;
+                                    self.change_focus(None);
+                                    // Land in the new group's conversation — the row exists, the offer is out.
+                                    if let Some(gi) = self.group_rosters.len().checked_sub(1) {
+                                        self.open_group_conversation(gi);
+                                        self.state = AppState::Conversation;
+                                        self.conv_topbar_off = 0.0;
+                                    }
+                                }
+                            }
+                        }
+                        2 => self.group_pick_from_genesis = true,
+                        3 => self.group_pick_from_genesis = false,
+                        k if k >= 4 => {
+                            let gi = k - 4;
+                            if let Some(gid) = self.group_rosters.get(gi).map(|(g, _)| *g) {
+                                self.send_group_offer(gid, ci);
+                                self.group_pick_open = false;
+                                self.change_focus(None);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
         }
@@ -1255,6 +1319,25 @@ impl FluorApp for PhotonApp {
         if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click() {
             ctx.window.request_redraw();
             return EventResponse::Handled;
+        }
+
+        // Group row tap (docs/groups.md §10.5) — hit IDs in [group_hit_base, group_hit_base + 64).
+        if matches!(self.state, AppState::Ready)
+            && self.group_hit_base != HIT_NONE
+            && hit_id >= self.group_hit_base
+            && hit_id < self.group_hit_base.wrapping_add(64)
+        {
+            let gi = (hit_id - self.group_hit_base) as usize;
+            if gi < self.group_rosters.len() {
+                crate::logf!("group-tap: opening \"{}\"", self.group_rosters[gi].1.title());
+                self.open_group_conversation(gi);
+                self.state = AppState::Conversation;
+                self.conv_topbar_off = 0.0;
+                self.clear_group_unread(gi);
+                self.change_focus(None);
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
         }
 
         // Contact row tap — hit IDs in [contact_hit_base, contact_hit_base + 255].
