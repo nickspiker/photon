@@ -802,7 +802,11 @@ mod android {
 
     /// Start: flip the flag, clear the queues, and ask the service to spin up AudioRecord/AudioTrack (VOICE_COMMUNICATION). Returns false when the service ref isn't up or the call fails — mic permission handling is Kotlin's side of the line.
     /// Start: flip the flag, clear the queues, let Kotlin do the Android-only chores (proximity lock, foreground microphone type, lock-screen flags, the RECORD_AUDIO prompt), then open the AAudio streams from Rust (audio_aaudio). False when the output stream cannot open.
+    /// THE HANDOVER LOCK (field 2026-09-15 16:54, Emma's Note 10: "doesn't turn her screen off"): start and stop each run as ONE unit — streams AND the Kotlin chores. The session-ownership fix serialized the AAudio streams thru their own lock, but the ringback's stop reached Kotlin's stopCallAudio AFTER the engine's startCallAudio had already returned early on the still-true running flag, so the chores went down under the live wave and never came back: no proximity lock (the screen stayed lit at the ear), no mic foreground type, the earpiece route cleared. Held across the whole sequence, a stop finishes tearing down before a start begins building up, and the start then sees a stopped service and runs its full body.
+    static HANDOVER: Mutex<()> = Mutex::new(());
+
     pub fn start() -> bool {
+        let _h = HANDOVER.lock().unwrap();
         if ACTIVE.swap(true, Ordering::SeqCst) {
             return true;
         }
@@ -818,6 +822,7 @@ mod android {
     }
 
     pub fn stop() {
+        let _h = HANDOVER.lock().unwrap();
         if ACTIVE.swap(false, Ordering::SeqCst) {
             crate::platform::audio_aaudio::stop();
             let _ = crate::platform::jni_android::call_service_void("stopCallAudio");
