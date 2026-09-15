@@ -51,6 +51,9 @@ static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 // STALL GUARD: after an arrival stall the whole backlog lands at once and the queue stands far past the target; the one-sample splice would take most of a minute to shed 200ms, so a queue past target + STALL_SLACK sheds frames now, bounded per render. This is not depth control (the loss loop owns the target) — it is the one case where standing latency is pure debris.
 const STALL_SLACK: usize = 4; // 20ms past target (2026-09-10 field: the loop held target 1 while the standing depth sat at 5-17 frames for a whole call — the splice alone sheds a sample a frame, so the guard must do the shedding)
 const STALL_MAX_DROP_PER_RENDER: usize = 4;
+/// The recent render level (mean |sample|, fast attack / ~0.6 s decay) the stall guard reads pauses against, and the voiced-frame drop cadence counter (one voiced frame per eight renders at most).
+static RENDER_LEVEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static STALL_VOICED_SKIP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 // SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 240 = ±0.42% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
 const SPLICE_UNDER_MARGIN: usize = 2; // duplicate only when depth sits ≥2 under target (priming/underrun own the empty case; hysteresis keeps delete/duplicate from chattering)
 static SPLICE_DROPPED: AtomicUsize = AtomicUsize::new(0);
@@ -352,14 +355,33 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             match q.pop_front() {
                 Some(mut f) => {
                     let target = JITTER_TARGET.load(Ordering::Relaxed);
-                    // Stall guard (see the consts): shed a backlog standing far past the target, a few frames per render.
+                    // Stall guard (see the consts): shed a backlog standing far past the target, a few frames per render — FROM THE PAUSES (field 2026-09-15, "splotchy": a Wi-Fi stall of 1–3 s lands its whole backlog at once and the guard shed it four frames per render regardless of content, 1,782 frames — 8.9 s of the far voice — cut from one 108 s wave; words vanished). A frame well under the recent render envelope (a pause, a breath gap) drops freely; a frame carrying voice drops at most one per eight renders, so a pure-speech backlog sheds at 12% while latency recovers over seconds instead of words disappearing in one.
                     if q.len() > target + STALL_SLACK {
                         let mut dropped = 0;
-                        while q.len() > target + STALL_SLACK && dropped < STALL_MAX_DROP_PER_RENDER {
-                            q.pop_front();
-                            dropped += 1;
+                        let mut scanned = 0;
+                        while q.len() > target + STALL_SLACK && dropped < STALL_MAX_DROP_PER_RENDER && scanned < STALL_MAX_DROP_PER_RENDER * 2 {
+                            scanned += 1;
+                            let Some(head) = q.front() else { break };
+                            let lvl = head.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / head.len().max(1) as u64;
+                            let env = RENDER_LEVEL.load(Ordering::Relaxed);
+                            let quiet = lvl * 6 < env;
+                            if quiet {
+                                q.pop_front();
+                                dropped += 1;
+                            } else if STALL_VOICED_SKIP.fetch_add(1, Ordering::Relaxed) % 8 == 7 {
+                                q.pop_front();
+                                dropped += 1;
+                            } else {
+                                break;
+                            }
                         }
                         JITTER_TRIMS.fetch_add(dropped, Ordering::Relaxed);
+                    }
+                    // The render envelope the stall guard reads pauses against: fast attack on the frame just popped, ~0.6 s decay.
+                    {
+                        let lvl = f.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / f.len().max(1) as u64;
+                        let env = RENDER_LEVEL.load(Ordering::Relaxed);
+                        RENDER_LEVEL.store(lvl.max(env - (env >> 7)), Ordering::Relaxed);
                     }
                     // Sample-splice clock control (the fine actuator — see the consts): one sample per frame, at the flattest point, glides the depth toward target so the frame trims above stay dormant.
                     if f.len() > 2 {
@@ -492,6 +514,7 @@ fn clear_queues() {
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
     JITTER_DEPTH_PEAK.store(0, Ordering::Relaxed);
     JITTER_TRIMS.store(0, Ordering::Relaxed);
+    RENDER_LEVEL.store(0, Ordering::Relaxed);
     SPLICE_DROPPED.store(0, Ordering::Relaxed);
     SPLICE_DUPED.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);

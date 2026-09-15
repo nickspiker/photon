@@ -338,8 +338,9 @@ fn run(
     let mut raw_floor_q8: i64 = i64::MAX;
     let mut noise_est_q8: i64 = 0;
     let mut voiced_sum_q8: i64 = 0;
-    // The one-time re-aim's latch: the decision fires exactly once per call, at measurement confidence.
-    let mut tx_reaimed = false;
+    // The re-aim's evidence: every voiced frame mean since the last decision (fresh evidence per step; cleared on fire and on a failed dynamics gate). Two steps per call at most — the first from 4 s of speech, one correction if 8 s of later evidence proves it ≥2× wrong (field 2026-09-15 16:54–16:57: four waves in a row fired on 2 s of pre-conversation breath and handling at 7–25 coarse — "4–12× its quiet", the relative gate satisfied — and hit the 64× cap; the real speech that followed ran 53–115 and the wire sat 1.5–2× hot on the rail: "splotchy").
+    let mut reaim_ring: Vec<i64> = Vec::with_capacity(4096);
+    let mut reaim_steps: u8 = 0;
     let mut voiced_frames: i64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
@@ -526,6 +527,9 @@ fn run(
                 if noise_est_q8 > 0 && mean_q8 > (noise_est_q8 * 3).max(512) && crate::platform::audio::emitted_level() < 128 {
                     voiced_sum_q8 += mean_q8;
                     voiced_frames += 1;
+                    if reaim_steps < 2 && reaim_ring.len() < 4096 {
+                        reaim_ring.push(mean_q8);
+                    }
                 }
                 // The kernel at 24-bit: s24 · g(Q32) is Q40 against the i16 domain, so the shift is 40 and the carry keeps 40 bits. Budget: 2^23 · 2^39 (128× makeup) + carry < 2^63.
                 let mut carry = tx_stage.take_carry();
@@ -1173,26 +1177,48 @@ fn run(
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
-            // ONE-TIME RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS call has 2 s of far-quiet-gated voiced evidence, the makeup steps exactly onto the plan and never moves again this call — a single calibration correction from ground truth, not an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
-            if !tx_reaimed && voiced_frames >= 400 {
-                let measured_q8 = voiced_sum_q8 / voiced_frames.max(1);
-                // QUIET SANITY BOUND (the noise-aimed 64×, 2026-09-15): evidence that no longer clears 3× the room tracker is noise the gate let thru before the tracker settled — hold, keep accruing, decide on frames that do clear it.
-                if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {
+            // THE RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS call holds 4 s of speech-like far-quiet-gated voiced evidence, the makeup steps exactly onto the plan; one correction is allowed if 8 s of later evidence proves that step ≥2× wrong; then it is fixed for the call — two calibration corrections from ground truth at most, never an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
+            let need = if reaim_steps == 0 { 800 } else { 1600 };
+            if reaim_steps < 2 && reaim_ring.len() >= need {
+                // DYNAMICS GATE: speech modulates — its loud frames run several times its median; breath, handling and room sit flat. A flat window is not speech however far above the quiet it sits: discard it and wait for evidence that moves.
+                let mut sorted = reaim_ring.clone();
+                sorted.sort_unstable();
+                let p50 = sorted[sorted.len() / 2];
+                let p90 = sorted[sorted.len() * 9 / 10];
+                let measured_q8 = reaim_ring.iter().sum::<i64>() / reaim_ring.len() as i64;
+                let speech_like = p90 * 2 >= p50 * 5;
+                if !speech_like {
+                    crate::logf!(
+                        "CALL: level plan re-aim — {} frames at {} look flat (p90/p50 {}/{}), not speech; waiting",
+                        reaim_ring.len(),
+                        measured_q8 >> 8,
+                        p90 >> 8,
+                        p50 >> 8
+                    );
+                    reaim_ring.clear();
+                } else if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {
                     let ideal = (((TX_WIRE_TARGET * 2 / 3) << 40) / measured_q8)
                         .clamp(crate::call::qgain::UNITY / 8, 64 * crate::call::qgain::UNITY);
-                    // Step only when the aim is off by ≥1.5× either way — inside that band the rocker covers it.
-                    if ideal * 2 >= tx_makeup_q32 * 3 || tx_makeup_q32 * 2 >= ideal * 3 {
+                    // The first step fires past 1.5× off-aim (inside that band the rocker covers it); the correction only past 2× — a second step must be earned.
+                    let (num, den) = if reaim_steps == 0 { (3, 2) } else { (2, 1) };
+                    if ideal * den >= tx_makeup_q32 * num || tx_makeup_q32 * den >= ideal * num {
                         crate::logf!(
-                            "CALL: level plan re-aim — this call's voiced {} over {} frames ({}x its quiet), makeup {} → {} (once; the stored profile still learns at teardown)",
+                            "CALL: level plan re-aim {} — this call's voiced {} over {} frames ({}x its quiet, p90/p50 {}/{}), makeup {} → {}",
+                            if reaim_steps == 0 { "(first)" } else { "(correction, final)" },
                             measured_q8 >> 8,
-                            voiced_frames,
+                            reaim_ring.len(),
                             measured_q8 / noise_est_q8.max(1),
+                            p90 >> 8,
+                            p50 >> 8,
                             format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
                             format!("{:.1}x", ideal as f64 / crate::call::qgain::UNITY as f64)
                         );
                         tx_makeup_q32 = ideal;
                     }
-                    tx_reaimed = true;
+                    reaim_steps += 1;
+                    reaim_ring.clear();
+                } else {
+                    reaim_ring.clear();
                 }
             }
             // PEER-LOSS TIER GOVERNANCE (the 1 s verdict): the max loss byte the peer reported this second is their receive of OUR transmit. ≥2 = the AIMD drop edge for OUR tier — the direction this tier actually controls.

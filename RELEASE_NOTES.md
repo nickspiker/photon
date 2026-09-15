@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The wave's self-aim waits for real speech: it needs four seconds of sound that moves the way a voice does before it trusts a measurement, so breath and handling before the conversation starts can no longer aim the level wrong, and it allows itself one correction later if the first aim proves badly off.
+- After a Wi-Fi stall the backlog of the other person's voice is shed from the pauses, not from the words — before, a few seconds of stall could cut whole phrases out of what you heard.
 - A wave answered while the ringback was still winding down could go out silent — your side heard them, they heard nothing — because the ringback's cleanup and the call's start fought over the microphone; the session now has one owner at a time and a refused microphone open is retried.
 - Opening a conversation asks the contact if they are there and gives them one second: no answer and the header shows offline right away, flipping back the moment they respond.
 - The wave's ear for "is this speech?" is now relative to the room: it tracks this call's own quiet and counts only sound well above it, so background noise can never be mistaken for a voice and crank the send level, and the quiet itself — measured, not the manufacturer's claim — seeds the level for a microphone the app has never heard speak.
