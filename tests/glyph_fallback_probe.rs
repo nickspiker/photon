@@ -94,6 +94,25 @@ fn shipped_language_letters_resolve_from_open_sans() {
     // Indonesian and Swahili are plain ASCII Latin — no probe needed, and that is precisely why they are the cheapest reach on the board.
 }
 
+/// COMPLEX SHAPING actually runs, which is the load-bearing claim behind docs/languages.md's roadmap: Devanagari needs only a translation pass because the shaper — not the translator, and not a layout project — composes its conjuncts, and Arabic's remaining cost is UI mirroring rather than text.
+/// Measured structurally, so it cannot pass by accident: a shaped form must be NARROWER than its unshaped parts, which is only true if rustybuzz substituted glyphs rather than laying codepoints out one by one.
+/// If fluor ever drops to `Shaping::Basic`, or a script loses its fallback route, both assertions fail here rather than on someone's phone in a language nobody on the team reads.
+#[test]
+fn complex_scripts_actually_shape() {
+    let mut tr = renderer(true);
+    // Devanagari conjunct: क + virama + ष composes the single ligature क्ष. Unshaped it would be three separate glyphs INCLUDING a visible virama, so it cannot be narrower than the two bare consonants.
+    let ka = width(&mut tr, "\u{915}", "Open Sans");
+    let ssa = width(&mut tr, "\u{937}", "Open Sans");
+    let conjunct = width(&mut tr, "\u{915}\u{94D}\u{937}", "Open Sans");
+    assert!(conjunct > 0.0, "the conjunct laid out as nothing");
+    assert!(conjunct < ka + ssa, "Devanagari conjunct did not compose: क्ष measured {conjunct}, wider than bare क + ष at {}", ka + ssa);
+    // Arabic contextual forms: two behs joined take initial+final forms, narrower than two isolated ones.
+    let beh = width(&mut tr, "\u{628}", "Open Sans");
+    let joined = width(&mut tr, "\u{628}\u{628}", "Open Sans");
+    assert!(joined > 0.0, "the Arabic pair laid out as nothing");
+    assert!(joined < beh * 2.0, "Arabic did not apply contextual forms: بب measured {joined}, not narrower than two isolated ب at {}", beh * 2.0);
+}
+
 /// U+FE0F and U+FE0E pick the face for the character they follow: the colour-emoji ☎ and the monochrome ☎ are different glyphs with different advances, and a bare ☎ equals the colour one (colour-first chain).
 #[test]
 fn variation_selectors_choose_the_face() {

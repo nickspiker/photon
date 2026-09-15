@@ -97,7 +97,7 @@
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/calls.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_links.md](project_links.md) — message links = typed marks; label editable
-- [project_languages.md](project_languages.md) — language catalog shipped (en+es+mi), all numerals thru fmt_num
+- [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; shaping/Cyrillic already free, Hindi cheap, CJK = payload call
 - [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates page + website
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot shipped; off-by-default toggle
 - [project_bridge.md](project_bridge.md) — BRIDGE = passless remote shell between siblings over PT

@@ -1,10 +1,11 @@
 ---
 name: project_languages
-description: "language catalog SHIPPED 2026-09-03 — translations-as-code (exhaustive-match enum), en+es+mi complete, picker on You page; adding a string = add a Msg variant, every language file fails to build until its arm exists"
+description: "language catalog SHIPPED 2026-09-03 (translations-as-code, exhaustive-match enum); EXPANDED to 16 languages 2026-09-15; adding a string = add a Msg variant, every language file fails to build until its arm exists"
 metadata: 
   node_type: memory
   type: project
   originSessionId: 8c6221f3-48a5-4f77-b00e-1e3c7fa4c3b5
+  modified: 2026-09-15T17:57:37.368Z
 ---
 
 Nick approved translations-as-code 2026-09-03 ("Rust can already tell us if we missed a spot. Build it!"). Full arc shipped same night.
@@ -24,4 +25,16 @@ Nick approved translations-as-code 2026-09-03 ("Rust can already tell us if we m
 
 **Traps for future string work:** add the variant FIRST, then all three language arms, then the call site (compile errors guide the order). Widget constructor labels are frozen — either re-set per frame in render or add to relabel_for_language. Multi-line passages are ONE '\n'-joined variant; call sites iterate .lines() (PermanenceWarning gives line 0 the headline colour). es judgment calls logged in the 2026-09-03 session (darse de baja, Echar, Puente…); mi is my best-effort pending native review — flagged in mi.rs header.
 
-**Script ceiling:** any Latin-script language is a pure translation file; CJK/RTL blocks on fluor (font bundle + bidi), not on strings.
+**Script ceiling — CORRECTED 2026-09-15 by measurement; the old "CJK/RTL blocks on fluor" line was already false when written.** fluor drives cosmic-text with `Shaping::Advanced` at EVERY call site = full rustybuzz, and `BundledFallback::script_fallback` already routes Arabic/Devanagari/Thai/Armenian/Georgian/Runic to faces `src/ui/fonts.rs` bundles. So complex-script TEXT renders today; Arabic's remaining cost is UI MIRRORING (rail side, bubble sides, back arrows) — a layout project, not a shaping one. Devanagari is LTR so **Hindi needs no mirroring at all** (610M, the cheapest big win left). Open Sans measures 1010 codepoints covering Vietnamese precomposed, Turkish ı/İ, Polish/Czech, Cyrillic incl. ђ/ґ, Greek — so **Cyrillic needed zero font work**. CJK is the one real gap and it is a PAYLOAD decision (10-20MB vs the no-host-fonts doctrine), deliberately deferred — noted in fonts.rs as Nick's call to revisit. Thai is bundled+shaped but skipped: no inter-word spaces means dictionary line-breaking, a real project masquerading as a cheap one. All of it pinned in tests/glyph_fallback_probe.rs (`shipped_language_letters_resolve_from_open_sans`, `complex_scripts_actually_shape` — the latter asserts a shaped form measures NARROWER than its unshaped parts, so it cannot pass by accident).
+
+**2026-09-15 expansion to 16 languages** (Nick: "your call on Russian and easy to hit ones, might as well!"): +pt fr id de sw vi tr ru hi uk it pl fil. Written by 13 parallel subagents, one per language, each briefed to build a coined-metaphor glossary FIRST (wave/pigeon/braid/lane/fold) before touching the ~478 arms. Roadmap + reasoning in docs/languages.md.
+- **Autonym rule refined:** bare language name, EXCEPT where the language word does not detach — te reo detaches from Māori, but `tiếng`/`bahasa`/`ki-` do not, and "Việt"/"Indonesia" alone name a people and a country. So Tiếng Việt, Bahasa Indonesia, Kiswahili. Nick's test: whatever you'd say in "I'm a ___ speaker". (docs line claiming "Te Reo Māori" was stale vs code — fixed.)
+- **`index()` is STORAGE order (session atomic), `ALL` is DISPLAY order** — now sorted by autonym so a user who cannot read the current UI finds their tongue by scanning. Safe ONLY because of a latent-bug fix: the picker resolved a tap thru `from_index` (storage) while the slot is a position in `ALL` (display); they coincided only while ALL happened to be index-sorted. Now resolves thru `Lang::ALL[slot]`.
+- `from_code` is the ONE seam OS-locale seeding reads, so a new code gets host detection free. Filipino answers to both `fil` and `tl`. Turkish's code `tr` collides by sight with `lang::tr()` — compiles fine (separate Rust namespaces), commented in place.
+
+**TRANSLATING IS A PROOFREADER FOR THE ENGLISH — three defect classes found, all recorded in docs/languages.md:**
+1. `Msg::ClipPill` is the bare word "clip"; **6 of 13** translators read it as CROP (Beschnitt/potong/corte/kırpma/kata/ritaglio) when viewer.rs defines it as "blown channels black, crushed ones white". Fixed in place; the English wants rewording to `clipped`/`clip warn`. mi.rs's `tapahi` has the same crop reading and PREDATES this batch — left for Nick (Māori is his to coin).
+2. `Msg::CallBarCalling` direction is recoverable only from render.rs:837 (`CallPhase::Ringing` = "their offer reached us", the Answer/Decline phase = INCOMING). 3 agents read the call site and got it right; de and hi guessed outgoing and were fixed. Variants whose direction isn't in the English want a doc comment naming the call site.
+3. `Msg::ExposureStops(&str)` takes its value PRE-FORMATTED by fmt_halves, so no arm can branch on the number — ru and uk independently gave up and wrote "{s} EV". A `&str` that used to be a number is a formatted value wearing a semantic value's clothes; carry the number instead.
+
+**What the exhaustive match actually bought:** Slavic 3-form plurals (1 / 2-4 / 5+, with the 11-14 exception) are REQUIRED on five arms `en.rs` does not branch at all — MessagesDelivered, ContactFleetPinned, MessagesSentReceived, DiagRecordInspect, DiagMeta. Swahili branches on NOUN CLASS in nine arms (the linker changes too: jaribio *la* vs majaribio *ya*) and drops two branches English has. Indonesian/Vietnamese/Turkish collapse singular branches (no plural morphology). A data catalog would have had nowhere to put any of it. And a half-written Polish file failed the build with "non-exhaustive patterns: 399 more not covered" — a partial language cannot ship.

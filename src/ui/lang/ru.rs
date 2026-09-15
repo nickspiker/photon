@@ -1,0 +1,686 @@
+// Русский — полный перевод каталога; эталон — en.rs.
+// Никогда не переводится: handle'ы (побайтово точные), voca-слова сопряжения (материал протокола), строки лога, названия дюжинных цифр (Zil/Ter/Lun/Stel), имена полей VSF и ключи хранения, марочное слово "Photon", "TOKEN" и "passless".
+// КАЖДОЕ число проходит через crate::fmt_num (с учётом основания: дюжинные глифы или десятичные цифры по переключателю DOZENAL_UI) — голая арабская подстановка {} здесь запрещена, ровно как в en.rs.
+// Вывод fmt_num находит начертание Oxanium +glyphs из любого основного семейства (fluor называет его первым в своей цепочке подмены) — ни одному месту отрисовки не нужно об этом просить.
+// Обращение везде на «ты»: photon говорит лично и негромко, а не как компания.
+// Русский требует падежей и трёхформенного числа, поэтому там, где вариант несёт счёт, внутри него стоит настоящий match по count — это и есть причина, по которой каталог написан кодом, а не лежит в таблице.
+use super::Msg;
+use crate::fmt_num;
+use crate::ui::state::{ContactPage, SettingsPage};
+use std::borrow::Cow;
+
+// Обёртка со знаком для редкого знакового значения (коды выхода моста); дюжинные цифры беззнаковые, минус едет впереди.
+fn fmt_i(n: i64) -> String {
+    if n < 0 {
+        format!("-{}", fmt_num((-n) as u32))
+    } else {
+        fmt_num(n as u32)
+    }
+}
+
+pub fn text(msg: Msg) -> Cow<'static, str> {
+    match msg {
+        // ---- shared verbs / small buttons ----
+        Msg::Answer => "Ответить".into(),
+        Msg::Decline => "Отклонить".into(),
+        Msg::Reject => "Игнорировать".into(),
+        Msg::RejectedWaveRow => "\u{260E} волна проигнорирована".into(),
+        Msg::ReplicatePill => "реплицировать".into(),
+        Msg::ReplicatingToFleet => "просим каждое устройство держать эту запись".into(),
+        Msg::Delete => "Удалить".into(),
+        Msg::Keep => "Оставить".into(),
+        Msg::Play => "\u{25B6}\u{FE0E} Слушать".into(),
+        Msg::EndCall => "Завершить волну".into(),
+        Msg::HangUp => "Прервать".into(),
+        Msg::Attest => "Аттестовать".into(),
+        Msg::Cancel => "Отменить".into(),
+        Msg::Arm => "Взвести".into(),
+        Msg::Disarm => "Снять".into(),
+        Msg::Add => "Добавить".into(),
+        Msg::Update => "Обновить".into(),
+        // ---- page names ----
+        Msg::PageName(p) => match p {
+            SettingsPage::You => "Ты",
+            SettingsPage::Fleet => "Флот",
+            SettingsPage::Security => "Защита",
+            SettingsPage::Recovery => "Восстановление",
+            SettingsPage::Appearance => "Вид",
+            SettingsPage::Notifications => "Уведомления",
+            SettingsPage::Updates => "Обновления",
+            SettingsPage::Diagnostics => "Диагностика",
+            SettingsPage::Vault => "Сейф",
+            SettingsPage::Language => "Язык",
+            SettingsPage::Dozenal => "Основание",
+            SettingsPage::About => "О программе",
+        }
+        .into(),
+        // «Между вами» — это множественное «вы» о двух людях, а не вежливое обращение: тыканье сохраняется.
+        Msg::ContactPageName(p) => match p {
+            ContactPage::About => "О человеке",
+            ContactPage::Stats => "Между вами",
+            ContactPage::Manage => "Управление",
+        }
+        .into(),
+        // ---- call screen ----
+        Msg::SpeakerToggleOn => "\u{1F50A} Вкл".into(),
+        Msg::SpeakerToggleOff => "\u{1F50A} Динамик".into(),
+        Msg::SpeakerPlain => "Динамик".into(),
+        Msg::AddHandle => "+ Handle".into(),
+        Msg::AddHandlePlain => "Добавить handle".into(),
+        Msg::BackToContact => "\u{2039} Контакт".into(),
+        Msg::CallStart => "\u{260E} Волна".into(),
+        Msg::BeamStart => "\u{1F4F9} Луч".into(),
+        Msg::WaveBack => "Волна в ответ".into(),
+        Msg::BeamBack => "Луч в ответ".into(),
+        Msg::BeamToggle => "\u{1F4F9} Луч".into(),
+        Msg::IncomingCall => "\u{260E} входящая волна".into(),
+        Msg::IncomingCallNoPath => "\u{260E} входящая волна \u{2014} \u{26A0} нет прямого пути".into(),
+        Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} нет прямого пути").into(),
+        // Имя вынесено вперёд и стоит в именительном: после «с» понадобился бы творительный, а подставляется чужая строка.
+        Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} {name}: ответить пока нельзя \u{2014} восстанавливаем связь").into(),
+        Msg::CallReconnecting => "\u{26A0} переподключаемся\u{2026}".into(),
+        Msg::CallDroppedRow => "\u{260E} волна \u{2014} оборвалась".into(),
+        Msg::CallDroppedDur(dur) => format!("\u{260E} волна \u{2014} оборвалась \u{2014} {dur}").into(),
+        Msg::CallChipElsewhere(dev) => format!("\u{260E} волна идёт на устройстве {dev}").into(),
+        Msg::CallChipElsewhereUnknown => "\u{260E} волна идёт на другом устройстве".into(),
+        Msg::StopPlayback => "\u{25A0} Стоп".into(),
+        Msg::CallEndedDur(dur) => format!("\u{260E} волна \u{2014} {dur}").into(),
+        // «волна:» с двоеточием вместо «волна к …»: дательный падеж не налезает на подставленное имя.
+        Msg::CallingName(name) => format!("\u{260E} волна: {name}\u{2026}").into(),
+        Msg::CallRow => "\u{260E} волна".into(),
+        Msg::MissedCallRow => "\u{260E} пропущенная волна".into(),
+        Msg::CallDeclinedRow => "\u{260E} волна отклонена".into(),
+        Msg::BusyRow => "\u{260E} занято".into(),
+        // ---- launch / handle / join ----
+        Msg::YesForever => "Да — навсегда".into(),
+        Msg::HandleTaken => "на это имя уже кто-то отзывается \u{2014} выбери другое".into(),
+        Msg::HandleAttestedElsewhere(words) => format!("этот handle уже аттестован другим устройством (открытый ключ {words})").into(),
+        Msg::IdentityResumeHint => "это устройство уже несёт личность".into(),
+        Msg::IdentityOccupied => "это устройство уже несёт личность".into(),
+        Msg::HandleHint => "handle".into(),
+        Msg::HandleHintJoin => "handle (вступить во флот)".into(),
+        Msg::ThisDeviceName(name) => format!("это устройство: {name}").into(),
+        Msg::CopyWords => "скопировать слова".into(),
+        Msg::WordsCopied => "скопировано \u{2014} вставь на другом своём устройстве".into(),
+        Msg::LaunchJoinInstructions => "На другом своём устройстве: Настройки \u{2192} Флот \u{2192} Добавить\nОно рядом? Просто коснись имени этого устройства.\nДалеко? Введи там эти слова:".into(),
+        Msg::LaunchJoinConfirmNote => "Добавление ты подтвердишь на том устройстве.".into(),
+        Msg::StartFreshIdle => "Не то устройство? Начать с нуля (стереть это устройство)".into(),
+        Msg::StartFreshArmed => "Начать с нуля — коснись ещё раз, чтобы стереть это устройство".into(),
+        Msg::JoinerSelected => "Выбрано!".into(),
+        Msg::JoinerConfirmOther => "Подтверди на другом своём устройстве, чтобы закончить.".into(),
+        Msg::OffGridListening => "вне сети: слушаем рядом...".into(),
+        // Безличное «добавлено» вместо согласованного причастия: род подставляемого handle неизвестен.
+        Msg::AddedHandle(h) => format!("добавлено: {h}").into(),
+        Msg::AlreadyAdded(h) => format!("{h} уже в контактах").into(),
+        Msg::NotFound => "не найдено".into(),
+        Msg::SearchError(e) => format!("ошибка: {e}").into(),
+        Msg::AlreadyInContacts => "Уже в твоих контактах".into(),
+        Msg::Attesting => "Аттестация\u{2026}".into(),
+        Msg::RevokedByFleet => "твой флот ОТОЗВАЛ это устройство \u{2014} оно больше не может действовать как ты. Восстанови его с другого своего устройства, чтобы снова им пользоваться.".into(),
+        Msg::IdentityCarriedHint => "это устройство уже несёт личность".into(),
+        Msg::PermanenceWarning => "Так создаётся постоянная личность.\nБез пароля. Без сброса. Без восстановления.\nКто первым её аттестует, тому она и принадлежит.\nУстройства можно заменить. Личность — нет.\nНажми ещё раз, если это всерьёз.".into(),
+        Msg::KnownHandleWarning => "На это имя уже кто-то отзывается.".into(),
+        Msg::PickAnotherName => "Это не я \u{2014} выбрать другое".into(),
+        Msg::ItsMineShowWords => "Это я \u{2014} добавить это устройство".into(),
+        Msg::LockedRetry => "Уже восстановлено с другого устройства? Коснись, чтобы повторить".into(),
+        // ---- ready screen ----
+        Msg::PeersOnline(n) => {
+            let word = match (n % 10, n % 100) { (1, 11) => "пиров", (1, _) => "пир", (2..=4, 12..=14) => "пиров", (2..=4, _) => "пира", _ => "пиров" };
+            format!("{} {word}", fmt_num(n as u32)).into()
+        }
+        Msg::NetworkBack => "\u{2039} Сеть".into(),
+        Msg::AvatarDropHint => "перетащи файл, чтобы сменить аватар".into(),
+        Msg::SearchPlaceholder => "поиск | добавить".into(),
+        Msg::StorageDegraded => "хранилище деградировало".into(),
+        Msg::StorageRecovered => "хранилище восстановилось".into(),
+        Msg::StorageDataLost => "хранилище потеряло данные".into(),
+        Msg::AutoAttestBadge => "авто-аттестация при перезагрузке".into(),
+        Msg::ClockOff { pretty, ahead } => format!("часы сбились — {pretty} {}", if ahead { "вперёд" } else { "назад" }).into(),
+        Msg::HoursShort(n) => format!("{}ч", fmt_num(n as u32)).into(),
+        Msg::MinutesShort(n) => format!("{}м", fmt_num(n as u32)).into(),
+        Msg::SecondsShort(n) => format!("{}с", fmt_num(n as u32)).into(),
+        // ---- conversation ----
+        Msg::NewMessages(n) => {
+            let word = match (n % 10, n % 100) { (1, 11) => "новых сообщений", (1, _) => "новое сообщение", (2..=4, 12..=14) => "новых сообщений", (2..=4, _) => "новых сообщения", _ => "новых сообщений" };
+            format!("{} {word}", fmt_num(n as u32)).into()
+        }
+        Msg::MessagesDelivered(n) => {
+            let word = match (n % 10, n % 100) { (1, 11) => "твоих сообщений", (1, _) => "твоё сообщение", (2..=4, 12..=14) => "твоих сообщений", (2..=4, _) => "твоих сообщения", _ => "твоих сообщений" };
+            format!("доставлено {} {word}", fmt_num(n as u32)).into()
+        }
+        Msg::ChatDaysSpan(n) => {
+            let word = match (n % 10, n % 100) { (1, 11) => "дней", (1, _) => "день", (2..=4, 12..=14) => "дней", (2..=4, _) => "дня", _ => "дней" };
+            format!("переписка идёт {} {word}", fmt_num(n as u32)).into()
+        }
+        // «во флоте» без притяжательного: род владельца неизвестен, а «их флот» читалось бы как множественное число.
+        Msg::ContactFleetPinned(n) => {
+            let word = match (n % 10, n % 100) { (1, 11) => "устройств", (1, _) => "устройство", (2..=4, 12..=14) => "устройств", (2..=4, _) => "устройства", _ => "устройств" };
+            format!("личность закреплена с первой свёртки \u{00b7} {} {word} во флоте", fmt_num(n as u32)).into()
+        }
+        Msg::PublishedNameExplainer(name) => format!("всегда \u{201c}{name}\u{201d} \u{2014} выводится из личности, изменить нельзя").into(),
+        Msg::EditingSnippet(s) => format!("правка \u{00bb} {s}").into(),
+        Msg::ReactSnippet(s) => format!("реакция \u{00bb} {s}").into(),
+        // «владелец: {name}» в скобках: родительный падеж «во флот X-а» не налезает на подставленное имя.
+        Msg::EnrolAttempts { n, fleet_owner } => {
+            let who = match fleet_owner {
+                Some(name) => format!(" (владелец: {name})"),
+                None => String::new(),
+            };
+            let word = match (n % 10, n % 100) { (1, 11) => "попыток", (1, _) => "попытка", (2..=4, 12..=14) => "попыток", (2..=4, _) => "попытки", _ => "попыток" };
+            format!("\u{26a0} {} {word} записать твоё устройство во флот{who}", fmt_num(n as u32)).into()
+        }
+        Msg::MessageNotSaved => "сообщение НЕ сохранено — хранилище отказало в записи; оно останется тусклым, пока его не донесёт повторная отправка".into(),
+        Msg::AttachmentLimit => format!("предел вложения: {} МБ", fmt_num(25)).into(),
+        Msg::AgoDays(n) => format!("{}д назад", fmt_num(n)).into(),
+        Msg::AgoHours(n) => format!("{}ч назад", fmt_num(n)).into(),
+        Msg::AgoMinutes(n) => format!("{}м назад", fmt_num(n)).into(),
+        Msg::AgoSeconds(n) => format!("{}с назад", fmt_num(n)).into(),
+        Msg::AgoDms(g) => format!("{g} назад").into(),
+        Msg::DmsHead => "сколько прошло".into(),
+        Msg::DmsIntro => "Возраст показан одним числом: сколько раз секунда удвоилась с тех пор. Каждый шаг вверх — это вдвое дальше назад, поэтому строки ниже читаются как удвоения, и всё время укладывается в две дюжинные цифры.".into(),
+        Msg::DmsReading(b) => match b {
+            0 => "секунда",
+            1 => "пара секунд",
+            2 => "несколько секунд",
+            3 => "десять секунд",
+            4 => "полминуты",
+            5 => "минута",
+            6 => "две минуты",
+            7 => "четыре минуты",
+            8 => "восемь минут",
+            9 => "четверть часа",
+            10 => "полчаса",
+            11 => "час",
+            16 => "сутки",
+            21 => "месяц",
+            24 => "год",
+            _ => "",
+        }
+        .into(),
+        Msg::DmsSizeHead => "размер".into(),
+        Msg::DmsSizeIntro => "Размеры считают удвоения одного бита, поэтому байт — это три, а каждые десять шагов — это в тысячу раз больше. То же самое одно число, без единицы.".into(),
+        Msg::DmsSizeReading(b) => match b {
+            0 => "бит",
+            3 => "байт",
+            7 => "шестнадцать байт",
+            10 => "сто байт",
+            13 => "килобайт",
+            16 => "восемь килобайт",
+            19 => "шестьдесят четыре килобайта",
+            23 => "мегабайт",
+            26 => "восемь мегабайт",
+            29 => "шестьдесят четыре мегабайта",
+            33 => "гигабайт",
+            43 => "терабайт",
+            _ => "",
+        }
+        .into(),
+        Msg::DmsScaleHead => "одно число на любую величину".into(),
+        Msg::DmsScaleProse => "Размер, возраст, скорость или длина показаны одним числом: сколько раз удвоилась их единица, записано дюжинными цифрами. Один читается Zil, два Zila, четыре Zilor, восемь Ter. Слова-единицы нет, потому что сами цифры говорят, на какой они шкале.\nДеление пополам и удвоение — единственный шаг, который человек чувствует, а логарифм укладывает бит и терабайт, секунду и возраст вселенной в две цифры каждое. Одни и те же цифры значат одно и то же на любой шкале.\nФорм три, и вид числа решает, какая: счёт — это простые цифры (Tera в счёте — это четыре), величина — это вот такое масштабирование (Tera в размере — это шестнадцать бит), доля целого — это одна цифра дроби после точки (.Lun — это половина).".into(),
+        Msg::DmsUnitsHead => "что такое единица".into(),
+        Msg::DmsUnitsProse => "Каждая шкала считает удвоения одной физической вещи: бит для размера, секунда Орла для времени, один герц для канала, а для длины — одна длина волны линии водорода, путь света за одно колебание Орла, двадцать один сантиметр. Каждая выбрана так, чтобы интересный людям диапазон лежал выше неё. Ниже единицы минус считает деления пополам; там, где интересный диапазон оказался бы ниже единицы, величину переворачивают — потому канал и читается как частота.".into(),
+        Msg::DmsLengthHead => "длина".into(),
+        Msg::DmsLengthIntro => "Длины считают удвоения длины волны линии водорода — это путь света за одно колебание Орла. Минус считает деления пополам ниже неё.".into(),
+        Msg::DmsLengthReading(k) => match k {
+            -11 => "волос",
+            -6 => "муравей",
+            -4 => "монета",
+            -1 => "ладонь",
+            0 => "линия водорода",
+            2 => "белоголовый орлан",
+            3 => "человек",
+            7 => "синий кит",
+            8 => "футбольное поле",
+            12 => "километр, миля",
+            15 => "Эверест",
+            24 => "радиус Земли",
+            30 => "Луна, световая секунда",
+            39 => "Солнце",
+            55 => "световой год",
+            91 => "наблюдаемая вселенная",
+            _ => "",
+        }
+        .into(),
+        Msg::HexLengthNote => "Длины — это счёт миллиметров в шестнадцатеричной, линейно.".into(),
+        Msg::DmsNow => "сейчас".into(),
+        Msg::DmsEmpty => "пусто".into(),
+        Msg::ConversationTitle => "Разговор".into(),
+        Msg::BackToContacts => "\u{2039} Контакты".into(),
+        Msg::NameReclaimed => "имя заново занял кто-то другой \u{2014} это НЕ тот человек".into(),
+        Msg::IdentityEndedFrozen => "личность завершена \u{2014} разговор заморожен".into(),
+        Msg::NotesToSelf => "заметки себе".into(),
+        Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
+        Msg::ClutchSecured => "защищено".into(),
+        Msg::ClutchStep(n) => match n {
+            0 => "делаем ключи\nэллиптические кривые, проверенные временем".into(),
+            1 => "делаем ключи\nрешётки, сделанные для квантовой эпохи".into(),
+            2 => "делаем ключи\nна кодах, шустрые".into(),
+            3 => "делаем ключи\nна кодах, тяжеловес (медленные)".into(),
+            4 => "отправляем наши открытые ключи".into(),
+            5 => "ждём их открытые ключи".into(),
+            6 => format!("запечатываем {} секретов на их ключи", fmt_num(12)).into(),
+            7 => format!("ждём их {} запечатанных секретов", fmt_num(12)).into(),
+            8 => format!("сводим все {} в один", fmt_num(12)).into(),
+            9 => "наше доказательство отправлено\nждём их".into(),
+            10 => "сверяем, что оба доказательства совпали".into(),
+            _ => "проверяем защищённый канал".into(),
+        },
+        // ---- compact call bar ----
+        Msg::CallBarCalling(name) => format!("\u{260E} идёт волна: {name}").into(),
+        Msg::CallBarInCall(name) => format!("\u{260E} в волне \u{2014} {name}").into(),
+        Msg::CallBarKeepRecording => "\u{260E} сохранить эту запись?".into(),
+        Msg::NoDirectPathSuffix => " \u{26A0} нет прямого пути".into(),
+        // ---- message details strip + action pills ----
+        Msg::SentDetail { age, state } => format!("отправлено \u{00b7} {age} \u{00b7} {state}").into(),
+        Msg::ReceivedDetail(age) => format!("получено \u{00b7} {age}").into(),
+        Msg::DeliveryDelivered => "доставлено".into(),
+        Msg::DeliveryReplicated => "реплицировано".into(),
+        Msg::DeliverySending => "отправляется".into(),
+        Msg::RecoveredSuffix => " \u{00b7} восстановлено".into(),
+        Msg::EditedSuffix => " \u{00b7} изменено".into(),
+        Msg::BlobDeliveredSuffix => " \u{00b7} blob доставлен".into(),
+        Msg::BlobSendingSuffix => " \u{00b7} blob отправляется".into(),
+        Msg::BlobNotHereSuffix => " \u{00b7} blob ещё не здесь".into(),
+        Msg::ReactTheySuffix(g) => format!(" \u{00b7} от них {g}").into(),
+        Msg::ReactYouSuffix(g) => format!(" \u{00b7} от тебя {g}").into(),
+        Msg::ReplyPill => "ответить".into(),
+        Msg::EditPill => "изменить".into(),
+        Msg::LinkConsentTitle => "Открыть эту ссылку?".into(),
+        Msg::OpenLinkPill => "Открыть".into(),
+        Msg::LinkNonAsciiWarn => "\u{26A0} в адресе есть символы вне ASCII".into(),
+        Msg::CopyPill => "копировать".into(),
+        Msg::CopiedPill => "скопировано".into(),
+        Msg::ResendPill => "отправить снова".into(),
+        Msg::FetchPill => "забрать".into(),
+        Msg::SavePill => "сохранить".into(),
+        Msg::ExportPill => "экспорт".into(),
+        Msg::DiscardPill => "отбросить".into(),
+        Msg::AttachStats { name, kind, size, dims } => {
+            let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
+            let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
+            format!("{name_part}{kind} \u{00B7} {size}{dims_part}").into()
+        }
+        Msg::AttachKindName(k) => match k {
+            crate::types::AttachKind::Unknown => "файл",
+            crate::types::AttachKind::Image => "картинка",
+            crate::types::AttachKind::RawImage => "сырая картинка",
+            crate::types::AttachKind::Video => "видео",
+            crate::types::AttachKind::Audio => "аудио",
+            crate::types::AttachKind::Text => "текст",
+            crate::types::AttachKind::Code => "код",
+            crate::types::AttachKind::Archive => "архив",
+            crate::types::AttachKind::Program => "программа",
+            crate::types::AttachKind::Document => "документ",
+        }
+        .into(),
+        Msg::PlayPill => "\u{25B6}\u{FE0E} слушать".into(),
+        Msg::DeletePill => "удалить".into(),
+        Msg::DeletingPill => "удаляем\u{2026}".into(),
+        Msg::StopPill => "стоп".into(),
+        // ---- contact panel (About / Stats / Manage) ----
+        Msg::OwnNotesConversation => "твой собственный разговор с заметками себе".into(),
+        Msg::NameNotShared => "имя: пока не раскрыто".into(),
+        Msg::NameShared(name) => format!("имя: \u{201c}{name}\u{201d} (опубликованное имя этого человека)").into(),
+        Msg::AvatarNotShared => "аватар: пока не раскрыт".into(),
+        Msg::AvatarShared => "аватар: раскрыт тебе".into(),
+        Msg::SelfNoCeremony => "ни церемонии, ни цепочки \u{2014} строки едут на ключе твоего флота".into(),
+        Msg::ReclaimedStranger => "\u{26a0} это имя заново занял другой человек \u{2014} на экране незнакомец".into(),
+        Msg::IdentityEndedByOwner => "личность завершена её владельцем".into(),
+        Msg::IdentityNotFolded => "личность ещё не свёрнута (первый контакт ещё улаживается)".into(),
+        Msg::WhatTheyShare => "Чем с тобой делятся".into(),
+        Msg::HistoryComplete => "история: полная на этом устройстве".into(),
+        Msg::HistorySyncing => "история: ещё синхронизируется".into(),
+        Msg::HistoryIdle => "история: простаивает (в этой сессии обхода не было)".into(),
+        Msg::SelfNoChain => "цепочки нет \u{2014} доставлено по определению".into(),
+        Msg::ChainWoven => "цепочка сплетена \u{2014} защита из конца в конец".into(),
+        Msg::AlwaysReachableSelf => "всегда на связи (это ты)".into(),
+        Msg::MessagesSentReceived { total, sent, recv } => {
+            let word = match (total % 10, total % 100) { (1, 11) => "сообщений", (1, _) => "сообщение", (2..=4, 12..=14) => "сообщений", (2..=4, _) => "сообщения", _ => "сообщений" };
+            format!("{} {word} \u{00b7} отправлено {} \u{00b7} получено {}", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into()
+        }
+        Msg::RowsShouldMatch => "эти строки должны совпадать на каждом твоём устройстве".into(),
+        Msg::OwnNotesCantBoot => "свои собственные заметки не выгонишь".into(),
+        Msg::SiblingSignsItselfOut => "устройство флота уходит по собственному запросу \u{2014} см. Настройки \u{2192} Флот".into(),
+        Msg::BootPill { armed } => if armed { "Коснись ещё раз \u{2014} выгнать" } else { "Выгнать" }.into(),
+        Msg::BootRemovesEverywhere => "убирает их со всех устройств ТВОЕГО флота".into(),
+        Msg::BootOstracism => "им не сообщают \u{2014} их записи остаются их (остракизм, а не стирание)".into(),
+        // ---- add device / pairing ----
+        Msg::AddDeviceTitle => "Добавить устройство".into(),
+        Msg::AddDeviceConfirmOnce => "Подтверждай только тогда, когда новое устройство покажет, что оно внутри".into(),
+        Msg::TapNearby => "или коснись ближнего устройства, которое просится во флот:".into(),
+        Msg::YesGreenFinish => "Да, оно зелёное \u{2014} закончить".into(),
+        Msg::TapOrbCancel => "коснись шара, чтобы отменить".into(),
+        Msg::AddDeviceNearby(name) => format!("{name}   \u{00b7} рядом").into(),
+        Msg::TypeWords => "Введи слова, показанные на новом устройстве".into(),
+        Msg::InvalidWord(w) => format!("'{w}' \u{2014} не одно из слов").into(),
+        Msg::WaitingForDevice => "Ждём новое устройство\u{2026} оно должно показывать свои слова".into(),
+        Msg::DevicesAskingToJoin(n) => {
+            let (noun, verb) = match (n % 10, n % 100) { (1, 11) => ("устройств", "просятся"), (1, _) => ("устройство", "просится"), (2..=4, 12..=14) => ("устройств", "просятся"), (2..=4, _) => ("устройства", "просятся"), _ => ("устройств", "просятся") };
+            format!("{} {noun} {verb} во флот \u{2014} введи слова того, что у тебя в руках", fmt_num(n as u32)).into()
+        }
+        Msg::NoMatchingDevice(bad) => format!("'{bad}' не совпадает ни с одним устройством, которое просится во флот").into(),
+        Msg::MatchingDevice(name) => format!("сверяем {name}\u{2026}").into(),
+        Msg::MatchingMultiple(n) => {
+            let word = match (n % 10, n % 100) { (1, 11) => "устройств", (1, _) => "устройство", (2..=4, 12..=14) => "устройств", (2..=4, _) => "устройства", _ => "устройств" };
+            format!("сверяем\u{2026} ({} {word})", fmt_num(n as u32)).into()
+        }
+        Msg::WordsMatched => "Слова совпали \u{2014} добавляем\u{2026}".into(),
+        Msg::Finishing => "Завершаем\u{2026}".into(),
+        Msg::Preparing => "Готовим\u{2026}".into(),
+        Msg::NoFleetKey => "У этого устройства пока нет ключа флота \u{2014} сделай это с другого своего устройства.".into(),
+        Msg::NoDeviceKey => "Ключ этого устройства пока не готов \u{2014} попробуй через мгновение.".into(),
+        // Слово «устройство» стоит перед подставленным именем, чтобы причастие согласовалось с ним, а не с именем неизвестного рода.
+        Msg::BoundDeviceConfirm(name) => format!("Устройство {name} привязано — оно позеленело?").into(),
+        Msg::AddingDevice(name) => format!("Добавляем {name}\u{2026}").into(),
+        Msg::DeviceAdded => "Устройство добавлено \u{221a}".into(),
+        Msg::AddDeviceError(e) => format!("Ошибка: {e}").into(),
+        Msg::AddFromSignedIn => "Добавь это устройство с того, которое уже твоё:".into(),
+        Msg::JoinFailed(e) => format!("Вступить не удалось: {e}").into(),
+        Msg::RequestFailed(e) => format!("запрос не удался: {e}").into(),
+        // ---- fleet page ----
+        Msg::FleetTitle => "Твои устройства".into(),
+        Msg::FleetTapToCopy => "Коснись имени, чтобы скопировать его ключ.".into(),
+        Msg::ThisDevice => "это устройство".into(),
+        Msg::RetiredStillYours => "на покое \u{2014} всё ещё твоё".into(),
+        Msg::RevokedBadge => "отозвано".into(),
+        Msg::TierLan => "LAN".into(),
+        Msg::TierWan => "WAN".into(),
+        Msg::TierDirect => "Прямое".into(),
+        Msg::TierRelay => "Релей".into(),
+        Msg::TierLegend => "зелёный LAN \u{00b7} синий Прямое \u{00b7} янтарный WAN \u{00b7} серый Релей".into(),
+        Msg::Online => "в сети".into(),
+        Msg::Offline => "не в сети".into(),
+        Msg::OnlineVia(link) => format!("в сети \u{00b7} {link}").into(),
+        Msg::NotEggedYet(status) => format!("{status} \u{00b7} защищённый канал ожидается").into(),
+        Msg::ADevice => "устройство".into(),
+        Msg::FoundNearby(h) => format!("рядом найдено: {h}").into(),
+        Msg::DepartureApproval(name) => format!("Устройство {name} просит уйти из твоего флота — одобри это в Настройках → Флот.").into(),
+        Msg::FleetSignedOut(name) => format!("Устройство {name} покинуло флот.").into(),
+        Msg::SignOutPublishFailed => "Не удалось опубликовать уход — проверь связь и попробуй снова.".into(),
+        Msg::LastDeviceCantSignOut => "Это последнее устройство твоей личности — ему нельзя уйти. Сначала добавь другое устройство, а потом отправь это на покой.".into(),
+        Msg::NoIdentityToRemove => "Нет аттестованной личности, которую можно убрать.".into(),
+        Msg::SignOutRequested => "Уход запрошен — одобри его с другого своего устройства (Настройки → Флот).".into(),
+        Msg::SignOutBuildFailed => "Не удалось собрать запрос на уход — попробуй снова.".into(),
+        Msg::DeviceReleased(name) => format!("Устройство {name} освобождено — теперь оно может войти в новую личность.").into(),
+        Msg::ReleaseFailed => "Не удалось освободить — проверь связь и попробуй снова.".into(),
+        Msg::DeviceReinstatedToast(name) => format!("Устройство {name} восстановлено \u{2014} оно вернётся во флот при следующей аттестации.").into(),
+        Msg::RevokedNotice(name) => format!("Устройство {name} отозвано \u{2014} оно больше не может действовать в этом флоте.").into(),
+        // «восстановление устройства {name}» — родительный падеж уходит на слово «устройства», подставленное имя остаётся приложением.
+        Msg::ConfirmReinstate(name) => format!("Введи свой handle, чтобы подтвердить восстановление устройства {name}.").into(),
+        Msg::ConfirmRevoke { name, last_unlocker } => {
+            let warn = if last_unlocker { " ВНИМАНИЕ: после этого устройство у тебя в руках останется ЕДИНСТВЕННЫМ, кто может его восстановить." } else { "" };
+            format!("Введи свой handle, чтобы подтвердить отзыв устройства {name}.{warn}").into()
+        }
+        Msg::CopiedName(name) => format!("Скопировано: {name}").into(),
+        Msg::ReleasePill { armed } => if armed { "Освободить \u{2014} точно?" } else { "Освободить" }.into(),
+        Msg::BridgePill => "Мост".into(),
+        Msg::ApproveSignOutPill { armed } => if armed { "Одобрить уход \u{2014} точно?" } else { "Одобрить уход" }.into(),
+        Msg::ReinstatePill { armed } => if armed { "Восстановить \u{2014} точно?" } else { "Восстановить" }.into(),
+        Msg::RevokePill { armed } => if armed { "Отозвать \u{2014} точно?" } else { "Отозвать" }.into(),
+        Msg::SingleCopyWarning => "Твоя история сообщений живёт только на этом устройстве \u{2014} добавь устройство, чтобы её реплицировать.".into(),
+        Msg::DeviceSignsItselfOut => "Попросить об уходе может только само устройство \u{2014} а его железо остаётся твоим, пока ты его не освободишь.".into(),
+        Msg::AddDevicePill => "Добавить устройство".into(),
+        Msg::RenamePill => "Переименовать".into(),
+        // ---- security page ----
+        Msg::SecurityLock => "Заблокировать".into(),
+        Msg::SecurityKill => "Убить".into(),
+        Msg::SecurityKillHint => "Сбрасывает твою личность и закрывает photon сию секунду, одним касанием, без подтверждения. Ничего не удаляется: запусти photon снова и введи свой handle, чтобы вернуться.".into(),
+        Msg::DepartWordsShow(w) => format!("Слова одобрения: {w}").into(),
+        Msg::DepartWaitingLine => "Ждём одобрения с другого своего устройства (Настройки \u{2192} Флот). Оно спросит слова, что выше.".into(),
+        Msg::DepartIntentNewOwner => "хочет уйти \u{2014} к НОВОМУ ВЛАДЕЛЬЦУ (одобрение заодно освобождает железо)".into(),
+        Msg::DepartIntentDesk => "хочет уйти \u{2014} железо остаётся у тебя (привязка остаётся твоей)".into(),
+        Msg::DepartWordsPrompt => "Введи слова, показанные на уходящем устройстве:".into(),
+        Msg::DepartWordsMismatch => "Эти слова не совпадают с экраном уходящего устройства.".into(),
+        Msg::DepartCompleteNewOwner(n) => format!("Устройство {n} отвязано, железо освобождено \u{2014} готово для нового владельца.").into(),
+        Msg::DepartReleasePending(n) => format!("Устройство {n} отвязано, но освобождение не опубликовалось \u{2014} нажми Освободить в его строке на покое, чтобы повторить.").into(),
+        Msg::DeviceBrandedHint => "Это железо всё ещё привязано к прежнему владельцу. Он может освободить его со своей страницы Флота (Освободить) или выйдя с него как \u{201C}новый владелец\u{201D}.".into(),
+        Msg::SecurityRevoke { armed } => if armed { "Отозвать \u{2014} точно?" } else { "Отозвать" }.into(),
+        Msg::SecurityRevokeHint => "Не даёт этому устройству действовать как ты: твой флот его отвергает, ключ флота проворачивается мимо него, и оно гаснет \u{2014} даже стирание и повторная аттестация его не вернут. Здесь ничего не удаляется, и оно остаётся в цепочке твоего флота. Восстанови его с другого своего устройства. Это для ящика стола \u{2014} или когда железо уже не у тебя в руках.".into(),
+        Msg::RevokeNeedsAnotherDevice => "Сначала добавь другое устройство \u{2014} восстановить это может только другое твоё устройство.".into(),
+        Msg::SecurityRevokeAloneHint => "Нужно другое твоё устройство. Отзыв отменяют с ДРУГОГО устройства \u{2014} отозванное никогда не восстановит само себя \u{2014} так что во флоте из одного это оборвало бы твою личность. Добавь устройство, и кнопка оживёт.".into(),
+        Msg::SecurityReleaseAloneHint => "Нужно другое твоё устройство. Чтобы уйти из флота, нужно одобрение второго устройства, а твоя личность должна где-то жить \u{2014} поэтому последнее устройство не может выйти само. Возьми Стереть, чтобы очистить это устройство, или сначала добавь ещё одно, чтобы передать это.".into(),
+        Msg::SecurityShred { armed } => if armed { "Стереть — точно?" } else { "Стереть" }.into(),
+        Msg::SecurityRemoveShred { armed } => if armed { "Освободить — точно?" } else { "Освободить" }.into(),
+        Msg::SecurityStatusLine => "Защита: сильная   \u{00b7}   Восстановление: не настроено".into(),
+        Msg::LoadOnStartup => "Запускать при входе".into(),
+        Msg::LoadOnStartupExplainer => "Запускает photon в фоне при входе в систему и держит его работающим после закрытия окна (он виден в списке автозапуска твоей ОС). Сочетай с авто-аттестацией ниже — и после перезагрузки всё снова на связи, а вводить ничего не надо.".into(),
+        Msg::LifelineCheckbox => "Пуленепробиваемый мост (безголовая линия жизни)".into(),
+        Msg::LifelineExplainer => "Держит безголовый photon запущенным на этой машине всё время: твои сообщения продолжают приходить и реплицироваться сюда, история по-прежнему раздаётся твоему флоту и друзьям, а мост остаётся доступен — постоянный запас твоей личности на случай, если другое устройство потеряется. Если приложение или весь сеанс рабочего стола умрёт, оно вернётся за секунды и аттестуется заново, а вводить ничего не надо (как в режиме без присмотра). Окно, которое ты откроешь, всегда бесшовно перехватывает управление.".into(),
+        Msg::LifelineChangeFailed(e) => format!("Не удалось изменить службу линии жизни: {e}").into(),
+        Msg::UnattendedTitle => "\u{26A0} Авто-аттестация при перезагрузке (без присмотра)".into(),
+        Msg::UnattendedCheckbox => "Авто-аттестация при перезагрузке (без присмотра)".into(),
+        Msg::UnattendedArmExplainer => "Введи свой handle ещё раз, чтобы ВЗВЕСТИ. После этого коробка становится тобой при каждой перезагрузке, и вводить ничего не надо.".into(),
+        Msg::UnattendedDisarmExplainer => "Введи свой handle ещё раз, чтобы снять:".into(),
+        Msg::UnattendedMismatch => "Handle не совпал — попробуй снова.".into(),
+        Msg::UnattendedWarning => "После этого перезагрузка возобновляет твою личность, и вводить ничего не надо \u{2014} кто включит эту коробку, тот и ты. Для машин, которые ты держишь под физическим контролем.".into(),
+        Msg::UnattendedArmedToast => "Авто-аттестация без присмотра ВЗВЕДЕНА — эта коробка перезагружается как ты".into(),
+        Msg::UnattendedDisarmedToast => "Авто-аттестация без присмотра снята".into(),
+        Msg::CouldntChangeLoginItem(e) => format!("Не удалось изменить элемент автозапуска: {e}").into(),
+        Msg::Custodians => "Хранители".into(),
+        Msg::CustodianCheckbox => "Быть хранителем для других".into(),
+        Msg::CustodianExplainer => "Одна галочка намеренно: хранители никогда не узнают, чьё восстановление они держат, а владельцы — кто из друзей держит их. Нельзя выдавить имя, которого тебе никогда не давали, а чтобы сговориться, надо сначала угадать с кем.".into(),
+        Msg::SecurityIntro => "Четыре действия, по порядку того, сколько они разрушают. Цвет — это предупреждение.".into(),
+        Msg::SecurityLockHint => "Блокирует это устройство, пока ты не введёшь свой handle заново. Полностью обратимо — ничего не удаляется, для твоего флота ничего не меняется.".into(),
+        Msg::SecurityShredHint => "Сносит сейф и снимает аттестацию с этого устройства — здесь это необратимо; твоя личность и история живут дальше на других твоих устройствах. Оно ОСТАЁТСЯ в твоём флоте и остаётся твоим: введи свой handle, чтобы начать на нём с пустого места. А чтобы передать железо дальше, возьми Освободить.".into(),
+        Msg::SecurityRemoveShredHint => "Выводит из флота, стирает и убирает это устройство из твоего флота, освобождая железо для того, кому оно достанется дальше \u{2014} он сможет сделать его своим. Другое твоё устройство одобряет, и это одобрение завершает передачу. Правильный способ продать или подарить устройство.".into(),
+        // ---- appearance ----
+        Msg::Theme => "Тема".into(),
+        Msg::DarkChrome => "Тёмная оправа".into(),
+        Msg::LightChrome => "Светлая оправа".into(),
+        Msg::PartyColours => "Цвета участников (временно → перцептивная L≈50%)".into(),
+        Msg::ZoomTextSize => "Масштаб / размер текста".into(),
+        Msg::ColourCalibration => "Калибровка цвета (панель Android)".into(),
+        // ---- notifications ----
+        Msg::NotificationsTitle => "Уведомления".into(),
+        Msg::ChimeNewMessage => "Звук при новом сообщении".into(),
+        Msg::VibrateNewMessage => "Вибрация при новом сообщении".into(),
+        Msg::RingIncomingCall => "Звонок при входящей волне".into(),
+        Msg::HoldWavesOnDevice => "Держать каждую запись волны на этом устройстве".into(),
+        Msg::VibrateIncomingCall => "Вибрация при входящей волне".into(),
+        Msg::PresenceCheckbox => "Показывать моё присутствие контактам".into(),
+        Msg::PerContactOverride => "Отдельная настройка для контакта живёт в его разговоре.".into(),
+        // ---- updates ----
+        Msg::UpdatesTitle => "Обновления".into(),
+        Msg::WhatsNew(v) => format!("Что нового в {v}").into(),
+        Msg::UpcomingChanges => "Что будет в следующем выпуске".into(),
+        Msg::DevChannelHint => "Хочешь тестировать новое в бете — этот канал для тебя!".into(),
+        Msg::PhotonVersion(v) => format!("Photon {v}").into(),
+        Msg::AutoUpdateCheck => "Проверять обновления автоматически".into(),
+        Msg::AutoUpdateInstall => "Устанавливать обновления автоматически".into(),
+        Msg::UpdateChecking(kind) => format!("Проверяем {kind}\u{2026}").into(),
+        Msg::UpdateUnavailable(kind) => format!("{kind} недоступен").into(),
+        Msg::UpdateNoBuild(kind) => format!("Сборки {kind} для этого устройства нет").into(),
+        Msg::UpdateAlreadyOn { kind, ver } => format!("Уже на {kind} {ver}").into(),
+        Msg::UpdateGet { kind, ver } => format!("Взять {kind} {ver}").into(),
+        Msg::Updating => "Обновляем\u{2026}".into(),
+        Msg::Downloading => "Скачиваем".into(),
+        Msg::DownloadingSize(size) => format!("Скачиваем {size}\u{2026}").into(),
+        Msg::UpdateAvailableToast(v) => format!("Photon {v} доступен \u{2014} Настройки \u{2192} Обновления").into(),
+        Msg::Installing { channel, ver } => format!("Устанавливаем {channel} {ver}\u{2026}").into(),
+        Msg::UpdatedRestarting => "Обновлено \u{221a} перезапуск\u{2026}".into(),
+        Msg::DownloadedConfirm => "Скачано \u{221a} подтверди запрос установки".into(),
+        Msg::UpdateFailed(e) => format!("Обновление не удалось (ничего не изменилось): {e}").into(),
+        // ---- diagnostics ----
+        Msg::HardLogs => format!("Жёсткий журнал — это устройство, {} ч (каждая строка пишется на диск)", fmt_num(24)).into(),
+        Msg::LogCleared => "Журнал очищен".into(),
+        Msg::LogSize(s) => format!("Журнал: {s}").into(),
+        Msg::LogEmpty => "Журнал пуст".into(),
+        Msg::LogSent => "Журнал отправлен \u{221a}".into(),
+        Msg::SendFailed(e) => format!("Отправка не удалась: {e}").into(),
+        Msg::NoLogToSend => "Отправлять пока нечего".into(),
+        Msg::SendingLog(size) => format!("Отправляем журнал ({size})\u{2026}").into(),
+        Msg::CantSendNotSignedIn => "Нельзя отправить: вход не выполнен".into(),
+        Msg::DiagRecordInspect { ts, lines } => {
+            let word = match (lines % 10, lines % 100) { (1, 11) => "строк", (1, _) => "строка", (2..=4, 12..=14) => "строк", (2..=4, _) => "строки", _ => "строк" };
+            format!("Запись VSF \u{00b7} {ts} \u{00b7} {} {word} \u{00b7} коснись Назад, чтобы вернуться к списку", fmt_num(lines as u32)).into()
+        }
+        Msg::DiagDecoding => "Разбираем журнал\u{2026}".into(),
+        Msg::DiagMeta { count, size } => {
+            let word = match (count % 10, count % 100) { (1, 11) => "записей", (1, _) => "запись", (2..=4, 12..=14) => "записей", (2..=4, _) => "записи", _ => "записей" };
+            format!("{} {word} \u{00b7} {size} \u{00b7} самое новое внизу \u{00b7} коснись строки, чтобы увидеть её VSF", fmt_num(count as u32)).into()
+        }
+        Msg::DiagTrimmed => " \u{00b7} самое старое обрезано".into(),
+        Msg::VaultIntro => "Запечатанный сейф этого устройства \u{2014} каждое сообщение, волна, ключ и настройка живут здесь, зашифрованными, и больше нигде на этом устройстве. Числа — собственные, от движка хранения.".into(),
+        Msg::VaultCapacity(s) => format!("ёмкость \u{00b7} {s}").into(),
+        Msg::VaultOdometer(s) => format!("записано за всю жизнь \u{00b7} {s}").into(),
+        Msg::VaultOccupied { now, live, dead } => format!("занято \u{00b7} {now} \u{2014} {live} живых, {dead} к освобождению").into(),
+        Msg::VaultLiveEntries(n) => format!("живых записей \u{00b7} {n}").into(),
+        Msg::VaultCommits(n) => format!("пережито коммитов \u{00b7} {n}").into(),
+        Msg::VaultHealthOk => "здоровье \u{00b7} в порядке \u{2014} каждый блок проверен при открытии".into(),
+        Msg::VaultHealed(n) => format!("здоровье \u{00b7} при открытии восстановлено потерянных значений: {n} \u{2014} их донесло зеркало").into(),
+        Msg::VaultDegraded => "здоровье \u{00b7} ДЕГРАДИРОВАЛО \u{2014} запись не удалась; сейф повторяет попытку, и пока ничего не потеряно".into(),
+        Msg::VaultRefresh => "Обновить".into(),
+        Msg::VaultReading => "читаем сейф\u{2026}".into(),
+        Msg::DiagInfo { used, cap, pct } => format!("Журнал на устройстве \u{00b7} {used} из {cap} ({}%) \u{00b7} сам истекает через {}\u{2013}{} ч", fmt_num(pct as u32), fmt_num(24), fmt_num(48)).into(),
+        Msg::LogTitle => "Журнал".into(),
+        Msg::DiagBack => "Назад".into(),
+        Msg::DiagClear => "Очистить".into(),
+        Msg::DiagSnapshot => "Снимок".into(),
+        Msg::DiagSubmit => "Отправить".into(),
+        Msg::DiagView => "Смотреть".into(),
+        Msg::OptionalNote => "Необязательная заметка".into(),
+        // ---- you / profile ----
+        Msg::YouAddCustomField => "Добавить своё поле".into(),
+        Msg::YouIdentity => "Личность".into(),
+        Msg::YouNote => "Твой handle И ЕСТЬ твоя личность — заполнять всё это не обязательно.".into(),
+        Msg::ChangeAvatar => "Сменить аватар\u{2026}".into(),
+        Msg::DragDropAvatar => "Перетащи картинку на окно Photon".into(),
+        Msg::ProfileSaved => "Профиль сохранён \u{221a}".into(),
+        Msg::NoChanges => "Без изменений".into(),
+        Msg::FieldExists => "Такое поле уже есть".into(),
+        Msg::FieldAdded(label) => format!("Добавлено \u{201c}{label}\u{201d}").into(),
+        // Заголовок раздела во множественном числе, чтобы не столкнуться с полем «Имя» внутри него.
+        Msg::ProfileTierName => "Имена".into(),
+        Msg::ProfileTierReach => "Связь".into(),
+        Msg::ProfileTierPlace => "Место".into(),
+        Msg::ProfileTierPersonal => "Личное".into(),
+        Msg::ProfileTierWork => "Работа".into(),
+        Msg::ProfileTierSensitive => "Чувствительное".into(),
+        Msg::YouShareHint => "галочка = видно всем друзьям\nдля отдельного друга измени на его странице".into(),
+        Msg::ProfileTierCustom => "Своё".into(),
+        Msg::ProfileNamePreferred => "Предпочитаемое имя".into(),
+        Msg::ProfileNameFirst => "Имя".into(),
+        Msg::ProfileNameMiddle => "Отчество".into(),
+        Msg::ProfileNameLast => "Фамилия".into(),
+        Msg::ProfileNameNick => "Прозвище".into(),
+        Msg::ProfileNamePrefix => "Префикс".into(),
+        Msg::ProfileNameSuffix => "Суффикс".into(),
+        Msg::ProfileNameMaiden => "Девичья фамилия".into(),
+        Msg::ProfileNamePronunciation => "Произношение".into(),
+        Msg::ProfileReachEmail => "Почта".into(),
+        Msg::ProfileReachPhone => "Телефон".into(),
+        Msg::ProfileReachWeb => "Сайт".into(),
+        Msg::ProfileReachAltMsg => "Другие мессенджеры".into(),
+        Msg::ProfilePlaceAddr => "Адрес".into(),
+        Msg::ProfilePlaceGeo => "Широта / долгота".into(),
+        Msg::ProfilePlaceTz => "Часовой пояс".into(),
+        Msg::ProfilePersonalDob => "Дата рождения".into(),
+        Msg::ProfilePersonalPronouns => "Местоимения".into(),
+        Msg::ProfilePersonalGender => "Пол".into(),
+        Msg::ProfilePersonalLang => "Языки".into(),
+        Msg::ProfilePersonalBio => "Коротко о себе".into(),
+        Msg::ProfileWorkOrg => "Организация".into(),
+        Msg::ProfileWorkTitle => "Должность".into(),
+        Msg::ProfileSensitiveSsn => "Национальный ID / СНИЛС".into(),
+        Msg::ProfileSensitivePassport => "Паспорт".into(),
+        Msg::ProfileSensitiveLicense => "Водительские права".into(),
+        Msg::ProfileSensitiveTaxId => "Налоговый номер".into(),
+        Msg::ProfileSensitiveEmergency => "Экстренный контакт".into(),
+        // ---- attachment bubbles ----
+        Msg::RecordingPlaying { pct } => format!("\u{25A0} играет \u{00B7} {}%", fmt_num(pct)).into(),
+        Msg::RecordingBubble { size, fetching } => {
+            let tail = if fetching { " \u{2014} забираем\u{2026}" } else { "" };
+            format!("\u{25B6}\u{FE0E} запись \u{00B7} {size}{tail}").into()
+        }
+        // Оговорка «в шрифте пузыря вышли бы тофу» никогда не была правдой — ИЗМЕРЕНО 2026-09-08 (tests/glyph_fallback_probe.rs): блок глифов подменяется начертанием Oxanium `+glyphs` из любого основного семейства, так что размеры файлов рисуются дюжинно, как и всякое другое число.
+        Msg::FileBubble { glyph, name, size, held } => {
+            let state = if held { "" } else { " \u{2014} коснись для действий" };
+            let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
+            format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
+        }
+        Msg::OpenPill => "Открыть".into(),
+        Msg::ViewerBack => "\u{2039} Назад".into(),
+        Msg::ViewerOriginal => "Оригинал".into(),
+        Msg::ViewerDecoding => "декодируем\u{2026}".into(),
+        Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} потери {loss} из {} \u{00B7} буфер {buf}", fmt_num(256)).into(),
+        Msg::ClipPill => "клиппинг".into(),
+        // «EV» вместо «ступеней»: значение приходит строкой, числовую форму слова не выбрать, а для фото-аудитории EV и есть ступень экспозиции.
+        Msg::ExposureStops(s) => format!("{s} EV").into(),
+        Msg::ReaderTooLarge => "слишком велико, чтобы читать здесь \u{2014} вместо этого сохранено".into(),
+        Msg::AttachDropHint => "перетащи файл в разговор, чтобы отправить его".into(),
+        Msg::BaseLogNote => "Возраст, размеры и длины в этом основании используют Дюжинное Метрическое Масштабирование \u{2014} удвоения, записанные дюжинно: одна цифра на удвоение, логарифм, а не счёт, так что всё время помещается в две цифры.".into(),
+        Msg::DigitsHead => "цифры".into(),
+        Msg::WhyHex => "шестнадцатеричная".into(),
+        Msg::WhyHexProse => "Эта — для программистов. Каждое число — то, что держит машина: возраст — простой счёт секунд, размер — простой счёт бит, оба по основанию шестнадцать и без масштабирования: минута — 3C, час — E10, мегабайт — 800000.".into(),
+        Msg::HexTimeIntro => "Возраст — это счёт секунд в шестнадцатеричной, линейно.".into(),
+        Msg::HexTimeReading(s) => match s { 1 => "секунда", 60 => "минута", 3600 => "час", 86400 => "сутки", 2592000 => "месяц", 31536000 => "год", _ => "" }.into(),
+        Msg::HexSizeIntro => "Размеры — это счёт бит в шестнадцатеричной, линейно.".into(),
+        Msg::HexSizeReading(b) => match b { 8 => "байт", 8192 => "килобайт", 8388608 => "мегабайт", 8589934592 => "гигабайт", _ => "" }.into(),
+        Msg::LastWave { link, loss, buffer } => format!("последняя волна \u{2014} канал {link} \u{00B7} потери {loss} из {} \u{00B7} буфер {buffer}", fmt_num(256)).into(),
+        Msg::NoWaveYet => "в этой сессии волн ещё не было".into(),
+        Msg::InspectFailed(e) => format!("осмотр не удался: {e}").into(),
+        // ---- message persistence / attachments toasts ----
+        Msg::RewritingVault => "перезаписываем в сейф\u{2026}".into(),
+        Msg::ResentOnChain => "отправлено снова по цепочке".into(),
+        Msg::RepushedFleet => "протолкнуто снова через флот (на этом устройстве цепочки нет)".into(),
+        Msg::FetchingFromDevices => "забираем с твоих устройств\u{2026}".into(),
+        Msg::WaveKeeping => "сохраняем запись\u{2026}".into(),
+        Msg::WavePos { pos, total } => format!("{pos} / {total}").into(),
+        Msg::FilterAll => "всё".into(),
+        Msg::FilterWaves => "волны".into(),
+        Msg::FilterText => "текст".into(),
+        Msg::CantPlayNow => "сейчас не сыграть (идёт волна?)".into(),
+        Msg::SavedTo(dest) => format!("сохранено \u{2192} {dest}").into(),
+        Msg::SaveFailed => "сохранить не удалось — смотри журнал".into(),
+        // ---- secured-elsewhere status ----
+        Msg::DifferentIdentity => "не завершить\nна том конце отвечает другая личность; убери и добавь заново".into(),
+        Msg::AnotherDevice => "другое устройство".into(),
+        Msg::SecuredOn(name) => format!("защищено на устройстве {name}\nсинхронизируем на это\u{2026}").into(),
+        Msg::SecuringOn(name) => format!("защищаем на устройстве {name}\u{2026}").into(),
+        Msg::SecuredElsewhere => "защищено на другом твоём устройстве\nсинхронизируем на это\u{2026}".into(),
+        // ---- bridge ----
+        Msg::BridgeElided { bytes, output } => format!("\u{2026} ({} байт раньше на хосте)\n{output}", crate::fmt_num64(bytes as u64)).into(),
+        Msg::BridgeShellStartFailed(e) => format!("(оболочка моста не запустилась: {e})").into(),
+        Msg::BridgeNoOutput(code) => format!("(вывода нет, exit {})", fmt_i(code as i64)).into(),
+        Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
+        Msg::BridgeShellDied(e) => format!("(оболочка умерла: {e} — следующая команда начнёт новую сессию)").into(),
+        Msg::EarlierOutputDropped(output) => format!("\u{2026}(ранний вывод отброшен)\n{output}").into(),
+        Msg::DeviceNotSibling => "Это устройство ещё не привязано как родственное.".into(),
+        Msg::ShellExited => "оболочка завершилась".into(),
+        Msg::StopReceivedIdle => "…(получен Стоп — здесь ничего не выполняется; если команда была в полёте, этот хост перезапустился и её поток потерян)".into(),
+        Msg::NoResponseToStop => "\n…(ответа на Стоп нет — промпт освобождён; команда может всё ещё выполняться на хосте)".into(),
+        Msg::StreamLost => "\n…(поток потерян — хост ушёл в офлайн посреди команды; там она может всё ещё выполняться. Переоткрой мост, чтобы начать новую сессию.)".into(),
+        Msg::CommandUndeliverable => "…(команду не доставить — хост так её и не подтвердил; промпт освобождён)".into(),
+        // ---- about ----
+        Msg::AboutKillswitchReady => "killswitch готов".into(),
+        Msg::AboutPasslessHead => "passless".into(),
+        Msg::AboutPasslessLead => "узнай больше о passless на".into(),
+        Msg::AboutPasslessProse => "У Photon нет аккаунтов и нет паролей. Твой handle — это и есть ключ: ты вводишь его, чтобы доказать, кто ты, и он нигде не хранится и никуда не отправляется.\nСерверов сообщений нет. Сообщения идут между устройствами разговора и больше нигде не оседают, так что третьей копии чего бы то ни было просто не существует.\nИменно поэтому удаление настоящее. Когда оба человека соглашаются удалить разговор, он исчезает так же, как исчезает сказанное вслух. Удаление в одиночку видно другому, так что согласие и предательство всегда выглядят по-разному.".into(),
+        Msg::AboutConsentHead => "согласие".into(),
+        Msg::AboutConsentProse => "Всё в Photon — по согласию. Дружба начинается с двух подписей и двумя же заканчивается. Устройство входит в твой флот только тогда, когда одобрили обе стороны.\nНет изгнания, нет принудительного удаления и нет администратора. С твоей личностью не случается ничего без подписи твоего собственного ключа.".into(),
+        Msg::AboutTokenHead => "TOKEN".into(),
+        Msg::AboutTokenProse => "TOKEN — это восстановление через людей, которым ты доверяешь. Потеряй все устройства, и выбранные тобой хранители вернут тебя обратно.\nНи один хранитель никогда не узнает, чьё восстановление он держит, и ни один владелец не узнает, кто из друзей держит его. Имя, которого ни у кого нет, невозможно потребовать, а хранителям, которые не могут найти друг друга, сложиться вместе куда труднее.".into(),
+        Msg::AboutWaveBeamHead => "волна + луч".into(),
+        Msg::AboutWaveBeamProse => "Волна — это голос. Луч — это видео, он уже в пути. У Photon нет звонков, потому что это и не телефонные звонки: нет оператора, нет аккаунта, нет компании посередине — твой голос идёт между твоими устройствами и больше нигде не оседает.\nКаждая волна и каждый луч записываются честно: когда всё кончается, запись ТВОЯ — хранить, удалить или переслать, как любое сообщение или письмо; ты ведь доверяешь тому, кому шлёшь волну. Запись, которая никогда не касалась ни Google, ни Meta, — это совсем не то же самое, что запись, живущая на их серверах.".into(),
+        Msg::AboutVersion(v) => format!("Версия {v}").into(),
+        Msg::AboutClockOffset { ms, conf } => format!("Часы отклоняются от истины на {ms} (±{conf})").into(),
+        Msg::AboutClockUnknown => "Часы — ещё не проверены".into(),
+        Msg::AboutVersionSpelled { main, patch } => match patch {
+            Some(p) => format!("{main} точка {p}").into(),
+            None => main.to_string().into(),
+        },
+        Msg::AboutDozenalHead => "дюжинная".into(),
+        Msg::AboutRiddle => "никто не может установить, существует ли ключ,\nгде он живёт и не шутка ли всё это целиком\nответ из тебя не выбить,\nкогда честный ответ неразрешим\nидеальный хранитель — тот, кого невозможно заставить\nпонять, чего он хранитель\n~ Claude Fable Teror".into(),
+        Msg::WhyYouDozenal => "а ты почему дюжинная?".into(),
+        Msg::WhyYouDozenalProse => "Потому что единица счёта — это то, что держит посредник, и держат её в основании десять. Деньги сперва были дюжинными: двенадцать пенсов в шиллинге, двенадцать дюймов, двенадцать часов, дюжина яиц. Десятичными они стали по указу — франк во время Революции и Десятичный день в Британии, — потому что основание десять удобно бухгалтерской книге, а бухгалтерская книга удобна тому, кто сидит посередине.\nУ Photon середины нет. Ни корпорации, ни расчётной палаты, ни рейтинга. У фрактальной градиентной сети доверия центра быть не может, потому что сеть с центром — это хаб с лишними шагами. Поэтому счёт идёт в основании, удобном для дележа, где половины, трети и четверти выходят точными, а основание бухгалтерской книги остаётся книгам.\nОтслеживает Photon другое — репутацию, и прежде всего согласие. Репутация — это не баланс. Это оценка по конкретному утверждению, выставленная людьми, которые согласились её выставить: инженер связи может получить \u{1B}\u{1B} по вопросу о протоколе и \u{10} за суфле, а владелец ресторана — ровно наоборот. Шкала идёт от Zil до Stelor, точка основания и две цифры: .\u{1B}\u{1B} читается .StelorStelor, звёздно; .\u{10} читается .Zil, пока ничего. Никто тобой не владеет, ничья оценка никуда не переносится, и на каждую оценку согласились оба конца.\nСейчас выбраны арабские цифры. Ничего не ломается. Просто коробка остаётся красной, пока ты не вернёшься.".into(),
+        Msg::WhyDozenal => "почему дюжинная".into(),
+        Msg::WhyDozenalProse => "Photon по умолчанию считает дюжинно — в основании двенадцать. Двенадцать делится нацело на два, три, четыре и шесть, поэтому половины, трети и четверти выходят точными там, где десятичная дробь тянется бесконечно.\nДесять — это просто столько, сколько у нас пальцев. Переключатель выше меняет весь интерфейс между дюжинным и десятичным.".into(),
+        // ---- settings misc ----
+        Msg::LanguageLabel => "Язык".into(),
+        Msg::SettingsTitle => "Настройки".into(),
+        Msg::SettingsBack => "\u{2039} Назад".into(),
+        Msg::Dozenal => "Дюжинная".into(),
+        Msg::Hexadecimal => "Шестнадцатеричная".into(),
+        Msg::Arabic => "Арабская".into(),
+    }
+}

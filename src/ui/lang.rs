@@ -8,16 +8,44 @@
 use super::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
+pub mod de;
 pub mod en;
 pub mod es;
+pub mod fil;
+pub mod fr;
+pub mod hi;
+pub mod id;
+pub mod it;
 pub mod mi;
+pub mod pl;
+pub mod pt;
+pub mod ru;
+pub mod sw;
+// Turkish's language code IS `tr`, which collides by sight with `tr()`, the translate function below. Rust keeps modules and functions in separate namespaces so both resolve unambiguously — `tr::text(msg)` is the module, `tr(msg)` is the call — and the file stays named for its code like every other language here.
+pub mod tr;
+pub mod uk;
+pub mod vi;
 
 /// The UI language — a device-local typed setting (display.lang, x-string code), seeded once from the OS locale at first launch, the user's after that.
+/// Variants are declared in ADDITION ORDER, and `index()` follows it: the index is the session atomic's storage form, so a shipped index never moves. Picker order is `ALL`, which is free to re-sort (see the note there).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Lang {
     En,
     Es,
     Mi,
+    Pt,
+    Fr,
+    Id,
+    De,
+    Sw,
+    Vi,
+    Tr,
+    Ru,
+    Hi,
+    Uk,
+    It,
+    Pl,
+    Fil,
 }
 
 impl Lang {
@@ -26,39 +54,127 @@ impl Lang {
             Lang::En => "en",
             Lang::Es => "es",
             Lang::Mi => "mi",
+            Lang::Pt => "pt",
+            Lang::Fr => "fr",
+            Lang::Id => "id",
+            Lang::De => "de",
+            Lang::Sw => "sw",
+            Lang::Vi => "vi",
+            Lang::Tr => "tr",
+            Lang::Ru => "ru",
+            Lang::Hi => "hi",
+            Lang::Uk => "uk",
+            Lang::It => "it",
+            Lang::Pl => "pl",
+            Lang::Fil => "fil",
         }
     }
+    /// The ONE seam the OS-locale seeding reads (platform::locale::os_language), so a language is discoverable from the host the moment its code lands here.
     pub fn from_code(c: &str) -> Option<Lang> {
         match c {
             "en" => Some(Lang::En),
             "es" => Some(Lang::Es),
             "mi" => Some(Lang::Mi),
+            "pt" => Some(Lang::Pt),
+            "fr" => Some(Lang::Fr),
+            "id" => Some(Lang::Id),
+            "de" => Some(Lang::De),
+            "sw" => Some(Lang::Sw),
+            "vi" => Some(Lang::Vi),
+            "tr" => Some(Lang::Tr),
+            "ru" => Some(Lang::Ru),
+            "hi" => Some(Lang::Hi),
+            "uk" => Some(Lang::Uk),
+            "it" => Some(Lang::It),
+            "pl" => Some(Lang::Pl),
+            // Filipino answers to both its ISO 639-3 code and Tagalog's older two-letter one, which is what most hosts still report.
+            "fil" | "tl" => Some(Lang::Fil),
             _ => None,
         }
     }
     // Autonyms are invariant across languages by design — a lost user must always recognise their own tongue in the picker. Bare language names, parallel form (Nick 2026-09-03: "Māori" not "Te Reo Māori" — te reo just means "the language").
+    /// The form a speaker would use saying "I speak ___" in that language — so Tiếng Việt and Bahasa Indonesia keep their language word, which is NOT a contradiction of the bare-name rule: te reo detaches from Māori, tiếng and bahasa do not, and "Việt"/"Indonesia" alone name a people and a country rather than a language (Nick 2026-09-15).
     pub fn autonym(self) -> &'static str {
         match self {
             Lang::En => "English",
             Lang::Es => "Espa\u{f1}ol",
             Lang::Mi => "M\u{101}ori",
+            Lang::Pt => "Portugu\u{EA}s",
+            Lang::Fr => "Fran\u{E7}ais",
+            Lang::Id => "Bahasa Indonesia",
+            Lang::De => "Deutsch",
+            Lang::Sw => "Kiswahili",
+            Lang::Vi => "Ti\u{1EBF}ng Vi\u{1EC7}t",
+            Lang::Tr => "T\u{FC}rk\u{E7}e",
+            Lang::Ru => "\u{420}\u{443}\u{441}\u{441}\u{43A}\u{438}\u{439}",
+            Lang::Hi => "\u{939}\u{93F}\u{928}\u{94D}\u{926}\u{940}",
+            Lang::Uk => "\u{423}\u{43A}\u{440}\u{430}\u{457}\u{43D}\u{441}\u{44C}\u{43A}\u{430}",
+            Lang::It => "Italiano",
+            Lang::Pl => "Polski",
+            Lang::Fil => "Filipino",
         }
     }
+    /// STORAGE order — the session atomic's form. A shipped index NEVER moves; new languages append. (The picker uses ALL, not this.)
     pub fn index(self) -> usize {
         match self {
             Lang::En => 0,
             Lang::Es => 1,
             Lang::Mi => 2,
+            Lang::Pt => 3,
+            Lang::Fr => 4,
+            Lang::Id => 5,
+            Lang::De => 6,
+            Lang::Sw => 7,
+            Lang::Vi => 8,
+            Lang::Tr => 9,
+            Lang::Ru => 10,
+            Lang::Hi => 11,
+            Lang::Uk => 12,
+            Lang::It => 13,
+            Lang::Pl => 14,
+            Lang::Fil => 15,
         }
     }
     pub fn from_index(i: usize) -> Lang {
         match i {
             1 => Lang::Es,
             2 => Lang::Mi,
+            3 => Lang::Pt,
+            4 => Lang::Fr,
+            5 => Lang::Id,
+            6 => Lang::De,
+            7 => Lang::Sw,
+            8 => Lang::Vi,
+            9 => Lang::Tr,
+            10 => Lang::Ru,
+            11 => Lang::Hi,
+            12 => Lang::Uk,
+            13 => Lang::It,
+            14 => Lang::Pl,
+            15 => Lang::Fil,
             _ => Lang::En,
         }
     }
-    pub const ALL: [Lang; 3] = [Lang::En, Lang::Es, Lang::Mi];
+    /// DISPLAY order — sorted by autonym, because a user who cannot read the current UI language finds their own tongue by scanning, not by knowing where it was added. Latin-script names sort first and the Cyrillic/Devanagari names follow, which is simply codepoint order and stays deterministic.
+    /// Safe to re-sort freely: the picker resolves a tap thru this array, never thru `index()`.
+    pub const ALL: [Lang; 16] = [
+        Lang::Id,
+        Lang::De,
+        Lang::En,
+        Lang::Es,
+        Lang::Fil,
+        Lang::Fr,
+        Lang::It,
+        Lang::Sw,
+        Lang::Mi,
+        Lang::Pl,
+        Lang::Pt,
+        Lang::Vi,
+        Lang::Tr,
+        Lang::Ru,
+        Lang::Uk,
+        Lang::Hi,
+    ];
 }
 
 // Session mirror of the language setting — a static so tr() reads the language without threading &self thru every draw call (same shape as DOZENAL_UI).
@@ -77,6 +193,19 @@ pub fn tr(msg: Msg) -> Cow<'static, str> {
         Lang::En => en::text(msg),
         Lang::Es => es::text(msg),
         Lang::Mi => mi::text(msg),
+        Lang::Pt => pt::text(msg),
+        Lang::Fr => fr::text(msg),
+        Lang::Id => id::text(msg),
+        Lang::De => de::text(msg),
+        Lang::Sw => sw::text(msg),
+        Lang::Vi => vi::text(msg),
+        Lang::Tr => tr::text(msg),
+        Lang::Ru => ru::text(msg),
+        Lang::Hi => hi::text(msg),
+        Lang::Uk => uk::text(msg),
+        Lang::It => it::text(msg),
+        Lang::Pl => pl::text(msg),
+        Lang::Fil => fil::text(msg),
     }
 }
 

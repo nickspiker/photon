@@ -70,5 +70,16 @@ Approximate total speakers (L1+L2). Ordered by reach per unit of engineering, no
 
 Security vocabulary is where machine translation fails quietly.
 "Sealed", "fold", "standing member", "lane", "braid", "wave", "pigeon" — a wrong choice there does not read as broken, it reads as *confidently wrong*, which is worse in a trust-bearing UI than leaving English.
-Every language file therefore starts from a glossary decision for the coined metaphors, applied consistently across all 354 arms, and wants a native reviewer before it ships.
+Every language file therefore starts from a glossary decision for the coined metaphors, applied consistently across all arms, and wants a native reviewer before it ships.
 Translate the metaphor where it survives; where it does not, pick one clear concrete word and never drift from it.
+
+### Translating is a proofreader for the English
+
+Adding twelve languages at once found three classes of defect that no amount of re-reading English would have surfaced, because an ambiguity is invisible in the language that has it.
+
+- **`Msg::ClipPill` is ambiguous and should be reworded.** The label is the bare word `clip`, sitting beside `−½ / +½ / 0` in the viewer. **Six of thirteen** independent translators read it as *crop* — Beschnitt, potong, corte, kırpma, kata, ritaglio — when `viewer.rs` defines `clip` as "blown channels black, crushed ones white", a clipping-INDICATOR view. Those six were corrected in place, but the root cause is the English: something like `clipped` or `clip warn` would stop it recurring in every future language. (Māori's `tapahi` has the same crop reading and predates this batch.)
+- **`Msg::CallBarCalling` has a direction only the call site reveals.** "{name} waving" reads equally as us calling them. Three translators resolved it by reading `render.rs`, where it binds to `CallPhase::Ringing` — "their offer reached us", the phase that offers Answer/Decline — and one guessed the opposite and said so. Any variant whose direction is not recoverable from the English wants a doc comment naming its call site.
+- **English's unmarked plurals hide required branches.** `MessagesDelivered`, `ContactFleetPinned`, `MessagesSentReceived`, `DiagRecordInspect` and `DiagMeta` do not branch in `en.rs` at all; Russian, Ukrainian and Polish must branch all five on the 1 / 2–4 / 5+ rule with its 11–14 exception. This is the catalog-as-code premise paying off exactly as designed — a data format would have had no place to put that logic.
+- **A pre-formatted numeric argument silently forbids agreement.** `Msg::ExposureStops(&str)` receives its value already rendered by `fmt_halves`, so no arm can branch on the number — Russian and Ukrainian independently gave up and wrote `{s} EV` rather than choose wrongly between ступінь/ступені/ступенів. The variant doctrine says parameterized variants carry SEMANTIC values; a `&str` that used to be a number is a formatted value wearing a semantic value's clothes. Any variant whose argument a language might need to agree with should carry the number.
+
+The corollary: a language that needs branching English lacks is a signal the English message is carrying implicit grammar, not a sign the translation is overwrought.

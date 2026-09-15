@@ -799,8 +799,10 @@ mod tests {
     fn census_sweep_auto_nukes_strays() {
         let _g = serial();
         isolate_test_storage();
-        // Spend log_dir's ONE-SHOT old-log migration (OLD_LOG_SWEPT) before planting the log: that Once fires on the process's first sink open and deletes photon.log.vsf from the config dir — racing it here read as "the census ate the log" (the census never touches it; its keep list names the log).
-        crate::logf!("census test: opening the log sink so the old-log migration is already spent");
+        // Spend log_dir's ONE-SHOT old-log migration (OLD_LOG_SWEPT) before planting the log. That Once deletes photon.log.vsf from the CONFIG dir — a legitimate one-time move to the temp dir — and if it fires after this test plants its bait the assertion below blames the census for a file the census never touches (its keep list names the log explicitly).
+        // Called DIRECTLY rather than thru a log macro: a log line only buffers into LOG_PENDING and the sink opens lazily, so macro-first merely made the race rarer instead of ending it — which is exactly how it came back.
+        #[cfg(feature = "logging")]
+        let _ = crate::log_dir();
         let secret = [0x9Du8; 32];
         let dir = photon_config_dir().unwrap();
         std::fs::create_dir_all(dir.join("junkdir")).unwrap();
