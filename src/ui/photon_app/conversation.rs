@@ -911,6 +911,71 @@ impl PhotonApp {
     }
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
+    /// Merge a sibling page's rows into a GROUP conversation (docs/groups.md step 6): identity = (timestamp, content); flags upgrade monotonically (delivered, deleted, notified true-wins; reference/marks/author fill in once); new rows insert with their flags verbatim. Returns the rows that changed or landed (for persist + onward gossip).
+    pub(super) fn merge_group_page_rows(&mut self, conv_pos: usize, rows: &[crate::network::history_pages::HistoryRow]) -> Vec<crate::types::ChatMessage> {
+        let conv = &mut self.conversations[conv_pos];
+        let mut fresh = Vec::new();
+        for row in rows {
+            if crate::types::is_control_content(&row.content) {
+                continue;
+            }
+            if let Some(existing) = conv.messages.iter_mut().find(|m| m.timestamp == row.timestamp && m.content == row.content) {
+                let mut upgraded = false;
+                if row.delivered && !existing.delivered && existing.is_outgoing == row.sender_outgoing {
+                    existing.delivered = true;
+                    upgraded = true;
+                }
+                if row.deleted && !existing.deleted {
+                    existing.deleted = true;
+                    upgraded = true;
+                }
+                if row.notified && !existing.notified {
+                    existing.notified = true;
+                }
+                if existing.author.is_none() && row.author.is_some() {
+                    existing.author = row.author;
+                    upgraded = true;
+                }
+                if existing.reference.is_none() {
+                    if let Some(r) = row.reference.and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t))) {
+                        existing.reference = Some(r);
+                        upgraded = true;
+                    }
+                }
+                if existing.marks.is_empty() && !row.marks.is_empty() {
+                    let v = crate::types::valid_marks(&existing.content, &row.marks);
+                    if !v.is_empty() {
+                        existing.marks = v;
+                        upgraded = true;
+                    }
+                }
+                if existing.star_osc.abs() < row.star_osc.abs() {
+                    existing.star_osc = row.star_osc;
+                    upgraded = true;
+                }
+                if upgraded {
+                    fresh.push(existing.clone());
+                }
+                continue;
+            }
+            let mut m = crate::types::ChatMessage::new_with_timestamp(row.content.clone(), row.sender_outgoing, row.timestamp);
+            m.author = row.author;
+            m.delivered = row.delivered;
+            m.deleted = row.deleted;
+            m.notified = row.notified;
+            m.star_osc = row.star_osc;
+            m.reference = row.reference.and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
+            m.marks = crate::types::valid_marks(&m.content, &row.marks);
+            m.preview = row.preview.clone();
+            if let Some((k, w, h, ph)) = row.attach {
+                m.attach = crate::types::AttachKind::from_wire(k).map(|kind| crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph });
+            }
+            conv.insert_message_sorted(m.clone());
+            fresh.push(m);
+        }
+        fresh
+    }
+
     /// The group twin of `clear_unread`: opening a group conversation clears its ring.
     pub(super) fn clear_group_unread(&mut self, gi: usize) {
         let Some((gid, _)) = self.group_rosters.get(gi) else {
@@ -1923,9 +1988,13 @@ impl PhotonApp {
             self.persist_conv_state_async(pos);
         }
         if let Some((idx, m)) = sibling_push {
-            // A GROUP row never rides the sender's FRIENDSHIP token to our siblings (they would merge it into the wrong conversation); the group's own sibling push lands with step 6.
-            if persist_group_conv.is_none() {
-                self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
+            match persist_group_conv {
+                // A GROUP row rides its own token to our siblings (docs/groups.md step 6), never the sender's friendship token.
+                Some(id) => {
+                    let gid = crate::types::group::GroupId(*id.as_bytes());
+                    self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), std::slice::from_ref(&m), None);
+                }
+                None => self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None),
             }
         }
         if let Some(idx) = recv_seal_idx {
@@ -2012,6 +2081,8 @@ impl PhotonApp {
             );
             let mut incoming = incoming;
             let mut era_moved = false;
+            // A GROUP blob carries its roster (docs/groups.md step 6) — merged after the adopt, whatever the lane math decides.
+            let group_roster: Option<Vec<u8>> = incoming.group.then(|| incoming.group_roster().to_vec());
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
@@ -2049,6 +2120,11 @@ impl PhotonApp {
                 } else {
                     self.era_pull_miss_from(conversation_token, sender_pubkey.key);
                 }
+            }
+            if let Some(bytes) = group_roster.as_ref() {
+                let gid = crate::types::group::GroupId(*fid.as_bytes());
+                self.adopt_replicated_group(gid, bytes);
+                // A sibling's group blob may carry a roster edge with no lane movement; the roster merge above is the whole adopt in that case.
             }
             if !adopted {
                 continue;
@@ -2169,6 +2245,28 @@ impl PhotonApp {
             else {
                 continue;
             };
+            // A GROUP page from a sibling (docs/groups.md step 6): rows merge into the group conversation verbatim (same identity, their flags are ours); no contact stands behind the token, so the contact-scoped extras (chirp, attach fetch, call signals) are skipped here.
+            if from_sibling {
+                if let Some(gid) = self.group_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g) {
+                    self.hist_rid_map.remove(&request_id);
+                    if let Some(page) = page {
+                        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+                        let conv_pos = match self.conversations.iter().position(|v| v.id() == fid) {
+                            Some(p) => p,
+                            None => {
+                                self.conversations.push(crate::types::Conversation::new_group(gid, std::iter::empty()));
+                                self.conversations.len() - 1
+                            }
+                        };
+                        let fresh = self.merge_group_page_rows(conv_pos, &page.rows);
+                        if !fresh.is_empty() {
+                            self.persist_conversation_async(fid);
+                            self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), &fresh, Some(sender_pubkey.key));
+                        }
+                    }
+                    continue;
+                }
+            }
             // Same sender routing the arm used for the key choice, re-run for the merge target: sibling pages land on the token's contact; friend pages land on the chains' other participant.
             let contact_idx = if from_sibling {
                 self.contact_idx_for_conversation_token(&conversation_token)

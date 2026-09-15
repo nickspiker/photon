@@ -848,6 +848,37 @@ impl PhotonApp {
                     .enumerate()
                     .find(|(_, c)| c.handle_proof == hp)
                 else {
+                    // GROUP PEER (docs/groups.md §2 / step 5): no contact row, but a standing member of a group we hold carries this proof — fold it into the group-scoped trust source. Same monotonic tip gate as a contact; a vanished chain drops the peer's devices (verify-or-withhold).
+                    let party = self.group_rosters.iter().find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == hp && r.is_standing(&m.party)).map(|m| m.party));
+                    if let Some(party) = party {
+                        if !existed {
+                            if let Some(p) = self.group_peers.iter_mut().find(|p| p.party == party) {
+                                if !p.devices.is_empty() {
+                                    crate::logf!("GROUP: peer {}'s chain is GONE — withholding its devices", crate::fp(&hp));
+                                    p.devices.clear();
+                                    self.reseed_group_pubkeys();
+                                }
+                            }
+                            continue;
+                        }
+                        match self.group_peers.iter_mut().find(|p| p.party == party) {
+                            Some(p) if tip_ts < p.fold_ts => {}
+                            Some(p) => {
+                                let changed_fold = p.devices != members;
+                                p.devices = members.clone();
+                                p.fold_ts = tip_ts;
+                                if changed_fold {
+                                    crate::logf!("GROUP: peer {} folded — {} device(s)", crate::fp(&hp), members.len());
+                                    self.reseed_group_pubkeys();
+                                }
+                            }
+                            None => {
+                                crate::logf!("GROUP: peer {} folded for the first time — {} device(s)", crate::fp(&hp), members.len());
+                                self.group_peers.push(crate::types::group::GroupPeer { party, handle_proof: hp, devices: members.clone(), fold_ts: tip_ts });
+                                self.reseed_group_pubkeys();
+                            }
+                        }
+                    }
                     continue;
                 };
                 // IDENTITY ENDED (docs/lifecycle.md D3): the chain VANISHED for a contact we had folded — the owner's last departure purged it. Freeze everything (verify-or-withhold: never destroy local state on a not_found; a lying worker must not fake a death) and render the contact as ended. A reappearing chain routes thru the genesis-pin check below: same genesis clears the flag (worker blip), different genesis = a successor.

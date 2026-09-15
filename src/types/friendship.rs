@@ -265,6 +265,8 @@ pub struct FriendshipChains {
     // ==================== GROUP STATE (docs/groups.md, schema v9 additive) ====================
     /// True when this blob is a GROUP's chain state: the friendship_id IS the group id (stable, never participant-derived), the token is the group token, the participant set is mutable behind the id, and inbound trust for its frames consults GroupPeer instead of Contact.
     pub group: bool,
+    /// The group's ROSTER, as roster-codec bytes (docs/groups.md step 6): rides the chains blob so fleet chain replication carries membership with the keys — no new plane. Set on every roster edge (bumps mutated_osc so the replication pushes); merged, never adopted wholesale, on the receiving sibling. Empty on a friendship blob.
+    group_roster: Vec<u8>,
     /// OUR device's published group-scoped KEM decapsulation bundles (docs/groups.md §3): a group era's fresh secret arrives as a wrap encapsulated to the bundle we published in our member record, possibly minted while we slept — so unlike a friendship's RAM-only EraEphemeral these persist here, the same custody class as the lane links beside them. Newest-last; superseded bundles zeroize on rotation.
     group_kems: Vec<crate::crypto::era::EraDecapKeys>,
 }
@@ -541,6 +543,7 @@ impl FriendshipChains {
             rows_since_ratchet: 0,
             group: false,
             group_kems: Vec::new(),
+            group_roster: Vec::new(),
         }
     }
 
@@ -578,6 +581,7 @@ impl FriendshipChains {
             rows_since_ratchet: 0,
             group: true,
             group_kems: Vec::new(),
+            group_roster: Vec::new(),
         }
     }
 
@@ -660,6 +664,7 @@ impl FriendshipChains {
             rows_since_ratchet: 0,
             group: false,
             group_kems: Vec::new(),
+            group_roster: Vec::new(),
         })
     }
 
@@ -741,6 +746,7 @@ impl FriendshipChains {
             rows_since_ratchet: 0,
             group: false,
             group_kems: Vec::new(),
+            group_roster: Vec::new(),
         })
     }
 
@@ -785,6 +791,20 @@ impl FriendshipChains {
     /// OUR device's published group KEM decapsulation bundles, newest-last (docs/groups.md §3). Empty on a friendship, and on a group device that has not yet published its member record.
     pub fn group_kems(&self) -> &[crate::crypto::era::EraDecapKeys] {
         &self.group_kems
+    }
+
+    /// The roster bytes riding this group blob (empty on a friendship, or before the first roster edge).
+    pub fn group_roster(&self) -> &[u8] {
+        &self.group_roster
+    }
+
+    /// Set the roster bytes (a roster edge): bumps `mutated_osc` so chain replication pushes membership with the keys.
+    pub fn set_group_roster(&mut self, bytes: Vec<u8>) {
+        if !self.group || self.group_roster == bytes {
+            return;
+        }
+        self.group_roster = bytes;
+        self.mutated_osc = vsf::eagle_time_oscillations();
     }
 
     /// Install the persisted bundle set wholesale (the storage loader). Replaced bundles zeroize in their Drop.
@@ -1442,6 +1462,7 @@ impl FriendshipChains {
             group: self.group,
             // Per-DEVICE, like our_label: every device publishes its own bundle in its member record, so a sibling never adopts ours.
             group_kems: Vec::new(),
+            group_roster: self.group_roster.clone(),
         }
     }
 

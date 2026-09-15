@@ -2134,6 +2134,32 @@ impl PhotonApp {
             }
         }
         self.reseed_pong_seal_keys();
+        self.reseed_group_pubkeys();
+    }
+
+    /// GROUP admission list (docs/groups.md §2 / step 5): per group token, every standing member's devices — a friend's answerable set, a never-friended member's GroupPeer fold. Our own devices never enter (a sibling's frames arrive thru the fleet plane). Rebuilt on every roster, fold and lock edge; the RX worker reads it at the door.
+    pub(super) fn reseed_group_pubkeys(&self) {
+        let ours = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+        let mut list: Vec<([u8; 32], Vec<[u8; 32]>)> = Vec::with_capacity(self.group_rosters.len());
+        for (gid, roster) in &self.group_rosters {
+            let phase = self.group_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            if matches!(phase, crate::storage::group::GroupPhase::Left) {
+                continue;
+            }
+            let mut devs: Vec<[u8; 32]> = Vec::new();
+            for party in roster.standing() {
+                if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == party) {
+                    devs.extend(c.answerable_pubkeys());
+                } else if let Some(p) = self.group_peers.iter().find(|p| p.party == party) {
+                    devs.extend(p.devices.iter().copied());
+                }
+            }
+            devs.retain(|d| Some(*d) != ours);
+            devs.sort_unstable();
+            devs.dedup();
+            list.push((gid.token(), devs));
+        }
+        crate::network::status::set_group_devices(list);
     }
 
     /// Rebuild the pairwise pong-seal key map from the same contact walk as `reseed_contact_pubkeys` — one entry per answerable DEVICE pubkey, so the checker can seal a pong to whichever fleet device pinged. Friends: one key per friendship off the static identity DH ([`crate::crypto::clutch::identity_friendship_secret`]), inserted under each of their devices. Siblings — including a self-contact, whose party id IS our own — share the identity seed instead (their party ids aren't curve points, so the DH would come back None anyway) and key per sorted device pair. Runs on the UI thread only: the checker receives finished keys, never the seed.

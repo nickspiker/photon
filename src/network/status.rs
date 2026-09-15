@@ -160,6 +160,23 @@ pub fn set_sibling_devices(devices: Vec<[u8; 32]>) {
     }
 }
 
+/// GROUP admission (docs/groups.md §2 "transport trust, scoped"): per group token, the standing members' devices. A frame carrying a group token is admitted iff its signer sits under THAT token — a member we never friended is admitted for its group's chat frames and nothing else (pings and every other frame family still consult the contact list alone). Written by the app on every roster / fold edge (`reseed_group_pubkeys`).
+static GROUP_DEVICES: std::sync::Mutex<Vec<([u8; 32], Vec<[u8; 32]>)>> = std::sync::Mutex::new(Vec::new());
+
+pub fn set_group_devices(list: Vec<([u8; 32], Vec<[u8; 32]>)>) {
+    if let Ok(mut g) = GROUP_DEVICES.lock() {
+        *g = list;
+    }
+}
+
+/// Is `dev` a standing member's device of the group whose token is `token`?
+pub fn group_admits(token: &[u8; 32], dev: &[u8; 32]) -> bool {
+    GROUP_DEVICES
+        .lock()
+        .map(|g| g.iter().any(|(t, devs)| t == token && devs.iter().any(|d| d == dev)))
+        .unwrap_or(false)
+}
+
 fn is_sibling_device(pk: &[u8; 32]) -> bool {
     SIBLING_DEVICES
         .lock()
@@ -3315,7 +3332,8 @@ async fn run_checker(
                                         let list = contacts_recv.lock().unwrap();
                                         list.iter().any(|p| *p == sender_pubkey)
                                     };
-                                    if !is_contact {
+                                    // A GROUP member we never friended is admitted for its group's frames only (docs/groups.md §2): the token scopes the trust at the door.
+                                    if !is_contact && !group_admits(&conversation_token, &sender_pubkey.key) {
                                         continue;
                                     }
 

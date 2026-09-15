@@ -75,6 +75,7 @@ fn chains_schema() -> SectionSchema {
         // OUR device's published KEM decapsulation bundles (§3), index-aligned rows: the wrap that carries a new era's fresh secret targets the bundle we published in our member record, possibly minted while we slept — so the secrets persist here, the same custody class as the lane links beside them.
         .field("pending_targets", TypeConstraint::Any) // hR: N×32 party ids this pending has to reach (group blobs only)
         .field("pending_acked", TypeConstraint::Any) // hR: N×32 party ids whose ACK arrived (group blobs only)
+        .field("group_roster", TypeConstraint::Any) // hR: the roster-codec bytes (group blobs only) — membership rides replication with the keys
         .field("kem_published_era", TypeConstraint::Any)
         .field("kem_bundle_id", TypeConstraint::AnyHash) // hb 32: the public bundle's fingerprint (what a wrap names)
         .field("kem_set", TypeConstraint::AnyUnsigned)
@@ -333,6 +334,9 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         builder = builder
             .set("group", VsfType::u(1, false))
             .map_err(|e| StorageError::Parse(e.to_string()))?;
+        if !chains.group_roster().is_empty() {
+            builder = builder.set("group_roster", VsfType::hR(chains.group_roster().to_vec())).map_err(|e| StorageError::Parse(e.to_string()))?;
+        }
         for pending in chains.pending_messages() {
             builder = builder
                 .append_multi("pending_targets", vec![VsfType::hR(pending.targets.iter().flat_map(|p: &[u8; 32]| p.iter().copied()).collect::<Vec<u8>>())])
@@ -844,6 +848,9 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             })
             .collect();
         chains.set_group_kems(kems);
+        if let Some(VsfType::hR(b)) = section.get_fields("group_roster").first().and_then(|f| f.values.first()) {
+            chains.set_group_roster(b.clone());
+        }
     }
     Ok(chains)
 }
@@ -1040,6 +1047,19 @@ mod tests {
         assert_eq!((k.published_era, k.kem_set), (0, KEM_SET_DEFAULT));
         let (resp, f) = era_encapsulate(&eph.init_wire, KEM_SET_DEFAULT).expect("wrap");
         assert_eq!(era_decapsulate_group(k, &resp), Some(f), "the reloaded bundle opens the wrap");
+        assert_eq!(k.bundle_id, eph.init_wire.bundle_id(), "the bundle id rides with the keys");
+        // The roster rides the blob (step 6) and survives the round trip AND the replication subset; a per-member ACK ledger persists on a group pending.
+        chains.set_group_roster(vec![0xAB; 40]);
+        chains.prepare_send(b"hi".to_vec(), b"hi".to_vec(), 77, vec![]).unwrap();
+        chains.set_pending_targets(77, vec![[2u8; 32], [3u8; 32]]);
+        assert_eq!(chains.process_group_ack(77, [3u8; 32]), Vec::<i64>::new());
+        let bytes = chains_to_vsf_bytes(&chains).expect("encode");
+        let back = chains_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(back.group_roster(), &[0xAB; 40][..]);
+        assert_eq!(back.pending_progress(77), Some((1, 2)));
+        assert_eq!(back.pending_unacked(77), Some(vec![[2u8; 32]]));
+        let subset = chains.replication_subset(&[ours]);
+        assert_eq!(subset.group_roster(), &[0xAB; 40][..], "replication carries membership with the keys");
     }
 
     /// A FRIENDSHIP blob must not change by a byte for the group work: it stays version 8 and writes none of the v9 fields, so a fielded sibling running an older schema adopts it exactly as before.

@@ -488,12 +488,27 @@ impl PhotonApp {
         self.group_rosters[pos].1.merge_all(verified)
     }
 
-    /// Follow the roster's standing set into the group conversation (§4: the set follows the roster; the id never moves). Returns whether the set changed.
+    /// Follow the roster's standing set into the group conversation (§4: the set follows the roster; the id never moves), re-seed the group's admission list, and fold any standing member we never friended into the GroupPeer trust source (step 5). Returns whether the set changed.
     pub(super) fn sync_group_conversation(&mut self, gid: &GroupId) -> bool {
-        let Some(standing) = self.group_rosters.iter().find(|(id, _)| id == gid).map(|(_, r)| r.standing()) else {
+        let Some((standing, proofs)) = self.group_rosters.iter().find(|(id, _)| id == gid).map(|(_, r)| {
+            let standing = r.standing();
+            let proofs: Vec<[u8; 32]> = standing.iter().filter_map(|p| r.members.get(p).map(|m| m.handle_proof)).collect();
+            (standing, proofs)
+        }) else {
             return false;
         };
-        self.conversations.iter_mut().find(|c| c.id().as_bytes() == &gid.0).map(|c| c.set_participants(standing)).unwrap_or(false)
+        let changed = self.conversations.iter_mut().find(|c| c.id().as_bytes() == &gid.0).map(|c| c.set_participants(standing.clone())).unwrap_or(false);
+        self.reseed_group_pubkeys();
+        // Members with no contact row need their public chain folded — the same refresh a contact gets; the drain lands them in `group_peers`.
+        let us = self.session.as_ref().map(|s| s.handle_proof);
+        let unfriended: Vec<[u8; 32]> = proofs
+            .into_iter()
+            .filter(|hp| Some(*hp) != us && !self.contacts.iter().any(|c| c.handle_proof == *hp) && !self.group_peers.iter().any(|p| p.handle_proof == *hp))
+            .collect();
+        if !unfriended.is_empty() {
+            self.spawn_contact_fleet_refresh(unfriended);
+        }
+        changed
     }
 
     /// Send (or refresh) a group OFFER to a contact over the pairwise braid (§10.1): the roster snapshot rides the package's gpl field so the invitee sees who is in it before consenting. Carries no secret. The invitee's consent comes back as a Join.
@@ -725,6 +740,10 @@ impl PhotonApp {
                 if post.text.is_none() {
                     self.persist_conversation_async(fid);
                 }
+                // Our own row exists only on this device until a sibling hears of it — the group's token carries it (docs/groups.md step 6).
+                if let Some(row) = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == ts).cloned()) {
+                    self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), std::slice::from_ref(&row), None);
+                }
             } else {
                 // Held: keep the post (with its stamp, so a control row re-sends as the SAME row) for the next drain edge.
                 let mut held = post;
@@ -751,6 +770,55 @@ impl PhotonApp {
             if let Err(e) = crate::storage::group::save_roster(gid, roster, storage) {
                 crate::logf!("GROUP: roster write failed for {}: {}", hex::encode(&gid.0[..4]), e);
             }
+            // The roster rides the chains blob to our siblings (step 6): stamp it, and the replication pass pushes on its mutated_osc.
+            if let Ok(bytes) = crate::storage::group::roster_to_vsf_bytes(gid, roster) {
+                let fid = crate::types::FriendshipId::from_bytes(gid.0);
+                if let Some((_, c)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
+                    c.set_group_roster(bytes);
+                }
+            }
         }
+    }
+
+    /// A SIBLING's replicated group blob landed (docs/groups.md step 6): merge the roster it carries; if this device never held the group, boot it — index, conversation, local state — so a phone that slept thru a join wakes holding the group. Returns whether the roster changed.
+    pub(super) fn adopt_replicated_group(&mut self, gid: GroupId, roster_bytes: &[u8]) -> bool {
+        if roster_bytes.is_empty() {
+            return false;
+        }
+        let (bid, snapshot) = match crate::storage::group::roster_from_vsf_bytes(roster_bytes) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::logf!("GROUP: sibling roster for {} failed verified read: {}", hex::encode(&gid.0[..4]), e);
+                return false;
+            }
+        };
+        if bid != gid {
+            return false;
+        }
+        let pos = match self.group_rosters.iter().position(|(id, _)| *id == gid) {
+            Some(p) => p,
+            None => {
+                let Some(_) = Self::verify_snapshot_birth(&gid, &snapshot) else {
+                    crate::logf!("GROUP: sibling roster for {} carries no verifiable genesis — refused", hex::encode(&gid.0[..4]));
+                    return false;
+                };
+                crate::logf!("GROUP: booted \"{}\" ({}) from a sibling's replication", snapshot.title(), hex::encode(&gid.0[..4]));
+                self.group_rosters.push((gid, Roster { genesis: snapshot.genesis.clone(), ..Default::default() }));
+                let fid = crate::types::FriendshipId::from_bytes(gid.0);
+                if !self.conversations.iter().any(|v| v.id() == fid) {
+                    self.conversations.push(crate::types::Conversation::new_group(gid, std::iter::empty()));
+                }
+                self.set_group_local(&gid, |l| l.phase = GroupPhase::Standing);
+                self.group_rosters.len() - 1
+            }
+        };
+        let mut changed = self.merge_snapshot_into(pos, snapshot);
+        changed |= self.sync_group_conversation(&gid);
+        if changed {
+            self.persist_group(&gid);
+        } else if let Some(storage) = self.storage.as_ref() {
+            let _ = crate::storage::group::index_group(&gid, storage);
+        }
+        changed
     }
 }

@@ -1289,11 +1289,28 @@ impl PhotonApp {
         rows: &[crate::types::ChatMessage],
         exclude_device: Option<[u8; 32]>,
     ) {
-        use crate::network::history_pages::{seal_history_page, HistoryPagePlain, HistoryRow};
         let contact = &self.contacts[idx];
         if contact.is_sibling {
             return; // sibling↔sibling chatter stays device-pair-local
         }
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
+        let token = crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
+        let label = crate::fp(&contact.handle_proof);
+        self.push_rows_to_siblings_token(token, &label, rows, exclude_device);
+    }
+
+    /// The token-keyed core of the sibling row push (docs/groups.md step 6): a GROUP pushes under its own token (`GroupId::token`), a friendship under the pair's. `label` is only for the log line.
+    pub(super) fn push_rows_to_siblings_token(
+        &self,
+        token: [u8; 32],
+        label: &str,
+        rows: &[crate::types::ChatMessage],
+        exclude_device: Option<[u8; 32]>,
+    ) {
+        use crate::network::history_pages::{seal_history_page, HistoryPagePlain, HistoryRow};
         // The B-arc re-seal: live fleet pages seal under the EPOCH hist_page key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the sibling-online history sweep re-covers these rows) rather than fork the seal, exactly the chain_sync rule.
         let (Some((epoch_k, epoch)), Some(kp), Some(checker), Some(session)) = (
             self.fleet_epoch,
@@ -1327,9 +1344,7 @@ impl PhotonApp {
         if hist_rows.is_empty() {
             return;
         }
-        let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
-        let token =
-            crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
+        let _ = session;
         let page = HistoryPagePlain {
             oldest_osc: hist_rows.iter().map(|r| r.timestamp).min().unwrap_or(0),
             more: false,
@@ -1379,7 +1394,7 @@ impl PhotonApp {
         crate::logf!(
             "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable)",
             page.rows.len(),
-            crate::fp(&self.contacts[idx].handle_proof),
+            label,
             targets.len(),
             skipped
         );
