@@ -96,3 +96,47 @@ My devices see a group as one more conversation: chains blob (lanes, eras, KEM d
 3. Eras: KEM bundles in member records, shrink mint on leave, cadence ratchet, the minter-id race.
 4. UI: group row, author colours, delivered fraction, group page, D5 policy surface.
 5. Later: group calls; add-consent gate; the relay fan-out if groups outgrow per-device sends (fleet invariants say any size, so nothing here assumes small).
+
+## 10. Lifecycle — the phase diagram (2026-09-15, Nick + Claude)
+
+Decisions folded in here, superseding §2/§4/§6/§8 where they differ: **a group has no name in any registry** — its identity is the random id and lineage, and the title is one more roster record (`title`, signed by whoever changed it, newest wins, the genesis suggestion is the first); nothing to squat, nothing to sell, nothing freed on the last leave. **Membership is a friendship with more people**: a member brings you in over the friendship braid you two already hold, and you say yes by tapping Join on that offer — never a silent adoption, never join-on-first-send. Any member adds; nobody removes anyone but themselves; the unwelcome member is answered by a new group. Join-by-link (§8b) carries a random era-bound token, not a name. Open communities with claimable names are a different product, undecided.
+
+### 10.1 The group as you hold it
+
+| Phase | What it means | Edges out |
+|---|---|---|
+| **None** | You don't hold it. | A friend's offer row lands in your conversation with them → Offered. |
+| **Offered** | A Join row in the friendship conversation: sponsor, title, member count, history policy, the era-pinned secrets in typed fields. No timer; the row stays as testimony. | Join → Joining. Sponsor refreshes on a mint → Offered (row updates in place). Sponsor leaves the group, or the friendship ends → Expired. |
+| **Expired** | The person who vouched is gone. Row relabels; nothing else changes. | A fresh offer (from anyone standing) → Offered. |
+| **Joining** | You hold chains + roster; your member record went out as your first frame on your lane. Under from-join the group also has to mint you an era. | Any standing member ACKs your record → Standing. No timeout. |
+| **Standing** | The normal state. **Alone** is the same state with nobody else standing (the header says so). | Leave → Leaving. Era moved while you slept → Catching up. Everyone else leaves → Standing (alone). |
+| **Catching up** | A wrap for the current era is in re-serve; current-era frames drop pre-decrypt until it opens. | Wrap opens → Standing. |
+| **Leaving** | Your leave record is posted; compose disabled; history readable. | A survivor countersigns (the mint) → Left. Alone: at once. |
+| **Left** | Read-only history, greyed row, winnowable. Terminal for this lineage. | A fresh offer → Offered (a re-join is a new member record; newest wins). |
+
+### 10.2 Another member as you see them
+
+Invited (sponsor-local only: "waiting on Emma") → Joined, name pending (record merged, fold not yet succeeded: gradient avatar, "Pending…") → Standing (named) → Departed (leave record merged; greyed in the member list; their rows stay attributed). Records never delete.
+
+### 10.3 A row in a group
+
+Yours: Composed → Sending (encrypted ONCE on your lane, the same ciphertext fanned to every standing member's devices) → Delivering k of n (the ring fills by the fraction of standing members that ACKed; n shrinks when a member departs) → Delivered (all standing ACKed). Replicated (a sibling holds it) runs beside, as today.
+Theirs: Arrived → Parked (a woven strand is missing: pull it from the sender, or from any standing member if the sender is gone) → Applied → Notified.
+
+### 10.4 Eras, and the only two places you see them
+
+| Trigger | Who mints | What you see |
+|---|---|---|
+| A leave (countersign) | The first survivor to observe it; a race falls to the lowest party id | The leaver's row greys, then "left". |
+| A join under from-join | Any standing member | Nothing; the joiner's Join completes. |
+| The 256-row cadence | Any standing member | Nothing. |
+| A device that slept thru a mint | — | "Catching up" until its wrap opens. |
+| A sponsor holding a stale offer | — | The offer refreshes in place, or expires with the sponsor. |
+
+### 10.5 Screens
+
+- **Ready list.** Group rows beside contact rows, one list, sorted by recency of activity ("frecency"). Ring by phase: dashed while Joining, solid when Standing, grey when Left; unread ring as today. Avatar = composite of standing members' gradients.
+- **Friendship conversation.** The offer row: title, "Emma brought you into taco · 4 people", Join. Relabels to "joined" / "offer expired". The sponsor's side shows "you brought Emma into taco · waiting / joined".
+- **Contact panel → Manage.** "Bring into a group": pick an existing group you stand in, or New group (title, history policy) which founds and offers in ONE act — a group is never created empty; Alone only ever happens by departures.
+- **Group conversation.** Header: title + count ("taco · 4"). Rows carry author name and colour (`group_id ‖ author`, so everyone sees the same colour for the same person). Your rows' delivered ring fills by fraction. Compose as today.
+- **Group panel** (the orb inside a group conversation, same rail as the contact panel). About: title (editable by anyone, lands as a record), members by phase, history policy, era index for diagnostics. Add: your contacts not yet standing, one tap offers. Manage: mute (ships with the first row), detach title (later), Leave with a confirm.
