@@ -66,6 +66,34 @@ fn bundled_coverage_resolves_and_unbundled_is_tofu() {
     }
 }
 
+/// The LANGUAGE-CATALOG contract (docs/languages.md "Script ceiling"): every letter the shipped translations actually type must resolve from Open Sans itself, with no script routing and no host font.
+/// This is what makes those languages pure translation files, and the doc now claims it in writing — so it is measured here rather than believed. Vietnamese is the one that could plausibly fail: its letters live in Latin Extended Additional, not the basic block, and it stacks two marks on one vowel.
+/// Cyrillic is included because it is the reason Russian and its neighbours need no font work at all.
+#[test]
+fn shipped_language_letters_resolve_from_open_sans() {
+    let mut tr = renderer(true);
+    let tofu = width(&mut tr, "\u{6F22}", "Open Sans");
+    let letters = [
+        ("Portuguese", "\u{E3}\u{F5}\u{E7}"),              // ã õ ç
+        ("French", "\u{E9}\u{E8}\u{EA}\u{FB}\u{E7}"),      // é è ê û ç
+        ("German", "\u{E4}\u{F6}\u{FC}\u{DF}"),            // ä ö ü ß
+        ("Turkish", "\u{131}\u{130}\u{11F}\u{15F}"),       // ı İ ğ ş — dotted/dotless i are DISTINCT letters
+        ("Vietnamese", "\u{1EBF}\u{1ED9}\u{1EEF}\u{111}\u{1A1}\u{1B0}"), // ế ộ ữ đ ơ ư — precomposed, two marks on one vowel
+        ("Maori", "\u{101}\u{113}\u{12B}\u{14D}\u{16B}"),  // ā ē ī ō ū
+        ("Cyrillic", "\u{410}\u{44F}\u{452}\u{491}"),      // А я ђ ґ — Russian plus the Serbian/Ukrainian extras
+        ("Greek", "\u{3B1}\u{3A9}"),                        // α Ω
+        ("Polish/Czech", "\u{142}\u{119}\u{159}\u{17E}"),  // ł ę ř ž
+    ];
+    for (name, s) in letters {
+        for ch in s.chars() {
+            let w = width(&mut tr, &ch.to_string(), "Open Sans");
+            assert!(w > 0.0, "{name}: U+{:04X} laid out as nothing — resolved-but-empty is worse than tofu", ch as u32);
+            assert_ne!(w, tofu, "{name}: U+{:04X} measured as tofu — Open Sans does not cover it, so that language is NOT a pure translation file", ch as u32);
+        }
+    }
+    // Indonesian and Swahili are plain ASCII Latin — no probe needed, and that is precisely why they are the cheapest reach on the board.
+}
+
 /// U+FE0F and U+FE0E pick the face for the character they follow: the colour-emoji ☎ and the monochrome ☎ are different glyphs with different advances, and a bare ☎ equals the colour one (colour-first chain).
 #[test]
 fn variation_selectors_choose_the_face() {

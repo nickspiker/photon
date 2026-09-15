@@ -32,12 +32,43 @@ If non-programmer translators ever join, a build-script generating arms from a f
 ## Selection
 
 Language is a typed device-local setting (fstate), seeded once from the OS locale at first launch, then the user's — it never live-follows the host, so rendering stays deterministic.
-The picker lives on the You/personal settings page; each language is named in itself (English, Español, Te Reo Māori).
+The picker lives on the You/personal settings page; each language is named in itself, bare and parallel: English, Español, Māori — not "Te Reo Māori", since te reo just means "the language" (Nick 2026-09-03).
+`Lang::index` is the stable storage/atomic order and never moves once shipped; `Lang::ALL` is display order and may be re-sorted freely.
 Switching languages triggers a full damage/redraw; every layout measures text, so string-length changes just flow.
 
-## Script ceiling
+## Script ceiling — what the renderer can actually do
 
-fluor NFC-normalizes and bundles Open Sans (precomposed Latin incl. āēīōū), Noto Symbols, optional Noto Color Emoji.
-Any Latin-script language is a pure translation file.
-CJK/RTL/Indic needs a fluor font bundle + bidi/shaping work first — a renderer project the catalog design doesn't care about.
-The tell is structural: adding `ar.rs` blocks on fluor, not on strings.
+Measured 2026-09-15, because this section previously claimed a ceiling the code had already broken through.
+
+- **Shaping is ON.** fluor drives cosmic-text with `Shaping::Advanced` at every call site, which is full rustybuzz shaping: Arabic contextual forms and ligatures, Devanagari conjuncts and matra reordering, all of it. There is no shaping engine left to write.
+- **Per-script routing exists.** fluor's `BundledFallback::script_fallback` already maps Arabic, Devanagari, Thai, Armenian, Georgian and Runic to their bundled faces.
+- **The faces are bundled.** `src/ui/fonts.rs` loads Noto Sans Arabic, Devanagari, Thai, Armenian and Georgian today.
+- **Open Sans already covers more than Latin.** Measured against the bundled `OpenSans-Regular.ttf` (1010 codepoints): Vietnamese precomposed (ế ộ ữ đ ơ ư), Turkish (ı İ ğ ş), Polish/Czech (ł ę ř ž), Cyrillic including extended (А я ђ ґ), and Greek all resolve. **Cyrillic needs no font work** — Russian, Ukrainian, Serbian, Bulgarian and Kazakh are pure translation files.
+- **CJK is the one real gap**, and it is deliberate: no CJK face is bundled because it costs 10–20 MB, which collides with the no-host-fonts doctrine. That is a payload decision, not a rendering one.
+- **What Arabic still needs is UI MIRRORING, not text.** Right-to-left *text* renders correctly today; a right-to-left *interface* — rail side, bubble sides, back-arrow direction, alignment defaults — is a photon/fluor layout project. That is the whole remaining cost, and it is smaller than "write a shaping engine" but it is not nothing.
+
+Consequence: **Devanagari is left-to-right**, so Hindi needs no mirroring at all. Font, shaping and routing are already in place, which puts Hindi within reach of a pure translation pass plus a rendering verification against `tests/glyph_fallback_probe.rs`.
+
+## Reach roadmap
+
+Approximate total speakers (L1+L2). Ordered by reach per unit of engineering, not by headcount.
+
+| Tier | Cost beyond ~354 strings | Languages |
+|---|---|---|
+| Pure translation | none | Portuguese 265M · French 310M · Indonesian 200M · German 135M · Swahili 200M · Vietnamese 85M · Turkish 90M · **Russian 255M** · Polish · Italian · Dutch |
+| Translation + render check | verify the glyph probe | Hindi 610M · Thai 60M (faces + shaping already bundled) |
+| Translation + UI mirroring | RTL layout project | Arabic 475M · Persian 80M · Urdu 230M |
+| Translation + payload decision | 10–20 MB of font | Mandarin · Japanese 125M · Korean 80M |
+
+**Raw speaker counts mislead for a sovereign messenger, in both directions.** Mandarin's 1.1B badly overstates addressable users, because the traversal ladder leans on FGTW (a Cloudflare worker) and Cloudflare is blocked in the PRC — the realistic reach is Taiwan, Singapore, Malaysia and the diaspora, and Traditional/Simplified splits even that in two. Meanwhile Arabic, Persian and Urdu *understate* the case: those are populations for whom messaging that touches no infrastructure is the point, not a feature. Effort-per-user is the wrong sole metric when the users hardest to reach are the ones with the most need.
+
+**Recommended order:** the pure-translation tier wholesale (~1.5B reach, zero engine work), then Hindi (biggest single number that costs only a translation pass), then the RTL mirroring project with Arabic as its first tenant — the mirroring is a one-time investment that Persian and Urdu then inherit. CJK last, gated on the payload decision, and worth reopening only if the subset-versus-bundle question gets a good answer.
+
+**Keep a values slot each round.** Māori is in the catalog ahead of languages a hundred times its size, and that was correct. If the ordering were purely by headcount it would say something about the project that the project does not mean.
+
+## Translation quality
+
+Security vocabulary is where machine translation fails quietly.
+"Sealed", "fold", "standing member", "lane", "braid", "wave", "pigeon" — a wrong choice there does not read as broken, it reads as *confidently wrong*, which is worse in a trust-bearing UI than leaving English.
+Every language file therefore starts from a glossary decision for the coined metaphors, applied consistently across all 354 arms, and wants a native reviewer before it ships.
+Translate the metaphor where it survives; where it does not, pick one clear concrete word and never drift from it.

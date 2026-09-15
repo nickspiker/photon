@@ -1138,9 +1138,10 @@ impl FluorApp for PhotonApp {
                     }
                 } else if page == SettingsPage::Language {
                     // One tap per language button — adopt, persist device-local, refresh constructor-frozen labels; the next paint re-translates everything else thru tr().
+                    // The slot is a position in ALL (DISPLAY order), so it resolves thru ALL — not thru from_index, which reads the stable STORAGE order. The two coincided only while ALL happened to be sorted by index; the moment the picker is re-sorted (alphabetical by autonym, say) a from_index lookup would select a different language than the one tapped.
                     let n = crate::ui::lang::Lang::ALL.len() as HitId;
                     if slot < n {
-                        let l = crate::ui::lang::Lang::from_index(slot as usize);
+                        let l = crate::ui::lang::Lang::ALL[slot as usize];
                         if l != crate::ui::lang::lang() {
                             crate::ui::lang::set_lang(l);
                             self.save_lang_setting(l);
