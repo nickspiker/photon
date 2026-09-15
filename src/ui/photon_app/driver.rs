@@ -352,6 +352,10 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(64);
         self.group_pick_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(16);
+        self.group_nav_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(3);
+        self.group_panel_btn_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(40); // 8 pills + 32 Add-page contact rows
         // Call controls (docs/calls.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.call_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.call_start_btn = Some(Button::new(
@@ -592,7 +596,7 @@ impl FluorApp for PhotonApp {
             AppState::Ready => {
                 self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
             }
-            AppState::Settings(_) | AppState::ContactPanel(_) => {
+            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::GroupPanel(_) => {
                 self.settings_rail_scroll = top_hung(self.settings_rail_scroll);
                 self.settings_content_scroll = top_hung(self.settings_content_scroll);
             }
@@ -771,6 +775,15 @@ impl FluorApp for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
+            if matches!(self.state, AppState::GroupPanel(_)) {
+                self.group_leave_armed = false;
+                self.state = AppState::Conversation;
+                if let Some(gi) = self.active_group() {
+                    self.clear_group_unread(gi);
+                }
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
             if matches!(self.state, AppState::Conversation) {
                 self.broadcast_focus_claim(false);
                 self.state = AppState::Ready;
@@ -797,6 +810,58 @@ impl FluorApp for PhotonApp {
                 } else {
                     AppState::Launch(LaunchState::Fresh)
                 };
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
+        }
+
+        // Group panel (docs/groups.md §10.5): rail rows switch the page; pills: 0 = Leave (two-tap), 1 = Mute, 2 = Rename; 8.. = offer a contact from the Add page.
+        if matches!(self.state, AppState::GroupPanel(_)) {
+            if self.group_leave_armed && hit_id != self.group_panel_btn_base {
+                self.group_leave_armed = false;
+                self.scene_dirty = true;
+            }
+            if self.group_nav_base != HIT_NONE && hit_id >= self.group_nav_base && hit_id < self.group_nav_base.wrapping_add(3) {
+                let idx = (hit_id - self.group_nav_base) as usize;
+                if let Some(p) = crate::ui::state::GroupPage::ALL.get(idx).copied() {
+                    self.change_focus(None);
+                    self.settings_content_scroll = 0.0;
+                    self.state = AppState::GroupPanel(p);
+                    ctx.window.request_redraw();
+                }
+                return EventResponse::Handled;
+            }
+            if self.group_panel_btn_base != HIT_NONE && hit_id >= self.group_panel_btn_base && hit_id < self.group_panel_btn_base.wrapping_add(40) {
+                let slot = hit_id - self.group_panel_btn_base;
+                if let Some(gi) = self.active_group() {
+                    let gid = self.group_rosters[gi].0;
+                    match slot {
+                        0 => {
+                            if self.group_leave_armed {
+                                self.group_leave_armed = false;
+                                self.leave_group(gid);
+                            } else {
+                                self.group_leave_armed = true;
+                            }
+                        }
+                        1 => self.toggle_group_mute(gid),
+                        2 => {
+                            let title: String = self.group_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
+                            self.rename_group(gid, &title);
+                            self.change_focus(None);
+                        }
+                        k if k >= 8 => {
+                            let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+                            let roster_standing = self.group_rosters[gi].1.standing();
+                            let candidates: Vec<usize> = self.contacts.iter().enumerate().filter(|(_, c)| !c.is_sibling && c.friendship_id.is_some() && c.remote_count(&our_hh) > 0 && roster_standing.binary_search(&c.handle_hash).is_err()).map(|(i, _)| i).collect();
+                            if let Some(ci) = candidates.get((k - 8) as usize).copied() {
+                                self.send_group_offer(gid, ci);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                self.scene_dirty = true;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -2214,7 +2279,7 @@ impl FluorApp for PhotonApp {
                         .round() as isize;
                     } else if matches!(
                         self.state,
-                        AppState::Settings(_) | AppState::ContactPanel(_)
+                        AppState::Settings(_) | AppState::ContactPanel(_) | AppState::GroupPanel(_)
                     ) {
                         // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
                         let over_rail = {
@@ -2626,6 +2691,12 @@ impl FluorApp for PhotonApp {
                             // Rename abandoned — drop the box, nothing written.
                             self.fleet_rename = None;
                             self.change_focus(None);
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        if matches!(self.state, AppState::GroupPanel(_)) {
+                            self.group_leave_armed = false;
+                            self.state = AppState::Conversation;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }

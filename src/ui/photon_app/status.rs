@@ -239,6 +239,8 @@ impl PhotonApp {
         let mut chains_persist_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
         // GROUP ACKs (docs/groups.md step 4): (group, acking device, eagle time) — applied AFTER the loop to the per-member ledger.
         let mut group_acks: Vec<(crate::types::group::GroupId, [u8; 32], i64)> = Vec::new();
+        // GROUPS whose current-era frames we could not open (a mint we slept thru) — flipped to Catching up after the loop.
+        let mut catching_up: Vec<crate::types::group::GroupId> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -1199,6 +1201,10 @@ impl PhotonApp {
                                 let ret = chains.retired_era().map(|r| format!("{:08x}", r.tag)).unwrap_or_else(|| "none".into());
                                 let pen = chains.pending_era().map(|p| format!("{:08x}", p.tag)).unwrap_or_else(|| "none".into());
                                 crate::logf!("CHAT: frame tagged era {:08x} from {} — ours {}, retired {}, pending {} — dropped (stale/unknown era, not fork evidence)", era.unwrap_or(0), crate::fp(&sender_pubkey.key), ours, ret, pen);
+                                // A GROUP frame on an era we do not hold (docs/groups.md §10.1 Catching up): the wrap for this device is still in flight or re-serve — say so in the header until it lands.
+                                if chains.group {
+                                    catching_up.push(crate::types::group::GroupId(*fid_ref.as_bytes()));
+                                }
                                 continue;
                             }
                         };
@@ -5300,6 +5306,15 @@ impl PhotonApp {
         }
         for (gid, device, ts) in group_acks {
             if self.on_group_ack(gid, device, ts) {
+                changed = true;
+            }
+        }
+        catching_up.sort_unstable_by_key(|g| g.0);
+        catching_up.dedup();
+        for gid in catching_up {
+            let was = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            if was == crate::storage::group::GroupPhase::Standing {
+                self.set_group_local(&gid, |l| l.phase = crate::storage::group::GroupPhase::CatchingUp);
                 changed = true;
             }
         }

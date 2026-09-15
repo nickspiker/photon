@@ -492,6 +492,21 @@ pub enum Msg<'a> {
     PendingMember,
     /// The compose bar's honest label while group sends are not yet wired.
     GroupComposeSoon,
+    /// Group panel (docs/groups.md §10.5).
+    GroupPageName(crate::ui::state::GroupPage),
+    Members,
+    MemberStanding,
+    MemberDeparted,
+    MemberPendingName,
+    /// Our own row in a member list.
+    YouLabel,
+    EraIndex { n: &'a str },
+    MutePill { muted: bool },
+    LeaveGroupPill { armed: bool },
+    LeaveGroupNote,
+    AddToGroupNote,
+    NobodyToAdd,
+    YouLeftNote,
     /// The offer card (docs/groups.md §10.1), invitee side: "<sponsor> brought you into <title> · <n>".
     OfferLine { sponsor: &'a str, title: &'a str, n: &'a str },
     /// The card once joined.

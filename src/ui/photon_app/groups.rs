@@ -425,11 +425,33 @@ impl PhotonApp {
             crate::logf!("GROUP: records for unheld group {} — ignored", hex::encode(&gid.0[..4]));
             return;
         };
+        let standing_before = self.group_rosters[pos].1.standing();
         let mut changed = self.merge_snapshot_into(pos, snapshot);
         changed |= self.sync_group_conversation(&gid);
         if changed {
             self.persist_group(&gid);
             crate::logf!("GROUP: {} roster advanced by records from {}", hex::encode(&gid.0[..4]), sender);
+            let standing_after = self.group_rosters[pos].1.standing();
+            let departed: Vec<[u8; 32]> = standing_before.iter().filter(|p| standing_after.binary_search(p).is_err()).copied().collect();
+            if !departed.is_empty() {
+                // A member lost standing (a leave, or a withdrawn vouch): nothing is owed to it any more, and the survivors mint the next era (step 9).
+                let fid = crate::types::FriendshipId::from_bytes(gid.0);
+                let done = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid).map(|(_, c)| c.retarget_pendings(&standing_after)).unwrap_or_default();
+                if !done.is_empty() {
+                    if let Some(cp) = self.conversations.iter().position(|v| v.id() == fid) {
+                        for m in self.conversations[cp].messages.iter_mut() {
+                            if m.is_outgoing && done.contains(&m.timestamp) {
+                                m.delivered = true;
+                            }
+                        }
+                    }
+                    self.persist_conversation_async(fid);
+                }
+                for p in &departed {
+                    crate::logf!("GROUP: {} left {} — {} standing remain; minting the next era", crate::fp(p), hex::encode(&gid.0[..4]), standing_after.len());
+                }
+                self.mint_group_era(gid, None);
+            }
         }
     }
 
@@ -652,10 +674,31 @@ impl PhotonApp {
         let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) else {
             return false;
         };
+        // THE MINTER'S CUTOVER EDGE (docs/groups.md §10.4): the first ACK of any wrap row proves a member holds the new era — the pending era becomes current here.
+        let is_wrap_row = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)).map_or(false, |m| m.content == GroupSignal::Wrap.to_content());
+        let mut cut_over = false;
+        if is_wrap_row && chains.pending_era().is_some() {
+            if let Some((old_tag, new_tag, retired)) = chains.cut_over_to_pending() {
+                crate::logf!("GROUP: era cut over {:08x} → {:08x} in {} on the first wrap ACK — {} pending(s) re-serve on the fresh lane", old_tag, new_tag, hex::encode(&gid.0[..4]), retired);
+                cut_over = true;
+            }
+        }
         let done = chains.process_group_ack(acked_eagle_time, party);
         let progress = chains.pending_progress(acked_eagle_time);
+        // The leaver's edge (D9): once ANY member ACKs our leave row, a survivor holds the news — the root dies here.
+        if self.group_locals.iter().any(|(g, l)| *g == gid && l.phase == GroupPhase::Left) {
+            let is_leave_row = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)).map_or(false, |m| m.content == GroupSignal::Records.to_content());
+            if is_leave_row {
+                crate::logf!("GROUP: leave of {} acknowledged by {} — root zeroized", hex::encode(&gid.0[..4]), crate::fp(&party));
+                self.zeroize_group_root(gid);
+                return false;
+            }
+        }
         crate::logf!("GROUP: ACK from {} for {} in {} — {}", crate::fp(&party), acked_eagle_time, hex::encode(&gid.0[..4]), match progress { Some((a, n)) => format!("{} of {}", a, n), None => "complete".to_string() });
         self.persist_chains_async(&fid);
+        if cut_over {
+            self.after_group_cutover(gid);
+        }
         if done.is_empty() {
             return false;
         }
@@ -756,6 +799,137 @@ impl PhotonApp {
             }
         }
         sent_any
+    }
+
+    /// LEAVE (§10.1 Standing → Left, D9): post our signed leave record into the group and go read-only at once — the token drops from the admission list, compose closes, the row greys. The root is zeroized when the leave row's first ACK proves a survivor holds it (`on_group_ack`), so a lost frame cannot strand the others without the news; alone, at once.
+    pub(super) fn leave_group(&mut self, gid: GroupId) -> bool {
+        let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) else {
+            return false;
+        };
+        let Some(pos) = self.group_rosters.iter().position(|(g, _)| *g == gid) else {
+            return false;
+        };
+        let leave = crate::types::group::LeaveRecord { party: our_pid, signed_osc: vsf::eagle_time_oscillations(), signature: [0u8; 64], signer_device: crate::types::group::device_pubkey(&seed) };
+        let mut leave = leave;
+        leave.signature = crate::types::group::sign_record(&leave.signing_bytes(), &seed);
+        let alone = self.group_rosters[pos].1.standing().iter().all(|p| *p == our_pid);
+        let mut posted = Roster::default();
+        posted.merge_leave(leave.clone());
+        let blob = crate::storage::group::roster_to_vsf_bytes(&gid, &posted).ok();
+        self.group_rosters[pos].1.merge_leave(leave);
+        self.sync_group_conversation(&gid);
+        self.persist_group(&gid);
+        self.set_group_local(&gid, |l| l.phase = GroupPhase::Left);
+        if alone {
+            self.zeroize_group_root(gid);
+            crate::logf!("GROUP: left {} — alone, root zeroized at once", hex::encode(&gid.0[..4]));
+        } else {
+            // The leave row is the LAST frame on our lane; the root dies on its first ACK.
+            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob, wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
+            crate::logf!("GROUP: leaving {} — leave record posted; the root dies on its first ACK", hex::encode(&gid.0[..4]));
+        }
+        self.reseed_group_pubkeys();
+        true
+    }
+
+    /// Drop the group's chains blob (root, lanes, bundles) — the leaver's local zeroize. The conversation stays, read-only.
+    pub(super) fn zeroize_group_root(&mut self, gid: GroupId) {
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        self.friendship_chains.retain(|(id, _)| *id != fid);
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = crate::storage::friendship::delete_friendship_chains(&fid, storage) {
+                crate::logf!("GROUP: chains delete failed for {}: {}", hex::encode(&gid.0[..4]), e);
+            }
+        }
+    }
+
+    /// RENAME (D7): a title record signed by us, merged here and posted into the group; newest wins everywhere.
+    pub(super) fn rename_group(&mut self, gid: GroupId, title: &str) -> bool {
+        let title = title.trim();
+        if title.is_empty() {
+            return false;
+        }
+        let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) else {
+            return false;
+        };
+        let Some(pos) = self.group_rosters.iter().position(|(g, _)| *g == gid) else {
+            return false;
+        };
+        let rec = crate::types::group::title_record(our_pid, title, &seed);
+        let mut posted = Roster::default();
+        posted.genesis = self.group_rosters[pos].1.genesis.clone();
+        posted.merge_title(rec.clone());
+        posted.genesis = None;
+        if !self.group_rosters[pos].1.merge_title(rec) {
+            return false;
+        }
+        self.persist_group(&gid);
+        let blob = crate::storage::group::roster_to_vsf_bytes(&gid, &posted).ok();
+        self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob, wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
+        crate::logf!("GROUP: {} renamed \"{}\"", hex::encode(&gid.0[..4]), title);
+        true
+    }
+
+    /// MUTE (D12): this device only — never in the roster.
+    pub(super) fn toggle_group_mute(&mut self, gid: GroupId) {
+        self.set_group_local(&gid, |l| l.muted = !l.muted);
+    }
+
+    /// Is this group muted on this device?
+    pub(super) fn group_muted(&self, gid: &GroupId) -> bool {
+        self.group_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted)
+    }
+
+    /// After a GROUP cutover (docs/groups.md §10.4), on either side: the pendings the cutover cleared re-serve on the fresh lane, a fresh KEM bundle publishes for the new era (the next mint wraps to it), and Catching-up devices are Standing again.
+    pub(super) fn after_group_cutover(&mut self, gid: GroupId) {
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        self.set_group_local(&gid, |l| {
+            if l.phase == GroupPhase::CatchingUp {
+                l.phase = GroupPhase::Standing;
+            }
+        });
+        // Fresh bundle for the new era.
+        if let (Some(our_pid), Some(seed)) = (self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)), self.device_seed()) {
+            let era = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.era_index).unwrap_or(0);
+            let eph = crate::crypto::era::era_keygen(era, 0, crate::crypto::era::KEM_SET_DEFAULT);
+            let bundle = crate::types::group::bundle_record(our_pid, era, &eph, &seed);
+            if let Some((_, c)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
+                c.push_group_kem(eph.export_decaps(era));
+            }
+            if let Some(pos) = self.group_rosters.iter().position(|(g, _)| *g == gid) {
+                self.group_rosters[pos].1.merge_bundle(bundle.clone());
+                self.persist_group(&gid);
+            }
+            let mut posted = Roster::default();
+            posted.merge_bundle(bundle);
+            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: crate::storage::group::roster_to_vsf_bytes(&gid, &posted).ok(), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
+        }
+        self.persist_chains_of(&fid);
+        self.resend_held_group_rows(gid);
+    }
+
+    /// Re-queue every undelivered outgoing chat row of a group (a cutover cleared its pendings; a relaunch found them held) — control rows never re-serve bare.
+    pub(super) fn resend_held_group_rows(&mut self, gid: GroupId) {
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = self
+            .conversations
+            .iter()
+            .find(|v| v.id() == fid)
+            .map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered && !crate::types::is_control_content(&m.content) && (!m.content.is_empty() || m.reference.is_some())).map(|m| (m.content.clone(), m.timestamp, m.reference)).collect())
+            .unwrap_or_default();
+        let already: Vec<i64> = self.pending_group_posts.iter().filter(|p| p.gid == gid).filter_map(|p| p.text.as_ref().map(|(_, ts, _)| *ts)).collect();
+        let pending: Vec<i64> = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.pending_messages.iter().map(|m| m.eagle_time).collect()).unwrap_or_default();
+        let mut n = 0usize;
+        for (text, ts, reference) in held {
+            if already.contains(&ts) || pending.contains(&ts) {
+                continue;
+            }
+            self.queue_group_post(GroupPost { gid, signal: GroupSignal::Records, blob: None, wrap: None, kem: None, text: Some((text, ts, reference)), queued: self.tick_serial, control: false });
+            n += 1;
+        }
+        if n > 0 {
+            crate::logf!("GROUP: {} held row(s) re-queued for {}", n, hex::encode(&gid.0[..4]));
+        }
     }
 
     /// Persist a group's index entry + roster. Chains persist thru the standard chains path on their own mutation edges.

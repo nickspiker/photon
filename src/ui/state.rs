@@ -25,6 +25,8 @@ pub enum AppState {
 
     /// Per-contact panel — the orb's destination inside a Conversation (where it already wears the friend's avatar). Mirrors the Settings screen exactly: same layout, nav rail with pages, scrolling content. Carries the selected page; the open conversation rides `active_conversation`, same as Conversation; the rail's pinned Back returns to the conversation.
     ContactPanel(ContactPage),
+    /// Per-GROUP panel (docs/groups.md §10.5) — the orb's destination inside a group conversation. Same shape as the contact panel: About (title, members by phase, policy), Add (contacts not yet standing), Manage (mute, leave).
+    GroupPanel(GroupPage),
 
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
@@ -123,6 +125,28 @@ impl ContactPage {
             ContactPage::About => "About",
             ContactPage::Stats => "Between you",
             ContactPage::Manage => "Manage",
+        }
+    }
+}
+
+/// Pages of the per-group panel (docs/groups.md §10.5) — the contact panel's structure, group-scoped.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GroupPage {
+    /// Title (editable by anyone — a roster record), members by phase, the history policy, the era index.
+    About,
+    /// Your contacts not yet standing — one tap offers.
+    Add,
+    /// Mute, Leave.
+    Manage,
+}
+
+impl GroupPage {
+    pub const ALL: [GroupPage; 3] = [GroupPage::About, GroupPage::Add, GroupPage::Manage];
+    pub fn label(self) -> &'static str {
+        match self {
+            GroupPage::About => "About",
+            GroupPage::Add => "Add",
+            GroupPage::Manage => "Manage",
         }
     }
 }

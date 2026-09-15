@@ -1721,9 +1721,11 @@ impl PhotonApp {
                 // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere. Computed BEFORE the insert so the fleet alert-duty flag can ride the row into the sibling push.
                 let conversation_open = matches!(
                     self.state,
-                    AppState::Conversation | AppState::ContactPanel(_)
+                    AppState::Conversation | AppState::ContactPanel(_) | AppState::GroupPanel(_)
                 ) && self.active_conversation
                     == Some(self.conversations[conv_pos].id());
+                // A MUTED group (docs/groups.md D12, this device only) never dings and never bumps the unread ring.
+                let group_muted = persist_group_conv.map_or(false, |id| self.group_muted(&crate::types::group::GroupId(*id.as_bytes())));
                 // RECENCY GUARD (2026-08-18, Nick-approved): silent discharge additionally requires the human to have TOUCHED this device recently. The walk-away gap — leaving a screen parked on a conversation — produces no input edge anywhere in the fleet, so a parked-but-attended window would otherwise silently swallow every arriving message (monotone notified=true rides the sibling push; unrecoverable). NOT a scheduled timer: an Instant comparison evaluated only at this message-arrival edge — the arriving message is the clock.
                 let fresh = self
                     .last_interaction
@@ -1747,7 +1749,7 @@ impl PhotonApp {
                 });
                 // Exactly-once duty: `looking` = we are the clearer (discharge silently); a fresh live ding also discharges. Either way the flag is set BEFORE the insert + sibling push, so every forwarded copy arrives pre-discharged and no other device re-dings.
                 let will_ding =
-                    !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row;
+                    !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row && !group_muted;
                 if looking || will_ding {
                     msg.notified = true;
                 }
@@ -1882,7 +1884,7 @@ impl PhotonApp {
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
 
-                if !contact_is_sibling && !looking && !is_edit_row && is_new_row {
+                if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !group_muted {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
@@ -1969,7 +1971,19 @@ impl PhotonApp {
             self.on_group_signal(ci, cp, sig, wire, kem, ts);
         }
         if let Some(ci) = cadence_ci {
-            self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached);
+            match persist_group_conv {
+                // GROUP cadence (docs/groups.md §10.4): the lowest standing party id mints; everyone else lets the edge pass (a race would still resolve by that same id).
+                Some(id) => {
+                    let gid = crate::types::group::GroupId(*id.as_bytes());
+                    let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                    let lowest = self.group_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.standing().first().copied());
+                    if us.is_some() && us == lowest {
+                        crate::logf!("GROUP: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
+                        self.mint_group_era(gid, None);
+                    }
+                }
+                None => self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached),
+            }
         }
         if let Some((snapshot, req)) = ack_enqueue {
             let dispatch = self.status_checker.as_ref().map(|c| c.ack_dispatch());

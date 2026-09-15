@@ -100,6 +100,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::ContactPanel(_) => "ContactPanel",
+                AppState::GroupPanel(_) => "GroupPanel",
             },
             Vec::new(),
         );
@@ -187,7 +188,7 @@ impl PhotonApp {
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(
             self.state,
-            AppState::Conversation | AppState::ContactPanel(_)
+            AppState::Conversation | AppState::ContactPanel(_) | AppState::GroupPanel(_)
         ) {
             active_ci
                 .and_then(|ci| self.contacts.get(ci))
@@ -331,6 +332,12 @@ impl PhotonApp {
             let n = if cpage == ContactPage::Manage { self.manage_page_rows() } else { contact_page_rows(cpage) };
             self.settings_content_extent =
                 (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
+            (self.settings_rail_scroll, self.settings_content_scroll)
+        } else if let AppState::GroupPanel(gpage) = self.state {
+            let sl = SettingsLayout::compute(&ctx.viewport);
+            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::GroupPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            let n = self.group_page_rows(gpage);
+            self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
             (0.0, 0.0)
@@ -479,7 +486,7 @@ impl PhotonApp {
                                // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
         let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
             self.state,
-            AppState::Settings(_) | AppState::ContactPanel(_)
+            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::GroupPanel(_)
         ) {
             let sl = SettingsLayout::compute(&ctx.viewport);
             (
@@ -2563,6 +2570,131 @@ impl PhotonApp {
                                     draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * 0.8, r.h * 0.9), &label, hid, ctx.pressed_hit, !already, None, "Oxanium");
                                 }
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── GROUP PANEL (docs/groups.md §10.5): the contact panel's shape — header = the shared title, rail = Back + About/Add/Manage, content = the page. ──
+        if let AppState::GroupPanel(gpage) = self.state {
+            use crate::ui::state::GroupPage;
+            let layout = SettingsLayout::compute(&ctx.viewport);
+            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
+            if let Some(gi) = active_gi {
+                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, layout.rail.y as isize, buf_w as isize, buf_h as isize, HIT_NONE);
+                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+                let (gid, roster) = &self.group_rosters[gi];
+                let gid = *gid;
+                let phase = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+                let muted = self.group_locals.iter().find(|(g, _)| *g == gid).map_or(false, |(_, l)| l.muted);
+                let standing = roster.standing();
+                let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
+                let name_colour = party_colour(&group_digest(&gid, &our_hh));
+                ctx.text.draw_text_center(&mut canvas, &roster.title(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
+                // Rail: pinned Back, then the three pages.
+                let rail_inset = layout.rail_inset();
+                let nav_h = layout.nav_row_h();
+                let rspan = layout.unit * 0.58;
+                {
+                    let r = fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
+                    let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
+                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::SettingsBack), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
+                    let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
+                    paint::fill_rect(&mut canvas, layout.rail.x as isize, layout.rail.y as isize, layout.rail.w as isize, (r.bottom() - layout.rail.y) as isize, fill, None, None);
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, layout.rail.y as isize, layout.rail.right() as isize, r.bottom() as isize, self.back_btn_hit_id);
+                }
+                let pages_top = rail_inset.y + nav_h;
+                let pages_clip = fluor::paint::Clip::new(layout.rail.x.max(0.0) as usize, pages_top.max(layout.rail.y).max(0.0) as usize, layout.rail.right().max(0.0) as usize, layout.rail.bottom().max(0.0) as usize);
+                for (i, p) in GroupPage::ALL.iter().enumerate() {
+                    let r = fluor::region::Region::new(rail_inset.x, pages_top - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h);
+                    if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
+                        continue;
+                    }
+                    let active = *p == gpage;
+                    let hid = self.group_nav_base.wrapping_add(i as HitId);
+                    let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == hid;
+                    let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
+                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::GroupPageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
+                    if held {
+                        paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
+                    } else if active {
+                        paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, theme::RAIL_ACTIVE_COLOUR, Some(pages_clip), None);
+                    }
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, r.y.max(pages_top) as isize, layout.rail.right() as isize, r.bottom().min(layout.rail.bottom()) as isize, hid);
+                }
+                // Content.
+                let tspan = layout.unit * 0.9;
+                let hspan2 = layout.unit * 0.62;
+                // The same sum group_page_rows computes (field-wise: the chrome borrow is live).
+                let n = match gpage {
+                    GroupPage::About => 4 + roster.members.len(),
+                    GroupPage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
+                    GroupPage::Manage => 6,
+                };
+                let rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
+                let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
+                settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::GroupPageName(gpage)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                match gpage {
+                    GroupPage::About => {
+                        // Row 1: the title box + Rename (a roster record anyone may post).
+                        let r1 = rows[1];
+                        if let Some(tb) = self.group_title_textbox.as_mut() {
+                            let tb_left = r1.x + r1.w * 0.05;
+                            let tb_w = (r1.w * 0.55).max(hspan2 * 6.0);
+                            tb.set_rect(tb_left + tb_w * 0.5, r1.center_y(), tb_w, r1.h * 0.85);
+                            tb.set_font_size(hspan2, ctx.text);
+                            let id = tb.hit_id();
+                            tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                        }
+                        let has_title = self.group_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::group::GroupPhase::Left { self.group_panel_btn_base.wrapping_add(2) } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
+                        // Row 2: policy + era.
+                        let policy = if roster.genesis.as_ref().map_or(false, |g| g.history_from_genesis) { tr(Msg::HistoryFromGenesis) } else { tr(Msg::HistoryFromJoin) };
+                        let era = self.friendship_chains.iter().find(|(id, _)| id.as_bytes() == &gid.0).map(|(_, c)| c.era_index).unwrap_or(0);
+                        settings_line(&mut canvas, ctx.text, rows[2], &format!("{} \u{00b7} {}", policy, tr(Msg::EraIndex { n: &crate::fmt_num64(era) })), hspan2, *theme::LABEL_COLOUR, 400);
+                        // Row 3: "Members"; rows 4..: one per member record, standing or left, in the member's colour.
+                        settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::Members), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        let mut members: Vec<&crate::types::group::MemberRecord> = roster.members.values().collect();
+                        members.sort_unstable_by_key(|m| (!roster.is_standing(&m.party), m.signed_osc));
+                        for (k, m) in members.iter().enumerate() {
+                            let Some(r) = rows.get(4 + k) else { break };
+                            let is_standing = standing.binary_search(&m.party).is_ok();
+                            let name = if m.party == our_hh {
+                                tr(Msg::YouLabel).into_owned()
+                            } else if m.name.is_empty() {
+                                tr(Msg::MemberPendingName).into_owned()
+                            } else {
+                                m.name.clone()
+                            };
+                            let state = if is_standing { tr(Msg::MemberStanding) } else { tr(Msg::MemberDeparted) };
+                            let colour = if is_standing { party_colour(&group_digest(&gid, &m.party)) } else { theme::dim_colour(*theme::LABEL_COLOUR) };
+                            settings_line(&mut canvas, ctx.text, *r, &format!("{} \u{00b7} {}", name, state), hspan2, colour, if is_standing { 500 } else { 400 });
+                        }
+                    }
+                    GroupPage::Add => {
+                        settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::AddToGroupNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        let candidates: Vec<usize> = self.contacts.iter().enumerate().filter(|(_, c)| !c.is_sibling && c.friendship_id.is_some() && c.remote_count(&our_hh) > 0 && !roster.is_standing(&c.handle_hash)).map(|(i, _)| i).collect();
+                        if candidates.is_empty() {
+                            settings_line(&mut canvas, ctx.text, rows[2], &tr(Msg::NobodyToAdd), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                        for (k, ci) in candidates.iter().enumerate().take(32) {
+                            let Some(r) = rows.get(2 + k) else { break };
+                            let name = super::contact_visible_name(&self.contacts[*ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
+                            let already = self.group_locals.iter().any(|(g, l)| *g == gid && l.offered.iter().any(|(p, _)| *p == self.contacts[*ci].handle_hash));
+                            let label = if already { format!("{} \u{00b7} \u{2026}", name) } else { name };
+                            let hid = if phase == crate::storage::group::GroupPhase::Standing { self.group_panel_btn_base.wrapping_add(8 + k as HitId) } else { HIT_NONE };
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(*r, 0.8), &label, hid, ctx.pressed_hit, hid != HIT_NONE, None, "Oxanium");
+                        }
+                    }
+                    GroupPage::Manage => {
+                        // Mute (this device only), then Leave (two-tap) with its note.
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[1], 0.5), &tr(Msg::MutePill { muted }), self.group_panel_btn_base.wrapping_add(1), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        if phase == crate::storage::group::GroupPhase::Left {
+                            settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        } else {
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::LeaveGroupPill { armed: self.group_leave_armed }), self.group_panel_btn_base, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::LeaveGroupNote), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
                 }

@@ -1859,8 +1859,13 @@ pub struct PhotonApp {
     group_pick_open: bool,
     /// New-group form state on the picker: history policy from genesis (true) or from join (false, the default).
     group_pick_from_genesis: bool,
-    /// The New-group title box — registered in visit_app_widgets + textboxes_mut only.
+    /// The New-group title box — registered in visit_app_widgets + textboxes_mut only. Doubles as the group panel's rename box.
     group_title_textbox: Option<Textbox>,
+    /// Group panel rail rows [group_nav_base, +3) and pills [group_panel_btn_base, +8): 0 = Leave (two-tap), 1 = Mute, 2 = Rename; the Add page's contact rows use [group_panel_btn_base + 8, +32).
+    group_nav_base: HitId,
+    group_panel_btn_base: HitId,
+    /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
+    group_leave_armed: bool,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
     back_btn_hit_id: HitId,
     /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
@@ -2578,6 +2583,9 @@ impl PhotonApp {
             group_pick_open: false,
             group_pick_from_genesis: false,
             group_title_textbox: None,
+            group_nav_base: HIT_NONE,
+            group_panel_btn_base: HIT_NONE,
+            group_leave_armed: false,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
             join_copywords_hit_id: HIT_NONE,
@@ -3278,7 +3286,7 @@ impl PhotonApp {
                 }
             }
         }
-        if matches!(self.state, AppState::ContactPanel(crate::ui::state::ContactPage::Manage)) && self.group_pick_open {
+        if (matches!(self.state, AppState::ContactPanel(crate::ui::state::ContactPage::Manage)) && self.group_pick_open) || matches!(self.state, AppState::GroupPanel(crate::ui::state::GroupPage::About)) {
             if let Some(tb) = self.group_title_textbox.as_mut() {
                 f(tb);
             }
@@ -3515,6 +3523,17 @@ fn contact_page_rows(page: ContactPage) -> usize {
 }
 
 impl PhotonApp {
+    /// The group panel's row budget per page (docs/groups.md §10.5): About = title row + policy + "Members" header + one row per member record; Add = note + one row per candidate contact; Manage = fixed.
+    fn group_page_rows(&self, page: crate::ui::state::GroupPage) -> usize {
+        use crate::ui::state::GroupPage;
+        let gi = self.active_group();
+        match page {
+            GroupPage::About => 4 + gi.map_or(0, |gi| self.group_rosters[gi].1.members.len()),
+            GroupPage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
+            GroupPage::Manage => 6,
+        }
+    }
+
     /// The Manage page's row budget grows when the group picker is open: the fixed six, plus the New-group form (three rows) and one row per group we stand in (docs/groups.md §10.5). The render arm computes the same sum field-wise (it runs under the chrome borrow).
     fn manage_page_rows(&self) -> usize {
         let base = contact_page_rows(ContactPage::Manage);

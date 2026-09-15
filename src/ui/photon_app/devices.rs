@@ -1313,7 +1313,7 @@ impl PhotonApp {
                         self.contact_boot_armed = false;
                         if matches!(
                             self.state,
-                            AppState::Conversation | AppState::ContactPanel(_)
+                            AppState::Conversation | AppState::ContactPanel(_) | AppState::GroupPanel(_)
                         ) {
                             self.state = AppState::Ready;
                         }
