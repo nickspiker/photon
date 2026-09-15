@@ -1,6 +1,6 @@
 ---
 name: project-groups-build
-description: Groups implementation status — steps 1 + 2a–2d-iii(invite send) PUSHED 2026-09-14; next = found-group action + group-message fan-out
+description: Groups implementation status — steps 1 + 2a–2d-iii(invite send) PUSHED 2026-09-14, invite-secrets-to-typed-fields fix 702da08d 2026-09-15 (local); next = found-group action + group-message fan-out
 metadata: 
   node_type: memory
   type: project
@@ -27,3 +27,5 @@ Known deferred: chains.participants stale on roster change for groups (informati
 Also fixed en route: census_sweep_auto_nukes_strays raced log_dir()'s one-shot OLD_LOG_SWEPT Once (first log-sink open deletes the config-dir log) — test now spends the Once before planting its log.
 
 VSF-gate remediation d9359966 (2026-09-14, the v97 deploy's gate blocked on the fresh code): the group_list index is now a complete VSF document (provenance header + section, verified read thru parse_document) like the roster beside it, and all five hash domains end in a binary version byte (b"PHOTON_GROUP_v\x01" etc., never ASCII "v1") — safe flag-day, nothing shipped had minted a group. The substrate rode out publicly in release v97 (groundwork only, no UI surface).
+
+Invite secrets fix 702da08d (2026-09-15, Nick "Fix!"): the invite's era-pinned root/history key/lineage/index had been hex-encoded INTO the control-row text (copied from the EraSignal text pattern). The text is the row, and rows persist + replicate + re-serve, so the secret outlived its era — defeating retired-era zeroize and the crypto-shred horizon. Now `GroupInviteWire` on `GroupWire.invite` (typed fields gei/groot/ghk/glin, all-or-nothing parse, zeroize on drop), consumed by on_group_signal and never written to the row; GroupSignal::Invite is a bare kind marker. Zero field impact (no group ever minted). Doctrine reaffirmed: nothing binary or secret is ever encoded into control-row text — the EraSignal's hex nonce is the same smell (public values, style only).
