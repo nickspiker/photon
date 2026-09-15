@@ -1730,7 +1730,8 @@ impl PhotonApp {
             g_norm: p.g_norm,
             delay_bins: p.delay_bins,
             voiced: stored.as_ref().and_then(|c| c.voiced),
-            floor: stored.as_ref().map(|c| c.floor).unwrap_or(p.floor),
+            // The stored fine floor wins (a per-mic measurement); the ringback probe's coarse floor stands in only when nothing is stored, and only when it is a real reading.
+            floor: stored.as_ref().and_then(|c| c.floor).or(Some(p.floor).filter(|f| *f > 0.0)),
         })
     }
 

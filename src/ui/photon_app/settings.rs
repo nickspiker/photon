@@ -715,7 +715,7 @@ impl PhotonApp {
         let floor = fs
             .device_local(&format!("audio.cal.voice.{mic}.floor"))
             .and_then(crate::storage::fleet_settings::as_f32)
-            .unwrap_or(40.0);
+            .filter(|f| *f > 0.0);
         Some(crate::call::engine::CalSnapshot { g_norm, delay_bins, voiced, floor })
     }
 
@@ -771,6 +771,19 @@ impl PhotonApp {
                 let stored_voiced = read_f32(fs, &format!("{base}.voiced"));
                 let stored_n = if stored_voiced.is_some() { read_n(fs, &format!("{base}.n")) } else { 0.0 };
                 let w = lr.windows as f32;
+                // FLOOR-ONLY post (voiced 0 = the sentinel, 2026-09-15 "normalize on quiet"): a call where nobody talked 3 s still measured its quiet — blend the floor, leave voiced and its count untouched.
+                if p.voiced <= 0.0 {
+                    let floor = match read_f32(fs, &format!("{base}.floor")).filter(|f| *f > 0.0) {
+                        Some(f0) => f0 + (w / (w + stored_n + 20.0)) * (p.floor - f0),
+                        None => p.floor,
+                    };
+                    crate::logf!(
+                        "CAL: learned quiet — mic \"{}\" floor {} (floor-only post; the voiced profile is untouched)",
+                        p.mic_id,
+                        format!("{floor:.2}")
+                    );
+                    vec![(format!("{base}.floor"), vsf::VsfType::f5(floor))]
+                } else {
                 // RE-SEED on a gross mismatch (field 2026-09-15, the crackling wave): a measurement ≥2× off the store means the store is WRONG, not noisy — Nick's quiet-test-wave profile (45, n 100) met real speech at 165 and the inertial blend moved it to 65, leaving the next wave still ~21× hot. A wrong calibration is replaced, not nudged; the count restarts so the next calls own the evidence.
                 let reseed = stored_voiced.is_some_and(|v0| v0 > 0.0 && (p.voiced >= v0 * 2.0 || p.voiced <= v0 * 0.5));
                 let alpha = if reseed { 1.0 } else { w / (w + stored_n + 20.0) };
@@ -788,8 +801,8 @@ impl PhotonApp {
                     "CAL: learned voice {} — mic \"{}\" voiced {} floor {} n {} (the next call's makeup denominator; fleet-synced device-local)",
                     if reseed { "RE-SEEDED (measurement ≥2x off the store)" } else { "blended" },
                     p.mic_id,
-                    format!("{voiced:.0}"),
-                    format!("{floor:.0}"),
+                    format!("{voiced:.1}"),
+                    format!("{floor:.2}"),
                     format!("{n:.0}")
                 );
                 vec![
@@ -797,6 +810,7 @@ impl PhotonApp {
                     (format!("{base}.floor"), vsf::VsfType::f5(floor)),
                     (format!("{base}.n"), vsf::VsfType::u(n as usize, false)),
                 ]
+                }
             }
         };
         let fs = self.fleet_settings.as_mut().unwrap();

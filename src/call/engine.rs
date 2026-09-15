@@ -148,7 +148,8 @@ pub struct CalSnapshot {
     pub delay_bins: usize,
     /// This mic's measured raw voiced mean |sample| (blended across calls, fleet-synced per device+input) — the makeup's denominator. None until the first call measures it.
     pub voiced: Option<f32>,
-    pub floor: f32,
+    /// This mic's measured quiet (fractional coarse units since 2026-09-15 — the fine floor): the seed's second rung when no voiced profile exists, ranked ABOVE the vendor sensitivity (Nick: "normalize on quiet" — the quiet is measured on this device, the vendor number is marketing). None until a call measures it; a talkless call still posts one.
+    pub floor: Option<f32>,
 }
 
 /// Handle held by the UI's ActiveCall. Dropping it does NOT stop the engine — call `stop()` (teardown is an explicit edge).
@@ -299,13 +300,17 @@ fn run(
     // The TX level plan: the makeup denominator resolves ONCE, at engine start — stored per-input voiced profile (measured on past calls, fleet-synced) beats the vendor's reported sensitivity beats the CDD default. Fixed for the whole call; never adapted inside one.
     let (cal_voiced, cal_src) = match params.cal.as_ref().and_then(|c| c.voiced).filter(|v| *v >= 8.0) {
         Some(v) => (v as i64, "stored"),
-        None => match crate::platform::audio::mic_sensitivity_dbfs() {
+        // QUIET OUTRANKS THE VENDOR (Nick 2026-09-15, "normalize on quiet"): a stored fine floor × a nominal 20× speech-over-quiet seeds the makeup when no voiced profile exists yet — the quiet was MEASURED on this device where the sensitivity is a vendor claim (sign flips between vendors, ~10 dB off even when plausible). Bounded like the sensitivity estimate; the in-call re-aim corrects it from real speech within seconds anyway.
+        None => match params.cal.as_ref().and_then(|c| c.floor).filter(|f| *f > 0.05) {
+            Some(f) => (((f * 20.0).clamp(16.0, 512.0)) as i64, "floor-derived (stored quiet x 20)"),
+            None => match crate::platform::audio::mic_sensitivity_dbfs() {
             // Only a PLAUSIBLE sensitivity is believed (field 2026-09-13 23:47: Nick's vendor reports ~−8 dBFS at 94 dB SPL — physically absurd — and the derived 2048 gave a 1.3× makeup, his voice at 66 on the wire). Real elements sit −25..−50 dBFS; outside that the report is garbage and the default carries until the first call's measurement stores the truth.
             Some(s) if (-50.0..=-25.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity"),
             // Nick's vendor reports +37.0 where Emma's reports −37.0 — the HAL's sign convention is backwards. A positive magnitude in the plausible band is believed, negated.
             Some(s) if (25.0..=50.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((-s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity (vendor sign flipped)"),
             Some(_) => (TX_CAL_VOICED, "default (sensitivity implausible)"),
             None => (TX_CAL_VOICED, "default"),
+            },
         },
     };
     // Clamped to qgain's 16× budget (field 2026-09-15, the crackling wave: Nick's stored voiced 45 — calibrated on quiet afternoon test waves — minted a 30.3× makeup against real speech at 165, wire ran ~6000 against the 2048 target, and every syllable's peaks sat on the rail; Brittany mirror-imaged it at 16.4× on voiced 83 vs 490). A too-low cap means a quiet wave and a rocker; a too-high makeup means crackle — quiet errs safe.
@@ -326,8 +331,12 @@ fn run(
     );
     let mut tx_stage = crate::call::qgain::QGain::new(tx_makeup_q32);
     // This call's own measurement of the raw mic (pre-makeup): a min-statistic floor and the voiced mean above it — posted at teardown as the NEXT call's makeup denominator, blended and fleet-synced per input.
-    let mut raw_floor: i64 = i64::MAX;
-    let mut voiced_sum: i64 = 0;
+    // QUIET IS THE ANCHOR (Nick 2026-09-15, "normalize on quiet"): everything voiced is decided RELATIVE to this call's own measured quiet, because the speech-over-quiet ratio is the one statistic the device's unknown input gain cancels out of. Two trackers, both in FULL 24-bit resolution (256 = one coarse unit — the integer floor was quantization-blind: two phones both said "floor 1" with speech at 90 and 22):
+    // raw_floor_q8 — the min-statistic fine floor, stored per mic at teardown (the seed's quiet rung);
+    // noise_est_q8 — a slow-rise / fast-fall room tracker, the voiced gate's bar (the min undershoots bursty room noise by 10×+ — HVAC, rustling — which is how noise at 19 coarse passed a floor-anchored gate and aimed 64× at silence).
+    let mut raw_floor_q8: i64 = i64::MAX;
+    let mut noise_est_q8: i64 = 0;
+    let mut voiced_sum_q8: i64 = 0;
     // The one-time re-aim's latch: the decision fires exactly once per call, at measurement confidence.
     let mut tx_reaimed = false;
     let mut voiced_frames: i64 = 0;
@@ -498,13 +507,23 @@ fn run(
             // THE LEVEL PLAN'S ONE MAP (see TX_MAKEUP_Q32): fixed makeup (Q32, remainder carried, i32 headroom kept thru the shaper) then the cubic rail — a shout tapers into the rail instead of squaring off. Wire and archive carry the SAME shaped calibrated signal: the wire copy is the good copy of every party.
             {
                 // The calibration statistics stay in 16-bit units (the stored profiles, TX_CAL_VOICED and the plan constants all are): the 24-bit sum shifts down 8.
-                let raw_mean = (frame24.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() >> 8) / frame24.len().max(1) as i64;
-                if raw_mean > 0 && raw_mean < raw_floor {
-                    raw_floor = raw_mean;
+                let mean_q8 = frame24.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame24.len().max(1) as i64;
+                if mean_q8 > 0 && mean_q8 < raw_floor_q8 {
+                    raw_floor_q8 = mean_q8;
                 }
-                // Voiced calibration accumulates only while the far side is QUIET (00:15 field wave: Emma's "measured voiced 185" was mostly Nick — her earpiece and, same-room, his actual mouth — which would drift the stored number; echo must never calibrate the mic).
-                if raw_floor != i64::MAX && raw_mean > (raw_floor * 3).max(12) && crate::platform::audio::emitted_level() < 128 {
-                    voiced_sum += raw_mean;
+                // The room tracker: seeded on the first live frame, RISES slowly (>>10 per frame, ~5 s to a louder room — a speech burst can only creep it, and any pause snaps it back), FALLS fast (>>2 per frame, ~50 ms to a quieter one).
+                if mean_q8 > 0 {
+                    if noise_est_q8 == 0 {
+                        noise_est_q8 = mean_q8;
+                    } else if mean_q8 > noise_est_q8 {
+                        noise_est_q8 += ((mean_q8 - noise_est_q8) >> 10).max(1);
+                    } else {
+                        noise_est_q8 = mean_q8 + ((noise_est_q8 - mean_q8) >> 2);
+                    }
+                }
+                // RELATIVE voiced gate: 3× the tracked quiet (and above 2 coarse units of absolute silence) — room noise cannot be 3× its own tracker, speech at the ear always is, and the device's unknown gain cancels out of the ratio. Far-quiet gating unchanged (00:15 field wave: echo must never calibrate the mic).
+                if noise_est_q8 > 0 && mean_q8 > (noise_est_q8 * 3).max(512) && crate::platform::audio::emitted_level() < 128 {
+                    voiced_sum_q8 += mean_q8;
                     voiced_frames += 1;
                 }
                 // The kernel at 24-bit: s24 · g(Q32) is Q40 against the i16 domain, so the shift is 40 and the carry keeps 40 bits. Budget: 2^23 · 2^39 (128× makeup) + carry < 2^63.
@@ -1155,16 +1174,18 @@ fn run(
             last_est = std::time::Instant::now();
             // ONE-TIME RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS call has 2 s of far-quiet-gated voiced evidence, the makeup steps exactly onto the plan and never moves again this call — a single calibration correction from ground truth, not an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
             if !tx_reaimed && voiced_frames >= 400 {
-                let measured = voiced_sum / voiced_frames.max(1);
-                if measured > 0 {
-                    let ideal = (((TX_WIRE_TARGET * 2 / 3) << 32) / measured)
+                let measured_q8 = voiced_sum_q8 / voiced_frames.max(1);
+                // QUIET SANITY BOUND (the noise-aimed 64×, 2026-09-15): evidence that no longer clears 3× the room tracker is noise the gate let thru before the tracker settled — hold, keep accruing, decide on frames that do clear it.
+                if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {
+                    let ideal = (((TX_WIRE_TARGET * 2 / 3) << 40) / measured_q8)
                         .clamp(crate::call::qgain::UNITY / 8, 64 * crate::call::qgain::UNITY);
                     // Step only when the aim is off by ≥1.5× either way — inside that band the rocker covers it.
                     if ideal * 2 >= tx_makeup_q32 * 3 || tx_makeup_q32 * 2 >= ideal * 3 {
                         crate::logf!(
-                            "CALL: level plan re-aim — this call's voiced {} over {} frames, makeup {} → {} (once; the stored profile still learns at teardown)",
-                            measured,
+                            "CALL: level plan re-aim — this call's voiced {} over {} frames ({}x its quiet), makeup {} → {} (once; the stored profile still learns at teardown)",
+                            measured_q8 >> 8,
                             voiced_frames,
+                            measured_q8 / noise_est_q8.max(1),
                             format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
                             format!("{:.1}x", ideal as f64 / crate::call::qgain::UNITY as f64)
                         );
@@ -1350,24 +1371,25 @@ fn run(
     );
     // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
+    let fine_floor = if raw_floor_q8 == i64::MAX { None } else { Some(raw_floor_q8 as f32 / 256.0) };
     crate::logf!(
         "CALL: level plan — makeup {} ({}, cal voiced {}); this call measured voiced {} floor {} over {} frames",
         format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
         cal_src,
         cal_voiced,
-        if voiced_frames > 0 { (voiced_sum / voiced_frames).to_string() } else { "?".into() },
-        if raw_floor == i64::MAX { "?".to_string() } else { raw_floor.to_string() },
+        if voiced_frames > 0 { (voiced_sum_q8 / voiced_frames >> 8).to_string() } else { "?".into() },
+        fine_floor.map(|f| format!("{f:.2}")).unwrap_or_else(|| "?".into()),
         voiced_frames
     );
-    // ≥3 s of voiced speech earns a profile post: the blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
-    if voiced_frames >= 600 {
+    // ≥3 s of voiced speech earns a full profile post; a call with a measured quiet but no speech still posts its FLOOR alone (voiced 0 = the floor-only sentinel) — the quiet rung of the next call's seed needs no one to have talked. The blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
+    if voiced_frames >= 600 || (fine_floor.is_some() && tx_frames >= 600) {
         crate::call::calibrate::post_learned(vec![crate::call::calibrate::LearnedResult {
             result: crate::call::calibrate::CalResult::Voice(crate::call::calibrate::VoiceProfile {
-                voiced: (voiced_sum / voiced_frames) as f32,
-                floor: if raw_floor == i64::MAX { 0.0 } else { raw_floor as f32 },
+                voiced: if voiced_frames >= 600 { (voiced_sum_q8 / voiced_frames) as f32 / 256.0 } else { 0.0 },
+                floor: fine_floor.unwrap_or(0.0),
                 mic_id: crate::platform::audio::mic_id(),
             }),
-            windows: (voiced_frames / 200) as u32,
+            windows: (voiced_frames.max(200) / 200) as u32,
             solid: voiced_frames >= 2400,
         }]);
     }
