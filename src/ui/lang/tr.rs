@@ -63,6 +63,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOn => "\u{1F50A} Açık".into(),
         Msg::SpeakerToggleOff => "\u{1F50A} Hoparlör".into(),
         Msg::SpeakerPlain => "Hoparlör".into(),
+        Msg::EarpiecePlain => "Ahize".into(),
         Msg::AddHandle => "+ Handle".into(),
         Msg::AddHandlePlain => "Handle ekle".into(),
         Msg::BackToContact => "\u{2039} Kişi".into(),
@@ -259,6 +260,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliverySending => "gönderiliyor".into(),
         Msg::RecoveredSuffix => " \u{00b7} kurtarıldı".into(),
         Msg::EditedSuffix => " \u{00b7} düzenlendi".into(),
+        Msg::EditWasLine { age, text } => format!("önce \u{00b7} {age}: {text}").into(),
         Msg::BlobDeliveredSuffix => " \u{00b7} blob iletildi".into(),
         Msg::BlobSendingSuffix => " \u{00b7} blob gönderiliyor".into(),
         Msg::BlobNotHereSuffix => " \u{00b7} blob henüz burada değil".into(),
@@ -276,6 +278,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SavePill => "kaydet".into(),
         Msg::ExportPill => "dışa aktar".into(),
         Msg::DiscardPill => "at".into(),
+        Msg::LoftPill => "kümese".into(),
         Msg::AttachStats { name, kind, size, dims } => {
             let name_part = if name.is_empty() { String::new() } else { format!("{name} \u{00B7} ") };
             let dims_part = if dims.is_empty() { String::new() } else { format!(" \u{00B7} {dims}") };
@@ -447,6 +450,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VibrateNewMessage => "Yeni mesajda titreşsin".into(),
         Msg::RingIncomingCall => "Gelen dalgada çalsın".into(),
         Msg::HoldWavesOnDevice => "Her dalga kaydını bu cihazda tut".into(),
+        Msg::KeepEditHistory => "Düzenleme geçmişini göster".into(),
         Msg::VibrateIncomingCall => "Gelen dalgada titreşsin".into(),
         Msg::PresenceCheckbox => "Durumumu kişilerime göster".into(),
         Msg::PerContactOverride => "Kişiye özel ayar her sohbetin kendi içinde.".into(),
@@ -496,6 +500,15 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VaultDegraded => "sağlık \u{00b7} BOZUK \u{2014} bir yazma başarısız oldu; kasa yeniden deniyor ve henüz hiçbir şey kaybolmadı".into(),
         Msg::VaultRefresh => "Yenile".into(),
         Msg::VaultReading => "kasa okunuyor\u{2026}".into(),
+        Msg::VaultSpaceHead => "Yeri ne tutuyor".into(),
+        Msg::VaultFilterAll => "her şey".into(),
+        Msg::VaultFilterWaves => "dalgalar".into(),
+        Msg::VaultFilterPictures => "resimler".into(),
+        Msg::VaultFilterSongs => "şarkılar".into(),
+        Msg::VaultFilterFiles => "dosyalar".into(),
+        Msg::VaultFilterKept => "\u{2605} saklanan".into(),
+        Msg::VaultConvLine { size, name, count } => format!("{size} \u{00b7} {name} ({count})").into(),
+        Msg::VaultBinEmpty => "burada henüz bir şey yok".into(),
         // Türkçede yüzde işareti sayının önünde durur (%25), bu yüzden fmt_num çağrısı aynı kalır, simge yer değiştirir.
         Msg::DiagInfo { used, cap, pct } => format!("Cihazdaki günlük \u{00b7} {used} / {cap} (%{}) \u{00b7} {}\u{2013}{} saat içinde kendiliğinden silinir", fmt_num(pct as u32), fmt_num(24), fmt_num(48)).into(),
         Msg::LogTitle => "Günlük".into(),
