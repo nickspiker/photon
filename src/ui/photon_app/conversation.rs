@@ -1013,7 +1013,7 @@ impl PhotonApp {
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
         let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // Group control row landed (docs/groups.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
-        let mut group_signal_evt: Option<(usize, usize, crate::types::group::GroupSignal, Option<Vec<u8>>, i64)> = None;
+        let mut group_signal_evt: Option<(usize, usize, crate::types::group::GroupSignal, Option<crate::network::message_package::GroupWire>, i64)> = None;
         // The 256-row cadence edge (crypto/era.rs): the contact whose peer-row count just crossed a multiple of the cadence.
         let mut cadence_ci: Option<usize> = None;
         let mut recv_seal_idx: Option<usize> = None;
@@ -1420,7 +1420,8 @@ impl PhotonApp {
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(row);
                 persist_ci = Some(contact_idx);
-                group_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.as_ref().and_then(|g| g.blob.clone()), timestamp));
+                // The whole typed group wire goes to the handler (the invite's secrets live ONLY there — the row inserted above is the bare kind marker).
+                group_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.clone(), timestamp));
             } else if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
                 let sig_row =
                     ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
@@ -1828,8 +1829,8 @@ impl PhotonApp {
         if let Some((ci, sig, kem, ts)) = era_signal_evt {
             self.on_era_signal(ci, sig, kem, ts);
         }
-        if let Some((ci, cp, sig, blob, ts)) = group_signal_evt {
-            self.on_group_signal(ci, cp, sig, blob, ts);
+        if let Some((ci, cp, sig, wire, ts)) = group_signal_evt {
+            self.on_group_signal(ci, cp, sig, wire, ts);
         }
         if let Some(ci) = cadence_ci {
             self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached);

@@ -33,12 +33,30 @@ pub struct MessagePackage {
     pub group: Option<GroupWire>,
 }
 
-/// The group frame's typed extras (docs/groups.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a GROUP_PREFIX control row (invite snapshot or record posting).
+/// The group frame's typed extras (docs/groups.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a GROUP_PREFIX control row (invite snapshot or record posting); `invite` is the era-pinned secret set on an INVITE row — typed fields, consumed at ingress, never part of the row.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct GroupWire {
     pub from: [u8; 32],
     pub woven_authors: Vec<[u8; 32]>,
     pub blob: Option<Vec<u8>>,
+    pub invite: Option<GroupInviteWire>,
+}
+
+/// The invite's era-pinned secrets (docs/groups.md §4 Invite), riding as typed fields beside the text — the era-KEM doctrine, and here it is load-bearing: the row TEXT is what persists, replicates to siblings and re-serves as history, so a secret in the text would outlive the era it belongs to and defeat the retired-era zeroize. These fields are read once by the invite handler and dropped; the row that lands carries only the kind marker. Zeroized on drop.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GroupInviteWire {
+    pub era_index: u64,
+    pub group_root: [u8; 32],
+    pub group_history_key: [u8; 32],
+    pub era_lineage: [u8; 32],
+}
+
+impl Drop for GroupInviteWire {
+    fn drop(&mut self) {
+        use zeroize::Zeroize;
+        self.group_root.zeroize();
+        self.group_history_key.zeroize();
+    }
 }
 
 /// The attachment row's typed extras on the friend wire — kind (AttachKind wire value), pixel dims (0 = unknown), the preview-blob hash, and the micro preview bytes.
@@ -110,6 +128,10 @@ fn msg_schema() -> SectionSchema {
         .field("gpl", TypeConstraint::Any) // hR group record payload (roster-codec blob) on a GROUP_PREFIX row; old parsers discard the unknown name
         .field("gfrom", TypeConstraint::AnyHash) // hb 32 group attribution: the sender's party id (docs/groups.md §3); presence marks a group frame
         .field("gwa", TypeConstraint::AnyHash) // hb 32 weave author per wt entry (group weave refs are (author, eagle_time)); count must match wt
+        .field("gei", TypeConstraint::AnyUnsigned) // invite: the era index the secrets below open (auto-sized; readers widen)
+        .field("groot", TypeConstraint::AnyHash) // hb 32 invite: the group root of that era — consumed at ingress, never stored in the row
+        .field("ghk", TypeConstraint::AnyHash) // hb 32 invite: the group history key of that era — consumed at ingress, never stored
+        .field("glin", TypeConstraint::AnyHash) // hb 32 invite: the era lineage (public — the one-way image of the era-0 root)
 }
 
 /// Encode a message package as a complete VSF document. The caller supplies the pad (already random) so this layer stays deterministic-in, deterministic-out.
@@ -238,6 +260,12 @@ pub fn build_message_package_era(
             if !b.is_empty() {
                 builder = builder.set("gpl", VsfType::hR(b.clone())).map_err(|e| e.to_string())?;
             }
+        }
+        if let Some(inv) = g.invite.as_ref() {
+            builder = builder.set("gei", VsfType::u(inv.era_index as usize, false)).map_err(|e| e.to_string())?;
+            builder = builder.set("groot", VsfType::hb(inv.group_root.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("ghk", VsfType::hb(inv.group_history_key.to_vec())).map_err(|e| e.to_string())?;
+            builder = builder.set("glin", VsfType::hb(inv.era_lineage.to_vec())).map_err(|e| e.to_string())?;
         }
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
@@ -420,10 +448,22 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
                 })
                 .collect();
             let blob = bytes_field("gpl");
+            // The invite secret set is all-or-nothing: three hashes and an index, or no invite at all (a partial set is a malformed invite, never a guess).
+            let hash32 = |name: &str| -> Option<[u8; 32]> {
+                section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| match v {
+                    VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+                    _ => None,
+                })
+            };
+            let invite = match (u_field("gei"), hash32("groot"), hash32("ghk"), hash32("glin")) {
+                (Some(era_index), Some(group_root), Some(group_history_key), Some(era_lineage)) => Some(GroupInviteWire { era_index, group_root, group_history_key, era_lineage }),
+                _ => None,
+            };
             GroupWire {
                 from,
                 woven_authors: if authors.len() == woven_times.len() { authors } else { Vec::new() },
                 blob: (!blob.is_empty()).then_some(blob),
+                invite,
             }
         });
     Ok(MessagePackage {
@@ -460,7 +500,7 @@ mod tests {
     /// The group extras ride typed beside the text (the era-KEM doctrine): attribution, paired weave authors, the record blob — absent on every friendship row, and a wa/wt count mismatch drops the authors while the times keep driving the braid.
     #[test]
     fn group_wire_rides_and_is_absent_on_plain_rows() {
-        let g = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]) };
+        let g = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), invite: None };
         let built = build_message_package_era("\u{1}\u{2}photon-group\u{2}\u{1}records", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.group, Some(g.clone()));
@@ -468,12 +508,28 @@ mod tests {
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().group, None);
         // Mismatched pairing: one author for two times — authors drop, attribution and blob stay.
-        let bad = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None };
+        let bad = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, invite: None };
         let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.group.as_ref().unwrap().from, [0xAA; 32]);
         assert!(pkg.group.as_ref().unwrap().woven_authors.is_empty());
         assert_eq!(pkg.woven_times, vec![5, 9]);
+    }
+
+    /// The invite's secrets ride as TYPED fields (all four, or none) and never appear in the text — the row that persists is the bare kind marker.
+    #[test]
+    fn group_invite_secrets_ride_typed_never_in_text() {
+        let inv = GroupInviteWire { era_index: 300, group_root: [0x11; 32], group_history_key: [0x22; 32], era_lineage: [0x33; 32] };
+        let g = GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: Some(vec![1u8; 40]), invite: Some(inv.clone()) };
+        let text = crate::types::group::GroupSignal::Invite.to_content();
+        let built = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&g)).unwrap();
+        let pkg = parse_message_package(&built).unwrap();
+        assert_eq!(pkg.group.as_ref().unwrap().invite, Some(inv));
+        assert_eq!(pkg.body, text);
+        assert!(!pkg.body.contains("11111111"), "no secret material in the row text");
+        // A partial set (root without history key) is no invite at all.
+        let section_only = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, invite: None })).unwrap();
+        assert_eq!(parse_message_package(&section_only).unwrap().group.as_ref().unwrap().invite, None);
     }
 
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).

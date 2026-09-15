@@ -299,16 +299,11 @@ pub fn verify_record(signing_bytes: &[u8], signature: &[u8; 64], signer_device: 
     vk.verify(&blake3::hash(signing_bytes).as_bytes()[..], &sig).is_ok()
 }
 
-/// The group control-row grammar (§4, the `EraSignal` shape): a hidden text row `GROUP_PREFIX kind ‖ ␂-separated fields`, with the record payload — a roster-codec VSF blob — riding the message package's typed `gpl` field beside it, never inside the text. Small fixed-width values (the invite's era-pinned secrets) ride the text hex-encoded: the row travels sealed inside the pairwise braid, so the text IS end-to-end encrypted; hex is framing, not protection.
-#[derive(Clone, Debug, PartialEq)]
+/// The group control-row grammar (§4, the `EraSignal` shape): a hidden text row `GROUP_PREFIX kind`, with EVERYTHING else typed on the message package beside it — the roster-codec blob in `gpl`, the invite's era-pinned secrets in `gei`/`groot`/`ghk`/`glin` (`GroupInviteWire`). Nothing binary is ever encoded into the text: the text is the row, and the row persists, replicates and re-serves — a secret in it would outlive its era.
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum GroupSignal {
-    /// The sponsor's pairwise invite (§4 Invite): era-pinned secrets + lineage in the text, the roster snapshot in `gpl` so the invitee sees who is in it before consenting. Refreshed by the sponsor on every era mint (§8b); consent IS the invitee's member record, posted into the group as its first frame.
-    Invite {
-        era_index: u64,
-        group_root: [u8; 32],
-        group_history_key: [u8; 32],
-        era_lineage: [u8; 32],
-    },
+    /// The sponsor's pairwise invite (§4 Invite): the era-pinned secrets ride the package's typed invite fields (consumed at ingress, never stored), the roster snapshot rides `gpl` so the invitee sees who is in it before consenting. Refreshed by the sponsor on every era mint (§8b); consent IS the invitee's member record, posted into the group as its first frame.
+    Invite,
     /// Records posted INSIDE the group — genesis, member, leave, in any mix — as a roster-codec blob in `gpl`. History re-serve REBUILDS the blob from the roster at serve time (records never delete, so the roster always holds them — the plaid-fill doctrine: derived bytes are reconstructed, never archived twice).
     Records,
 }
@@ -316,35 +311,14 @@ pub enum GroupSignal {
 impl GroupSignal {
     pub fn to_content(&self) -> String {
         match self {
-            GroupSignal::Invite { era_index, group_root, group_history_key, era_lineage } => format!(
-                "{}invite\u{2}{}\u{2}{}\u{2}{}\u{2}{}",
-                GROUP_PREFIX,
-                era_index,
-                hex::encode(group_root),
-                hex::encode(group_history_key),
-                hex::encode(era_lineage)
-            ),
+            GroupSignal::Invite => format!("{}invite", GROUP_PREFIX),
             GroupSignal::Records => format!("{}records", GROUP_PREFIX),
         }
     }
 
     pub fn parse(content: &str) -> Option<GroupSignal> {
-        let rest = content.strip_prefix(GROUP_PREFIX)?;
-        let mut parts = rest.split('\u{2}');
-        match parts.next()? {
-            "invite" => {
-                let era_index: u64 = parts.next()?.parse().ok()?;
-                let dec32 = |s: &str| -> Option<[u8; 32]> {
-                    let v = hex::decode(s).ok()?;
-                    <[u8; 32]>::try_from(v.as_slice()).ok()
-                };
-                Some(GroupSignal::Invite {
-                    era_index,
-                    group_root: dec32(parts.next()?)?,
-                    group_history_key: dec32(parts.next()?)?,
-                    era_lineage: dec32(parts.next()?)?,
-                })
-            }
+        match content.strip_prefix(GROUP_PREFIX)? {
+            "invite" => Some(GroupSignal::Invite),
             "records" => Some(GroupSignal::Records),
             _ => None,
         }
@@ -529,7 +503,7 @@ mod tests {
     /// The control-row grammar round-trips and stays hidden; a bogus kind is None, never a panic.
     #[test]
     fn group_signals_round_trip_and_are_control() {
-        let inv = GroupSignal::Invite { era_index: 3, group_root: [1; 32], group_history_key: [2; 32], era_lineage: [3; 32] };
+        let inv = GroupSignal::Invite;
         assert_eq!(GroupSignal::parse(&inv.to_content()), Some(inv.clone()));
         assert_eq!(GroupSignal::parse(&GroupSignal::Records.to_content()), Some(GroupSignal::Records));
         assert!(crate::types::is_control_content(&inv.to_content()));
@@ -552,15 +526,15 @@ mod tests {
         f_roster.merge_member(birth.founder_member.clone());
         let mut f_chains = FriendshipChains::from_group_root(birth.group_id, &f_roster.standing(), birth.group_root, birth.group_history_key, 0, birth.era_lineage);
 
-        // The wire: the signal text + the roster snapshot blob (rides the package's gpl field).
-        let sig = GroupSignal::Invite { era_index: 0, group_root: birth.group_root, group_history_key: birth.group_history_key, era_lineage: birth.era_lineage };
-        let content = sig.to_content();
+        // The wire: the bare signal text, the era-pinned secrets as typed package fields, the roster snapshot blob in gpl.
+        let content = GroupSignal::Invite.to_content();
+        let wire = crate::network::message_package::GroupInviteWire { era_index: 0, group_root: birth.group_root, group_history_key: birth.group_history_key, era_lineage: birth.era_lineage };
         let blob = crate::storage::group::roster_to_vsf_bytes(&birth.group_id, &f_roster).expect("snapshot");
+        assert!(!content.contains(&hex::encode(birth.group_root)), "the row text carries no secret");
 
         // The invitee's side: parse, inspect who is in it, verify the birth, consent.
-        let Some(GroupSignal::Invite { era_index, group_root, group_history_key, era_lineage }) = GroupSignal::parse(&content) else {
-            panic!("invite parses");
-        };
+        assert_eq!(GroupSignal::parse(&content), Some(GroupSignal::Invite), "invite parses");
+        let (era_index, group_root, group_history_key, era_lineage) = (wire.era_index, wire.group_root, wire.group_history_key, wire.era_lineage);
         let (gid, mut j_roster) = crate::storage::group::roster_from_vsf_bytes(&blob).expect("snapshot decodes");
         assert_eq!(gid, birth.group_id);
         let g = j_roster.genesis.as_ref().expect("the invitee sees the birth certificate");

@@ -1,17 +1,22 @@
 //! Group flows (docs/groups.md): founding, the pairwise invite's adoption, and roster record merges.
-//! The receive half rides `commit_braid_rx`'s control-row ladder (a `GroupSignal` row defers here after the chains borrow ends, the era-signal discipline); the send half posts `GROUP_PREFIX` rows with the roster blob on the package's typed `gpl` field.
+//! The receive half rides `commit_braid_rx`'s control-row ladder (a `GroupSignal` row defers here after the chains borrow ends, the era-signal discipline); the send half posts bare `GROUP_PREFIX` rows with the roster blob on the package's typed `gpl` field and the invite's era-pinned secrets on its typed invite fields — the text is the row, and the row persists, so nothing secret ever rides the text.
 //! Consent doctrine (§4): adopting an invite creates the group LOCALLY only — the member record that makes us standing posts on our first send in the group (composing IS consent); nothing here auto-joins anyone.
 
 use super::PhotonApp;
 use crate::types::group::{GroupId, GroupSignal, Roster};
 
 impl PhotonApp {
-    /// A `GroupSignal` control row landed (deferred from commit_braid_rx): `ci` = the sender's contact, `cp` = the conversation the row landed in, `blob` = the package's roster payload.
-    pub(super) fn on_group_signal(&mut self, ci: usize, cp: usize, sig: GroupSignal, blob: Option<Vec<u8>>, _ts: i64) {
+    /// A `GroupSignal` control row landed (deferred from commit_braid_rx): `ci` = the sender's contact, `cp` = the conversation the row landed in, `wire` = the package's typed group extras (roster blob; the invite's secrets, which die with this call).
+    pub(super) fn on_group_signal(&mut self, ci: usize, cp: usize, sig: GroupSignal, wire: Option<crate::network::message_package::GroupWire>, _ts: i64) {
+        let blob = wire.as_ref().and_then(|g| g.blob.clone());
         match sig {
-            GroupSignal::Invite { era_index, group_root, group_history_key, era_lineage } => {
-                self.adopt_group_invite(ci, era_index, group_root, group_history_key, era_lineage, blob);
-            }
+            GroupSignal::Invite => match wire.as_ref().and_then(|g| g.invite.as_ref()) {
+                Some(inv) => self.adopt_group_invite(ci, inv.era_index, inv.group_root, inv.group_history_key, inv.era_lineage, blob),
+                None => {
+                    let sponsor = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
+                    crate::logf!("GROUP: invite from {} without its typed secret fields — refused", sponsor);
+                }
+            },
             GroupSignal::Records => self.merge_group_records(ci, cp, blob),
         }
     }
@@ -138,7 +143,7 @@ impl PhotonApp {
             .unwrap_or(false)
     }
 
-    /// Send (or refresh) a group invite to a contact over the pairwise braid (§4 Invite): the era-pinned secrets ride the hidden control text (sealed end-to-end by the braid), the roster snapshot rides the package's gpl field so the invitee sees who is in it before consenting. The pending ledger's stored ciphertext carries retransmits; a new era means the sponsor calls this again (§8b refresh-on-mint). The invitee's consent posts back as its member record.
+    /// Send (or refresh) a group invite to a contact over the pairwise braid (§4 Invite): the era-pinned secrets ride the package's typed invite fields (sealed end-to-end by the braid, consumed at ingress, never part of the persisted row), the roster snapshot rides the gpl field so the invitee sees who is in it before consenting. The pending ledger's stored ciphertext carries retransmits; a new era means the sponsor calls this again (§8b refresh-on-mint). The invitee's consent posts back as its member record.
     pub(super) fn send_group_invite(&mut self, gid: crate::types::group::GroupId, ci: usize) -> bool {
         let Some(contact) = self.contacts.get(ci) else {
             return false;
@@ -174,8 +179,9 @@ impl PhotonApp {
                 }
             }
         };
-        let content = crate::types::group::GroupSignal::Invite { era_index, group_root: root, group_history_key: hk, era_lineage }.to_content();
-        let wire = crate::network::message_package::GroupWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob) };
+        let content = crate::types::group::GroupSignal::Invite.to_content();
+        let invite = crate::network::message_package::GroupInviteWire { era_index, group_root: root, group_history_key: hk, era_lineage };
+        let wire = crate::network::message_package::GroupWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), invite: Some(invite) };
         let ts = vsf::eagle_time_oscillations();
         let sent = self.chain_transmit_with(ci, &content, ts, None, None, None, Some(&wire));
         crate::logf!("GROUP: invite for {} (era {}) {} to {}", hex::encode(&gid.0[..4]), era_index, if sent { "sent" } else { "NOT sent — the next edge retries" }, fp);
