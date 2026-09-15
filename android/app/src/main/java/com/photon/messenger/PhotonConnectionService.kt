@@ -216,22 +216,19 @@ class PhotonConnectionService : Service() {
         try { nativeAudioMic(micId) } catch (e: Throwable) { PhotonLog.w(TAG, "mic mirror failed: ${e.message}") }
     }
 
-    /** The routed volume in dB, mirrored to Rust (the chirp's level estimate): the voice stream at the earpiece while a wave rides it, the media stream at the loudspeaker otherwise. A member so the route change can call it (2026-09-12). */
+    /** Which USAGE the Rust render stream actually opened with — reported by native code after every output open (call_service_void renderUsageVoice/renderUsageMedia), so the volume mirror reads the stream that truly governs the wave instead of guessing from the route (field 2026-09-15: Nick's mirror said −32 dB while he heard the far side fine). */
+    @Volatile var renderVoiceUsage = false
+    fun renderUsageVoice() { renderVoiceUsage = true; pushVolumeMirror() }
+    fun renderUsageMedia() { renderVoiceUsage = false; pushVolumeMirror() }
+
+    /** The routed volume in dB, mirrored to Rust: the stream that governs the RENDER TRACK'S ACTUAL USAGE (voice-communication on the earpiece fast path, media otherwise — native reports it, see renderVoiceUsage). The dB is the plain index ratio (20·log10(idx/max), floor −60): monotone, vendor-curve-free — getStreamVolumeDb's per-device curves returned −32 dB at audible settings on Nick's phone (2026-09-15), which poisoned the echo normalization and every level diagnosis. A member so the route change can call it (2026-09-12). */
     fun pushVolumeMirror() {
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         try {
-            // STREAM_MUSIC, not STREAM_VOICE_CALL (field 2026-09-02, Nick's rocker-indicator catch): our render track is USAGE_MEDIA (the latency-first 2026-08-19 trade — the vendor voice pipeline cost an 80ms buffer floor), so the MUSIC stream is the knob that actually governs our loudness. Mirroring the voice-call stream normalized the echo profile (g_norm = g / vol_lin) by a slider that does NOTHING to our audio — media volume changes didn't rescale the prediction, voice-call changes rescaled it for no physical reason.
-            // While the wave rides the earpiece the rocker governs the VOICE stream at the earpiece's own curve; otherwise the media stream at the loudspeaker's, as before (2026-09-12).
-            val stream = if (earpieceRouted) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
-            val device = if (earpieceRouted) android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE else android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER
-            val db = if (Build.VERSION.SDK_INT >= 28) {
-                am.getStreamVolumeDb(stream, am.getStreamVolume(stream), device)
-            } else {
-                // Pre-28 fallback: linear index ratio → rough dB (20·log10), floor -60.
-                val v = am.getStreamVolume(stream).toFloat()
-                val max = am.getStreamMaxVolume(stream).toFloat().coerceAtLeast(1f)
-                if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
-            }
+            val stream = if (earpieceRouted && renderVoiceUsage) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+            val v = am.getStreamVolume(stream).toFloat()
+            val max = am.getStreamMaxVolume(stream).toFloat().coerceAtLeast(1f)
+            val db = if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
             nativeVolumeDb(db)
         } catch (e: Throwable) { PhotonLog.w(TAG, "volume mirror failed: ${e.message}") }
     }

@@ -191,6 +191,8 @@ fn start_output() -> Result<AudioStream, String> {
     let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
     s.request_start().map_err(|e| format!("start: {e:?}"))?;
     describe(&s, "out");
+    // Tell the service which USAGE the render actually opened with, so the volume mirror reads the stream that truly governs it (field 2026-09-15: Nick's mirror said −32 dB while he heard fine — the mirror guessed the stream instead of knowing it).
+    let _ = crate::platform::jni_android::call_service_void(if VOICE_USAGE_OK.load(Ordering::Relaxed) { "renderUsageVoice" } else { "renderUsageMedia" });
     Ok(s)
 }
 

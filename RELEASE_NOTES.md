@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave now aims its send level by listening to itself: a few seconds in, once it has heard enough of your actual voice, it corrects its gain once to put you exactly on the plan — so a quiet posture no longer makes you inaudible and a stale calibration no longer makes you crackle, whatever the last call measured.
+- The volume readout the wave's diagnostics rely on now reads the control that actually governs the call's loudness, as a plain fraction of full — vendor loudness curves had it reporting near-mute on phones that sounded fine.
 - The crackling wave is fixed: a voice calibration learned from quiet test calls could drive the send level far past the plan and pin every syllable against the ceiling — the gain is now capped, and a calibration that a real call proves badly wrong is replaced on the spot instead of nudged toward the truth over many calls.
 
 ## v97

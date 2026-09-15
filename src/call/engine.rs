@@ -310,7 +310,8 @@ fn run(
     };
     // Clamped to qgain's 16× budget (field 2026-09-15, the crackling wave: Nick's stored voiced 45 — calibrated on quiet afternoon test waves — minted a 30.3× makeup against real speech at 165, wire ran ~6000 against the 2048 target, and every syllable's peaks sat on the rail; Brittany mirror-imaged it at 16.4× on voiced 83 vs 490). A too-low cap means a quiet wave and a rocker; a too-high makeup means crackle — quiet errs safe.
     let tx_makeup_uncapped: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
-    let tx_makeup_q32: i64 = tx_makeup_uncapped.min(16 * crate::call::qgain::UNITY);
+    // mut for the ONE-TIME re-aim below — the profile aims the first seconds, this call's own measurement aims the rest.
+    let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(16 * crate::call::qgain::UNITY);
     crate::logf!(
         "CALL: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
         format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
@@ -327,6 +328,8 @@ fn run(
     // This call's own measurement of the raw mic (pre-makeup): a min-statistic floor and the voiced mean above it — posted at teardown as the NEXT call's makeup denominator, blended and fleet-synced per input.
     let mut raw_floor: i64 = i64::MAX;
     let mut voiced_sum: i64 = 0;
+    // The one-time re-aim's latch: the decision fires exactly once per call, at measurement confidence.
+    let mut tx_reaimed = false;
     let mut voiced_frames: i64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
@@ -1150,6 +1153,26 @@ fn run(
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
+            // ONE-TIME RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS call has 2 s of far-quiet-gated voiced evidence, the makeup steps exactly onto the plan and never moves again this call — a single calibration correction from ground truth, not an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
+            if !tx_reaimed && voiced_frames >= 400 {
+                let measured = voiced_sum / voiced_frames.max(1);
+                if measured > 0 {
+                    let ideal = (((TX_WIRE_TARGET * 2 / 3) << 32) / measured)
+                        .clamp(crate::call::qgain::UNITY / 8, 64 * crate::call::qgain::UNITY);
+                    // Step only when the aim is off by ≥1.5× either way — inside that band the rocker covers it.
+                    if ideal * 2 >= tx_makeup_q32 * 3 || tx_makeup_q32 * 2 >= ideal * 3 {
+                        crate::logf!(
+                            "CALL: level plan re-aim — this call's voiced {} over {} frames, makeup {} → {} (once; the stored profile still learns at teardown)",
+                            measured,
+                            voiced_frames,
+                            format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
+                            format!("{:.1}x", ideal as f64 / crate::call::qgain::UNITY as f64)
+                        );
+                        tx_makeup_q32 = ideal;
+                    }
+                    tx_reaimed = true;
+                }
+            }
             // PEER-LOSS TIER GOVERNANCE (the 1 s verdict): the max loss byte the peer reported this second is their receive of OUR transmit. ≥2 = the AIMD drop edge for OUR tier — the direction this tier actually controls.
             {
                 let now = std::time::Instant::now();
