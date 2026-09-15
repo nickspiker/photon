@@ -189,7 +189,8 @@ pub fn start(params: EngineParams) -> EngineHandle {
     };
     let (sink_tx, sink_rx) = std::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>();
     let sink_gen = super::install_media_sink(sink_tx);
-    crate::platform::audio::start();
+    // CLAIM the session (start_owned): against a live ringback session this is the click-free handover, and the ringback's own late stop becomes a no-op because the generation moved on.
+    let _ = crate::platform::audio::start_owned();
     match std::thread::Builder::new()
         .name("call-engine".into())
         .spawn(move || {

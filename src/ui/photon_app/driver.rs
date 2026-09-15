@@ -1275,8 +1275,9 @@ impl FluorApp for PhotonApp {
                 // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
                 self.clear_unread(ci);
                 self.change_focus(None);
-                // Refresh this contact's presence on conversation-enter so the header reflects reality promptly.
+                // Refresh this contact's presence on conversation-enter so the header reflects reality promptly — and arm the one-second verdict (presence_probe_tick).
                 self.ping_contact(ci);
+                self.presence_probe = Some((ci, Instant::now()));
                 // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
                 self.spawn_avatar_download(ci);
                 ctx.window.request_redraw();
@@ -2887,8 +2888,10 @@ impl FluorApp for PhotonApp {
             .as_ref()
             .map_or(false, |c| c.phase == crate::call::CallPhase::Active)
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
+        // The conversation-enter presence probe's verdict deadline (Nick 2026-09-15: "going into a contact should trigger a ping and 1s timeout for offline/no response") — one wake at the deadline, nothing while it isn't armed.
+        let probe = self.presence_probe.map(|(_, at)| at + std::time::Duration::from_secs(1));
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold, call_timer]
+        [blink, anim, presence, pairing, fleet_refold, call_timer, probe]
             .into_iter()
             .flatten()
             .min()
@@ -2898,6 +2901,9 @@ impl FluorApp for PhotonApp {
         let now = Instant::now();
         let mut needs_redraw = false;
         if self.poll_resume_vault() {
+            needs_redraw = true;
+        }
+        if self.presence_probe_tick(now) {
             needs_redraw = true;
         }
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.

@@ -63,26 +63,26 @@ fn to_call_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
 /// Start the ringback for a wave we are placing. `digest` is the relationship digest — the SAME seed as the callee's own ring, so what we hear is genuinely their cadence.
 /// Returns `None` when the audio session won't open (a mic-less/speaker-less box still waves, just silently).
 pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
-    if !crate::platform::audio::start() {
+    let Some(gen) = crate::platform::audio::start_owned() else {
         crate::log("CALL: ringback — audio session refused, waving silently");
         return None;
-    }
+    };
     *PROBE.lock().unwrap() = None;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let spawned = std::thread::Builder::new()
         .name("call-ringback".into())
-        .spawn(move || run(digest, flag))
+        .spawn(move || run(digest, flag, gen))
         .is_ok();
     if !spawned {
         crate::log("CALL: ringback thread spawn failed");
-        crate::platform::audio::stop();
+        crate::platform::audio::stop_owned(gen);
         return None;
     }
     Some(RingbackGuard(stop))
 }
 
-fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
+fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
     use crate::platform::audio;
 
     // One cadence, resampled to the call rate and padded to the headset level — the ring is a full-scale clip and the wave that follows is 4 stops down; landing them at the same loudness is the whole point of routing it thru the call path.
@@ -189,10 +189,6 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>) {
         );
     }
 
-    // Hand the session over to the engine if the wave was answered; otherwise close it — an unanswered wave must not leave the mic open. Either way local-source mode is NOT cleared here: the engine's probe phase (which takes over on answer) is itself a local source and re-asserts/clears it on its own edges; on the close path clear_queues resets the flag.
-    if super::media_sink_live() {
-        crate::log("CALL: ringback stopped — engine has the session");
-    } else {
-        crate::platform::audio::stop();
-    }
+    // Hand the session over to the engine if it has claimed it; otherwise close it — an unanswered wave must not leave the mic open. OWNERSHIP, not a liveness peek (2026-09-15): the media-sink check had a window — this thread finishes the probe estimate after the answer, and an engine that hadn't installed its sink yet got its session torn down and its chores pulled. stop_owned is a no-op once a newer start has claimed the session. Local-source mode is NOT cleared here: the engine re-asserts/clears it on its own edges; on the close path clear_queues resets the flag.
+    crate::platform::audio::stop_owned(gen);
 }

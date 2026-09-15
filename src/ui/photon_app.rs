@@ -1301,6 +1301,8 @@ pub struct PhotonApp {
     last_lan_beacon: Option<Instant>,
     /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
     last_presence_ping: Option<Instant>,
+    /// The conversation-enter presence probe: (contact, when the open-ping fired). The verdict tick clears it at one second — offline if no pong landed since.
+    presence_probe: Option<(usize, Instant)>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
     last_interaction: Option<Instant>,
     /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
@@ -2228,6 +2230,7 @@ impl PhotonApp {
             blink_timer: BlinkTimer::new(),
             last_screen: AppState::default(),
             last_presence_ping: None,
+            presence_probe: None,
             presence_surface: None,
             last_lan_beacon: None,
             last_interaction: None,

@@ -217,13 +217,24 @@ pub fn start() -> bool {
             return false;
         }
     };
-    let input = match start_input() {
-        Ok(s) => Some(s),
-        Err(e) => {
-            crate::logf!("AUDIO: AAudio input not open ({}) — listen-only until the mic grant lands", e);
-            None
+    // A transient refusal (Disconnected: the HAL re-routing under a comm-device change, or a previous input still releasing) gets three more tries a beat apart before the grant path is left to rescue it (2026-09-15: one Disconnected at answer and the whole wave went out silent).
+    let mut input = None;
+    for attempt in 0..4 {
+        match start_input() {
+            Ok(s) => {
+                input = Some(s);
+                break;
+            }
+            Err(e) if attempt < 3 && e.contains("Disconnected") => {
+                crate::logf!("AUDIO: AAudio input refused ({}) — retry {} of 3", e, attempt + 1);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+            Err(e) => {
+                crate::logf!("AUDIO: AAudio input not open ({}) — listen-only until the mic grant lands", e);
+                break;
+            }
         }
-    };
+    }
     *g = Some(Session { output: SendStream(output), input: input.map(SendStream) });
     true
 }
@@ -243,8 +254,9 @@ pub fn ensure_input() {
 
 /// Stop and close both streams (Drop closes). Logs the HAL's underrun/overrun counts — the buffer-floor monitor.
 pub fn stop() {
-    let taken = SESSION.lock().unwrap().take();
-    let Some(s) = taken else { return };
+    // The lock is held THRU the close (2026-09-15): releasing it after the take let a concurrent start() open its input against streams still being torn down, and the HAL answered Disconnected. Nothing here runs on a callback thread, so holding it is safe; a start() on another thread simply waits for a clean device.
+    let mut g = SESSION.lock().unwrap();
+    let Some(s) = g.take() else { return };
     let out_x = s.output.0.x_run_count();
     let in_x = s.input.as_ref().map(|i| i.0.x_run_count()).unwrap_or(-1);
     let _ = s.output.0.request_stop();
@@ -253,6 +265,7 @@ pub fn stop() {
     }
     crate::logf!("AUDIO: AAudio down — out xruns {}, in xruns {}", out_x, in_x);
     drop(s);
+    drop(g);
 }
 
 /// A stream faulted (a headset plugged in, the device went away): the HAL disconnects exclusive streams on a route change. Rebuild off the callback thread — never close a stream from its own callback — once per fault, only while a call is live.

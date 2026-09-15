@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave answered while the ringback was still winding down could go out silent — your side heard them, they heard nothing — because the ringback's cleanup and the call's start fought over the microphone; the session now has one owner at a time and a refused microphone open is retried.
+- Opening a conversation asks the contact if they are there and gives them one second: no answer and the header shows offline right away, flipping back the moment they respond.
 - The wave's ear for "is this speech?" is now relative to the room: it tracks this call's own quiet and counts only sound well above it, so background noise can never be mistaken for a voice and crank the send level, and the quiet itself — measured, not the manufacturer's claim — seeds the level for a microphone the app has never heard speak.
 - A wave now aims its send level by listening to itself: a few seconds in, once it has heard enough of your actual voice, it corrects its gain once to put you exactly on the plan — so a quiet posture no longer makes you inaudible and a stale calibration no longer makes you crackle, whatever the last call measured.
 - The volume readout the wave's diagnostics rely on now reads the control that actually governs the call's loudness, as a plain fraction of full — vendor loudness curves had it reporting near-mute on phones that sounded fine.

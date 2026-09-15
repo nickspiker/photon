@@ -292,6 +292,25 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
+/// SESSION OWNERSHIP (field 2026-09-15 15:45, "Emma could not hear me"): every `start_owned` claims the session with a fresh generation; `stop_owned(gen)` tears it down ONLY while that generation still owns it. The ringback's late teardown (its thread finishes the probe estimate after the answer) used to race the engine's start on the UI thread — the engine's fresh input open met the ringback's still-closing input ("start: Disconnected"), then the ringback's stopCallAudio pulled the foreground mic type and the earpiece route out from under the live wave: 0 packets out for the whole call. A stale owner's stop is now a logged no-op.
+static SESSION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn start_owned() -> Option<u64> {
+    if !start() {
+        return None;
+    }
+    Some(SESSION_GEN.fetch_add(1, Ordering::SeqCst) + 1)
+}
+
+pub fn stop_owned(gen: u64) {
+    let live = SESSION_GEN.load(Ordering::SeqCst);
+    if live == gen {
+        stop();
+    } else {
+        crate::logf!("AUDIO: stale owner's stop ignored (gen {} — the session belongs to gen {} now)", gen, live);
+    }
+}
+
 pub(crate) fn push_captured(at_osc: i64, frame: Vec<i32>) {
     let mut q = CAPTURE_Q.lock().unwrap();
     if q.len() >= CAPTURE_Q_MAX {
