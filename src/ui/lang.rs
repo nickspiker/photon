@@ -507,6 +507,13 @@ pub enum Msg<'a> {
     AddToGroupNote,
     NobodyToAdd,
     YouLeftNote,
+    /// Settings → Conversations (docs/groups.md §10 in plain words).
+    GroupsExplainHead,
+    GroupsExplainProse,
+    DefaultHistoryHead,
+    DefaultHistoryNote,
+    YourGroups,
+    NoGroupsYet,
     /// The offer card (docs/groups.md §10.1), invitee side: "<sponsor> brought you into <title> · <n>".
     OfferLine { sponsor: &'a str, title: &'a str, n: &'a str },
     /// The card once joined.

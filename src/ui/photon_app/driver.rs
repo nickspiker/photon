@@ -907,6 +907,8 @@ impl FluorApp for PhotonApp {
                     // Bring into a group (docs/groups.md §10.5): toggle the picker; the title box takes focus so typing starts at once.
                     self.group_pick_open = !self.group_pick_open;
                     if self.group_pick_open {
+                        // The picker opens on the fleet's default policy (Settings → Conversations).
+                        self.group_pick_from_genesis = self.group_default_from_genesis();
                         if let Some(tb) = self.group_title_textbox.as_mut() {
                             tb.chars.clear();
                             tb.cursor = 0;
@@ -1347,6 +1349,19 @@ impl FluorApp for PhotonApp {
                         open_url_in_browser("https://passless.org/");
                         crate::log("ABOUT: passless.org link tapped");
                     }
+                } else if page == SettingsPage::Conversations {
+                    // 0/1 = the default newcomer-history policy for groups we found (a linked fleet setting); 2.. = Mute pill per group row (this device only).
+                    if slot == 0 || slot == 1 {
+                        let from_gen = slot == 1;
+                        if self.settings_set("groups.history_from_genesis", vsf::VsfType::u(from_gen as usize, false)) {
+                            crate::logf!("SETTINGS: groups.history_from_genesis = {} (linked write)", from_gen);
+                        }
+                    } else if slot >= 2 {
+                        if let Some(gid) = self.group_rosters.get((slot - 2) as usize).map(|(g, _)| *g) {
+                            self.toggle_group_mute(gid);
+                        }
+                    }
+                    ctx.window.request_redraw();
                 } else if page == SettingsPage::Dozenal {
                     // The base pills (slots 0..=2): the render-edge static flips NOW so every number on screen switches base this frame, and the fleet-wide linked write follows the identity to every device.
                     let pick = match slot {

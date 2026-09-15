@@ -609,6 +609,11 @@ impl PhotonApp {
         Some(gid)
     }
 
+    /// The default newcomer-history policy for groups this identity founds (Settings → Conversations; a linked fleet setting). Absent = from join (D5).
+    pub(super) fn group_default_from_genesis(&self) -> bool {
+        self.fleet_settings.as_ref().and_then(|fs| fs.effective("groups.history_from_genesis")).and_then(|v| v.as_u64()).map_or(false, |v| v != 0)
+    }
+
     /// The name + avatar pin we grant a group: the published profile name and the session avatar pin's lookup half (zeroes when unset).
     fn own_name_grant(&self) -> (String, [u8; 32]) {
         let name = self.fleet_settings.as_ref().and_then(|fs| fs.effective("profile.name")).and_then(crate::storage::fleet_settings::as_text).unwrap_or_default();

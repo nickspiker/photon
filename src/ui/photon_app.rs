@@ -3509,6 +3509,8 @@ fn settings_page_rows(page: SettingsPage) -> usize {
         SettingsPage::You => 7,
         SettingsPage::Diagnostics => 10,
         SettingsPage::Security => 15,
+        // Conversations: the explainer (six paragraphs, each ≈2 wrapped lines at 0.8) + the policy pills + the group list (sized live in the render; this is the natural floor).
+        SettingsPage::Conversations => 22,
         _ => 8,
     }
 }

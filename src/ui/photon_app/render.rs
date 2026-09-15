@@ -98,6 +98,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
                 AppState::Settings(SettingsPage::Vault) => "Settings:Vault",
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
+                AppState::Settings(SettingsPage::Conversations) => "Settings:Conversations",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::ContactPanel(_) => "ContactPanel",
                 AppState::GroupPanel(_) => "GroupPanel",
@@ -6271,6 +6272,57 @@ impl PhotonApp {
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
+                }
+                SettingsPage::Conversations => {
+                    // CONVERSATIONS (docs/groups.md §10, Nick 2026-09-15: the explanation belongs in the doc AND somewhere easily viewable in the app): how groups work in plain words, the default newcomer-history policy for groups this identity founds (a fleet setting, born linked), then every group we stand in with a Mute pill (this device only).
+                    let inset = layout.content_inset();
+                    let line_h = layout.content_line_h();
+                    let cx = inset.x + inset.w * 0.5;
+                    let wrap_w = inset.w - line_h;
+                    let page_clip = Some(fluor::paint::Clip::new(inset.x.max(0.0) as usize, inset.y.max(0.0) as usize, (inset.x + inset.w).max(0.0) as usize, (inset.y + inset.h).max(0.0) as usize));
+                    let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
+                    let head_style = TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
+                    let mut y = inset.y - settings_content_scroll;
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h * 1.4;
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::GroupsExplainHead), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                    y += line_h;
+                    for line in tr(Msg::GroupsExplainProse).lines() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
+                        y += line_h * 0.3;
+                    }
+                    y += line_h * 0.4;
+                    // The default newcomer-history policy for groups WE found — the founding picker reads it; a fleet setting, born linked.
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DefaultHistoryHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h;
+                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DefaultHistoryNote), &prose_style, line_h * 0.8, page_clip);
+                    y += line_h * 0.3;
+                    {
+                        let from_gen = self.fleet_settings.as_ref().and_then(|fs| fs.effective("groups.history_from_genesis")).and_then(|v| v.as_u64()).map_or(false, |v| v != 0);
+                        let labels = [tr(Msg::HistoryFromJoin), tr(Msg::HistoryFromGenesis)];
+                        let pills = [
+                            (labels[0].as_ref(), btn_base, true, if from_gen { None } else { Some(*theme::PILL_GREEN) }),
+                            (labels[1].as_ref(), btn_base.wrapping_add(1), true, if from_gen { Some(*theme::PILL_GREEN) } else { None }),
+                        ];
+                        let mut flow = Flow::new(fluor::region::Region::new(inset.x, y + settings_content_scroll, inset.w, inset.h), settings_content_scroll);
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &pills, "Oxanium");
+                        y += flow.used();
+                    }
+                    y += line_h * 0.6;
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::YourGroups), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    y += line_h;
+                    if self.group_rosters.is_empty() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::NoGroupsYet), &prose_style, line_h * 0.8, page_clip);
+                    }
+                    for (gi, (gid, roster)) in self.group_rosters.iter().enumerate().take(30) {
+                        let muted = self.group_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted);
+                        let n = roster.standing().len();
+                        let row = fluor::region::Region::new(inset.x, y, inset.w, line_h);
+                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&group_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
+                        let pill = fluor::region::Region::new(row.x + row.w * 0.62, row.y + row.h * 0.08, row.w * 0.34, row.h * 0.84);
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &tr(Msg::MutePill { muted }), btn_base.wrapping_add(2 + gi as HitId), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        y += line_h * 1.1;
+                    }
                 }
                 SettingsPage::Dozenal => {
                     // THE BASE PAGE (Nick 2026-09-09: "a distinct dozenal tab that reads Dozenal or Arabic depending on their choice"): the fleet-wide toggle, why (or the tin-foil answer in arabic mode), the digit cheat sheet with the custodian riddle behind it, and the DMS time-ago legend. A centred card like About, manual cursor, measured extent.

@@ -63,18 +63,21 @@ pub enum SettingsPage {
     Language,
     /// The number base: the dozenal toggle, why, the digit cheat sheet, and the DMS time-ago legend. Its rail label reads "Dozenal" or "Arabic" per the current choice (Nick 2026-09-09).
     Dozenal,
+    /// Conversations (docs/groups.md §10): how groups work, in plain words; the default newcomer-history policy for groups you found; the groups you stand in with a Mute pill each.
+    Conversations,
     /// Explainer / philosophy / version / feedback / credits.
     About,
 }
 
 impl SettingsPage {
     /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every call start, so there is no ritual for a page to hold.
-    pub const ALL: [SettingsPage; 11] = [
+    pub const ALL: [SettingsPage; 12] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
         SettingsPage::Recovery,
         // SettingsPage::Appearance,
+        SettingsPage::Conversations,
         SettingsPage::Notifications,
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
@@ -99,6 +102,7 @@ impl SettingsPage {
             SettingsPage::Language => "Language",
             // The base page is "Base" (Nick 2026-09-10) — the pills on it show the choice.
             SettingsPage::Dozenal => "Base",
+            SettingsPage::Conversations => "Conversations",
             SettingsPage::About => "About",
         }
     }
