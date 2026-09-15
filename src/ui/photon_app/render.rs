@@ -975,24 +975,26 @@ impl PhotonApp {
                     }
                 }
             } else if matches!(self.state, AppState::Conversation) && call_pill_show {
-                // The ☎ start pill — top-right of the conversation, mirroring the "‹ Contacts" back arrow on the left; sized off `unit` so it matches the back arrow at every zoom. Shown for any friend convo (discoverable), dimmed (disabled) until the friend is reachable — the disabled label dim reads as "can't call yet".
-                let pill_w = unit * 5.;
-                let px = buf_w as f32 - pill_w - unit; // top-right, one unit of margin from the edge
-                // Sit on the SAME vertical as the back arrow (`buf_h·0.06 + unit`) — lower than the old pinned `cy` — and slide up-under with the message scroll (`conv_topbar_off`) exactly like the back arrow, so the whole top bar is one browser-toolbar band. When it scrolls above the top its hit rect leaves the surface with it (no ghost taps).
+                // The Wave / Beam pills — top-right of the conversation, HALF the old size (Nick 2026-09-15: "2x too big"), and one pill height ABOVE the "‹ Contacts" line so the two never overlap on a narrow screen; on desktop the chrome strip is the floor. They slide up-under with the message scroll (`conv_topbar_off`) like the back arrow.
+                let pill_h = unit;
+                let pill_font = call_font * 0.5;
+                let pill_w = unit * 2.5;
+                let px = buf_w as f32 - pill_w - unit * 0.5; // top-right, half a unit of margin from the edge
+                let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
                 let bar_h = buf_h as f32 * 0.06 + unit + pill_h;
                 let bar_off = self.conv_topbar_off.min(bar_h);
-                let call_cy = buf_h as f32 * 0.06 + unit - bar_off;
+                let call_cy = (buf_h as f32 * 0.06).max(strip_floor + pill_h * 0.6) - bar_off;
                 if let Some(b) = self.call_start_btn.as_mut() {
                     b.set_rect(px + pill_w * 0.5, call_cy, pill_w, pill_h);
-                    b.set_font_size(call_font);
+                    b.set_font_size(pill_font);
                     b.set_enabled(call_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
                 // Beam (video) stub — sits left of Wave, permanently disabled until video lands.
                 if let Some(b) = self.call_beam_btn.as_mut() {
-                    b.set_rect(px - pill_w * 0.5 - unit * 0.4, call_cy, pill_w, pill_h);
-                    b.set_font_size(call_font);
+                    b.set_rect(px - pill_w * 0.5 - unit * 0.2, call_cy, pill_w, pill_h);
+                    b.set_font_size(pill_font);
                     b.set_enabled(false);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -2852,7 +2854,8 @@ impl PhotonApp {
                     let unit = conv_layout.unit_height;
 
                     // Back arrow (top-left) — below the chrome title bar area. Slides off vertically by conv_topbar_off (scroll-tied, browser-toolbar style); the hit rect follows and stamps HIT_NONE once mostly gone so a ghost tap can't fire it.
-                    let back_size = unit * 1.15;
+                    // Half the old size (Nick 2026-09-15: "2x too big").
+                    let back_size = unit * 0.575;
                     let bar_h = buf_h as f32 * 0.06 + unit + back_size;
                     let bar_off = self.conv_topbar_off.min(bar_h);
                     let back_y = buf_h as f32 * 0.06 + unit - bar_off;
