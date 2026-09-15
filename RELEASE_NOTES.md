@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v98
+
 - Atoms and molecules: tap New atom on the contacts screen to found a conversation that is yours alone, titled or not, and it is an atom; open its panel and press Create a molecule! to offer a friend a bond over the conversation you already have with them, and the moment they tap Bind it is a molecule — the same thing under a different count, the way a lone hydrogen becomes H₂.
 - Nobody owns a molecule, nobody can bind you into one, anyone bound in can bring in anyone they know, and only you can remove yourself; the title is a label anyone can change, the real identity is a random number minted at founding, so a name can never be squatted, sold, or stolen.
 - Every message in a molecule is encrypted once on your own lane and sent to every member, each member's device holds its own key bundle, and leaving posts your signed departure while the others mint a new key you will not hold.
