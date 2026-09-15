@@ -83,6 +83,7 @@
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock validator; one load-bearing use (update stamp)
 - [project_theme_rec2020.md](project_theme_rec2020.md) — theme colours VSF RGB thru vsf_rgb_to_bt2020; Rec.2020 out everywhere
 - [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset mirror + ime_lift)
+- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor; jitter slack 80 ms + setpoint 1/512; session ownership + HANDOVER lock; never `git add -A` (shared tree)
 - [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC, recorded nowhere
 - [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction; docs/dozenal.md
 - [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs; Dozenal settings page
