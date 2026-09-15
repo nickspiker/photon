@@ -1698,9 +1698,16 @@ async fn run_checker(
                                     match crate::network::fgtw::relay::peel_relay_envelope(&data) {
                                         Some((sender_key, inner)) => {
                                             crate::logf!("PIPE: ← {}B envelope from {} → {}B inner (injecting)", data.len(), hex::encode(&sender_key[..4]), inner.len());
-                                            if inject_tx_pipe.send(inner).await.is_err() {
-                                                // Receiver task gone — the whole status task is tearing down.
-                                                return;
+                                            // BOUNDED WAIT, never a silent wedge (field 2026-09-15, the no-ring dial): a full inject channel behind a slow dispatcher blocked this send().await forever — reads, keepalives and the liveness window all froze with it, and the pipe sat dead with no log line while the relay kept reporting delivered. Relay frames are datagram-class (senders re-fire); five seconds of backpressure drops the frame LOUDLY and keeps the pipe breathing.
+                                            match tokio::time::timeout(std::time::Duration::from_secs(5), inject_tx_pipe.send(inner)).await {
+                                                Ok(Ok(())) => {}
+                                                Ok(Err(_)) => {
+                                                    // Receiver task gone — the whole status task is tearing down.
+                                                    return;
+                                                }
+                                                Err(_) => {
+                                                    crate::logf!("PIPE: inject backpressure — dispatcher hasn't drained in 5s, {}B frame from {} dropped", data.len(), hex::encode(&sender_key[..4]));
+                                                }
                                             }
                                         }
                                         None => {
