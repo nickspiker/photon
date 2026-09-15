@@ -7,6 +7,12 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Atoms and molecules: tap New atom on the contacts screen to found a conversation that is yours alone, titled or not, and it is an atom; open its panel and press Create a molecule! to offer a friend a bond over the conversation you already have with them, and the moment they tap Bind it is a molecule — the same thing under a different count, the way a lone hydrogen becomes H₂.
+- Nobody owns a molecule, nobody can bind you into one, anyone bound in can bring in anyone they know, and only you can remove yourself; the title is a label anyone can change, the real identity is a random number minted at founding, so a name can never be squatted, sold, or stolen.
+- Every message in a molecule is encrypted once on your own lane and sent to every member, each member's device holds its own key bundle, and leaving posts your signed departure while the others mint a new key you will not hold.
+- The contacts screen filters among friends, atoms and molecules; Settings has a Conversations page that explains all of this in plain words and holds the default for what newcomers may see.
+- The language list grew to sixteen, and every one of them speaks atoms and molecules.
+
 - Fewer tiny gaps on a busy Wi-Fi: the playback buffer no longer sheds the small bursts of early-arriving audio that home Wi-Fi delivers (it was shedding them, then running dry a moment later), and the loss loop now aims below its ceiling instead of sitting exactly on it — a few more milliseconds of buffer for a much steadier voice.
 - The self-aim's first step needs a plausibly loud voice before it trusts itself, so a quiet first word can no longer set the level hot for the next twenty seconds.
 - The wave's self-aim waits for real speech: it needs four seconds of sound that moves the way a voice does before it trusts a measurement, so breath and handling before the conversation starts can no longer aim the level wrong, and it allows itself one correction later if the first aim proves badly off.
