@@ -1881,6 +1881,8 @@ pub struct PhotonApp {
     ready_filter_base: HitId,
     /// NEW ATOM mode on the Ready screen: the search box is the title box, the plus founds the atom instead of searching a handle.
     atom_naming: bool,
+    /// The filter strip's measured height in pixels (it WRAPS on a narrow screen — Nick 2026-09-15: "when the buttons wrap, it needs to push down the top contact"); fed back from the render's flow, one frame late, settles like sel_meta_h. Zero until first drawn = one row.
+    ready_strip_h: f32,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
     back_btn_hit_id: HitId,
     /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
@@ -2604,6 +2606,7 @@ impl PhotonApp {
             ready_filter: ReadyFilter::All,
             ready_filter_base: HIT_NONE,
             atom_naming: false,
+            ready_strip_h: 0.0,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
             join_copywords_hit_id: HIT_NONE,

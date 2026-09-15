@@ -976,6 +976,21 @@ impl PhotonApp {
         fresh
     }
 
+    /// The row the details strip is FOR — the same resolution the render uses for `sel_key` (field 2026-09-15, "the play button shows but does nothing until I tap something else"): the explicit selection, else the NEWEST visible row of the open conversation, whose strip shows unasked (unless the user dismissed it). Every pill dispatch reads this, never `selected_msg` alone — a strip that is painted must answer.
+    pub(super) fn strip_target(&self) -> Option<(usize, i64, bool)> {
+        if let Some(sel) = self.selected_msg {
+            return Some(sel);
+        }
+        let ci = self.active_contact()?;
+        let conv = self.conv_of(ci)?;
+        let raw: &[crate::types::ChatMessage] = &conv.messages;
+        let newest = raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (ci, m.timestamp, m.is_outgoing))?;
+        if self.strip_dismissed == Some(newest) {
+            return None;
+        }
+        Some(newest)
+    }
+
     /// The group twin of `clear_unread`: opening a group conversation clears its ring.
     pub(super) fn clear_molecule_unread(&mut self, gi: usize) {
         let Some((gid, _)) = self.molecule_rosters.get(gi) else {

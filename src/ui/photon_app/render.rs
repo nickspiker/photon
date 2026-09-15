@@ -264,7 +264,9 @@ impl PhotonApp {
             }
             let rf = self.ready_filter;
             let show_friends = matches!(rf, ReadyFilter::All | ReadyFilter::Friends);
-            let block_h: isize = row_h
+            // The strip's height as last measured (wrapped pills push the first row down), one row until first drawn.
+            let strip_h: isize = if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() as isize } else { row_h };
+            let block_h: isize = strip_h
                 + self
                     .contacts
                     .iter()
@@ -1780,7 +1782,8 @@ impl PhotonApp {
             });
 
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
-            let block_h: isize = row_h
+            let strip_h: isize = if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() as isize } else { row_h };
+            let block_h: isize = strip_h
                 + matching
                     .iter()
                     .map(|row| match *row {
@@ -1815,9 +1818,15 @@ impl PhotonApp {
                 let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_ref(), self.ready_filter_base.wrapping_add(i as HitId), true, chosen(i))).collect();
                 let mut flow = Flow::new(fluor::region::Region::new(strip.x, strip.y + scroll as f32, strip.w, strip.h * 4.0), scroll as f32);
                 flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
+                // Measure: the wrapped strip's real height (plus the row's top/bottom margin) drives the next frame's row offset and extent.
+                let measured = flow.used() + row_h as f32 * 0.2;
+                if (measured - self.ready_strip_h).abs() > 0.5 {
+                    self.ready_strip_h = measured.max(row_h as f32);
+                    self.scene_dirty = true;
+                }
             }
-            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero, one row down for the strip.
-            let mut row_cursor = rows.y0 as isize + row_h;
+            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero, the strip's measured height down.
+            let mut row_cursor = rows.y0 as isize + strip_h;
             for row in matching.iter() {
                 // One row, two sources: a contact (the cached scaled avatar, the relationship colour, the presence tier) or a group (the members' gradient pie, the group's own colour, the best tier over its members' rows). Everything below reads the view, never a contact index, so a group row paints thru the identical geometry.
                 let rctx = ReadyCtx {

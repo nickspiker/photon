@@ -1462,7 +1462,7 @@ impl FluorApp for PhotonApp {
         // Message-row tap (conversation) — toggle that message's details strip (direction, age, delivery, copy). The copy pill copies the message text via the platform clipboard (arboard / Kotlin poll bridge).
         if matches!(self.state, AppState::Conversation) && self.msg_hit_base != HIT_NONE {
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
-                if let Some((sci, ts, out)) = self.selected_msg {
+                if let Some((sci, ts, out)) = self.strip_target() {
                     let text_opt = self.conv_of(sci).and_then(|v| {
                         v.messages
                             .iter()
@@ -1487,7 +1487,7 @@ impl FluorApp for PhotonApp {
                 && hit_id < self.react_strip_base.wrapping_add(10)
             {
                 let slot = (hit_id - self.react_strip_base) as usize;
-                if let Some((sci, ts, _)) = self.selected_msg {
+                if let Some((sci, ts, _)) = self.strip_target() {
                     if slot == 9 {
                         // The circled "+": type anything, send commits it as the reaction.
                         self.compose_react_to = Some(ts);
@@ -1535,7 +1535,7 @@ impl FluorApp for PhotonApp {
                 let slot = hit_id - self.msg_action_base;
                 // JOIN (slot 13, a group offer card — docs/molecules.md §10.1): the consent. The parked offer under the selected row names the group.
                 if slot == 13 {
-                    if let (Some(ci), Some((_, ts, false))) = (self.active_contact(), self.selected_msg) {
+                    if let (Some(ci), Some((_, ts, false))) = (self.active_contact(), self.strip_target()) {
                         let sponsor = self.contacts[ci].handle_hash;
                         let gid = self.bond_offers.iter().find(|o| o.sponsor == sponsor && o.row_osc == ts && !o.accepted).or_else(|| self.bond_offers.iter().find(|o| o.sponsor == sponsor && !o.accepted)).map(|o| o.molecule_id);
                         if let Some(gid) = gid {
@@ -1554,7 +1554,7 @@ impl FluorApp for PhotonApp {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
-                if let Some((sci, ts, out)) = self.selected_msg {
+                if let Some((sci, ts, out)) = self.strip_target() {
                     match slot {
                         // LOFT (slot 12): shred the LOCAL blob only — no tombstone, no marker, no sibling push; the row stays and its pill flips to fetch. Incoming pigeons only (the sender's fleet holds the original).
                         12 => {
