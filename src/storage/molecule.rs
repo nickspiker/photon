@@ -1,6 +1,6 @@
-//! Group roster storage (docs/groups.md §5).
+//! Group roster storage (docs/molecules.md §5).
 //!
-//! The roster — genesis plus the merged sovereign record sets — persists as one vault entry at `vault_key("group", group_id)`, beside the group's chains blob at `vault_key("chains", group_id)`.
+//! The roster — genesis plus the merged sovereign record sets — persists as one vault entry at `vault_key("molecule", molecule_id)`, beside the group's chains blob at `vault_key("chains", molecule_id)`.
 //! The SAME canonical bytes serve the vault and, later, the wire: roster records travel as control rows and re-serve pages, and a whole-roster snapshot rides the pairwise invite — so the codec is a complete VSF file with a provenance header, exactly like the chains blob.
 //! Signatures persist verbatim: a loaded record is still verifiable against the folded device set, so storage is custody, never trust.
 
@@ -8,15 +8,15 @@ use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::VsfType;
 
 use crate::storage::{FlatStorage, StorageError};
-use crate::types::group::{BundleRecord, GenesisRecord, GroupId, LeaveRecord, MemberRecord, Roster, TitleRecord, VouchRecord};
+use crate::types::molecule::{BundleRecord, GenesisRecord, MoleculeId, LeaveRecord, MemberRecord, Roster, TitleRecord, VouchRecord};
 
 /// The section name, shared by the builder and the TOC lookup — the two must never drift.
-const ROSTER_SECTION: &str = "group_roster";
+const ROSTER_SECTION: &str = "molecule_roster";
 
 fn roster_schema() -> SectionSchema {
     SectionSchema::new(ROSTER_SECTION)
         .field("version", TypeConstraint::AnyUnsigned)
-        .field("group_id", TypeConstraint::AnyHash)
+        .field("molecule_id", TypeConstraint::AnyHash)
         // Genesis (optional until the record arrives — an invitee's roster snapshot always carries it)
         .field("gen_founder", TypeConstraint::AnyHash)
         .field("gen_osc", TypeConstraint::Any)
@@ -62,18 +62,18 @@ fn roster_schema() -> SectionSchema {
 }
 
 /// Vault address for a group's roster — beside its chains blob, same scope bytes.
-fn roster_key(group_id: &GroupId) -> [u8; 32] {
-    crate::storage::vault_key("group", &group_id.0)
+fn roster_key(molecule_id: &MoleculeId) -> [u8; 32] {
+    crate::storage::vault_key("molecule", &molecule_id.0)
 }
 
 /// Encode a roster to its canonical VSF bytes — vault entry, invite snapshot, and (later) re-serve payload alike.
-pub fn roster_to_vsf_bytes(group_id: &GroupId, roster: &Roster) -> Result<Vec<u8>, StorageError> {
+pub fn roster_to_vsf_bytes(molecule_id: &MoleculeId, roster: &Roster) -> Result<Vec<u8>, StorageError> {
     let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
     let mut builder = roster_schema()
         .build()
         .set("version", 2u8)
         .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("group_id", VsfType::hb(group_id.0.to_vec()))
+        .set("molecule_id", VsfType::hb(molecule_id.0.to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?;
     if let Some(g) = roster.genesis.as_ref() {
         builder = builder
@@ -188,14 +188,14 @@ pub fn roster_to_vsf_bytes(group_id: &GroupId, roster: &Roster) -> Result<Vec<u8
 }
 
 /// Decode a roster from its canonical bytes — STRICT verified read, shared by the vault loader and every wire arrival (invite snapshot, replication), so a headerless blob never becomes membership state.
-pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), StorageError> {
+pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), StorageError> {
     let section = vsf::schema::SectionBuilder::parse_document(roster_schema(), vsf_bytes, None)
         .map_err(|e| StorageError::Parse(format!("roster failed verified read: {e}")))?;
 
     let gid_bytes: [u8; 32] = section
-        .get_value::<[u8; 32]>("group_id")
-        .map_err(|e| StorageError::Parse(format!("group_id: {e}")))?;
-    let group_id = GroupId(gid_bytes);
+        .get_value::<[u8; 32]>("molecule_id")
+        .map_err(|e| StorageError::Parse(format!("molecule_id: {e}")))?;
+    let molecule_id = MoleculeId(gid_bytes);
 
     // Width-agnostic numeral reads (the writer stamps e6; never variant-match a parsed integer).
     let e6_of = |v: &VsfType| -> Option<i64> {
@@ -261,7 +261,7 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), Stor
             .and_then(hb64)
             .ok_or_else(|| StorageError::Parse("genesis without a signature".to_string()))?;
         roster.genesis = Some(GenesisRecord {
-            group_id,
+            molecule_id,
             founder,
             genesis_osc: section.get_fields("gen_osc").first().and_then(|f| f.values.first()).and_then(e6_of).unwrap_or(0),
             history_from_genesis: section
@@ -368,20 +368,20 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(GroupId, Roster), Stor
         });
     }
 
-    Ok((group_id, roster))
+    Ok((molecule_id, roster))
 }
 
 /// The group-index section name, shared by the builder and the TOC lookup — the two must never drift.
-const GROUP_LIST_SECTION: &str = "group_list";
+const MOLECULE_LIST_SECTION: &str = "molecule_list";
 
 /// Schema for the group index: one `group` field per group id. The vault is flat and content-addressed — nothing enumerates — so membership is discoverable at boot ONLY thru this list, exactly as contacts are thru theirs. Vault-internal (FlatStorage encrypts it); never travels.
-fn group_list_schema() -> SectionSchema {
-    SectionSchema::new(GROUP_LIST_SECTION).field("group", TypeConstraint::AnyHash)
+fn molecule_list_schema() -> SectionSchema {
+    SectionSchema::new(MOLECULE_LIST_SECTION).field("group", TypeConstraint::AnyHash)
 }
 
-/// Save the group index at `vault_key("groups", vault_seed)` — a complete VSF document (provenance header + section), the same shape as the roster, so the load side is a verified read.
-pub fn save_group_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), StorageError> {
-    let mut builder = group_list_schema().build();
+/// Save the group index at `vault_key("molecules", vault_seed)` — a complete VSF document (provenance header + section), the same shape as the roster, so the load side is a verified read.
+pub fn save_molecule_list(ids: &[MoleculeId], storage: &FlatStorage) -> Result<(), StorageError> {
+    let mut builder = molecule_list_schema().build();
     for id in ids {
         builder = builder
             .append_multi("group", vec![VsfType::hb(id.0.to_vec())])
@@ -391,65 +391,65 @@ pub fn save_group_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), Sto
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
-        .add_unboxed(GROUP_LIST_SECTION, section_bytes)
+        .add_unboxed(MOLECULE_LIST_SECTION, section_bytes)
         .build()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
-    storage.write_addr(&crate::storage::vault_key("groups", &storage.vault_seed()), &vsf_bytes)
+    storage.write_addr(&crate::storage::vault_key("molecules", &storage.vault_seed()), &vsf_bytes)
 }
 
 /// Load the group index. Empty = this device belongs to no groups.
-pub fn load_group_list(storage: &FlatStorage) -> Result<Vec<GroupId>, StorageError> {
-    let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("groups", &storage.vault_seed()))? else {
+pub fn load_molecule_list(storage: &FlatStorage) -> Result<Vec<MoleculeId>, StorageError> {
+    let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("molecules", &storage.vault_seed()))? else {
         return Ok(Vec::new());
     };
-    let section = vsf::schema::SectionBuilder::parse_document(group_list_schema(), &vsf_bytes, None)
+    let section = vsf::schema::SectionBuilder::parse_document(molecule_list_schema(), &vsf_bytes, None)
         .map_err(|e| StorageError::Parse(format!("group list failed verified read: {e}")))?;
     Ok(section
         .get_fields("group")
         .iter()
         .filter_map(|f| f.values.first())
         .filter_map(|v| match v {
-            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok().map(GroupId),
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok().map(MoleculeId),
             _ => None,
         })
         .collect())
 }
 
 /// Add one group to the index iff absent. Returns whether the list changed (caller persists rosters/chains beside it).
-pub fn index_group(group_id: &GroupId, storage: &FlatStorage) -> Result<bool, StorageError> {
-    let mut ids = load_group_list(storage)?;
-    if ids.contains(group_id) {
+pub fn index_molecule(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<bool, StorageError> {
+    let mut ids = load_molecule_list(storage)?;
+    if ids.contains(molecule_id) {
         return Ok(false);
     }
-    ids.push(*group_id);
-    save_group_list(&ids, storage)?;
+    ids.push(*molecule_id);
+    save_molecule_list(&ids, storage)?;
     Ok(true)
 }
 
 /// Save a group's roster to the vault.
-pub fn save_roster(group_id: &GroupId, roster: &Roster, storage: &FlatStorage) -> Result<(), StorageError> {
-    let bytes = roster_to_vsf_bytes(group_id, roster)?;
-    storage.write_addr(&roster_key(group_id), &bytes)
+pub fn save_roster(molecule_id: &MoleculeId, roster: &Roster, storage: &FlatStorage) -> Result<(), StorageError> {
+    let bytes = roster_to_vsf_bytes(molecule_id, roster)?;
+    storage.write_addr(&roster_key(molecule_id), &bytes)
 }
 
 /// Load a group's roster from the vault. None = no roster stored (not a member of this group on this device).
-pub fn load_roster(group_id: &GroupId, storage: &FlatStorage) -> Result<Option<Roster>, StorageError> {
-    let Some(bytes) = storage.read_addr(&roster_key(group_id))? else {
+pub fn load_roster(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<Option<Roster>, StorageError> {
+    let Some(bytes) = storage.read_addr(&roster_key(molecule_id))? else {
         return Ok(None);
     };
     let (loaded_id, roster) = roster_from_vsf_bytes(&bytes)?;
-    if loaded_id != *group_id {
+    if loaded_id != *molecule_id {
         return Err(StorageError::Parse("roster id mismatch at its own address".to_string()));
     }
     Ok(Some(roster))
 }
 
 /// Load every group this device belongs to — index → (roster, chains, materialized conversation). The one boot enumeration for groups, shared by the attest worker and the resume loader (the friendship analogue is contacts → load_all_friendships). A group whose roster is missing is skipped loudly; a chains-blob failure still yields the conversation (rows render, sending waits for the root to re-arrive via a refreshed invite).
-pub fn load_all_groups(storage: &FlatStorage) -> Vec<(GroupId, Roster, Option<crate::types::FriendshipChains>, crate::types::Conversation)> {
-    let ids = match load_group_list(storage) {
+pub fn load_all_molecules(storage: &FlatStorage) -> Vec<(MoleculeId, Roster, Option<crate::types::FriendshipChains>, crate::types::Conversation)> {
+    let ids = match load_molecule_list(storage) {
         Ok(v) => v,
         Err(e) => {
-            crate::logf!("GROUP: index load failed: {}", e);
+            crate::logf!("MOLECULE: index load failed: {}", e);
             return Vec::new();
         }
     };
@@ -458,11 +458,11 @@ pub fn load_all_groups(storage: &FlatStorage) -> Vec<(GroupId, Roster, Option<cr
         let roster = match load_roster(&id, storage) {
             Ok(Some(r)) => r,
             Ok(None) => {
-                crate::logf!("GROUP: {} indexed but roster missing — skipped", hex::encode(&id.0[..4]));
+                crate::logf!("MOLECULE: {} indexed but roster missing — skipped", hex::encode(&id.0[..4]));
                 continue;
             }
             Err(e) => {
-                crate::logf!("GROUP: roster load failed for {}: {}", hex::encode(&id.0[..4]), e);
+                crate::logf!("MOLECULE: roster load failed for {}: {}", hex::encode(&id.0[..4]), e);
                 continue;
             }
         };
@@ -470,32 +470,32 @@ pub fn load_all_groups(storage: &FlatStorage) -> Vec<(GroupId, Roster, Option<cr
         let chains = match crate::storage::friendship::load_friendship_chains(&fid, storage) {
             Ok(c) => Some(c),
             Err(e) => {
-                crate::logf!("GROUP: chains load failed for {}: {}", hex::encode(&id.0[..4]), e);
+                crate::logf!("MOLECULE: chains load failed for {}: {}", hex::encode(&id.0[..4]), e);
                 None
             }
         };
-        let mut conv = crate::types::Conversation::new_group(id, roster.standing());
+        let mut conv = crate::types::Conversation::new_molecule(id, roster.standing());
         crate::storage::contacts::load_conversation_state(&mut conv, &id.0, storage);
         if let Err(e) = crate::storage::contacts::load_messages(&mut conv, storage) {
-            crate::logf!("GROUP: message load failed for {}: {}", hex::encode(&id.0[..4]), e);
+            crate::logf!("MOLECULE: message load failed for {}: {}", hex::encode(&id.0[..4]), e);
         }
         out.push((id, roster, chains, conv));
     }
     out
 }
 
-/// GROUP-LOCAL state (D12): what this DEVICE holds about a group that must never replicate — the mute, and the phase this device is in. Lives beside the roster at `vault_key("group-local", gid)`; the roster replicates and this does not.
+/// GROUP-LOCAL state (D12): what this DEVICE holds about a group that must never replicate — the mute, and the phase this device is in. Lives beside the roster at `vault_key("molecule-local", gid)`; the roster replicates and this does not.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GroupLocal {
+pub struct MoleculeLocal {
     pub muted: bool,
-    pub phase: GroupPhase,
+    pub phase: MoleculePhase,
     /// Offers THIS device sent: (invitee party, the offer row's eagle time in that friendship conversation) — what labels the sponsor-side row "waiting" / "joined" and what a roster edge refreshes.
     pub offered: Vec<([u8; 32], i64)>,
 }
 
-/// The phase this device is in for a group (docs/groups.md §10.1). Offered/Expired live on the parked offer, not here; None = not held.
+/// The phase this device is in for a group (docs/molecules.md §10.1). Offered/Expired live on the parked offer, not here; None = not held.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub enum GroupPhase {
+pub enum MoleculePhase {
     /// Join sent, waiting on the sponsor's wrap.
     Joining,
     /// The normal state (alone is standing with nobody else — derived from the roster, not stored).
@@ -507,41 +507,41 @@ pub enum GroupPhase {
     Left,
 }
 
-impl GroupPhase {
+impl MoleculePhase {
     fn to_u8(self) -> u8 {
         match self {
-            GroupPhase::Joining => 1,
-            GroupPhase::Standing => 2,
-            GroupPhase::CatchingUp => 3,
-            GroupPhase::Left => 4,
+            MoleculePhase::Joining => 1,
+            MoleculePhase::Standing => 2,
+            MoleculePhase::CatchingUp => 3,
+            MoleculePhase::Left => 4,
         }
     }
-    fn from_u64(v: u64) -> GroupPhase {
+    fn from_u64(v: u64) -> MoleculePhase {
         match v {
-            1 => GroupPhase::Joining,
-            3 => GroupPhase::CatchingUp,
-            4 => GroupPhase::Left,
-            _ => GroupPhase::Standing,
+            1 => MoleculePhase::Joining,
+            3 => MoleculePhase::CatchingUp,
+            4 => MoleculePhase::Left,
+            _ => MoleculePhase::Standing,
         }
     }
 }
 
-const GROUP_LOCAL_SECTION: &str = "group_local";
+const MOLECULE_LOCAL_SECTION: &str = "molecule_local";
 
-fn group_local_schema() -> SectionSchema {
-    SectionSchema::new(GROUP_LOCAL_SECTION)
+fn molecule_local_schema() -> SectionSchema {
+    SectionSchema::new(MOLECULE_LOCAL_SECTION)
         .field("muted", TypeConstraint::AnyUnsigned)
         .field("phase", TypeConstraint::AnyUnsigned)
         .field("offered_party", TypeConstraint::AnyHash)
         .field("offered_osc", TypeConstraint::Any)
 }
 
-fn group_local_key(group_id: &GroupId) -> [u8; 32] {
-    crate::storage::vault_key("group-local", &group_id.0)
+fn molecule_local_key(molecule_id: &MoleculeId) -> [u8; 32] {
+    crate::storage::vault_key("molecule-local", &molecule_id.0)
 }
 
-pub fn save_group_local(group_id: &GroupId, local: &GroupLocal, storage: &FlatStorage) -> Result<(), StorageError> {
-    let mut builder = group_local_schema()
+pub fn save_molecule_local(molecule_id: &MoleculeId, local: &MoleculeLocal, storage: &FlatStorage) -> Result<(), StorageError> {
+    let mut builder = molecule_local_schema()
         .build()
         .set("muted", VsfType::u(local.muted as usize, false))
         .map_err(|e| StorageError::Parse(e.to_string()))?
@@ -558,18 +558,18 @@ pub fn save_group_local(group_id: &GroupId, local: &GroupLocal, storage: &FlatSt
     let bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
-        .add_unboxed(GROUP_LOCAL_SECTION, section_bytes)
+        .add_unboxed(MOLECULE_LOCAL_SECTION, section_bytes)
         .build()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
-    storage.write_addr(&group_local_key(group_id), &bytes)
+    storage.write_addr(&molecule_local_key(molecule_id), &bytes)
 }
 
 /// Load; absent = default (not muted, standing).
-pub fn load_group_local(group_id: &GroupId, storage: &FlatStorage) -> Result<GroupLocal, StorageError> {
-    let Some(bytes) = storage.read_addr(&group_local_key(group_id))? else {
-        return Ok(GroupLocal::default());
+pub fn load_molecule_local(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<MoleculeLocal, StorageError> {
+    let Some(bytes) = storage.read_addr(&molecule_local_key(molecule_id))? else {
+        return Ok(MoleculeLocal::default());
     };
-    let section = vsf::schema::SectionBuilder::parse_document(group_local_schema(), &bytes, None)
+    let section = vsf::schema::SectionBuilder::parse_document(molecule_local_schema(), &bytes, None)
         .map_err(|e| StorageError::Parse(format!("group local failed verified read: {e}")))?;
     let u = |name: &str| section.get_fields(name).first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0);
     let parties: Vec<[u8; 32]> = section
@@ -591,13 +591,13 @@ pub fn load_group_local(group_id: &GroupId, storage: &FlatStorage) -> Result<Gro
         })
         .collect();
     let offered = parties.into_iter().zip(oscs).collect();
-    Ok(GroupLocal { muted: u("muted") != 0, phase: GroupPhase::from_u64(u("phase")), offered })
+    Ok(MoleculeLocal { muted: u("muted") != 0, phase: MoleculePhase::from_u64(u("phase")), offered })
 }
 
 /// A PARKED OFFER (§10.1 Offered): a friend's offer we have not answered — the roster snapshot they sent and who sent it. No secret rides here (D10). Persisted so a relaunch between offer and Join keeps the row alive; deleted on Join or expiry.
 #[derive(Clone, Debug)]
-pub struct GroupOffer {
-    pub group_id: GroupId,
+pub struct BondOffer {
+    pub molecule_id: MoleculeId,
     /// The sponsor's party id (a contact's handle_hash).
     pub sponsor: crate::types::PartyId,
     /// The eagle time of the offer row in the friendship conversation — the card the Join pill lives on.
@@ -607,23 +607,23 @@ pub struct GroupOffer {
     pub accepted: bool,
 }
 
-const GROUP_OFFER_SECTION: &str = "group_offer";
+const BOND_OFFER_SECTION: &str = "bond_offer";
 
-fn group_offer_schema() -> SectionSchema {
-    SectionSchema::new(GROUP_OFFER_SECTION)
+fn bond_offer_schema() -> SectionSchema {
+    SectionSchema::new(BOND_OFFER_SECTION)
         .field("sponsor", TypeConstraint::AnyHash)
         .field("row_osc", TypeConstraint::Any)
         .field("accepted", TypeConstraint::AnyUnsigned)
         .field("snapshot", TypeConstraint::Any) // hR: the roster-codec blob, verbatim
 }
 
-fn group_offer_key(group_id: &GroupId) -> [u8; 32] {
-    crate::storage::vault_key("goffer", &group_id.0)
+fn bond_offer_key(molecule_id: &MoleculeId) -> [u8; 32] {
+    crate::storage::vault_key("bond-offer", &molecule_id.0)
 }
 
-pub fn save_group_offer(offer: &GroupOffer, storage: &FlatStorage) -> Result<(), StorageError> {
-    let snapshot = roster_to_vsf_bytes(&offer.group_id, &offer.snapshot)?;
-    let section_bytes = group_offer_schema()
+pub fn save_bond_offer(offer: &BondOffer, storage: &FlatStorage) -> Result<(), StorageError> {
+    let snapshot = roster_to_vsf_bytes(&offer.molecule_id, &offer.snapshot)?;
+    let section_bytes = bond_offer_schema()
         .build()
         .set("sponsor", VsfType::hb(offer.sponsor.to_vec()))
         .map_err(|e| StorageError::Parse(e.to_string()))?
@@ -638,17 +638,17 @@ pub fn save_group_offer(offer: &GroupOffer, storage: &FlatStorage) -> Result<(),
     let bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
-        .add_unboxed(GROUP_OFFER_SECTION, section_bytes)
+        .add_unboxed(BOND_OFFER_SECTION, section_bytes)
         .build()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
-    storage.write_addr(&group_offer_key(&offer.group_id), &bytes)
+    storage.write_addr(&bond_offer_key(&offer.molecule_id), &bytes)
 }
 
-pub fn load_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<Option<GroupOffer>, StorageError> {
-    let Some(bytes) = storage.read_addr(&group_offer_key(group_id))? else {
+pub fn load_bond_offer(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<Option<BondOffer>, StorageError> {
+    let Some(bytes) = storage.read_addr(&bond_offer_key(molecule_id))? else {
         return Ok(None);
     };
-    let section = vsf::schema::SectionBuilder::parse_document(group_offer_schema(), &bytes, None)
+    let section = vsf::schema::SectionBuilder::parse_document(bond_offer_schema(), &bytes, None)
         .map_err(|e| StorageError::Parse(format!("group offer failed verified read: {e}")))?;
     let sponsor = section.get_value::<[u8; 32]>("sponsor").map_err(|e| StorageError::Parse(format!("sponsor: {e}")))?;
     let row_osc = section
@@ -671,19 +671,19 @@ pub fn load_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<Opt
         .ok_or_else(|| StorageError::Parse("offer without a snapshot".to_string()))?;
     let accepted = section.get_fields("accepted").first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0) != 0;
     let (gid, snapshot) = roster_from_vsf_bytes(&blob)?;
-    if gid != *group_id {
+    if gid != *molecule_id {
         return Err(StorageError::Parse("offer snapshot names another group".to_string()));
     }
-    Ok(Some(GroupOffer { group_id: gid, sponsor, row_osc, snapshot, accepted }))
+    Ok(Some(BondOffer { molecule_id: gid, sponsor, row_osc, snapshot, accepted }))
 }
 
-pub fn delete_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<(), StorageError> {
-    storage.delete_addr(&group_offer_key(group_id))
+pub fn delete_bond_offer(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<(), StorageError> {
+    storage.delete_addr(&bond_offer_key(molecule_id))
 }
 
-/// The parked-offer index at `vault_key("goffers", vault_seed)` — offers, like groups, are discoverable at boot only thru a list.
-pub fn save_offer_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), StorageError> {
-    let mut builder = group_list_schema().build();
+/// The parked-offer index at `vault_key("bond-offers", vault_seed)` — offers, like groups, are discoverable at boot only thru a list.
+pub fn save_offer_list(ids: &[MoleculeId], storage: &FlatStorage) -> Result<(), StorageError> {
+    let mut builder = molecule_list_schema().build();
     for id in ids {
         builder = builder.append_multi("group", vec![VsfType::hb(id.0.to_vec())]).map_err(|e| StorageError::Parse(e.to_string()))?;
     }
@@ -691,62 +691,62 @@ pub fn save_offer_list(ids: &[GroupId], storage: &FlatStorage) -> Result<(), Sto
     let vsf_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
-        .add_unboxed(GROUP_LIST_SECTION, section_bytes)
+        .add_unboxed(MOLECULE_LIST_SECTION, section_bytes)
         .build()
         .map_err(|e| StorageError::Parse(e.to_string()))?;
-    storage.write_addr(&crate::storage::vault_key("goffers", &storage.vault_seed()), &vsf_bytes)
+    storage.write_addr(&crate::storage::vault_key("bond-offers", &storage.vault_seed()), &vsf_bytes)
 }
 
-pub fn load_offer_list(storage: &FlatStorage) -> Result<Vec<GroupId>, StorageError> {
-    let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("goffers", &storage.vault_seed()))? else {
+pub fn load_offer_list(storage: &FlatStorage) -> Result<Vec<MoleculeId>, StorageError> {
+    let Some(vsf_bytes) = storage.read_addr(&crate::storage::vault_key("bond-offers", &storage.vault_seed()))? else {
         return Ok(Vec::new());
     };
-    let section = vsf::schema::SectionBuilder::parse_document(group_list_schema(), &vsf_bytes, None)
+    let section = vsf::schema::SectionBuilder::parse_document(molecule_list_schema(), &vsf_bytes, None)
         .map_err(|e| StorageError::Parse(format!("offer list failed verified read: {e}")))?;
     Ok(section
         .get_fields("group")
         .iter()
         .filter_map(|f| f.values.first())
         .filter_map(|v| match v {
-            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok().map(GroupId),
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok().map(MoleculeId),
             _ => None,
         })
         .collect())
 }
 
 /// Park an offer: write it and index it. Replaces an older offer for the same group (a refreshed snapshot).
-pub fn park_group_offer(offer: &GroupOffer, storage: &FlatStorage) -> Result<(), StorageError> {
-    save_group_offer(offer, storage)?;
+pub fn park_bond_offer(offer: &BondOffer, storage: &FlatStorage) -> Result<(), StorageError> {
+    save_bond_offer(offer, storage)?;
     let mut ids = load_offer_list(storage)?;
-    if !ids.contains(&offer.group_id) {
-        ids.push(offer.group_id);
+    if !ids.contains(&offer.molecule_id) {
+        ids.push(offer.molecule_id);
         save_offer_list(&ids, storage)?;
     }
     Ok(())
 }
 
 /// Unpark: delete the offer and drop it from the index.
-pub fn unpark_group_offer(group_id: &GroupId, storage: &FlatStorage) -> Result<(), StorageError> {
-    delete_group_offer(group_id, storage)?;
-    let ids: Vec<GroupId> = load_offer_list(storage)?.into_iter().filter(|g| g != group_id).collect();
+pub fn unpark_bond_offer(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<(), StorageError> {
+    delete_bond_offer(molecule_id, storage)?;
+    let ids: Vec<MoleculeId> = load_offer_list(storage)?.into_iter().filter(|g| g != molecule_id).collect();
     save_offer_list(&ids, storage)
 }
 
 /// Every parked offer this device holds.
-pub fn load_all_offers(storage: &FlatStorage) -> Vec<GroupOffer> {
+pub fn load_all_offers(storage: &FlatStorage) -> Vec<BondOffer> {
     let ids = match load_offer_list(storage) {
         Ok(v) => v,
         Err(e) => {
-            crate::logf!("GROUP: offer index load failed: {}", e);
+            crate::logf!("MOLECULE: offer index load failed: {}", e);
             return Vec::new();
         }
     };
     ids.iter()
-        .filter_map(|id| match load_group_offer(id, storage) {
+        .filter_map(|id| match load_bond_offer(id, storage) {
             Ok(Some(o)) => Some(o),
             Ok(None) => None,
             Err(e) => {
-                crate::logf!("GROUP: offer {} failed to load: {}", hex::encode(&id.0[..4]), e);
+                crate::logf!("MOLECULE: offer {} failed to load: {}", hex::encode(&id.0[..4]), e);
                 None
             }
         })
@@ -756,22 +756,22 @@ pub fn load_all_offers(storage: &FlatStorage) -> Vec<GroupOffer> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::group::{device_pubkey, found_group, sign_record, verify_record};
+    use crate::types::molecule::{device_pubkey, found_atom, sign_record, verify_record};
 
     /// The full birth → persist → reload arc: a founder's roster round-trips with signatures still verifiable — storage is custody, never trust.
     #[test]
     fn roster_round_trips_and_signatures_survive() {
         let seed = [0xA5u8; 32];
-        let birth = found_group([0x01; 32], [0x02; 32], "Nick", [0x03; 32], "purple turtles", false, &seed);
+        let birth = found_atom([0x01; 32], [0x02; 32], "Nick", [0x03; 32], "purple turtles", false, &seed);
         let mut roster = Roster::default();
         assert!(roster.merge_genesis(birth.genesis.clone()));
         assert!(roster.merge_member(birth.founder_member.clone()));
         assert!(roster.merge_vouch(birth.founder_vouch.clone()));
 
-        let bytes = roster_to_vsf_bytes(&birth.group_id, &roster).expect("encode");
+        let bytes = roster_to_vsf_bytes(&birth.molecule_id, &roster).expect("encode");
         assert!(bytes.starts_with(b"R\xc3\x85<"), "a complete VSF file, not a bare section");
         let (gid, back) = roster_from_vsf_bytes(&bytes).expect("decode");
-        assert_eq!(gid, birth.group_id);
+        assert_eq!(gid, birth.molecule_id);
         let g = back.genesis.as_ref().expect("genesis rides");
         assert_eq!(g, &birth.genesis);
         let m = back.members.get(&birth.founder_member.party).expect("founder stands");
@@ -787,7 +787,7 @@ mod tests {
     #[test]
     fn roster_storage_obeys_merge_law_and_leaves_ride() {
         let seed = [0x77u8; 32];
-        let birth = found_group([0x0A; 32], [0x0B; 32], "founder", [0; 32], "t", true, &seed);
+        let birth = found_atom([0x0A; 32], [0x0B; 32], "founder", [0; 32], "t", true, &seed);
         let mut roster = Roster::default();
         roster.merge_genesis(birth.genesis.clone());
         roster.merge_member(birth.founder_member.clone());
@@ -800,8 +800,8 @@ mod tests {
         m2.signer_device = device_pubkey(&seed);
         m2.signature = sign_record(&m2.signing_bytes(), &seed);
         roster.merge_member(m2.clone());
-        roster.merge_vouch(crate::types::group::vouch_record(birth.founder_member.party, m2.party, false, &seed));
-        let mut l2 = crate::types::group::LeaveRecord {
+        roster.merge_vouch(crate::types::molecule::vouch_record(birth.founder_member.party, m2.party, false, &seed));
+        let mut l2 = crate::types::molecule::LeaveRecord {
             party: m2.party,
             signed_osc: 200,
             signature: [0; 64],
@@ -810,7 +810,7 @@ mod tests {
         l2.signature = sign_record(&l2.signing_bytes(), &seed);
         roster.merge_leave(l2.clone());
 
-        let bytes = roster_to_vsf_bytes(&birth.group_id, &roster).expect("encode");
+        let bytes = roster_to_vsf_bytes(&birth.molecule_id, &roster).expect("encode");
         let (_, back) = roster_from_vsf_bytes(&bytes).expect("decode");
         assert!(!back.is_standing(&m2.party), "left member is not standing");
         assert!(back.members.contains_key(&m2.party), "ostracism never erasure: the record stays as testimony");
@@ -820,9 +820,9 @@ mod tests {
         // Vault arc thru FlatStorage.
         crate::storage::isolate_test_storage();
         let storage = FlatStorage::new(crate::storage::APP, [0xD1; 32], [0xD2; 32]).expect("storage");
-        assert!(load_roster(&birth.group_id, &storage).expect("load").is_none(), "absent = not a member here");
-        save_roster(&birth.group_id, &roster, &storage).expect("save");
-        let loaded = load_roster(&birth.group_id, &storage).expect("load").expect("present");
+        assert!(load_roster(&birth.molecule_id, &storage).expect("load").is_none(), "absent = not a member here");
+        save_roster(&birth.molecule_id, &roster, &storage).expect("save");
+        let loaded = load_roster(&birth.molecule_id, &storage).expect("load").expect("present");
         assert_eq!(loaded.standing(), roster.standing());
         assert_eq!(loaded.genesis, roster.genesis);
     }
@@ -831,17 +831,17 @@ mod tests {
     #[test]
     fn roster_v2_title_bundles_vouches_and_local_state_round_trip() {
         let seed = [0x31u8; 32];
-        let birth = found_group([0x0A; 32], [0x0B; 32], "founder", [0; 32], "t", false, &seed);
+        let birth = found_atom([0x0A; 32], [0x0B; 32], "founder", [0; 32], "t", false, &seed);
         let mut roster = Roster::default();
         roster.merge_genesis(birth.genesis.clone());
         roster.merge_member(birth.founder_member.clone());
         roster.merge_vouch(birth.founder_vouch.clone());
         let eph = crate::crypto::era::era_keygen(0, 0, crate::crypto::era::KEM_SET_DEFAULT);
-        let bundle = crate::types::group::bundle_record(birth.founder_member.party, 0, &eph, &seed);
+        let bundle = crate::types::molecule::bundle_record(birth.founder_member.party, 0, &eph, &seed);
         roster.merge_bundle(bundle.clone());
-        let title = crate::types::group::title_record(birth.founder_member.party, "taco", &seed);
+        let title = crate::types::molecule::title_record(birth.founder_member.party, "taco", &seed);
         roster.merge_title(title.clone());
-        let bytes = roster_to_vsf_bytes(&birth.group_id, &roster).expect("encode");
+        let bytes = roster_to_vsf_bytes(&birth.molecule_id, &roster).expect("encode");
         let (_, back) = roster_from_vsf_bytes(&bytes).expect("decode");
         assert_eq!(back.title(), "taco");
         assert_eq!(back.title.as_ref(), Some(&title));
@@ -856,37 +856,37 @@ mod tests {
         crate::storage::isolate_test_storage();
         let storage = FlatStorage::new(crate::storage::APP, [0xD3; 32], [0xD4; 32]).expect("storage");
         // Local state: default when absent; mute + phase persist; and the mute is NOT in the roster bytes.
-        assert_eq!(load_group_local(&birth.group_id, &storage).expect("absent"), GroupLocal::default());
-        let local = GroupLocal { muted: true, phase: GroupPhase::Joining, offered: vec![([0x0C; 32], 4242)] };
-        save_group_local(&birth.group_id, &local, &storage).expect("save local");
-        assert_eq!(load_group_local(&birth.group_id, &storage).expect("load"), local);
+        assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("absent"), MoleculeLocal::default());
+        let local = MoleculeLocal { muted: true, phase: MoleculePhase::Joining, offered: vec![([0x0C; 32], 4242)] };
+        save_molecule_local(&birth.molecule_id, &local, &storage).expect("save local");
+        assert_eq!(load_molecule_local(&birth.molecule_id, &storage).expect("load"), local);
         assert!(!bytes.windows(5).any(|w| w == b"muted"), "a mute never replicates");
         // Parked offer: park, enumerate, unpark.
-        let offer = GroupOffer { group_id: birth.group_id, sponsor: [0x0A; 32], row_osc: 777, snapshot: roster.clone(), accepted: false };
-        park_group_offer(&offer, &storage).expect("park");
+        let offer = BondOffer { molecule_id: birth.molecule_id, sponsor: [0x0A; 32], row_osc: 777, snapshot: roster.clone(), accepted: false };
+        park_bond_offer(&offer, &storage).expect("park");
         let all = load_all_offers(&storage);
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].sponsor, offer.sponsor);
         assert_eq!(all[0].row_osc, 777);
         assert_eq!(all[0].snapshot.standing(), roster.standing());
-        park_group_offer(&offer, &storage).expect("re-park replaces");
+        park_bond_offer(&offer, &storage).expect("re-park replaces");
         assert_eq!(load_offer_list(&storage).expect("list").len(), 1);
-        unpark_group_offer(&birth.group_id, &storage).expect("unpark");
+        unpark_bond_offer(&birth.molecule_id, &storage).expect("unpark");
         assert!(load_all_offers(&storage).is_empty());
-        assert!(load_group_offer(&birth.group_id, &storage).expect("gone").is_none());
+        assert!(load_bond_offer(&birth.molecule_id, &storage).expect("gone").is_none());
     }
 
-    /// The index is the ONLY enumeration the flat vault offers: boot discovers membership thru it, and index_group is idempotent.
+    /// The index is the ONLY enumeration the flat vault offers: boot discovers membership thru it, and index_molecule is idempotent.
     #[test]
     fn group_index_enumerates_membership() {
         crate::storage::isolate_test_storage();
         let storage = FlatStorage::new(crate::storage::APP, [0xE1; 32], [0xE2; 32]).expect("storage");
-        assert!(load_group_list(&storage).expect("empty vault").is_empty());
-        let a = crate::types::group::GroupId::from_nonce(&[1; 32]);
-        let b = crate::types::group::GroupId::from_nonce(&[2; 32]);
-        assert!(index_group(&a, &storage).expect("index a"));
-        assert!(index_group(&b, &storage).expect("index b"));
-        assert!(!index_group(&a, &storage).expect("idempotent"), "a second index of the same group is a no-op");
-        assert_eq!(load_group_list(&storage).expect("load"), vec![a, b]);
+        assert!(load_molecule_list(&storage).expect("empty vault").is_empty());
+        let a = crate::types::molecule::MoleculeId::from_nonce(&[1; 32]);
+        let b = crate::types::molecule::MoleculeId::from_nonce(&[2; 32]);
+        assert!(index_molecule(&a, &storage).expect("index a"));
+        assert!(index_molecule(&b, &storage).expect("index b"));
+        assert!(!index_molecule(&a, &storage).expect("idempotent"), "a second index of the same group is a no-op");
+        assert_eq!(load_molecule_list(&storage).expect("load"), vec![a, b]);
     }
 }

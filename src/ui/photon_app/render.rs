@@ -101,7 +101,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Conversations) => "Settings:Conversations",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
                 AppState::ContactPanel(_) => "ContactPanel",
-                AppState::GroupPanel(_) => "GroupPanel",
+                AppState::MoleculePanel(_) => "MoleculePanel",
             },
             Vec::new(),
         );
@@ -133,42 +133,42 @@ impl PhotonApp {
 
         // The open conversation's contact row + compose gate, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
         let active_ci = self.active_contact();
-        // A GROUP conversation paints thru a transient contact view (docs/groups.md §10.5) — resolved here, before the borrow, beside the contact index. Exactly one of the two is Some on the conversation screen.
-        let active_gi = self.active_group();
-        let group_view: Option<crate::types::Contact> = active_gi.and_then(|gi| self.group_view_of(gi));
-        let active_gid: Option<crate::types::group::GroupId> = active_gi.map(|gi| self.group_rosters[gi].0);
+        // A GROUP conversation paints thru a transient contact view (docs/molecules.md §10.5) — resolved here, before the borrow, beside the contact index. Exactly one of the two is Some on the conversation screen.
+        let active_gi = self.active_molecule();
+        let molecule_view: Option<crate::types::Contact> = active_gi.and_then(|gi| self.molecule_view_of(gi));
+        let active_gid: Option<crate::types::molecule::MoleculeId> = active_gi.map(|gi| self.molecule_rosters[gi].0);
         // A member's name grant by party id, for the author line above each incoming group row ("Pending…" until their fold names them).
-        let group_names: Vec<([u8; 32], String)> = active_gi
-            .map(|gi| self.group_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
+        let molecule_names: Vec<([u8; 32], String)> = active_gi
+            .map(|gi| self.molecule_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
             .unwrap_or_default();
-        // OFFER CARDS in the open friendship conversation (docs/groups.md §10.5): per offer row, its label and — for an unaccepted incoming offer — the group a Join would enter.
-        let offer_cards: Vec<(i64, bool, String, Option<crate::types::group::GroupId>)> = active_ci
+        // OFFER CARDS in the open friendship conversation (docs/molecules.md §10.5): per offer row, its label and — for an unaccepted incoming offer — the group a Join would enter.
+        let bond_cards: Vec<(i64, bool, String, Option<crate::types::molecule::MoleculeId>)> = active_ci
             .and_then(|ci| self.contacts.get(ci).map(|c| (ci, c.handle_hash)))
             .map(|(ci, party)| {
                 let their_name = super::contact_visible_name(&self.contacts[ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
                 let mut cards = Vec::new();
                 if let Some(conv) = self.conv_of(ci) {
-                    for m in conv.messages.iter().filter(|m| is_group_offer_row(m)) {
+                    for m in conv.messages.iter().filter(|m| is_bond_offer_row(m)) {
                         if m.is_outgoing {
                             // Sponsor side: which group we offered this contact into, and whether they stand yet.
-                            let found = self.group_locals.iter().find(|(_, l)| l.offered.iter().any(|(p, ts)| *p == party && *ts == m.timestamp)).map(|(g, _)| *g);
+                            let found = self.molecule_locals.iter().find(|(_, l)| l.offered.iter().any(|(p, ts)| *p == party && *ts == m.timestamp)).map(|(g, _)| *g);
                             let (title, joined) = found
-                                .and_then(|g| self.group_rosters.iter().find(|(id, _)| *id == g))
+                                .and_then(|g| self.molecule_rosters.iter().find(|(id, _)| *id == g))
                                 .map(|(_, r)| (r.title(), r.is_standing(&party)))
                                 .unwrap_or_else(|| (String::new(), false));
-                            let label = if joined { tr(Msg::OfferAccepted { name: &their_name, title: &title }).into_owned() } else { tr(Msg::OfferWaiting { name: &their_name, title: &title }).into_owned() };
+                            let label = if joined { tr(Msg::BondAccepted { name: &their_name, title: &title }).into_owned() } else { tr(Msg::BondWaiting { name: &their_name, title: &title }).into_owned() };
                             cards.push((m.timestamp, true, label, None));
                         } else {
-                            let offer = self.group_offers.iter().find(|o| o.sponsor == party && o.row_osc == m.timestamp).or_else(|| self.group_offers.iter().find(|o| o.sponsor == party));
-                            let (title, n, gid, accepted) = offer.map(|o| (o.snapshot.title(), o.snapshot.standing().len(), o.group_id, o.accepted)).unwrap_or_else(|| (String::new(), 0, crate::types::group::GroupId([0u8; 32]), false));
-                            let held = self.group_rosters.iter().any(|(g, _)| *g == gid);
+                            let offer = self.bond_offers.iter().find(|o| o.sponsor == party && o.row_osc == m.timestamp).or_else(|| self.bond_offers.iter().find(|o| o.sponsor == party));
+                            let (title, n, gid, accepted) = offer.map(|o| (o.snapshot.title(), o.snapshot.standing().len(), o.molecule_id, o.accepted)).unwrap_or_else(|| (String::new(), 0, crate::types::molecule::MoleculeId([0u8; 32]), false));
+                            let held = self.molecule_rosters.iter().any(|(g, _)| *g == gid);
                             let expired = offer.is_none() || self.contacts[ci].identity_ended || self.contacts[ci].identity_superseded;
                             let label = if held || accepted {
-                                tr(Msg::OfferJoined { title: &title }).into_owned()
+                                tr(Msg::BondBound { title: &title }).into_owned()
                             } else if expired {
-                                tr(Msg::OfferExpired).into_owned()
+                                tr(Msg::BondExpired).into_owned()
                             } else {
-                                tr(Msg::OfferLine { sponsor: &their_name, title: &title, n: &crate::fmt_num64(n as u64) }).into_owned()
+                                tr(Msg::BondOfferLine { sponsor: &their_name, title: &title, n: &crate::fmt_num64(n as u64) }).into_owned()
                             };
                             let joinable = (!held && !accepted && !expired && offer.is_some()).then_some(gid);
                             cards.push((m.timestamp, false, label, joinable));
@@ -189,11 +189,11 @@ impl PhotonApp {
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
         let title_text: String = if matches!(
             self.state,
-            AppState::Conversation | AppState::ContactPanel(_) | AppState::GroupPanel(_)
+            AppState::Conversation | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
         ) {
             active_ci
                 .and_then(|ci| self.contacts.get(ci))
-                .or(group_view.as_ref())
+                .or(molecule_view.as_ref())
                 // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list). Siblings show their machine name; a group its shared title.
                 .map(|c| super::contact_visible_name(c, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()))
                 .unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned())
@@ -253,35 +253,39 @@ impl PhotonApp {
                 }
                 lines_by_ci.push(lines);
             }
-            // GROUP rows (docs/groups.md §10.5) wrap their shared title the same way; the filter matches on the title.
-            let mut lines_by_gi: Vec<Vec<String>> = Vec::with_capacity(self.group_rosters.len());
-            for (_, roster) in &self.group_rosters {
+            // GROUP rows (docs/molecules.md §10.5) wrap their shared title the same way; the filter matches on the title.
+            let mut lines_by_gi: Vec<Vec<String>> = Vec::with_capacity(self.molecule_rosters.len());
+            for (_, roster) in &self.molecule_rosters {
                 let mut lines = wrap_text_lines(ctx.text, &roster.title(), &wrap_style, name_w);
                 if lines.is_empty() {
                     lines.push(String::new());
                 }
                 lines_by_gi.push(lines);
             }
-            let block_h: isize = self
-                .contacts
-                .iter()
-                .enumerate()
-                .filter(|(_, c)| {
-                    // Must mirror the render pass's `matching` filter exactly (siblings hidden) or the two clamps disagree within a frame.
-                    !c.is_sibling
-                        && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
-                })
-                .map(|(ci, _)| contact_row_height(row_h, lines_by_ci[ci].len()))
-                .sum::<isize>()
+            let rf = self.ready_filter;
+            let show_friends = matches!(rf, ReadyFilter::All | ReadyFilter::Friends);
+            let block_h: isize = row_h
                 + self
-                    .group_rosters
+                    .contacts
                     .iter()
                     .enumerate()
-                    .filter(|(_, (_, r))| filter.is_empty() || r.title().to_lowercase().contains(&filter))
+                    .filter(|(_, c)| {
+                        // Must mirror the render pass's `matching` filter exactly (siblings hidden, the strip's filter) or the two clamps disagree within a frame.
+                        show_friends
+                            && !c.is_sibling
+                            && (filter.is_empty() || self.atom_naming || c.display_name().to_lowercase().contains(&filter))
+                    })
+                    .map(|(ci, _)| contact_row_height(row_h, lines_by_ci[ci].len()))
+                    .sum::<isize>()
+                + self
+                    .molecule_rosters
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, (_, r))| ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>();
             self.contact_row_lines = lines_by_ci;
-            self.group_row_lines = lines_by_gi;
+            self.molecule_row_lines = lines_by_gi;
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
@@ -334,10 +338,10 @@ impl PhotonApp {
             self.settings_content_extent =
                 (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
             (self.settings_rail_scroll, self.settings_content_scroll)
-        } else if let AppState::GroupPanel(gpage) = self.state {
+        } else if let AppState::MoleculePanel(gpage) = self.state {
             let sl = SettingsLayout::compute(&ctx.viewport);
-            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::GroupPage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
-            let n = self.group_page_rows(gpage);
+            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::MoleculePage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            let n = self.molecule_page_rows(gpage);
             self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
@@ -487,7 +491,7 @@ impl PhotonApp {
                                // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
         let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
             self.state,
-            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::GroupPanel(_)
+            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
         ) {
             let sl = SettingsLayout::compute(&ctx.viewport);
             (
@@ -1726,22 +1730,27 @@ impl PhotonApp {
                 .as_ref()
                 .map(|t| t.chars.iter().collect::<String>().to_lowercase())
                 .unwrap_or_default();
+            // NEW ATOM mode: the box holds a title, not a search — the list stays whole.
+            let filter = if self.atom_naming { String::new() } else { filter };
+            let rf = self.ready_filter;
+            let show_friends = matches!(rf, ReadyFilter::All | ReadyFilter::Friends);
             let mut matching: Vec<ReadyRow> = self
                 .contacts
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| {
                     // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
-                    !c.is_sibling
+                    show_friends
+                        && !c.is_sibling
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
                 .map(|(i, _)| ReadyRow::Contact(i))
-                // GROUP rows (docs/groups.md §10.5): one list with the contacts, sorted by the same key.
+                // ATOM and MOLECULE rows (docs/molecules.md §10.5): one list with the friends, sorted by the same key, narrowed by the strip.
                 .chain(
-                    self.group_rosters
+                    self.molecule_rosters
                         .iter()
                         .enumerate()
-                        .filter(|(_, (_, r))| filter.is_empty() || r.title().to_lowercase().contains(&filter))
+                        .filter(|(_, (_, r))| ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || r.title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 .collect();
@@ -1754,7 +1763,7 @@ impl PhotonApp {
             matching.sort_by_key(|row| {
                 let conv = match *row {
                     ReadyRow::Contact(ci) => dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]),
-                    ReadyRow::Group(gi) => self.conversations.iter().find(|v| v.id().as_bytes() == &self.group_rosters[gi].0 .0),
+                    ReadyRow::Group(gi) => self.conversations.iter().find(|v| v.id().as_bytes() == &self.molecule_rosters[gi].0 .0),
                 };
                 let last_activity = conv
                     .map(|v| v.messages.as_slice())
@@ -1771,13 +1780,14 @@ impl PhotonApp {
             });
 
             // Clamp scroll over the FULL block (user section + rows + version footer), hard-stop at both ends. Down-scroll stops when the version footer (one row past the last row) plus a row of bottom margin reaches the screen bottom; up-scroll stops at rest (0), with the avatar at its natural top. MUST match the pre-chrome clamp above (`block_end = block_bottom_at_zero + row_h*2`) so both passes agree within a frame.
-            let block_h: isize = matching
-                .iter()
-                .map(|row| match *row {
-                    ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())),
-                    ReadyRow::Group(gi) => contact_row_height(row_h, self.group_row_lines.get(gi).map_or(1, |l| l.len())),
-                })
-                .sum();
+            let block_h: isize = row_h
+                + matching
+                    .iter()
+                    .map(|row| match *row {
+                        ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())),
+                        ReadyRow::Group(gi) => contact_row_height(row_h, self.molecule_row_lines.get(gi).map_or(1, |l| l.len())),
+                    })
+                    .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
             let block_end = block_bottom_at_zero + row_h * 2;
             let max_scroll = (block_end - buf_h as isize).max(0);
@@ -1792,19 +1802,33 @@ impl PhotonApp {
             // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
             let ring_thickness = super::ring_thickness(avatar_r);
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
-            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero.
-            let mut row_cursor = rows.y0 as isize;
+            // THE FILTER STRIP (docs/molecules.md §10.5): All · Friends · Atoms · Molecules, then New atom — a pseudo-row at the top of the block that scrolls with it.
+            {
+                let strip_top = rows.y0 as f32 - scroll as f32;
+                let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
+                let labels = [tr(Msg::FilterAll), tr(Msg::FilterFriends), tr(Msg::FilterAtoms), tr(Msg::FilterMolecules), tr(Msg::NewAtom)];
+                let chosen = |i: usize| match (i, self.ready_filter) {
+                    (0, ReadyFilter::All) | (1, ReadyFilter::Friends) | (2, ReadyFilter::Atoms) | (3, ReadyFilter::Molecules) => Some(*theme::PILL_GREEN),
+                    (4, _) if self.atom_naming => Some(*theme::PILL_GREEN),
+                    _ => None,
+                };
+                let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_ref(), self.ready_filter_base.wrapping_add(i as HitId), true, chosen(i))).collect();
+                let mut flow = Flow::new(fluor::region::Region::new(strip.x, strip.y + scroll as f32, strip.w, strip.h * 4.0), scroll as f32);
+                flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
+            }
+            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero, one row down for the strip.
+            let mut row_cursor = rows.y0 as isize + row_h;
             for row in matching.iter() {
                 // One row, two sources: a contact (the cached scaled avatar, the relationship colour, the presence tier) or a group (the members' gradient pie, the group's own colour, the best tier over its members' rows). Everything below reads the view, never a contact index, so a group row paints thru the identical geometry.
                 let rctx = ReadyCtx {
                     contacts: &self.contacts,
                     conversations: &self.conversations,
                     contact_row_lines: &self.contact_row_lines,
-                    group_rosters: &self.group_rosters,
-                    group_locals: &self.group_locals,
-                    group_row_lines: &self.group_row_lines,
+                    molecule_rosters: &self.molecule_rosters,
+                    molecule_locals: &self.molecule_locals,
+                    molecule_row_lines: &self.molecule_row_lines,
                     contact_hit_base: self.contact_hit_base,
-                    group_hit_base: self.group_hit_base,
+                    molecule_hit_base: self.molecule_hit_base,
                 };
                 let view: RowView = match *row {
                     ReadyRow::Contact(ci) => RowView::of_contact(&rctx, ci, &our_handle_hash),
@@ -1862,7 +1886,7 @@ impl PhotonApp {
                     (_, Some((gid, members))) => {
                         // The group's avatar: a pie of its members' gradients at the row diameter.
                         let gd = (avatar_r * 2.0).max(1.0) as usize;
-                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &group_avatar_rgb(gid, members, gd), gd, Some(rows_clip));
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &molecule_avatar_rgb(gid, members, gd), gd, Some(rows_clip));
                     }
                     _ => {
                         // Default unset avatar: the deterministic gradient (a contact's public proof; a group's id).
@@ -2023,7 +2047,7 @@ impl PhotonApp {
                     self.contacts[ci].avatar_scaled_diameter = diam;
                 }
                 // The Manage page's row budget (grows with the group picker) — a method call, so it is bound before the `contact` borrow.
-                let manage_rows = contact_page_rows(ContactPage::Manage) + if self.group_pick_open { 3 + self.group_rosters.len() } else { 0 };
+                let manage_rows = contact_page_rows(ContactPage::Manage) + if self.molecule_pick_open { 1 + self.molecule_rosters.len().max(1) } else { 0 };
                 let contact = &self.contacts[ci];
                 // Our pid feeds the relationship digest below — a keyed colour, not a self-check. "Is this me" is the participant count.
                 let our_hh = self
@@ -2533,41 +2557,25 @@ impl PhotonApp {
                                 400,
                             );
                             settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
-                            // BRING INTO A GROUP (docs/groups.md §10.5): pill slot 1. Opens the picker below: New group (title box, the history policy fixed at birth, Found) and every group we stand in.
+                            // BRING INTO A GROUP (docs/molecules.md §10.5): pill slot 1. Opens the picker below: New group (title box, the history policy fixed at birth, Found) and every group we stand in.
                             let pill2 = fluor::region::Region::new(rows[5].x + rows[5].w * 0.1, rows[5].y, rows[5].w * 0.5, rows[5].h * 0.95);
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BringIntoGroup), self.contact_panel_btn_base.wrapping_add(1), ctx.pressed_hit);
-                            if self.group_pick_open && all_rows.len() >= 9 {
-                                let pick = |i: u16| self.group_pick_base.wrapping_add(i as HitId);
-                                // Row 6: the title box, prefilled or empty, beside the "New group" label.
-                                let r6 = all_rows[6];
-                                settings_line(&mut canvas, ctx.text, fluor::region::Region::new(r6.x, r6.y, r6.w * 0.3, r6.h), &tr(Msg::NewGroup), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                                if let Some(tb) = self.group_title_textbox.as_mut() {
-                                    let tb_left = r6.x + r6.w * 0.32;
-                                    let tb_w = (r6.w * 0.62).max(hspan2 * 6.0);
-                                    tb.set_rect(tb_left + tb_w * 0.5, r6.center_y(), tb_w, r6.h * 0.85);
-                                    tb.set_font_size(hspan2, ctx.text);
-                                    let id = tb.hit_id();
-                                    tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
-                                }
-                                // Row 7: the history policy, two pills, the chosen one filled (a birth property — everyone who joins does so knowing it).
-                                let r7 = all_rows[7];
-                                let half = r7.w * 0.48;
-                                let from_gen = self.group_pick_from_genesis;
-                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r7.x, r7.y, half, r7.h * 0.9), &tr(Msg::HistoryFromJoin), pick(3), ctx.pressed_hit, true, if from_gen { None } else { Some(*theme::PILL_GREEN) }, "Oxanium");
-                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r7.x + r7.w * 0.52, r7.y, half, r7.h * 0.9), &tr(Msg::HistoryFromGenesis), pick(2), ctx.pressed_hit, true, if from_gen { Some(*theme::PILL_GREEN) } else { None }, "Oxanium");
-                                // Row 8: Found — enabled once the title box holds text.
-                                let r8 = all_rows[8];
-                                let has_title = self.group_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
-                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r8.x + r8.w * 0.1, r8.y, r8.w * 0.5, r8.h * 0.9), &tr(Msg::FoundGroupPill), if has_title { pick(1) } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
-                                // Rows 9..: every group we stand in — one tap offers this contact into it (already standing there = drawn disabled).
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BindIntoMolecule), self.contact_panel_btn_base.wrapping_add(1), ctx.pressed_hit);
+                            if self.molecule_pick_open && all_rows.len() >= 7 {
+                                let pick = |i: u16| self.molecule_pick_base.wrapping_add(i as HitId);
+                                settings_line(&mut canvas, ctx.text, all_rows[6], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
+                                // Rows 7..: every atom and molecule we stand in — one tap offers this contact a bond into it (already standing there = drawn disabled).
                                 let contact_pid = contact.handle_hash;
-                                for (gi, (gid, roster)) in self.group_rosters.iter().enumerate() {
-                                    let Some(r) = all_rows.get(9 + gi) else { break };
+                                if self.molecule_rosters.is_empty() {
+                                    if let Some(r) = all_rows.get(7) {
+                                        settings_line(&mut canvas, ctx.text, *r, &tr(Msg::NoAtomsYet), hspan2, *theme::LABEL_COLOUR, 400);
+                                    }
+                                }
+                                for (gi, (_, roster)) in self.molecule_rosters.iter().enumerate() {
+                                    let Some(r) = all_rows.get(7 + gi) else { break };
                                     let n_standing = roster.standing().len();
                                     let already = roster.is_standing(&contact_pid);
-                                    let label = format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n_standing as u64));
+                                    let label = format!("{} \u{00b7} {}", roster.title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_num64(n_standing as u64) });
                                     let hid = if already || gi + 4 >= 16 { HIT_NONE } else { pick((4 + gi) as u16) };
-                                    let _ = gid;
                                     draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * 0.8, r.h * 0.9), &label, hid, ctx.pressed_hit, !already, None, "Oxanium");
                                 }
                             }
@@ -2577,21 +2585,21 @@ impl PhotonApp {
             }
         }
 
-        // ── GROUP PANEL (docs/groups.md §10.5): the contact panel's shape — header = the shared title, rail = Back + About/Add/Manage, content = the page. ──
-        if let AppState::GroupPanel(gpage) = self.state {
-            use crate::ui::state::GroupPage;
+        // ── GROUP PANEL (docs/molecules.md §10.5): the contact panel's shape — header = the shared title, rail = Back + About/Add/Manage, content = the page. ──
+        if let AppState::MoleculePanel(gpage) = self.state {
+            use crate::ui::state::MoleculePage;
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if let Some(gi) = active_gi {
                 restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, layout.rail.y as isize, buf_w as isize, buf_h as isize, HIT_NONE);
                 let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-                let (gid, roster) = &self.group_rosters[gi];
+                let (gid, roster) = &self.molecule_rosters[gi];
                 let gid = *gid;
-                let phase = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-                let muted = self.group_locals.iter().find(|(g, _)| *g == gid).map_or(false, |(_, l)| l.muted);
+                let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+                let muted = self.molecule_locals.iter().find(|(g, _)| *g == gid).map_or(false, |(_, l)| l.muted);
                 let standing = roster.standing();
                 let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-                let name_colour = party_colour(&group_digest(&gid, &our_hh));
+                let name_colour = party_colour(&molecule_digest(&gid, &our_hh));
                 ctx.text.draw_text_center(&mut canvas, &roster.title(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
                 // Rail: pinned Back, then the three pages.
                 let rail_inset = layout.rail_inset();
@@ -2607,16 +2615,16 @@ impl PhotonApp {
                 }
                 let pages_top = rail_inset.y + nav_h;
                 let pages_clip = fluor::paint::Clip::new(layout.rail.x.max(0.0) as usize, pages_top.max(layout.rail.y).max(0.0) as usize, layout.rail.right().max(0.0) as usize, layout.rail.bottom().max(0.0) as usize);
-                for (i, p) in GroupPage::ALL.iter().enumerate() {
+                for (i, p) in MoleculePage::ALL.iter().enumerate() {
                     let r = fluor::region::Region::new(rail_inset.x, pages_top - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h);
                     if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
                         continue;
                     }
                     let active = *p == gpage;
-                    let hid = self.group_nav_base.wrapping_add(i as HitId);
+                    let hid = self.molecule_nav_base.wrapping_add(i as HitId);
                     let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == hid;
                     let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
-                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::GroupPageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
+                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::MoleculePageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
                     if held {
                         paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
                     } else if active {
@@ -2627,20 +2635,20 @@ impl PhotonApp {
                 // Content.
                 let tspan = layout.unit * 0.9;
                 let hspan2 = layout.unit * 0.62;
-                // The same sum group_page_rows computes (field-wise: the chrome borrow is live).
+                // The same sum molecule_page_rows computes (field-wise: the chrome borrow is live).
                 let n = match gpage {
-                    GroupPage::About => 4 + roster.members.len(),
-                    GroupPage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
-                    GroupPage::Manage => 6,
+                    MoleculePage::About => 6 + roster.members.len(),
+                    MoleculePage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
+                    MoleculePage::Manage => 6,
                 };
                 let rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
                 let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
-                settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::GroupPageName(gpage)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::MoleculePageName(gpage)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                 match gpage {
-                    GroupPage::About => {
+                    MoleculePage::About => {
                         // Row 1: the title box + Rename (a roster record anyone may post).
                         let r1 = rows[1];
-                        if let Some(tb) = self.group_title_textbox.as_mut() {
+                        if let Some(tb) = self.molecule_title_textbox.as_mut() {
                             let tb_left = r1.x + r1.w * 0.05;
                             let tb_w = (r1.w * 0.55).max(hspan2 * 6.0);
                             tb.set_rect(tb_left + tb_w * 0.5, r1.center_y(), tb_w, r1.h * 0.85);
@@ -2648,18 +2656,22 @@ impl PhotonApp {
                             let id = tb.hit_id();
                             tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
                         }
-                        let has_title = self.group_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::group::GroupPhase::Left { self.group_panel_btn_base.wrapping_add(2) } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
-                        // Row 2: policy + era.
+                        let has_title = self.molecule_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::molecule::MoleculePhase::Left { self.molecule_panel_btn_base.wrapping_add(2) } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
+                        // Row 2: an ATOM offers its one becoming — "Create a molecule!" — which is the Add page; the line beneath says what binding does.
+                        if standing.len() <= 1 && phase == crate::storage::molecule::MoleculePhase::Standing {
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[2], 0.6), &tr(Msg::CreateMoleculePill), self.molecule_panel_btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
+                            settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::CreateMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
                         let policy = if roster.genesis.as_ref().map_or(false, |g| g.history_from_genesis) { tr(Msg::HistoryFromGenesis) } else { tr(Msg::HistoryFromJoin) };
                         let era = self.friendship_chains.iter().find(|(id, _)| id.as_bytes() == &gid.0).map(|(_, c)| c.era_index).unwrap_or(0);
-                        settings_line(&mut canvas, ctx.text, rows[2], &format!("{} \u{00b7} {}", policy, tr(Msg::EraIndex { n: &crate::fmt_num64(era) })), hspan2, *theme::LABEL_COLOUR, 400);
-                        // Row 3: "Members"; rows 4..: one per member record, standing or left, in the member's colour.
-                        settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::Members), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                        let mut members: Vec<&crate::types::group::MemberRecord> = roster.members.values().collect();
+                        settings_line(&mut canvas, ctx.text, rows[4], &format!("{} \u{00b7} {}", policy, tr(Msg::EraIndex { n: &crate::fmt_num64(era) })), hspan2, *theme::LABEL_COLOUR, 400);
+                        // Row 5: "Members"; rows 6..: one per member record, standing or left, in the member's colour.
+                        settings_line(&mut canvas, ctx.text, rows[5], &tr(Msg::Members), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        let mut members: Vec<&crate::types::molecule::MemberRecord> = roster.members.values().collect();
                         members.sort_unstable_by_key(|m| (!roster.is_standing(&m.party), m.signed_osc));
                         for (k, m) in members.iter().enumerate() {
-                            let Some(r) = rows.get(4 + k) else { break };
+                            let Some(r) = rows.get(6 + k) else { break };
                             let is_standing = standing.binary_search(&m.party).is_ok();
                             let name = if m.party == our_hh {
                                 tr(Msg::YouLabel).into_owned()
@@ -2669,12 +2681,12 @@ impl PhotonApp {
                                 m.name.clone()
                             };
                             let state = if is_standing { tr(Msg::MemberStanding) } else { tr(Msg::MemberDeparted) };
-                            let colour = if is_standing { party_colour(&group_digest(&gid, &m.party)) } else { theme::dim_colour(*theme::LABEL_COLOUR) };
+                            let colour = if is_standing { party_colour(&molecule_digest(&gid, &m.party)) } else { theme::dim_colour(*theme::LABEL_COLOUR) };
                             settings_line(&mut canvas, ctx.text, *r, &format!("{} \u{00b7} {}", name, state), hspan2, colour, if is_standing { 500 } else { 400 });
                         }
                     }
-                    GroupPage::Add => {
-                        settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::AddToGroupNote), hspan2, *theme::LABEL_COLOUR, 400);
+                    MoleculePage::Add => {
+                        settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
                         let candidates: Vec<usize> = self.contacts.iter().enumerate().filter(|(_, c)| !c.is_sibling && c.friendship_id.is_some() && c.remote_count(&our_hh) > 0 && !roster.is_standing(&c.handle_hash)).map(|(i, _)| i).collect();
                         if candidates.is_empty() {
                             settings_line(&mut canvas, ctx.text, rows[2], &tr(Msg::NobodyToAdd), hspan2, *theme::LABEL_COLOUR, 400);
@@ -2682,20 +2694,20 @@ impl PhotonApp {
                         for (k, ci) in candidates.iter().enumerate().take(32) {
                             let Some(r) = rows.get(2 + k) else { break };
                             let name = super::contact_visible_name(&self.contacts[*ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
-                            let already = self.group_locals.iter().any(|(g, l)| *g == gid && l.offered.iter().any(|(p, _)| *p == self.contacts[*ci].handle_hash));
+                            let already = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.offered.iter().any(|(p, _)| *p == self.contacts[*ci].handle_hash));
                             let label = if already { format!("{} \u{00b7} \u{2026}", name) } else { name };
-                            let hid = if phase == crate::storage::group::GroupPhase::Standing { self.group_panel_btn_base.wrapping_add(8 + k as HitId) } else { HIT_NONE };
+                            let hid = if phase == crate::storage::molecule::MoleculePhase::Standing { self.molecule_panel_btn_base.wrapping_add(8 + k as HitId) } else { HIT_NONE };
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(*r, 0.8), &label, hid, ctx.pressed_hit, hid != HIT_NONE, None, "Oxanium");
                         }
                     }
-                    GroupPage::Manage => {
+                    MoleculePage::Manage => {
                         // Mute (this device only), then Leave (two-tap) with its note.
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[1], 0.5), &tr(Msg::MutePill { muted }), self.group_panel_btn_base.wrapping_add(1), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
-                        if phase == crate::storage::group::GroupPhase::Left {
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[1], 0.5), &tr(Msg::MutePill { muted }), self.molecule_panel_btn_base.wrapping_add(1), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        if phase == crate::storage::molecule::MoleculePhase::Left {
                             settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
                         } else {
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::LeaveGroupPill { armed: self.group_leave_armed }), self.group_panel_btn_base, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::LeaveGroupNote), hspan2, *theme::LABEL_COLOUR, 400);
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), self.molecule_panel_btn_base, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
                 }
@@ -2797,7 +2809,7 @@ impl PhotonApp {
             } else if let Some(ci) = active_ci {
                 Some((ci, None))
             } else {
-                group_view.as_ref().map(|v| (usize::MAX, Some(v)))
+                molecule_view.as_ref().map(|v| (usize::MAX, Some(v)))
             };
             if let Some((ci, peer_view)) = active_peer {
                 {
@@ -3019,10 +3031,10 @@ impl PhotonApp {
                     } else {
                         party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
                     };
-                    // A GROUP row's colour is its AUTHOR's (docs/groups.md D14: the group id ‖ author digest, the same on every member's screen); a friendship row is the friend's.
+                    // A GROUP row's colour is its AUTHOR's (docs/molecules.md D14: the group id ‖ author digest, the same on every member's screen); a friendship row is the friend's.
                     let author_colour = |m: &crate::types::ChatMessage| -> u32 {
                         match (active_gid.as_ref(), m.author.as_ref()) {
-                            (Some(gid), Some(a)) => party_colour(&group_digest(gid, a)),
+                            (Some(gid), Some(a)) => party_colour(&molecule_digest(gid, a)),
                             _ => their_colour,
                         }
                     };
@@ -3032,7 +3044,7 @@ impl PhotonApp {
                             return None;
                         }
                         let a = m.author.as_ref()?;
-                        Some(group_names.iter().find(|(p, _)| p == a).map(|(_, n)| n.clone()).unwrap_or_else(|| tr(Msg::PendingMember).into_owned()))
+                        Some(molecule_names.iter().find(|(p, _)| p == a).map(|(_, n)| n.clone()).unwrap_or_else(|| tr(Msg::PendingMember).into_owned()))
                     };
 
                     // Petname style for stream entry #0 (pending names shear italic like everywhere else).
@@ -3209,8 +3221,8 @@ impl PhotonApp {
                             })
                         });
                         let body_of = |m: &crate::types::ChatMessage| -> String {
-                            if is_group_offer_row(m) {
-                                return offer_cards.iter().find(|(ts, out, _, _)| *ts == m.timestamp && *out == m.is_outgoing).map(|(_, _, l, _)| l.clone()).unwrap_or_else(|| tr(Msg::OfferExpired).into_owned());
+                            if is_bond_offer_row(m) {
+                                return bond_cards.iter().find(|(ts, out, _, _)| *ts == m.timestamp && *out == m.is_outgoing).map(|(_, _, l, _)| l.clone()).unwrap_or_else(|| tr(Msg::BondExpired).into_owned());
                             }
                             if crate::types::parse_attachment_content(&m.content).is_none() {
                                 if let Some((_, b)) = edit_over.get(&(m.timestamp, m.is_outgoing)) {
@@ -3337,7 +3349,7 @@ impl PhotonApp {
                                 if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                                     total += 1;
                                 }
-                                // An incoming GROUP row reserves ONE extra line for its author above the body (docs/groups.md §10.5).
+                                // An incoming GROUP row reserves ONE extra line for its author above the body (docs/molecules.md §10.5).
                                 if author_line(m).is_some() {
                                     total += 1;
                                 }
@@ -3736,12 +3748,12 @@ impl PhotonApp {
                                         v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(8)));
                                     }
                                     v
-                                } else if is_group_offer_row(msg) {
-                                    // An OFFER card's one verb (docs/groups.md §10.1): Join, live only while the offer is parked and unanswered; a joined or expired card shows its state in the label and offers nothing.
-                                    let joinable = offer_cards.iter().find(|(ts, out, _, _)| *ts == msg.timestamp && *out == msg.is_outgoing).and_then(|(_, _, _, j)| *j);
+                                } else if is_bond_offer_row(msg) {
+                                    // An OFFER card's one verb (docs/molecules.md §10.1): Join, live only while the offer is parked and unanswered; a joined or expired card shows its state in the label and offers nothing.
+                                    let joinable = bond_cards.iter().find(|(ts, out, _, _)| *ts == msg.timestamp && *out == msg.is_outgoing).and_then(|(_, _, _, j)| *j);
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if joinable.is_some() {
-                                        v.push((tr(Msg::OfferJoin), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(13)));
+                                        v.push((tr(Msg::BindPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(13)));
                                     }
                                     v
                                 } else {
@@ -3999,7 +4011,7 @@ impl PhotonApp {
                                     );
                                 }
                             }
-                            // The AUTHOR line of an incoming group row (docs/groups.md §10.5): the member's name in their colour, one line above the body (above the reply reference when both exist), left-aligned like the body it names.
+                            // The AUTHOR line of an incoming group row (docs/molecules.md §10.5): the member's name in their colour, one line above the body (above the reply reference when both exist), left-aligned like the body it names.
                             if let Some(name) = author.as_ref() {
                                 let reply_off = if reply_target.is_some() { intra } else { 0.0 };
                                 let auth_y = y - react_off - lines.len() as f32 * intra - reply_off;
@@ -4762,9 +4774,9 @@ impl PhotonApp {
                                 btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
                         } else if active_gid.is_some() {
-                            // A GROUP conversation before the fan-out send lands (docs/groups.md step 4): the compose slot carries an honest label instead of a box that would swallow text.
+                            // A GROUP conversation before the fan-out send lands (docs/molecules.md step 4): the compose slot carries an honest label instead of a box that would swallow text.
                             let label_y = buf_h as f32 - ime_lift - compose_margin - unit * 0.9;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::GroupComposeSoon), buf_w as f32 * 0.5, label_y, &TextStyle::new(unit * 0.55, *theme::LABEL_COLOUR).weight(500).font("Oxanium"), None, None);
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::MoleculeComposeSoon), buf_w as f32 * 0.5, label_y, &TextStyle::new(unit * 0.55, *theme::LABEL_COLOUR).weight(500).font("Oxanium"), None, None);
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }
@@ -6274,7 +6286,7 @@ impl PhotonApp {
                     measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Conversations => {
-                    // CONVERSATIONS (docs/groups.md §10, Nick 2026-09-15: the explanation belongs in the doc AND somewhere easily viewable in the app): how groups work in plain words, the default newcomer-history policy for groups this identity founds (a fleet setting, born linked), then every group we stand in with a Mute pill (this device only).
+                    // CONVERSATIONS (docs/molecules.md §10, Nick 2026-09-15: the explanation belongs in the doc AND somewhere easily viewable in the app): how groups work in plain words, the default newcomer-history policy for groups this identity founds (a fleet setting, born linked), then every group we stand in with a Mute pill (this device only).
                     let inset = layout.content_inset();
                     let line_h = layout.content_line_h();
                     let cx = inset.x + inset.w * 0.5;
@@ -6285,9 +6297,9 @@ impl PhotonApp {
                     let mut y = inset.y - settings_content_scroll;
                     ctx.text.draw_text_center(&mut canvas, &tr(Msg::PageName(page)), cx, y + line_h * 0.5, &head_style, page_clip, None);
                     y += line_h * 1.4;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::GroupsExplainHead), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::MoleculesExplainHead), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
                     y += line_h;
-                    for line in tr(Msg::GroupsExplainProse).lines() {
+                    for line in tr(Msg::MoleculesExplainProse).lines() {
                         y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                         y += line_h * 0.3;
                     }
@@ -6298,7 +6310,7 @@ impl PhotonApp {
                     y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DefaultHistoryNote), &prose_style, line_h * 0.8, page_clip);
                     y += line_h * 0.3;
                     {
-                        let from_gen = self.fleet_settings.as_ref().and_then(|fs| fs.effective("groups.history_from_genesis")).and_then(|v| v.as_u64()).map_or(false, |v| v != 0);
+                        let from_gen = self.fleet_settings.as_ref().and_then(|fs| fs.effective("molecule.history_from_genesis")).and_then(|v| v.as_u64()).map_or(false, |v| v != 0);
                         let labels = [tr(Msg::HistoryFromJoin), tr(Msg::HistoryFromGenesis)];
                         let pills = [
                             (labels[0].as_ref(), btn_base, true, if from_gen { None } else { Some(*theme::PILL_GREEN) }),
@@ -6309,16 +6321,16 @@ impl PhotonApp {
                         y += flow.used();
                     }
                     y += line_h * 0.6;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::YourGroups), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::YourMolecules), cx, y + line_h * 0.5, &head_style, page_clip, None);
                     y += line_h;
-                    if self.group_rosters.is_empty() {
-                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::NoGroupsYet), &prose_style, line_h * 0.8, page_clip);
+                    if self.molecule_rosters.is_empty() {
+                        y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::NoAtomsYet), &prose_style, line_h * 0.8, page_clip);
                     }
-                    for (gi, (gid, roster)) in self.group_rosters.iter().enumerate().take(30) {
-                        let muted = self.group_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted);
+                    for (gi, (gid, roster)) in self.molecule_rosters.iter().enumerate().take(30) {
+                        let muted = self.molecule_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted);
                         let n = roster.standing().len();
                         let row = fluor::region::Region::new(inset.x, y, inset.w, line_h);
-                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&group_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
+                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&molecule_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
                         let pill = fluor::region::Region::new(row.x + row.w * 0.62, row.y + row.h * 0.08, row.w * 0.34, row.h * 0.84);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &tr(Msg::MutePill { muted }), btn_base.wrapping_add(2 + gi as HitId), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         y += line_h * 1.1;
@@ -6951,7 +6963,17 @@ fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
     (0..n).map(|i| fluor::region::Region::new(r.x, r.y + band_h * i as f32, r.w, if i + 1 == n { r.bottom() - (r.y + band_h * i as f32) } else { band_h })).collect()
 }
 
-/// One entry of the Ready list (docs/groups.md §10.5): a contact row or a group row, in ONE sorted list.
+/// Does the Ready filter admit a molecule row with `standing` members? An atom is a molecule of one (docs/molecules.md §0).
+fn ready_filter_admits(f: ReadyFilter, standing: usize) -> bool {
+    match f {
+        ReadyFilter::All => true,
+        ReadyFilter::Friends => false,
+        ReadyFilter::Atoms => standing <= 1,
+        ReadyFilter::Molecules => standing > 1,
+    }
+}
+
+/// One entry of the Ready list (docs/molecules.md §10.5): a contact row or a group row, in ONE sorted list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ReadyRow {
     Contact(usize),
@@ -6967,7 +6989,7 @@ struct RowView {
     ring: u32,
     hit: HitId,
     /// A group row's pie: the group id and its standing members other than us (painted at the row diameter in the loop); `None` = a contact's scaled cache or the gradient seed.
-    pie: Option<(crate::types::group::GroupId, Vec<[u8; 32]>)>,
+    pie: Option<(crate::types::molecule::MoleculeId, Vec<[u8; 32]>)>,
     gradient_seed: u64,
 }
 
@@ -6976,11 +6998,11 @@ struct ReadyCtx<'a> {
     contacts: &'a [crate::types::Contact],
     conversations: &'a [crate::types::Conversation],
     contact_row_lines: &'a [Vec<String>],
-    group_rosters: &'a [(crate::types::group::GroupId, crate::types::group::Roster)],
-    group_locals: &'a [(crate::types::group::GroupId, crate::storage::group::GroupLocal)],
-    group_row_lines: &'a [Vec<String>],
+    molecule_rosters: &'a [(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)],
+    molecule_locals: &'a [(crate::types::molecule::MoleculeId, crate::storage::molecule::MoleculeLocal)],
+    molecule_row_lines: &'a [Vec<String>],
     contact_hit_base: HitId,
-    group_hit_base: HitId,
+    molecule_hit_base: HitId,
 }
 
 impl RowView {
@@ -7003,15 +7025,15 @@ impl RowView {
         }
     }
 
-    /// A group row: title lines, the group's colour (its digest with us — one colour per group per viewer, the header uses the same), unread from its conversation, the ring = the best connectivity tier over its standing members' contact rows (a member we never friended contributes nothing until the GroupPeer fold lands), the members' gradient pie as the avatar. Joining/Left phases read as a pending name (shear) so a row that cannot yet carry a message never looks like one that can.
+    /// A group row: title lines, the group's colour (its digest with us — one colour per group per viewer, the header uses the same), unread from its conversation, the ring = the best connectivity tier over its standing members' contact rows (a member we never friended contributes nothing until the MoleculePeer fold lands), the members' gradient pie as the avatar. Joining/Left phases read as a pending name (shear) so a row that cannot yet carry a message never looks like one that can.
     fn of_group(app: &ReadyCtx, gi: usize, our_handle_hash: &[u8; 32]) -> Self {
-        let (gid, roster) = &app.group_rosters[gi];
+        let (gid, roster) = &app.molecule_rosters[gi];
         let standing = roster.standing();
         let members: Vec<[u8; 32]> = standing.iter().filter(|p| *p != our_handle_hash).copied().collect();
-        let phase = app.group_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+        let phase = app.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
         let conv = app.conversations.iter().find(|v| v.id().as_bytes() == &gid.0);
         let ring = match phase {
-            crate::storage::group::GroupPhase::Standing => members
+            crate::storage::molecule::MoleculePhase::Standing => members
                 .iter()
                 .filter_map(|p| app.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *p))
                 .map(|c| (contact_conn_tier(c), c))
@@ -7021,12 +7043,12 @@ impl RowView {
             _ => *theme::RING_OFFLINE_COLOUR,
         };
         RowView {
-            name_lines: app.group_row_lines.get(gi).cloned().unwrap_or_default(),
-            has_real_name: matches!(phase, crate::storage::group::GroupPhase::Standing | crate::storage::group::GroupPhase::CatchingUp),
-            colour: party_colour(&group_digest(gid, our_handle_hash)),
+            name_lines: app.molecule_row_lines.get(gi).cloned().unwrap_or_default(),
+            has_real_name: matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp),
+            colour: party_colour(&molecule_digest(gid, our_handle_hash)),
             unread: conv.is_some_and(|v| v.unread_count > 0),
             ring,
-            hit: if gi < 64 { app.group_hit_base.wrapping_add(gi as HitId) } else { HIT_NONE },
+            hit: if gi < 64 { app.molecule_hit_base.wrapping_add(gi as HitId) } else { HIT_NONE },
             pie: Some((*gid, members)),
             gradient_seed: proof_gradient_seed(&gid.0),
         }

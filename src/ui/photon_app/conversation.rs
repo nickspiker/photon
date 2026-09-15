@@ -249,24 +249,24 @@ impl PhotonApp {
         })
     }
 
-    /// The GROUP the active conversation is, as an index into `group_rosters` — `None` when the open conversation is a friendship (or nothing is open).
-    pub(super) fn active_group(&self) -> Option<usize> {
+    /// The GROUP the active conversation is, as an index into `molecule_rosters` — `None` when the open conversation is a friendship (or nothing is open).
+    pub(super) fn active_molecule(&self) -> Option<usize> {
         let id = self.active_conversation?;
-        if !self.conversations.iter().any(|v| v.id() == id && v.is_group()) {
+        if !self.conversations.iter().any(|v| v.id() == id && v.is_molecule()) {
             return None;
         }
-        self.group_rosters.iter().position(|(g, _)| g.0 == *id.as_bytes())
+        self.molecule_rosters.iter().position(|(g, _)| g.0 == *id.as_bytes())
     }
 
-    /// Open a group conversation (docs/groups.md §10.5) — the same reset `open_conversation_with` does for a contact, keyed on the group's stable id.
-    pub(super) fn open_group_conversation(&mut self, gi: usize) {
-        let Some((gid, _)) = self.group_rosters.get(gi) else {
+    /// Open a group conversation (docs/molecules.md §10.5) — the same reset `open_conversation_with` does for a contact, keyed on the group's stable id.
+    pub(super) fn open_molecule_conversation(&mut self, gi: usize) {
+        let Some((gid, _)) = self.molecule_rosters.get(gi) else {
             return;
         };
         let id = crate::types::FriendshipId::from_bytes(gid.0);
         if !self.conversations.iter().any(|v| v.id() == id) {
-            let standing = self.group_rosters[gi].1.standing();
-            self.conversations.push(crate::types::Conversation::new_group(*gid, standing));
+            let standing = self.molecule_rosters[gi].1.standing();
+            self.conversations.push(crate::types::Conversation::new_molecule(*gid, standing));
         }
         self.call_playback = None;
         self.call_playback_hash = None;
@@ -279,21 +279,21 @@ impl PhotonApp {
         // Focus claims are a friendship-token affair today (the token derives from the pair); a group claim rides the group token once the fleet notification design lands for groups.
     }
 
-    /// The transient contact the conversation screen paints a group thru (`Contact::group_view`): the shared title, the standing count minus us, and online = any standing member's contact row is online.
-    pub(super) fn group_view_of(&self, gi: usize) -> Option<crate::types::Contact> {
-        let (gid, roster) = self.group_rosters.get(gi)?;
+    /// The transient contact the conversation screen paints a group thru (`Contact::molecule_view`): the shared title, the standing count minus us, and online = any standing member's contact row is online.
+    pub(super) fn molecule_view_of(&self, gi: usize) -> Option<crate::types::Contact> {
+        let (gid, roster) = self.molecule_rosters.get(gi)?;
         let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         let standing = roster.standing();
         let remote = standing.iter().filter(|p| Some(**p) != us).count();
         let online = standing.iter().any(|p| Some(*p) != us && self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p && c.is_online));
-        let title = match self.group_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase) {
-            Some(crate::storage::group::GroupPhase::Joining) => format!("{} · {}", roster.title(), tr(Msg::JoiningStatus)),
-            Some(crate::storage::group::GroupPhase::CatchingUp) => format!("{} · {}", roster.title(), tr(Msg::CatchingUpStatus)),
-            Some(crate::storage::group::GroupPhase::Left) => format!("{} · {}", roster.title(), tr(Msg::LeftStatus)),
-            _ if remote == 0 => format!("{} · {}", roster.title(), tr(Msg::GroupAlone)),
+        let title = match self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase) {
+            Some(crate::storage::molecule::MoleculePhase::Joining) => format!("{} · {}", roster.title(), tr(Msg::JoiningStatus)),
+            Some(crate::storage::molecule::MoleculePhase::CatchingUp) => format!("{} · {}", roster.title(), tr(Msg::CatchingUpStatus)),
+            Some(crate::storage::molecule::MoleculePhase::Left) => format!("{} · {}", roster.title(), tr(Msg::LeftStatus)),
+            _ if remote == 0 => format!("{} · {}", roster.title(), tr(Msg::AtomLabel)),
             _ => format!("{} · {}", roster.title(), crate::fmt_num64((remote + 1) as u64)),
         };
-        Some(crate::types::Contact::group_view(*gid, &title, remote, online))
+        Some(crate::types::Contact::molecule_view(*gid, &title, remote, online))
     }
 
     /// Open the conversation this contact row stands for.
@@ -482,12 +482,12 @@ impl PhotonApp {
 
     /// Can the open conversation dispatch from THIS device — a locally-woven chain, zero remote participants (loopback), a replicated chain this device writes on its own lane (per-device lanes), or COMPOSE-ANYWHERE (history + a fleet to forward thru)? THE one definition: the focus walk and the render both call it, where two hand-mirrored copies used to drift ("textbox appears but can't type", desktop 2026-07-26). A truly fresh un-clutched contact still answers false (nothing anywhere can transmit yet).
     pub(super) fn compose_ready(&self) -> bool {
-        // A GROUP composes once this device holds the root and stands (docs/groups.md §10.1: Standing or Catching up — a held row waits for the wrap; Joining/Left never compose).
-        if let Some(gi) = self.active_group() {
-            let gid = self.group_rosters[gi].0;
+        // A GROUP composes once this device holds the root and stands (docs/molecules.md §10.1: Standing or Catching up — a held row waits for the wrap; Joining/Left never compose).
+        if let Some(gi) = self.active_molecule() {
+            let gid = self.molecule_rosters[gi].0;
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
-            let phase = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-            return matches!(phase, crate::storage::group::GroupPhase::Standing | crate::storage::group::GroupPhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
+            let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            return matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp) && self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable());
         }
         let Some(ci) = self.active_contact() else {
             return false;
@@ -911,8 +911,8 @@ impl PhotonApp {
     }
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
-    /// Merge a sibling page's rows into a GROUP conversation (docs/groups.md step 6): identity = (timestamp, content); flags upgrade monotonically (delivered, deleted, notified true-wins; reference/marks/author fill in once); new rows insert with their flags verbatim. Returns the rows that changed or landed (for persist + onward gossip).
-    pub(super) fn merge_group_page_rows(&mut self, conv_pos: usize, rows: &[crate::network::history_pages::HistoryRow]) -> Vec<crate::types::ChatMessage> {
+    /// Merge a sibling page's rows into a GROUP conversation (docs/molecules.md step 6): identity = (timestamp, content); flags upgrade monotonically (delivered, deleted, notified true-wins; reference/marks/author fill in once); new rows insert with their flags verbatim. Returns the rows that changed or landed (for persist + onward gossip).
+    pub(super) fn merge_molecule_page_rows(&mut self, conv_pos: usize, rows: &[crate::network::history_pages::HistoryRow]) -> Vec<crate::types::ChatMessage> {
         let conv = &mut self.conversations[conv_pos];
         let mut fresh = Vec::new();
         for row in rows {
@@ -977,8 +977,8 @@ impl PhotonApp {
     }
 
     /// The group twin of `clear_unread`: opening a group conversation clears its ring.
-    pub(super) fn clear_group_unread(&mut self, gi: usize) {
-        let Some((gid, _)) = self.group_rosters.get(gi) else {
+    pub(super) fn clear_molecule_unread(&mut self, gi: usize) {
+        let Some((gid, _)) = self.molecule_rosters.get(gi) else {
             return;
         };
         let id = crate::types::FriendshipId::from_bytes(gid.0);
@@ -1145,14 +1145,14 @@ impl PhotonApp {
         let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
         let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
-        // Group control row landed (docs/groups.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
-        let mut group_signal_evt: Option<(usize, usize, crate::types::group::GroupSignal, Option<crate::network::message_package::GroupWire>, Option<crate::crypto::era::EraKemWire>, i64)> = None;
+        // Group control row landed (docs/molecules.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
+        let mut molecule_signal_evt: Option<(usize, usize, crate::types::molecule::MoleculeSignal, Option<crate::network::message_package::MoleculeWire>, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // The 256-row cadence edge (crypto/era.rs): the contact whose peer-row count just crossed a multiple of the cadence.
         let mut cadence_ci: Option<usize> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
-        // A GROUP row persists by its conversation id, never by the sender's contact (whose own conversation is a different table) — docs/groups.md step 4.
-        let mut persist_group_conv: Option<crate::types::ConversationId> = None;
+        // A GROUP row persists by its conversation id, never by the sender's contact (whose own conversation is a different table) — docs/molecules.md step 4.
+        let mut persist_molecule_conv: Option<crate::types::ConversationId> = None;
         // BRIDGE host: a TYPED command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push; the i64 is the command row's eagle_time (what the streamed output frames target). A Stop press defers likewise.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         let mut bridge_run: Option<(usize, String, i64)> = None;
@@ -1179,15 +1179,15 @@ impl PhotonApp {
             // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. The UNSHADOWED identity pid is kept for the conversation resolution below, which must NOT follow the chains' expression of us.
             let identity_hh = our_handle_hash;
             // TOTAL identity resolution — no silent exits. The normal path: one of our pids is a participant, the other participant is a known contact. EITHER half can be stale-era (a pre-flag-day ceremony's expression of us, OR a contact whose key has since migrated) — and the frame still DECRYPTED, because lanes key on wire labels, not participants: the crypto is fine, only the naming is stale. Breaking silently on any half was the field's decrypts-forever-never-ACKs loop (2026-08-11: one device re-decrypted the same retransmitted frame every ~15s for six-plus HOURS — no row, no ACK, no persist, nothing in its log). The fallback resolves the peer by matching participants against the contact list; only a set matching NO known contact drops, loudly.
-            let (our_handle_hash, from_handle_hash, contact_idx) = if chains.group {
-                // GROUP resolution (docs/groups.md §2): the sender is whichever STANDING member's folded devices include the signer — the same verdict dispatch reached, re-run against current state. No other-participant, no shadow seam: the id is minted, never derived.
-                let gid = crate::types::group::GroupId(*chains.friendship_id.as_bytes());
+            let (our_handle_hash, from_handle_hash, contact_idx) = if chains.molecule {
+                // GROUP resolution (docs/molecules.md §2): the sender is whichever STANDING member's folded devices include the signer — the same verdict dispatch reached, re-run against current state. No other-participant, no shadow seam: the id is minted, never derived.
+                let gid = crate::types::molecule::MoleculeId(*chains.friendship_id.as_bytes());
                 let Some(idx) = self.contacts.iter().position(|c| {
                     !c.is_sibling
                         && c.knows_device(&sender_pubkey.key)
-                        && self.group_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
+                        && self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
                 }) else {
-                    crate::logf!("GROUP: decrypted frame's signer is no standing member's device — dropped (token {}...)", hex::encode(&conversation_token[..8]));
+                    crate::logf!("MOLECULE: decrypted frame's signer is no standing member's device — dropped (token {}...)", hex::encode(&conversation_token[..8]));
                     break 'commit;
                 };
                 (identity_hh, self.contacts[idx].handle_hash, idx)
@@ -1244,13 +1244,13 @@ impl PhotonApp {
             // DUPLICATE STAMP (eagle_time <= last received on this lane) that nonetheless LINKED our current head (the CAS above proved it): a RE-ENCRYPT of an old row at its original stamp — a sender that re-encrypted after missing our ACK, or a re-serve. The sender's chain has PROVABLY advanced onto this frame's hash, so we must follow it: the chain mutations below run for this frame too (salt, mixing, advance, head, gap drain — minus the contiguous-tip mark, whose stamp is already covered), then the branch at the commit snapshot re-ACKs from THIS copy's plaintext (the stateless lost-ACK heal, Nick's "hidden anchor") and stops before any row/UI/bridge semantics — dedup proved we hold the content. The old early-exit here re-ACKed WITHOUT following, which forked the lane permanently: our head stayed at the original while every successor linked the re-encrypt's — "expected prev X, got Y" buffering forever (field 2026-08-23: bridge outputs #2 and #3 never displayed, wedged behind a re-encrypted output #1).
             let is_dup_frame = chains.is_duplicate(&lane, timestamp);
             // The conversation this frame lands in — resolved THRU THE CONTACT, the same derivation the loader, the persist snapshot, the page server, and the census all use. It used to materialize from chains.participants(): whenever the chains' expression of OUR half differs from the contact path's pid (a stale-era ceremony's participant set), that minted a SHADOW conversation — live rows accumulated in an object no loader fills and no persist snapshot reads, so they rendered all session and DIED at restart (field, 2026-08-11: a device advertised 92 rows from RAM while its disk table held 7). The chains stay crypto truth; the CONTACT is conversation truth. A GROUP resolves by its stable id — minted, never derived.
-            let conv_pos = if chains.group {
-                persist_group_conv = Some(chains.friendship_id);
+            let conv_pos = if chains.molecule {
+                persist_molecule_conv = Some(chains.friendship_id);
                 match self.conversations.iter().position(|v| v.id().as_bytes() == chains.friendship_id.as_bytes()) {
                     Some(p) => p,
                     None => {
-                        let gid = crate::types::group::GroupId(*chains.friendship_id.as_bytes());
-                        self.conversations.push(crate::types::Conversation::new_group(gid, chains.participants().iter().copied()));
+                        let gid = crate::types::molecule::MoleculeId(*chains.friendship_id.as_bytes());
+                        self.conversations.push(crate::types::Conversation::new_molecule(gid, chains.participants().iter().copied()));
                         self.conversations.len() - 1
                     }
                 }
@@ -1342,17 +1342,17 @@ impl PhotonApp {
                 .and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
             let bridge_wire = pkg.bridge;
             let mut pkg_era_kem = pkg.era_kem;
-            let pkg_group = pkg.group;
-            // GROUP attribution must AGREE with the transport verdict (docs/groups.md §3): the signer proved standing membership as from_handle_hash; a package claiming another party is spoofed attribution, refused before any row exists.
-            if chains.group {
+            let pkg_group = pkg.molecule;
+            // GROUP attribution must AGREE with the transport verdict (docs/molecules.md §3): the signer proved standing membership as from_handle_hash; a package claiming another party is spoofed attribution, refused before any row exists.
+            if chains.molecule {
                 match pkg_group.as_ref() {
                     Some(g) if g.from == from_handle_hash => {}
                     Some(g) => {
-                        crate::logf!("GROUP: attribution mismatch — signer resolves {} but the package claims {}; dropped", crate::fp(&from_handle_hash), crate::fp(&g.from));
+                        crate::logf!("MOLECULE: attribution mismatch — signer resolves {} but the package claims {}; dropped", crate::fp(&from_handle_hash), crate::fp(&g.from));
                         break 'commit;
                     }
                     None => {
-                        crate::log("GROUP: frame without attribution — dropped");
+                        crate::log("MOLECULE: frame without attribution — dropped");
                         break 'commit;
                     }
                 }
@@ -1550,14 +1550,14 @@ impl PhotonApp {
                 self.conversations[conv_pos].insert_message_sorted(era_row);
                 persist_ci = Some(contact_idx);
                 era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
-            } else if let Some(sig) = crate::types::group::GroupSignal::parse(&message_text) {
-                // Group control row (docs/groups.md §4): an INVITE rides a friendship conversation, RECORDS ride the group's own — both land as hidden rows (ACK durability, the probe pattern) and dispatch after the borrow.
+            } else if let Some(sig) = crate::types::molecule::MoleculeSignal::parse(&message_text) {
+                // Group control row (docs/molecules.md §4): an INVITE rides a friendship conversation, RECORDS ride the group's own — both land as hidden rows (ACK durability, the probe pattern) and dispatch after the borrow.
                 let row = ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(row);
                 persist_ci = Some(contact_idx);
                 // The whole typed group wire goes to the handler (the invite's secrets live ONLY there — the row inserted above is the bare kind marker).
-                group_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.clone(), pkg_era_kem.take(), timestamp));
+                molecule_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.clone(), pkg_era_kem.take(), timestamp));
             } else if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
                 let sig_row =
                     ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
@@ -1694,8 +1694,8 @@ impl PhotonApp {
                 .with_ack_hash(plaintext_hash);
                 // The wire's typed reference lands ON THE ROW — without this the sender saw its own reply hint (the send path stamps its row) while the receiver's copy arrived bare (field, 2026-08-09: "responses don't show the hinted message on the receive side").
                 msg.reference = wire_reference;
-                // GROUP attribution lands on the row (docs/groups.md §5) — the verified sender party id (the agreement check above already refused a mismatch). Pairwise rows stay authorless.
-                if chains.group {
+                // GROUP attribution lands on the row (docs/molecules.md §5) — the verified sender party id (the agreement check above already refused a mismatch). Pairwise rows stay authorless.
+                if chains.molecule {
                     msg.author = pkg_group.as_ref().map(|g| g.from);
                 }
                 // The wire's typed marks land too — validated against the body (the receiver renders ONLY explicit marks, never a regex of its own).
@@ -1721,11 +1721,11 @@ impl PhotonApp {
                 // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere. Computed BEFORE the insert so the fleet alert-duty flag can ride the row into the sibling push.
                 let conversation_open = matches!(
                     self.state,
-                    AppState::Conversation | AppState::ContactPanel(_) | AppState::GroupPanel(_)
+                    AppState::Conversation | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
                 ) && self.active_conversation
                     == Some(self.conversations[conv_pos].id());
-                // A MUTED group (docs/groups.md D12, this device only) never dings and never bumps the unread ring.
-                let group_muted = persist_group_conv.map_or(false, |id| self.group_muted(&crate::types::group::GroupId(*id.as_bytes())));
+                // A MUTED group (docs/molecules.md D12, this device only) never dings and never bumps the unread ring.
+                let molecule_muted = persist_molecule_conv.map_or(false, |id| self.molecule_muted(&crate::types::molecule::MoleculeId(*id.as_bytes())));
                 // RECENCY GUARD (2026-08-18, Nick-approved): silent discharge additionally requires the human to have TOUCHED this device recently. The walk-away gap — leaving a screen parked on a conversation — produces no input edge anywhere in the fleet, so a parked-but-attended window would otherwise silently swallow every arriving message (monotone notified=true rides the sibling push; unrecoverable). NOT a scheduled timer: an Instant comparison evaluated only at this message-arrival edge — the arriving message is the clock.
                 let fresh = self
                     .last_interaction
@@ -1749,7 +1749,7 @@ impl PhotonApp {
                 });
                 // Exactly-once duty: `looking` = we are the clearer (discharge silently); a fresh live ding also discharges. Either way the flag is set BEFORE the insert + sibling push, so every forwarded copy arrives pre-discharged and no other device re-dings.
                 let will_ding =
-                    !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row && !group_muted;
+                    !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row && !molecule_muted;
                 if looking || will_ding {
                     msg.notified = true;
                 }
@@ -1884,7 +1884,7 @@ impl PhotonApp {
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
 
-                if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !group_muted {
+                if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !molecule_muted {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
@@ -1967,19 +1967,19 @@ impl PhotonApp {
         if let Some((ci, sig, kem, ts)) = era_signal_evt {
             self.on_era_signal(ci, sig, kem, ts);
         }
-        if let Some((ci, cp, sig, wire, kem, ts)) = group_signal_evt {
-            self.on_group_signal(ci, cp, sig, wire, kem, ts);
+        if let Some((ci, cp, sig, wire, kem, ts)) = molecule_signal_evt {
+            self.on_molecule_signal(ci, cp, sig, wire, kem, ts);
         }
         if let Some(ci) = cadence_ci {
-            match persist_group_conv {
-                // GROUP cadence (docs/groups.md §10.4): the lowest standing party id mints; everyone else lets the edge pass (a race would still resolve by that same id).
+            match persist_molecule_conv {
+                // GROUP cadence (docs/molecules.md §10.4): the lowest standing party id mints; everyone else lets the edge pass (a race would still resolve by that same id).
                 Some(id) => {
-                    let gid = crate::types::group::GroupId(*id.as_bytes());
+                    let gid = crate::types::molecule::MoleculeId(*id.as_bytes());
                     let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-                    let lowest = self.group_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.standing().first().copied());
+                    let lowest = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.standing().first().copied());
                     if us.is_some() && us == lowest {
-                        crate::logf!("GROUP: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
-                        self.mint_group_era(gid, None);
+                        crate::logf!("MOLECULE: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
+                        self.mint_molecule_era(gid, None);
                     }
                 }
                 None => self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached),
@@ -1993,7 +1993,7 @@ impl PhotonApp {
             };
             self.persist_chains_then(snapshot, actions);
         }
-        if let Some(id) = persist_group_conv {
+        if let Some(id) = persist_molecule_conv {
             self.persist_conversation_async(id);
         } else if let Some(ci) = persist_ci {
             self.persist_messages_async(ci);
@@ -2002,10 +2002,10 @@ impl PhotonApp {
             self.persist_conv_state_async(pos);
         }
         if let Some((idx, m)) = sibling_push {
-            match persist_group_conv {
-                // A GROUP row rides its own token to our siblings (docs/groups.md step 6), never the sender's friendship token.
+            match persist_molecule_conv {
+                // A GROUP row rides its own token to our siblings (docs/molecules.md step 6), never the sender's friendship token.
                 Some(id) => {
-                    let gid = crate::types::group::GroupId(*id.as_bytes());
+                    let gid = crate::types::molecule::MoleculeId(*id.as_bytes());
                     self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), std::slice::from_ref(&m), None);
                 }
                 None => self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None),
@@ -2095,8 +2095,8 @@ impl PhotonApp {
             );
             let mut incoming = incoming;
             let mut era_moved = false;
-            // A GROUP blob carries its roster (docs/groups.md step 6) — merged after the adopt, whatever the lane math decides.
-            let group_roster: Option<Vec<u8>> = incoming.group.then(|| incoming.group_roster().to_vec());
+            // A GROUP blob carries its roster (docs/molecules.md step 6) — merged after the adopt, whatever the lane math decides.
+            let molecule_roster: Option<Vec<u8>> = incoming.molecule.then(|| incoming.molecule_roster().to_vec());
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
@@ -2135,9 +2135,9 @@ impl PhotonApp {
                     self.era_pull_miss_from(conversation_token, sender_pubkey.key);
                 }
             }
-            if let Some(bytes) = group_roster.as_ref() {
-                let gid = crate::types::group::GroupId(*fid.as_bytes());
-                self.adopt_replicated_group(gid, bytes);
+            if let Some(bytes) = molecule_roster.as_ref() {
+                let gid = crate::types::molecule::MoleculeId(*fid.as_bytes());
+                self.adopt_replicated_molecule(gid, bytes);
                 // A sibling's group blob may carry a roster edge with no lane movement; the roster merge above is the whole adopt in that case.
             }
             if !adopted {
@@ -2259,20 +2259,20 @@ impl PhotonApp {
             else {
                 continue;
             };
-            // A GROUP page from a sibling (docs/groups.md step 6): rows merge into the group conversation verbatim (same identity, their flags are ours); no contact stands behind the token, so the contact-scoped extras (chirp, attach fetch, call signals) are skipped here.
+            // A GROUP page from a sibling (docs/molecules.md step 6): rows merge into the group conversation verbatim (same identity, their flags are ours); no contact stands behind the token, so the contact-scoped extras (chirp, attach fetch, call signals) are skipped here.
             if from_sibling {
-                if let Some(gid) = self.group_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g) {
+                if let Some(gid) = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g) {
                     self.hist_rid_map.remove(&request_id);
                     if let Some(page) = page {
                         let fid = crate::types::FriendshipId::from_bytes(gid.0);
                         let conv_pos = match self.conversations.iter().position(|v| v.id() == fid) {
                             Some(p) => p,
                             None => {
-                                self.conversations.push(crate::types::Conversation::new_group(gid, std::iter::empty()));
+                                self.conversations.push(crate::types::Conversation::new_molecule(gid, std::iter::empty()));
                                 self.conversations.len() - 1
                             }
                         };
-                        let fresh = self.merge_group_page_rows(conv_pos, &page.rows);
+                        let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows);
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);
                             self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), &fresh, Some(sender_pubkey.key));

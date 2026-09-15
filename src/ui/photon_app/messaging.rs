@@ -71,9 +71,9 @@ impl PhotonApp {
     }
 
     pub(super) fn submit_message(&mut self) {
-        // A GROUP conversation (docs/groups.md step 4): the same box, the group send.
-        if let Some(gi) = self.active_group() {
-            let gid = self.group_rosters[gi].0;
+        // A GROUP conversation (docs/molecules.md step 4): the same box, the group send.
+        if let Some(gi) = self.active_molecule() {
+            let gid = self.molecule_rosters[gi].0;
             let text: String = match self.message_textbox.as_ref() {
                 Some(tb) => tb.chars.iter().collect(),
                 None => return,
@@ -86,13 +86,13 @@ impl PhotonApp {
             }
             if let Some(target) = self.compose_react_to.take() {
                 let glyph: String = text.chars().take(8).collect();
-                if self.send_group_message(gid, &glyph, Some((crate::types::RefKind::React, target))) {
+                if self.send_molecule_message(gid, &glyph, Some((crate::types::RefKind::React, target))) {
                     self.stamp_react_used(&glyph);
                 }
             } else {
                 let reference = self.compose_edit_of.take().map(|t| (crate::types::RefKind::Edit, t)).or_else(|| self.compose_reply_to.take().map(|t| (crate::types::RefKind::Reply, t)));
                 self.compose_tagged_marks = self.take_compose_tagged_marks();
-                self.send_group_message(gid, &text, reference);
+                self.send_molecule_message(gid, &text, reference);
                 self.compose_tagged_marks.clear();
             }
             if let Some(tb) = self.message_textbox.as_mut() {
@@ -298,8 +298,8 @@ impl PhotonApp {
         if self.conversations.iter().any(|v| v.id() == conv_id && !v.hydrated) {
             if let Some(storage) = self.storage.as_ref().cloned() {
                 if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == conv_id) {
-                    let mut fresh = if conv.is_group() {
-                        crate::types::Conversation::new_group(crate::types::group::GroupId(*conv_id.as_bytes()), conv.participants().iter().copied())
+                    let mut fresh = if conv.is_molecule() {
+                        crate::types::Conversation::new_molecule(crate::types::molecule::MoleculeId(*conv_id.as_bytes()), conv.participants().iter().copied())
                     } else {
                         crate::types::Conversation::new(conv.participants().iter().copied())
                     };
@@ -696,9 +696,9 @@ impl PhotonApp {
                 }
                 continue;
             }
-            // GROUP (docs/groups.md step 4): the pending just recorded learns WHO it has to reach — the per-member ACK ledger's target set.
+            // GROUP (docs/molecules.md step 4): the pending just recorded learns WHO it has to reach — the per-member ACK ledger's target set.
             let targets: Vec<[u8; 32]> = done.routes.iter().filter_map(|r| r.party).collect();
-            if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, c)| *id == done.friendship_id && c.group) {
+            if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, c)| *id == done.friendship_id && c.molecule) {
                 chains.set_pending_targets(done.eagle_time, targets);
             }
             // CALL basket capture (docs/calls.md): the offer's send COMMIT is where the CALLER sees the lane key its offer sealed under — the basket's doomed egg (the callee captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
@@ -863,8 +863,8 @@ impl PhotonApp {
                         && (!m.content.is_empty() || m.reference.is_some())
                         // An era-ratchet row is never re-served: its KEM material lived only in the original package, and a dead Init on the NEW era would be nonsense (the sender stores none anyway; belt and braces).
                         && !m.content.starts_with(crate::types::ERA_PREFIX)
-                        // A group control row (offer / join / wrap) is never re-served bare: its roster blob or sealed secret rode the original package only — the sponsor re-offers on the next roster edge, a joiner taps Join again (docs/groups.md step 4).
-                        && !m.content.starts_with(crate::types::group::GROUP_PREFIX)
+                        // A group control row (offer / join / wrap) is never re-served bare: its roster blob or sealed secret rode the original package only — the sponsor re-offers on the next roster edge, a joiner taps Join again (docs/molecules.md step 4).
+                        && !m.content.starts_with(crate::types::molecule::MOLECULE_PREFIX)
                 })
                 .map(|m| (m.content.clone(), m.timestamp, m.reference))
                 .collect(),
@@ -908,7 +908,7 @@ impl PhotonApp {
         reference: Option<(crate::types::RefKind, i64)>,
         bridge: Option<&crate::network::message_package::BridgeWire>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
-        group: Option<&crate::network::message_package::GroupWire>,
+        molecule: Option<&crate::network::message_package::MoleculeWire>,
     ) -> bool {
         let (friendship_id, route, conv_id) = match self.route_for_contact(ci) {
             Ok(v) => v,
@@ -919,10 +919,10 @@ impl PhotonApp {
             }
         };
         let anchor_only = self.contacts.get(ci).map_or(false, |c| c.is_sibling);
-        self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, group)
+        self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, molecule)
     }
 
-    /// The recipient half of a friendship send, split from the crypto (docs/groups.md step 4): the one route a contact resolves to, plus the ids the core needs. Every refusal names its reason.
+    /// The recipient half of a friendship send, split from the crypto (docs/molecules.md step 4): the one route a contact resolves to, plus the ids the core needs. Every refusal names its reason.
     pub(super) fn route_for_contact(&self, ci: usize) -> Result<(crate::types::FriendshipId, Route, crate::types::ConversationId), &'static str> {
         let Some(contact) = self.contacts.get(ci) else {
             return Err("contact index out of range");
@@ -955,9 +955,9 @@ impl PhotonApp {
         Ok((fid, Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(contact.handle_hash) }, conv_id))
     }
 
-    /// The recipient list of a GROUP send (docs/groups.md step 4): one route per standing member's addressable device — the contact fold for friends (their active device and race addresses, their fleet as relay copies), the GroupPeer fold for members we never friended (relay only, by device pubkey; step 5 wires the fold). We are never our own route. Empty = nobody reachable yet (the retransmit sweep re-resolves on every pass).
-    pub(super) fn routes_for_group(&self, gid: crate::types::group::GroupId) -> Vec<Route> {
-        let Some((_, roster)) = self.group_rosters.iter().find(|(g, _)| *g == gid) else {
+    /// The recipient list of a GROUP send (docs/molecules.md step 4): one route per standing member's addressable device — the contact fold for friends (their active device and race addresses, their fleet as relay copies), the MoleculePeer fold for members we never friended (relay only, by device pubkey; step 5 wires the fold). We are never our own route. Empty = nobody reachable yet (the retransmit sweep re-resolves on every pass).
+    pub(super) fn routes_for_molecule(&self, gid: crate::types::molecule::MoleculeId) -> Vec<Route> {
+        let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) else {
             return Vec::new();
         };
         let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
@@ -975,7 +975,7 @@ impl PhotonApp {
                     None => continue,
                 };
                 routes.push(Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(party) });
-            } else if let Some(peer) = self.group_peers.iter().find(|p| p.party == party) {
+            } else if let Some(peer) = self.molecule_peers.iter().find(|p| p.party == party) {
                 // Never friended: no LAN/WAN address known here — the relay carries it by device pubkey, every folded device a copy.
                 if let Some(first) = peer.devices.first() {
                     routes.push(Route { peer_addr: crate::network::status::RELAY_ADDR, alt_addr: None, recipient_pubkey: *first, relay_to: peer.devices.clone(), party: Some(party) });
@@ -985,36 +985,36 @@ impl PhotonApp {
         routes
     }
 
-    /// A GROUP send (docs/groups.md step 4): the same braid encrypt on OUR lane in the group's chains, the one ciphertext fanned to every standing member's device. Refuses while we hold no root (Joining) or have left.
-    pub(super) fn group_transmit(
+    /// A GROUP send (docs/molecules.md step 4): the same braid encrypt on OUR lane in the group's chains, the one ciphertext fanned to every standing member's device. Refuses while we hold no root (Joining) or have left.
+    pub(super) fn molecule_transmit(
         &mut self,
-        gid: crate::types::group::GroupId,
+        gid: crate::types::molecule::MoleculeId,
         text: &str,
         eagle_time: i64,
         reference: Option<(crate::types::RefKind, i64)>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
-        group: Option<&crate::network::message_package::GroupWire>,
+        molecule: Option<&crate::network::message_package::MoleculeWire>,
     ) -> bool {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        let phase = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-        if matches!(phase, crate::storage::group::GroupPhase::Joining | crate::storage::group::GroupPhase::Left) {
-            crate::logf!("GROUP: cannot send in {} — phase {}", hex::encode(&gid.0[..4]), format!("{:?}", phase));
+        let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+        if matches!(phase, crate::storage::molecule::MoleculePhase::Joining | crate::storage::molecule::MoleculePhase::Left) {
+            crate::logf!("MOLECULE: cannot send in {} — phase {}", hex::encode(&gid.0[..4]), format!("{:?}", phase));
             return false;
         }
         if !self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable()) {
-            crate::logf!("GROUP: cannot send in {} — no root held", hex::encode(&gid.0[..4]));
+            crate::logf!("MOLECULE: cannot send in {} — no root held", hex::encode(&gid.0[..4]));
             return false;
         }
-        let routes = self.routes_for_group(gid);
+        let routes = self.routes_for_molecule(gid);
         if routes.is_empty() {
-            crate::logf!("GROUP: {} has no reachable member right now — the row is held for the sweep", hex::encode(&gid.0[..4]));
+            crate::logf!("MOLECULE: {} has no reachable member right now — the row is held for the sweep", hex::encode(&gid.0[..4]));
             return false;
         }
         // Groups weave like friendships once the strand pull is live (step 7); until then anchor-only, so a member missing a strand never parks a frame it cannot open.
-        self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, None, era_kem, group)
+        self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, None, era_kem, molecule)
     }
 
-    /// The crypto half every send shares (docs/groups.md step 4): the row's marks/attach, the in-flight and idempotency gates, the weave, the package, the off-thread braid encrypt — keyed on the conversation id, source-blind.
+    /// The crypto half every send shares (docs/molecules.md step 4): the row's marks/attach, the in-flight and idempotency gates, the weave, the package, the off-thread braid encrypt — keyed on the conversation id, source-blind.
     #[allow(clippy::too_many_arguments)]
     fn transmit_core(
         &mut self,
@@ -1027,7 +1027,7 @@ impl PhotonApp {
         reference: Option<(crate::types::RefKind, i64)>,
         bridge: Option<&crate::network::message_package::BridgeWire>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
-        group: Option<&crate::network::message_package::GroupWire>,
+        molecule: Option<&crate::network::message_package::MoleculeWire>,
     ) -> bool {
         let conv = self.conversations.iter().find(|v| v.id() == conv_id);
         // Read before any chains borrow: the row's own marks (a tagged phrase carries a destination the text cannot rebuild — a re-serve reads the row, 2026-09-09).
@@ -1162,7 +1162,7 @@ impl PhotonApp {
                 &pad,
                 era_kem,
                 row_attach.as_ref(),
-                group,
+                molecule,
             ) {
                 Ok(p) => p,
                 Err(e) => {

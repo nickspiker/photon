@@ -4,7 +4,7 @@ pub mod device_binding;
 pub mod fanout_pairs;
 pub mod fleet_settings;
 pub mod friendship;
-pub mod group;
+pub mod molecule;
 
 // The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.
 pub use kete::{decrypt_bytes, encrypt_bytes, App, FlatStorage, StorageError};

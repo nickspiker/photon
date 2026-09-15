@@ -262,13 +262,13 @@ pub struct FriendshipChains {
     /// Rows exchanged on the current era since it began — the standing-cadence ratchet edge (never a timer).
     pub rows_since_ratchet: u32,
 
-    // ==================== GROUP STATE (docs/groups.md, schema v9 additive) ====================
-    /// True when this blob is a GROUP's chain state: the friendship_id IS the group id (stable, never participant-derived), the token is the group token, the participant set is mutable behind the id, and inbound trust for its frames consults GroupPeer instead of Contact.
-    pub group: bool,
-    /// The group's ROSTER, as roster-codec bytes (docs/groups.md step 6): rides the chains blob so fleet chain replication carries membership with the keys — no new plane. Set on every roster edge (bumps mutated_osc so the replication pushes); merged, never adopted wholesale, on the receiving sibling. Empty on a friendship blob.
-    group_roster: Vec<u8>,
-    /// OUR device's published group-scoped KEM decapsulation bundles (docs/groups.md §3): a group era's fresh secret arrives as a wrap encapsulated to the bundle we published in our member record, possibly minted while we slept — so unlike a friendship's RAM-only EraEphemeral these persist here, the same custody class as the lane links beside them. Newest-last; superseded bundles zeroize on rotation.
-    group_kems: Vec<crate::crypto::era::EraDecapKeys>,
+    // ==================== GROUP STATE (docs/molecules.md, schema v9 additive) ====================
+    /// True when this blob is a GROUP's chain state: the friendship_id IS the group id (stable, never participant-derived), the token is the group token, the participant set is mutable behind the id, and inbound trust for its frames consults MoleculePeer instead of Contact.
+    pub molecule: bool,
+    /// The group's ROSTER, as roster-codec bytes (docs/molecules.md step 6): rides the chains blob so fleet chain replication carries membership with the keys — no new plane. Set on every roster edge (bumps mutated_osc so the replication pushes); merged, never adopted wholesale, on the receiving sibling. Empty on a friendship blob.
+    molecule_roster: Vec<u8>,
+    /// OUR device's published group-scoped KEM decapsulation bundles (docs/molecules.md §3): a group era's fresh secret arrives as a wrap encapsulated to the bundle we published in our member record, possibly minted while we slept — so unlike a friendship's RAM-only EraEphemeral these persist here, the same custody class as the lane links beside them. Newest-last; superseded bundles zeroize on rotation.
+    molecule_kems: Vec<crate::crypto::era::EraDecapKeys>,
 }
 
 /// A retired era: root + history key held only so straggler frames on its lanes still decrypt and ACK. Dropped (zeroized) on an observed edge — never a timer.
@@ -370,7 +370,7 @@ pub struct PendingMessage {
     pub attempts: u8,
     /// Reliability (runtime-only, NOT persisted): the eagle-time oscillation at which this message is next eligible for resend. The tick-driven retransmit sweep resends any unacked pending whose `next_retry_osc` has passed, then pushes this out by the next backoff step. Set on first send.
     pub next_retry_osc: i64,
-    /// GROUP (docs/groups.md step 4): the parties this row has to reach (the standing set at send time, minus us), and the parties whose ACK has arrived. A friendship row keeps both empty and clears on the one ACK as ever; a group row clears only when `acked_by ⊇ targets`. Persisted in the group blob only; `retarget` shrinks the targets on a leave.
+    /// GROUP (docs/molecules.md step 4): the parties this row has to reach (the standing set at send time, minus us), and the parties whose ACK has arrived. A friendship row keeps both empty and clears on the one ACK as ever; a group row clears only when `acked_by ⊇ targets`. Persisted in the group blob only; `retarget` shrinks the targets on a leave.
     pub targets: Vec<crate::types::PartyId>,
     pub acked_by: Vec<crate::types::PartyId>,
 }
@@ -541,19 +541,19 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
-            group: false,
-            group_kems: Vec::new(),
-            group_roster: Vec::new(),
+            molecule: false,
+            molecule_kems: Vec::new(),
+            molecule_roster: Vec::new(),
         }
     }
 
-    /// A GROUP's chain state (docs/groups.md): the root arrives from the founder or a sponsor over an existing pairwise braid — there is NO ceremony, nothing derives from eggs. The friendship id IS the group id, the token is the group token, and lanes grow from the delivered root exactly as a friendship's do (`derive_lane_active` is root-agnostic — pinned in types::group tests). `era_lineage` comes from the genesis record (the founder computes `clutch::era_lineage(&root)` at mint; a joiner adopts it from the invite, whatever era it lands in).
-    pub fn from_group_root(group_id: crate::types::group::GroupId, participants: &[[u8; 32]], group_root: [u8; 32], group_history_key: [u8; 32], era_index: u64, era_lineage: [u8; 32]) -> Self {
+    /// A GROUP's chain state (docs/molecules.md): the root arrives from the founder or a sponsor over an existing pairwise braid — there is NO ceremony, nothing derives from eggs. The friendship id IS the group id, the token is the group token, and lanes grow from the delivered root exactly as a friendship's do (`derive_lane_active` is root-agnostic — pinned in types::group tests). `era_lineage` comes from the genesis record (the founder computes `clutch::era_lineage(&root)` at mint; a joiner adopts it from the invite, whatever era it lands in).
+    pub fn from_molecule_root(molecule_id: crate::types::molecule::MoleculeId, participants: &[[u8; 32]], molecule_root: [u8; 32], molecule_history_key: [u8; 32], era_index: u64, era_lineage: [u8; 32]) -> Self {
         let mut sorted_participants = participants.to_vec();
         sorted_participants.sort();
         Self {
-            friendship_id: FriendshipId::from_bytes(group_id.0),
-            conversation_token: group_id.token(),
+            friendship_id: FriendshipId::from_bytes(molecule_id.0),
+            conversation_token: molecule_id.token(),
             chains: Vec::new(),
             participants: sorted_participants,
             lane_labels: Vec::new(),
@@ -569,8 +569,8 @@ impl FriendshipChains {
             last_sent_weave: None,
             last_incorporated_hp: None,
             gap_buffer: Vec::new(),
-            history_key: Some(group_history_key),
-            lane_root: Some(group_root),
+            history_key: Some(molecule_history_key),
+            lane_root: Some(molecule_root),
             genesis_osc: vsf::eagle_time_oscillations(),
             mutated_osc: 0,
             era_index,
@@ -579,9 +579,9 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
-            group: true,
-            group_kems: Vec::new(),
-            group_roster: Vec::new(),
+            molecule: true,
+            molecule_kems: Vec::new(),
+            molecule_roster: Vec::new(),
         }
     }
 
@@ -662,9 +662,9 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
-            group: false,
-            group_kems: Vec::new(),
-            group_roster: Vec::new(),
+            molecule: false,
+            molecule_kems: Vec::new(),
+            molecule_roster: Vec::new(),
         })
     }
 
@@ -744,9 +744,9 @@ impl FriendshipChains {
             retired: None,
             pending: None,
             rows_since_ratchet: 0,
-            group: false,
-            group_kems: Vec::new(),
-            group_roster: Vec::new(),
+            molecule: false,
+            molecule_kems: Vec::new(),
+            molecule_roster: Vec::new(),
         })
     }
 
@@ -788,35 +788,35 @@ impl FriendshipChains {
         self.lane_root = None;
     }
 
-    /// OUR device's published group KEM decapsulation bundles, newest-last (docs/groups.md §3). Empty on a friendship, and on a group device that has not yet published its member record.
-    pub fn group_kems(&self) -> &[crate::crypto::era::EraDecapKeys] {
-        &self.group_kems
+    /// OUR device's published group KEM decapsulation bundles, newest-last (docs/molecules.md §3). Empty on a friendship, and on a group device that has not yet published its member record.
+    pub fn molecule_kems(&self) -> &[crate::crypto::era::EraDecapKeys] {
+        &self.molecule_kems
     }
 
     /// The roster bytes riding this group blob (empty on a friendship, or before the first roster edge).
-    pub fn group_roster(&self) -> &[u8] {
-        &self.group_roster
+    pub fn molecule_roster(&self) -> &[u8] {
+        &self.molecule_roster
     }
 
     /// Set the roster bytes (a roster edge): bumps `mutated_osc` so chain replication pushes membership with the keys.
-    pub fn set_group_roster(&mut self, bytes: Vec<u8>) {
-        if !self.group || self.group_roster == bytes {
+    pub fn set_molecule_roster(&mut self, bytes: Vec<u8>) {
+        if !self.molecule || self.molecule_roster == bytes {
             return;
         }
-        self.group_roster = bytes;
+        self.molecule_roster = bytes;
         self.mutated_osc = vsf::eagle_time_oscillations();
     }
 
     /// Install the persisted bundle set wholesale (the storage loader). Replaced bundles zeroize in their Drop.
-    pub fn set_group_kems(&mut self, kems: Vec<crate::crypto::era::EraDecapKeys>) {
-        self.group_kems = kems;
+    pub fn set_molecule_kems(&mut self, kems: Vec<crate::crypto::era::EraDecapKeys>) {
+        self.molecule_kems = kems;
     }
 
     /// Publish a fresh bundle: newest-last, keeping ONE superseded bundle beside it — a wrap minted before our rotation frame landed still targets the old one; anything older zeroizes on the spot.
-    pub fn push_group_kem(&mut self, keys: crate::crypto::era::EraDecapKeys) {
-        self.group_kems.push(keys);
-        while self.group_kems.len() > 2 {
-            self.group_kems.remove(0);
+    pub fn push_molecule_kem(&mut self, keys: crate::crypto::era::EraDecapKeys) {
+        self.molecule_kems.push(keys);
+        while self.molecule_kems.len() > 2 {
+            self.molecule_kems.remove(0);
         }
     }
 
@@ -1459,10 +1459,10 @@ impl FriendshipChains {
             retired: self.retired.clone(),
             pending: self.pending.clone(),
             rows_since_ratchet: self.rows_since_ratchet,
-            group: self.group,
+            molecule: self.molecule,
             // Per-DEVICE, like our_label: every device publishes its own bundle in its member record, so a sibling never adopts ours.
-            group_kems: Vec::new(),
-            group_roster: self.group_roster.clone(),
+            molecule_kems: Vec::new(),
+            molecule_roster: self.molecule_roster.clone(),
         }
     }
 
@@ -1557,7 +1557,7 @@ impl FriendshipChains {
 
     /// GROUP: the parties a pending still owes — `None` when it is not pending (or not a group blob).
     pub fn pending_unacked(&self, eagle_time: i64) -> Option<Vec<crate::types::PartyId>> {
-        if !self.group {
+        if !self.molecule {
             return None;
         }
         self.pending_messages.iter().find(|m| m.eagle_time == eagle_time).map(|m| m.targets.iter().filter(|p| !m.acked_by.contains(p)).copied().collect())
@@ -1829,9 +1829,9 @@ impl FriendshipChains {
     }
 
     /// Process ACK: match the pending by (eagle_time, plaintext_hash), remove it, report the match. Under advance-on-send the chain already ratcheted forward when this message was encrypted, so the ACK is a pure delivery RECEIPT — it MUST NOT advance again (that would double-ratchet past the receiver). The match edge is what the caller hangs delivery, CLUTCH-ephemeral zeroize, and chain-seal on. No mutated_osc stamp: removing a pending is device-local (siblings never adopt our pendings) and the send already pushed the advanced lane, so an ACK needs no fleet replication.
-    /// GROUP: record which parties a just-committed pending has to reach (docs/groups.md step 4). No-op on a friendship blob.
+    /// GROUP: record which parties a just-committed pending has to reach (docs/molecules.md step 4). No-op on a friendship blob.
     pub fn set_pending_targets(&mut self, eagle_time: i64, targets: Vec<crate::types::PartyId>) {
-        if !self.group {
+        if !self.molecule {
             return;
         }
         if let Some(m) = self.pending_messages.iter_mut().find(|m| m.eagle_time == eagle_time) {
@@ -1844,7 +1844,7 @@ impl FriendshipChains {
 
     /// GROUP: a member left (or lost standing) — it is no longer owed any pending; a row whose remaining targets are all acked clears. Returns the eagle times that just completed.
     pub fn retarget_pendings(&mut self, standing: &[crate::types::PartyId]) -> Vec<i64> {
-        if !self.group {
+        if !self.molecule {
             return Vec::new();
         }
         let mut done = Vec::new();
@@ -1866,7 +1866,7 @@ impl FriendshipChains {
         self.pending_messages.iter().find(|m| m.eagle_time == eagle_time).map(|m| (m.acked_by.len(), m.targets.len()))
     }
 
-    /// GROUP ACK (docs/groups.md step 4): mark `acker` on the row and — because a receiver processes OUR lane strictly in order — on every OLDER pending too (the implied-ACK rule, per party); a pending clears when its acked set covers its targets. Returns the eagle times that just completed (the row `delivered` flips for those).
+    /// GROUP ACK (docs/molecules.md step 4): mark `acker` on the row and — because a receiver processes OUR lane strictly in order — on every OLDER pending too (the implied-ACK rule, per party); a pending clears when its acked set covers its targets. Returns the eagle times that just completed (the row `delivered` flips for those).
     pub fn process_group_ack(&mut self, acked_eagle_time: i64, acker: crate::types::PartyId) -> Vec<i64> {
         if !self.pending_messages.iter().any(|m| m.eagle_time == acked_eagle_time) {
             return Vec::new();
@@ -2545,12 +2545,12 @@ mod tests {
         assert!(!sender.process_ack(9_999, &ph));
     }
 
-    /// GROUP per-member ACK ledger (docs/groups.md step 4): three targets; an ACK marks its party on the row and — the in-order lane — on every older pending; a row clears only when every target acked; a leave shrinks the targets and can complete a row; the friendship path is untouched.
+    /// GROUP per-member ACK ledger (docs/molecules.md step 4): three targets; an ACK marks its party on the row and — the in-order lane — on every older pending; a row clears only when every target acked; a leave shrinks the targets and can complete a row; the friendship path is untouched.
     #[test]
     fn group_ack_ledger_clears_only_when_every_target_acked() {
-        let gid = crate::types::group::GroupId::from_nonce(&[3u8; 32]);
+        let gid = crate::types::molecule::MoleculeId::from_nonce(&[3u8; 32]);
         let (a, b, c) = ([0xA0u8; 32], [0xB0u8; 32], [0xC0u8; 32]);
-        let mut g = FriendshipChains::from_group_root(gid, &[[0x01; 32], a, b, c], [7u8; 32], [8u8; 32], 0, [9u8; 32]);
+        let mut g = FriendshipChains::from_molecule_root(gid, &[[0x01; 32], a, b, c], [7u8; 32], [8u8; 32], 0, [9u8; 32]);
         let t1 = 1_000i64;
         let t2 = 2_000i64;
         g.prepare_send(b"one".to_vec(), b"one".to_vec(), t1, vec![]).unwrap();

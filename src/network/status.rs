@@ -160,18 +160,18 @@ pub fn set_sibling_devices(devices: Vec<[u8; 32]>) {
     }
 }
 
-/// GROUP admission (docs/groups.md §2 "transport trust, scoped"): per group token, the standing members' devices. A frame carrying a group token is admitted iff its signer sits under THAT token — a member we never friended is admitted for its group's chat frames and nothing else (pings and every other frame family still consult the contact list alone). Written by the app on every roster / fold edge (`reseed_group_pubkeys`).
-static GROUP_DEVICES: std::sync::Mutex<Vec<([u8; 32], Vec<[u8; 32]>)>> = std::sync::Mutex::new(Vec::new());
+/// GROUP admission (docs/molecules.md §2 "transport trust, scoped"): per group token, the standing members' devices. A frame carrying a group token is admitted iff its signer sits under THAT token — a member we never friended is admitted for its group's chat frames and nothing else (pings and every other frame family still consult the contact list alone). Written by the app on every roster / fold edge (`reseed_molecule_pubkeys`).
+static MOLECULE_DEVICES: std::sync::Mutex<Vec<([u8; 32], Vec<[u8; 32]>)>> = std::sync::Mutex::new(Vec::new());
 
-pub fn set_group_devices(list: Vec<([u8; 32], Vec<[u8; 32]>)>) {
-    if let Ok(mut g) = GROUP_DEVICES.lock() {
+pub fn set_molecule_devices(list: Vec<([u8; 32], Vec<[u8; 32]>)>) {
+    if let Ok(mut g) = MOLECULE_DEVICES.lock() {
         *g = list;
     }
 }
 
 /// Is `dev` a standing member's device of the group whose token is `token`?
-pub fn group_admits(token: &[u8; 32], dev: &[u8; 32]) -> bool {
-    GROUP_DEVICES
+pub fn molecule_admits(token: &[u8; 32], dev: &[u8; 32]) -> bool {
+    MOLECULE_DEVICES
         .lock()
         .map(|g| g.iter().any(|(t, devs)| t == token && devs.iter().any(|d| d == dev)))
         .unwrap_or(false)
@@ -509,7 +509,7 @@ pub enum StatusUpdate {
         acked_eagle_time: i64,
         /// BLAKE3 hash of decrypted plaintext - proves they decrypted our message
         plaintext_hash: [u8; 32],
-        /// The signing device — the only identity an ACK carries; a GROUP resolves it to the acking party for the per-member ledger (docs/groups.md step 4).
+        /// The signing device — the only identity an ACK carries; a GROUP resolves it to the acking party for the per-member ledger (docs/molecules.md step 4).
         sender_pubkey: [u8; 32],
     },
     /// Avatar request received from a peer - they want our avatar (verified signature)
@@ -3332,8 +3332,8 @@ async fn run_checker(
                                         let list = contacts_recv.lock().unwrap();
                                         list.iter().any(|p| *p == sender_pubkey)
                                     };
-                                    // A GROUP member we never friended is admitted for its group's frames only (docs/groups.md §2): the token scopes the trust at the door.
-                                    if !is_contact && !group_admits(&conversation_token, &sender_pubkey.key) {
+                                    // A GROUP member we never friended is admitted for its group's frames only (docs/molecules.md §2): the token scopes the trust at the door.
+                                    if !is_contact && !molecule_admits(&conversation_token, &sender_pubkey.key) {
                                         continue;
                                     }
 

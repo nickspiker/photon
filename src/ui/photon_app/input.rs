@@ -207,6 +207,29 @@ impl PhotonApp {
     }
 
     /// Submit the contacts-page textbox contents as an FGTW handle search. Called from Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on empty input, on no `HandleQuery` available (init failure path), and on a search for the user's own attested handle (would just find their own device — no point). Successful Found results land in `tick()`'s drain loop and append to `self.contacts`. Persistence + UI transition into a search-in-flight visual state (the rotating-hourglass plus button) ride in subsequent slices.
+    /// NEW ATOM (docs/molecules.md §0): the typed title founds an atom — you alone in it — and opens it. Empty = nothing founded, the mode stays.
+    pub(super) fn submit_new_atom(&mut self) {
+        let title: String = self.contacts_textbox.as_ref().map(|tb| tb.chars.iter().collect::<String>()).unwrap_or_default();
+        let title = title.trim().to_string();
+        if title.is_empty() {
+            return;
+        }
+        let from_genesis = self.molecule_default_from_genesis();
+        if self.found_atom_alone(&title, from_genesis).is_some() {
+            self.atom_naming = false;
+            if let Some(tb) = self.contacts_textbox.as_mut() {
+                tb.clear();
+            }
+            self.change_focus(None);
+            if let Some(gi) = self.molecule_rosters.len().checked_sub(1) {
+                self.open_molecule_conversation(gi);
+                self.state = AppState::Conversation;
+                self.conv_topbar_off = 0.0;
+            }
+            self.scene_dirty = true;
+        }
+    }
+
     pub(super) fn submit_add_friend(&mut self) {
         let handle: String = match self.contacts_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
@@ -526,25 +549,25 @@ impl PhotonApp {
             }
             // In a Conversation the orb wears the friend's avatar — it opens the friend panel (same doctrine: the orb is a panel entry, never a direct action).
             AppState::Conversation => {
-                // A GROUP conversation's orb opens the group panel (docs/groups.md §10.5).
+                // A GROUP conversation's orb opens the group panel (docs/molecules.md §10.5).
                 if self.active_contact().is_none() {
-                    if let Some(gi) = self.active_group() {
+                    if let Some(gi) = self.active_molecule() {
                         self.change_focus(None);
-                        self.group_leave_armed = false;
+                        self.molecule_leave_armed = false;
                         self.settings_content_scroll = 0.0;
-                        let title = self.group_rosters[gi].1.title();
-                        if let Some(tb) = self.group_title_textbox.as_mut() {
+                        let title = self.molecule_rosters[gi].1.title();
+                        if let Some(tb) = self.molecule_title_textbox.as_mut() {
                             tb.chars = title.chars().collect();
                             tb.cursor = tb.chars.len();
                         }
-                        self.state = AppState::GroupPanel(crate::ui::state::GroupPage::About);
+                        self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::About);
                         return true;
                     }
                     return false;
                 }
                 self.change_focus(None);
                 self.contact_boot_armed = false;
-                self.group_pick_open = false;
+                self.molecule_pick_open = false;
                 self.state = AppState::ContactPanel(ContactPage::About);
                 true
             }
@@ -577,7 +600,7 @@ impl PhotonApp {
             self.depart_words_entry
                 .as_mut()
                 .map(|(_, t)| (TextboxRole::DepartWords, t)),
-            self.group_title_textbox
+            self.molecule_title_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::GroupTitle, t)),
         ]

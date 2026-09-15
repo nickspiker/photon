@@ -501,10 +501,10 @@ impl PhotonApp {
     /// After a cutover: persist the blob (the replication sweep pushes it on the mutated_osc edge) and re-serve undelivered rows on the fresh lane — the rotated_flush shape.
     pub(super) fn era_cutover_flush(&mut self, ci: usize, fid: &crate::types::friendship::FriendshipId) {
         self.persist_chains_async(fid);
-        // A GROUP cutover (docs/groups.md §10.4): undelivered rows re-serve on the fresh lane and this device publishes a fresh bundle for the new era; a friendship flushes its held rows.
-        if self.group_rosters.iter().any(|(g, _)| g.0 == *fid.as_bytes()) {
-            let gid = crate::types::group::GroupId(*fid.as_bytes());
-            self.after_group_cutover(gid);
+        // A GROUP cutover (docs/molecules.md §10.4): undelivered rows re-serve on the fresh lane and this device publishes a fresh bundle for the new era; a friendship flushes its held rows.
+        if self.molecule_rosters.iter().any(|(g, _)| g.0 == *fid.as_bytes()) {
+            let gid = crate::types::molecule::MoleculeId(*fid.as_bytes());
+            self.after_molecule_cutover(gid);
         } else {
             self.resend_held_messages(ci);
         }

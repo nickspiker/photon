@@ -314,7 +314,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.msg_action_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(14); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/groups.md)
+        self.hit_counter = self.hit_counter.wrapping_add(14); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/molecules.md)
         self.react_strip_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -347,15 +347,17 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1);
-        // GROUPS (docs/groups.md §10.5): Ready-list group rows (64) and the Manage-page group picker (16) — appended here, never mid-run (the contiguous-id contract).
-        self.group_hit_base = self.hit_counter;
+        // GROUPS (docs/molecules.md §10.5): Ready-list group rows (64) and the Manage-page group picker (16) — appended here, never mid-run (the contiguous-id contract).
+        self.molecule_hit_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(64);
-        self.group_pick_base = self.hit_counter;
+        self.molecule_pick_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(16);
-        self.group_nav_base = self.hit_counter;
+        self.molecule_nav_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3);
-        self.group_panel_btn_base = self.hit_counter;
+        self.molecule_panel_btn_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(40); // 8 pills + 32 Add-page contact rows
+        self.ready_filter_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(5); // All / Friends / Atoms / Molecules / New atom
         // Call controls (docs/calls.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.call_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.call_start_btn = Some(Button::new(
@@ -544,7 +546,7 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
-        self.group_title_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.molecule_title_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Unattended-confirm handle box: built once here so its hit_id is stable (lazy creation at open time bumped hit_counter every open, drifting the id out from under the render's stamp — the box then took no input).
         self.unattended_confirm_tb = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // The per-field boxes are built lazily on first You-page open (build_you_fields) — HitId is a u16, so we allocate the ~32 field ids only when the page is actually visited.
@@ -596,7 +598,7 @@ impl FluorApp for PhotonApp {
             AppState::Ready => {
                 self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
             }
-            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::GroupPanel(_) => {
+            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_) => {
                 self.settings_rail_scroll = top_hung(self.settings_rail_scroll);
                 self.settings_content_scroll = top_hung(self.settings_content_scroll);
             }
@@ -775,11 +777,11 @@ impl FluorApp for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
-            if matches!(self.state, AppState::GroupPanel(_)) {
-                self.group_leave_armed = false;
+            if matches!(self.state, AppState::MoleculePanel(_)) {
+                self.molecule_leave_armed = false;
                 self.state = AppState::Conversation;
-                if let Some(gi) = self.active_group() {
-                    self.clear_group_unread(gi);
+                if let Some(gi) = self.active_molecule() {
+                    self.clear_molecule_unread(gi);
                 }
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -815,47 +817,53 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Group panel (docs/groups.md §10.5): rail rows switch the page; pills: 0 = Leave (two-tap), 1 = Mute, 2 = Rename; 8.. = offer a contact from the Add page.
-        if matches!(self.state, AppState::GroupPanel(_)) {
-            if self.group_leave_armed && hit_id != self.group_panel_btn_base {
-                self.group_leave_armed = false;
+        // Group panel (docs/molecules.md §10.5): rail rows switch the page; pills: 0 = Leave (two-tap), 1 = Mute, 2 = Rename; 8.. = offer a contact from the Add page.
+        if matches!(self.state, AppState::MoleculePanel(_)) {
+            if self.molecule_leave_armed && hit_id != self.molecule_panel_btn_base {
+                self.molecule_leave_armed = false;
                 self.scene_dirty = true;
             }
-            if self.group_nav_base != HIT_NONE && hit_id >= self.group_nav_base && hit_id < self.group_nav_base.wrapping_add(3) {
-                let idx = (hit_id - self.group_nav_base) as usize;
-                if let Some(p) = crate::ui::state::GroupPage::ALL.get(idx).copied() {
+            if self.molecule_nav_base != HIT_NONE && hit_id >= self.molecule_nav_base && hit_id < self.molecule_nav_base.wrapping_add(3) {
+                let idx = (hit_id - self.molecule_nav_base) as usize;
+                if let Some(p) = crate::ui::state::MoleculePage::ALL.get(idx).copied() {
                     self.change_focus(None);
                     self.settings_content_scroll = 0.0;
-                    self.state = AppState::GroupPanel(p);
+                    self.state = AppState::MoleculePanel(p);
                     ctx.window.request_redraw();
                 }
                 return EventResponse::Handled;
             }
-            if self.group_panel_btn_base != HIT_NONE && hit_id >= self.group_panel_btn_base && hit_id < self.group_panel_btn_base.wrapping_add(40) {
-                let slot = hit_id - self.group_panel_btn_base;
-                if let Some(gi) = self.active_group() {
-                    let gid = self.group_rosters[gi].0;
+            if self.molecule_panel_btn_base != HIT_NONE && hit_id >= self.molecule_panel_btn_base && hit_id < self.molecule_panel_btn_base.wrapping_add(40) {
+                let slot = hit_id - self.molecule_panel_btn_base;
+                if let Some(gi) = self.active_molecule() {
+                    let gid = self.molecule_rosters[gi].0;
                     match slot {
                         0 => {
-                            if self.group_leave_armed {
-                                self.group_leave_armed = false;
-                                self.leave_group(gid);
+                            if self.molecule_leave_armed {
+                                self.molecule_leave_armed = false;
+                                self.leave_molecule(gid);
                             } else {
-                                self.group_leave_armed = true;
+                                self.molecule_leave_armed = true;
                             }
                         }
-                        1 => self.toggle_group_mute(gid),
+                        1 => self.toggle_molecule_mute(gid),
+                        3 => {
+                            // Create a molecule! — the Add page, where binding someone in makes it one.
+                            self.change_focus(None);
+                            self.settings_content_scroll = 0.0;
+                            self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::Add);
+                        }
                         2 => {
-                            let title: String = self.group_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
-                            self.rename_group(gid, &title);
+                            let title: String = self.molecule_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
+                            self.rename_molecule(gid, &title);
                             self.change_focus(None);
                         }
                         k if k >= 8 => {
                             let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-                            let roster_standing = self.group_rosters[gi].1.standing();
+                            let roster_standing = self.molecule_rosters[gi].1.standing();
                             let candidates: Vec<usize> = self.contacts.iter().enumerate().filter(|(_, c)| !c.is_sibling && c.friendship_id.is_some() && c.remote_count(&our_hh) > 0 && roster_standing.binary_search(&c.handle_hash).is_err()).map(|(i, _)| i).collect();
                             if let Some(ci) = candidates.get((k - 8) as usize).copied() {
-                                self.send_group_offer(gid, ci);
+                                self.send_bond_offer(gid, ci);
                             }
                         }
                         _ => {}
@@ -904,58 +912,29 @@ impl FluorApp for PhotonApp {
                     self.scene_dirty = true;
                     ctx.window.request_redraw();
                 } else if slot == 1 {
-                    // Bring into a group (docs/groups.md §10.5): toggle the picker; the title box takes focus so typing starts at once.
-                    self.group_pick_open = !self.group_pick_open;
-                    if self.group_pick_open {
-                        // The picker opens on the fleet's default policy (Settings → Conversations).
-                        self.group_pick_from_genesis = self.group_default_from_genesis();
-                        if let Some(tb) = self.group_title_textbox.as_mut() {
-                            tb.chars.clear();
-                            tb.cursor = 0;
-                        }
-                        let id = self.group_title_textbox.as_ref().map(|t| t.hit_id());
-                        self.change_focus(id);
-                    } else {
-                        self.change_focus(None);
-                    }
+                    // Bind into a molecule (docs/molecules.md §10.5): toggle the picker of atoms and molecules we stand in.
+                    self.molecule_pick_open = !self.molecule_pick_open;
+                    self.change_focus(None);
                     self.scene_dirty = true;
                     ctx.window.request_redraw();
                 }
                 return EventResponse::Handled;
             }
-            // The group picker's rows (docs/groups.md §10.5): 1 = Found (new group with this contact), 2/3 = the history policy, 4.. = offer this contact into an existing group.
-            if self.group_pick_open
-                && self.group_pick_base != HIT_NONE
-                && hit_id >= self.group_pick_base
-                && hit_id < self.group_pick_base.wrapping_add(16)
+            // The group picker's rows (docs/molecules.md §10.5): 1 = Found (new group with this contact), 2/3 = the history policy, 4.. = offer this contact into an existing group.
+            if self.molecule_pick_open
+                && self.molecule_pick_base != HIT_NONE
+                && hit_id >= self.molecule_pick_base
+                && hit_id < self.molecule_pick_base.wrapping_add(16)
             {
-                let pick = (hit_id - self.group_pick_base) as usize;
+                let pick = (hit_id - self.molecule_pick_base) as usize;
                 if let Some(ci) = self.active_contact() {
                     match pick {
-                        1 => {
-                            let title: String = self.group_title_textbox.as_ref().map(|t| t.chars.iter().collect::<String>()).unwrap_or_default();
-                            let title = title.trim().to_string();
-                            if !title.is_empty() {
-                                let from_genesis = self.group_pick_from_genesis;
-                                if self.found_group_with(ci, &title, from_genesis).is_some() {
-                                    self.group_pick_open = false;
-                                    self.change_focus(None);
-                                    // Land in the new group's conversation — the row exists, the offer is out.
-                                    if let Some(gi) = self.group_rosters.len().checked_sub(1) {
-                                        self.open_group_conversation(gi);
-                                        self.state = AppState::Conversation;
-                                        self.conv_topbar_off = 0.0;
-                                    }
-                                }
-                            }
-                        }
-                        2 => self.group_pick_from_genesis = true,
-                        3 => self.group_pick_from_genesis = false,
+                        // Slots 1..=3 were the New-group form; an atom is founded on the Ready screen now (docs/molecules.md §0), so the picker only binds into what exists.
                         k if k >= 4 => {
                             let gi = k - 4;
-                            if let Some(gid) = self.group_rosters.get(gi).map(|(g, _)| *g) {
-                                self.send_group_offer(gid, ci);
-                                self.group_pick_open = false;
+                            if let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) {
+                                self.send_bond_offer(gid, ci);
+                                self.molecule_pick_open = false;
                                 self.change_focus(None);
                             }
                         }
@@ -1353,12 +1332,12 @@ impl FluorApp for PhotonApp {
                     // 0/1 = the default newcomer-history policy for groups we found (a linked fleet setting); 2.. = Mute pill per group row (this device only).
                     if slot == 0 || slot == 1 {
                         let from_gen = slot == 1;
-                        if self.settings_set("groups.history_from_genesis", vsf::VsfType::u(from_gen as usize, false)) {
-                            crate::logf!("SETTINGS: groups.history_from_genesis = {} (linked write)", from_gen);
+                        if self.settings_set("molecule.history_from_genesis", vsf::VsfType::u(from_gen as usize, false)) {
+                            crate::logf!("SETTINGS: molecule.history_from_genesis = {} (linked write)", from_gen);
                         }
                     } else if slot >= 2 {
-                        if let Some(gid) = self.group_rosters.get((slot - 2) as usize).map(|(g, _)| *g) {
-                            self.toggle_group_mute(gid);
+                        if let Some(gid) = self.molecule_rosters.get((slot - 2) as usize).map(|(g, _)| *g) {
+                            self.toggle_molecule_mute(gid);
                         }
                     }
                     ctx.window.request_redraw();
@@ -1401,19 +1380,50 @@ impl FluorApp for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // Group row tap (docs/groups.md §10.5) — hit IDs in [group_hit_base, group_hit_base + 64).
+        // Ready filter strip (docs/molecules.md §10.5): All / Friends / Atoms / Molecules, and New atom.
         if matches!(self.state, AppState::Ready)
-            && self.group_hit_base != HIT_NONE
-            && hit_id >= self.group_hit_base
-            && hit_id < self.group_hit_base.wrapping_add(64)
+            && self.ready_filter_base != HIT_NONE
+            && hit_id >= self.ready_filter_base
+            && hit_id < self.ready_filter_base.wrapping_add(5)
         {
-            let gi = (hit_id - self.group_hit_base) as usize;
-            if gi < self.group_rosters.len() {
-                crate::logf!("group-tap: opening \"{}\"", self.group_rosters[gi].1.title());
-                self.open_group_conversation(gi);
+            let k = hit_id - self.ready_filter_base;
+            match k {
+                0 => self.ready_filter = super::ReadyFilter::All,
+                1 => self.ready_filter = super::ReadyFilter::Friends,
+                2 => self.ready_filter = super::ReadyFilter::Atoms,
+                3 => self.ready_filter = super::ReadyFilter::Molecules,
+                _ => {
+                    // NEW ATOM: the search box becomes the title box; the plus (or Enter) founds it. Tapping again cancels.
+                    self.atom_naming = !self.atom_naming;
+                    if let Some(tb) = self.contacts_textbox.as_mut() {
+                        tb.chars.clear();
+                        tb.cursor = 0;
+                    }
+                    if self.atom_naming {
+                        let id = self.contacts_textbox.as_ref().map(|t| t.hit_id());
+                        self.change_focus(id);
+                    }
+                }
+            }
+            self.contacts_scroll = 0;
+            self.scene_dirty = true;
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
+        }
+
+        // Group row tap (docs/molecules.md §10.5) — hit IDs in [molecule_hit_base, molecule_hit_base + 64).
+        if matches!(self.state, AppState::Ready)
+            && self.molecule_hit_base != HIT_NONE
+            && hit_id >= self.molecule_hit_base
+            && hit_id < self.molecule_hit_base.wrapping_add(64)
+        {
+            let gi = (hit_id - self.molecule_hit_base) as usize;
+            if gi < self.molecule_rosters.len() {
+                crate::logf!("group-tap: opening \"{}\"", self.molecule_rosters[gi].1.title());
+                self.open_molecule_conversation(gi);
                 self.state = AppState::Conversation;
                 self.conv_topbar_off = 0.0;
-                self.clear_group_unread(gi);
+                self.clear_molecule_unread(gi);
                 self.change_focus(None);
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
@@ -1523,13 +1533,13 @@ impl FluorApp for PhotonApp {
                 && hit_id < self.msg_action_base.wrapping_add(14)
             {
                 let slot = hit_id - self.msg_action_base;
-                // JOIN (slot 13, a group offer card — docs/groups.md §10.1): the consent. The parked offer under the selected row names the group.
+                // JOIN (slot 13, a group offer card — docs/molecules.md §10.1): the consent. The parked offer under the selected row names the group.
                 if slot == 13 {
                     if let (Some(ci), Some((_, ts, false))) = (self.active_contact(), self.selected_msg) {
                         let sponsor = self.contacts[ci].handle_hash;
-                        let gid = self.group_offers.iter().find(|o| o.sponsor == sponsor && o.row_osc == ts && !o.accepted).or_else(|| self.group_offers.iter().find(|o| o.sponsor == sponsor && !o.accepted)).map(|o| o.group_id);
+                        let gid = self.bond_offers.iter().find(|o| o.sponsor == sponsor && o.row_osc == ts && !o.accepted).or_else(|| self.bond_offers.iter().find(|o| o.sponsor == sponsor && !o.accepted)).map(|o| o.molecule_id);
                         if let Some(gid) = gid {
-                            self.join_group_offer(gid);
+                            self.bind_offer(gid);
                         }
                     }
                     self.scene_dirty = true;
@@ -2294,7 +2304,7 @@ impl FluorApp for PhotonApp {
                         .round() as isize;
                     } else if matches!(
                         self.state,
-                        AppState::Settings(_) | AppState::ContactPanel(_) | AppState::GroupPanel(_)
+                        AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
                     ) {
                         // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
                         let over_rail = {
@@ -2565,7 +2575,11 @@ impl FluorApp for PhotonApp {
                     .map(|b| b.take_click())
                     .unwrap_or(false);
                 if plus_clicked {
-                    self.submit_add_friend();
+                    if self.atom_naming {
+                        self.submit_new_atom();
+                    } else {
+                        self.submit_add_friend();
+                    }
                     ctx.window.request_redraw();
                 }
                 // Conversation send button — same release-edge polling pattern as the plus button.
@@ -2709,8 +2723,8 @@ impl FluorApp for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        if matches!(self.state, AppState::GroupPanel(_)) {
-                            self.group_leave_armed = false;
+                        if matches!(self.state, AppState::MoleculePanel(_)) {
+                            self.molecule_leave_armed = false;
                             self.state = AppState::Conversation;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
@@ -2816,7 +2830,11 @@ impl FluorApp for PhotonApp {
                             .map(|t| Some(t.hit_id()) == self.focused)
                             .unwrap_or(false);
                         if focused_is_contacts_textbox {
-                            self.submit_add_friend();
+                            if self.atom_naming {
+                                self.submit_new_atom();
+                            } else {
+                                self.submit_add_friend();
+                            }
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -4300,8 +4318,8 @@ impl PhotonApp {
                                 self.friendship_chains.push((fid, chains));
                             }
                         }
-                        // GROUPS (docs/groups.md §5): the index is the vault's only enumeration — chains join the same registry (the token scan treats them identically), conversations and rosters ride beside. Same never-clobber rule as the friendship pass.
-                        for (gid, roster, chains, conv) in crate::storage::group::load_all_groups(&s) {
+                        // GROUPS (docs/molecules.md §5): the index is the vault's only enumeration — chains join the same registry (the token scan treats them identically), conversations and rosters ride beside. Same never-clobber rule as the friendship pass.
+                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&s) {
                             if let Some(chains) = chains {
                                 let fid = *chains.id();
                                 if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
@@ -4311,17 +4329,17 @@ impl PhotonApp {
                             if !self.conversations.iter().any(|v| v.id().as_bytes() == &gid.0) {
                                 self.conversations.push(conv);
                             }
-                            if !self.group_rosters.iter().any(|(g, _)| *g == gid) {
-                                self.group_rosters.push((gid, roster));
+                            if !self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
+                                self.molecule_rosters.push((gid, roster));
                             }
-                            if !self.group_locals.iter().any(|(g, _)| *g == gid) {
-                                let local = crate::storage::group::load_group_local(&gid, &s).unwrap_or_default();
-                                self.group_locals.push((gid, local));
+                            if !self.molecule_locals.iter().any(|(g, _)| *g == gid) {
+                                let local = crate::storage::molecule::load_molecule_local(&gid, &s).unwrap_or_default();
+                                self.molecule_locals.push((gid, local));
                             }
                         }
-                        for offer in crate::storage::group::load_all_offers(&s) {
-                            if !self.group_offers.iter().any(|o| o.group_id == offer.group_id) {
-                                self.group_offers.push(offer);
+                        for offer in crate::storage::molecule::load_all_offers(&s) {
+                            if !self.bond_offers.iter().any(|o| o.molecule_id == offer.molecule_id) {
+                                self.bond_offers.push(offer);
                             }
                         }
                         // Anything the loader REJECTED (pre-v8 blobs, the lanes flag-day) leaves its contact keyed-but-chainless — reset those ceremonies now, while every chain that CAN load already has.

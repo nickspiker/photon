@@ -1,5 +1,5 @@
-pub mod group;
-pub use group::*;
+pub mod molecule;
+pub use molecule::*;
 pub mod attach_kind;
 pub mod contact;
 pub mod conversation;

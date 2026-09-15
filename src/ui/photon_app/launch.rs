@@ -277,16 +277,16 @@ impl PhotonApp {
                 }
                 // Group rosters the load worker read thru the group index (their chains and conversations rode the two merges above). Never clobber: an in-session roster has seen merge edges the disk copy may lack.
                 for (gid, roster, local) in data.groups {
-                    if !self.group_locals.iter().any(|(g, _)| *g == gid) {
-                        self.group_locals.push((gid, local));
+                    if !self.molecule_locals.iter().any(|(g, _)| *g == gid) {
+                        self.molecule_locals.push((gid, local));
                     }
-                    if !self.group_rosters.iter().any(|(g, _)| *g == gid) {
-                        self.group_rosters.push((gid, roster));
+                    if !self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
+                        self.molecule_rosters.push((gid, roster));
                     }
                 }
-                for offer in data.group_offers {
-                    if !self.group_offers.iter().any(|o| o.group_id == offer.group_id) {
-                        self.group_offers.push(offer);
+                for offer in data.bond_offers {
+                    if !self.bond_offers.iter().any(|o| o.molecule_id == offer.molecule_id) {
+                        self.bond_offers.push(offer);
                     }
                 }
                 // Seed `our_reflexive` from FGTW's signed observation if we have nothing better yet. This is what lets `publish_self_peer_record` sign a record on a FIRST launch: until now it needed a peer-echoed pong, but a pong needs a reachable path, which needs an address a peer could learn, which needs a published record -- a cycle nothing could enter, which is why `PHONEBOOK:` never appeared in a log and gossip carried zero records.

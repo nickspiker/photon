@@ -237,10 +237,10 @@ impl PhotonApp {
         let mut persist_hashes: Vec<[u8; 32]> = Vec::new();
         // Friendships whose chains changed in a SAFE-to-delay way (ACK pending-removal, chain-sync adopt) — persisted AFTER the loop via the coalescing chains writer. The `checker` borrow spans the loop, so a &mut self method can't run inside it (the same deferral every arm here uses).
         let mut chains_persist_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
-        // GROUP ACKs (docs/groups.md step 4): (group, acking device, eagle time) — applied AFTER the loop to the per-member ledger.
-        let mut group_acks: Vec<(crate::types::group::GroupId, [u8; 32], i64)> = Vec::new();
+        // GROUP ACKs (docs/molecules.md step 4): (group, acking device, eagle time) — applied AFTER the loop to the per-member ledger.
+        let mut molecule_acks: Vec<(crate::types::molecule::MoleculeId, [u8; 32], i64)> = Vec::new();
         // GROUPS whose current-era frames we could not open (a mint we slept thru) — flipped to Catching up after the loop.
-        let mut catching_up: Vec<crate::types::group::GroupId> = Vec::new();
+        let mut catching_up: Vec<crate::types::molecule::MoleculeId> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -1168,17 +1168,17 @@ impl PhotonApp {
                             crate::log("CHAT: we are not a participant in these chains");
                             continue;
                         };
-                        // For 2-party chats, infer sender as the "other" participant. A GROUP frame (docs/groups.md §2) has no "other": the sender is whichever STANDING member's folded devices include the signer — v1 resolves thru the Contact fold (field-test members are mutual friends); the GroupPeer fold for never-friended members layers in with eras. Post-decrypt attribution (pkg.group.from) must agree with this resolution or the row is refused there.
-                        let from_handle_hash = if chains.group {
-                            let gid = crate::types::group::GroupId(*fid_ref.as_bytes());
+                        // For 2-party chats, infer sender as the "other" participant. A GROUP frame (docs/molecules.md §2) has no "other": the sender is whichever STANDING member's folded devices include the signer — v1 resolves thru the Contact fold (field-test members are mutual friends); the MoleculePeer fold for never-friended members layers in with eras. Post-decrypt attribution (pkg.molecule.from) must agree with this resolution or the row is refused there.
+                        let from_handle_hash = if chains.molecule {
+                            let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
                             match self.contacts.iter().find(|c| {
                                 !c.is_sibling
                                     && c.knows_device(&sender_pubkey.key)
-                                    && self.group_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
+                                    && self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
                             }) {
                                 Some(c) => c.handle_hash,
                                 None => {
-                                    crate::logf!("GROUP: dropped frame — signer {}... is no standing member's device of {}", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
+                                    crate::logf!("MOLECULE: dropped frame — signer {}... is no standing member's device of {}", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
                                     continue;
                                 }
                             }
@@ -1201,9 +1201,9 @@ impl PhotonApp {
                                 let ret = chains.retired_era().map(|r| format!("{:08x}", r.tag)).unwrap_or_else(|| "none".into());
                                 let pen = chains.pending_era().map(|p| format!("{:08x}", p.tag)).unwrap_or_else(|| "none".into());
                                 crate::logf!("CHAT: frame tagged era {:08x} from {} — ours {}, retired {}, pending {} — dropped (stale/unknown era, not fork evidence)", era.unwrap_or(0), crate::fp(&sender_pubkey.key), ours, ret, pen);
-                                // A GROUP frame on an era we do not hold (docs/groups.md §10.1 Catching up): the wrap for this device is still in flight or re-serve — say so in the header until it lands.
-                                if chains.group {
-                                    catching_up.push(crate::types::group::GroupId(*fid_ref.as_bytes()));
+                                // A GROUP frame on an era we do not hold (docs/molecules.md §10.1 Catching up): the wrap for this device is still in flight or re-serve — say so in the header until it lands.
+                                if chains.molecule {
+                                    catching_up.push(crate::types::molecule::MoleculeId(*fid_ref.as_bytes()));
                                 }
                                 continue;
                             }
@@ -1257,12 +1257,12 @@ impl PhotonApp {
                         }
 
                         // The conversation this frame lands in — resolved THRU THE CONTACT (see the braid drain's SHADOW SEAM note: chains-derived resolution minted an unpersisted shadow object when the chains carry a stale-era participant set). Field-precise (`chains` pins `friendship_chains` for this whole block, so no &mut self method fits here). A GROUP resolves by its stable id — no derivation, no shadow seam possible.
-                        let conv_pos = if chains.group {
+                        let conv_pos = if chains.molecule {
                             match self.conversations.iter().position(|v| v.id().as_bytes() == fid_ref.as_bytes()) {
                                 Some(p) => p,
                                 None => {
-                                    let gid = crate::types::group::GroupId(*fid_ref.as_bytes());
-                                    self.conversations.push(crate::types::Conversation::new_group(gid, chains.participants().iter().copied()));
+                                    let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
+                                    self.conversations.push(crate::types::Conversation::new_molecule(gid, chains.participants().iter().copied()));
                                     self.conversations.len() - 1
                                 }
                             }
@@ -1381,7 +1381,7 @@ impl PhotonApp {
                                 c.last_pinged = None;
                             }
                             // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a call ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
-                            if !self.contacts[contact_idx].is_sibling && !chains.group {
+                            if !self.contacts[contact_idx].is_sibling && !chains.molecule {
                                 // Groups: the friend-history walk is a pairwise protocol; a group gap waits on the sender's retransmit and (later) group re-serve — never a friendship walk against a group conversation.
                                 let conv = &mut self.conversations[conv_pos];
                                 if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {
@@ -1468,9 +1468,9 @@ impl PhotonApp {
                             hex::encode(&conversation_token[..8])
                         );
                         // A frame we can't even ROUTE is evidence, not just noise: if this token's contact claims the ceremony is Complete, the state is lying (chains wiped, claim resurrected) and nothing else will ever trigger the repair. Recorded here, judged post-drain. A GROUP token is excluded — no ceremony exists to repair; the root re-arrives by a refreshed invite, never a re-clutch.
-                        let group_token = self.group_rosters.iter().any(|(g, _)| g.token() == conversation_token);
-                        if group_token {
-                            crate::logf!("GROUP: frame for token {}... arrived before its chains loaded — dropped (no rekey probe)", hex::encode(&conversation_token[..8]));
+                        let molecule_token = self.molecule_rosters.iter().any(|(g, _)| g.token() == conversation_token);
+                        if molecule_token {
+                            crate::logf!("MOLECULE: frame for token {}... arrived before its chains loaded — dropped (no rekey probe)", hex::encode(&conversation_token[..8]));
                         } else if !rekey_probe.contains(&conversation_token) {
                             rekey_probe.push(conversation_token);
                         }
@@ -1482,9 +1482,9 @@ impl PhotonApp {
                     plaintext_hash,
                     sender_pubkey,
                 } => {
-                    // GROUP ACK (docs/groups.md step 4): a group's token routes to the per-member ledger and never touches the friendship path below.
-                    if let Some(gid) = self.friendship_chains.iter().find(|(_, c)| c.group && c.conversation_token == conversation_token).map(|(id, _)| crate::types::group::GroupId(*id.as_bytes())) {
-                        group_acks.push((gid, sender_pubkey, acked_eagle_time));
+                    // GROUP ACK (docs/molecules.md step 4): a group's token routes to the per-member ledger and never touches the friendship path below.
+                    if let Some(gid) = self.friendship_chains.iter().find(|(_, c)| c.molecule && c.conversation_token == conversation_token).map(|(id, _)| crate::types::molecule::MoleculeId(*id.as_bytes())) {
+                        molecule_acks.push((gid, sender_pubkey, acked_eagle_time));
                         continue;
                     }
                     // Get our handle_hash
@@ -5304,17 +5304,17 @@ impl PhotonApp {
         for fid in chains_persist_fids {
             self.persist_chains_async(&fid);
         }
-        for (gid, device, ts) in group_acks {
-            if self.on_group_ack(gid, device, ts) {
+        for (gid, device, ts) in molecule_acks {
+            if self.on_molecule_ack(gid, device, ts) {
                 changed = true;
             }
         }
         catching_up.sort_unstable_by_key(|g| g.0);
         catching_up.dedup();
         for gid in catching_up {
-            let was = self.group_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-            if was == crate::storage::group::GroupPhase::Standing {
-                self.set_group_local(&gid, |l| l.phase = crate::storage::group::GroupPhase::CatchingUp);
+            let was = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            if was == crate::storage::molecule::MoleculePhase::Standing {
+                self.set_molecule_local(&gid, |l| l.phase = crate::storage::molecule::MoleculePhase::CatchingUp);
                 changed = true;
             }
         }

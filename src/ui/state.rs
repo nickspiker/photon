@@ -25,8 +25,8 @@ pub enum AppState {
 
     /// Per-contact panel — the orb's destination inside a Conversation (where it already wears the friend's avatar). Mirrors the Settings screen exactly: same layout, nav rail with pages, scrolling content. Carries the selected page; the open conversation rides `active_conversation`, same as Conversation; the rail's pinned Back returns to the conversation.
     ContactPanel(ContactPage),
-    /// Per-GROUP panel (docs/groups.md §10.5) — the orb's destination inside a group conversation. Same shape as the contact panel: About (title, members by phase, policy), Add (contacts not yet standing), Manage (mute, leave).
-    GroupPanel(GroupPage),
+    /// Per-GROUP panel (docs/molecules.md §10.5) — the orb's destination inside a group conversation. Same shape as the contact panel: About (title, members by phase, policy), Add (contacts not yet standing), Manage (mute, leave).
+    MoleculePanel(MoleculePage),
 
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
@@ -63,7 +63,7 @@ pub enum SettingsPage {
     Language,
     /// The number base: the dozenal toggle, why, the digit cheat sheet, and the DMS time-ago legend. Its rail label reads "Dozenal" or "Arabic" per the current choice (Nick 2026-09-09).
     Dozenal,
-    /// Conversations (docs/groups.md §10): how groups work, in plain words; the default newcomer-history policy for groups you found; the groups you stand in with a Mute pill each.
+    /// Conversations (docs/molecules.md §10): how groups work, in plain words; the default newcomer-history policy for groups you found; the groups you stand in with a Mute pill each.
     Conversations,
     /// Explainer / philosophy / version / feedback / credits.
     About,
@@ -133,9 +133,9 @@ impl ContactPage {
     }
 }
 
-/// Pages of the per-group panel (docs/groups.md §10.5) — the contact panel's structure, group-scoped.
+/// Pages of the per-group panel (docs/molecules.md §10.5) — the contact panel's structure, group-scoped.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum GroupPage {
+pub enum MoleculePage {
     /// Title (editable by anyone — a roster record), members by phase, the history policy, the era index.
     About,
     /// Your contacts not yet standing — one tap offers.
@@ -144,13 +144,13 @@ pub enum GroupPage {
     Manage,
 }
 
-impl GroupPage {
-    pub const ALL: [GroupPage; 3] = [GroupPage::About, GroupPage::Add, GroupPage::Manage];
+impl MoleculePage {
+    pub const ALL: [MoleculePage; 3] = [MoleculePage::About, MoleculePage::Add, MoleculePage::Manage];
     pub fn label(self) -> &'static str {
         match self {
-            GroupPage::About => "About",
-            GroupPage::Add => "Add",
-            GroupPage::Manage => "Manage",
+            MoleculePage::About => "About",
+            MoleculePage::Add => "Add",
+            MoleculePage::Manage => "Manage",
         }
     }
 }

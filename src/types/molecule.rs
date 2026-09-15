@@ -1,18 +1,18 @@
-//! Groups substrate (docs/groups.md): the stable id, the token, the roster of sovereign records and their merge, and the control-row grammar. No wire, no chains, no UI in this module — it is the vocabulary the later steps speak.
+//! Groups substrate (docs/molecules.md): the stable id, the token, the roster of sovereign records and their merge, and the control-row grammar. No wire, no chains, no UI in this module — it is the vocabulary the later steps speak.
 //!
-//! A group is a conversation with a mutable member set and its own root secret; membership is signed records merged by union with subject-signed newest-wins per party (§4). Records ride inside the group as hidden control rows (`GROUP_PREFIX`, the `ERA_PREFIX` pattern), so they are history, re-servable, and fleet-replicated with no new plane.
+//! A group is a conversation with a mutable member set and its own root secret; membership is signed records merged by union with subject-signed newest-wins per party (§4). Records ride inside the group as hidden control rows (`MOLECULE_PREFIX`, the `ERA_PREFIX` pattern), so they are history, re-servable, and fleet-replicated with no new plane.
 
 use crate::types::PartyId;
 
 /// Hidden control-row prefix for every roster record (the `ERA_PREFIX` shape — `is_control_content` hides it from every UI and digest).
-pub const GROUP_PREFIX: &str = "\u{1}\u{2}photon-group\u{2}\u{1}";
+pub const MOLECULE_PREFIX: &str = "\u{1}\u{2}photon-molecule\u{2}\u{1}";
 
 /// A group's stable identity: 32 random bytes minted by the founder — deliberately NOT participant-derived, because the member set moves and the conversation must not (§2 D2).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
-pub struct GroupId(pub [u8; 32]);
+pub struct MoleculeId(pub [u8; 32]);
 
-impl GroupId {
-    /// Mint a fresh group id: `blake3("PHOTON_GROUP_v" ‖ 0x01 ‖ genesis_nonce)` over 32 random bytes (the version is a binary numeral after the text — the numbers-binary-at-rest doctrine).
+impl MoleculeId {
+    /// Mint a fresh group id: `blake3("PHOTON_MOLECULE_v" ‖ 0x01 ‖ genesis_nonce)` over 32 random bytes (the version is a binary numeral after the text — the numbers-binary-at-rest doctrine).
     pub fn mint() -> Self {
         let nonce: [u8; 32] = rand::random();
         Self::from_nonce(&nonce)
@@ -20,20 +20,20 @@ impl GroupId {
     /// The deterministic half of the mint, split out so tests can pin vectors.
     pub fn from_nonce(genesis_nonce: &[u8; 32]) -> Self {
         let mut h = blake3::Hasher::new();
-        h.update(b"PHOTON_GROUP_v\x01");
+        h.update(b"PHOTON_MOLECULE_v\x01");
         h.update(genesis_nonce);
-        GroupId(*h.finalize().as_bytes())
+        MoleculeId(*h.finalize().as_bytes())
     }
-    /// The routing tag on every group frame (the `conversation_token` role): only members hold `group_id`, so only members can mint or match it. Stable across eras.
+    /// The routing tag on every group frame (the `conversation_token` role): only members hold `molecule_id`, so only members can mint or match it. Stable across eras.
     pub fn token(&self) -> [u8; 32] {
-        *blake3::Hasher::new_derive_key("photon.group.token.v1").update(&self.0).finalize().as_bytes()
+        *blake3::Hasher::new_derive_key("photon.molecule.token.v1").update(&self.0).finalize().as_bytes()
     }
 }
 
 /// FOUNDER-SCOPED group proof (settled 2026-09-14): the group's registry face, unique PER FOUNDER — global squatting is impossible by construction ("I can't have three purple turtle groups but you could have one too"). Domain-separated from every personal proof so the knock router always knows what kind of thing it is routing. v1 registers nothing; this is the derivation the attach layer will use.
 pub fn founder_scoped_proof(founder_proof: &[u8; 32], name: &str) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
-    h.update(b"PHOTON_GROUP_v\x01");
+    h.update(b"PHOTON_MOLECULE_v\x01");
     h.update(founder_proof);
     h.update(name.as_bytes());
     *h.finalize().as_bytes()
@@ -63,7 +63,7 @@ impl MemberRecord {
     /// The canonical signed bytes: every field in fixed order, signature omitted. One derivation for sign and verify so the two can never disagree.
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 4 + 8 + self.name.len() + 16);
-        b.extend_from_slice(b"PHOTON_GROUP_MEMBER_v\x01");
+        b.extend_from_slice(b"PHOTON_MOLECULE_MEMBER_v\x01");
         b.extend_from_slice(&self.party);
         b.extend_from_slice(&self.handle_proof);
         b.extend_from_slice(&(self.name.len() as u32).to_le_bytes());
@@ -88,7 +88,7 @@ pub struct LeaveRecord {
 impl LeaveRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 2 + 8 + 24);
-        b.extend_from_slice(b"PHOTON_GROUP_LEAVE_v\x01");
+        b.extend_from_slice(b"PHOTON_MOLECULE_LEAVE_v\x01");
         b.extend_from_slice(&self.party);
         b.extend_from_slice(&self.signed_osc.to_le_bytes());
         b.extend_from_slice(&self.signer_device);
@@ -99,7 +99,7 @@ impl LeaveRecord {
 /// Genesis — founder-signed birth certificate (§4 Genesis). The newcomer-history policy is fixed at birth; from-join additionally mints an era at every join (§8b).
 #[derive(Clone, Debug, PartialEq)]
 pub struct GenesisRecord {
-    pub group_id: GroupId,
+    pub molecule_id: MoleculeId,
     pub founder: PartyId,
     pub genesis_osc: i64,
     /// D5: true = newcomers may be served history from genesis (the family group); false = from join, and a join mints an era.
@@ -113,8 +113,8 @@ pub struct GenesisRecord {
 impl GenesisRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 3 + 16 + self.title.len());
-        b.extend_from_slice(b"PHOTON_GROUP_GENESIS_v\x01");
-        b.extend_from_slice(&self.group_id.0);
+        b.extend_from_slice(b"PHOTON_MOLECULE_GENESIS_v\x01");
+        b.extend_from_slice(&self.molecule_id.0);
         b.extend_from_slice(&self.founder);
         b.extend_from_slice(&self.genesis_osc.to_le_bytes());
         b.push(self.history_from_genesis as u8);
@@ -138,7 +138,7 @@ pub struct TitleRecord {
 impl TitleRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 2 + 8 + 4 + self.title.len() + 24);
-        b.extend_from_slice(b"PHOTON_GROUP_TITLE_v\x01");
+        b.extend_from_slice(b"PHOTON_MOLECULE_TITLE_v\x01");
         b.extend_from_slice(&self.party);
         b.extend_from_slice(&(self.title.len() as u32).to_le_bytes());
         b.extend_from_slice(self.title.as_bytes());
@@ -166,7 +166,7 @@ pub struct BundleRecord {
 impl BundleRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 2 + 8 + 1 + 12 + self.mlkem_pk.len() + self.x_pk.len() + self.hqc_pk.len() + 8 + 24);
-        b.extend_from_slice(b"PHOTON_GROUP_BUNDLE_v\x01");
+        b.extend_from_slice(b"PHOTON_MOLECULE_BUNDLE_v\x01");
         b.extend_from_slice(&self.party);
         b.extend_from_slice(&self.device);
         b.extend_from_slice(&self.published_era.to_le_bytes());
@@ -198,7 +198,7 @@ pub struct VouchRecord {
 impl VouchRecord {
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 3 + 8 + 1 + 24);
-        b.extend_from_slice(b"PHOTON_GROUP_VOUCH_v\x01");
+        b.extend_from_slice(b"PHOTON_MOLECULE_VOUCH_v\x01");
         b.extend_from_slice(&self.voucher);
         b.extend_from_slice(&self.subject);
         b.extend_from_slice(&self.signed_osc.to_le_bytes());
@@ -366,7 +366,7 @@ impl Roster {
 
 /// A member seen thru the group's SECOND trust source (§2 "transport trust, scoped"): party id → folded devices, consulted ONLY for frames carrying that group's token. Deliberately NOT a Contact — no presence standing, no address-book row; a non-friend member's pings still drop, membership grants nothing outside the group.
 #[derive(Clone, Debug, Default)]
-pub struct GroupPeer {
+pub struct MoleculePeer {
     pub party: PartyId,
     /// The proof the fold verifies their public membership chain under, and the registry key for addressing.
     pub handle_proof: [u8; 32],
@@ -376,7 +376,7 @@ pub struct GroupPeer {
     pub fold_ts: i64,
 }
 
-impl GroupPeer {
+impl MoleculePeer {
     /// The group-scoped device gate — the `knows_device` of this trust source.
     pub fn knows_device(&self, dev: &[u8; 32]) -> bool {
         self.devices.iter().any(|d| d == dev)
@@ -485,9 +485,9 @@ pub fn verify_record(signing_bytes: &[u8], signature: &[u8; 64], signer_device: 
     vk.verify(&blake3::hash(signing_bytes).as_bytes()[..], &sig).is_ok()
 }
 
-/// The group control-row grammar (§4, the `EraSignal` shape): a hidden text row `GROUP_PREFIX kind`, with EVERYTHING else typed on the message package beside it — roster records in `gpl` (a roster-codec blob), a wrap's KEM ciphertexts on `ekn`/`ekx`/`ekh` and its sealed secret on the typed wrap fields (`GroupWrapWire`). Nothing binary is ever encoded into the text: the text is the row, and the row persists, replicates and re-serves — a secret in it would outlive its era (D10: secrets only ever move as wraps).
+/// The group control-row grammar (§4, the `EraSignal` shape): a hidden text row `MOLECULE_PREFIX kind`, with EVERYTHING else typed on the message package beside it — roster records in `gpl` (a roster-codec blob), a wrap's KEM ciphertexts on `ekn`/`ekx`/`ekh` and its sealed secret on the typed wrap fields (`BondWrapWire`). Nothing binary is ever encoded into the text: the text is the row, and the row persists, replicates and re-serves — a secret in it would outlive its era (D10: secrets only ever move as wraps).
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub enum GroupSignal {
+pub enum MoleculeSignal {
     /// The sponsor's OFFER, over the friendship braid: a roster snapshot in `gpl` so the invitee sees who is in it before consenting. Carries no secret. Refreshed by the sponsor on every roster change; the invitee's consent is the Join.
     Offer,
     /// The invitee's JOIN, back over the friendship braid: its member record + its device's KEM bundle in `gpl`. The sponsor posts them into the group, vouches, and answers with a Wrap.
@@ -498,22 +498,22 @@ pub enum GroupSignal {
     Records,
 }
 
-impl GroupSignal {
+impl MoleculeSignal {
     pub fn to_content(&self) -> String {
         match self {
-            GroupSignal::Offer => format!("{}offer", GROUP_PREFIX),
-            GroupSignal::Join => format!("{}join", GROUP_PREFIX),
-            GroupSignal::Wrap => format!("{}wrap", GROUP_PREFIX),
-            GroupSignal::Records => format!("{}records", GROUP_PREFIX),
+            MoleculeSignal::Offer => format!("{}offer", MOLECULE_PREFIX),
+            MoleculeSignal::Join => format!("{}join", MOLECULE_PREFIX),
+            MoleculeSignal::Wrap => format!("{}wrap", MOLECULE_PREFIX),
+            MoleculeSignal::Records => format!("{}records", MOLECULE_PREFIX),
         }
     }
 
-    pub fn parse(content: &str) -> Option<GroupSignal> {
-        match content.strip_prefix(GROUP_PREFIX)? {
-            "offer" => Some(GroupSignal::Offer),
-            "join" => Some(GroupSignal::Join),
-            "wrap" => Some(GroupSignal::Wrap),
-            "records" => Some(GroupSignal::Records),
+    pub fn parse(content: &str) -> Option<MoleculeSignal> {
+        match content.strip_prefix(MOLECULE_PREFIX)? {
+            "offer" => Some(MoleculeSignal::Offer),
+            "join" => Some(MoleculeSignal::Join),
+            "wrap" => Some(MoleculeSignal::Wrap),
+            "records" => Some(MoleculeSignal::Records),
             _ => None,
         }
     }
@@ -549,7 +549,7 @@ pub fn title_record(party: PartyId, title: &str, device_seed: &[u8; 32]) -> Titl
     rec
 }
 
-/// Publish this device's KEM bundle: the public half of a fresh `era_keygen` — the caller keeps `export_decaps` in the chains blob (`push_group_kem`).
+/// Publish this device's KEM bundle: the public half of a fresh `era_keygen` — the caller keeps `export_decaps` in the chains blob (`push_molecule_kem`).
 pub fn bundle_record(party: PartyId, published_era: u64, eph: &crate::crypto::era::EraEphemeral, device_seed: &[u8; 32]) -> BundleRecord {
     let mut rec = BundleRecord {
         party,
@@ -566,11 +566,11 @@ pub fn bundle_record(party: PartyId, published_era: u64, eph: &crate::crypto::er
     rec
 }
 
-/// Everything a founder mints at birth (§4 Genesis): the id, the era-0 secrets, the signed birth certificate, and the founder's own member record (the founder sponsors itself). The caller builds `FriendshipChains::from_group_root` with the secrets, persists the roster, and posts both records as the group's first control rows. The secrets are here transiently — they live on in the chains blob, nowhere else.
-pub struct GroupBirth {
-    pub group_id: GroupId,
-    pub group_root: [u8; 32],
-    pub group_history_key: [u8; 32],
+/// Everything a founder mints at birth (§4 Genesis): the id, the era-0 secrets, the signed birth certificate, and the founder's own member record (the founder sponsors itself). The caller builds `FriendshipChains::from_molecule_root` with the secrets, persists the roster, and posts both records as the group's first control rows. The secrets are here transiently — they live on in the chains blob, nowhere else.
+pub struct AtomBirth {
+    pub molecule_id: MoleculeId,
+    pub molecule_root: [u8; 32],
+    pub molecule_history_key: [u8; 32],
     pub era_lineage: [u8; 32],
     pub genesis: GenesisRecord,
     pub founder_member: MemberRecord,
@@ -579,19 +579,19 @@ pub struct GroupBirth {
 }
 
 /// Found a group: mint the nonce, the era-0 root and history key (fresh randomness — no ceremony, nothing derived from any friendship), and sign genesis + the founder's member record with this device's key.
-pub fn found_group(founder: PartyId, founder_proof: [u8; 32], name_grant: &str, avatar_pin: [u8; 32], title: &str, history_from_genesis: bool, device_seed: &[u8; 32]) -> GroupBirth {
+pub fn found_atom(founder: PartyId, founder_proof: [u8; 32], name_grant: &str, avatar_pin: [u8; 32], title: &str, history_from_genesis: bool, device_seed: &[u8; 32]) -> AtomBirth {
     use rand::RngCore;
     let mut nonce = [0u8; 32];
-    let mut group_root = [0u8; 32];
-    let mut group_history_key = [0u8; 32];
+    let mut molecule_root = [0u8; 32];
+    let mut molecule_history_key = [0u8; 32];
     rand::thread_rng().fill_bytes(&mut nonce);
-    rand::thread_rng().fill_bytes(&mut group_root);
-    rand::thread_rng().fill_bytes(&mut group_history_key);
-    let group_id = GroupId::from_nonce(&nonce);
+    rand::thread_rng().fill_bytes(&mut molecule_root);
+    rand::thread_rng().fill_bytes(&mut molecule_history_key);
+    let molecule_id = MoleculeId::from_nonce(&nonce);
     let signer_device = device_pubkey(device_seed);
     let now = vsf::eagle_time_oscillations();
     let mut genesis = GenesisRecord {
-        group_id,
+        molecule_id,
         founder,
         genesis_osc: now,
         history_from_genesis,
@@ -613,11 +613,11 @@ pub fn found_group(founder: PartyId, founder_proof: [u8; 32], name_grant: &str, 
     founder_member.signature = sign_record(&founder_member.signing_bytes(), device_seed);
     let mut founder_vouch = VouchRecord { voucher: founder, subject: founder, signed_osc: now, withdrawn: false, signature: [0u8; 64], signer_device };
     founder_vouch.signature = sign_record(&founder_vouch.signing_bytes(), device_seed);
-    GroupBirth {
-        group_id,
-        group_root,
-        group_history_key,
-        era_lineage: crate::crypto::clutch::era_lineage(&group_root),
+    AtomBirth {
+        molecule_id,
+        molecule_root,
+        molecule_history_key,
+        era_lineage: crate::crypto::clutch::era_lineage(&molecule_root),
         genesis,
         founder_member,
         founder_vouch,
@@ -631,7 +631,7 @@ mod tests {
     /// A roster whose founder [1;32] stands on its genesis self-vouch, so tests can vouch others in from it.
     fn founded() -> Roster {
         let mut r = Roster::default();
-        r.merge_genesis(GenesisRecord { group_id: GroupId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: "t".into(), signature: [0; 64], signer_device: [0; 32] });
+        r.merge_genesis(GenesisRecord { molecule_id: MoleculeId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: "t".into(), signature: [0; 64], signer_device: [0; 32] });
         r.merge_member(rec(1, 1));
         r.merge_vouch(vouch(1, 1, 1, false));
         r
@@ -656,11 +656,11 @@ mod tests {
 
     #[test]
     fn group_id_is_stable_and_token_derives() {
-        let a = GroupId::from_nonce(&[7; 32]);
-        let b = GroupId::from_nonce(&[7; 32]);
+        let a = MoleculeId::from_nonce(&[7; 32]);
+        let b = MoleculeId::from_nonce(&[7; 32]);
         assert_eq!(a, b);
         assert_ne!(a.0, a.token(), "the token is a derivation, never the id itself");
-        assert_ne!(GroupId::from_nonce(&[8; 32]), a);
+        assert_ne!(MoleculeId::from_nonce(&[8; 32]), a);
     }
 
     #[test]
@@ -757,26 +757,26 @@ mod tests {
     #[test]
     fn lanes_derive_from_a_group_root_exactly_as_a_friendship() {
         // The doc's central reuse claim (§3): derive_lane_active is root-agnostic — a group root produces a full lane keystream just as a friendship root does, and distinct labels give distinct lanes.
-        let group_root = [0x42u8; 32];
-        let a = crate::crypto::clutch::derive_lane_active(&group_root, &[1; 32]);
-        let b = crate::crypto::clutch::derive_lane_active(&group_root, &[2; 32]);
+        let molecule_root = [0x42u8; 32];
+        let a = crate::crypto::clutch::derive_lane_active(&molecule_root, &[1; 32]);
+        let b = crate::crypto::clutch::derive_lane_active(&molecule_root, &[2; 32]);
         assert_eq!(a.len(), 8192);
         assert_ne!(a, b);
-        assert_eq!(a, crate::crypto::clutch::derive_lane_active(&group_root, &[1; 32]));
+        assert_eq!(a, crate::crypto::clutch::derive_lane_active(&molecule_root, &[1; 32]));
     }
 
     /// Writer discipline in a GROUP (§3, the step-1 unit): two member devices holding only the delivered root agree on any lane from its label alone, stay in lockstep thru an advance, and each writes its OWN lane — the same one-writer-per-lane invariant a friendship holds, off a root no ceremony minted.
     #[test]
     fn writer_discipline_two_members_one_root() {
         use crate::types::friendship::FriendshipChains;
-        let gid = GroupId::from_nonce(&[9u8; 32]);
+        let gid = MoleculeId::from_nonce(&[9u8; 32]);
         let root = [0x33u8; 32];
         let hk = [0x44u8; 32];
         let lineage = crate::crypto::clutch::era_lineage(&root);
         let members = [[1u8; 32], [2u8; 32], [3u8; 32]];
-        let mut a = FriendshipChains::from_group_root(gid, &members, root, hk, 0, lineage);
-        let mut b = FriendshipChains::from_group_root(gid, &members, root, hk, 0, lineage);
-        assert!(a.group);
+        let mut a = FriendshipChains::from_molecule_root(gid, &members, root, hk, 0, lineage);
+        let mut b = FriendshipChains::from_molecule_root(gid, &members, root, hk, 0, lineage);
+        assert!(a.molecule);
         assert_eq!(a.conversation_token, gid.token());
         assert_eq!(a.id().as_bytes(), &gid.0, "the conversation id IS the group id");
         let a_label = a.mint_our_lane().expect("root present — the lane mints");
@@ -793,13 +793,13 @@ mod tests {
     /// The control-row grammar round-trips and stays hidden; a bogus kind is None, never a panic.
     #[test]
     fn group_signals_round_trip_and_are_control() {
-        for sig in [GroupSignal::Offer, GroupSignal::Join, GroupSignal::Wrap, GroupSignal::Records] {
-            assert_eq!(GroupSignal::parse(&sig.to_content()), Some(sig));
+        for sig in [MoleculeSignal::Offer, MoleculeSignal::Join, MoleculeSignal::Wrap, MoleculeSignal::Records] {
+            assert_eq!(MoleculeSignal::parse(&sig.to_content()), Some(sig));
             assert!(crate::types::is_control_content(&sig.to_content()));
-            assert!(!sig.to_content().trim_start_matches(GROUP_PREFIX).contains('\u{2}'), "bare kind markers — nothing rides the text");
+            assert!(!sig.to_content().trim_start_matches(MOLECULE_PREFIX).contains('\u{2}'), "bare kind markers — nothing rides the text");
         }
-        assert_eq!(GroupSignal::parse(&format!("{}bogus\u{2}1", GROUP_PREFIX)), None);
-        assert_eq!(GroupSignal::parse("plain text"), None);
+        assert_eq!(MoleculeSignal::parse(&format!("{}bogus\u{2}1", MOLECULE_PREFIX)), None);
+        assert_eq!(MoleculeSignal::parse("plain text"), None);
     }
 
     /// The full join arc (§10.1, D10): founder mints; the OFFER carries only a snapshot; the joiner's JOIN carries its member record + bundle; the sponsor vouches and answers with a WRAP sealed to that bundle; the joiner installs the era and both sides hold the same token, lanes and standing set — and the joiner never held a secret before the wrap.
@@ -810,18 +810,18 @@ mod tests {
         let j_seed = [0x02u8; 32];
         let founder_party = [0xF0u8; 32];
         let joiner_party = [0x10u8; 32];
-        let birth = found_group(founder_party, [0xF1; 32], "founder", [0; 32], "turtles", true, &f_seed);
+        let birth = found_atom(founder_party, [0xF1; 32], "founder", [0; 32], "turtles", true, &f_seed);
         let mut f_roster = Roster::default();
         f_roster.merge_genesis(birth.genesis.clone());
         f_roster.merge_member(birth.founder_member.clone());
         f_roster.merge_vouch(birth.founder_vouch.clone());
-        let mut f_chains = FriendshipChains::from_group_root(birth.group_id, &f_roster.standing(), birth.group_root, birth.group_history_key, 0, birth.era_lineage);
+        let mut f_chains = FriendshipChains::from_molecule_root(birth.molecule_id, &f_roster.standing(), birth.molecule_root, birth.molecule_history_key, 0, birth.era_lineage);
 
         // OFFER: the snapshot blob in gpl, nothing else.
-        let offer_blob = crate::storage::group::roster_to_vsf_bytes(&birth.group_id, &f_roster).expect("snapshot");
-        assert!(!offer_blob.windows(32).any(|w| w == birth.group_root), "no secret in the offer");
-        let (gid, snapshot) = crate::storage::group::roster_from_vsf_bytes(&offer_blob).expect("snapshot decodes");
-        assert_eq!(gid, birth.group_id);
+        let offer_blob = crate::storage::molecule::roster_to_vsf_bytes(&birth.molecule_id, &f_roster).expect("snapshot");
+        assert!(!offer_blob.windows(32).any(|w| w == birth.molecule_root), "no secret in the offer");
+        let (gid, snapshot) = crate::storage::molecule::roster_from_vsf_bytes(&offer_blob).expect("snapshot decodes");
+        assert_eq!(gid, birth.molecule_id);
         let g = snapshot.genesis.as_ref().expect("the invitee sees the birth certificate");
         assert!(verify_record(&g.signing_bytes(), &g.signature, &g.signer_device));
         assert!(snapshot.is_standing(&founder_party), "the sponsor stands in its own snapshot");
@@ -834,10 +834,10 @@ mod tests {
         let mut join = Roster::default();
         join.merge_member(member.clone());
         join.merge_bundle(bundle.clone());
-        let join_blob = crate::storage::group::roster_to_vsf_bytes(&gid, &join).expect("join encodes");
+        let join_blob = crate::storage::molecule::roster_to_vsf_bytes(&gid, &join).expect("join encodes");
 
         // The sponsor: verify, vouch, merge, wrap the current era whole (from-genesis).
-        let (_, join_records) = crate::storage::group::roster_from_vsf_bytes(&join_blob).expect("join decodes");
+        let (_, join_records) = crate::storage::molecule::roster_from_vsf_bytes(&join_blob).expect("join decodes");
         let m = join_records.members.get(&joiner_party).expect("member record");
         assert!(verify_record(&m.signing_bytes(), &m.signature, &m.signer_device));
         let b = join_records.newest_bundle(&device_pubkey(&j_seed)).expect("bundle");
@@ -847,8 +847,8 @@ mod tests {
         f_roster.merge_vouch(vouch_record(founder_party, joiner_party, false, &f_seed));
         assert!(f_roster.is_standing(&joiner_party));
         let mut payload = Vec::new();
-        payload.extend_from_slice(&birth.group_root);
-        payload.extend_from_slice(&birth.group_history_key);
+        payload.extend_from_slice(&birth.molecule_root);
+        payload.extend_from_slice(&birth.molecule_history_key);
         let nonce = [7u8; 32];
         let (cts, sealed) = crate::crypto::era::wrap_to_bundle(&b.pubkeys(), b.kem_set, &b.device, 0, &nonce, &payload).expect("wrap");
 
@@ -861,7 +861,7 @@ mod tests {
         j_roster.merge_member(member);
         j_roster.merge_bundle(bundle);
         j_roster.merge_vouch(f_roster.vouches[&(founder_party, joiner_party)][0].clone());
-        let mut j_chains = FriendshipChains::from_group_root(gid, &j_roster.standing(), root, hk, 0, birth.era_lineage);
+        let mut j_chains = FriendshipChains::from_molecule_root(gid, &j_roster.standing(), root, hk, 0, birth.era_lineage);
         assert_eq!(j_chains.conversation_token, f_chains.conversation_token, "one token, minted from the id");
         assert_eq!(f_roster.standing(), j_roster.standing());
         assert_eq!(f_roster.standing().len(), 2);

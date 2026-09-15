@@ -111,4 +111,4 @@ Not yet (later stages): the consent-gated fresh channel (`ConsentFresh`, logs); 
 
 ## Out of scope here
 
-Groups — BUILT 2026-09-15 as docs/groups.md (the same lanes off a delivered group root, exactly as promised here) — the reservoir/epoch FS machinery of §14.10 (lanes are compatible with it; it layers on later), UI (no UI work in this phase — rendering still shows one conversation, lanes are transport plumbing).
+Molecules (atoms bound together) — BUILT 2026-09-15 as docs/molecules.md (the same lanes off a delivered group root, exactly as promised here) — the reservoir/epoch FS machinery of §14.10 (lanes are compatible with it; it layers on later), UI (no UI work in this phase — rendering still shows one conversation, lanes are transport plumbing).

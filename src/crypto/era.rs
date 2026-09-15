@@ -38,7 +38,7 @@ pub struct EraKemWire {
 impl EraKemWire {
     /// A public fingerprint of a bundle (length-framed blake3 over the three keys) — what a wrap names, what a device matches before it decapsulates.
     pub fn bundle_id(&self) -> [u8; 32] {
-        let mut h = Hasher::new_derive_key("photon.group.bundle.v1");
+        let mut h = Hasher::new_derive_key("photon.molecule.bundle.v1");
         for part in [&self.mlkem, &self.x25519, &self.hqc] {
             h.update(&(part.len() as u32).to_le_bytes());
             h.update(part);
@@ -148,7 +148,7 @@ pub fn era_decapsulate(eph: &EraEphemeral, resp: &EraKemWire) -> Option<[u8; 32]
     Some(fresh)
 }
 
-/// A PERSISTED decapsulation bundle for the GROUP era ratchet (docs/groups.md §3). A friendship's EraEphemeral is RAM-only because its ratchet completes in one wire round trip; a group device PUBLISHES its bundle in its member record and must still open a wrap minted while it slept — so these secrets ride the group chains blob, the same custody class as the lane links beside them. Replaced on our first frame of each new era; the superseded bundle zeroizes.
+/// A PERSISTED decapsulation bundle for the GROUP era ratchet (docs/molecules.md §3). A friendship's EraEphemeral is RAM-only because its ratchet completes in one wire round trip; a group device PUBLISHES its bundle in its member record and must still open a wrap minted while it slept — so these secrets ride the group chains blob, the same custody class as the lane links beside them. Replaced on our first frame of each new era; the superseded bundle zeroizes.
 #[derive(Clone)]
 pub struct EraDecapKeys {
     /// The era we were IN when the bundle published — the minter always encapsulates to each device's newest published bundle, whatever index it mints.
@@ -190,7 +190,7 @@ impl EraEphemeral {
 }
 
 /// Decapsulate a group-era wrap against a PERSISTED bundle — `era_decapsulate` for keys that outlived their keygen call. Returns F. None on malformed material.
-pub fn era_decapsulate_group(keys: &EraDecapKeys, resp: &EraKemWire) -> Option<[u8; 32]> {
+pub fn era_decapsulate_molecule(keys: &EraDecapKeys, resp: &EraKemWire) -> Option<[u8; 32]> {
     let mut secrets: Vec<(&'static str, Vec<u8>)> = Vec::new();
     if keys.kem_set & KEM_MLKEM1024 != 0 {
         secrets.push(("mlkem1024", mlkem1024_decapsulate(&keys.mlkem_sk, &resp.mlkem)?));
@@ -212,7 +212,7 @@ pub fn era_decapsulate_group(keys: &EraDecapKeys, resp: &EraKemWire) -> Option<[
     Some(fresh)
 }
 
-/// GROUP WRAP (docs/groups.md D10): seal a chosen secret to one device's published bundle. `era_encapsulate` mints a KEM-derived key K and its ciphertexts; the payload is sealed under `KDF("photon.group.wrap.v1", K ‖ recipient ‖ era ‖ nonce)` with kete's AEAD, so a wrap is bound to exactly one recipient device and one era and cannot be replayed at another. Returns the ciphertexts (for `ekn`/`ekx`/`ekh`) and the sealed bytes (for `gwrap`).
+/// GROUP WRAP (docs/molecules.md D10): seal a chosen secret to one device's published bundle. `era_encapsulate` mints a KEM-derived key K and its ciphertexts; the payload is sealed under `KDF("photon.molecule.wrap.v1", K ‖ recipient ‖ era ‖ nonce)` with kete's AEAD, so a wrap is bound to exactly one recipient device and one era and cannot be replayed at another. Returns the ciphertexts (for `ekn`/`ekx`/`ekh`) and the sealed bytes (for `gwrap`).
 pub fn wrap_to_bundle(bundle: &EraKemWire, kem_set: u8, recipient: &[u8; 32], era: u64, nonce: &[u8; 32], payload: &[u8]) -> Option<(EraKemWire, Vec<u8>)> {
     let (cts, mut k) = era_encapsulate(bundle, kem_set)?;
     let mut key = wrap_key(&k, recipient, era, nonce);
@@ -227,7 +227,7 @@ pub fn unwrap_from_bundle(keys: &EraDecapKeys, bundle_id: &[u8; 32], cts: &EraKe
     if keys.bundle_id != *bundle_id {
         return None;
     }
-    let mut k = era_decapsulate_group(keys, cts)?;
+    let mut k = era_decapsulate_molecule(keys, cts)?;
     let mut key = wrap_key(&k, recipient, era, nonce);
     k.zeroize();
     let out = kete::decrypt_bytes(sealed, &key).ok();
@@ -236,7 +236,7 @@ pub fn unwrap_from_bundle(keys: &EraDecapKeys, bundle_id: &[u8; 32], cts: &EraKe
 }
 
 fn wrap_key(k: &[u8; 32], recipient: &[u8; 32], era: u64, nonce: &[u8; 32]) -> [u8; 32] {
-    let mut h = Hasher::new_derive_key("photon.group.wrap.v1");
+    let mut h = Hasher::new_derive_key("photon.molecule.wrap.v1");
     h.update(k);
     h.update(recipient);
     h.update(&era.to_le_bytes());
@@ -397,14 +397,14 @@ mod tests {
         assert_ne!(a, derive_era_keys(&fid, 1, &old_root, None, &f_init, &t));
     }
 
-    /// The GROUP custody path: a persisted decapsulation bundle opens exactly the wrap its live ephemeral would have — surviving the keygen call is the whole point (docs/groups.md §3: a device offline thru a mint reads the wrap from re-serve later).
+    /// The GROUP custody path: a persisted decapsulation bundle opens exactly the wrap its live ephemeral would have — surviving the keygen call is the whole point (docs/molecules.md §3: a device offline thru a mint reads the wrap from re-serve later).
     #[test]
     fn exported_decaps_open_the_same_wrap() {
         let eph = era_keygen(5, 0x1111_2222, KEM_SET_DEFAULT);
         let keys = eph.export_decaps(4);
         let (resp, f_resp) = era_encapsulate(&eph.init_wire, KEM_SET_DEFAULT).expect("encapsulate");
         assert_eq!(era_decapsulate(&eph, &resp), Some(f_resp));
-        assert_eq!(era_decapsulate_group(&keys, &resp), Some(f_resp), "the persisted bundle IS the ephemeral's decap half");
+        assert_eq!(era_decapsulate_molecule(&keys, &resp), Some(f_resp), "the persisted bundle IS the ephemeral's decap half");
         assert_eq!(keys.published_era, 4);
     }
 

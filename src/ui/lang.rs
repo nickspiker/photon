@@ -482,20 +482,27 @@ pub enum Msg<'a> {
     OwnNotesCantBoot,
     SiblingSignsItselfOut,
     BootPill { armed: bool },
-    // ---- groups (docs/groups.md §10.5) ----
-    /// The Manage page pill that opens the group picker.
-    BringIntoGroup,
+    // ---- groups (docs/molecules.md §10.5) ----
+    /// The Manage page pill that opens the bind picker (atoms and molecules we stand in).
+    BindIntoMolecule,
+    /// The Ready list's filter strip (FilterAll is the stream filter's, shared).
+    FilterFriends,
+    FilterAtoms,
+    FilterMolecules,
+    /// "atom" — the header suffix and the picker's count for a molecule of one.
+    AtomLabel,
+    /// The atom panel's one becoming.
+    CreateMoleculePill,
+    CreateMoleculeNote,
     /// The picker's "start a new group" row.
-    NewGroup,
+    NewAtom,
     /// The New-group title box hint.
-    GroupTitlePrompt,
+    AtomTitlePrompt,
     /// The New-group commit pill.
-    FoundGroupPill,
+    FoundAtomPill,
     /// History policy pills, fixed at birth (D5).
     HistoryFromGenesis,
     HistoryFromJoin,
-    /// Header suffix when nobody else stands.
-    GroupAlone,
     /// Header suffix while our Join awaits the sponsor's wrap.
     JoiningStatus,
     /// Header suffix while an era's wrap has not reached this device.
@@ -505,9 +512,9 @@ pub enum Msg<'a> {
     /// A member whose fold has not yet succeeded — drawn as a contact without a name is.
     PendingMember,
     /// The compose bar's honest label while group sends are not yet wired.
-    GroupComposeSoon,
-    /// Group panel (docs/groups.md §10.5).
-    GroupPageName(crate::ui::state::GroupPage),
+    MoleculeComposeSoon,
+    /// Group panel (docs/molecules.md §10.5).
+    MoleculePageName(crate::ui::state::MoleculePage),
     Members,
     MemberStanding,
     MemberDeparted,
@@ -516,30 +523,30 @@ pub enum Msg<'a> {
     YouLabel,
     EraIndex { n: &'a str },
     MutePill { muted: bool },
-    LeaveGroupPill { armed: bool },
-    LeaveGroupNote,
-    AddToGroupNote,
+    LeaveMoleculePill { armed: bool },
+    LeaveMoleculeNote,
+    BindNote,
     NobodyToAdd,
     YouLeftNote,
-    /// Settings → Conversations (docs/groups.md §10 in plain words).
-    GroupsExplainHead,
-    GroupsExplainProse,
+    /// Settings → Conversations (docs/molecules.md §10 in plain words).
+    MoleculesExplainHead,
+    MoleculesExplainProse,
     DefaultHistoryHead,
     DefaultHistoryNote,
-    YourGroups,
-    NoGroupsYet,
-    /// The offer card (docs/groups.md §10.1), invitee side: "<sponsor> brought you into <title> · <n>".
-    OfferLine { sponsor: &'a str, title: &'a str, n: &'a str },
+    YourMolecules,
+    NoAtomsYet,
+    /// The offer card (docs/molecules.md §10.1), invitee side: "<sponsor> brought you into <title> · <n>".
+    BondOfferLine { sponsor: &'a str, title: &'a str, n: &'a str },
     /// The card once joined.
-    OfferJoined { title: &'a str },
+    BondBound { title: &'a str },
     /// The card once the sponsor is gone.
-    OfferExpired,
+    BondExpired,
     /// The Join pill.
-    OfferJoin,
+    BindPill,
     /// Sponsor side: waiting on the invitee.
-    OfferWaiting { name: &'a str, title: &'a str },
+    BondWaiting { name: &'a str, title: &'a str },
     /// Sponsor side: the invitee stands.
-    OfferAccepted { name: &'a str, title: &'a str },
+    BondAccepted { name: &'a str, title: &'a str },
     BootRemovesEverywhere,
     BootOstracism,
     // ---- add device / pairing ----

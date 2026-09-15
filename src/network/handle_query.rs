@@ -33,10 +33,10 @@ pub struct AttestationData {
         crate::types::friendship::FriendshipId,
         crate::types::friendship::FriendshipChains,
     )>,
-    /// Group rosters (docs/groups.md §5), loaded thru the group index; the groups' chains and conversations ride the two vectors above under FriendshipId(group_id).
-    pub groups: Vec<(crate::types::group::GroupId, crate::types::group::Roster, crate::storage::group::GroupLocal)>,
-    /// Parked offers (docs/groups.md §10.1 Offered), loaded thru the offer index.
-    pub group_offers: Vec<crate::storage::group::GroupOffer>,
+    /// Group rosters (docs/molecules.md §5), loaded thru the group index; the groups' chains and conversations ride the two vectors above under FriendshipId(molecule_id).
+    pub groups: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, crate::storage::molecule::MoleculeLocal)>,
+    /// Parked offers (docs/molecules.md §10.1 Offered), loaded thru the offer index.
+    pub bond_offers: Vec<crate::storage::molecule::BondOffer>,
     pub avatar_pixels: Option<Vec<u8>>, // Local avatar if exists
     pub peers: Vec<PeerRecord>,
     /// The address FGTW OBSERVED this announce arriving from, straight off the signed `announce_ok` ack.
@@ -860,19 +860,19 @@ impl HandleQuery {
                             }
                             conversations.push(conv);
                         }
-                        // GROUPS (docs/groups.md §5): enumerate thru the index — chains and conversations ride the same vectors the UI already adopts, rosters ride beside.
-                        let mut groups: Vec<(crate::types::group::GroupId, crate::types::group::Roster, crate::storage::group::GroupLocal)> = Vec::new();
-                        for (gid, roster, chains, conv) in crate::storage::group::load_all_groups(&storage) {
+                        // GROUPS (docs/molecules.md §5): enumerate thru the index — chains and conversations ride the same vectors the UI already adopts, rosters ride beside.
+                        let mut groups: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, crate::storage::molecule::MoleculeLocal)> = Vec::new();
+                        for (gid, roster, chains, conv) in crate::storage::molecule::load_all_molecules(&storage) {
                             if let Some(c) = chains {
                                 friendships.push((*c.id(), c));
                             }
                             if !conversations.iter().any(|v| v.id() == conv.id()) {
                                 conversations.push(conv);
                             }
-                            let local = crate::storage::group::load_group_local(&gid, &storage).unwrap_or_default();
+                            let local = crate::storage::molecule::load_molecule_local(&gid, &storage).unwrap_or_default();
                             groups.push((gid, roster, local));
                         }
-                        let group_offers = crate::storage::group::load_all_offers(&storage);
+                        let bond_offers = crate::storage::molecule::load_all_offers(&storage);
                         crate::log("Network: Background loading complete");
 
                         QueryResult::Success(Box::new(AttestationData {
@@ -882,7 +882,7 @@ impl HandleQuery {
                             conversations,
                             friendships,
                             groups,
-                            group_offers,
+                            bond_offers,
                             avatar_pixels,
                             peers: result.peers,
                             observed_addr: result.observed_addr,

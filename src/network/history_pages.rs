@@ -35,7 +35,7 @@ pub struct HistoryRow {
     pub preview: Vec<u8>,
     /// Star stamp (signed eagle osc; positive = starred, negative = unstarred, 0 = never touched) — absent on pre-feature pages ⇒ 0. Merge = larger |osc| wins.
     pub star_osc: i64,
-    /// The author's party id (groups, docs/groups.md §5) — absent on pairwise/pre-feature pages ⇒ None (derive from direction).
+    /// The author's party id (groups, docs/molecules.md §5) — absent on pairwise/pre-feature pages ⇒ None (derive from direction).
     pub author: Option<[u8; 32]>,
 }
 

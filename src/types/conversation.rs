@@ -30,10 +30,10 @@ pub type ConversationId = FriendshipId;
 pub struct Conversation {
     /// Sorted, deduplicated party ids — INCLUDING our own. Sorted because a derived id must agree on both sides; deduplicated because a participant set is a set.
     participants: Vec<PartyId>,
-    /// The id. For a derived conversation (notes/DM) it is a pure function of the immutable participant set; for a GROUP it is the stable random `GroupId` and the set is mutable behind it (docs/groups.md §2 D2).
+    /// The id. For a derived conversation (notes/DM) it is a pure function of the immutable participant set; for a GROUP it is the stable random `MoleculeId` and the set is mutable behind it (docs/molecules.md §2 D2).
     id: ConversationId,
     /// TRUE = the id is stable and the participant set may move (a group); FALSE = the id derives from the set, which is therefore immutable.
-    group: bool,
+    molecule: bool,
     /// Messages, oldest first.
     pub messages: Vec<ChatMessage>,
     /// Count of real inbound rows that landed while this conversation was NOT front-of-eyes. Drives the contacts-list unread treatment (inner coloured ring + heavier name + float-to-top — never a count glyph). Cleared and re-persisted the moment the conversation becomes the active view.
@@ -58,7 +58,7 @@ impl Conversation {
         Self {
             participants,
             id,
-            group: false,
+            molecule: false,
             messages: Vec::new(),
             unread_count: 0,
             scroll_offset: 0.0,
@@ -69,14 +69,14 @@ impl Conversation {
     }
 
     /// A GROUP conversation: the stable minted id, the CURRENT standing set behind it. The set follows the roster (set_participants on every merge edge); the id never moves.
-    pub fn new_group(group_id: crate::types::group::GroupId, participants: impl IntoIterator<Item = PartyId>) -> Self {
+    pub fn new_molecule(molecule_id: crate::types::molecule::MoleculeId, participants: impl IntoIterator<Item = PartyId>) -> Self {
         let mut participants: Vec<PartyId> = participants.into_iter().collect();
         participants.sort_unstable();
         participants.dedup();
         Self {
             participants,
-            id: FriendshipId(group_id.0),
-            group: true,
+            id: FriendshipId(molecule_id.0),
+            molecule: true,
             messages: Vec::new(),
             unread_count: 0,
             scroll_offset: 0.0,
@@ -86,13 +86,13 @@ impl Conversation {
         }
     }
 
-    pub fn is_group(&self) -> bool {
-        self.group
+    pub fn is_molecule(&self) -> bool {
+        self.molecule
     }
 
     /// Replace the participant set — GROUPS ONLY (the roster's standing set on a merge edge). A derived conversation refuses: its id IS its set, and mutating one without the other is how a conversation forks. Returns whether anything changed.
     pub fn set_participants(&mut self, participants: impl IntoIterator<Item = PartyId>) -> bool {
-        if !self.group {
+        if !self.molecule {
             return false;
         }
         let mut next: Vec<PartyId> = participants.into_iter().collect();

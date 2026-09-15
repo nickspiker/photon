@@ -29,22 +29,22 @@ pub struct MessagePackage {
     pub era_kem: Option<crate::crypto::era::EraKemWire>,
     /// Typed attachment fields (2026-09-10): the sender's sniffed kind, dims, preview-blob hash and the row's micro preview. None on every non-attachment row.
     pub attach: Option<AttachWire>,
-    /// Typed group extras (docs/groups.md §3/§4): attribution, weave authors, and the record payload. None on every friendship row.
-    pub group: Option<GroupWire>,
+    /// Typed group extras (docs/molecules.md §3/§4): attribution, weave authors, and the record payload. None on every friendship row.
+    pub molecule: Option<MoleculeWire>,
 }
 
-/// The group frame's typed extras (docs/groups.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a GROUP_PREFIX control row (offer snapshot, join records, record posting); `wrap` is the sealed era secret on a WRAP row — typed fields, consumed at ingress, never part of the row.
+/// The group frame's typed extras (docs/molecules.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a MOLECULE_PREFIX control row (offer snapshot, join records, record posting); `wrap` is the sealed era secret on a WRAP row — typed fields, consumed at ingress, never part of the row.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GroupWire {
+pub struct MoleculeWire {
     pub from: [u8; 32],
     pub woven_authors: Vec<[u8; 32]>,
     pub blob: Option<Vec<u8>>,
-    pub wrap: Option<GroupWrapWire>,
+    pub wrap: Option<BondWrapWire>,
 }
 
-/// A group WRAP's typed fields (docs/groups.md §3 Eras, D10 "secrets only ever move as wraps"): one era secret sealed to ONE device's published KEM bundle. The KEM ciphertexts ride the existing `ekn`/`ekx`/`ekh` fields beside these; `sealed` is the secret under the KEM-derived key. Read once by the wrap handler and dropped; the row that persists is the bare kind marker. Zeroized on drop. Never in the text — the text is the row, and the row persists, replicates and re-serves.
+/// A group WRAP's typed fields (docs/molecules.md §3 Eras, D10 "secrets only ever move as wraps"): one era secret sealed to ONE device's published KEM bundle. The KEM ciphertexts ride the existing `ekn`/`ekx`/`ekh` fields beside these; `sealed` is the secret under the KEM-derived key. Read once by the wrap handler and dropped; the row that persists is the bare kind marker. Zeroized on drop. Never in the text — the text is the row, and the row persists, replicates and re-serves.
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct GroupWrapWire {
+pub struct BondWrapWire {
     /// The device this wrap opens for — every other device ignores the row.
     pub recipient_device: [u8; 32],
     /// The published bundle it was sealed to (`EraKemWire::bundle_id`) — matched before any decapsulation runs.
@@ -58,7 +58,7 @@ pub struct GroupWrapWire {
     pub sealed: Vec<u8>,
 }
 
-impl Drop for GroupWrapWire {
+impl Drop for BondWrapWire {
     fn drop(&mut self) {
         use zeroize::Zeroize;
         self.sealed.zeroize();
@@ -131,8 +131,8 @@ fn msg_schema() -> SectionSchema {
         .field("ah", TypeConstraint::AnyUnsigned)
         .field("aph", TypeConstraint::Any)
         .field("apv", TypeConstraint::Any)
-        .field("gpl", TypeConstraint::Any) // hR group record payload (roster-codec blob) on a GROUP_PREFIX row; old parsers discard the unknown name
-        .field("gfrom", TypeConstraint::AnyHash) // hb 32 group attribution: the sender's party id (docs/groups.md §3); presence marks a group frame
+        .field("gpl", TypeConstraint::Any) // hR group record payload (roster-codec blob) on a MOLECULE_PREFIX row; old parsers discard the unknown name
+        .field("gfrom", TypeConstraint::AnyHash) // hb 32 group attribution: the sender's party id (docs/molecules.md §3); presence marks a group frame
         .field("gwa", TypeConstraint::AnyHash) // hb 32 weave author per wt entry (group weave refs are (author, eagle_time)); count must match wt
         .field("grcpt", TypeConstraint::AnyHash) // hb 32 wrap: the recipient device
         .field("gbid", TypeConstraint::AnyHash) // hb 32 wrap: the bundle it was sealed to
@@ -167,7 +167,7 @@ pub fn build_message_package_era(
     pad: &[u8],
     era_kem: Option<&crate::crypto::era::EraKemWire>,
     attach: Option<&AttachWire>,
-    group: Option<&GroupWire>,
+    molecule: Option<&MoleculeWire>,
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
         .build()
@@ -259,7 +259,7 @@ pub fn build_message_package_era(
             builder = builder.set("apv", VsfType::hR(a.preview.clone())).map_err(|e| e.to_string())?;
         }
     }
-    if let Some(g) = group {
+    if let Some(g) = molecule {
         builder = builder.set("gfrom", VsfType::hb(g.from.to_vec())).map_err(|e| e.to_string())?;
         for a in &g.woven_authors {
             builder = builder.append_multi("gwa", vec![VsfType::hb(a.to_vec())]).map_err(|e| e.to_string())?;
@@ -439,7 +439,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         }),
     };
     // Group extras: `gfrom` is the presence flag (a group frame always attributes). Weave authors must pair 1:1 with woven times — a mismatch drops the AUTHORS (the times still drive the braid advance; the receive path treats authorless refs as unresolvable and parks nothing on them).
-    let group = section
+    let molecule = section
         .get_fields("gfrom")
         .first()
         .and_then(|f| f.values.first())
@@ -467,10 +467,10 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             };
             let sealed = bytes_field("gwrap");
             let wrap = match (hash32("grcpt"), hash32("gbid"), u_field("gera"), hash32("glin"), hash32("gnonce"), !sealed.is_empty()) {
-                (Some(recipient_device), Some(bundle_id), Some(era), Some(era_lineage), Some(nonce), true) => Some(GroupWrapWire { recipient_device, bundle_id, era, era_lineage, nonce, sealed }),
+                (Some(recipient_device), Some(bundle_id), Some(era), Some(era_lineage), Some(nonce), true) => Some(BondWrapWire { recipient_device, bundle_id, era, era_lineage, nonce, sealed }),
                 _ => None,
             };
-            GroupWire {
+            MoleculeWire {
                 from,
                 woven_authors: if authors.len() == woven_times.len() { authors } else { Vec::new() },
                 blob: (!blob.is_empty()).then_some(blob),
@@ -489,7 +489,7 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         marks,
         era_kem,
         attach,
-        group,
+        molecule,
     })
 }
 
@@ -511,38 +511,38 @@ mod tests {
     /// The group extras ride typed beside the text (the era-KEM doctrine): attribution, paired weave authors, the record blob — absent on every friendship row, and a wa/wt count mismatch drops the authors while the times keep driving the braid.
     #[test]
     fn group_wire_rides_and_is_absent_on_plain_rows() {
-        let g = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), wrap: None };
-        let built = build_message_package_era("\u{1}\u{2}photon-group\u{2}\u{1}records", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g)).unwrap();
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), wrap: None };
+        let built = build_message_package_era("\u{1}\u{2}photon-molecule\u{2}\u{1}records", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
-        assert_eq!(pkg.group, Some(g.clone()));
+        assert_eq!(pkg.molecule, Some(g.clone()));
         assert_eq!(pkg.woven_times, vec![5, 9]);
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
-        assert_eq!(parse_message_package(&plain).unwrap().group, None);
+        assert_eq!(parse_message_package(&plain).unwrap().molecule, None);
         // Mismatched pairing: one author for two times — authors drop, attribution and blob stay.
-        let bad = GroupWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, wrap: None };
+        let bad = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, wrap: None };
         let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
-        assert_eq!(pkg.group.as_ref().unwrap().from, [0xAA; 32]);
-        assert!(pkg.group.as_ref().unwrap().woven_authors.is_empty());
+        assert_eq!(pkg.molecule.as_ref().unwrap().from, [0xAA; 32]);
+        assert!(pkg.molecule.as_ref().unwrap().woven_authors.is_empty());
         assert_eq!(pkg.woven_times, vec![5, 9]);
     }
 
     /// A wrap's sealed secret rides as TYPED fields (all five, or none) beside the KEM ciphertexts and never appears in the text — the row that persists is the bare kind marker.
     #[test]
     fn group_wrap_rides_typed_never_in_text() {
-        let w = GroupWrapWire { recipient_device: [0x11; 32], bundle_id: [0x22; 32], era: 300, era_lineage: [0x33; 32], nonce: [0x44; 32], sealed: vec![0x55; 80] };
+        let w = BondWrapWire { recipient_device: [0x11; 32], bundle_id: [0x22; 32], era: 300, era_lineage: [0x33; 32], nonce: [0x44; 32], sealed: vec![0x55; 80] };
         let kem = crate::crypto::era::EraKemWire { mlkem: vec![1; 8], x25519: vec![2; 32], hqc: vec![3; 8] };
-        let g = GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: Some(w.clone()) };
-        let text = crate::types::group::GroupSignal::Wrap.to_content();
+        let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: Some(w.clone()) };
+        let text = crate::types::molecule::MoleculeSignal::Wrap.to_content();
         let built = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], Some(&kem), None, Some(&g)).unwrap();
         let pkg = parse_message_package(&built).unwrap();
-        assert_eq!(pkg.group.as_ref().unwrap().wrap, Some(w));
+        assert_eq!(pkg.molecule.as_ref().unwrap().wrap, Some(w));
         assert_eq!(pkg.era_kem, Some(kem));
         assert_eq!(pkg.body, text);
         assert!(!pkg.body.contains("5555"), "no secret material in the row text");
         // A partial set (attribution without the wrap fields) is no wrap at all.
-        let plain = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&GroupWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None })).unwrap();
-        assert_eq!(parse_message_package(&plain).unwrap().group.as_ref().unwrap().wrap, None);
+        let plain = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None })).unwrap();
+        assert_eq!(parse_message_package(&plain).unwrap().molecule.as_ref().unwrap().wrap, None);
     }
 
     /// Round-trip: every field survives, the reference travels typed, empty body and zero wovens are legal, and garbage is ONE clean error (fork-detector food, never a panic).

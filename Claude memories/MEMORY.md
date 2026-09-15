@@ -33,7 +33,7 @@
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when required
 
 ## Active / open
-- [project-groups-build.md](project-groups-build.md) — GROUPS PHASE 1 BUILT 2026-09-15 (steps 1–6, 8–10; v0.97.10); open = live strand pull, never-friended receive commit, offer refresh, Withdraw
+- [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; open = live strand pull, never-friended receive commit, offer refresh, Withdraw
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — OPEN: restarts re-run ceremonies, fresh index-0 eras (10/hr), era_pull can't answer
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak

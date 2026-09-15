@@ -46,7 +46,7 @@ mod call_ui;
 mod ceremony;
 mod era;
 mod conversation;
-mod groups;
+mod molecules;
 mod devices;
 mod driver;
 mod input;
@@ -453,17 +453,17 @@ fn relationship_digest(p: &[u8; 32], other: &[u8; 32]) -> [u8; 32] {
     ihi::spaghettify(&input)
 }
 
-/// A GROUP member's colour digest (docs/groups.md D14): `spaghettify(group_id ‖ author)` — keyed on the group, not on the viewer, so every member sees the same colour for the same person.
-fn group_digest(gid: &crate::types::group::GroupId, author: &[u8; 32]) -> [u8; 32] {
+/// A GROUP member's colour digest (docs/molecules.md D14): `spaghettify(molecule_id ‖ author)` — keyed on the group, not on the viewer, so every member sees the same colour for the same person.
+fn molecule_digest(gid: &crate::types::molecule::MoleculeId, author: &[u8; 32]) -> [u8; 32] {
     relationship_digest(&gid.0, author)
 }
 
 /// A group's list avatar: a pie of its standing members' gradients (each member's slice is `gradient_avatar_rgb` seeded from its group digest), so the row reads as "these people" without an orb of its own. One member = its whole gradient; none = the group id's.
-fn group_avatar_rgb(gid: &crate::types::group::GroupId, members: &[[u8; 32]], diam: usize) -> Vec<u8> {
+fn molecule_avatar_rgb(gid: &crate::types::molecule::MoleculeId, members: &[[u8; 32]], diam: usize) -> Vec<u8> {
     if members.is_empty() {
         return gradient_avatar_rgb(proof_gradient_seed(&gid.0), diam);
     }
-    let slices: Vec<Vec<u8>> = members.iter().map(|m| gradient_avatar_rgb(proof_gradient_seed(&group_digest(gid, m)), diam)).collect();
+    let slices: Vec<Vec<u8>> = members.iter().map(|m| gradient_avatar_rgb(proof_gradient_seed(&molecule_digest(gid, m)), diam)).collect();
     if slices.len() == 1 {
         return slices.into_iter().next().unwrap();
     }
@@ -669,7 +669,7 @@ struct BraidTxEncrypted {
     eagle_time: i64,
     salt_text: Vec<u8>,
     woven_strands: Vec<Vec<u8>>,
-    /// Where the ONE ciphertext goes: exactly one route for a friendship, one per standing member for a group (docs/groups.md step 4 — encrypt once on our lane, fan the same bytes out).
+    /// Where the ONE ciphertext goes: exactly one route for a friendship, one per standing member for a group (docs/molecules.md step 4 — encrypt once on our lane, fan the same bytes out).
     routes: Vec<Route>,
     text_len: usize,
     result: Option<BraidTxWire>,
@@ -755,9 +755,9 @@ const DEFAULT_REACTIONS: [&str; 5] = [
 ];
 
 /// The bubble text for a ROW. THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it"): a picture row has no text at all (the band above is the row), a code or text row shows its first lines, anything without a visual shows its bare filename. No kind glyph, no size, no hint — the size and the actions live in the details strip a tap on the row opens.
-/// The group offer row (docs/groups.md §10.1): the bare Offer kind marker, in either direction.
-fn is_group_offer_row(m: &crate::types::ChatMessage) -> bool {
-    m.content == crate::types::group::GroupSignal::Offer.to_content()
+/// The group offer row (docs/molecules.md §10.1): the bare Offer kind marker, in either direction.
+fn is_bond_offer_row(m: &crate::types::ChatMessage) -> bool {
+    m.content == crate::types::molecule::MoleculeSignal::Offer.to_content()
 }
 
 fn display_row(msg: &crate::types::ChatMessage) -> String {
@@ -805,8 +805,8 @@ fn display_content(content: &str) -> String {
 
 /// Is this row a BUBBLE in the stream? One source of truth for the renderer's visible-list filter AND the tap-to-jump scroll walk — the two must count identically or a jump lands off-target. Control rows and tombstones never draw; reaction rows resolve onto their target; an edit row hides while its target exists (renders standalone only when the target never synced).
 fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMessage, filter: ChatFilter) -> bool {
-    // A group OFFER row is the one control row that renders (docs/groups.md §10.5): the card the Join pill lives on.
-    if is_group_offer_row(m) {
+    // A group OFFER row is the one control row that renders (docs/molecules.md §10.5): the card the Join pill lives on.
+    if is_bond_offer_row(m) {
         return !m.deleted && filter != ChatFilter::Waves;
     }
     if crate::types::is_control_content(&m.content) || m.deleted {
@@ -862,6 +862,16 @@ pub(crate) enum VaultFilter {
     Files,
     /// Starred rows of any kind — the winnow-exempt bin.
     Kept,
+}
+
+/// The Ready list filter (docs/molecules.md §10.5): friendships, atoms and molecules are three distinct things on one screen.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) enum ReadyFilter {
+    #[default]
+    All,
+    Friends,
+    Atoms,
+    Molecules,
 }
 
 /// The conversation stream filter — the cycling pill in the top bar (all → waves → text → all). Session state, never persisted; resets to All on every conversation open.
@@ -1070,7 +1080,7 @@ enum TextboxRole {
     FleetRename,
     /// The Fleet page's departure-approval words box — typing the leaver's on-screen words is the live-contact binding that gates the countersign.
     DepartWords,
-    /// The Manage page's New-group title box (docs/groups.md §10.5) — registry membership per the two-walk rule.
+    /// The Manage page's New-group title box (docs/molecules.md §10.5) — registry membership per the two-walk rule.
     GroupTitle,
 }
 
@@ -1443,21 +1453,21 @@ pub struct PhotonApp {
     blind_flip: std::collections::HashMap<([u8; 32], [u8; 32]), ([u8; 32], u32)>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
     history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
-    /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume. GROUP chains (docs/groups.md) live here too under FriendshipId(group_id) — the token scan and era routing treat them identically; only trust and attribution branch.
+    /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume. GROUP chains (docs/molecules.md) live here too under FriendshipId(molecule_id) — the token scan and era routing treat them identically; only trust and attribution branch.
     friendship_chains: Vec<(
         crate::types::friendship::FriendshipId,
         crate::types::friendship::FriendshipChains,
     )>,
-    /// Group rosters, keyed by group id (docs/groups.md §4): the membership truth every group-frame gate and standing set reads. Persisted via `save_roster`; loaded on attest/resume thru the group index.
-    group_rosters: Vec<(crate::types::group::GroupId, crate::types::group::Roster)>,
-    /// This DEVICE's local state per group (D12: mute, phase) — beside the roster, never inside it. Persisted at vault_key("group-local", gid).
-    group_locals: Vec<(crate::types::group::GroupId, crate::storage::group::GroupLocal)>,
+    /// Group rosters, keyed by group id (docs/molecules.md §4): the membership truth every group-frame gate and standing set reads. Persisted via `save_roster`; loaded on attest/resume thru the group index.
+    molecule_rosters: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)>,
+    /// This DEVICE's local state per group (D12: mute, phase) — beside the roster, never inside it. Persisted at vault_key("molecule-local", gid).
+    molecule_locals: Vec<(crate::types::molecule::MoleculeId, crate::storage::molecule::MoleculeLocal)>,
     /// Parked offers (§10.1 Offered): a friend's snapshot awaiting our Join. Persisted; no secret rides here.
-    group_offers: Vec<crate::storage::group::GroupOffer>,
+    bond_offers: Vec<crate::storage::molecule::BondOffer>,
     /// Group-scoped trust source (§2): never-friended members' folded devices, consulted only for frames carrying that group's token. Runtime, re-folded at boot (step 5 wires the fold).
-    group_peers: Vec<crate::types::group::GroupPeer>,
+    molecule_peers: Vec<crate::types::molecule::MoleculePeer>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
-    pending_group_posts: Vec<groups::GroupPost>,
+    pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
     chord_lb_press: Option<Instant>,
     /// Last `[` Release timestamp. `None` until first release.
@@ -1849,23 +1859,28 @@ pub struct PhotonApp {
     active_conversation: Option<crate::types::ConversationId>,
     /// Base hit ID for contact rows. Row `i` gets `contact_hit_base + i`. Allocated in `init` after the other widget IDs.
     contact_hit_base: HitId,
-    /// Ready-list GROUP rows: hit ids in [group_hit_base, +64) index `group_rosters` (docs/groups.md §10.5). Allocated at the END of the id run.
-    group_hit_base: HitId,
-    /// The group-picker inside a contact panel's Manage page ("Bring into a group"): rows in [group_pick_base, +16): 0 = New group, 1 = found (the New-group commit), 2 = from-genesis pill, 3 = from-join pill, 4.. = existing groups.
-    group_pick_base: HitId,
-    /// Wrapped title lines per group row (index = position in `group_rosters`), refreshed on the Ready pre-pass like `contact_row_lines`.
-    group_row_lines: Vec<Vec<String>>,
+    /// Ready-list GROUP rows: hit ids in [molecule_hit_base, +64) index `molecule_rosters` (docs/molecules.md §10.5). Allocated at the END of the id run.
+    molecule_hit_base: HitId,
+    /// The group-picker inside a contact panel's Manage page ("Bring into a group"): rows in [molecule_pick_base, +16): 0 = New group, 1 = found (the New-group commit), 2 = from-genesis pill, 3 = from-join pill, 4.. = existing groups.
+    molecule_pick_base: HitId,
+    /// Wrapped title lines per group row (index = position in `molecule_rosters`), refreshed on the Ready pre-pass like `contact_row_lines`.
+    molecule_row_lines: Vec<Vec<String>>,
     /// The Manage page's group picker is open for the panel's contact.
-    group_pick_open: bool,
+    molecule_pick_open: bool,
     /// New-group form state on the picker: history policy from genesis (true) or from join (false, the default).
-    group_pick_from_genesis: bool,
+    molecule_pick_from_genesis: bool,
     /// The New-group title box — registered in visit_app_widgets + textboxes_mut only. Doubles as the group panel's rename box.
-    group_title_textbox: Option<Textbox>,
-    /// Group panel rail rows [group_nav_base, +3) and pills [group_panel_btn_base, +8): 0 = Leave (two-tap), 1 = Mute, 2 = Rename; the Add page's contact rows use [group_panel_btn_base + 8, +32).
-    group_nav_base: HitId,
-    group_panel_btn_base: HitId,
+    molecule_title_textbox: Option<Textbox>,
+    /// Group panel rail rows [molecule_nav_base, +3) and pills [molecule_panel_btn_base, +8): 0 = Leave (two-tap), 1 = Mute, 2 = Rename; the Add page's contact rows use [molecule_panel_btn_base + 8, +32).
+    molecule_nav_base: HitId,
+    molecule_panel_btn_base: HitId,
     /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
-    group_leave_armed: bool,
+    molecule_leave_armed: bool,
+    /// The Ready list's filter strip (docs/molecules.md §10.5): everything, friends, atoms, molecules. Hit ids [ready_filter_base, +5): 0..=3 the filters, 4 = New atom.
+    ready_filter: ReadyFilter,
+    ready_filter_base: HitId,
+    /// NEW ATOM mode on the Ready screen: the search box is the title box, the plus founds the atom instead of searching a handle.
+    atom_naming: bool,
     /// Hit ID for the "← Contacts" back button on the Conversation screen.
     back_btn_hit_id: HitId,
     /// Hit ID for the "Start fresh (wipe this device)" line on the JOIN words screen — a removed device's only self-clean path (it can't attest → can't reach Security).
@@ -2411,11 +2426,11 @@ impl PhotonApp {
             blind_flip: std::collections::HashMap::new(),
             history_serve: std::collections::HashMap::new(),
             friendship_chains: Vec::new(),
-            group_rosters: Vec::new(),
-            group_locals: Vec::new(),
-            group_offers: Vec::new(),
-            group_peers: Vec::new(),
-            pending_group_posts: Vec::new(),
+            molecule_rosters: Vec::new(),
+            molecule_locals: Vec::new(),
+            bond_offers: Vec::new(),
+            molecule_peers: Vec::new(),
+            pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
             chord_rb_press: None,
@@ -2577,15 +2592,18 @@ impl PhotonApp {
             avatar_set_rx: None,
             active_conversation: None,
             contact_hit_base: HIT_NONE,
-            group_hit_base: HIT_NONE,
-            group_pick_base: HIT_NONE,
-            group_row_lines: Vec::new(),
-            group_pick_open: false,
-            group_pick_from_genesis: false,
-            group_title_textbox: None,
-            group_nav_base: HIT_NONE,
-            group_panel_btn_base: HIT_NONE,
-            group_leave_armed: false,
+            molecule_hit_base: HIT_NONE,
+            molecule_pick_base: HIT_NONE,
+            molecule_row_lines: Vec::new(),
+            molecule_pick_open: false,
+            molecule_pick_from_genesis: false,
+            molecule_title_textbox: None,
+            molecule_nav_base: HIT_NONE,
+            molecule_panel_btn_base: HIT_NONE,
+            molecule_leave_armed: false,
+            ready_filter: ReadyFilter::All,
+            ready_filter_base: HIT_NONE,
+            atom_naming: false,
             back_btn_hit_id: HIT_NONE,
             join_startfresh_hit_id: HIT_NONE,
             join_copywords_hit_id: HIT_NONE,
@@ -3286,8 +3304,8 @@ impl PhotonApp {
                 }
             }
         }
-        if (matches!(self.state, AppState::ContactPanel(crate::ui::state::ContactPage::Manage)) && self.group_pick_open) || matches!(self.state, AppState::GroupPanel(crate::ui::state::GroupPage::About)) {
-            if let Some(tb) = self.group_title_textbox.as_mut() {
+        if matches!(self.state, AppState::MoleculePanel(crate::ui::state::MoleculePage::About)) {
+            if let Some(tb) = self.molecule_title_textbox.as_mut() {
                 f(tb);
             }
         }
@@ -3525,24 +3543,24 @@ fn contact_page_rows(page: ContactPage) -> usize {
 }
 
 impl PhotonApp {
-    /// The group panel's row budget per page (docs/groups.md §10.5): About = title row + policy + "Members" header + one row per member record; Add = note + one row per candidate contact; Manage = fixed.
-    fn group_page_rows(&self, page: crate::ui::state::GroupPage) -> usize {
-        use crate::ui::state::GroupPage;
-        let gi = self.active_group();
+    /// The group panel's row budget per page (docs/molecules.md §10.5): About = title row + policy + "Members" header + one row per member record; Add = note + one row per candidate contact; Manage = fixed.
+    fn molecule_page_rows(&self, page: crate::ui::state::MoleculePage) -> usize {
+        use crate::ui::state::MoleculePage;
+        let gi = self.active_molecule();
         match page {
-            GroupPage::About => 4 + gi.map_or(0, |gi| self.group_rosters[gi].1.members.len()),
-            GroupPage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
-            GroupPage::Manage => 6,
+            MoleculePage::About => 6 + gi.map_or(0, |gi| self.molecule_rosters[gi].1.members.len()),
+            MoleculePage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
+            MoleculePage::Manage => 6,
         }
     }
 
-    /// The Manage page's row budget grows when the group picker is open: the fixed six, plus the New-group form (three rows) and one row per group we stand in (docs/groups.md §10.5). The render arm computes the same sum field-wise (it runs under the chrome borrow).
+    /// The Manage page's row budget grows when the group picker is open: the fixed six, plus the New-group form (three rows) and one row per group we stand in (docs/molecules.md §10.5). The render arm computes the same sum field-wise (it runs under the chrome borrow).
     fn manage_page_rows(&self) -> usize {
         let base = contact_page_rows(ContactPage::Manage);
-        if !self.group_pick_open {
+        if !self.molecule_pick_open {
             return base;
         }
-        base + 3 + self.group_rosters.len()
+        base + 1 + self.molecule_rosters.len()
     }
 }
 

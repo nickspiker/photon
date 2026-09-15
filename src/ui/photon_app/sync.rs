@@ -869,17 +869,17 @@ impl PhotonApp {
                 Some((fid, primary, alt, recipient_key, relay_to))
             })
             .collect();
-        // GROUP pass (docs/groups.md step 4): one route per standing member's device, resolved from the roster at sweep time, and a pending re-sends only to the parties whose ACK is still missing.
-        let group_routes: Vec<(crate::types::group::GroupId, Vec<super::Route>)> = self
-            .group_rosters
+        // GROUP pass (docs/molecules.md step 4): one route per standing member's device, resolved from the roster at sweep time, and a pending re-sends only to the parties whose ACK is still missing.
+        let molecule_routes: Vec<(crate::types::molecule::MoleculeId, Vec<super::Route>)> = self
+            .molecule_rosters
             .iter()
             .filter(|(g, _)| {
                 let fid = crate::types::FriendshipId::from_bytes(g.0);
                 self.friendship_chains.iter().any(|(id, c)| *id == fid && c.has_pending_messages())
             })
-            .map(|(g, _)| (*g, self.routes_for_group(*g)))
+            .map(|(g, _)| (*g, self.routes_for_molecule(*g)))
             .collect();
-        if routes.is_empty() && group_routes.is_empty() {
+        if routes.is_empty() && molecule_routes.is_empty() {
             return;
         }
 
@@ -887,7 +887,7 @@ impl PhotonApp {
             return;
         };
 
-        for (gid, groutes) in group_routes {
+        for (gid, groutes) in molecule_routes {
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) else {
                 continue;
@@ -916,7 +916,7 @@ impl PhotonApp {
                     });
                     sent += 1;
                 }
-                crate::logf!("GROUP: retransmit {} in {} (attempt {}) to {} of {} owed{}", eagle_time, hex::encode(&gid.0[..4]), attempts, sent, owed.len(), if exhausted { " — GAVE UP" } else { "" });
+                crate::logf!("MOLECULE: retransmit {} in {} (attempt {}) to {} of {} owed{}", eagle_time, hex::encode(&gid.0[..4]), attempts, sent, owed.len(), if exhausted { " — GAVE UP" } else { "" });
             }
         }
 
@@ -1302,7 +1302,7 @@ impl PhotonApp {
         self.push_rows_to_siblings_token(token, &label, rows, exclude_device);
     }
 
-    /// The token-keyed core of the sibling row push (docs/groups.md step 6): a GROUP pushes under its own token (`GroupId::token`), a friendship under the pair's. `label` is only for the log line.
+    /// The token-keyed core of the sibling row push (docs/molecules.md step 6): a GROUP pushes under its own token (`MoleculeId::token`), a friendship under the pair's. `label` is only for the log line.
     pub(super) fn push_rows_to_siblings_token(
         &self,
         token: [u8; 32],

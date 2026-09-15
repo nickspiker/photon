@@ -192,8 +192,8 @@ impl PhotonApp {
             if self.drain_pending_chain_sends() {
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
-            // GROUP posts (docs/groups.md step 4): chat rows and control rows, same frame fence, fanned to every standing member.
-            if self.drain_group_posts() {
+            // GROUP posts (docs/molecules.md step 4): chat rows and control rows, same frame fence, fanned to every standing member.
+            if self.drain_molecule_posts() {
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
@@ -848,34 +848,34 @@ impl PhotonApp {
                     .enumerate()
                     .find(|(_, c)| c.handle_proof == hp)
                 else {
-                    // GROUP PEER (docs/groups.md §2 / step 5): no contact row, but a standing member of a group we hold carries this proof — fold it into the group-scoped trust source. Same monotonic tip gate as a contact; a vanished chain drops the peer's devices (verify-or-withhold).
-                    let party = self.group_rosters.iter().find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == hp && r.is_standing(&m.party)).map(|m| m.party));
+                    // GROUP PEER (docs/molecules.md §2 / step 5): no contact row, but a standing member of a group we hold carries this proof — fold it into the group-scoped trust source. Same monotonic tip gate as a contact; a vanished chain drops the peer's devices (verify-or-withhold).
+                    let party = self.molecule_rosters.iter().find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == hp && r.is_standing(&m.party)).map(|m| m.party));
                     if let Some(party) = party {
                         if !existed {
-                            if let Some(p) = self.group_peers.iter_mut().find(|p| p.party == party) {
+                            if let Some(p) = self.molecule_peers.iter_mut().find(|p| p.party == party) {
                                 if !p.devices.is_empty() {
-                                    crate::logf!("GROUP: peer {}'s chain is GONE — withholding its devices", crate::fp(&hp));
+                                    crate::logf!("MOLECULE: peer {}'s chain is GONE — withholding its devices", crate::fp(&hp));
                                     p.devices.clear();
-                                    self.reseed_group_pubkeys();
+                                    self.reseed_molecule_pubkeys();
                                 }
                             }
                             continue;
                         }
-                        match self.group_peers.iter_mut().find(|p| p.party == party) {
+                        match self.molecule_peers.iter_mut().find(|p| p.party == party) {
                             Some(p) if tip_ts < p.fold_ts => {}
                             Some(p) => {
                                 let changed_fold = p.devices != members;
                                 p.devices = members.clone();
                                 p.fold_ts = tip_ts;
                                 if changed_fold {
-                                    crate::logf!("GROUP: peer {} folded — {} device(s)", crate::fp(&hp), members.len());
-                                    self.reseed_group_pubkeys();
+                                    crate::logf!("MOLECULE: peer {} folded — {} device(s)", crate::fp(&hp), members.len());
+                                    self.reseed_molecule_pubkeys();
                                 }
                             }
                             None => {
-                                crate::logf!("GROUP: peer {} folded for the first time — {} device(s)", crate::fp(&hp), members.len());
-                                self.group_peers.push(crate::types::group::GroupPeer { party, handle_proof: hp, devices: members.clone(), fold_ts: tip_ts });
-                                self.reseed_group_pubkeys();
+                                crate::logf!("MOLECULE: peer {} folded for the first time — {} device(s)", crate::fp(&hp), members.len());
+                                self.molecule_peers.push(crate::types::molecule::MoleculePeer { party, handle_proof: hp, devices: members.clone(), fold_ts: tip_ts });
+                                self.reseed_molecule_pubkeys();
                             }
                         }
                     }
