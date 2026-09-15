@@ -1722,8 +1722,8 @@ mod tests {
         }
         assert!(t >= 4, "loss lifts the target, got {t}");
         let lifted = t;
-        // 300 clean windows: the burst leaves the ring after 256 and the target is already falling; the integral bleeds out over the next few hundred and the floor returns.
-        for _ in 0..300 {
+        // 400 clean windows: the burst leaves the ring after 256 and the target is already falling; the integral bleeds out over the next few hundred and the floor returns. (At the 1/512 setpoint a burst is one stop further over than at 1/256, so the integral winds one stop higher while the burst sits in the ring and bleeds ~a third longer — 300 was the 1/256 number.)
+        for _ in 0..400 {
             t = loss_loop_step(&mut bits, &mut pos, &mut integ, false, 2);
         }
         assert!(t < lifted, "clean windows shrink it back, got {t} (lifted {lifted})");
