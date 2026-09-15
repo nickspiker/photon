@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Fewer tiny gaps on a busy Wi-Fi: the playback buffer no longer sheds the small bursts of early-arriving audio that home Wi-Fi delivers (it was shedding them, then running dry a moment later), and the loss loop now aims below its ceiling instead of sitting exactly on it — a few more milliseconds of buffer for a much steadier voice.
+- The self-aim's first step needs a plausibly loud voice before it trusts itself, so a quiet first word can no longer set the level hot for the next twenty seconds.
 - The wave's self-aim waits for real speech: it needs four seconds of sound that moves the way a voice does before it trusts a measurement, so breath and handling before the conversation starts can no longer aim the level wrong, and it allows itself one correction later if the first aim proves badly off.
 - After a Wi-Fi stall the backlog of the other person's voice is shed from the pauses, not from the words — before, a few seconds of stall could cut whole phrases out of what you heard.
 - A wave answered while the ringback was still winding down could go out silent — your side heard them, they heard nothing — because the ringback's cleanup and the call's start fought over the microphone; the session now has one owner at a time and a refused microphone open is retried.

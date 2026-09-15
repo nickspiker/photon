@@ -55,7 +55,7 @@ const PLAID_PROBATION_UNDERRUNS: u32 = 5;
 const PLAID_PROBATION_STRIKES: u32 = 2;
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
 const LOSS_RING: usize = 256;
-const LOSS_SETPOINT: f32 = 1.0 / 256.0;
+const LOSS_SETPOINT: f32 = 1.0 / 512.0; // 2026-09-15: the loop HELD the 1/256 setpoint exactly — 50 five-millisecond gaps a minute at plaid, every one audible; "under 1/256" wants the setpoint below the ceiling
 const LOSS_KP: f32 = 1.0; // frames per stop of error, immediately
 const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
 const JITTER_TARGET_CAP: usize = 24;
@@ -1194,6 +1194,14 @@ fn run(
                         measured_q8 >> 8,
                         p90 >> 8,
                         p50 >> 8
+                    );
+                    reaim_ring.clear();
+                } else if reaim_steps == 0 && measured_q8 < 24 * 256 {
+                    // FIRST-STEP PLAUSIBILITY (2026-09-15 17:40, Emma: voiced 14 with real modulation — the first tentative words before the phone reached her ear — aimed 64× and ran 18 s hot until the correction): no calibrated Unprocessed mic we have met puts conversational speech under 24 coarse (53–490 across four phones); a first step needs that much, the correction has 8 s of evidence and no floor.
+                    crate::logf!(
+                        "CALL: level plan re-aim — {} frames at {} modulate like speech but sit under the plausibility floor for a first aim; waiting",
+                        reaim_ring.len(),
+                        measured_q8 >> 8
                     );
                     reaim_ring.clear();
                 } else if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {

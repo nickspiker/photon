@@ -49,7 +49,7 @@ pub fn set_jitter_target(frames: usize) {
 }
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 // STALL GUARD: after an arrival stall the whole backlog lands at once and the queue stands far past the target; the one-sample splice would take most of a minute to shed 200ms, so a queue past target + STALL_SLACK sheds frames now, bounded per render. This is not depth control (the loss loop owns the target) — it is the one case where standing latency is pure debris.
-const STALL_SLACK: usize = 4; // 20ms past target (2026-09-10 field: the loop held target 1 while the standing depth sat at 5-17 frames for a whole call — the splice alone sheds a sample a frame, so the guard must do the shedding)
+const STALL_SLACK: usize = 16; // 80ms past target (2026-09-15 18:31: at 4 the guard fought the loss loop on a bursty Wi-Fi — aggregated arrivals push the depth 8–12 frames for a moment, the guard shed them, the queue then ran dry in the next inter-burst gap, 50 underruns and 910 trims in one 66 s wave; a real stall lands 200+ frames and still trips this). Was 4 — 20ms past target (2026-09-10 field: the loop held target 1 while the standing depth sat at 5-17 frames for a whole call — the splice alone sheds a sample a frame, so the guard must do the shedding)
 const STALL_MAX_DROP_PER_RENDER: usize = 4;
 /// The recent render level (mean |sample|, fast attack / ~0.6 s decay) the stall guard reads pauses against, and the voiced-frame drop cadence counter (one voiced frame per eight renders at most).
 static RENDER_LEVEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
