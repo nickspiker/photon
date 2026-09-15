@@ -6452,9 +6452,9 @@ impl PhotonApp {
                             }
                         }
                         crate::NumBase::Arabic => {
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::WhyYouDozenal), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::BaseTenHead), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
                             y += line_h;
-                            for line in tr(Msg::WhyYouDozenalProse).lines() {
+                            for line in tr(Msg::BaseTenProse).lines() {
                                 y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                                 y += line_h * 0.3;
                             }

@@ -862,10 +862,10 @@ pub enum Msg<'a> {
     AboutDozenalHead,
     AboutRiddle,
     WhyDozenal,
-    // The decimal-mode swap: the question turned round. Shown INSTEAD of WhyDozenal/WhyDozenalProse while the toggle is off — no scold line, the red box carries the disapproval.
-    WhyYouDozenal,
+    // The decimal-mode swap: shown INSTEAD of WhyDozenal/WhyDozenalProse while the toggle is off — a plain lesson on what base ten is (place value, the Indian origin, zero's date, other bases, the slide rule), no scold line; the red box carries the disapproval.
+    BaseTenHead,
     // '\n'-joined paragraphs like WhyDozenalProse. Dozenal glyph control codes (0x10..0x1B) ride inline; the font chain draws them from any family.
-    WhyYouDozenalProse,
+    BaseTenProse,
     // '\n'-joined paragraphs; the About card iterates .lines() and wraps each as its own stanza.
     WhyDozenalProse,
     // ---- settings misc ----
