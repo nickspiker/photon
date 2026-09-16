@@ -11,12 +11,17 @@ pub const FULL_VIEW_MAX_EDGE: usize = 4096;
 /// Long edge of the LINEAR buffer the viewer keeps for its exposure control — twelve bytes a pixel, so a phone keeps 2048 (50 MB) and a desktop 4096.
 pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } else { 4096 };
 
-/// THE COLOUR-MANAGED ORIGINAL (Nick 2026-09-11, "colour/spectral managed, vsf rgb as much as possible"): the bytes go thru opsin's ingest (limbus for DNG/RAW/TIFF with both DNG matrices and the illuminant, jxl-oxide, zune for JPEG, image-webp for WebP — PNG/GIF/BMP have no opsin arm yet and take the fallback below) into one native-depth spectral image, then `to_linear_in(VsfRgb)` — the profile's matrix, illuminant-normalised, integer pipeline — gives linear VSF RGB with 65535 = the profile's white. EXIF orientation is applied and the buffer folded to [`LINEAR_VIEW_MAX_EDGE`] here, off the UI thread; exposure is a gain at the display encode ([`encode_linear`]), so it is live. RAW stays CFA-binned (no demosaic) — the same picture opsin shows. None = opsin could not read it (the caller falls back to the gamma-2 path).
+/// THE COLOUR-MANAGED ORIGINAL (Nick 2026-09-11, "colour/spectral managed, vsf rgb as much as possible"): the bytes go thru opsin's ingest (limbus for DNG/RAW/TIFF with both DNG matrices and the illuminant, jxl-oxide, zune for JPEG, image-webp for WebP — PNG/GIF/BMP have no opsin arm yet and take the fallback below; opsin recognises the file by its bytes, never its name) into one native-depth spectral image, then `to_linear_in(VsfRgb)` — the profile's matrix, illuminant-normalised, integer pipeline — gives linear VSF RGB with 65535 = the profile's white. EXIF orientation is applied and the buffer folded to [`LINEAR_VIEW_MAX_EDGE`] here, off the UI thread; exposure is a gain at the display encode ([`encode_linear`]), so it is live. RAW stays CFA-binned (no demosaic) — the same picture opsin shows. None = opsin could not read it (the caller falls back to the gamma-2 path).
 pub fn full_image_linear(path: &std::path::Path, kind: AttachKind) -> Option<(usize, usize, Vec<i32>)> {
     if !kind.is_image() {
         return None;
     }
     let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
+    // opsin decides by the bytes, and since 2026-09-15 it opens ANYTHING — a file no decoder claims goes to its headerless guesser, which is right for the standalone viewer and wrong here: a PNG/GIF/BMP would render as guessed noise instead of taking the gamma-2 decode below. Only hand it what it has a real decoder for.
+    if matches!(opsin::sniff::sniff_path(path), None | Some(opsin::sniff::Kind::Unknown)) {
+        crate::logf!("attach: no opsin decoder for {}; gamma-2 path", if ext.is_empty() { "these bytes" } else { ext.as_str() });
+        return None;
+    }
     {
         let dec = match opsin::convert::load_any(path) {
             Ok(d) => d,

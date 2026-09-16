@@ -6,9 +6,9 @@ use super::*;
 pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
 
 /// A RAW's temp copy for limbus (file-only reader): written into the runtime dir under the content hash, None for every other kind or on a write failure. The caller removes it once the decode has landed.
-/// A temp copy of any picked/held image for the opsin viewer path (its readers want a path), carrying the original extension so the ingest dispatches on it. Lives in runtime_dir beside the RAW temp; the caller removes it after the render.
+/// A temp copy of any picked/held image for the opsin viewer path (its readers want a path). opsin recognises the file by its bytes, so the extension is only for the human who sees the name in the viewer's title; it is the original's when there is one, else what the bytes' magic says. Lives in runtime_dir beside the RAW temp; the caller removes it after the render.
 pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
-    // The name's extension when it has one; images travel nameless now, so the bytes' own magic names the rest (opsin's ingest dispatches on the extension).
+    // The name's extension when it has one; images travel nameless now, so the bytes' own magic names the rest.
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     let ext = if ext.is_empty() { crate::types::sniff_ext(bytes).to_string() } else { ext };
     let dir = crate::storage::runtime_dir();
