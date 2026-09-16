@@ -499,6 +499,25 @@ impl PhotonApp {
         if let Some(cb) = self.settings_wave_hold_check.as_mut() {
             cb.set_checked(self.wave_hold);
         }
+        // The earpiece trim (device-local, stops; absent = 0) applied live.
+        let trim = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.device_local("audio.rx.trim"))
+            .and_then(|v| v.as_i64())
+            .unwrap_or(0) as i32;
+        crate::platform::audio::set_rx_trim_stops(trim);
+        // Plaid beyond the LAN: linked, absent = ON.
+        let plaid_wan = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.effective("waves.plaid_wan"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(true);
+        crate::call::PLAID_WAN_ALLOWED.store(plaid_wan, std::sync::atomic::Ordering::Relaxed);
+        if let Some(cb) = self.settings_plaid_wan_check.as_mut() {
+            cb.set_checked(plaid_wan);
+        }
         // Show edit history: linked (a view preference follows the person), absent = OFF — today's clean look until opted in.
         self.chat_history = self
             .fleet_settings
@@ -768,7 +787,7 @@ impl PhotonApp {
                 let base = format!("audio.cal.voice.{}", p.mic_id);
                 let fs = self.fleet_settings.as_ref().unwrap();
                 // n restarts when no .voiced exists yet — the gain-era profiles left n=100 behind, which would give a first voiced write a fifth of the weight it earned.
-                let stored_voiced = read_f32(fs, &format!("{base}.voiced"));
+                let stored_voiced = read_f32(fs, &format!("{base}.voiced")).filter(|v| *v > 0.0);
                 let stored_n = if stored_voiced.is_some() { read_n(fs, &format!("{base}.n")) } else { 0.0 };
                 let w = lr.windows as f32;
                 // FLOOR-ONLY post (voiced 0 = the sentinel, 2026-09-15 "normalize on quiet"): a call where nobody talked 3 s still measured its quiet — blend the floor, leave voiced and its count untouched.
@@ -821,6 +840,104 @@ impl PhotonApp {
             fs.set(&k, v, now);
         }
         self.persist_and_push_settings();
+    }
+
+    /// The Wave page's profile list: every mic this device has measured — (mic id, voiced, fine floor, calls of evidence). Read from this device's own entries (profiles are device-local); a voiced of 0 is the floor-only sentinel (or a forgotten profile) and lists with voice 0.
+    pub(super) fn voice_profiles(&self) -> Vec<(String, f32, f32, u32)> {
+        let Some(fs) = self.fleet_settings.as_ref() else { return Vec::new() };
+        let Some(dev) = fs.devices.iter().find(|d| d.device_pubkey == fs.our_device) else { return Vec::new() };
+        let mut mics: Vec<String> = dev
+            .entries
+            .iter()
+            .filter_map(|e| e.key.strip_prefix("audio.cal.voice."))
+            .filter_map(|rest| rest.rsplit_once('.').map(|(mic, _)| mic.to_string()))
+            .collect();
+        mics.sort();
+        mics.dedup();
+        mics.into_iter()
+            .map(|mic| {
+                let base = format!("audio.cal.voice.{mic}");
+                let voiced = fs.device_local(&format!("{base}.voiced")).and_then(crate::storage::fleet_settings::as_f32).unwrap_or(0.0);
+                let floor = fs.device_local(&format!("{base}.floor")).and_then(crate::storage::fleet_settings::as_f32).unwrap_or(0.0);
+                let n = fs.device_local(&format!("{base}.n")).and_then(|v| v.as_u64()).unwrap_or(0) as u32;
+                (mic, voiced, floor, n)
+            })
+            .filter(|(_, v, f, _)| *v > 0.0 || *f > 0.0)
+            .collect()
+    }
+
+    /// FORGET a mic's profile (the Wave page): voiced and floor to zero, the count to zero — the next wave measures from nothing (the engine's seed treats a zero voiced as absent, the blend restarts its count). Device-local writes.
+    pub(super) fn forget_voice_profile(&mut self, mic: &str) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        let base = format!("audio.cal.voice.{mic}");
+        let fs = self.fleet_settings.as_mut().unwrap();
+        let mut changed = false;
+        for (k, v) in [
+            (format!("{base}.voiced"), vsf::VsfType::f5(0.0)),
+            (format!("{base}.floor"), vsf::VsfType::f5(0.0)),
+            (format!("{base}.n"), vsf::VsfType::u(0, false)),
+        ] {
+            if fs.linked(&k) {
+                fs.set_link(&k, false, now);
+            }
+            changed |= fs.set(&k, v, now);
+        }
+        crate::logf!("CAL: profile forgotten — mic \"{}\" (the next wave measures from nothing)", mic);
+        if changed {
+            self.persist_and_push_settings();
+        }
+        self.wave_profiles = self.voice_profiles();
+    }
+
+    /// The earpiece trim (the Wave page): step by one stop, clamp, apply live, persist device-local (`audio.rx.trim`).
+    pub(super) fn step_rx_trim(&mut self, delta: i32) {
+        let stops = (crate::platform::audio::rx_trim_stops() + delta).clamp(-crate::platform::audio::RX_TRIM_MAX_STOPS, crate::platform::audio::RX_TRIM_MAX_STOPS);
+        crate::platform::audio::set_rx_trim_stops(stops);
+        if self.ensure_fleet_settings() {
+            let now = vsf::eagle_time_oscillations();
+            let fs = self.fleet_settings.as_mut().unwrap();
+            if fs.linked("audio.rx.trim") {
+                fs.set_link("audio.rx.trim", false, now);
+            }
+            if fs.set("audio.rx.trim", vsf::VsfType::i(stops as isize), now) {
+                crate::logf!("AUDIO: earpiece trim = {} stop(s) (device-local)", stops);
+                self.persist_and_push_settings();
+            }
+        }
+    }
+
+    /// Kick the measure-now ritual (the Wave page). No-op while a wave is live or one is already listening.
+    pub(super) fn start_voice_measure(&mut self) {
+        if self.active_call.is_some() || self.wave_measure_rx.is_some() {
+            return;
+        }
+        self.wave_measure_rx = crate::call::measure::start(6);
+        if self.wave_measure_rx.is_none() {
+            crate::log("CAL: measure now — the audio session refused to open");
+        }
+    }
+
+    /// Drain the ritual's verdict (the tick): the page flips from "listening…" to the number; the profile itself rides the ordinary learned-result drain.
+    pub(super) fn drain_voice_measure(&mut self) -> bool {
+        let Some(rx) = self.wave_measure_rx.as_ref() else { return false };
+        match rx.try_recv() {
+            Ok(m) => {
+                self.wave_measured = Some(m);
+                self.wave_measure_rx = None;
+                self.drain_audio_cal();
+                self.wave_profiles = self.voice_profiles();
+                self.scene_dirty = true;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.wave_measure_rx = None;
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => false,
+        }
     }
 
     /// Drain measured profiles (v-chirp probe mid-call, learner at teardown/route-swap) into stored settings — toast-free, silent bookkeeping.

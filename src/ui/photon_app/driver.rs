@@ -493,6 +493,17 @@ impl FluorApp for PhotonApp {
             12.,
             false,
         ));
+        // Plaid beyond the LAN (waves.plaid_wan, linked, default ON) — the Wave page.
+        self.settings_plaid_wan_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            tr(Msg::PlaidOffLan),
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            true,
+        ));
         // Show edit history (chat.history, linked, default OFF): a selected edited bubble's meta lists every prior version.
         self.settings_history_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
@@ -991,6 +1002,10 @@ impl FluorApp for PhotonApp {
                         self.request_vault_stats();
                         self.compute_vault_breakdown();
                     }
+                    // Opening the Wave page snapshots the profile list (the render reads a copy).
+                    if *p == SettingsPage::Wave {
+                        self.wave_profiles = self.voice_profiles();
+                    }
                     // Navigating away abandons a rename in progress (Nick 2026-09-10): the box goes, nothing written.
                     if self.fleet_rename.is_some() && self.state != AppState::Settings(*p) {
                         self.fleet_rename = None;
@@ -1271,6 +1286,22 @@ impl FluorApp for PhotonApp {
                     } else if slot == 2 {
                         self.spawn_update_apply(Channel::Dev);
                     }
+                } else if page == SettingsPage::Wave {
+                    // 0 quieter · 1 louder · 2 measure now · 8+i forget the i-th listed mic.
+                    match slot {
+                        0 => self.step_rx_trim(-1),
+                        1 => self.step_rx_trim(1),
+                        2 => self.start_voice_measure(),
+                        8..=13 => {
+                            let mic = self.wave_profiles.get((slot - 8) as usize).map(|p| p.0.clone());
+                            if let Some(mic) = mic {
+                                self.forget_voice_profile(&mic);
+                            }
+                        }
+                        _ => {}
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
                 } else if page == SettingsPage::Vault {
                     if slot == 0 {
                         self.request_vault_stats();
@@ -3110,6 +3141,9 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
         if self.presence_probe_tick(now) {
+            needs_redraw = true;
+        }
+        if self.drain_voice_measure() {
             needs_redraw = true;
         }
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.

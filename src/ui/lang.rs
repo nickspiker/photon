@@ -739,6 +739,41 @@ pub enum Msg<'a> {
     /// One breakdown row: a conversation's total for the active filter, its name, and its row count.
     VaultConvLine { size: &'a str, name: &'a str, count: &'a str },
     VaultBinEmpty,
+    // ---- the Wave page ----
+    WaveIntro,
+    /// "This device's hearing" — the trim section head.
+    WaveHearingHead,
+    /// The trim's current value in stops, the route, and the rocker as read.
+    WaveHearingLine { stops: &'a str, route: &'a str, rocker: &'a str },
+    WaveTrimWhy,
+    WaveQuieter,
+    WaveLouder,
+    /// "This device's voice" — the calibration section head.
+    WaveVoiceHead,
+    WaveVoiceWhy,
+    /// One mic's profile: voiced level, quiet floor, calls of evidence.
+    WaveMicLine { mic: &'a str, voiced: &'a str, floor: &'a str, n: &'a str },
+    WaveNoProfiles,
+    WaveForget,
+    WaveMeasureNow,
+    WaveListening,
+    /// The measure-now verdict.
+    WaveMeasured { voiced: &'a str, floor: &'a str },
+    WaveMeasuredQuiet,
+    /// "The last wave" — the stats section head.
+    WaveLastHead,
+    WaveNoWaveYet,
+    WaveLastLink { dur: &'a str, path: &'a str, floor: &'a str, ema: &'a str, max: &'a str },
+    WavePathLan,
+    WavePathWan,
+    WaveLastLoss { lost: &'a str, of: &'a str, filled: &'a str, holes: &'a str },
+    WaveLastLadder { rate: &'a str, ups: &'a str, downs: &'a str, peer: &'a str },
+    WaveLastLevel { start: &'a str, end: &'a str, voiced: &'a str },
+    WaveLastReaim { voiced: &'a str, from: &'a str, to: &'a str },
+    WaveLastJitter { underruns: &'a str, trims: &'a str },
+    /// "Preferences" — the toggles section head.
+    WavePrefsHead,
+    PlaidOffLan,
     LogTitle,
     DiagBack,
     DiagClear,

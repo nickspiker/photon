@@ -11,6 +11,7 @@ pub mod vchirp;
 pub mod nlms;
 pub mod ringback;
 pub mod engine;
+pub mod measure;
 pub mod spool;
 pub mod record;
 pub mod wave_env;
@@ -173,6 +174,41 @@ pub static LAST_LINK_LOSS: std::sync::atomic::AtomicU32 = std::sync::atomic::Ato
 pub static LAST_LINK_TARGET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// The wire rung the engine is sending on (index into engine::TIER_NAMES), for the call panel's live line.
 pub static LAST_LINK_TIER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// THE LAST WAVE (the Wave settings page, Nick 2026-09-16 "a wave config screen"): the engine's teardown writes one summary; the page renders it. Session-only — the log holds history.
+#[derive(Clone, Debug, Default)]
+pub struct LastWave {
+    pub seconds: u64,
+    pub lan_path: bool,
+    pub rtt_floor_ms: u32,
+    pub rtt_ema_ms: u32,
+    pub rtt_max_ms: u32,
+    pub windows_in: u64,
+    pub windows_lost: u64,
+    pub fills_got: u64,
+    pub holes: u64,
+    /// Ladder: where it ended (engine::TIER_RATES index), how often it moved.
+    pub tier_end: usize,
+    pub tier_ups: u32,
+    pub tier_downs: u32,
+    /// The peer's worst reported loss in one second (0 = a v96 peer that never said).
+    pub peer_lost_max: u32,
+    /// The level plan: the makeup the call started on and ended on (×10), the whole-call voiced level, and the re-aim steps as (voiced evidence, from ×10, to ×10).
+    pub makeup_start_x10: u32,
+    pub makeup_end_x10: u32,
+    pub measured_voiced: u32,
+    pub reaims: Vec<(u32, u32, u32)>,
+    pub underruns: u64,
+    pub trims: u64,
+}
+pub static LAST_WAVE: std::sync::Mutex<Option<LastWave>> = std::sync::Mutex::new(None);
+
+pub fn last_wave() -> Option<LastWave> {
+    LAST_WAVE.lock().unwrap().clone()
+}
+
+/// The Wave page's "plaid off-LAN" preference (`waves.plaid_wan`, default ON): OFF = the raw rung is never tried beyond a LAN-class path, whatever the headroom says — some links are simply happier at 128 kbps and a person may say so once.
+pub static PLAID_WAN_ALLOWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
 /// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this call. Written by the engine thread, read by the UI's drought measurement.
 pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);

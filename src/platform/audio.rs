@@ -54,6 +54,17 @@ const STALL_MAX_DROP_PER_RENDER: usize = 4;
 /// The recent render level (mean |sample|, fast attack / ~0.6 s decay) the stall guard reads pauses against, and the voiced-frame drop cadence counter (one voiced frame per eight renders at most).
 static RENDER_LEVEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STALL_VOICED_SKIP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// The earpiece trim in stops (−4..=4), device-local; see the render chain.
+static RX_TRIM_STOPS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+pub const RX_TRIM_MAX_STOPS: i32 = 4;
+
+pub fn rx_trim_stops() -> i32 {
+    RX_TRIM_STOPS.load(Ordering::Relaxed)
+}
+
+pub fn set_rx_trim_stops(stops: i32) {
+    RX_TRIM_STOPS.store(stops.clamp(-RX_TRIM_MAX_STOPS, RX_TRIM_MAX_STOPS), Ordering::Relaxed);
+}
 // SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 240 = ±0.42% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
 const SPLICE_UNDER_MARGIN: usize = 2; // duplicate only when depth sits ≥2 under target (priming/underrun own the empty case; hysteresis keeps delete/duplicate from chattering)
 static SPLICE_DROPPED: AtomicUsize = AtomicUsize::new(0);
@@ -437,6 +448,19 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
                 carry = acc & 0xFFFF_FFFF;
             }
             SPEAKER_DUCK_CARRY.store(carry, Ordering::Relaxed);
+        }
+    }
+    // THE EARPIECE TRIM (Nick 2026-09-16, the Kalispell↔Southworth wave: a Pixel 3a at max rocker heard the plan level as quiet while a Pixel 8 Pro at its lowest step heard it loud — the earpieces differ by more than Android's narrow voice-call rocker can span, and no vendor number tells us an earpiece's loudness). A per-device static gain in STOPS (one stop = ×2), remembered in `audio.rx.trim`, the pot under the rocker: a power of two, so it is an exact shift with no carry; upward it saturates at the rail. Never on the wire, never in the archive — this device's ear only. Local sources (ringback, previews) skip it: they were built for the rung the wave plays at.
+    if !LOCAL_SOURCE.load(Ordering::Relaxed) {
+        let stops = RX_TRIM_STOPS.load(Ordering::Relaxed);
+        if stops > 0 {
+            for s in frame.iter_mut() {
+                *s = ((*s as i32) << stops).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            }
+        } else if stops < 0 {
+            for s in frame.iter_mut() {
+                *s = (*s as i32 >> (-stops)) as i16;
+            }
         }
     }
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.

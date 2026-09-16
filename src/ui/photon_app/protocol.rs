@@ -468,6 +468,18 @@ impl PhotonApp {
         }
 
 
+        // Plaid beyond the LAN: LINKED write; the engine reads the static live, so the next climb decision sees it.
+        let plaid_wan_toggle = self
+            .settings_plaid_wan_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = plaid_wan_toggle {
+            crate::call::PLAID_WAN_ALLOWED.store(checked, std::sync::atomic::Ordering::Relaxed);
+            if self.settings_set("waves.plaid_wan", vsf::VsfType::u0(checked)) {
+                crate::logf!("SETTINGS: waves.plaid_wan = {} (linked write)", checked);
+            }
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         // Show edit history: LINKED write (a view preference follows the person across their fleet); the live flag flips immediately so the open strip re-renders this frame.
         let history_toggle = self
             .settings_history_check

@@ -97,6 +97,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
                 AppState::Settings(SettingsPage::Vault) => "Settings:Vault",
+                AppState::Settings(SettingsPage::Wave) => "Settings:Wave",
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::Conversations) => "Settings:Conversations",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
@@ -5883,18 +5884,13 @@ impl PhotonApp {
                     flow.line(&mut canvas, ctx.text, &tr(Msg::NotificationsTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.gap(hspan2 * 0.4);
                     // The background/load-on-startup toggle MOVED to Security (Nick 2026-09-03) — it belongs beside the auto-attest arm it enables, not among the alert sounds.
+                    // The wave toggles (ring, vibrate on incoming, hold every wave) moved home to the Wave page (Nick 2026-09-16).
                     let chime = tr(Msg::ChimeNewMessage);
                     let vib_msg = tr(Msg::VibrateNewMessage);
-                    let ring_call = tr(Msg::RingIncomingCall);
-                    let vib_call = tr(Msg::VibrateIncomingCall);
-                    let wave_hold = tr(Msg::HoldWavesOnDevice);
                     let edit_hist = tr(Msg::KeepEditHistory);
-                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 6] = [
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 3] = [
                         (self.settings_chime_check.as_mut(), &*chime),
                         (self.settings_vibrate_msg_check.as_mut(), &*vib_msg),
-                        (self.settings_ring_call_check.as_mut(), &*ring_call),
-                        (self.settings_vibrate_call_check.as_mut(), &*vib_call),
-                        (self.settings_wave_hold_check.as_mut(), &*wave_hold),
                         (self.settings_history_check.as_mut(), &*edit_hist),
                     ];
                     for (cb, label) in boxes {
@@ -6171,6 +6167,113 @@ impl PhotonApp {
                             );
                         }
                     }
+                }
+                SettingsPage::Wave => {
+                    // THE WAVE PAGE (Nick 2026-09-16, "a wave config screen"): this device's hearing (the earpiece trim in STOPS — "ideally not dB"), its voice (the per-mic profiles the calibration learned, forget / measure now), the last wave's stats, and the wave preferences. Everything but the trim and the ritual is data the app already held and used to let die in the log.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveIntro), hspan2, *theme::LABEL_COLOUR, 400);
+                    // ── Hearing: the trim.
+                    flow.gap(hspan2 * 0.6);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveHearingHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    {
+                        let stops = crate::platform::audio::rx_trim_stops();
+                        let stops_s = if stops < 0 { format!("\u{2212}{}", crate::fmt_num((-stops) as u32)) } else if stops > 0 { format!("+{}", crate::fmt_num(stops as u32)) } else { crate::fmt_num(0) };
+                        let route = crate::platform::audio::route_id();
+                        let rocker = crate::platform::audio::current_volume_db().map(|db| crate::fmt_share((10f32.powf(db / 20.0) * 1000.0).round() as u64, 1000)).unwrap_or_else(|| "?".into());
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::WaveHearingLine { stops: &stops_s, route: &route, rocker: &rocker }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveTrimWhy), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        let can_down = stops > -crate::platform::audio::RX_TRIM_MAX_STOPS;
+                        let can_up = stops < crate::platform::audio::RX_TRIM_MAX_STOPS;
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                            (&tr(Msg::WaveQuieter), btn_base.wrapping_add(0), can_down, None),
+                            (&tr(Msg::WaveLouder), btn_base.wrapping_add(1), can_up, None),
+                        ], "Open Sans");
+                    }
+                    // ── Voice: the profiles.
+                    flow.gap(hspan2 * 0.6);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveVoiceHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveVoiceWhy), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    let profiles = self.wave_profiles.clone();
+                    if profiles.is_empty() {
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::WaveNoProfiles), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                    }
+                    for (i, (mic, voiced, floor, n)) in profiles.iter().enumerate().take(6) {
+                        let v = crate::fmt_num(voiced.round() as u32);
+                        // The quiet floor is a fraction of a coarse unit on every phone we have met — shown as a share of one.
+                        let f = crate::fmt_share((*floor * 1000.0).round() as u64, 1000);
+                        let ns = crate::fmt_num(*n);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::WaveMicLine { mic, voiced: &v, floor: &f, n: &ns }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &[
+                            (&tr(Msg::WaveForget), btn_base.wrapping_add(8 + i as u16), true, None),
+                        ], "Open Sans");
+                    }
+                    if self.wave_measure_rx.is_some() {
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::WaveListening), hspan2 * 0.95, *theme::SEARCH_FOUND_COLOUR, 500);
+                    } else {
+                        if let Some(m) = self.wave_measured.as_ref() {
+                            let line = if m.voiced_frames >= 600 {
+                                let v = crate::fmt_num(m.voiced);
+                                let f = crate::fmt_share((m.floor * 1000.0).round() as u64, 1000);
+                                tr(Msg::WaveMeasured { voiced: &v, floor: &f }).into_owned()
+                            } else {
+                                tr(Msg::WaveMeasuredQuiet).into_owned()
+                            };
+                            flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        }
+                        let idle = self.active_call.is_none();
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                            (&tr(Msg::WaveMeasureNow), btn_base.wrapping_add(2), idle, None),
+                        ], "Open Sans");
+                    }
+                    // ── The last wave.
+                    flow.gap(hspan2 * 0.6);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    match crate::call::last_wave() {
+                        Some(w) => {
+                            let dur = super::call_ui::fmt_duration_secs(w.seconds as i64);
+                            let path = tr(if w.lan_path { Msg::WavePathLan } else { Msg::WavePathWan });
+                            let (fl, em, mx) = (crate::fmt_num(w.rtt_floor_ms), crate::fmt_num(w.rtt_ema_ms), crate::fmt_num(w.rtt_max_ms));
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLink { dur: &dur, path: &path, floor: &fl, ema: &em, max: &mx }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            let (lost, of, filled, holes) = (crate::fmt_num64(w.windows_lost), crate::fmt_num64(w.windows_in), crate::fmt_num64(w.fills_got), crate::fmt_num64(w.holes));
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLoss { lost: &lost, of: &of, filled: &filled, holes: &holes }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            let rate = if w.tier_end + 1 == crate::call::engine::TIER_RATES.len() { "plaid".to_string() } else { format!("{} kbps", crate::fmt_num((crate::call::engine::TIER_RATES[w.tier_end] / 1000) as u32)) };
+                            let (ups, downs, peer) = (crate::fmt_num(w.tier_ups), crate::fmt_num(w.tier_downs), crate::fmt_num(w.peer_lost_max));
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLadder { rate: &rate, ups: &ups, downs: &downs, peer: &peer }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            let x10 = |v: u32| format!("{}.{}", crate::fmt_num(v / 10), crate::fmt_num(v % 10));
+                            let (st, en, vo) = (x10(w.makeup_start_x10), x10(w.makeup_end_x10), crate::fmt_num(w.measured_voiced));
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLevel { start: &st, end: &en, voiced: &vo }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            for (voiced, from, to) in &w.reaims {
+                                let (v, f, t) = (crate::fmt_num(*voiced), x10(*from), x10(*to));
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastReaim { voiced: &v, from: &f, to: &t }), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            }
+                            let (un, tr_) = (crate::fmt_num64(w.underruns), crate::fmt_num64(w.trims));
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastJitter { underruns: &un, trims: &tr_ }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        }
+                        None => {
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveNoWaveYet), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        }
+                    }
+                    // ── Preferences.
+                    flow.gap(hspan2 * 0.6);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::WavePrefsHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    let ring_call = tr(Msg::RingIncomingCall);
+                    let vib_call = tr(Msg::VibrateIncomingCall);
+                    let wave_hold = tr(Msg::HoldWavesOnDevice);
+                    let plaid_wan = tr(Msg::PlaidOffLan);
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 4] = [
+                        (self.settings_ring_call_check.as_mut(), &*ring_call),
+                        (self.settings_vibrate_call_check.as_mut(), &*vib_call),
+                        (self.settings_wave_hold_check.as_mut(), &*wave_hold),
+                        (self.settings_plaid_wan_check.as_mut(), &*plaid_wan),
+                    ];
+                    for (cb, label) in boxes {
+                        let Some(cb) = cb else { continue };
+                        flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, label, hspan2);
+                    }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Vault => {
                     // THE VAULT'S PHYSIQUE (Nick 2026-09-14: "would be nice to see the stats"). Read-only; the snapshot is fetched off-thread on page entry and on Refresh (the librarian's mailbox queues behind commits). Sizes ride dms_size (DMS dozenal / hex bits / arabic), counts ride fmt_num64 — the number doctrine end to end.

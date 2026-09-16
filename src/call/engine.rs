@@ -28,7 +28,7 @@ const REPAIR_PACKETS: u32 = 1;
 // Climb evidence is RECEIVE-side cleanliness — a proxy for the channel both ways until a call_stats feedback frame exists (deferred in docs/calls.md); comment here so nobody mistakes it for measured TX loss.
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds cannot parse this wire at all; the whole fleet updates together.
-const TIER_RATES: [i32; 5] = [16_000, 32_000, 64_000, 128_000, 768_000];
+pub const TIER_RATES: [i32; 5] = [16_000, 32_000, 64_000, 128_000, 768_000];
 /// The rungs' names for the call panel (Nick 2026-09-11: "spaceball themed names for the quality rungs"): Spaceballs' speeds, bottom to top, the top rung already being plaid.
 pub const TIER_NAMES: [&str; 5] = ["sublight", "light speed", "ridiculous speed", "ludicrous speed", "plaid"];
 
@@ -341,6 +341,8 @@ fn run(
     // The re-aim's evidence: every voiced frame mean since the last decision (fresh evidence per step; cleared on fire and on a failed dynamics gate). Two steps per call at most — the first from 4 s of speech, one correction if 8 s of later evidence proves it ≥2× wrong (field 2026-09-15 16:54–16:57: four waves in a row fired on 2 s of pre-conversation breath and handling at 7–25 coarse — "4–12× its quiet", the relative gate satisfied — and hit the 64× cap; the real speech that followed ran 53–115 and the wire sat 1.5–2× hot on the rail: "splotchy").
     let mut reaim_ring: Vec<i64> = Vec::with_capacity(4096);
     let mut reaim_steps: u8 = 0;
+    let makeup_start_q32 = tx_makeup_q32;
+    let mut reaim_history: Vec<(u32, u32, u32)> = Vec::new();
     let mut voiced_frames: i64 = 0;
     // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
@@ -383,6 +385,7 @@ fn run(
     // Peer-loss governance state (see LINK_TAIL_V2): the tail byte's per-second baseline, the peer's max reported loss this local second, whether this peer speaks the byte at all, the last moment they reported loss, and the fill-ask pressure counter.
     let mut tail_lost_base: u64 = 0;
     let mut peer_loss_sec_max: u32 = 0;
+    let mut peer_loss_max_call: u32 = 0;
     let mut peer_sends_loss = false;
     let mut last_peer_loss_at: Option<std::time::Instant> = None;
     let mut fill_asks_sec: u32 = 0;
@@ -788,6 +791,7 @@ fn run(
                     let lost = t[10] as u32;
                     if lost > 0 {
                         peer_loss_sec_max = peer_loss_sec_max.max(lost);
+                        peer_loss_max_call = peer_loss_max_call.max(lost);
                         last_peer_loss_at = Some(std::time::Instant::now());
                     }
                 }
@@ -919,7 +923,9 @@ fn run(
                         && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
                     let ema_calm = rtt_n == 0 || rtt_min == u32::MAX || rtt_ema - rtt_min as f32 <= PLAID_RTT_EMA_BLOAT_MS;
                     let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && ema_calm && plaid_strikes < PLAID_PROBATION_STRIKES;
-                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || headroom));
+                    // The Wave page's off-LAN plaid preference (default on): OFF confines the raw rung to a LAN-class path however much headroom the WAN shows.
+                    let wan_ok = super::PLAID_WAN_ALLOWED.load(Ordering::Relaxed);
+                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || (headroom && wan_ok)));
                     let peer_ok = if next == RAW_TIER { peer_quiet(std::time::Duration::from_secs(10)) } else { peer_quiet(CLIMB_HOLD) };
                     // Delay-gradient climb gate: a building queue (slope past calm) bars every climb — the earliest congestion signal there is.
                     let slope_calm = slope_buckets.len() < 5 || {
@@ -1221,6 +1227,7 @@ fn run(
                             format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
                             format!("{:.1}x", ideal as f64 / crate::call::qgain::UNITY as f64)
                         );
+                        reaim_history.push(((measured_q8 >> 8) as u32, (tx_makeup_q32 * 10 / crate::call::qgain::UNITY) as u32, (ideal * 10 / crate::call::qgain::UNITY) as u32));
                         tx_makeup_q32 = ideal;
                     }
                     reaim_steps += 1;
@@ -1407,6 +1414,31 @@ fn run(
     // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
     let fine_floor = if raw_floor_q8 == i64::MAX { None } else { Some(raw_floor_q8 as f32 / 256.0) };
+    // THE LAST WAVE summary for the Wave settings page — one write, session-only.
+    {
+        let js = crate::platform::audio::jitter_stats();
+        *super::LAST_WAVE.lock().unwrap() = Some(super::LastWave {
+            seconds: start_instant.elapsed().as_secs(),
+            lan_path: params.plaid_allowed,
+            rtt_floor_ms: if rtt_min == u32::MAX { 0 } else { rtt_min },
+            rtt_ema_ms: rtt_ema.round() as u32,
+            rtt_max_ms: rtt_max,
+            windows_in: pkts_in,
+            windows_lost,
+            fills_got: fills_got_live + fills_got_drain,
+            holes: holes_faded,
+            tier_end: tier,
+            tier_ups,
+            tier_downs,
+            peer_lost_max: peer_loss_max_call,
+            makeup_start_x10: (makeup_start_q32 * 10 / crate::call::qgain::UNITY) as u32,
+            makeup_end_x10: (tx_makeup_q32 * 10 / crate::call::qgain::UNITY) as u32,
+            measured_voiced: if voiced_frames > 0 { (voiced_sum_q8 / voiced_frames >> 8) as u32 } else { 0 },
+            reaims: reaim_history.clone(),
+            underruns: js.2 as u64,
+            trims: js.4 as u64,
+        });
+    }
     crate::logf!(
         "CALL: level plan — makeup {} ({}, cal voiced {}); this call measured voiced {} floor {} over {} frames",
         format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
