@@ -1207,8 +1207,8 @@ fn run(
                 } else if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {
                     let ideal = (((TX_WIRE_TARGET * 2 / 3) << 40) / measured_q8)
                         .clamp(crate::call::qgain::UNITY / 8, 64 * crate::call::qgain::UNITY);
-                    // The first step fires past 1.5× off-aim (inside that band the rocker covers it); the correction only past 2× — a second step must be earned.
-                    let (num, den) = if reaim_steps == 0 { (3, 2) } else { (2, 1) };
+                    // Both steps fire past 1.5× off-aim (inside that band the rocker covers it); the correction is earned by its EVIDENCE (8 s against 4 s), not a wider band — the 42-minute Kalispell↔Southworth wave (2026-09-16): Theresa's greeting energy aimed the first step at 243, her conversation ran 143, and the 2× correction band let a 1.7× (−4.6 dB) quiet aim stand for the whole wave; Emma's quiet first words showed the same bias the other way.
+                    let (num, den) = (3, 2);
                     if ideal * den >= tx_makeup_q32 * num || tx_makeup_q32 * den >= ideal * num {
                         crate::logf!(
                             "CALL: level plan re-aim {} — this call's voiced {} over {} frames ({}x its quiet, p90/p50 {}/{}), makeup {} → {}",

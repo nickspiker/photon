@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The wave's self-aim correction now fires at the same threshold as its first step, so an energetic greeting or a hesitant first word can no longer leave a call a few decibels off for its whole length.
 ## v98
 
 - Atoms and molecules: tap New atom on the contacts screen to found a conversation that is yours alone, titled or not, and it is an atom; open its panel and press Create a molecule! to offer a friend a bond over the conversation you already have with them, and the moment they tap Bind it is a molecule — the same thing under a different count, the way a lone hydrogen becomes H₂.
