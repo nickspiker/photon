@@ -319,6 +319,8 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(1); // the conversation stream filter pill
+        self.digit_strip_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(12); // the compose digit strip: the twelve dozenal glyphs, tap to insert
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -1397,6 +1399,13 @@ impl FluorApp for PhotonApp {
                         // A tap anywhere within the dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
                         self.about_riddle_revealed = true;
                     }
+                    if slot == 6 {
+                        let digits: String = (0x10u8..=0x1B).map(char::from).collect();
+                        if self.copy_to_clipboard(&digits) {
+                            self.ready_toast = Some(tr(Msg::DigitsCopied).into_owned());
+                            self.ready_toast_screen = None;
+                        }
+                    }
                 } else {
                     crate::logf!(
                         "settings-stub: pill {} on {} (no behaviour wired)",
@@ -1912,6 +1921,17 @@ impl FluorApp for PhotonApp {
                 }
             }
             // The stream filter pill cycles all → waves → text. The wrap cache keys on the filter, so the list rebuilds itself.
+            // THE DIGIT STRIP (Nick 2026-09-16, "use them in casual conversation"): a tap on a glyph key inserts that digit byte into the message box, focus untouched.
+            if self.digit_strip_base != HIT_NONE && hit_id >= self.digit_strip_base && hit_id < self.digit_strip_base.wrapping_add(12) {
+                let d = (hit_id - self.digit_strip_base) as u8;
+                let glyph = char::from(0x10 + d).to_string();
+                if let Some(tb) = self.message_textbox.as_mut() {
+                    tb.insert_str(&glyph, ctx.text);
+                }
+                self.scene_dirty = true;
+                ctx.window.request_redraw();
+                return EventResponse::Handled;
+            }
             if hit_id != HIT_NONE && hit_id == self.conv_filter_hit {
                 self.conv_filter = self.conv_filter.next();
                 self.selected_msg = None;

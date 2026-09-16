@@ -102,6 +102,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("thiết bị này: {name}").into(),
         Msg::CopyWords => "chép các từ".into(),
         Msg::WordsCopied => "đã chép \u{2014} dán chúng trên thiết bị kia của bạn".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "Trên thiết bị kia của bạn: Cài đặt \u{2192} Đội \u{2192} Thêm\nỞ gần? Chỉ cần chạm vào tên thiết bị này.\nỞ xa? Gõ các từ này ở đó:".into(),
         Msg::LaunchJoinConfirmNote => "Bạn sẽ xác nhận việc thêm trên thiết bị đó.".into(),
         Msg::StartFreshIdle => "Nhầm thiết bị? Bắt đầu lại từ đầu (xóa sạch thiết bị này)".into(),

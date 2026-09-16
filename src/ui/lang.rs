@@ -278,6 +278,9 @@ pub enum Msg<'a> {
     ThisDeviceName(&'a str),
     CopyWords,
     WordsCopied,
+    /// The Base page: put the twelve dozenal digits on the clipboard (Nick 2026-09-16: "use them in casual conversation").
+    CopyDigits,
+    DigitsCopied,
     LaunchJoinInstructions,
     LaunchJoinConfirmNote,
     StartFreshIdle,

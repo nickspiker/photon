@@ -77,6 +77,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("this device: {name}").into(),
         Msg::CopyWords => "copy words".into(),
         Msg::WordsCopied => "copied \u{2014} paste them on your other device".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "On your other device: Settings \u{2192} Fleet \u{2192} Add\nNearby? Just tap this device's name.\nFar away? Type these words there:".into(),
         Msg::LaunchJoinConfirmNote => "You'll confirm the add on that device.".into(),
         Msg::StartFreshIdle => "Wrong device? Start fresh (wipe this device)".into(),

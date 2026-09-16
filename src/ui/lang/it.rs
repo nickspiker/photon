@@ -104,6 +104,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("questo dispositivo: {name}").into(),
         Msg::CopyWords => "copia le parole".into(),
         Msg::WordsCopied => "copiate \u{2014} incollale sull’altro dispositivo".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "Sull’altro dispositivo: Impostazioni \u{2192} Flotta \u{2192} Aggiungi\nÈ qui vicino? Tocca il nome di questo dispositivo.\nÈ lontano? Scrivi lì queste parole:".into(),
         Msg::LaunchJoinConfirmNote => "L’aggiunta la confermi su quel dispositivo.".into(),
         Msg::StartFreshIdle => "Dispositivo sbagliato? Ricomincia da zero (cancella questo dispositivo)".into(),

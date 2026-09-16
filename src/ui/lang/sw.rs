@@ -103,6 +103,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("kifaa hiki: {name}").into(),
         Msg::CopyWords => "nakili maneno".into(),
         Msg::WordsCopied => "yamenakiliwa \u{2014} yabandike kwenye kifaa chako kingine".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "Kwenye kifaa chako kingine: Mipangilio \u{2192} Kundi \u{2192} Ongeza\nKipo karibu? Gusa tu jina la kifaa hiki.\nKipo mbali? Andika maneno haya huko:".into(),
         Msg::LaunchJoinConfirmNote => "Utathibitisha kuongezwa kwenye kifaa hicho.".into(),
         Msg::StartFreshIdle => "Kifaa kibaya? Anza upya (futa kifaa hiki)".into(),

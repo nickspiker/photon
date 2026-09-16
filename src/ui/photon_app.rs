@@ -1705,6 +1705,8 @@ pub struct PhotonApp {
     strip_dismissed: Option<(usize, i64, bool)>,
     /// Hit id of the filter pill.
     conv_filter_hit: HitId,
+    /// The compose digit strip's twelve hit ids (dozenal base only, while the message box is focused).
+    digit_strip_base: HitId,
     /// Wave cards' waveform bands as drawn this frame, slot-indexed like `msg_hit_rows` (`visible_index % MSG_HIT_SPAN`).
     msg_wave_bands: Vec<Option<WaveBand>>,
     /// Attachment visuals as drawn this frame, slot-indexed like `msg_hit_rows`.
@@ -2565,6 +2567,7 @@ impl PhotonApp {
             rejected_offers: std::collections::HashSet::new(),
             strip_dismissed: None,
             conv_filter_hit: HIT_NONE,
+            digit_strip_base: HIT_NONE,
             msg_wave_bands: Vec::new(),
             msg_attach_visuals: Vec::new(),
             wave_scrub: None,

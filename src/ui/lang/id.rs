@@ -101,6 +101,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("perangkat ini: {name}").into(),
         Msg::CopyWords => "salin kata-katanya".into(),
         Msg::WordsCopied => "tersalin \u{2014} tempel di perangkatmu yang lain".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "Di perangkatmu yang lain: Pengaturan \u{2192} Armada \u{2192} Tambah\nDekat? Cukup ketuk nama perangkat ini.\nJauh? Ketik kata-kata ini di sana:".into(),
         Msg::LaunchJoinConfirmNote => "Kamu akan mengonfirmasi penambahannya di perangkat itu.".into(),
         Msg::StartFreshIdle => "Salah perangkat? Mulai dari nol (hapus perangkat ini)".into(),

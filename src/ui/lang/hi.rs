@@ -103,6 +103,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("यह डिवाइस: {name}").into(),
         Msg::CopyWords => "शब्द कॉपी करो".into(),
         Msg::WordsCopied => "कॉपी हो गए \u{2014} अपने दूसरे डिवाइस पर चिपकाओ".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "अपने दूसरे डिवाइस पर: सेटिंग्स \u{2192} बेड़ा \u{2192} जोड़ो\nपास है? बस इस डिवाइस के नाम पर टैप करो।\nदूर है? ये शब्द वहाँ लिखो:".into(),
         Msg::LaunchJoinConfirmNote => "जोड़ने की पुष्टि उसी डिवाइस पर करनी होगी।".into(),
         Msg::StartFreshIdle => "ग़लत डिवाइस? नए सिरे से शुरू करो (यह डिवाइस मिटा दो)".into(),

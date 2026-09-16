@@ -115,6 +115,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("цей пристрій: {name}").into(),
         Msg::CopyWords => "копіювати слова".into(),
         Msg::WordsCopied => "скопійовано \u{2014} встав їх на іншому своєму пристрої".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "На іншому своєму пристрої: Налаштування \u{2192} Флот \u{2192} Додати\nПоруч? Просто торкнись назви цього пристрою.\nДалеко? Введи там ці слова:".into(),
         Msg::LaunchJoinConfirmNote => "Додавання ти підтвердиш на тому пристрої.".into(),
         Msg::StartFreshIdle => "Не той пристрій? Почати з нуля (стерти цей пристрій)".into(),

@@ -103,6 +103,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("bu cihaz: {name}").into(),
         Msg::CopyWords => "kelimeleri kopyala".into(),
         Msg::WordsCopied => "kopyalandı \u{2014} diğer cihazına yapıştır".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "Diğer cihazında: Ayarlar \u{2192} Filo \u{2192} Ekle\nYakında mı? Bu cihazın adına dokunman yeter.\nUzakta mı? Şu kelimeleri oraya yaz:".into(),
         Msg::LaunchJoinConfirmNote => "Eklemeyi o cihazda onaylayacaksın.".into(),
         Msg::StartFreshIdle => "Yanlış cihaz mı? Sıfırdan başla (bu cihazı sil)".into(),

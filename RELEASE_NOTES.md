@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The twelve dozenal digits are typeable: in the dozenal base a row of glyph keys sits above the message box while you compose, a tap inserts one, and the Base page has a pill that copies all twelve to the clipboard for pasting anywhere in photon.
 - Settings has a Wave page: this device's hearing (an earpiece trim in stops on a bar with a tick per stop, six stops each way, quiet-min to loud-max, live during a wave — one stop doubles or halves what this device plays, for phones whose earpieces sit outside what the rocker can reach — with the route and rocker beside it), this device's voice (what each microphone's calibration has learned, a forget pill, and a "measure now" that listens to a sentence and stores the result), the last wave's stats in plain words (path, round trip, loss and recovery, the rate ladder, the level plan's aim), and the wave preferences — ring and vibrate on incoming, hold every wave here, and whether raw audio may be tried beyond the local network.
 - Before you attest, the orb's Security page now offers Wipe: a phone that was someone else's, or a handle nobody will type again, can be cleared to a blank slate without the old handle, and the hint says what stays true afterwards.
 - The Base page, with arabic numerals selected, now explains what base ten is: where the numerals came from, how recent zero is, that other bases exist, and why photon's magnitudes are counted the way a slide rule multiplies.

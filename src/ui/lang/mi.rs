@@ -101,6 +101,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("tēnei pūrere: {name}").into(),
         Msg::CopyWords => "tāruatia ngā kupu".into(),
         Msg::WordsCopied => "kua tāruatia \u{2014} whakapiria ki tō pūrere kē".into(),
+        Msg::CopyDigits => "tāruatia ngā mati tekau mā rua".into(),
+        Msg::DigitsCopied => "kua tāruatia \u{2014} whakapiritia ki hea noa i photon".into(),
         Msg::LaunchJoinInstructions => "I tō pūrere kē: Tautuhinga \u{2192} Kāhui \u{2192} Tāpiri\nKei te taha? Pāwhiritia noatia te ingoa o tēnei pūrere.\nKei tawhiti? Tāurua ēnei kupu ki reira:".into(),
         Msg::LaunchJoinConfirmNote => "Māu te tāpiri e whakaū i taua pūrere.".into(),
         Msg::StartFreshIdle => "He pūrere hē? Tīmata anō (mukua tēnei pūrere)".into(),

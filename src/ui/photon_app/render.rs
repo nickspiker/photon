@@ -3156,11 +3156,17 @@ impl PhotonApp {
                             .map(|t| t.height)
                             .unwrap_or(compose_h)
                             .max(compose_h);
+                        // THE DIGIT STRIP (Nick 2026-09-16): while the message box has focus in the dozenal base, a band of the twelve glyph keys sits between the list and the compose box — the keyboard has no key for a digit byte, so the app supplies one.
+                        let digit_strip = compose_ready
+                            && crate::num_base() == crate::NumBase::Dozenal
+                            && self.message_textbox.as_ref().is_some_and(|tb| self.focused == Some(tb.hit_id()));
+                        let digit_band_h = if digit_strip { unit * 1.1 } else { 0.0 };
                         let list_bottom = buf_h as f32
                             - ime_lift
                             - live_compose_h
                             - compose_margin
                             - unit * 0.5
+                            - digit_band_h
                             - if compose_strip.is_some()
                                 || (bridge_strip_txt.is_some() || bridge_inflight)
                             {
@@ -4613,6 +4619,22 @@ impl PhotonApp {
                         let _ = n;
 
                         // ── Armed reply/edit strip: the referenced message at HALF alpha (its sender's colour), in the reserved band. While editing, the strip shows what the row says NOW — the box holds the correction, so the pair reads as a before/after diff.
+                        if digit_strip {
+                            // The band sits just above the compose box: below the reply/bridge strip when one is up.
+                            let strip_top = list_bottom + if compose_strip.is_some() || (bridge_strip_txt.is_some() || bridge_inflight) { unit * 0.9 } else { 0.0 };
+                            let key_h = unit * 0.95;
+                            let gap = unit * 0.12;
+                            let avail = buf_w as f32 - pad_x * 2.0;
+                            let key_w = ((avail - gap * 11.0) / 12.0).max(unit * 0.6);
+                            for d in 0..12u8 {
+                                let x = pad_x + d as f32 * (key_w + gap);
+                                let rect = fluor::region::Region::new(x, strip_top + (digit_band_h - key_h) * 0.5, key_w, key_h);
+                                let label = char::from(0x10 + d).to_string();
+                                let hid = self.digit_strip_base.wrapping_add(d as u16);
+                                let fill = Some((theme::near_black(*theme::COPY_PILL_COLOUR, 0.15), theme::near_black(*theme::COPY_PILL_COLOUR, 0.3)));
+                                draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, true, fill, "Oxanium");
+                            }
+                        }
                         if let Some((t, strip_kind)) = compose_strip {
                             let target = raw_msgs.iter().find(|x| {
                                 x.timestamp == t
@@ -6623,6 +6645,15 @@ impl PhotonApp {
                         y += line_h * 0.9;
                     }
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base.wrapping_add(5));
+                    // COPY THE DIGITS (Nick 2026-09-16, "an easy spot to copy … so I can use them in casual conversation"): one pill puts the twelve glyph bytes on the clipboard; anywhere in photon they draw as digits (the +glyphs face is first in every fallback chain).
+                    {
+                        y += line_h * 0.3;
+                        let pw = (inset.w * 0.6).min(hspan2 * 14.0);
+                        let ph = hspan2 * 2.0;
+                        let rect = fluor::region::Region::new(cx - pw * 0.5, y, pw, ph);
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::CopyDigits), btn_base.wrapping_add(6), ctx.pressed_hit, true, None, "Open Sans");
+                        y += ph + line_h * 0.3;
+                    }
                     if self.about_riddle_revealed && base == crate::NumBase::Dozenal {
                         y += line_h * 0.4;
                         ctx.text.draw_text_center(&mut canvas, &crate::dozenal_glyphs(42), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(400).font("Oxanium"), page_clip, None);

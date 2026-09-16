@@ -101,6 +101,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ThisDeviceName(name) => format!("dieses Gerät: {name}").into(),
         Msg::CopyWords => "Wörter kopieren".into(),
         Msg::WordsCopied => "kopiert \u{2014} füge sie auf deinem anderen Gerät ein".into(),
+        Msg::CopyDigits => "copy the twelve digits".into(),
+        Msg::DigitsCopied => "copied \u{2014} paste them anywhere in photon".into(),
         Msg::LaunchJoinInstructions => "Auf deinem anderen Gerät: Einstellungen \u{2192} Flotte \u{2192} Hinzufügen\nIn der Nähe? Tippe einfach auf den Namen dieses Geräts.\nWeit weg? Tippe dort diese Wörter ein:".into(),
         Msg::LaunchJoinConfirmNote => "Du bestätigst das Hinzufügen auf jenem Gerät.".into(),
         Msg::StartFreshIdle => "Falsches Gerät? Neu anfangen (dieses Gerät löschen)".into(),
