@@ -747,6 +747,9 @@ pub enum Msg<'a> {
     WaveHearingLine { stops: &'a str, route: &'a str, rocker: &'a str },
     WaveTrimWhy,
     WaveQuieter,
+    /// The trim bar's end labels.
+    WaveTrimQuietMin,
+    WaveTrimLoudMax,
     WaveLouder,
     /// "This device's voice" — the calibration section head.
     WaveVoiceHead,

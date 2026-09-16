@@ -583,6 +583,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveHearingLine { stops, route, rocker } => format!("whakatika taringa {stops} taumata · ara {route} · kaha {rocker}").into(),
         Msg::WaveTrimWhy => "He rerekē ngā pūoro taringa i tua atu i te whānui o te pātene kaha, ā, kāore he waea e kī ana i te kaha o tōna. He pōtene tēnei i raro i te pātene: kotahi te taumata ka rua, ka haurua rānei te tangi o tēnei pūrere. Kāore e pā ki tāu e tuku ana.".into(),
         Msg::WaveQuieter => "whakangāwari".into(),
+        Msg::WaveTrimQuietMin => "mārie iti".into(),
+        Msg::WaveTrimLoudMax => "kaha rawa".into(),
         Msg::WaveLouder => "whakakaha".into(),
         Msg::WaveVoiceHead => "Te reo o tēnei pūrere".into(),
         Msg::WaveVoiceWhy => "Ngā mea kua ākona e te taupānga mō ia hopureo: te kaha o tō reo ki runga, me te mārie o tōna mārie. Ka inea e ia ngaru; ka whakakapia he kōtaha tawhito ina kitea e te ngaru he hē rawa, wareware rānei i konei kia tīmata hou te ngaru e whai ake.".into(),

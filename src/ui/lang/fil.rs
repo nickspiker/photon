@@ -581,6 +581,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveHearingLine { stops, route, rocker } => format!("earpiece trim {stops} stops · route {route} · rocker {rocker}").into(),
         Msg::WaveTrimWhy => "Earpieces differ by more than the rocker can span, and no phone reports how loud its earpiece is. The trim is a pot under the rocker: one stop doubles or halves what this device plays. It never touches what you send.".into(),
         Msg::WaveQuieter => "quieter".into(),
+        Msg::WaveTrimQuietMin => "quiet min".into(),
+        Msg::WaveTrimLoudMax => "loud max".into(),
         Msg::WaveLouder => "louder".into(),
         Msg::WaveVoiceHead => "This device's voice".into(),
         Msg::WaveVoiceWhy => "What the app has learned about each microphone: how loud your speech lands on it and how quiet its quiet is. A wave measures these every time; a stale profile is replaced when a wave proves it badly wrong, or forget it here and the next wave starts fresh.".into(),

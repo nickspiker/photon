@@ -579,6 +579,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveHearingLine { stops, route, rocker } => format!("ajuste del auricular {stops} pasos · ruta {route} · volumen {rocker}").into(),
         Msg::WaveTrimWhy => "Los auriculares difieren más de lo que el botón de volumen puede cubrir, y ningún teléfono informa cuán fuerte suena el suyo. El ajuste es un potenciómetro bajo el botón: un paso duplica o reduce a la mitad lo que reproduce este dispositivo. Nunca toca lo que envías.".into(),
         Msg::WaveQuieter => "más bajo".into(),
+        Msg::WaveTrimQuietMin => "mínimo silencio".into(),
+        Msg::WaveTrimLoudMax => "máximo fuerte".into(),
         Msg::WaveLouder => "más alto".into(),
         Msg::WaveVoiceHead => "La voz de este dispositivo".into(),
         Msg::WaveVoiceWhy => "Lo que la app ha aprendido de cada micrófono: cuán fuerte llega tu voz y cuán silencioso es su silencio. Cada onda lo mide; un perfil viejo se reemplaza cuando una onda demuestra que está muy mal, u olvídalo aquí y la próxima onda empieza de cero.".into(),

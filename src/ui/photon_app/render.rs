@@ -6183,6 +6183,35 @@ impl PhotonApp {
                         let route = crate::platform::audio::route_id();
                         let rocker = crate::platform::audio::current_volume_db().map(|db| crate::fmt_share((10f32.powf(db / 20.0) * 1000.0).round() as u64, 1000)).unwrap_or_else(|| "?".into());
                         flow.line(&mut canvas, ctx.text, &tr(Msg::WaveHearingLine { stops: &stops_s, route: &route, rocker: &rocker }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        // THE TRIM BAR (Nick 2026-09-16): a track with a tick per stop from quiet-min (−Lun) to loud-max (+Lun), the current stop a bright marker with its dozenal doubling count above it, the ends labelled — so the ear can see how much room it has left either way.
+                        {
+                            let max = crate::platform::audio::RX_TRIM_MAX_STOPS;
+                            let band = flow.band(hspan2 * 3.2);
+                            let margin = hspan2 * 1.2;
+                            let (x0, x1) = (band.x + margin, band.x + band.w - margin);
+                            let ty = band.y + band.h * 0.55;
+                            let step = (x1 - x0) / (2 * max) as f32;
+                            paint::fill_rect(&mut canvas, x0 as isize, ty as isize, (x1 - x0) as isize, 0, *theme::LABEL_COLOUR, None, None);
+                            for k in -max..=max {
+                                let x = x0 + (k + max) as f32 * step;
+                                let (h, colour) = if k == stops {
+                                    (hspan2 * 1.1, *theme::SEARCH_FOUND_COLOUR)
+                                } else if k == 0 {
+                                    (hspan2 * 0.7, *theme::CONTACT_NAME_COLOUR)
+                                } else {
+                                    (hspan2 * 0.45, *theme::LABEL_COLOUR)
+                                };
+                                let wpx = if k == stops { (hspan2 * 0.18).max(2.0) } else { 1.0 };
+                                paint::fill_rect(&mut canvas, (x - wpx * 0.5) as isize, (ty - h * 0.5) as isize, wpx as isize, h as isize, colour, None, None);
+                            }
+                            let glyph_style = TextStyle::new(hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
+                            let mx = x0 + (stops + max) as f32 * step;
+                            ctx.text.draw_text_center(&mut canvas, &crate::dms_doublings_glyphs(stops), mx, band.y + hspan2 * 0.9, &glyph_style, None, None);
+                            let end_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(500);
+                            let ly = band.y + band.h - hspan2 * 0.15;
+                            ctx.text.draw_text_left(&mut canvas, &tr(Msg::WaveTrimQuietMin), band.x, ly, &end_style, None, None);
+                            ctx.text.draw_text_right(&mut canvas, &tr(Msg::WaveTrimLoudMax), band.x + band.w, ly, &end_style, None, None);
+                        }
                         flow.prose(&mut canvas, ctx.text, &tr(Msg::WaveTrimWhy), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                         let can_down = stops > -crate::platform::audio::RX_TRIM_MAX_STOPS;
                         let can_up = stops < crate::platform::audio::RX_TRIM_MAX_STOPS;

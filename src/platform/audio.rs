@@ -54,9 +54,10 @@ const STALL_MAX_DROP_PER_RENDER: usize = 4;
 /// The recent render level (mean |sample|, fast attack / ~0.6 s decay) the stall guard reads pauses against, and the voiced-frame drop cadence counter (one voiced frame per eight renders at most).
 static RENDER_LEVEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static STALL_VOICED_SKIP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// The earpiece trim in stops (−4..=4), device-local; see the render chain.
+/// The earpiece trim in stops (−6..=6), device-local; see the render chain.
 static RX_TRIM_STOPS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
-pub const RX_TRIM_MAX_STOPS: i32 = 4;
+/// Six stops (Lun) each way (Nick 2026-09-16): a bar with a tick per stop shows how close the ear sits to loud-max and quiet-min.
+pub const RX_TRIM_MAX_STOPS: i32 = 6;
 
 pub fn rx_trim_stops() -> i32 {
     RX_TRIM_STOPS.load(Ordering::Relaxed)
