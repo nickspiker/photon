@@ -168,7 +168,7 @@ impl PhotonApp {
                             } else if expired {
                                 tr(Msg::BondExpired).into_owned()
                             } else {
-                                tr(Msg::BondOfferLine { sponsor: &their_name, title: &title, n: &crate::fmt_num64(n as u64) }).into_owned()
+                                tr(Msg::BondOfferLine { sponsor: &their_name, title: &title, n: &crate::fmt_mag(n as u64) }).into_owned()
                             };
                             let joinable = (!held && !accepted && !expired && offer.is_some()).then_some(gid);
                             cards.push((m.timestamp, false, label, joinable));
@@ -2585,7 +2585,7 @@ impl PhotonApp {
                                     let Some(r) = all_rows.get(7 + gi) else { break };
                                     let n_standing = roster.standing().len();
                                     let already = roster.is_standing(&contact_pid);
-                                    let label = format!("{} \u{00b7} {}", roster.title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_num64(n_standing as u64) });
+                                    let label = format!("{} \u{00b7} {}", roster.title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_mag(n_standing as u64) });
                                     let hid = if already || gi + 4 >= 16 { HIT_NONE } else { pick((4 + gi) as u16) };
                                     draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * 0.8, r.h * 0.9), &label, hid, ctx.pressed_hit, !already, None, "Oxanium");
                                 }
@@ -3668,7 +3668,7 @@ impl PhotonApp {
                                 // STATS UP TOP (Nick 2026-09-12): an attachment row's meta line leads with name, type, size and dims; the age and delivery state follow.
                                 if let (Some(a), Some((_, name, size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
                                     let size_s = crate::types::size_label(size);
-                                    let dims_s = a.dims.map(|(w, h): (u32, u32)| format!("{}\u{00D7}{}", crate::fmt_num(w), crate::fmt_num(h))).unwrap_or_default();
+                                    let dims_s = a.dims.map(|(w, h): (u32, u32)| format!("{}\u{00D7}{}", crate::fmt_mag(w as u64), crate::fmt_mag(h as u64))).unwrap_or_default();
                                     let kind_s = tr(Msg::AttachKindName(a.kind));
                                     let stats = tr(Msg::AttachStats { name: &name, kind: &kind_s, size: &size_s, dims: &dims_s });
                                     detail = format!("{stats} \u{00B7} {detail}");

@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age/dms_size/dms_length DMS doubling counts as a pure logarithm, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, rep_grade_glyphs (the reputation ladder: 1 − 1/evidence as a dozenal fraction, exact on every unit-fraction rung), dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age/dms_size/dms_length DMS doubling counts as a pure logarithm, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, fmt_mag (THE quantity render: every count a doubling count in dozenal, spirix lb + glyph-flagged digits, zero answered by spirix's own escape class), fmt_share (the other and only other form: a proportion as a radix point and its digits, integer base twelve so a third stays exactly .Tera), rep_grade_glyphs (the reputation ladder: 1 − 1/evidence, exact on every unit-fraction rung), dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
@@ -321,6 +321,46 @@ pub fn fmt_mag(n: u64) -> String {
     }
 }
 
+/// A PROPORTION as a SHARE OF A WHOLE — the second and only other form: a radix point and the digits after it, so `.Lun` is a half. The dot is what announces it, which is why a share needs no other marker beside a magnitude.
+///
+/// Computed in INTEGER base twelve, deliberately not through a binary float. A third is exactly `.4` in dozenal — twelve divides by three — and that exactness is the entire dozenal argument; but no binary float holds a third, so dividing in one renders `.3ƐƐƐ…`, which is the same number and visibly contradicts the claim. Scaling by a power of twelve and taking digits keeps every fraction whose denominator divides twelve exactly where the argument says it lands.
+///
+/// Leading zeros after the point do not count toward the width, so a small share keeps its resolution: three-in-256 reads `.018` rather than rounding away to nothing.
+pub fn fmt_share(part: u64, whole: u64) -> String {
+    if whole == 0 {
+        return crate::ui::lang::tr(crate::ui::lang::Msg::DmsEmpty).into_owned();
+    }
+    match num_base() {
+        // Arabic keeps the ledger world's percent; hex keeps its linear fraction of the whole.
+        NumBase::Arabic => format!("{}%", (part.saturating_mul(100) / whole).min(100)),
+        NumBase::Hex => format!("0.{:03X}", (part.saturating_mul(4096) / whole).min(4095)),
+        NumBase::Dozenal => {
+            // 12^5 of headroom, then digits off the top. Two SIGNIFICANT digits — leading zeros are placeholders, not precision.
+            let scaled = part.saturating_mul(248_832) / whole;
+            let mut out = String::from(".");
+            let (mut rem, mut seen) = (scaled, 0u8);
+            for place in (0..5).rev() {
+                let unit = 12u64.pow(place);
+                let digit = (rem / unit).min(11) as u8;
+                rem %= unit;
+                out.push(char::from(0x10 + digit));
+                if digit != 0 {
+                    seen += 1;
+                }
+                // Stop when the fraction is spent — a half is .Lun, never .Lun followed by a row of Zils pretending to be precision — or once two significant digits are out.
+                if rem == 0 || seen == 2 {
+                    break;
+                }
+            }
+            // A share of nothing is a share all the same: one Zil after the point, never a bare dot.
+            if out.len() == 1 {
+                out.push(char::from(0x10));
+            }
+            out
+        }
+    }
+}
+
 /// One rung of the REPUTATION ladder: the grade `1 − 1/evidence`, as a dozenal fraction — a radix point and up to two digits.
 /// Every rung the Base page shows is a unit fraction, and twelve divides by two, three, four and six, so each one lands EXACTLY. The identical values repeat forever in base ten, which is the argument the ladder exists to make rather than merely assert.
 /// Read backwards it is the confidence: one digit means a dozen behind the grade, two digits a gross. A digit that was not earned is not modesty to omit, it is the only honest width.
@@ -500,6 +540,30 @@ pub(crate) mod base_kat {
 
     fn g(digits: &[u8]) -> String {
         digits.iter().map(|d| char::from(0x10 + d)).collect()
+    }
+
+    /// THE SHARE FORM, and why it is integer. Twelve divides by two, three, four and six, so those fractions land on a single exact digit — and that exactness IS the dozenal argument, the thing the reputation ladder and the Base page both claim in writing.
+    /// A binary float cannot hold a third, so dividing in one renders .3ƐƐƐ… — the same number, and a visible contradiction of the claim on the page beside it. These assertions fail if anyone ever routes this through a float.
+    #[test]
+    fn a_share_is_exact_where_dozenal_promises_it() {
+        let _g = hold_base(NumBase::Dozenal);
+        assert_eq!(fmt_share(1, 2), format!(".{}", g(&[6])), "a half is .Lun");
+        assert_eq!(fmt_share(1, 3), format!(".{}", g(&[4])), "A THIRD IS EXACTLY .Tera — the claim a float would break");
+        assert_eq!(fmt_share(1, 4), format!(".{}", g(&[3])), "a quarter is .Ter");
+        assert_eq!(fmt_share(1, 6), format!(".{}", g(&[2])), "a sixth is .Zilor");
+        assert_eq!(fmt_share(2, 3), format!(".{}", g(&[8])), "two thirds is .Lunor");
+        // The reputation ladder's own rungs, which the Base page prints beside this.
+        assert_eq!(fmt_share(11, 12), format!(".{}", g(&[11])), "eleven twelfths is .Stelor");
+    }
+
+    /// A small share keeps its resolution: leading zeros are placeholders, not significant digits, so a loss rate does not round away to nothing — the one reading where "almost none" and "none" must not look alike.
+    #[test]
+    fn a_small_share_keeps_its_digits() {
+        let _g = hold_base(NumBase::Dozenal);
+        let tiny = fmt_share(3, 256);
+        assert_eq!(tiny, format!(".{}", g(&[0, 1, 8])), "three in 256 is .Zil Zila Lunor");
+        assert_ne!(tiny, fmt_share(0, 256), "almost none must not read as none");
+        assert!(fmt_share(0, 256).starts_with('.'), "and none is still a share, not a bare dot");
     }
 
     /// EVERY QUANTITY IS A MAGNITUDE IN DOZENAL (Nick 2026-09-15). Sixteen peers reads Tera — the value that started this, because a linear dozenal sixteen renders `Zila Tera` and reads like two separate digits to anyone who has been thinking in doublings.
