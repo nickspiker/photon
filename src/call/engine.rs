@@ -85,6 +85,8 @@ const FILL_REQ_PER_PACKET: usize = 8;
 const FILL_PACKET_BUDGET: usize = 1100;
 /// Live re-request cadence: a wanted window is asked again this often until it lands or is nacked (an RTT and change on any real link).
 const FILL_REQ_LIVE: std::time::Duration = std::time::Duration::from_millis(40);
+/// Live fills beyond this round trip serve only the recording (the jitter cap is 120 ms — a fill that lands a second late plays nothing), and on a starved link they are the load that finishes it off: the 22:07 Kalispell wave (2026-09-16) ran a 1.26 s round trip at a measured 25 kbps capacity and asked 7,682 fills for 280 lost windows; the fills served back outweighed the 16 kbps stream itself. Past the horizon the wanted set still accumulates and the DRAIN asks for everything at hangup, so the kept wave stays whole.
+const FILL_LIVE_HORIZON_MS: f32 = 600.0;
 /// Drain re-request cadence.
 const FILL_REQ_DRAIN: std::time::Duration = std::time::Duration::from_millis(8);
 /// Drain heartbeat: flags + our final window count go out at least this often so the peer's tail list closes.
@@ -1060,7 +1062,9 @@ fn run(
             }
             let req_every = if draining.is_some() { FILL_REQ_DRAIN } else { FILL_REQ_LIVE };
             let mut reqs: Vec<u32> = Vec::new();
-            if peer_fills && !wanted.is_empty() && last_req_tx.elapsed() >= req_every {
+            // Beyond the live horizon only the drain asks (see FILL_LIVE_HORIZON_MS).
+            let live_fills_useful = draining.is_some() || rtt_n == 0 || rtt_ema <= FILL_LIVE_HORIZON_MS;
+            if peer_fills && !wanted.is_empty() && live_fills_useful && last_req_tx.elapsed() >= req_every {
                 // Round-robin thru the wanted set so a nack-less peer (or a lost request) never starves the rest.
                 let mut it = wanted.range(wanted_cursor..).chain(wanted.range(..wanted_cursor));
                 for _ in 0..FILL_REQ_PER_PACKET {
