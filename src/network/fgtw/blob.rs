@@ -33,7 +33,7 @@ fn build_signed_blob_vsf(
     fields: Vec<(String, VsfType)>,
 ) -> Result<Vec<u8>, BlobError> {
     let unsigned_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .signed_only(VsfType::ke(keypair.public.as_bytes().to_vec()))
         .add_section(section_name, fields)
         .build()
@@ -91,7 +91,7 @@ pub async fn put_blob(
             ),
             (
                 "timestamp".to_string(),
-                VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
+                VsfType::e(vsf::types::EtType::e6(crate::network::time_base::now_osc())),
             ),
             (
                 "handle_proof".to_string(),
@@ -137,7 +137,7 @@ pub async fn get_blob(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError> {
 
     // blob_get doesn't need signing — just a minimal VSF with the key
     let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "blob_get",
             vec![("key".to_string(), VsfType::d(storage_key.to_string()))],
@@ -231,7 +231,7 @@ pub fn put_blob_blocking(
             ),
             (
                 "timestamp".to_string(),
-                VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
+                VsfType::e(vsf::types::EtType::e6(crate::network::time_base::now_osc())),
             ),
             (
                 "handle_proof".to_string(),
@@ -299,7 +299,7 @@ pub fn put_log_blocking(
     let mut fields = vec![
         (
             "timestamp".to_string(),
-            VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
+            VsfType::e(vsf::types::EtType::e6(crate::network::time_base::now_osc())),
         ),
         (
             "handle_proof".to_string(),
@@ -350,7 +350,7 @@ pub fn log_delete_blocking(tag: &[u8; 32]) -> Result<(), BlobError> {
         .build()
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
     let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "log_delete",
             vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))],
@@ -377,7 +377,7 @@ pub fn log_list_blocking(tag: &[u8; 32]) -> Result<Vec<String>, BlobError> {
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
     let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "log_list",
             vec![("tag".to_string(), VsfType::v(b'r', tag.to_vec()))],
@@ -417,7 +417,7 @@ pub fn log_get_blocking(key: &str) -> Result<Vec<u8>, BlobError> {
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
     let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "log_get",
             vec![("key".to_string(), VsfType::d(key.to_string()))],
@@ -467,7 +467,7 @@ pub fn inbox_drain_blocking(
 
     // Canonical whole-file signing (ge over BLAKE3(file, ge zeroed)) — the scheme the worker's verify_file_signature_webcrypto checks (build_signed_blob_vsf's header is provenance-only, which that verify rejects; see log_put's detached-signature note).
     let unsigned = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
         .add_section(
             "inbox_drain",
@@ -536,7 +536,7 @@ pub fn get_blob_blocking(storage_key: &str) -> Result<Option<Vec<u8>>, BlobError
         .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
 
     let vsf_bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .add_section(
             "blob_get",
             vec![("key".to_string(), VsfType::d(storage_key.to_string()))],

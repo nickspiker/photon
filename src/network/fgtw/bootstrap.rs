@@ -354,7 +354,7 @@ fn build_announce_message(
 
     // 3. Build VSF with ke/ge at HEADER level (not inside section) for full file integrity
     let unsigned_bytes = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(crate::network::time_base::now_osc())
         .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
         .add_section(
             "announce",
