@@ -174,6 +174,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // IDLE CADENCE (2026-09-10): after three frames that changed nothing and with no finger down, the next frame is asked for 24 ms later instead of at the next vsync — an idle screen ticked the whole protocol 119 times a second. Any touch or key posts a frame at once, so the first frame after idle is never later than one vsync.
     private var idleFrames = 0
     private var touchDown = false
+    /// A second finger has touched during this gesture: nothing forwards to Rust until every finger lifts (see the touch listener).
+    private var multiTouch = false
     private val frameHandler = Handler(Looper.getMainLooper())
     private val idleFrameRunnable = Runnable { Choreographer.getInstance().postFrameCallback(this) }
     private fun scheduleNextFrame() {
@@ -458,7 +460,21 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             scaleGestureDetector.onTouchEvent(event)
 
             if (nativePtr != 0L) {
-                val action = when (event.action and MotionEvent.ACTION_MASK) {
+                val masked = event.action and MotionEvent.ACTION_MASK
+                // A SECOND FINGER ends the one-finger gesture for good (Nick 2026-09-16, "zoom snaps to the wrong finger upon release, jerking the display"): event.x/y is pointer index 0, so when the first finger lifted mid-pinch the next MOVE reported the OTHER finger's position and Rust saw one giant drag. From the second finger's touch until EVERY finger is up, Rust gets one CANCEL (the tap arbiter and the drag-scroll disarm) and then nothing — the pinch is the scale detector's alone.
+                if (masked == MotionEvent.ACTION_POINTER_DOWN && !multiTouch) {
+                    multiTouch = true
+                    touchDown = false
+                    wakeFrames()
+                    nativeOnTouch(nativePtr, 3, event.x, event.y)
+                }
+                if (multiTouch) {
+                    if (masked == MotionEvent.ACTION_UP || masked == MotionEvent.ACTION_CANCEL) {
+                        multiTouch = false
+                    }
+                    return@setOnTouchListener true
+                }
+                val action = when (masked) {
                     MotionEvent.ACTION_DOWN -> 0
                     MotionEvent.ACTION_UP -> 1
                     MotionEvent.ACTION_MOVE -> 2
