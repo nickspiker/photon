@@ -5,7 +5,7 @@
 // Kết quả của fmt_num luôn tìm được mặt chữ Oxanium +glyphs từ bất kỳ họ chữ chính nào (fluor đặt nó đầu chuỗi dự phòng) — không chỗ vẽ nào phải khai báo gì thêm.
 // Tiếng Việt không đánh dấu số nhiều bằng hình thái từ: ở đâu tiếng Anh tách nhánh một/nhiều thì ở đây chỉ còn một dạng, còn lời gọi fmt_num vẫn giữ nguyên như en.rs.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -122,7 +122,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ItsMineShowWords => "Đúng là tôi \u{2014} thêm thiết bị này".into(),
         Msg::LockedRetry => "Đã khôi phục từ thiết bị khác? Chạm để thử lại".into(),
         // ---- ready screen ----
-        Msg::PeersOnline(n) => format!("{} máy ngang hàng", fmt_num(n as u32)).into(),
+        Msg::PeersOnline(n) => format!("{} máy ngang hàng", fmt_mag(n as u64)).into(),
         Msg::NetworkBack => "\u{2039} Mạng".into(),
         Msg::AvatarDropHint => "kéo/thả để đổi avatar".into(),
         Msg::SearchPlaceholder => "tìm | thêm".into(),
@@ -135,10 +135,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}m", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => format!("{} tin nhắn mới", fmt_num(n as u32)).into(),
-        Msg::MessagesDelivered(n) => format!("{} tin nhắn của bạn đã tới nơi", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => format!("trò chuyện suốt {} ngày", fmt_num(n as u32)).into(),
-        Msg::ContactFleetPinned(n) => format!("danh tính đã ghim từ lần gấp đầu tiên \u{00b7} {} thiết bị trong đội của họ", fmt_num(n as u32)).into(),
+        Msg::NewMessages(n) => format!("{} tin nhắn mới", fmt_mag(n as u64)).into(),
+        Msg::MessagesDelivered(n) => format!("{} tin nhắn của bạn đã tới nơi", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => format!("trò chuyện suốt {} ngày", fmt_mag(n as u64)).into(),
+        Msg::ContactFleetPinned(n) => format!("danh tính đã ghim từ lần gấp đầu tiên \u{00b7} {} thiết bị trong đội của họ", fmt_mag(n as u64)).into(),
         Msg::PublishedNameExplainer(name) => format!("luôn là \u{201c}{name}\u{201d} \u{2014} dẫn ra từ chính danh tính của họ, không đổi được").into(),
         Msg::EditingSnippet(s) => format!("đang sửa \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("biểu cảm \u{00bb} {s}").into(),
@@ -147,7 +147,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" vào đội của {name}"),
                 None => String::new(),
             };
-            format!("\u{26a0} {} lần tìm cách ghi danh thiết bị của bạn{who}", fmt_num(n as u32)).into()
+            format!("\u{26a0} {} lần tìm cách ghi danh thiết bị của bạn{who}", fmt_mag(n as u64)).into()
         }
         Msg::MessageNotSaved => "tin nhắn CHƯA được lưu — kho lưu trữ từ chối ghi; nó còn mờ cho tới khi một lần gửi lại đặt được nó xuống".into(),
         Msg::AttachmentLimit => format!("giới hạn tệp đính kèm là {} MB", fmt_num(25)).into(),
@@ -338,7 +338,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SelfNoChain => "không chuỗi \u{2014} hiển nhiên là đã tới nơi".into(),
         Msg::ChainWoven => "chuỗi đã bện \u{2014} bảo mật đầu cuối".into(),
         Msg::AlwaysReachableSelf => "luôn liên lạc được (đây chính là bạn)".into(),
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} tin nhắn \u{00b7} {} đã gửi \u{00b7} {} đã nhận", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} tin nhắn \u{00b7} {} đã gửi \u{00b7} {} đã nhận", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "những dòng này phải khớp trên mọi thiết bị của bạn".into(),
         Msg::OwnNotesCantBoot => "không thể đuổi ghi chú của chính bạn".into(),
         Msg::SiblingSignsItselfOut => "một thiết bị trong đội chỉ rời đi theo yêu cầu của chính nó \u{2014} xem Cài đặt \u{2192} Đội".into(),
@@ -398,10 +398,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Gõ các từ hiện trên thiết bị mới".into(),
         Msg::InvalidWord(w) => format!("'{w}' không nằm trong các từ đó").into(),
         Msg::WaitingForDevice => "Đang chờ thiết bị mới\u{2026} lẽ ra nó đang hiện các từ của nó".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} thiết bị đang xin gia nhập \u{2014} gõ các từ của cái đang ở trong tay bạn", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} thiết bị đang xin gia nhập \u{2014} gõ các từ của cái đang ở trong tay bạn", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' không khớp thiết bị nào đang xin gia nhập").into(),
         Msg::MatchingDevice(name) => format!("đang đối chiếu {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("đang đối chiếu\u{2026} ({} thiết bị)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("đang đối chiếu\u{2026} ({} thiết bị)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "Các từ khớp \u{2014} đang thêm\u{2026}".into(),
         Msg::Finishing => "Đang hoàn tất\u{2026}".into(),
         Msg::Preparing => "Đang chuẩn bị\u{2026}".into(),
@@ -547,9 +547,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Chưa có nhật ký nào để gửi".into(),
         Msg::SendingLog(size) => format!("Đang gửi nhật ký ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Không gửi được: chưa vào danh tính".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("Bản ghi VSF \u{00b7} {ts} \u{00b7} {} dòng \u{00b7} chạm Quay lại để xem danh sách", fmt_num(lines as u32)).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("Bản ghi VSF \u{00b7} {ts} \u{00b7} {} dòng \u{00b7} chạm Quay lại để xem danh sách", fmt_mag(lines as u64)).into(),
         Msg::DiagDecoding => "Đang giải mã nhật ký\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} bản ghi \u{00b7} {size} \u{00b7} mới nhất ở dưới cùng \u{00b7} chạm một dòng để xem VSF của nó", fmt_num(count as u32)).into(),
+        Msg::DiagMeta { count, size } => format!("{} bản ghi \u{00b7} {size} \u{00b7} mới nhất ở dưới cùng \u{00b7} chạm một dòng để xem VSF của nó", fmt_mag(count as u64)).into(),
         Msg::DiagTrimmed => " \u{00b7} đã cắt bớt phần cũ nhất".into(),
         Msg::VaultIntro => "Két niêm phong của thiết bị này \u{2014} mọi tin nhắn, sóng, khóa và cài đặt đều sống ở đây, đã mã hóa, và không ở đâu khác trên thiết bị. Các con số là của chính cỗ máy lưu trữ.".into(),
         Msg::VaultCapacity(s) => format!("sức chứa \u{00b7} {s}").into(),

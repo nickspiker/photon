@@ -4840,6 +4840,7 @@ dependencies = [
  "sha2 0.10.9",
  "sha3 0.11.0-rc.8",
  "softbuffer",
+ "spirix",
  "subtle",
  "symphonia",
  "thiserror 2.0.18",

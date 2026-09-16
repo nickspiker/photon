@@ -4,7 +4,7 @@
 // Ang lumalabas sa fmt_num ay bumabagsak sa mukhang Oxanium +glyphs mula sa kahit anong pangunahing pamilya (una itong pinangalanan ng fluor sa fallback chain nito) — walang lugar ng pagguhit ang kailangang pumili nito.
 // Mga piniling salita: alon = wave, sinag = beam, kadena = chain, hinabi = braided/woven, armada = fleet, kaban = vault, tupi = fold, patotoo = attestation, seremonya = ceremony, bawiin = revoke, kalakip = attachment, kapantay = peer, tulay = bridge.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -123,7 +123,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LockedRetry => "Naibalik mula sa ibang device? Pindutin para subukan ulit".into(),
         // ---- ready screen ----
         // Walang pagbabago ang pangngalan sa bilang: iisa ang anyo ng "kapantay" sa isa at sa marami, kaya isang sangay lang.
-        Msg::PeersOnline(n) => format!("{} kapantay", fmt_num(n as u32)).into(),
+        Msg::PeersOnline(n) => format!("{} kapantay", fmt_mag(n as u64)).into(),
         Msg::NetworkBack => "\u{2039} Network".into(),
         Msg::AvatarDropHint => "i-drag at i-drop para palitan ang avatar".into(),
         Msg::SearchPlaceholder => "hanapin | idagdag".into(),
@@ -136,10 +136,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}m", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => format!("{} bagong mensahe", fmt_num(n as u32)).into(),
-        Msg::MessagesDelivered(n) => format!("naihatid ang {} sa mga mensahe mo", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => format!("nag-uusap sa loob ng {} na araw", fmt_num(n as u32)).into(),
-        Msg::ContactFleetPinned(n) => format!("nakapako ang pagkakakilanlan mula sa unang tupi \u{00b7} {} na device sa armada nila", fmt_num(n as u32)).into(),
+        Msg::NewMessages(n) => format!("{} bagong mensahe", fmt_mag(n as u64)).into(),
+        Msg::MessagesDelivered(n) => format!("naihatid ang {} sa mga mensahe mo", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => format!("nag-uusap sa loob ng {} na araw", fmt_mag(n as u64)).into(),
+        Msg::ContactFleetPinned(n) => format!("nakapako ang pagkakakilanlan mula sa unang tupi \u{00b7} {} na device sa armada nila", fmt_mag(n as u64)).into(),
         Msg::PublishedNameExplainer(name) => format!("laging \u{201c}{name}\u{201d} \u{2014} hango sa pagkakakilanlan nila, hindi mapapalitan").into(),
         Msg::EditingSnippet(s) => format!("binabago \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("reaksyon \u{00bb} {s}").into(),
@@ -148,7 +148,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" sa armada ni {name}"),
                 None => String::new(),
             };
-            format!("\u{26a0} {} na pagtatangkang ipasok ang device mo{who}", fmt_num(n as u32)).into()
+            format!("\u{26a0} {} na pagtatangkang ipasok ang device mo{who}", fmt_mag(n as u64)).into()
         }
         Msg::MessageNotSaved => "HINDI na-save ang mensahe — tinanggihan ng imbakan ang pagsulat; mananatili itong malabo hanggang mailapag ito ng isang muling padala".into(),
         Msg::AttachmentLimit => format!("{} MB ang limitasyon sa kalakip", fmt_num(25)).into(),
@@ -339,7 +339,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SelfNoChain => "walang kadena \u{2014} naihatid na sa mismong kahulugan".into(),
         Msg::ChainWoven => "hinabi na ang kadena \u{2014} sigurado mula dulo hanggang dulo".into(),
         Msg::AlwaysReachableSelf => "laging maaabot (ikaw ito)".into(),
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} mensahe \u{00b7} {} ipinadala \u{00b7} {} natanggap", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} mensahe \u{00b7} {} ipinadala \u{00b7} {} natanggap", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "dapat magkatugma ang mga hanay na ito sa bawat isa sa mga device mo".into(),
         Msg::OwnNotesCantBoot => "hindi mo maitataboy ang sarili mong mga tala".into(),
         Msg::SiblingSignsItselfOut => "ang device ng armada ay umaalis sa sarili nitong kahilingan \u{2014} tingnan ang Mga Setting \u{2192} Armada".into(),
@@ -399,10 +399,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "I-type ang mga salitang ipinapakita ng bagong device".into(),
         Msg::InvalidWord(w) => format!("hindi isa sa mga salita ang '{w}'").into(),
         Msg::WaitingForDevice => "Hinihintay ang bagong device\u{2026} dapat ipinapakita na nito ang mga salita nito".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} na device ang humihiling sumali \u{2014} i-type ang mga salita ng hawak mo", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} na device ang humihiling sumali \u{2014} i-type ang mga salita ng hawak mo", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("walang device na humihiling sumali na tumutugma sa '{bad}'").into(),
         Msg::MatchingDevice(name) => format!("tinutugma ang {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("tinutugma\u{2026} ({} na device)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("tinutugma\u{2026} ({} na device)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "Tugma ang mga salita \u{2014} idinadagdag\u{2026}".into(),
         Msg::Finishing => "Tinatapos\u{2026}".into(),
         Msg::Preparing => "Inihahanda\u{2026}".into(),
@@ -548,9 +548,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Wala pang log na maipapadala".into(),
         Msg::SendingLog(size) => format!("Ipinapadala ang log ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Hindi maipadala: hindi naka-sign in".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("Tala ng VSF \u{00b7} {ts} \u{00b7} {} na linya \u{00b7} pindutin ang Balik para sa listahan", fmt_num(lines as u32)).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("Tala ng VSF \u{00b7} {ts} \u{00b7} {} na linya \u{00b7} pindutin ang Balik para sa listahan", fmt_mag(lines as u64)).into(),
         Msg::DiagDecoding => "Dini-decode ang log\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} na tala \u{00b7} {size} \u{00b7} pinakabago sa ibaba \u{00b7} pindutin ang hanay para sa VSF nito", fmt_num(count as u32)).into(),
+        Msg::DiagMeta { count, size } => format!("{} na tala \u{00b7} {size} \u{00b7} pinakabago sa ibaba \u{00b7} pindutin ang hanay para sa VSF nito", fmt_mag(count as u64)).into(),
         Msg::DiagTrimmed => " \u{00b7} pinutol ang pinakaluma".into(),
         Msg::VaultIntro => "Ang selyadong imbakan ng device na ito \u{2014} naririto ang bawat mensahe, alon, susi at setting, naka-encrypt, at wala nang ibang lugar sa device na ito. Sa mismong makinarya ng imbakan galing ang mga numero.".into(),
         Msg::VaultCapacity(s) => format!("kapasidad \u{00b7} {s}").into(),

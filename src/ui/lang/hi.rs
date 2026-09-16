@@ -5,7 +5,7 @@
 // photon की गढ़ी हुई शब्दावली, पूरे कैटलॉग के लिए एक ही चुनाव: wave = लहर, beam = किरण, pigeon = कबूतर, braid/woven = गूँथना, chain = ज़ंजीर, lane = लेन, fold = तह, seal/sealed = सील/सीलबंद, vault = तिजोरी, fleet = बेड़ा, ceremony = रस्म, attest = अटेस्ट, revoke = रद्द, reinstate = बहाल, brand = छाप, relay = रिले, peer = साथी, era = युग, custodian = अमानतदार, handle = हैंडल, device = डिवाइस।
 // संबोधन तुम/तुम्हारा है, और क्रियाएँ जान-बूझकर हुक्मिया ("लिखो") या अकर्तृक ("भेजा जा रहा है") रखी गई हैं — हिन्दी क्रिया कर्ता के लिंग से सहमति करती है, और न पढ़ने वाले का लिंग पता है न किसी interpolate हुए नाम का।
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -124,7 +124,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LockedRetry => "किसी और डिवाइस से बहाल किया? दोबारा कोशिश के लिए टैप करो".into(),
         // ---- ready screen ----
         // "साथी" सीधे बहुवचन में नहीं बदलता, इसलिए en.rs वाली एकवचन/बहुवचन शाखा यहाँ नहीं चाहिए।
-        Msg::PeersOnline(n) => format!("{} साथी", fmt_num(n as u32)).into(),
+        Msg::PeersOnline(n) => format!("{} साथी", fmt_mag(n as u64)).into(),
         Msg::NetworkBack => "\u{2039} नेटवर्क".into(),
         Msg::AvatarDropHint => "अवतार बदलने के लिए खींचकर छोड़ो".into(),
         Msg::SearchPlaceholder => "खोजो | जोड़ो".into(),
@@ -138,10 +138,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SecondsShort(n) => format!("{}से", fmt_num(n as u32)).into(),
         // ---- conversation ----
         // "संदेश" नहीं बदलता, पर उसका विशेषण बदलता है: एक नया संदेश, तीन नए संदेश।
-        Msg::NewMessages(n) => if n == 1 { format!("{} नया संदेश", fmt_num(1)) } else { format!("{} नए संदेश", fmt_num(n as u32)) }.into(),
-        Msg::MessagesDelivered(n) => format!("तुम्हारे {} संदेश पहुँच गए", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => if n == 1 { format!("{} दिन की बातचीत", fmt_num(1)) } else { format!("{} दिनों की बातचीत", fmt_num(n as u32)) }.into(),
-        Msg::ContactFleetPinned(n) => format!("पहली तह से पहचान पक्की \u{00b7} उनके बेड़े में {} डिवाइस", fmt_num(n as u32)).into(),
+        Msg::NewMessages(n) => if n == 1 { format!("{} नया संदेश", fmt_mag(1)) } else { format!("{} नए संदेश", fmt_mag(n as u64)) }.into(),
+        Msg::MessagesDelivered(n) => format!("तुम्हारे {} संदेश पहुँच गए", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => if n == 1 { format!("{} दिन की बातचीत", fmt_mag(1)) } else { format!("{} दिनों की बातचीत", fmt_mag(n as u64)) }.into(),
+        Msg::ContactFleetPinned(n) => format!("पहली तह से पहचान पक्की \u{00b7} उनके बेड़े में {} डिवाइस", fmt_mag(n as u64)).into(),
         Msg::PublishedNameExplainer(name) => format!("हमेशा \u{201c}{name}\u{201d} \u{2014} यह नाम उनकी पहचान से बना है, बदला नहीं जा सकता").into(),
         Msg::EditingSnippet(s) => format!("बदलाव \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("रिएक्शन \u{00bb} {s}").into(),
@@ -151,7 +151,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" {name} के बेड़े में"),
                 None => String::new(),
             };
-            format!("\u{26a0} तुम्हारे डिवाइस को{who} शामिल करने की {} {}", fmt_num(n as u32), if n == 1 { "कोशिश" } else { "कोशिशें" }).into()
+            format!("\u{26a0} तुम्हारे डिवाइस को{who} शामिल करने की {} {}", fmt_mag(n as u64), if n == 1 { "कोशिश" } else { "कोशिशें" }).into()
         }
         Msg::MessageNotSaved => "संदेश सेव नहीं हुआ — स्टोरेज ने लिखने से मना कर दिया; दोबारा भेजने पर टिकने तक यह धुँधला ही रहेगा".into(),
         Msg::AttachmentLimit => format!("अटैचमेंट की हद {} MB है", fmt_num(25)).into(),
@@ -346,7 +346,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ChainWoven => "ज़ंजीर गूँथ दी गई \u{2014} सिरे से सिरे तक सुरक्षित".into(),
         Msg::AlwaysReachableSelf => "हमेशा पहुँच में (यह तुम ही हो)".into(),
         // "संदेश" सीधे बहुवचन में नहीं बदलता, इसलिए en.rs वाली शाखा यहाँ नहीं चाहिए।
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} संदेश \u{00b7} {} भेजे \u{00b7} {} मिले", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} संदेश \u{00b7} {} भेजे \u{00b7} {} मिले", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ये पंक्तियाँ तुम्हारे हर डिवाइस पर एक जैसी होनी चाहिए".into(),
         Msg::OwnNotesCantBoot => "अपने ही नोट को बाहर नहीं किया जा सकता".into(),
         Msg::SiblingSignsItselfOut => "बेड़े का डिवाइस अपनी ही दरख़्वास्त पर जाता है \u{2014} देखो सेटिंग्स \u{2192} बेड़ा".into(),
@@ -406,10 +406,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "नए डिवाइस पर दिख रहे शब्द लिखो".into(),
         Msg::InvalidWord(w) => format!("'{w}' उन शब्दों में से नहीं है").into(),
         Msg::WaitingForDevice => "नए डिवाइस का इंतज़ार\u{2026} उस पर उसके शब्द दिख रहे होंगे".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} डिवाइस जुड़ना चाह रहे हैं \u{2014} जो हाथ में है उसी के शब्द लिखो", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} डिवाइस जुड़ना चाह रहे हैं \u{2014} जो हाथ में है उसी के शब्द लिखो", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' जुड़ना चाहने वाले किसी डिवाइस से मेल नहीं खाता").into(),
         Msg::MatchingDevice(name) => format!("{name} से मिलान हो रहा है\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("मिलान हो रहा है\u{2026} ({} डिवाइस)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("मिलान हो रहा है\u{2026} ({} डिवाइस)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "शब्द मिल गए \u{2014} जोड़ा जा रहा है\u{2026}".into(),
         Msg::Finishing => "पूरा हो रहा है\u{2026}".into(),
         Msg::Preparing => "तैयारी हो रही है\u{2026}".into(),
@@ -558,9 +558,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SendingLog(size) => format!("लॉग भेजा जा रहा है ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "भेजा नहीं जा सकता: अंदर नहीं हो".into(),
         // "लाइन" तिर्यक बहुवचन में "लाइनें" हो जाती है, इसलिए यहाँ शाखा चाहिए।
-        Msg::DiagRecordInspect { ts, lines } => format!("रिकॉर्ड VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} सूची के लिए वापस दबाओ", fmt_num(lines as u32), if lines == 1 { "लाइन" } else { "लाइनें" }).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("रिकॉर्ड VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} सूची के लिए वापस दबाओ", fmt_mag(lines as u64), if lines == 1 { "लाइन" } else { "लाइनें" }).into(),
         Msg::DiagDecoding => "लॉग डिकोड हो रहा है\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} रिकॉर्ड \u{00b7} {size} \u{00b7} सबसे नया सबसे नीचे \u{00b7} किसी पंक्ति का VSF देखने के लिए उस पर टैप करो", fmt_num(count as u32)).into(),
+        Msg::DiagMeta { count, size } => format!("{} रिकॉर्ड \u{00b7} {size} \u{00b7} सबसे नया सबसे नीचे \u{00b7} किसी पंक्ति का VSF देखने के लिए उस पर टैप करो", fmt_mag(count as u64)).into(),
         Msg::DiagTrimmed => " \u{00b7} सबसे पुराने छाँट दिए".into(),
         Msg::VaultIntro => "इस डिवाइस की सीलबंद तिजोरी \u{2014} हर संदेश, लहर, चाबी और सेटिंग यहीं रहती है, एन्क्रिप्टेड, और इस डिवाइस पर कहीं और नहीं। आँकड़े भंडारण इंजन के अपने हैं।".into(),
         Msg::VaultCapacity(s) => format!("क्षमता \u{00b7} {s}").into(),

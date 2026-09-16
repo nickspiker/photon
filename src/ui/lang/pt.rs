@@ -4,7 +4,7 @@
 // A saída de fmt_num se resolve na face Oxanium +glyphs a partir de qualquer família primária (fluor a nomeia primeiro na cadeia de reserva) — nenhum ponto de desenho precisa optar por ela.
 // Vocabulário cunhado pelo photon, uma escolha só para o catálogo inteiro: wave = onda (o verbo é "mandar onda"), beam = feixe, braid/woven = tecer, chain = cadeia, lane = faixa, fold = dobra, vault = cofre, fleet = frota, seal = selar, attest = atestar, relay = relé, peer = par, era = era.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -122,7 +122,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ItsMineShowWords => "Sou eu \u{2014} adicionar este dispositivo".into(),
         Msg::LockedRetry => "Reintegrou de outro dispositivo? Toque para tentar de novo".into(),
         // ---- ready screen ----
-        Msg::PeersOnline(n) => format!("{} {}", fmt_num(n as u32), if n == 1 { "par" } else { "pares" }).into(),
+        Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), if n == 1 { "par" } else { "pares" }).into(),
         Msg::NetworkBack => "\u{2039} Rede".into(),
         Msg::AvatarDropHint => "arraste e solte para atualizar o avatar".into(),
         Msg::SearchPlaceholder => "buscar | adicionar".into(),
@@ -135,10 +135,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}m", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => if n == 1 { format!("{} mensagem nova", fmt_num(1)) } else { format!("{} mensagens novas", fmt_num(n as u32)) }.into(),
-        Msg::MessagesDelivered(n) => if n == 1 { format!("{} mensagem sua entregue", fmt_num(1)) } else { format!("{} mensagens suas entregues", fmt_num(n as u32)) }.into(),
-        Msg::ChatDaysSpan(n) => if n == 1 { format!("conversando ao longo de {} dia", fmt_num(1)) } else { format!("conversando ao longo de {} dias", fmt_num(n as u32)) }.into(),
-        Msg::ContactFleetPinned(n) => format!("identidade fixada desde a primeira dobra \u{00b7} {} {} na frota dessa pessoa", fmt_num(n as u32), if n == 1 { "dispositivo" } else { "dispositivos" }).into(),
+        Msg::NewMessages(n) => if n == 1 { format!("{} mensagem nova", fmt_mag(1)) } else { format!("{} mensagens novas", fmt_mag(n as u64)) }.into(),
+        Msg::MessagesDelivered(n) => if n == 1 { format!("{} mensagem sua entregue", fmt_mag(1)) } else { format!("{} mensagens suas entregues", fmt_mag(n as u64)) }.into(),
+        Msg::ChatDaysSpan(n) => if n == 1 { format!("conversando ao longo de {} dia", fmt_mag(1)) } else { format!("conversando ao longo de {} dias", fmt_mag(n as u64)) }.into(),
+        Msg::ContactFleetPinned(n) => format!("identidade fixada desde a primeira dobra \u{00b7} {} {} na frota dessa pessoa", fmt_mag(n as u64), if n == 1 { "dispositivo" } else { "dispositivos" }).into(),
         Msg::PublishedNameExplainer(name) => format!("sempre \u{201c}{name}\u{201d} \u{2014} derivado da identidade dessa pessoa, não pode ser mudado").into(),
         Msg::EditingSnippet(s) => format!("editando \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("reagir \u{00bb} {s}").into(),
@@ -147,7 +147,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" na frota de {name}"),
                 None => String::new(),
             };
-            format!("\u{26a0} {} {} de inscrever seu dispositivo{who}", fmt_num(n as u32), if n == 1 { "tentativa" } else { "tentativas" }).into()
+            format!("\u{26a0} {} {} de inscrever seu dispositivo{who}", fmt_mag(n as u64), if n == 1 { "tentativa" } else { "tentativas" }).into()
         }
         Msg::MessageNotSaved => "mensagem NÃO salva — o armazenamento recusou a gravação; ela fica esmaecida até que um reenvio a assente".into(),
         Msg::AttachmentLimit => format!("o limite de anexo é {} MB", fmt_num(25)).into(),
@@ -340,11 +340,11 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "sempre alcançável (esta pessoa é você)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!(
             "{} {} \u{00b7} {} {} \u{00b7} {} {}",
-            fmt_num(total as u32),
+            fmt_mag(total as u64),
             if total == 1 { "mensagem" } else { "mensagens" },
-            fmt_num(sent as u32),
+            fmt_mag(sent as u64),
             if sent == 1 { "enviada" } else { "enviadas" },
-            fmt_num(recv as u32),
+            fmt_mag(recv as u64),
             if recv == 1 { "recebida" } else { "recebidas" }
         )
         .into(),
@@ -407,10 +407,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Digite as palavras que aparecem no novo dispositivo".into(),
         Msg::InvalidWord(w) => format!("'{w}' não é uma das palavras").into(),
         Msg::WaitingForDevice => "Esperando o novo dispositivo\u{2026} ele deve estar mostrando as palavras dele".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} dispositivos pedem para entrar \u{2014} digite as palavras do que está na sua mão", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} dispositivos pedem para entrar \u{2014} digite as palavras do que está na sua mão", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' não bate com nenhum dispositivo pedindo para entrar").into(),
         Msg::MatchingDevice(name) => format!("conferindo {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("conferindo\u{2026} ({} dispositivos)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("conferindo\u{2026} ({} dispositivos)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "As palavras conferem \u{2014} adicionando\u{2026}".into(),
         Msg::Finishing => "Terminando\u{2026}".into(),
         Msg::Preparing => "Preparando\u{2026}".into(),
@@ -556,9 +556,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Ainda não há registro para enviar".into(),
         Msg::SendingLog(size) => format!("Enviando registro ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Não dá para enviar: sem sessão ativa".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("Entrada VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} toque em Voltar para a lista", fmt_num(lines as u32), if lines == 1 { "linha" } else { "linhas" }).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("Entrada VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} toque em Voltar para a lista", fmt_mag(lines as u64), if lines == 1 { "linha" } else { "linhas" }).into(),
         Msg::DiagDecoding => "Decodificando o registro\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} {} \u{00b7} {size} \u{00b7} as mais novas embaixo \u{00b7} toque numa linha para ver o VSF dela", fmt_num(count as u32), if count == 1 { "entrada" } else { "entradas" }).into(),
+        Msg::DiagMeta { count, size } => format!("{} {} \u{00b7} {size} \u{00b7} as mais novas embaixo \u{00b7} toque numa linha para ver o VSF dela", fmt_mag(count as u64), if count == 1 { "entrada" } else { "entradas" }).into(),
         Msg::DiagTrimmed => " \u{00b7} as mais antigas cortadas".into(),
         Msg::VaultIntro => "O cofre selado deste dispositivo \u{2014} cada mensagem, onda, chave e ajuste vive aqui, cifrado, e em nenhum outro lugar deste dispositivo. Os números são do próprio motor de armazenamento.".into(),
         Msg::VaultCapacity(s) => format!("capacidade \u{00b7} {s}").into(),

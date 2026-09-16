@@ -4,7 +4,7 @@
 // fmt_num çıktısı Oxanium +glyphs yüzünü herhangi bir birincil aileden bulur (fluor onu yedek zincirinde ilk sırada adlandırır) — hiçbir çizim noktasının ayrıca seçim yapması gerekmez.
 // Ses uyumu kuralı: çevrilen hiçbir cümlede ek, araya giren bir değerin (ad, handle, sürüm) sonuna yapışmaz — son ünlüsü derleme anında bilinemez, bu yüzden cümle o değerin yalın kalacağı biçimde kurulur.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -124,7 +124,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LockedRetry => "Başka bir cihazdan yasağı kaldırdın mı? Yeniden denemek için dokun".into(),
         // ---- ready screen ----
         // Türkçede sayıdan sonra ad tekil kalır, tekil/çoğul dalı yok.
-        Msg::PeersOnline(n) => format!("{} eş", fmt_num(n as u32)).into(),
+        Msg::PeersOnline(n) => format!("{} eş", fmt_mag(n as u64)).into(),
         Msg::NetworkBack => "\u{2039} Ağ".into(),
         Msg::AvatarDropHint => "avatarı güncellemek için sürükle bırak".into(),
         Msg::SearchPlaceholder => "ara | ekle".into(),
@@ -137,10 +137,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}dk", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}sn", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => format!("{} yeni mesaj", fmt_num(n as u32)).into(),
-        Msg::MessagesDelivered(n) => format!("mesajlarından {} tanesi iletildi", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => format!("{} gün boyunca sohbet", fmt_num(n as u32)).into(),
-        Msg::ContactFleetPinned(n) => format!("kimlik ilk katlanmadan beri sabit \u{00b7} filosunda {} cihaz", fmt_num(n as u32)).into(),
+        Msg::NewMessages(n) => format!("{} yeni mesaj", fmt_mag(n as u64)).into(),
+        Msg::MessagesDelivered(n) => format!("mesajlarından {} tanesi iletildi", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => format!("{} gün boyunca sohbet", fmt_mag(n as u64)).into(),
+        Msg::ContactFleetPinned(n) => format!("kimlik ilk katlanmadan beri sabit \u{00b7} filosunda {} cihaz", fmt_mag(n as u64)).into(),
         Msg::PublishedNameExplainer(name) => format!("her zaman \u{201c}{name}\u{201d} \u{2014} kimliğinden türetildi, değiştirilemez").into(),
         Msg::EditingSnippet(s) => format!("düzenleniyor \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("tepki \u{00bb} {s}").into(),
@@ -150,7 +150,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!("{name} adlı kişinin filosuna "),
                 None => String::new(),
             };
-            format!("\u{26a0} cihazını {who}kaydetmek için {} deneme yapıldı", fmt_num(n as u32)).into()
+            format!("\u{26a0} cihazını {who}kaydetmek için {} deneme yapıldı", fmt_mag(n as u64)).into()
         }
         Msg::MessageNotSaved => "mesaj kaydedilMEDİ — depolama yazmayı reddetti; bir tekrar gönderim onu yerleştirene kadar soluk kalır".into(),
         Msg::AttachmentLimit => format!("ek dosya sınırı {} MB", fmt_num(25)).into(),
@@ -341,7 +341,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SelfNoChain => "zincir yok \u{2014} tanımı gereği iletildi".into(),
         Msg::ChainWoven => "zincir örüldü \u{2014} uçtan uca güvenli".into(),
         Msg::AlwaysReachableSelf => "her zaman ulaşılabilir (bu sensin)".into(),
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} mesaj \u{00b7} {} gönderildi \u{00b7} {} alındı", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} mesaj \u{00b7} {} gönderildi \u{00b7} {} alındı", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "bu satırlar bütün cihazlarında aynı olmalı".into(),
         Msg::OwnNotesCantBoot => "kendi notlarını kovamazsın".into(),
         Msg::SiblingSignsItselfOut => "bir filo cihazı kendi isteğiyle ayrılır \u{2014} Ayarlar \u{2192} Filo sayfasına bak".into(),
@@ -401,10 +401,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Yeni cihazda görünen kelimeleri yaz".into(),
         Msg::InvalidWord(w) => format!("'{w}' kelimelerden biri değil").into(),
         Msg::WaitingForDevice => "Yeni cihaz bekleniyor\u{2026} kelimelerini gösteriyor olmalı".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} cihaz katılmak istiyor \u{2014} elindekinin kelimelerini yaz", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} cihaz katılmak istiyor \u{2014} elindekinin kelimelerini yaz", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' katılmak isteyen hiçbir cihazla eşleşmiyor").into(),
         Msg::MatchingDevice(name) => format!("{name} eşleştiriliyor\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("eşleştiriliyor\u{2026} ({} cihaz)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("eşleştiriliyor\u{2026} ({} cihaz)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "Kelimeler uyuştu \u{2014} ekleniyor\u{2026}".into(),
         Msg::Finishing => "Bitiriliyor\u{2026}".into(),
         Msg::Preparing => "Hazırlanıyor\u{2026}".into(),
@@ -551,9 +551,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Henüz gönderilecek günlük yok".into(),
         Msg::SendingLog(size) => format!("Günlük gönderiliyor ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Gönderilemiyor: oturum açık değil".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("VSF girdisi \u{00b7} {ts} \u{00b7} {} satır \u{00b7} liste için Geri'ye dokun", fmt_num(lines as u32)).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("VSF girdisi \u{00b7} {ts} \u{00b7} {} satır \u{00b7} liste için Geri'ye dokun", fmt_mag(lines as u64)).into(),
         Msg::DiagDecoding => "Günlük çözülüyor\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} girdi \u{00b7} {size} \u{00b7} en yenisi en altta \u{00b7} VSF'sini görmek için bir satıra dokun", fmt_num(count as u32)).into(),
+        Msg::DiagMeta { count, size } => format!("{} girdi \u{00b7} {size} \u{00b7} en yenisi en altta \u{00b7} VSF'sini görmek için bir satıra dokun", fmt_mag(count as u64)).into(),
         Msg::DiagTrimmed => " \u{00b7} en eskiler kırpıldı".into(),
         Msg::VaultIntro => "Bu cihazın mühürlü deposu \u{2014} her mesaj, dalga, anahtar ve ayar şifreli olarak burada yaşar, cihazda başka hiçbir yerde değil. Sayılar depolama motorunun kendi sayıları.".into(),
         Msg::VaultCapacity(s) => format!("kapasite \u{00b7} {s}").into(),

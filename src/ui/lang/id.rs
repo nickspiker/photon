@@ -3,7 +3,7 @@
 // SETIAP angka lewat crate::fmt_num (sadar basis: glif duodesimal atau desimal menurut sakelar DOZENAL_UI) — arabic mentah {} dilarang di sini, sama seperti di en.rs.
 // Keluaran fmt_num jatuh ke muka Oxanium +glyphs dari keluarga utama mana pun (fluor menamainya paling depan dalam rantai cadangannya) — tidak ada tempat gambar yang perlu meminta muka itu.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -122,7 +122,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LockedRetry => "Sudah dipulihkan dari perangkat lain? Ketuk untuk mencoba lagi".into(),
         // ---- ready screen ----
         // Indonesian does not mark plural, so one form serves every count and the English one/many branch disappears.
-        Msg::PeersOnline(n) => format!("{} rekan", fmt_num(n as u32)).into(),
+        Msg::PeersOnline(n) => format!("{} rekan", fmt_mag(n as u64)).into(),
         Msg::NetworkBack => "\u{2039} Jaringan".into(),
         Msg::AvatarDropHint => "seret & lepas untuk memperbarui avatar".into(),
         Msg::SearchPlaceholder => "cari | tambah".into(),
@@ -135,10 +135,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}m", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => format!("{} pesan baru", fmt_num(n as u32)).into(),
-        Msg::MessagesDelivered(n) => format!("{} pesanmu sudah sampai", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => format!("mengobrol selama {} hari", fmt_num(n as u32)).into(),
-        Msg::ContactFleetPinned(n) => format!("identitas terpaku sejak lipatan pertama \u{00b7} {} perangkat di armadanya", fmt_num(n as u32)).into(),
+        Msg::NewMessages(n) => format!("{} pesan baru", fmt_mag(n as u64)).into(),
+        Msg::MessagesDelivered(n) => format!("{} pesanmu sudah sampai", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => format!("mengobrol selama {} hari", fmt_mag(n as u64)).into(),
+        Msg::ContactFleetPinned(n) => format!("identitas terpaku sejak lipatan pertama \u{00b7} {} perangkat di armadanya", fmt_mag(n as u64)).into(),
         Msg::PublishedNameExplainer(name) => format!("selalu \u{201c}{name}\u{201d} \u{2014} diturunkan dari identitasnya, tidak bisa diubah").into(),
         Msg::EditingSnippet(s) => format!("mengubah \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("reaksi \u{00bb} {s}").into(),
@@ -147,7 +147,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" ke armada {name}"),
                 None => String::new(),
             };
-            format!("\u{26a0} {} percobaan mendaftarkan perangkatmu{who}", fmt_num(n as u32)).into()
+            format!("\u{26a0} {} percobaan mendaftarkan perangkatmu{who}", fmt_mag(n as u64)).into()
         }
         Msg::MessageNotSaved => "pesan TIDAK tersimpan — penyimpanan menolak penulisannya; ia tetap redup sampai pengiriman ulang mendaratkannya".into(),
         Msg::AttachmentLimit => format!("batas lampiran adalah {} MB", fmt_num(25)).into(),
@@ -338,7 +338,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SelfNoChain => "tanpa rantai \u{2014} sampai menurut definisi".into(),
         Msg::ChainWoven => "rantai teranyam \u{2014} aman dari ujung ke ujung".into(),
         Msg::AlwaysReachableSelf => "selalu terjangkau (ini kamu sendiri)".into(),
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} pesan \u{00b7} {} terkirim \u{00b7} {} diterima", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} pesan \u{00b7} {} terkirim \u{00b7} {} diterima", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "baris ini seharusnya sama di setiap perangkatmu".into(),
         Msg::OwnNotesCantBoot => "catatanmu sendiri tidak bisa diusir".into(),
         Msg::SiblingSignsItselfOut => "perangkat armada keluar atas permintaannya sendiri \u{2014} lihat Pengaturan \u{2192} Armada".into(),
@@ -398,10 +398,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Ketik kata-kata yang ditampilkan perangkat baru itu".into(),
         Msg::InvalidWord(w) => format!("'{w}' bukan salah satu katanya").into(),
         Msg::WaitingForDevice => "Menunggu perangkat baru\u{2026} seharusnya ia sedang menampilkan kata-katanya".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} perangkat minta bergabung \u{2014} ketik kata-kata dari yang ada di tanganmu", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} perangkat minta bergabung \u{2014} ketik kata-kata dari yang ada di tanganmu", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' tidak cocok dengan perangkat mana pun yang minta bergabung").into(),
         Msg::MatchingDevice(name) => format!("mencocokkan {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("mencocokkan\u{2026} ({} perangkat)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("mencocokkan\u{2026} ({} perangkat)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "Kata-katanya cocok \u{2014} menambahkan\u{2026}".into(),
         Msg::Finishing => "Menyelesaikan\u{2026}".into(),
         Msg::Preparing => "Menyiapkan\u{2026}".into(),
@@ -547,9 +547,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Belum ada log untuk dikirim".into(),
         Msg::SendingLog(size) => format!("Mengirim log ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Tidak bisa mengirim: belum masuk".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("Entri VSF \u{00b7} {ts} \u{00b7} {} baris \u{00b7} ketuk Kembali untuk daftarnya", fmt_num(lines as u32)).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("Entri VSF \u{00b7} {ts} \u{00b7} {} baris \u{00b7} ketuk Kembali untuk daftarnya", fmt_mag(lines as u64)).into(),
         Msg::DiagDecoding => "Mendekode log\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} entri \u{00b7} {size} \u{00b7} yang terbaru di bawah \u{00b7} ketuk sebuah baris untuk VSF-nya", fmt_num(count as u32)).into(),
+        Msg::DiagMeta { count, size } => format!("{} entri \u{00b7} {size} \u{00b7} yang terbaru di bawah \u{00b7} ketuk sebuah baris untuk VSF-nya", fmt_mag(count as u64)).into(),
         Msg::DiagTrimmed => " \u{00b7} yang terlama dipangkas".into(),
         Msg::VaultIntro => "Simpanan tersegel milik perangkat ini \u{2014} setiap pesan, gelombang, kunci dan pengaturan hidup di sini, terenkripsi, dan tidak di tempat lain mana pun di perangkat ini. Angkanya berasal dari mesin penyimpanannya sendiri.".into(),
         Msg::VaultCapacity(s) => format!("kapasitas \u{00b7} {s}").into(),

@@ -5,7 +5,7 @@
 // Обращение везде на «ты»: photon говорит лично и негромко, а не как компания.
 // Русский требует падежей и трёхформенного числа, поэтому там, где вариант несёт счёт, внутри него стоит настоящий match по count — это и есть причина, по которой каталог написан кодом, а не лежит в таблице.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -128,7 +128,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- ready screen ----
         Msg::PeersOnline(n) => {
             let word = match (n % 10, n % 100) { (1, 11) => "пиров", (1, _) => "пир", (2..=4, 12..=14) => "пиров", (2..=4, _) => "пира", _ => "пиров" };
-            format!("{} {word}", fmt_num(n as u32)).into()
+            format!("{} {word}", fmt_mag(n as u64)).into()
         }
         Msg::NetworkBack => "\u{2039} Сеть".into(),
         Msg::AvatarDropHint => "перетащи файл, чтобы сменить аватар".into(),
@@ -144,20 +144,20 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- conversation ----
         Msg::NewMessages(n) => {
             let word = match (n % 10, n % 100) { (1, 11) => "новых сообщений", (1, _) => "новое сообщение", (2..=4, 12..=14) => "новых сообщений", (2..=4, _) => "новых сообщения", _ => "новых сообщений" };
-            format!("{} {word}", fmt_num(n as u32)).into()
+            format!("{} {word}", fmt_mag(n as u64)).into()
         }
         Msg::MessagesDelivered(n) => {
             let word = match (n % 10, n % 100) { (1, 11) => "твоих сообщений", (1, _) => "твоё сообщение", (2..=4, 12..=14) => "твоих сообщений", (2..=4, _) => "твоих сообщения", _ => "твоих сообщений" };
-            format!("доставлено {} {word}", fmt_num(n as u32)).into()
+            format!("доставлено {} {word}", fmt_mag(n as u64)).into()
         }
         Msg::ChatDaysSpan(n) => {
             let word = match (n % 10, n % 100) { (1, 11) => "дней", (1, _) => "день", (2..=4, 12..=14) => "дней", (2..=4, _) => "дня", _ => "дней" };
-            format!("переписка идёт {} {word}", fmt_num(n as u32)).into()
+            format!("переписка идёт {} {word}", fmt_mag(n as u64)).into()
         }
         // «во флоте» без притяжательного: род владельца неизвестен, а «их флот» читалось бы как множественное число.
         Msg::ContactFleetPinned(n) => {
             let word = match (n % 10, n % 100) { (1, 11) => "устройств", (1, _) => "устройство", (2..=4, 12..=14) => "устройств", (2..=4, _) => "устройства", _ => "устройств" };
-            format!("личность закреплена с первой свёртки \u{00b7} {} {word} во флоте", fmt_num(n as u32)).into()
+            format!("личность закреплена с первой свёртки \u{00b7} {} {word} во флоте", fmt_mag(n as u64)).into()
         }
         Msg::PublishedNameExplainer(name) => format!("всегда \u{201c}{name}\u{201d} \u{2014} выводится из личности, изменить нельзя").into(),
         Msg::EditingSnippet(s) => format!("правка \u{00bb} {s}").into(),
@@ -169,7 +169,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 None => String::new(),
             };
             let word = match (n % 10, n % 100) { (1, 11) => "попыток", (1, _) => "попытка", (2..=4, 12..=14) => "попыток", (2..=4, _) => "попытки", _ => "попыток" };
-            format!("\u{26a0} {} {word} записать твоё устройство во флот{who}", fmt_num(n as u32)).into()
+            format!("\u{26a0} {} {word} записать твоё устройство во флот{who}", fmt_mag(n as u64)).into()
         }
         Msg::MessageNotSaved => "сообщение НЕ сохранено — хранилище отказало в записи; оно останется тусклым, пока его не донесёт повторная отправка".into(),
         Msg::AttachmentLimit => format!("предел вложения: {} МБ", fmt_num(25)).into(),
@@ -362,7 +362,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "всегда на связи (это ты)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => {
             let word = match (total % 10, total % 100) { (1, 11) => "сообщений", (1, _) => "сообщение", (2..=4, 12..=14) => "сообщений", (2..=4, _) => "сообщения", _ => "сообщений" };
-            format!("{} {word} \u{00b7} отправлено {} \u{00b7} получено {}", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into()
+            format!("{} {word} \u{00b7} отправлено {} \u{00b7} получено {}", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into()
         }
         Msg::RowsShouldMatch => "эти строки должны совпадать на каждом твоём устройстве".into(),
         Msg::OwnNotesCantBoot => "свои собственные заметки не выгонишь".into(),
@@ -425,13 +425,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaitingForDevice => "Ждём новое устройство\u{2026} оно должно показывать свои слова".into(),
         Msg::DevicesAskingToJoin(n) => {
             let (noun, verb) = match (n % 10, n % 100) { (1, 11) => ("устройств", "просятся"), (1, _) => ("устройство", "просится"), (2..=4, 12..=14) => ("устройств", "просятся"), (2..=4, _) => ("устройства", "просятся"), _ => ("устройств", "просятся") };
-            format!("{} {noun} {verb} во флот \u{2014} введи слова того, что у тебя в руках", fmt_num(n as u32)).into()
+            format!("{} {noun} {verb} во флот \u{2014} введи слова того, что у тебя в руках", fmt_mag(n as u64)).into()
         }
         Msg::NoMatchingDevice(bad) => format!("'{bad}' не совпадает ни с одним устройством, которое просится во флот").into(),
         Msg::MatchingDevice(name) => format!("сверяем {name}\u{2026}").into(),
         Msg::MatchingMultiple(n) => {
             let word = match (n % 10, n % 100) { (1, 11) => "устройств", (1, _) => "устройство", (2..=4, 12..=14) => "устройств", (2..=4, _) => "устройства", _ => "устройств" };
-            format!("сверяем\u{2026} ({} {word})", fmt_num(n as u32)).into()
+            format!("сверяем\u{2026} ({} {word})", fmt_mag(n as u64)).into()
         }
         Msg::WordsMatched => "Слова совпали \u{2014} добавляем\u{2026}".into(),
         Msg::Finishing => "Завершаем\u{2026}".into(),
@@ -582,12 +582,12 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CantSendNotSignedIn => "Нельзя отправить: вход не выполнен".into(),
         Msg::DiagRecordInspect { ts, lines } => {
             let word = match (lines % 10, lines % 100) { (1, 11) => "строк", (1, _) => "строка", (2..=4, 12..=14) => "строк", (2..=4, _) => "строки", _ => "строк" };
-            format!("Запись VSF \u{00b7} {ts} \u{00b7} {} {word} \u{00b7} коснись Назад, чтобы вернуться к списку", fmt_num(lines as u32)).into()
+            format!("Запись VSF \u{00b7} {ts} \u{00b7} {} {word} \u{00b7} коснись Назад, чтобы вернуться к списку", fmt_mag(lines as u64)).into()
         }
         Msg::DiagDecoding => "Разбираем журнал\u{2026}".into(),
         Msg::DiagMeta { count, size } => {
             let word = match (count % 10, count % 100) { (1, 11) => "записей", (1, _) => "запись", (2..=4, 12..=14) => "записей", (2..=4, _) => "записи", _ => "записей" };
-            format!("{} {word} \u{00b7} {size} \u{00b7} самое новое внизу \u{00b7} коснись строки, чтобы увидеть её VSF", fmt_num(count as u32)).into()
+            format!("{} {word} \u{00b7} {size} \u{00b7} самое новое внизу \u{00b7} коснись строки, чтобы увидеть её VSF", fmt_mag(count as u64)).into()
         }
         Msg::DiagTrimmed => " \u{00b7} самое старое обрезано".into(),
         Msg::VaultIntro => "Запечатанный сейф этого устройства \u{2014} каждое сообщение, волна, ключ и настройка живут здесь, зашифрованными, и больше нигде на этом устройстве. Числа — собственные, от движка хранения.".into(),

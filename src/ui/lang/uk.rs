@@ -5,7 +5,7 @@
 // Звертання всюди на "ти": photon говорить особисто й неголосно, а не як установа.
 // Словник кованих метафор: wave = хвиля, beam = промінь, braid = коса, lane = смуга, fold = згортання, vault = сейф (а storage = сховище), fleet = флот, chain = ланцюг, attest = засвідчити, revoke = відкликати, custodian = зберігач, brand = тавро.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -135,7 +135,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ItsMineShowWords => "Це я \u{2014} додати цей пристрій".into(),
         Msg::LockedRetry => "Поновив його з іншого пристрою? Торкнись, щоб спробувати ще".into(),
         // ---- ready screen ----
-        Msg::PeersOnline(n) => format!("{} {}", fmt_num(n as u32), plural(n as u64, "вузол", "вузли", "вузлів")).into(),
+        Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), plural(n as u64, "вузол", "вузли", "вузлів")).into(),
         Msg::NetworkBack => "\u{2039} Мережа".into(),
         Msg::AvatarDropHint => "перетягни й кинь, щоб оновити аватар".into(),
         Msg::SearchPlaceholder => "пошук | додати".into(),
@@ -148,10 +148,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}хв", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}с", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => format!("{} {}", fmt_num(n as u32), plural(n as u64, "нове повідомлення", "нові повідомлення", "нових повідомлень")).into(),
-        Msg::MessagesDelivered(n) => format!("{} {}", fmt_num(n as u32), plural(n as u64, "твоє повідомлення доставлено", "твої повідомлення доставлено", "твоїх повідомлень доставлено")).into(),
-        Msg::ChatDaysSpan(n) => format!("спілкуєтеся вже {} {}", fmt_num(n as u32), plural(n as u64, "день", "дні", "днів")).into(),
-        Msg::ContactFleetPinned(n) => format!("ідентичність закріплена від першого згортання \u{00b7} {} {} у їхньому флоті", fmt_num(n as u32), plural(n as u64, "пристрій", "пристрої", "пристроїв")).into(),
+        Msg::NewMessages(n) => format!("{} {}", fmt_mag(n as u64), plural(n as u64, "нове повідомлення", "нові повідомлення", "нових повідомлень")).into(),
+        Msg::MessagesDelivered(n) => format!("{} {}", fmt_mag(n as u64), plural(n as u64, "твоє повідомлення доставлено", "твої повідомлення доставлено", "твоїх повідомлень доставлено")).into(),
+        Msg::ChatDaysSpan(n) => format!("спілкуєтеся вже {} {}", fmt_mag(n as u64), plural(n as u64, "день", "дні", "днів")).into(),
+        Msg::ContactFleetPinned(n) => format!("ідентичність закріплена від першого згортання \u{00b7} {} {} у їхньому флоті", fmt_mag(n as u64), plural(n as u64, "пристрій", "пристрої", "пристроїв")).into(),
         Msg::PublishedNameExplainer(name) => format!("завжди \u{201c}{name}\u{201d} \u{2014} походить з їхньої ідентичності, змінити не можна").into(),
         Msg::EditingSnippet(s) => format!("редагування \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("реакція \u{00bb} {s}").into(),
@@ -161,7 +161,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" \u{2014} флот: {name}"),
                 None => String::new(),
             };
-            format!("\u{26a0} {} {} записати твій пристрій{who}", fmt_num(n as u32), plural(n as u64, "спроба", "спроби", "спроб")).into()
+            format!("\u{26a0} {} {} записати твій пристрій{who}", fmt_mag(n as u64), plural(n as u64, "спроба", "спроби", "спроб")).into()
         }
         Msg::MessageNotSaved => "повідомлення НЕ збережено — сховище відмовило в записі; воно лишається тьмяним, поки повторне надсилання його не посадить".into(),
         Msg::AttachmentLimit => format!("межа вкладення \u{2014} {} MB", fmt_num(25)).into(),
@@ -352,7 +352,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SelfNoChain => "без ланцюга \u{2014} доставлено за визначенням".into(),
         Msg::ChainWoven => "ланцюг сплетено \u{2014} захищено з кінця в кінець".into(),
         Msg::AlwaysReachableSelf => "завжди на зв'язку (це ти)".into(),
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} надіслано \u{00b7} {} отримано", fmt_num(total as u32), plural(total as u64, "повідомлення", "повідомлення", "повідомлень"), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} надіслано \u{00b7} {} отримано", fmt_mag(total as u64), plural(total as u64, "повідомлення", "повідомлення", "повідомлень"), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ці рядки мають збігатися на кожному твоєму пристрої".into(),
         Msg::OwnNotesCantBoot => "власні нотатки не виженеш".into(),
         Msg::SiblingSignsItselfOut => "пристрій флоту йде за власним проханням \u{2014} дивись Налаштування \u{2192} Флот".into(),
@@ -412,10 +412,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Введи слова, показані на новому пристрої".into(),
         Msg::InvalidWord(w) => format!("'{w}' \u{2014} не одне з тих слів").into(),
         Msg::WaitingForDevice => "Чекаю на новий пристрій\u{2026} він має показувати свої слова".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} {} \u{2014} введи слова того, що в тебе в руці", fmt_num(n as u32), plural(n as u64, "пристрій просить приєднатися", "пристрої просять приєднатися", "пристроїв просять приєднатися")).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} {} \u{2014} введи слова того, що в тебе в руці", fmt_mag(n as u64), plural(n as u64, "пристрій просить приєднатися", "пристрої просять приєднатися", "пристроїв просять приєднатися")).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' не збігається з жодним пристроєм, що просить приєднатися").into(),
         Msg::MatchingDevice(name) => format!("звіряю: {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("звіряю\u{2026} ({} {})", fmt_num(n as u32), plural(n as u64, "пристрій", "пристрої", "пристроїв")).into(),
+        Msg::MatchingMultiple(n) => format!("звіряю\u{2026} ({} {})", fmt_mag(n as u64), plural(n as u64, "пристрій", "пристрої", "пристроїв")).into(),
         Msg::WordsMatched => "Слова збіглися \u{2014} додаю\u{2026}".into(),
         Msg::Finishing => "Завершую\u{2026}".into(),
         Msg::Preparing => "Готую\u{2026}".into(),
@@ -561,9 +561,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Поки що нема чого надсилати".into(),
         Msg::SendingLog(size) => format!("Надсилаю журнал ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Не можу надіслати: ідентичності нема".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("Запис VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} торкнись Назад, щоб побачити список", fmt_num(lines as u32), plural(lines as u64, "рядок", "рядки", "рядків")).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("Запис VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} торкнись Назад, щоб побачити список", fmt_mag(lines as u64), plural(lines as u64, "рядок", "рядки", "рядків")).into(),
         Msg::DiagDecoding => "Розбираю журнал\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} {} \u{00b7} {size} \u{00b7} найновіше внизу \u{00b7} торкнись рядка, щоб побачити його VSF", fmt_num(count as u32), plural(count as u64, "запис", "записи", "записів")).into(),
+        Msg::DiagMeta { count, size } => format!("{} {} \u{00b7} {size} \u{00b7} найновіше внизу \u{00b7} торкнись рядка, щоб побачити його VSF", fmt_mag(count as u64), plural(count as u64, "запис", "записи", "записів")).into(),
         Msg::DiagTrimmed => " \u{00b7} найстаріше підрізано".into(),
         Msg::VaultIntro => "Запечатаний сейф цього пристрою \u{2014} кожне повідомлення, хвиля, ключ і налаштування живуть тут, зашифровані, і більше ніде на цьому пристрої. Числа \u{2014} від самого рушія сховища.".into(),
         Msg::VaultCapacity(s) => format!("місткість \u{00b7} {s}").into(),

@@ -3,7 +3,7 @@
 // Never translated (per docs/languages.md): "Photon", "TOKEN", handles and params, voca pairing words, the WaveVoiceSentence (must match the English audio recording), unit abbreviations, emoji/glyph prefixes.
 // EVERY numeral renders thru crate::fmt_num, exactly as in en.rs.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -121,7 +121,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ItsMineShowWords => "Ko au tērā \u{2014} tāpirihia tēnei pūrere".into(),
         Msg::LockedRetry => "Kua whakahokia mai i tētahi atu pūrere? Pāwhiritia kia ngana anō".into(),
         // ---- ready screen ----
-        Msg::PeersOnline(n) => if n == 1 { format!("{} hoa tūhono", fmt_num(1)) } else { format!("{} ngā hoa tūhono", fmt_num(n as u32)) }.into(),
+        Msg::PeersOnline(n) => if n == 1 { format!("{} hoa tūhono", fmt_mag(1)) } else { format!("{} ngā hoa tūhono", fmt_mag(n as u64)) }.into(),
         Msg::NetworkBack => "\u{2039} Whatunga".into(),
         Msg::AvatarDropHint => "tōia mai he whakaahua hei avatar hou".into(),
         Msg::SearchPlaceholder => "rapu | tāpiri".into(),
@@ -134,10 +134,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}m", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => if n == 1 { format!("{} karere hou", fmt_num(1)) } else { format!("{} ngā karere hou", fmt_num(n as u32)) }.into(),
-        Msg::MessagesDelivered(n) => format!("{} o ō karere kua tae", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => if n == 1 { format!("e kōrero ana mō te {} rā", fmt_num(1)) } else { format!("e kōrero ana mō ngā rā {}", fmt_num(n as u32)) }.into(),
-        Msg::ContactFleetPinned(n) => if n == 1 { format!("kua titia te tuakiri mai i te hononga tuatahi \u{00b7} {} pūrere i tō rātou kāhui", fmt_num(1)) } else { format!("kua titia te tuakiri mai i te hononga tuatahi \u{00b7} {} ngā pūrere i tō rātou kāhui", fmt_num(n as u32)) }.into(),
+        Msg::NewMessages(n) => if n == 1 { format!("{} karere hou", fmt_mag(1)) } else { format!("{} ngā karere hou", fmt_mag(n as u64)) }.into(),
+        Msg::MessagesDelivered(n) => format!("{} o ō karere kua tae", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => if n == 1 { format!("e kōrero ana mō te {} rā", fmt_mag(1)) } else { format!("e kōrero ana mō ngā rā {}", fmt_mag(n as u64)) }.into(),
+        Msg::ContactFleetPinned(n) => if n == 1 { format!("kua titia te tuakiri mai i te hononga tuatahi \u{00b7} {} pūrere i tō rātou kāhui", fmt_mag(1)) } else { format!("kua titia te tuakiri mai i te hononga tuatahi \u{00b7} {} ngā pūrere i tō rātou kāhui", fmt_mag(n as u64)) }.into(),
         Msg::PublishedNameExplainer(name) => format!("ko \u{201c}{name}\u{201d} i ngā wā katoa \u{2014} i ahu mai i tō rātou tuakiri, kāore e taea te whakarerekē").into(),
         Msg::EditingSnippet(s) => format!("e whakatika ana \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("urupare \u{00bb} {s}").into(),
@@ -147,9 +147,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 None => String::new(),
             };
             if n == 1 {
-                format!("\u{26a0} {} ngana ki te whakauru i tō pūrere{who}", fmt_num(1)).into()
+                format!("\u{26a0} {} ngana ki te whakauru i tō pūrere{who}", fmt_mag(1)).into()
             } else {
-                format!("\u{26a0} {} ngā ngana ki te whakauru i tō pūrere{who}", fmt_num(n as u32)).into()
+                format!("\u{26a0} {} ngā ngana ki te whakauru i tō pūrere{who}", fmt_mag(n as u64)).into()
             }
         }
         Msg::MessageNotSaved => "KĀORE te karere i tiakina — i whakakāhoretia te tuhi e te rokiroki; ka noho kōmā kia tau rā anō he tuku anō".into(),
@@ -341,7 +341,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SelfNoChain => "kāore he mekameka \u{2014} kua tae mā te tikanga tonu".into(),
         Msg::ChainWoven => "kua whatua te mekameka \u{2014} haumaru mai i tētahi pito ki tētahi".into(),
         Msg::AlwaysReachableSelf => "e taea tonutia (ko koe tēnei)".into(),
-        Msg::MessagesSentReceived { total, sent, recv } => if total == 1 { format!("{} karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_num(1), fmt_num(sent as u32), fmt_num(recv as u32)) } else { format!("{} ngā karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)) }.into(),
+        Msg::MessagesSentReceived { total, sent, recv } => if total == 1 { format!("{} karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_mag(1), fmt_mag(sent as u64), fmt_mag(recv as u64)) } else { format!("{} ngā karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)) }.into(),
         Msg::RowsShouldMatch => "me ōrite ēnei rārangi i ō pūrere katoa".into(),
         Msg::OwnNotesCantBoot => "kāore e taea ō pitopito kōrero ake te pana".into(),
         Msg::SiblingSignsItselfOut => "mā te pūrere kāhui anō ia e wehe \u{2014} tirohia Tautuhinga \u{2192} Kāhui".into(),
@@ -401,10 +401,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Tāurua ngā kupu e whakaaturia ana i te pūrere hou".into(),
         Msg::InvalidWord(w) => format!("ehara a '{w}' i tētahi o ngā kupu").into(),
         Msg::WaitingForDevice => "E tatari ana ki te pūrere hou\u{2026} me whakaatu ia i āna kupu".into(),
-        Msg::DevicesAskingToJoin(n) => format!("{} ngā pūrere e tono ana kia hono \u{2014} tāurua ngā kupu o te mea kei tō ringa", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("{} ngā pūrere e tono ana kia hono \u{2014} tāurua ngā kupu o te mea kei tō ringa", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("kāore a '{bad}' e hāngai ki tētahi pūrere e tono ana").into(),
         Msg::MatchingDevice(name) => format!("e whakataurite ana i a {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("e whakataurite ana\u{2026} ({} ngā pūrere)", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("e whakataurite ana\u{2026} ({} ngā pūrere)", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "Kua hāngai ngā kupu \u{2014} e tāpiri ana\u{2026}".into(),
         Msg::Finishing => "E whakaoti ana\u{2026}".into(),
         Msg::Preparing => "E whakarite ana\u{2026}".into(),
@@ -550,9 +550,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Kāore anō he rangitaki hei tuku".into(),
         Msg::SendingLog(size) => format!("E tuku ana i te rangitaki ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Kāore e taea te tuku: kāore i te takiuru".into(),
-        Msg::DiagRecordInspect { ts, lines } => if lines == 1 { format!("Rēkoata VSF \u{00b7} {ts} \u{00b7} {} rārangi \u{00b7} pāwhiritia a Hoki mō te rārangi katoa", fmt_num(1)) } else { format!("Rēkoata VSF \u{00b7} {ts} \u{00b7} {} ngā rārangi \u{00b7} pāwhiritia a Hoki mō te rārangi katoa", fmt_num(lines as u32)) }.into(),
+        Msg::DiagRecordInspect { ts, lines } => if lines == 1 { format!("Rēkoata VSF \u{00b7} {ts} \u{00b7} {} rārangi \u{00b7} pāwhiritia a Hoki mō te rārangi katoa", fmt_mag(1)) } else { format!("Rēkoata VSF \u{00b7} {ts} \u{00b7} {} ngā rārangi \u{00b7} pāwhiritia a Hoki mō te rārangi katoa", fmt_mag(lines as u64)) }.into(),
         Msg::DiagDecoding => "E wetewete ana i te rangitaki\u{2026}".into(),
-        Msg::DiagMeta { count, size } => if count == 1 { format!("{} rēkoata \u{00b7} {size} \u{00b7} ko te hou kei raro \u{00b7} pāwhiritia he rārangi mō tōna VSF", fmt_num(1)) } else { format!("{} ngā rēkoata \u{00b7} {size} \u{00b7} ko te hou kei raro \u{00b7} pāwhiritia he rārangi mō tōna VSF", fmt_num(count as u32)) }.into(),
+        Msg::DiagMeta { count, size } => if count == 1 { format!("{} rēkoata \u{00b7} {size} \u{00b7} ko te hou kei raro \u{00b7} pāwhiritia he rārangi mō tōna VSF", fmt_mag(1)) } else { format!("{} ngā rēkoata \u{00b7} {size} \u{00b7} ko te hou kei raro \u{00b7} pāwhiritia he rārangi mō tōna VSF", fmt_mag(count as u64)) }.into(),
         Msg::DiagTrimmed => " \u{00b7} kua tapahia ngā mea tawhito".into(),
         Msg::VaultIntro => "Te p\u{0101}taka hiri o t\u{0113}nei p\u{016b}rere \u{2014} kei konei ia karere, ia ngaru, ia k\u{012b} me ia tautuhinga, he mea whakamuna, k\u{0101}ore i w\u{0101}hi k\u{0113} o te p\u{016b}rere. N\u{0101} te p\u{016b}kaha ake ng\u{0101} tau.".into(),
         Msg::VaultCapacity(s) => format!("kahaoranga \u{00b7} {s}").into(),

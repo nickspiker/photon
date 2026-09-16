@@ -295,6 +295,32 @@ pub fn dms_age(secs: i64) -> String {
     }
 }
 
+/// A QUANTITY as an exponential magnitude (Nick 2026-09-15: "everything as exponential magnitude when in dozenal, file sizes, times, all of it"), linear in hex and arabic.
+///
+/// This is the one render for every count in the UI, because a dozenal build has no count form left to confuse it with: peers, messages, devices, lines — all of them doublings, so a digit means the same thing wherever it appears. The mixed system is what needed a marker; the pure one does not. (The remaining second form is the SHARE — a leading radix point — which reads as a share precisely because the dot is there.)
+///
+/// The doubling count comes from spirix `lb` and the digits come out of spirix's formatter already in photon's glyph block (`{:#}`), so nothing transliterates ASCII in between — which matters because the same formatter also emits a base marker and escape tags that a post-hoc mapper would corrupt.
+///
+/// ZERO answers itself. `log2(0)` is negative infinity, and spirix classes every non-normal value as an escape rather than a digit, so a count of none arrives structurally distinct with no `Option` dance and no per-scale zero word invented for it. The caller substitutes whatever word its context wants; here it is the vault's existing "empty".
+///
+/// `frac` is how many digits wide to draw. One is enough to keep small counts apart — two and three both floor to Zila, but two is a bare Zila and three is Zila point Luna — while staying short enough for a chip.
+pub fn fmt_mag(n: u64) -> String {
+    match num_base() {
+        NumBase::Dozenal => {
+            let doublings = spirix::ScalarF6E4::from(n as f64).lb();
+            // Ask spirix what CLASS the value is, rather than sniffing the rendered string: base twelve spells ten and eleven `A` and `B`, so a count of 1024 renders `+A` with no ascii digit in it and a string-shaped test would read it as nothing.
+            // Zero is its own class here and is NOT normal — but `lb(1)` is exactly zero, one thing being no doublings at all, so it must render. The class that means "no quantity" is the infinity `lb(0)` returns, and only that becomes a word.
+            if doublings.is_normal() || doublings.is_zero() {
+                // spirix prints a leading '+' for positives; the sign is structure, and this magnitude is never negative because a count is never below one.
+                return format!("{:#3.12}", doublings).trim_start_matches('+').to_string();
+            }
+            crate::ui::lang::tr(crate::ui::lang::Msg::DmsEmpty).into_owned()
+        }
+        NumBase::Hex => hex_glyphs(n.min(u32::MAX as u64) as u32),
+        NumBase::Arabic => n.to_string(),
+    }
+}
+
 /// One rung of the REPUTATION ladder: the grade `1 − 1/evidence`, as a dozenal fraction — a radix point and up to two digits.
 /// Every rung the Base page shows is a unit fraction, and twelve divides by two, three, four and six, so each one lands EXACTLY. The identical values repeat forever in base ten, which is the argument the ladder exists to make rather than merely assert.
 /// Read backwards it is the confidence: one digit means a dozen behind the grade, two digits a gross. A digit that was not earned is not modesty to omit, it is the only honest width.
@@ -474,6 +500,45 @@ pub(crate) mod base_kat {
 
     fn g(digits: &[u8]) -> String {
         digits.iter().map(|d| char::from(0x10 + d)).collect()
+    }
+
+    /// EVERY QUANTITY IS A MAGNITUDE IN DOZENAL (Nick 2026-09-15). Sixteen peers reads Tera — the value that started this, because a linear dozenal sixteen renders `Zila Tera` and reads like two separate digits to anyone who has been thinking in doublings.
+    /// The fraction is what keeps the small end honest: two and three both FLOOR to Zila, so a floored form would lose the difference exactly where a user is staring hardest.
+    #[test]
+    fn every_count_is_a_magnitude_in_dozenal() {
+        let _g = hold_base(NumBase::Dozenal);
+        assert_eq!(fmt_mag(1), g(&[0]), "one is Zil — no doublings yet");
+        assert_eq!(fmt_mag(2), g(&[1]), "two is one doubling, Zila");
+        assert_eq!(fmt_mag(4), g(&[2]), "four is Zilor");
+        assert_eq!(fmt_mag(16), g(&[4]), "SIXTEEN IS TERA — the peers line that convicted the count form");
+        assert_ne!(fmt_mag(2), fmt_mag(3), "two and three must stay apart; a floored form collapses them");
+        assert!(fmt_mag(3).starts_with(&g(&[1])), "three is Zila and a fraction, not a different digit");
+        // Ten and eleven are the base-twelve letters A and B in ascii, which is why normality is asked of spirix rather than sniffed from the rendered string.
+        assert_eq!(fmt_mag(1024), g(&[10]), "a kibi of anything is Stela — ten doublings, not a misread nothing");
+        assert_eq!(fmt_mag(2048), g(&[11]), "and eleven doublings is Stelor");
+    }
+
+    /// ZERO IS SPIRIX'S PROBLEM, not ours (Nick 2026-09-15: "zero is a single special case in spirix!"). `log2(0)` is negative infinity, which classes as an escape rather than a digit, so a count of none is caught by one normality question instead of a zero word invented per scale.
+    #[test]
+    fn a_count_of_none_is_a_word_not_a_glyph() {
+        let _g = hold_base(NumBase::Dozenal);
+        let none = fmt_mag(0);
+        assert!(!none.chars().any(|c| ('\u{10}'..='\u{1b}').contains(&c)), "none must not render as a digit of the block — it is not a quantity");
+        assert_ne!(none, fmt_mag(1), "none and one are the states most worth telling apart");
+        assert!(!none.is_empty(), "and it must say something");
+    }
+
+    /// Hex and arabic keep counting linearly — the exponential form is the DOZENAL reading, not a global one.
+    #[test]
+    fn other_bases_still_count() {
+        {
+            let _g = hold_base(NumBase::Hex);
+            assert_eq!(fmt_mag(16), "10", "sixteen in hex is one-zero, linear");
+            assert_eq!(fmt_mag(0), "0");
+        }
+        let _g = hold_base(NumBase::Arabic);
+        assert_eq!(fmt_mag(16), "16");
+        assert_eq!(fmt_mag(0), "0");
     }
 
     #[test]

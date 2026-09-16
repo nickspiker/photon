@@ -5,7 +5,7 @@
 // Mówimy do ciebie na "ty": photon mówi osobiście i cicho, nie jak firma.
 // Rzeczowniki po liczbie mają trzy formy (1 urządzenie / 2-4 urządzenia / 5+ urządzeń, z wyjątkiem 12-14) — dlatego arms z liczbą niosą prawdziwy match na liczbie.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -124,7 +124,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LockedRetry => "Przywrócone z innego urządzenia? Dotknij, by spróbować ponownie".into(),
         // ---- ready screen ----
         // Peer po polsku odmienia się jak zwykły rzeczownik męski: 1 peer, 2-4 peery, 5+ peerów (i 12-14 zawsze peerów).
-        Msg::PeersOnline(n) => format!("{} {}", fmt_num(n as u32), if n == 1 { "peer" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "peery" } else { "peerów" }).into(),
+        Msg::PeersOnline(n) => format!("{} {}", fmt_mag(n as u64), if n == 1 { "peer" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "peery" } else { "peerów" }).into(),
         Msg::NetworkBack => "\u{2039} Sieć".into(),
         Msg::AvatarDropHint => "przeciągnij i upuść, by zmienić awatar".into(),
         Msg::SearchPlaceholder => "szukaj | dodaj".into(),
@@ -137,13 +137,13 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}min", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => if n == 1 { format!("{} nowa wiadomość", fmt_num(1)) } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { format!("{} nowe wiadomości", fmt_num(n as u32)) } else { format!("{} nowych wiadomości", fmt_num(n as u32)) }.into(),
+        Msg::NewMessages(n) => if n == 1 { format!("{} nowa wiadomość", fmt_mag(1)) } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { format!("{} nowe wiadomości", fmt_mag(n as u64)) } else { format!("{} nowych wiadomości", fmt_mag(n as u64)) }.into(),
         // "z twoich wiadomości" trzyma dopełniacz mnogi przy każdej liczbie, więc liczebnik nie potrzebuje trzech form.
-        Msg::MessagesDelivered(n) => format!("dostarczono {} z twoich wiadomości", fmt_num(n as u32)).into(),
+        Msg::MessagesDelivered(n) => format!("dostarczono {} z twoich wiadomości", fmt_mag(n as u64)).into(),
         // Dzień ma tylko dwie formy: 1 dzień, a od dwóch w górę zawsze dni.
-        Msg::ChatDaysSpan(n) => if n == 1 { format!("rozmowa przez {} dzień", fmt_num(1)) } else { format!("rozmowa przez {} dni", fmt_num(n as u32)) }.into(),
+        Msg::ChatDaysSpan(n) => if n == 1 { format!("rozmowa przez {} dzień", fmt_mag(1)) } else { format!("rozmowa przez {} dni", fmt_mag(n as u64)) }.into(),
         // "we flocie tej osoby" zamiast "w jego/jej flocie" — polszczyzna nie ma neutralnego zaimka dzierżawczego trzeciej osoby.
-        Msg::ContactFleetPinned(n) => format!("tożsamość przypięta od pierwszego złożenia \u{00b7} {} {} we flocie tej osoby", fmt_num(n as u32), if n == 1 { "urządzenie" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "urządzenia" } else { "urządzeń" }).into(),
+        Msg::ContactFleetPinned(n) => format!("tożsamość przypięta od pierwszego złożenia \u{00b7} {} {} we flocie tej osoby", fmt_mag(n as u64), if n == 1 { "urządzenie" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "urządzenia" } else { "urządzeń" }).into(),
         Msg::PublishedNameExplainer(name) => format!("zawsze \u{201c}{name}\u{201d} \u{2014} wywiedzione z tożsamości tej osoby, nie da się tego zmienić").into(),
         Msg::EditingSnippet(s) => format!("edycja \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("reakcja \u{00bb} {s}").into(),
@@ -153,7 +153,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
                 Some(name) => format!(" do floty ({name})"),
                 None => String::new(),
             };
-            format!("\u{26a0} {} {} dołączenia twojego urządzenia{who}", fmt_num(n as u32), if n == 1 { "próba" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "próby" } else { "prób" }).into()
+            format!("\u{26a0} {} {} dołączenia twojego urządzenia{who}", fmt_mag(n as u64), if n == 1 { "próba" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "próby" } else { "prób" }).into()
         }
         Msg::MessageNotSaved => "wiadomość NIE zapisana — magazyn odmówił zapisu; zostaje przygaszona, dopóki ponowne wysłanie jej nie dowiezie".into(),
         Msg::AttachmentLimit => format!("limit załącznika to {} MB", fmt_num(25)).into(),
@@ -345,7 +345,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ChainWoven => "łańcuch spleciony \u{2014} zabezpieczone od końca do końca".into(),
         Msg::AlwaysReachableSelf => "zawsze osiągalne (to ty)".into(),
         // Wiadomość ma dwie formy po liczbie (1 wiadomość, od dwóch w górę wiadomości), a "wysłane/odebrane" schodzi do etykiety z dwukropkiem, żeby nie odmieniać imiesłowu przy każdej liczbie.
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} wysłane: {} \u{00b7} odebrane: {}", fmt_num(total as u32), if total == 1 { "wiadomość" } else { "wiadomości" }, fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} wysłane: {} \u{00b7} odebrane: {}", fmt_mag(total as u64), if total == 1 { "wiadomość" } else { "wiadomości" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "te wiersze powinny się zgadzać na każdym twoim urządzeniu".into(),
         Msg::OwnNotesCantBoot => "własnych notatek nie da się wyrzucić".into(),
         Msg::SiblingSignsItselfOut => "urządzenie floty odchodzi na własną prośbę \u{2014} zobacz Ustawienia \u{2192} Flota".into(),
@@ -406,10 +406,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::InvalidWord(w) => format!("'{w}' nie jest jednym z tych słów").into(),
         Msg::WaitingForDevice => "Czekanie na nowe urządzenie\u{2026} powinno pokazywać swoje słowa".into(),
         // Liczba rządzi tu i rzeczownikiem, i orzeczeniem (prosi / proszą / prosi), więc każda forma niesie całe zdanie.
-        Msg::DevicesAskingToJoin(n) => if n == 1 { format!("{} urządzenie prosi o dołączenie \u{2014} wpisz słowa z tego, które trzymasz w ręce", fmt_num(1)) } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { format!("{} urządzenia proszą o dołączenie \u{2014} wpisz słowa z tego, które trzymasz w ręce", fmt_num(n as u32)) } else { format!("{} urządzeń prosi o dołączenie \u{2014} wpisz słowa z tego, które trzymasz w ręce", fmt_num(n as u32)) }.into(),
+        Msg::DevicesAskingToJoin(n) => if n == 1 { format!("{} urządzenie prosi o dołączenie \u{2014} wpisz słowa z tego, które trzymasz w ręce", fmt_mag(1)) } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { format!("{} urządzenia proszą o dołączenie \u{2014} wpisz słowa z tego, które trzymasz w ręce", fmt_mag(n as u64)) } else { format!("{} urządzeń prosi o dołączenie \u{2014} wpisz słowa z tego, które trzymasz w ręce", fmt_mag(n as u64)) }.into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' nie pasuje do żadnego urządzenia proszącego o dołączenie").into(),
         Msg::MatchingDevice(name) => format!("dopasowywanie: {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("dopasowywanie\u{2026} ({} {})", fmt_num(n as u32), if n == 1 { "urządzenie" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "urządzenia" } else { "urządzeń" }).into(),
+        Msg::MatchingMultiple(n) => format!("dopasowywanie\u{2026} ({} {})", fmt_mag(n as u64), if n == 1 { "urządzenie" } else if matches!(n % 10, 2..=4) && !matches!(n % 100, 12..=14) { "urządzenia" } else { "urządzeń" }).into(),
         Msg::WordsMatched => "Słowa się zgadzają \u{2014} dodawanie\u{2026}".into(),
         Msg::Finishing => "Kończenie\u{2026}".into(),
         Msg::Preparing => "Przygotowywanie\u{2026}".into(),
@@ -556,9 +556,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::NoLogToSend => "Nie ma jeszcze logu do wysłania".into(),
         Msg::SendingLog(size) => format!("Wysyłanie logu ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Nie można wysłać: tożsamość nieaktywna".into(),
-        Msg::DiagRecordInspect { ts, lines } => format!("Wpis VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} dotknij Wstecz, by wrócić do listy", fmt_num(lines as u32), if lines == 1 { "wiersz" } else if matches!(lines % 10, 2..=4) && !matches!(lines % 100, 12..=14) { "wiersze" } else { "wierszy" }).into(),
+        Msg::DiagRecordInspect { ts, lines } => format!("Wpis VSF \u{00b7} {ts} \u{00b7} {} {} \u{00b7} dotknij Wstecz, by wrócić do listy", fmt_mag(lines as u64), if lines == 1 { "wiersz" } else if matches!(lines % 10, 2..=4) && !matches!(lines % 100, 12..=14) { "wiersze" } else { "wierszy" }).into(),
         Msg::DiagDecoding => "Dekodowanie logu\u{2026}".into(),
-        Msg::DiagMeta { count, size } => format!("{} {} \u{00b7} {size} \u{00b7} najnowsze na dole \u{00b7} dotknij wiersza, by zobaczyć jego VSF", fmt_num(count as u32), if count == 1 { "wpis" } else if matches!(count % 10, 2..=4) && !matches!(count % 100, 12..=14) { "wpisy" } else { "wpisów" }).into(),
+        Msg::DiagMeta { count, size } => format!("{} {} \u{00b7} {size} \u{00b7} najnowsze na dole \u{00b7} dotknij wiersza, by zobaczyć jego VSF", fmt_mag(count as u64), if count == 1 { "wpis" } else if matches!(count % 10, 2..=4) && !matches!(count % 100, 12..=14) { "wpisy" } else { "wpisów" }).into(),
         Msg::DiagTrimmed => " \u{00b7} najstarsze przycięte".into(),
         Msg::VaultIntro => "Zapieczętowany skarbiec tego urządzenia \u{2014} każda wiadomość, fala, klucz i ustawienie żyje tutaj, zaszyfrowane, i nigdzie indziej na tym urządzeniu. Liczby są z samego silnika magazynu.".into(),
         Msg::VaultCapacity(s) => format!("pojemność \u{00b7} {s}").into(),

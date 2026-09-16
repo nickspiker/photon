@@ -5,7 +5,7 @@
 // Msamiati wa msingi: wimbi = wave, mwale = beam, mnyororo = chain, msuko/kusuka = braid/weave, mkunjo/kukunja = fold, hazina = vault, kundi = fleet, kifaa = device, utaratibu = ceremony, kuoanisha = pairing, kubatilisha = revoke, kuthibitisha = attest, lakiri = seal, Kipokezi = relay, mshirika = peer.
 // Matokeo ya fmt_num hupatikana katika uso wa Oxanium +glyphs kutoka familia yoyote ya msingi (fluor huiweka kwanza katika mnyororo wake wa kurudia) — hakuna mahali pa kuchora panapohitaji kuomba.
 use super::Msg;
-use crate::fmt_num;
+use crate::{fmt_mag, fmt_num};
 use crate::ui::state::{ContactPage, SettingsPage};
 use std::borrow::Cow;
 
@@ -123,7 +123,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ItsMineShowWords => "Ni mimi \u{2014} ongeza kifaa hiki".into(),
         Msg::LockedRetry => "Umekirejesha kutoka kifaa kingine? Gusa ili kujaribu tena".into(),
         // ---- ready screen ----
-        Msg::PeersOnline(n) => if n == 1 { format!("mshirika {}", fmt_num(1)) } else { format!("washirika {}", fmt_num(n as u32)) }.into(),
+        Msg::PeersOnline(n) => if n == 1 { format!("mshirika {}", fmt_mag(1)) } else { format!("washirika {}", fmt_mag(n as u64)) }.into(),
         Msg::NetworkBack => "\u{2039} Mtandao".into(),
         Msg::AvatarDropHint => "buruta/dondosha ili kubadilisha avatar".into(),
         Msg::SearchPlaceholder => "tafuta | ongeza".into(),
@@ -136,10 +136,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MinutesShort(n) => format!("{}m", fmt_num(n as u32)).into(),
         Msg::SecondsShort(n) => format!("{}s", fmt_num(n as u32)).into(),
         // ---- conversation ----
-        Msg::NewMessages(n) => if n == 1 { format!("ujumbe mpya {}", fmt_num(1)) } else { format!("jumbe mpya {}", fmt_num(n as u32)) }.into(),
-        Msg::MessagesDelivered(n) => format!("kati ya jumbe zako, {} zimefika", fmt_num(n as u32)).into(),
-        Msg::ChatDaysSpan(n) => format!("mnazungumza kwa muda wa siku {}", fmt_num(n as u32)).into(),
-        Msg::ContactFleetPinned(n) => if n == 1 { format!("utambulisho umebandikwa tangu mkunjo wa kwanza \u{00b7} kifaa {} katika kundi lake", fmt_num(1)) } else { format!("utambulisho umebandikwa tangu mkunjo wa kwanza \u{00b7} vifaa {} katika kundi lake", fmt_num(n as u32)) }.into(),
+        Msg::NewMessages(n) => if n == 1 { format!("ujumbe mpya {}", fmt_mag(1)) } else { format!("jumbe mpya {}", fmt_mag(n as u64)) }.into(),
+        Msg::MessagesDelivered(n) => format!("kati ya jumbe zako, {} zimefika", fmt_mag(n as u64)).into(),
+        Msg::ChatDaysSpan(n) => format!("mnazungumza kwa muda wa siku {}", fmt_mag(n as u64)).into(),
+        Msg::ContactFleetPinned(n) => if n == 1 { format!("utambulisho umebandikwa tangu mkunjo wa kwanza \u{00b7} kifaa {} katika kundi lake", fmt_mag(1)) } else { format!("utambulisho umebandikwa tangu mkunjo wa kwanza \u{00b7} vifaa {} katika kundi lake", fmt_mag(n as u64)) }.into(),
         Msg::PublishedNameExplainer(name) => format!("daima \u{201c}{name}\u{201d} \u{2014} limetokana na utambulisho wake, haliwezi kubadilishwa").into(),
         Msg::EditingSnippet(s) => format!("unahariri \u{00bb} {s}").into(),
         Msg::ReactSnippet(s) => format!("itikia \u{00bb} {s}").into(),
@@ -150,9 +150,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             };
             // "jaribio" ni ngeli ya ji-/ma-: umoja huchukua "la", wingi "majaribio" huchukua "ya" — kiunganishi hubadilika pamoja na idadi.
             if n == 1 {
-                format!("\u{26a0} jaribio {} la kukiandikisha kifaa chako{who}", fmt_num(1)).into()
+                format!("\u{26a0} jaribio {} la kukiandikisha kifaa chako{who}", fmt_mag(1)).into()
             } else {
-                format!("\u{26a0} majaribio {} ya kukiandikisha kifaa chako{who}", fmt_num(n as u32)).into()
+                format!("\u{26a0} majaribio {} ya kukiandikisha kifaa chako{who}", fmt_mag(n as u64)).into()
             }
         }
         Msg::MessageNotSaved => "ujumbe HAUKUHIFADHIWA — hifadhi ilikataa kuandika; utabaki hafifu mpaka kutuma tena kuufikishe".into(),
@@ -345,7 +345,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::ChainWoven => "mnyororo umesukwa \u{2014} umelindwa mwanzo hadi mwisho".into(),
         Msg::AlwaysReachableSelf => "hupatikana daima (huyu ni wewe)".into(),
         // Kichwa pekee ndicho hubadilika kwa idadi (ujumbe/jumbe); hesabu za kutuma na kupokea hurejelea "jumbe" kwa ujumla, hivyo hubaki katika ngeli ya zi-.
-        Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} zilizotumwa {} \u{00b7} zilizopokelewa {}", if total == 1 { "ujumbe" } else { "jumbe" }, fmt_num(total as u32), fmt_num(sent as u32), fmt_num(recv as u32)).into(),
+        Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} zilizotumwa {} \u{00b7} zilizopokelewa {}", if total == 1 { "ujumbe" } else { "jumbe" }, fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "safu hizi zinapaswa kufanana kwenye kila kifaa chako".into(),
         Msg::OwnNotesCantBoot => "madokezo yako mwenyewe hayawezi kufukuzwa".into(),
         Msg::SiblingSignsItselfOut => "kifaa cha kundi huondoka kwa ombi lake lenyewe \u{2014} angalia Mipangilio \u{2192} Kundi".into(),
@@ -405,10 +405,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::TypeWords => "Andika maneno yanayoonyeshwa kwenye kifaa kipya".into(),
         Msg::InvalidWord(w) => format!("'{w}' si mojawapo ya maneno").into(),
         Msg::WaitingForDevice => "Inasubiri kifaa kipya\u{2026} kinapaswa kuwa kinaonyesha maneno yake".into(),
-        Msg::DevicesAskingToJoin(n) => format!("vifaa {} vinaomba kujiunga \u{2014} andika maneno ya kile kilicho mkononi mwako", fmt_num(n as u32)).into(),
+        Msg::DevicesAskingToJoin(n) => format!("vifaa {} vinaomba kujiunga \u{2014} andika maneno ya kile kilicho mkononi mwako", fmt_mag(n as u64)).into(),
         Msg::NoMatchingDevice(bad) => format!("'{bad}' hailingani na kifaa chochote kinachoomba kujiunga").into(),
         Msg::MatchingDevice(name) => format!("inalinganisha {name}\u{2026}").into(),
-        Msg::MatchingMultiple(n) => format!("inalinganisha\u{2026} (vifaa {})", fmt_num(n as u32)).into(),
+        Msg::MatchingMultiple(n) => format!("inalinganisha\u{2026} (vifaa {})", fmt_mag(n as u64)).into(),
         Msg::WordsMatched => "Maneno yanalingana \u{2014} inaongeza\u{2026}".into(),
         Msg::Finishing => "Inamaliza\u{2026}".into(),
         Msg::Preparing => "Inaandaa\u{2026}".into(),
@@ -555,10 +555,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SendingLog(size) => format!("Inatuma kumbukumbu ({size})\u{2026}").into(),
         Msg::CantSendNotSignedIn => "Haiwezi kutuma: hujaingia".into(),
         // "mstari" ni ngeli ya m-/mi-: umoja "mstari", wingi "mistari" — idadi huamua umbo.
-        Msg::DiagRecordInspect { ts, lines } => if lines == 1 { format!("Rekodi VSF \u{00b7} {ts} \u{00b7} mstari {} \u{00b7} gusa Rudi kwa orodha", fmt_num(1)) } else { format!("Rekodi VSF \u{00b7} {ts} \u{00b7} mistari {} \u{00b7} gusa Rudi kwa orodha", fmt_num(lines as u32)) }.into(),
+        Msg::DiagRecordInspect { ts, lines } => if lines == 1 { format!("Rekodi VSF \u{00b7} {ts} \u{00b7} mstari {} \u{00b7} gusa Rudi kwa orodha", fmt_mag(1)) } else { format!("Rekodi VSF \u{00b7} {ts} \u{00b7} mistari {} \u{00b7} gusa Rudi kwa orodha", fmt_mag(lines as u64)) }.into(),
         Msg::DiagDecoding => "Inasimbua kumbukumbu\u{2026}".into(),
         // "rekodi" ni ngeli ya N: umbo moja kwa umoja na wingi, hivyo hakuna tawi la idadi hapa.
-        Msg::DiagMeta { count, size } => format!("rekodi {} \u{00b7} {size} \u{00b7} mpya zaidi chini \u{00b7} gusa safu kwa VSF yake", fmt_num(count as u32)).into(),
+        Msg::DiagMeta { count, size } => format!("rekodi {} \u{00b7} {size} \u{00b7} mpya zaidi chini \u{00b7} gusa safu kwa VSF yake", fmt_mag(count as u64)).into(),
         Msg::DiagTrimmed => " \u{00b7} za zamani zimekatwa".into(),
         Msg::VaultIntro => "Hazina iliyotiwa lakiri ya kifaa hiki \u{2014} kila ujumbe, kila wimbi, kila ufunguo na kila mpangilio hukaa hapa, vimefichwa, na hakuna pengine kwenye kifaa hiki. Namba ni za injini ya hifadhi yenyewe.".into(),
         Msg::VaultCapacity(s) => format!("uwezo \u{00b7} {s}").into(),
