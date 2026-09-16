@@ -650,6 +650,9 @@ pub enum Msg<'a> {
     CustodianCheckbox,
     CustodianExplainer,
     SecurityIntro,
+    // Pre-attest Security page (Nick 2026-09-16): one verb, Wipe, for a device someone else held or a handle nobody will type again.
+    SecurityIntroUnattested,
+    SecurityWipeUnattestedHint,
     SecurityLockHint,
     SecurityShredHint,
     SecurityRemoveShredHint,

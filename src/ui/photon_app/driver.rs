@@ -1210,7 +1210,12 @@ impl FluorApp for PhotonApp {
                         // "Shred (crypto-wipe)" → full clean (nuke vault + clear session). Two-tap confirm (destructive + irreversible). Arming disarms the other destructive pill so exactly one confirm is ever live.
                         if self.settings_shred_armed {
                             self.settings_shred_armed = false;
+                            // Pre-attest (Nick 2026-09-16) the wipe is for a device someone else held, or a handle nobody will ever type again: the log goes too, so the next owner inherits no trace of the last. Attested, Shred keeps the log — the wipe itself is the line a submitted log should carry.
+                            let unattested = self.session.is_none();
                             self.clean_device_for_reuse();
+                            if unattested {
+                                crate::clear_log();
+                            }
                         } else {
                             self.settings_shred_armed = true;
                             self.settings_removeshred_armed = false;

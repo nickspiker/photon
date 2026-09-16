@@ -522,12 +522,12 @@ impl PhotonApp {
     }
 
     /// Encrypt + send the compose-box contents to the open contact, append it as an outgoing bubble, and persist. No-op unless a CLUTCH-Complete contact is open with a friendship chain and the box is non-empty. The crypto/wire/persist layers already exist (`FriendshipChains::prepare_send`, `StatusChecker::send_message`, `save_messages`); this is the UI→chain→network glue. Orb (chrome app-icon) tap. Returns true if it acted (caller redraws). Routed by screen: Ready → open the settings / about / help panel (its own screen with a nine-page nav rail); Settings → no-op (the dedicated back affordance exits). Launch / AddDevice / Conversation ignore the orb. The interim Ready → AddDevice entry moved onto the Fleet page's "Add device" pill.
-    /// Which settings pages the nav rail shows, gated by attest state. Pre-attest (no session) there is no identity to configure — You/Fleet/Security/Recovery/Appearance/Notifications/Diagnostics all need one — so only About and Updates make sense. Post-attest: the full rail. The orb opens the panel on EITHER screen; this just narrows what's inside.
+    /// Which settings pages the nav rail shows, gated by attest state. Pre-attest (no session) there is no identity to configure — You/Fleet/Recovery/Appearance/Notifications/Diagnostics all need one — so About, Updates, and Security narrowed to its one pre-attest verb, Wipe (Nick 2026-09-16: a bound device with a lost or foreign handle, or a hand-me-down phone, had no way out but the dev chord or the OS).
     pub(super) fn settings_pages(&self) -> &'static [SettingsPage] {
         if self.session.is_some() {
             &SettingsPage::ALL
         } else {
-            &[SettingsPage::About, SettingsPage::Updates]
+            &[SettingsPage::About, SettingsPage::Updates, SettingsPage::Security]
         }
     }
 

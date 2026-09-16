@@ -39,6 +39,12 @@ Named by **destructiveness** — three distinct actions:
 - **Shred** — crypto-shred: zeroize the keys (data is already ciphertext, so the dying key makes it unrecoverable), then delete files and let the OS reclaim. Distinct from Retire, pairs with it for handoff. A plain "wipe local storage, re-fetch from fleet" belongs here too — format bumps (e.g. vsf v7→v9) make a clean re-fetch genuinely useful.
 - Sec/Recovery posture strip.
 
+**Before attest** the rail shows About, Updates and a Security page narrowed to one verb, **Wipe** (2026-09-16). There is no identity to lock, kill, revoke or release, but there may be a sealed vault, a binding marker and a log left by whoever held the hardware before — and a bound device with a lost or foreign handle had no way out but the dev chord or the OS. Three things make it safe to offer:
+- **It grants nothing.** The vault is sealed under the handle-derived seed; the attest screen was never the lock. Anyone holding the unlocked phone can already destroy the data with the OS "clear storage", and the availability loss is exactly that loss, bounded by fleet-holds-history.
+- **It is Shred, not Release.** No session means no signature and no countersigning device. The fingerprint-derived device key survives the wipe, so the previous identity's fleet still lists this hardware until one of *its* devices removes it. The hint says so.
+- **It cannot bypass lockout.** Lockout's teeth are the other devices refusing this key, which lives on them; the local state going away changes nothing.
+The wipe does what the post-attest Shred does (same slot, same two-tap arm, same code path) and additionally clears the log, so the next owner inherits no trace of the last. It drops to a fresh Launch; it never exits the process (on Android an exit reads as a crash).
+
 ### Recovery
 The only page about *getting back in* rather than *clearing out* — kept separate from the wipes.
 - **Custodians (v1)**: a single opt-in checkbox — "be a custodian for others: yes/no". Choosing *your own* custodians is later.

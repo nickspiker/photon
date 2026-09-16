@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Before you attest, the orb's Security page now offers Wipe: a phone that was someone else's, or a handle nobody will type again, can be cleared to a blank slate without the old handle, and the hint says what stays true afterwards.
+- The Base page, with arabic numerals selected, now explains what base ten is: where the numerals came from, how recent zero is, that other bases exist, and why photon's magnitudes are counted the way a slide rule multiplies.
+- WebP pictures open in the colour-managed viewer with live exposure, and the viewer recognises every picture by its bytes rather than its file name.
 - The wave's self-aim correction now fires at the same threshold as its first step, so an energetic greeting or a hesitant first word can no longer leave a call a few decibels off for its whole length.
 ## v98
 

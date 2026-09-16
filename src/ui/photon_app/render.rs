@@ -5622,7 +5622,9 @@ impl PhotonApp {
                     let inset = layout.content_inset();
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                    flow.prose(&mut canvas, ctx.text, &tr(Msg::SecurityIntro), hspan2, *theme::LABEL_COLOUR, 400);
+                    // Pre-attest (Nick 2026-09-16: "wipe without attesting upon first boot") the page is ONE verb: Wipe. There is no identity to lock, kill, revoke or release, but there may be a vault, a binding marker and a log left by whoever held this hardware before — and a bound device with a lost or foreign handle has no other way out. The vault is sealed under the handle-derived seed, so the attest screen was never the lock: this grants nothing an OS "clear storage" doesn't.
+                    let unattested = self.session.is_none();
+                    flow.prose(&mut canvas, ctx.text, &tr(if unattested { Msg::SecurityIntroUnattested } else { Msg::SecurityIntro }), hspan2, *theme::LABEL_COLOUR, 400);
                     flow.gap(hspan2 * 0.6);
                     // One pill + its hint, flowed. Armed actions turn their hint red + bold — the confirm state IS the explanation.
                     let action = |flow: &mut Flow,
@@ -5654,125 +5656,135 @@ impl PhotonApp {
                         let n = settings_prose(canvas, text, region, hint, hspan2 * 0.85, hc, hw);
                         flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9;
                     };
-                    // Lock and Wipe are this device's own business and always available, even to a fleet of one. Revoke and Release both REQUIRE another device — one to reinstate us, one to countersign the departure — so on a lone device they render dead with the reason in place of the hint, rather than arming into a refusal toast.
-                    let fleet_verbs = has_sibling_device;
-                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        &tr(Msg::SecurityLock),
-                        &tr(Msg::SecurityLockHint),
-                        0, *theme::PILL_GREEN, false, true);
-                    // KILL (Nick 2026-09-10): Lock plus the process ending — one tap, no arm state. The hint carries the whole contract.
-                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        &tr(Msg::SecurityKill),
-                        &tr(Msg::SecurityKillHint),
-                        4, *theme::PILL_RED, false, true);
-                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
-                        &tr(if fleet_verbs { Msg::SecurityRevokeHint } else { Msg::SecurityRevokeAloneHint }),
-                        1, if self.settings_revoke_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_revoke_armed, fleet_verbs);
-                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
-                        &tr(Msg::SecurityShredHint),
-                        2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
-                    action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
-                        &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
-                        &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
-                        3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
-                    flow.gap(hspan2 * 0.4);
-                    // LEAVER's pending departure: the approval words, big and Oxanium, plus the waiting line — this screen IS the ceremony's display half until the de-fold completes (or relaunch clears it).
-                    if self.depart_request_t.is_some() {
-                        if let Some(words) = self.depart_words.clone() {
-                            flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsShow(&words)), hspan2 * 1.25, *theme::SEARCH_FOUND_COLOUR, 700);
-                            flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartWaitingLine), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                            flow.gap(hspan2 * 0.6);
-                        }
-                    }
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::SecurityStatusLine), hspan2, *theme::LABEL_COLOUR, 400);
-                    flow.gap(hspan2 * 0.8);
-                    // ── Load on startup (Nick 2026-09-03: auto-attest does no good unless the app also LOADS on reboot — the two belong side by side). The OS artifact IS the setting (platform::autostart, default-ON); the dispatch in protocol.rs works from any page, only the render lives here.
-                    #[cfg(not(target_os = "android"))]
-                    {
-                        let cb_band = flow.band(hspan2 * 2.0);
-                        if let Some(cb) = self.settings_background_check.as_mut() {
-                            let label = tr(Msg::LoadOnStartup);
-                            cb.set_label(&*label);
-                            cb.set_font_size(hspan2);
-                            let cb_h = hspan2 * 1.3;
-                            let label_w = ctx.text.measure_text(&label, &TextStyle::new(hspan2, 0));
-                            let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
-                            cb.set_rect(cb_band.x + w * 0.5, cb_band.center_y(), w, cb_h);
-                            cb.render_content_into(
-                                &mut canvas,
-                                ctx.text,
-                                None,
-                                Some(&mut chrome.hit_test_map),
-                            );
-                        }
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::LoadOnStartupExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                        flow.gap(hspan2 * 0.8);
-                    }
-                    // ── Bulletproof bridge (Nick 2026-09-07): the headless-lifeline watcher (docs/headless-lifeline.md) as a checkbox — the OS artifact IS the setting (platform::lifeline); the toggle dispatch rides protocol.rs like every settings checkbox.
-                    #[cfg(any(target_os = "linux", target_os = "macos"))]
-                    {
-                        if let Some(cb) = self.settings_lifeline_check.as_mut() {
-                            flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &tr(Msg::LifelineCheckbox), hspan2);
-                        }
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::LifelineExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
-                        flow.gap(hspan2 * 0.8);
-                    }
-                    // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Two states, both INLINE (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that re-proves the operator before arming/disarming.
-                    flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedTitle), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                    if let Some(target_on) = self.unattended_confirm {
-                        flow.prose(
-                            &mut canvas,
-                            ctx.text,
-                            &tr(if target_on {
-                                Msg::UnattendedArmExplainer
-                            } else {
-                                Msg::UnattendedDisarmExplainer
-                            }),
-                            hspan2,
-                            *theme::ERROR_TEXT_COLOUR,
-                            600,
-                        );
-                        let tb_band = flow.band(hspan2 * 2.2);
-                        if let Some(tb) = self.unattended_confirm_tb.as_mut() {
-                            // Page-scale glyphs like every other box — without this it kept the constructor's placeholder 12.0 (field 2026-09-07: "itty bitty, half the size").
-                            tb.set_font_size(hspan2, ctx.text);
-                            tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
-                            let id = tb.hit_id();
-                            tb.render_content_into(
-                                &mut canvas,
-                                0.,
-                                0.,
-                                ctx.text,
-                                None,
-                                None,
-                                Some(&mut chrome.hit_test_map),
-                                id,
-                            );
-                        }
-                        if self.unattended_confirm_failed {
-                            flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedMismatch), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
-                        }
-                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                            (&tr(if target_on { Msg::Arm } else { Msg::Disarm }), self.unattended_confirm_base, true, Some(*theme::PILL_RED)),
-                            (&tr(Msg::Cancel), self.unattended_confirm_base.wrapping_add(1), true, None),
-                        ], "Open Sans");
+                    if unattested {
+                        // Same slot, arm flag and dispatch as the post-attest Wipe (Shred) — one verb, one code path; the hint is the pre-attest contract (Shred, not Release: the fingerprint-derived device key survives, so the previous identity's fleet still lists this hardware until one of ITS devices removes it).
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
+                            &tr(Msg::SecurityWipeUnattestedHint),
+                            2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
+                        flow.gap(hspan2);
+                        measured_extent = Some((flow.used(), inset.h));
                     } else {
-                        let armed = self
-                            .settings_unattended_check
-                            .as_ref()
-                            .map(|c| c.is_checked())
-                            .unwrap_or(false);
-                        if let Some(cb) = self.settings_unattended_check.as_mut() {
-                            let label = cb.label().to_string();
-                            flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
+                        // Lock and Wipe are this device's own business and always available, even to a fleet of one. Revoke and Release both REQUIRE another device — one to reinstate us, one to countersign the departure — so on a lone device they render dead with the reason in place of the hint, rather than arming into a refusal toast.
+                        let fleet_verbs = has_sibling_device;
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityLock),
+                            &tr(Msg::SecurityLockHint),
+                            0, *theme::PILL_GREEN, false, true);
+                        // KILL (Nick 2026-09-10): Lock plus the process ending — one tap, no arm state. The hint carries the whole contract.
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityKill),
+                            &tr(Msg::SecurityKillHint),
+                            4, *theme::PILL_RED, false, true);
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityRevoke { armed: self.settings_revoke_armed }),
+                            &tr(if fleet_verbs { Msg::SecurityRevokeHint } else { Msg::SecurityRevokeAloneHint }),
+                            1, if self.settings_revoke_armed { *theme::PILL_RED } else { *theme::PILL_YELLOW }, self.settings_revoke_armed, fleet_verbs);
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityShred { armed: self.settings_shred_armed }),
+                            &tr(Msg::SecurityShredHint),
+                            2, *theme::PILL_ORANGE, self.settings_shred_armed, true);
+                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                            &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
+                            &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
+                            3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
+                        flow.gap(hspan2 * 0.4);
+                        // LEAVER's pending departure: the approval words, big and Oxanium, plus the waiting line — this screen IS the ceremony's display half until the de-fold completes (or relaunch clears it).
+                        if self.depart_request_t.is_some() {
+                            if let Some(words) = self.depart_words.clone() {
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::DepartWordsShow(&words)), hspan2 * 1.25, *theme::SEARCH_FOUND_COLOUR, 700);
+                                flow.prose(&mut canvas, ctx.text, &tr(Msg::DepartWaitingLine), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                                flow.gap(hspan2 * 0.6);
+                            }
                         }
-                        let (dc, dw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
-                        flow.prose(&mut canvas, ctx.text, &tr(Msg::UnattendedWarning), hspan2 * 0.9, dc, dw);
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::SecurityStatusLine), hspan2, *theme::LABEL_COLOUR, 400);
+                        flow.gap(hspan2 * 0.8);
+                        // ── Load on startup (Nick 2026-09-03: auto-attest does no good unless the app also LOADS on reboot — the two belong side by side). The OS artifact IS the setting (platform::autostart, default-ON); the dispatch in protocol.rs works from any page, only the render lives here.
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            let cb_band = flow.band(hspan2 * 2.0);
+                            if let Some(cb) = self.settings_background_check.as_mut() {
+                                let label = tr(Msg::LoadOnStartup);
+                                cb.set_label(&*label);
+                                cb.set_font_size(hspan2);
+                                let cb_h = hspan2 * 1.3;
+                                let label_w = ctx.text.measure_text(&label, &TextStyle::new(hspan2, 0));
+                                let w = cb_h + hspan2 * 0.5 + label_w + hspan2 * 0.3;
+                                cb.set_rect(cb_band.x + w * 0.5, cb_band.center_y(), w, cb_h);
+                                cb.render_content_into(
+                                    &mut canvas,
+                                    ctx.text,
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                );
+                            }
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::LoadOnStartupExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            flow.gap(hspan2 * 0.8);
+                        }
+                        // ── Bulletproof bridge (Nick 2026-09-07): the headless-lifeline watcher (docs/headless-lifeline.md) as a checkbox — the OS artifact IS the setting (platform::lifeline); the toggle dispatch rides protocol.rs like every settings checkbox.
+                        #[cfg(any(target_os = "linux", target_os = "macos"))]
+                        {
+                            if let Some(cb) = self.settings_lifeline_check.as_mut() {
+                                flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &tr(Msg::LifelineCheckbox), hspan2);
+                            }
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::LifelineExplainer), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                            flow.gap(hspan2 * 0.8);
+                        }
+                        // ── DANGEROUS: unattended auto-attest-on-reboot. Off by default. Two states, both INLINE (no floating overlay — an over-content modal drawn after chrome.flatten_into never composited its glyphs): the checkbox+disclaimer, OR (while a flip is pending) a handle-entry confirmation that re-proves the operator before arming/disarming.
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedTitle), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        if let Some(target_on) = self.unattended_confirm {
+                            flow.prose(
+                                &mut canvas,
+                                ctx.text,
+                                &tr(if target_on {
+                                    Msg::UnattendedArmExplainer
+                                } else {
+                                    Msg::UnattendedDisarmExplainer
+                                }),
+                                hspan2,
+                                *theme::ERROR_TEXT_COLOUR,
+                                600,
+                            );
+                            let tb_band = flow.band(hspan2 * 2.2);
+                            if let Some(tb) = self.unattended_confirm_tb.as_mut() {
+                                // Page-scale glyphs like every other box — without this it kept the constructor's placeholder 12.0 (field 2026-09-07: "itty bitty, half the size").
+                                tb.set_font_size(hspan2, ctx.text);
+                                tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.9, tb_band.h * 0.85);
+                                let id = tb.hit_id();
+                                tb.render_content_into(
+                                    &mut canvas,
+                                    0.,
+                                    0.,
+                                    ctx.text,
+                                    None,
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                    id,
+                                );
+                            }
+                            if self.unattended_confirm_failed {
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::UnattendedMismatch), hspan2, *theme::ERROR_TEXT_COLOUR, 600);
+                            }
+                            flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                                (&tr(if target_on { Msg::Arm } else { Msg::Disarm }), self.unattended_confirm_base, true, Some(*theme::PILL_RED)),
+                                (&tr(Msg::Cancel), self.unattended_confirm_base.wrapping_add(1), true, None),
+                            ], "Open Sans");
+                        } else {
+                            let armed = self
+                                .settings_unattended_check
+                                .as_ref()
+                                .map(|c| c.is_checked())
+                                .unwrap_or(false);
+                            if let Some(cb) = self.settings_unattended_check.as_mut() {
+                                let label = cb.label().to_string();
+                                flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
+                            }
+                            let (dc, dw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
+                            flow.prose(&mut canvas, ctx.text, &tr(Msg::UnattendedWarning), hspan2 * 0.9, dc, dw);
+                        }
+                        flow.gap(hspan2);
+                        measured_extent = Some((flow.used(), inset.h));
                     }
-                    flow.gap(hspan2);
-                    measured_extent = Some((flow.used(), inset.h));
                 }
                 SettingsPage::Recovery => {
                     // RECOVERY, Flow rework (ticket queue 2026-09-02): everything wraps at the pane edge, the checkbox positions inline (the About-checkbox pattern), and the measured extent replaces the hand-counted 8-row estimate.
