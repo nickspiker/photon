@@ -843,6 +843,7 @@ impl PhotonApp {
                     sig: None,
                     // Every v82+ host frame is a delta; resurrecting without the flag would make a re-served exit frame REPLACE the client's appended transcript with just the last chunk.
                     delta: true,
+                    pigeon: None,
                 })
             }
             _ => None,

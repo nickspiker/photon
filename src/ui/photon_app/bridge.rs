@@ -746,6 +746,7 @@ impl PhotonApp {
                 exit: e.fin.map(|c| c as i64),
                 sig: None,
                 delta: true,
+                    pigeon: None,
             };
             if is_final {
                 // The exit-carrying delta rides the full durable path (host row + retransmit + held-row re-serve) — it is the one frame that must survive.

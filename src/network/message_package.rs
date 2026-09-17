@@ -90,6 +90,18 @@ pub struct BridgeWire {
     pub sig: Option<u64>,
     /// APPEND semantics (Nick 2026-09-03): this frame carries only what's NEW since the previous frame — the client appends to the command's row instead of replacing it, the chain's hash links already guarantee order, and "finished" is simply the frame where `exit` is present (no special end message). Absent = legacy whole-snapshot replace.
     pub delta: bool,
+    /// A PIGEON DROPPED INTO THE BRIDGE (Nick 2026-09-17): the operator dropped a file on an open session and it lands in whatever directory the host's shell is standing in.
+    /// Name and content hash only — deliberately NO PATH. The host is the only side that knows where its shell actually stands (the client's `cwd` is a snapshot off the last output frame and goes stale the moment a command cds), and a wire that cannot name a destination cannot be used to write outside the directory the operator is already looking at.
+    /// The bytes themselves ride the ordinary chunked blob transport under the same relationship key; this is the announcement, not the payload.
+    pub pigeon: Option<BridgePigeon>,
+}
+
+/// A file dropped into an open bridge session: what it is called and which bytes it is. Ephemeral by construction — the host writes it to disk and sheds the blob, the client sheds its copy once the landing confirms, and the row carrying this is a bridge row, wiped at the next open.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct BridgePigeon {
+    pub name: String,
+    pub hash: [u8; 32],
+    pub size: u64,
 }
 
 impl BridgeWire {
@@ -100,6 +112,7 @@ impl BridgeWire {
             && self.exit.is_none()
             && self.sig.is_none()
             && !self.delta
+            && self.pigeon.is_none()
     }
 }
 
@@ -117,6 +130,9 @@ fn msg_schema() -> SectionSchema {
         .field("bexit", TypeConstraint::Any) // i6 bridge exit code; present = final frame
         .field("bsig", TypeConstraint::AnyUnsigned) // bridge interrupt signal number
         .field("bdelta", TypeConstraint::AnyUnsigned) // u0 append-semantics flag; absent = legacy whole-snapshot replace (old parsers discard unknown fields, so this is forward-compatible)
+        .field("bpn", TypeConstraint::Utf8Text) // bridge pigeon: the dropped file's name (no path — the host chooses the directory)
+        .field("bph", TypeConstraint::AnyHash) // bridge pigeon: content hash, the key the chunked transport serves under
+        .field("bps", TypeConstraint::AnyUnsigned) // bridge pigeon: size in bytes, so the far side can show progress before a manifest lands
         .field("mk", TypeConstraint::AnyUnsigned) // mark kind per entry (1 = link)
         .field("ms", TypeConstraint::AnyUnsigned) // mark byte start per entry
         .field("ml", TypeConstraint::AnyUnsigned) // mark byte len per entry
@@ -218,6 +234,15 @@ pub fn build_message_package_era(
         if b.delta {
             builder = builder
                 .set("bdelta", VsfType::u0(true))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(p) = b.pigeon.as_ref() {
+            builder = builder
+                .set("bpn", VsfType::x(p.name.clone()))
+                .map_err(|e| e.to_string())?
+                .set("bph", VsfType::hb(p.hash.to_vec()))
+                .map_err(|e| e.to_string())?
+                .set("bps", VsfType::u(p.size as usize, false))
                 .map_err(|e| e.to_string())?;
         }
     }
@@ -371,6 +396,22 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
             .and_then(|f| f.values.first())
             .and_then(|v| v.as_u64())
             .map_or(false, |v| v != 0),
+        // ALL THREE or none: a pigeon without its hash is an announcement of bytes nobody can fetch, and a hash without a name has nowhere to land. A partial set is not a smaller pigeon, it is a malformed frame.
+        pigeon: {
+            let name = section.get_fields("bpn").first().and_then(|f| f.values.first()).and_then(|v| match v {
+                VsfType::x(t) => Some(t.clone()),
+                _ => None,
+            });
+            let hash = section.get_fields("bph").first().and_then(|f| f.values.first()).and_then(|v| match v {
+                VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+                _ => None,
+            });
+            let size = section.get_fields("bps").first().and_then(|f| f.values.first()).and_then(|v| v.as_u64());
+            match (name, hash, size) {
+                (Some(name), Some(hash), Some(size)) if !name.is_empty() => Some(BridgePigeon { name, hash, size }),
+                _ => None,
+            }
+        },
     };
     // Marks: four order-correlated multi-fields zipped back into tuples; any length mismatch = drop all (the text stands, links degrade).
     let u_list = |name: &str| -> Vec<u64> {
@@ -623,6 +664,7 @@ mod tests {
             exit: None,
             sig: None,
             delta: true,
+            pigeon: None,
         };
         let partial =
             build_message_package("out so far", &[0u8; 32], &[], Some((4, 999)), Some(&wire), &[], &[])

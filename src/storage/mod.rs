@@ -5,6 +5,7 @@ pub mod fanout_pairs;
 pub mod fleet_settings;
 pub mod friendship;
 pub mod molecule;
+pub mod spool;
 
 // The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.
 pub use kete::{decrypt_bytes, encrypt_bytes, App, FlatStorage, StorageError};
@@ -533,6 +534,61 @@ pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Ve
     Some(out)
 }
 
+
+/// Store a file from DISK without ever holding it in RAM — the mirror of [`blob_write_file`], which streams the other way.
+///
+/// `blob_store_any` takes the whole plaintext as a slice because the picker path has no choice: Android's image picker hands over bytes, not a path, so RAM at pick time bounds it and that is where the 256 MB attachment cap comes from. It is a PICKER constraint and was never a property of the wire — chunks are 256 KB and the receiving side already streams to disk.
+/// A dropped file always has a path, so it inherits none of that: chunks are hashed and stored as they are read, the whole-file hash accumulates incrementally, and the manifest lands last because it is the only part that needs the final hash. The bound is the disk, not the memory.
+///
+/// Returns the content hash and the manifest (None for a file that fits in one chunk, matching `blob_store_any`).
+pub fn blob_store_file(identity_seed: &[u8; 32], path: &std::path::Path) -> Result<([u8; 32], Option<BlobManifest>), String> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path).map_err(|e| format!("blob: open {}: {e}", path.display()))?;
+    let len = f.metadata().map(|m| m.len()).unwrap_or(0);
+    // Small enough for one chunk: read it whole and reuse the existing path, so a little file takes no manifest and no extra vault entries.
+    if (len as usize) <= BLOB_CHUNK_SIZE {
+        let mut buf = Vec::with_capacity(len as usize);
+        f.read_to_end(&mut buf).map_err(|e| format!("blob: read: {e}"))?;
+        let hash = *blake3::hash(&buf).as_bytes();
+        blob_store(identity_seed, &hash, &buf)?;
+        return Ok((hash, None));
+    }
+    let mut whole = blake3::Hasher::new();
+    let mut chunk_hashes: Vec<[u8; 32]> = Vec::new();
+    let mut buf = vec![0u8; BLOB_CHUNK_SIZE];
+    let mut total = 0u64;
+    loop {
+        // read_exact would fail on the short final chunk; fill by hand so a partial read mid-file is not mistaken for the end.
+        let mut filled = 0usize;
+        while filled < BLOB_CHUNK_SIZE {
+            match f.read(&mut buf[filled..]) {
+                Ok(0) => break,
+                Ok(n) => filled += n,
+                Err(e) => return Err(format!("blob: read: {e}")),
+            }
+        }
+        if filled == 0 {
+            break;
+        }
+        let part = &buf[..filled];
+        whole.update(part);
+        total += filled as u64;
+        let ch = *blake3::hash(part).as_bytes();
+        // A chunk already held is a chunk already correct — content addressing makes the re-store a no-op worth skipping on a big file.
+        if !blob_present(&ch) {
+            blob_store(identity_seed, &ch, part)?;
+        }
+        chunk_hashes.push(ch);
+        if filled < BLOB_CHUNK_SIZE {
+            break;
+        }
+    }
+    let hash = *whole.finalize().as_bytes();
+    let m = BlobManifest { size: total, chunk_size: BLOB_CHUNK_SIZE as u32, chunks: chunk_hashes };
+    blob_manifest_store(identity_seed, &hash, &m)?;
+    Ok((hash, Some(m)))
+}
+
 /// Write a held blob to `path`, chunk by chunk with a running hash — the Save path for any size. Returns the byte count; a hash mismatch removes the partial file and returns None.
 pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: &std::path::Path) -> Option<u64> {
     use std::io::Write;
@@ -792,6 +848,42 @@ mod tests {
     fn serial() -> std::sync::MutexGuard<'static, ()> {
         static GATE: std::sync::Mutex<()> = std::sync::Mutex::new(());
         GATE.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// A file streamed IN from disk must be byte-identical to the same file stored whole — same content hash, same chunk hashes, same manifest — or a drop and a pick would address the same bytes differently and neither could fetch the other's.
+    /// This is the property that lets a bridge drop skip the 256 MB picker cap: the cap is RAM at pick time, and a path has no such bound.
+    #[test]
+    fn a_streamed_file_hashes_like_a_whole_one() {
+        let _g = serial();
+        isolate_test_storage();
+        // The blob store writes identity-scoped entries thru the DEVICE vault, so the session open is the setup — a bare FlatStorage::new leaves the device vault identityless and every put refuses ("identity not set").
+        let seed = [0x5E; 32];
+        let _vault = open_session_vault(seed, [0x5F; 32], [0x60; 32]).expect("session vault");
+        // Deliberately several chunks plus a SHORT final one — the boundary the read loop is most likely to get wrong.
+        let mut bytes = Vec::new();
+        for i in 0..(BLOB_CHUNK_SIZE * 2 + 1234) {
+            bytes.push((i % 251) as u8);
+        }
+        let dir = std::env::temp_dir().join(format!("photon-blobstream-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("pigeon.bin");
+        std::fs::write(&path, &bytes).expect("write");
+
+        let whole_hash = *blake3::hash(&bytes).as_bytes();
+        let (streamed_hash, m) = blob_store_file(&seed, &path).expect("stream in");
+        assert_eq!(streamed_hash, whole_hash, "the streamed hash IS the file's hash");
+        let m = m.expect("past one chunk, so a manifest");
+        assert_eq!(m.size, bytes.len() as u64);
+        assert_eq!(m.chunks.len(), 3, "two full chunks and a short tail");
+        // The same split the whole-buffer path produces.
+        let expect = BlobManifest::of(&bytes);
+        assert_eq!(m.chunks, expect.chunks, "chunk boundaries and hashes must match the picker path exactly");
+
+        // And it round-trips back out to disk.
+        let back = dir.join("out.bin");
+        assert!(blob_write_file(&seed, &streamed_hash, &back).is_some(), "streams back out");
+        assert_eq!(std::fs::read(&back).expect("read back"), bytes, "byte-identical after the round trip");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// THE census rule (Nick, verbatim, 2026-08-20): a file in the primary or secondary dir that doesn't match `<device token>.vsf` or the log "goes bye bye. no backey uppey, no convertey, no touchey." Strays don't need to be known by name to die, file-era artifacts included — nothing is imported into the vault.
