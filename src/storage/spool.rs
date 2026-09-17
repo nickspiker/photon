@@ -29,14 +29,31 @@ use vsf::VsfType;
 /// The window width: 256 bits. Per-window false-present probability 2^-256; also one SIMD register, so the scan is a memory-bandwidth `all_zero` sweep.
 pub const SPOOL_WINDOW: usize = 32;
 
-/// Everything the transfer IS, carried by the spool itself: the landing name, the whole-file plaintext hash, the sealed slot lengths (the body layout), and the per-chunk plaintext hashes so finalize verifies chunk-by-chunk as it decrypts — no whole-file second pass, no other record.
+/// Everything the transfer IS, in five scalars (Nick 2026-09-17: "stupid simple — malloc, zero, compare, move up the chain; ack, then check on finalization"): the landing name, the whole-file plaintext hash, the plaintext size, the chunk size, and the seal overhead. The slot table is DERIVED, not stored, and there is no hash list at all — three granularities deliberately decoupled:
+/// - PRESENCE is the 32-byte zero windows, free from the file itself.
+/// - TRANSFER is the wire's chunks: land the sealed bytes, ack, move on — no verification on the hot path.
+/// - VERIFICATION happens once, at finalize: the decrypt walk runs a single whole-file blake3 against `hash`, and every chunk's AEAD tag verifies as a side effect of decrypting it — per-chunk integrity costs nothing extra because the seal already carries it. On the rare mismatch, fault LOCALIZATION is an interactive repair: both sides hash windows on demand at whatever granularity suits the link — a megabyte on a slow one, a gigabyte for a terabyte on a fast one — and only mismatched windows re-fetch. Localization hashes are computed when needed and never stored, which is why the prelude is five scalars instead of a table that guessed the repair resolution years too early.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpoolDesc {
     pub name: String,
     pub hash: [u8; 32],
     pub size: u64,
-    pub sealed_lens: Vec<u64>,
-    pub chunk_hashes: Vec<[u8; 32]>,
+    /// Plaintext bytes per chunk (the wire's transfer granularity).
+    pub chunk_size: u32,
+    /// Sealed-minus-plaintext per chunk (nonce + tag; 40 for XChaCha20-Poly1305). Stored rather than assumed so the spool stays transport-agnostic.
+    pub seal_overhead: u32,
+}
+
+impl SpoolDesc {
+    /// The derived slot table: every chunk seals to `plain + overhead`, the tail to its remainder. A tail of at least one byte keeps every slot ≥ overhead + 1 ≥ 41 > one window, so the zero-scan's tail guard holds by construction.
+    pub fn sealed_lens(&self) -> Vec<u64> {
+        if self.size == 0 || self.chunk_size == 0 {
+            return Vec::new();
+        }
+        let (c, o) = (self.chunk_size as u64, self.seal_overhead as u64);
+        let n = self.size.div_ceil(c);
+        (0..n).map(|i| (self.size - i * c).min(c) + o).collect()
+    }
 }
 
 /// Where each slot's sealed bytes live: `base` is the prelude region's end, then tight-packed prefix sums — total is base plus the sealed sum, and everything is derivable from the prelude alone.
@@ -69,13 +86,13 @@ fn spool_schema() -> SectionSchema {
         .field("name", TypeConstraint::Utf8Text)
         .field("hash", TypeConstraint::AnyHash)
         .field("size", TypeConstraint::AnyUnsigned)
-        .field("slen", TypeConstraint::AnyUnsigned) // one per slot: the SEALED length (layout)
-        .field("chash", TypeConstraint::AnyHash) // one per slot: the PLAINTEXT chunk hash (finalize verifies as it decrypts)
+        .field("csz", TypeConstraint::AnyUnsigned) // plaintext chunk size — the slot table derives from these two scalars
+        .field("ovh", TypeConstraint::AnyUnsigned) // seal overhead per chunk
 }
 
 /// The prelude document: a COMPLETE VSF file (header, TOC, provenance hash), which is what lets it verify itself.
 fn prelude_doc(desc: &SpoolDesc) -> Result<Vec<u8>, String> {
-    let mut b = spool_schema()
+    let b = spool_schema()
         .build()
         .set("version", 1u8)
         .map_err(|e| e.to_string())?
@@ -84,13 +101,11 @@ fn prelude_doc(desc: &SpoolDesc) -> Result<Vec<u8>, String> {
         .set("hash", VsfType::hb(desc.hash.to_vec()))
         .map_err(|e| e.to_string())?
         .set("size", VsfType::u(desc.size as usize, false))
+        .map_err(|e| e.to_string())?
+        .set("csz", VsfType::u(desc.chunk_size as usize, false))
+        .map_err(|e| e.to_string())?
+        .set("ovh", VsfType::u(desc.seal_overhead as usize, false))
         .map_err(|e| e.to_string())?;
-    for &l in &desc.sealed_lens {
-        b = b.append_multi("slen", vec![VsfType::u(l as usize, false)]).map_err(|e| e.to_string())?;
-    }
-    for h in &desc.chunk_hashes {
-        b = b.append_multi("chash", vec![VsfType::hb(h.to_vec())]).map_err(|e| e.to_string())?;
-    }
     let section = b.encode().map_err(|e| e.to_string())?;
     vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -104,7 +119,7 @@ fn prelude_doc(desc: &SpoolDesc) -> Result<Vec<u8>, String> {
 pub fn create(path: &Path, desc: &SpoolDesc) -> io::Result<(File, SpoolLayout)> {
     let doc = prelude_doc(desc).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
     let base = 8 + doc.len() as u64;
-    let lay = layout(base, &desc.sealed_lens).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "spool slot under one window"))?;
+    let lay = layout(base, &desc.sealed_lens()).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "spool slot under one window"))?;
     let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
     f.set_len(lay.total)?;
     pwrite_all(&f, &(doc.len() as u64).to_le_bytes(), 0)?;
@@ -146,23 +161,20 @@ pub fn resume(path: &Path) -> io::Result<Option<(SpoolDesc, SpoolLayout, File)>>
     let Ok(hash) = section.get_value::<[u8; 32]>("hash") else {
         return Ok(None);
     };
-    let size = section.get_fields("size").first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0);
-    let sealed_lens: Vec<u64> = section.get_fields("slen").iter().filter_map(|f| f.values.first()).filter_map(|v| v.as_u64()).collect();
-    let chunk_hashes: Vec<[u8; 32]> = section
-        .get_fields("chash")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
-            _ => None,
-        })
-        .collect();
-    if sealed_lens.is_empty() || sealed_lens.len() != chunk_hashes.len() {
+    let scalar = |field: &str| section.get_fields(field).first().and_then(|f| f.values.first()).and_then(|v| v.as_u64());
+    let (Some(size), Some(csz), Some(ovh)) = (scalar("size"), scalar("csz"), scalar("ovh")) else {
+        return Ok(None);
+    };
+    let (Ok(chunk_size), Ok(seal_overhead)) = (u32::try_from(csz), u32::try_from(ovh)) else {
+        return Ok(None);
+    };
+    let desc = SpoolDesc { name, hash, size, chunk_size, seal_overhead };
+    let lens = desc.sealed_lens();
+    if lens.is_empty() {
         return Ok(None);
     }
-    let desc = SpoolDesc { name, hash, size, sealed_lens, chunk_hashes };
     let base = 8 + doc_len;
-    let Some(lay) = layout(base, &desc.sealed_lens) else {
+    let Some(lay) = layout(base, &lens) else {
         return Ok(None);
     };
     if lay.total != file_len {
@@ -279,14 +291,8 @@ mod tests {
             .collect()
     }
 
-    fn desc_of(lens: &[u64]) -> SpoolDesc {
-        SpoolDesc {
-            name: "pigeon.bin".into(),
-            hash: [0xAB; 32],
-            size: lens.iter().sum::<u64>().saturating_sub(40 * lens.len() as u64),
-            sealed_lens: lens.to_vec(),
-            chunk_hashes: (0..lens.len()).map(|i| [i as u8 + 1; 32]).collect(),
-        }
+    fn desc_of(size: u64, chunk: u32) -> SpoolDesc {
+        SpoolDesc { name: "pigeon.bin".into(), hash: [0xAB; 32], size, chunk_size: chunk, seal_overhead: 40 }
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {
@@ -296,8 +302,11 @@ mod tests {
     /// The theorem, end to end: write an arbitrary subset in arbitrary order, come back COLD through resume — nothing but the file — and the prelude self-verifies, the desc round-trips, and the zero-scan reconstructs the subset EXACTLY. The file was the state.
     #[test]
     fn the_file_is_its_own_bitmap_and_its_own_manifest() {
-        let lens: Vec<u64> = vec![40, 262184, 63, 4096, 262184, 41, 1000];
-        let desc = desc_of(&lens);
+        // Six full chunks and a one-byte tail — the tail slot is 41 sealed bytes, the smallest a slot can be, and still over one window by construction.
+        let desc = desc_of(6 * 262144 + 1, 262144);
+        let lens = desc.sealed_lens();
+        assert_eq!(lens.len(), 7);
+        assert_eq!(*lens.last().unwrap(), 41, "the one-byte tail seals to 41");
         let p = scratch("bitmap");
         let (f, lay) = create(&p, &desc).expect("create");
         let held = [1usize, 4, 5];
@@ -318,9 +327,8 @@ mod tests {
     /// The prelude is judged by ITS OWN HASH, not the zero rule (plaintext VSF may hold honest zero runs): a torn prelude fails `read_verified` and resume says fresh — never a wrong layout.
     #[test]
     fn a_torn_prelude_fails_closed_to_fresh() {
-        let lens = vec![4096u64, 4096];
         let p = scratch("tornprelude");
-        let (f, lay) = create(&p, &desc_of(&lens)).expect("create");
+        let (f, lay) = create(&p, &desc_of(8000, 4056)).expect("create");
         write_slot(&f, &lay, 0, &sealed_bytes(3, 4096)).expect("write");
         drop(f);
         // Corrupt one byte INSIDE the prelude document: parse or provenance now fails.
@@ -335,13 +343,12 @@ mod tests {
     /// Crash model: a torn write lands a sector-grained prefix and the rest stays zero. The end-aligned tail window catches it, so a torn slot honestly reads missing and gets re-fetched whole — idempotent, since the same sealed bytes rewrite.
     #[test]
     fn a_torn_write_reads_missing() {
-        let lens = vec![262184u64, 262184];
         let p = scratch("torn");
-        let (f, lay) = create(&p, &desc_of(&lens)).expect("create");
-        let whole = sealed_bytes(7, lens[0] as usize);
+        let (f, lay) = create(&p, &desc_of(2 * 262144, 262144)).expect("create");
+        let whole = sealed_bytes(7, 262184);
         pwrite_all(&f, &whole[..131072], lay.offsets[0]).expect("torn prefix");
         // Out-of-order writeback model: a full slot lands but one interior page never did.
-        write_slot(&f, &lay, 1, &sealed_bytes(9, lens[1] as usize)).expect("write");
+        write_slot(&f, &lay, 1, &sealed_bytes(9, 262184)).expect("write");
         pwrite_all(&f, &[0u8; 4096], lay.offsets[1] + 32768).expect("lost page");
         let miss = missing(&f, &lay).expect("scan");
         assert!(miss[0], "a torn prefix must read missing");
@@ -352,9 +359,8 @@ mod tests {
     /// THE COUNTEREXAMPLE the module header promises: plaintext breaks the zero rule, because real files contain honest zero runs. An all-zero "chunk" — think executable padding — writes successfully and still reads missing, which in a plaintext design would be a fetch-forever livelock. This test exists so the seal is never "optimized" away: it is the bitmap.
     #[test]
     fn plaintext_zeros_would_lie() {
-        let lens = vec![4096u64];
         let p = scratch("plain");
-        let (f, lay) = create(&p, &desc_of(&lens)).expect("create");
+        let (f, lay) = create(&p, &desc_of(4056, 4056)).expect("create");
         write_slot(&f, &lay, 0, &vec![0u8; 4096]).expect("write zeros");
         assert!(missing(&f, &lay).expect("scan")[0], "written zeros are indistinguishable from absence — encryption is the load-bearing premise, not an add-on");
         let _ = std::fs::remove_file(&p);
