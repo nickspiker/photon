@@ -23,7 +23,8 @@ impl PhotonApp {
     pub(super) fn ime_lift(&self) -> f32 {
         #[cfg(target_os = "android")]
         {
-            crate::platform::jni_android::ime_inset_px() as f32
+            // Edge to edge (2026-09-16): with no keyboard the gesture-nav bar is the bottom obstruction, and the compose box lifts above it exactly as it lifts above the keyboard; the keyboard's raw inset already covers the bar it sits on.
+            crate::platform::jni_android::ime_inset_px().max(crate::platform::jni_android::bottom_inset_px()) as f32
         }
         #[cfg(not(target_os = "android"))]
         {

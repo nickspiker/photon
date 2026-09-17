@@ -585,6 +585,30 @@ static IME_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::n
 /// The device glass corner radius in pixels (WindowInsets.getRoundedCorner, API 31+), 0 = unknown/unreported. Mirrored once from the Activity's insets listener; the chrome draws its corners from it (fluor glass_radius_px).
 static GLASS_RADIUS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
+/// System-bar extents under the edge-to-edge surface: the status bar (or cutout) at the top, the gesture-nav bar at the bottom, in pixels. Mirrored from the Activity's insets listener.
+static TOP_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static BOTTOM_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+pub fn top_inset_px() -> i32 {
+    TOP_INSET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn bottom_inset_px() -> i32 {
+    BOTTOM_INSET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSystemInsets(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    top: jint,
+    bottom: jint,
+) {
+    TOP_INSET.store(top.max(0), std::sync::atomic::Ordering::Relaxed);
+    BOTTOM_INSET.store(bottom.max(0), std::sync::atomic::Ordering::Relaxed);
+    crate::logf!("DISPLAY: system insets — top {} px (status bar / cutout), bottom {} px (gesture nav); the surface is edge to edge", top, bottom);
+}
+
 pub fn glass_radius_px() -> Option<f32> {
     let r = GLASS_RADIUS.load(std::sync::atomic::Ordering::Relaxed);
     (r > 0).then_some(r as f32)

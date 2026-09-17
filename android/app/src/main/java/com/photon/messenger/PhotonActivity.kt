@@ -36,6 +36,7 @@ import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
+import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
 import com.google.firebase.messaging.FirebaseMessaging
 
@@ -82,6 +83,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var lastImeInset = -1
     // Last glass corner radius reported to Rust — dedupes the insets listener.
     private var lastGlassRadius = -1
+    private var lastTopInset = -1
+    private var lastBottomInset = -1
 
     // Scale gesture detector for pinch-to-zoom
     private lateinit var scaleGestureDetector: ScaleGestureDetector
@@ -204,6 +207,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
+    private external fun nativeSystemInsets(top: Int, bottom: Int)  // Status bar / gesture-nav extents under an edge-to-edge surface
     private external fun nativeGlassRadius(px: Int)  // The display's rounded-corner radius (WindowInsets.getRoundedCorner, API 31+); the chrome corners follow it
     private external fun nativeImeEditorText(contextPtr: Long): String  // honest-IME mirror: focused textbox's full text
     private external fun nativeImeEditorCursor(contextPtr: Long): Int   // honest-IME mirror: cursor in CHARS (code points)
@@ -407,6 +411,17 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             FrameLayout.LayoutParams.MATCH_PARENT,
             FrameLayout.LayoutParams.MATCH_PARENT
         ))
+        // EDGE TO EDGE (Nick 2026-09-16, "the top and bottom grey bars are still there"): the surface spans the whole display, under the status bar and the gesture pill, so the window's corners ARE the glass corners and the chrome's rounded corners can line up against them. The bars go transparent (Android 15 forces this at target 35 anyway); their extents reach Rust thru nativeSystemInsets so the layouts can keep content out from under them.
+        WindowCompat.setDecorFitsSystemWindows(window, false)
+        @Suppress("DEPRECATION")
+        run {
+            window.statusBarColor = android.graphics.Color.TRANSPARENT
+            window.navigationBarColor = android.graphics.Color.TRANSPARENT
+        }
+        if (Build.VERSION.SDK_INT >= 29) {
+            window.isNavigationBarContrastEnforced = false
+            window.isStatusBarContrastEnforced = false
+        }
         setContentView(container)
 
         // Use RGBA_8888 for efficient u32 pixel copies from Rust
@@ -511,12 +526,21 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             // but our surface already sits ABOVE the nav bar (the window fits system bars) — passing
             // the raw value overshot the lift by the nav-bar height, leaving a dead gap between the
             // compose box and the keyboard. Subtract the overlap; clamp at zero for gesture nav.
+            // Edge to edge now (2026-09-16): the surface runs under the nav bar, so the keyboard's raw inset is the lift (it includes the bar the keyboard sits on) — the old "minus the nav bar" correction described a surface that stopped above it.
             val rawIme = insets.getInsets(WindowInsetsCompat.Type.ime()).bottom
             val navBar = insets.getInsets(WindowInsetsCompat.Type.navigationBars()).bottom
-            val imeHeight = if (rawIme > 0) maxOf(0, rawIme - navBar) else 0
+            val statusBar = insets.getInsets(WindowInsetsCompat.Type.statusBars()).top
+            val cutoutTop = insets.getInsets(WindowInsetsCompat.Type.displayCutout()).top
+            val imeHeight = if (rawIme > 0) rawIme else 0
             if (imeHeight != lastImeInset) {
                 lastImeInset = imeHeight
                 nativeImeInset(imeHeight)
+            }
+            val top = maxOf(statusBar, cutoutTop)
+            if (top != lastTopInset || navBar != lastBottomInset) {
+                lastTopInset = top
+                lastBottomInset = navBar
+                nativeSystemInsets(top, navBar)
             }
             // THE GLASS RADIUS (Nick 2026-09-16): the physical corner radius the OS reports for each corner (API 31+) — the largest of the four is the chrome's small-corner radius, twice it the big one. Reported once per change; -1 = never reported.
             if (Build.VERSION.SDK_INT >= 31) {
