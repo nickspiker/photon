@@ -3729,12 +3729,8 @@ pub(crate) fn contact_conn_tier(c: &crate::types::Contact) -> ConnTier {
             ConnTier::Wan
         };
     }
-    if c.reached_via_relay {
-        ConnTier::Relay
-    } else {
-        // Online with no proven direct path yet: the punch is still in flight.
-        ConnTier::Wan
-    }
+    // Online with no proven direct path is RELAY-CLASS whatever the last pong's route flag says (field 2026-09-17: Jon's ring read green — "so it shouldn't be relay" — on a contact every frame of which rode the pipe; the flag's "don't override a direct verdict" guard had frozen it false after a CLUTCH-online edge, and the unproven state painted green). Green is a validated direct path or nothing; the punch that is "still in flight" turns it green the moment it lands.
+    ConnTier::Relay
 }
 
 /// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.

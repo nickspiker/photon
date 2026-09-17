@@ -115,10 +115,11 @@ impl PhotonApp {
             self.state,
             AppState::Ready | AppState::Conversation | AppState::Settings(_)
         ) {
+            // THE PULSE RUNS FOR THE RELAY-ONLY TOO (field 2026-09-17, Jon's Mac ↔ Nick's phone — "are we just missing a punch?"): this registry resolve + punch is the ONLY path that turns a published address into a validated one, and it was gated on a PENDING contact with no address at all — so a Complete friend reachable only over the relay was never resolved and never punched from this side. Nick's phone punched Jon only because some other Pending contact happened to keep his pulse alive; Jon's Mac had none and fired zero punches all day. An online contact with no validated path is stalled by the same definition the resolver uses, so it keeps the pulse alive under the same backoff.
             let blocked = self.contacts.iter().any(|c| {
-                c.ip.is_none()
-                    && c.clutch_state == crate::types::ClutchState::Pending
-                    && self.has_remote(c)
+                self.has_remote(c)
+                    && ((c.ip.is_none() && c.clutch_state == crate::types::ClutchState::Pending)
+                        || (c.is_online && c.validated_path.is_none() && c.clutch_state == crate::types::ClutchState::Complete))
             });
             let interval = STALLED_ADDR_REFETCH * (1u32 << self.stalled_refetch_streak.min(7));
             let due = self
