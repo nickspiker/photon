@@ -367,37 +367,49 @@ impl PhotonApp {
         ) else {
             return;
         };
-        // Friend device + all siblings; race_addrs handles LAN/WAN, relay list covers the unreachable.
+        // ONE DEVICE PER ASK (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): the request used to fan out to the friend's every device AND all our siblings at once, and every holder answered with the whole blob — a 142 MB pigeon served in full by three devices, ~300 KB pigeons landing nine times each. Now the candidates are ranked — the friend's devices with a proven direct path first, then the friend's other online devices, then our online siblings, then the rest — one is asked, and each 20 s re-ask (attach_fetch_retry_tick) moves to the next.
+        let tries = self.attach_fetch_inflight.get(content_hash).map_or(0, |(_, _, n)| *n);
         let mut targets: Vec<(
+            u8,
             std::net::SocketAddr,
             Option<std::net::SocketAddr>,
             [u8; 32],
             Vec<[u8; 32]>,
         )> = Vec::new();
         for c in &self.contacts {
-            let is_target = c.is_sibling
-                || self.contacts.get(sci).map(|t| t.handle_hash) == Some(c.handle_hash);
+            let is_friend = self.contacts.get(sci).map(|t| t.handle_hash) == Some(c.handle_hash);
+            let is_target = c.is_sibling || is_friend;
             if !is_target {
                 continue;
             }
             if let Some((a, alt)) = c.race_addrs() {
                 let relay = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
                 if let Some(k) = c.device_key() {
-                    targets.push((a, alt, k, relay));
+                    let rank = match (is_friend, c.is_online, c.validated_path.is_some()) {
+                        (true, true, true) => 0,
+                        (true, true, false) => 1,
+                        (false, true, _) => 2,
+                        (true, false, _) => 3,
+                        (false, false, _) => 4,
+                    };
+                    targets.push((rank, a, alt, k, relay));
                 }
             }
         }
-        for (peer_addr, alt_addr, recipient_pubkey, relay_to) in targets {
-            checker.send_history(crate::network::status::HistorySendRequest {
-                peer_addr,
-                alt_addr,
-                recipient_pubkey,
-                vsf_bytes: vsf_bytes.clone(),
-                relay_to,
-            });
+        targets.sort_by_key(|t| t.0);
+        if targets.is_empty() {
+            crate::log("attach: fetch has nobody to ask — no device of the friend or ours has an address");
+            return;
         }
-        crate::log("attach: fetch request dispatched");
-        let tries = self.attach_fetch_inflight.get(content_hash).map_or(0, |(_, _, n)| *n);
+        let (rank, peer_addr, alt_addr, recipient_pubkey, relay_to) = targets[tries as usize % targets.len()].clone();
+        checker.send_history(crate::network::status::HistorySendRequest {
+            peer_addr,
+            alt_addr,
+            recipient_pubkey,
+            vsf_bytes: vsf_bytes.clone(),
+            relay_to,
+        });
+        crate::logf!("attach: fetch request dispatched to device {} (rank {}, candidate {} of {})", crate::fp(&recipient_pubkey), rank, tries as usize % targets.len() + 1, targets.len());
         self.attach_fetch_inflight.insert(*content_hash, (sci, std::time::Instant::now(), tries.saturating_add(1)));
     }
 

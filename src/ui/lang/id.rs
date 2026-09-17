@@ -676,12 +676,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Buka".into(),
         Msg::ViewerBack => "\u{2039} Kembali".into(),
-        Msg::ViewerOriginal => "Asli".into(),
         Msg::ViewerDecoding => "mendekode\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} hilang {loss} dari {} \u{00B7} buffer {buf}", fmt_num(256)).into(),
         // CLIPPING, not cropping: the toggle paints blown channels black and crushed ones white (viewer.rs Viewer::clip) — potong reads as a crop, a different operation entirely.
-        Msg::ClipPill => "clipping".into(),
-        Msg::ExposureStops(s) => format!("{s} stop").into(),
         Msg::ReaderTooLarge => "terlalu besar untuk dibaca di sini \u{2014} disimpan saja".into(),
         Msg::AttachDropHint => "lepaskan sebuah berkas ke percakapan untuk mengirimnya".into(),
         Msg::BaseLogNote => "Pada basis ini, waktu-lalu, ukuran dan panjang memakai Penskalaan Metrik Duodesimal \u{2014} pelipatan, ditulis duodesimal: satu digit per pelipatan, sebuah logaritma dan bukan hitungan, jadi seluruh waktu muat dalam dua digit.".into(),

@@ -45,7 +45,7 @@ impl PhotonApp {
         timed_drain!("attach_prep", self.drain_attach_prepared());
         // Decoded attachment pictures → the cache; preview wants → decode jobs / fetches.
         timed_drain!("img_decoded", self.drain_img_decoded());
-        timed_drain!("img_linear", self.drain_img_linear());
+        timed_drain!("img_view", self.drain_img_view());
         timed_drain!("img_wants", self.drain_img_wants());
         // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
         timed_drain!("history_pages", self.drain_history_pages());
@@ -3445,6 +3445,9 @@ impl PhotonApp {
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if !known {
                         crate::log("ATTACH: manifest from unknown device — dropped");
+                    } else if crate::storage::blob_present(&content_hash) {
+                        // A second holder answering an ask we already have whole (the fan-out days), or a late copy: nothing to store, nothing to announce — the progress bar must not reopen on a finished blob.
+                        crate::log("ATTACH: manifest for a blob already held here — ignored");
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
                         // OFF THE UI THREAD (2026-09-14, Nick's desktop launch hang: 128 manifests arrived in a burst and every store waited on the vault mutex behind the chunk worker's 200-5000 ms fsyncs — 49 s of UI stalls). The seal open, the store and the held-count all ride the seal worker; the drain seeds the progress bar.
                         let tx = self.attach_installed_tx.clone();
@@ -3492,6 +3495,8 @@ impl PhotonApp {
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if !known {
                         crate::log("ATTACH: chunk from unknown device — dropped");
+                    } else if crate::storage::blob_present(&content_hash) {
+                        // The blob is whole already — a late or duplicate chunk is dropped before the seal open and the store (it used to be re-stored and re-counted: 28 "complete" lines for three pigeons).
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
                         let tx = self.attach_installed_tx.clone();
                         let sniff_name: String = self
@@ -3600,8 +3605,20 @@ impl PhotonApp {
                         .iter()
                         .any(|c| c.knows_device(&sender_pubkey.key));
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    // THE RELAY COPY ONLY WHERE THE DIRECT LEG IS UNPROVEN (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): every served chunk went out twice — PT direct AND a Cloudflare relay copy, unconditionally — so a 142 MB pigeon cost 284 MB and every relay byte. A requester we hold a punch-validated path to gets the direct leg alone (PT is reliable on it); a relay-injected request, or a requester with no validated path, still gets the relay copy — that is the one-directional-reverse-path case the copy existed for.
+                    let relay_needed = crate::network::traverse::gather::is_bogus_addr(&sender_addr)
+                        || !self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key) && c.validated_path.is_some());
+                    // The same request landing twice within ten seconds (the direct and relay copies of one ask, or two asks racing) is served once — the second serve of 262 chunks three seconds after the first was the log's biggest re-upload.
+                    let served_key = (sender_pubkey.key, content_hash);
+                    let duplicate = want.is_none() && self.attach_served_recent.get(&served_key).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(10));
+                    if known && !duplicate && want.is_none() {
+                        self.attach_served_recent.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(60));
+                        self.attach_served_recent.insert(served_key, std::time::Instant::now());
+                    }
                     if !known {
                         crate::log("ATTACH: request from unknown device — ignored");
+                    } else if duplicate {
+                        crate::log("ATTACH: the same request again within 10 s — already being served, ignored");
                     } else if let (Some(seed), Some(wire_key), Some(kp)) = (
                         seed,
                         self.attach_wire_key(&sender_pubkey.key, &conversation_token),
@@ -3654,12 +3671,12 @@ impl PhotonApp {
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
-                                            relay_to: vec![sender_pubkey.key],
+                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
                                         });
                                         sent += 1;
                                     }
                                 }
-                                crate::logf!("ATTACH: served chunked request — {} of {} chunk(s){}", sent, m.chunks.len(), if want.is_some() { " (resume)" } else { " + manifest" });
+                                crate::logf!("ATTACH: served chunked request — {} of {} chunk(s){}{}", sent, m.chunks.len(), if want.is_some() { " (resume)" } else { " + manifest" }, if relay_needed { " (direct + relay copy)" } else { " (direct only)" });
                                 return;
                             }
                             let Some(plain) = crate::storage::blob_load(&seed, &content_hash)
@@ -3684,7 +3701,7 @@ impl PhotonApp {
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
-                                            relay_to: vec![sender_pubkey.key], // always the one-device relay copy — see the page-serve site: responses die on one-directional reverse paths
+                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() }, // the relay copy only where the direct leg is unproven (see relay_needed above)
                                         });
                                     crate::log("ATTACH: served blob request");
                                 }

@@ -688,11 +688,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Ouvrir".into(),
         Msg::ViewerBack => "\u{2039} Retour".into(),
-        Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "décodage\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} perte {loss} sur {} \u{00B7} tampon {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "écrêtage".into(),
-        Msg::ExposureStops(s) => format!("{s} diaphragmes").into(),
         Msg::ReaderTooLarge => "trop volumineux pour être lu ici \u{2014} enregistré à la place".into(),
         Msg::AttachDropHint => "dépose un fichier sur la conversation pour l\u{2019}envoyer".into(),
         Msg::BaseLogNote => "Ici, le temps écoulé, les tailles et les longueurs utilisent la Mise à l\u{2019}Échelle Métrique Duodécimale \u{2014} des doublements, écrits en duodécimal : un chiffre par doublement, un logarithme plutôt qu\u{2019}un décompte, si bien que tout le temps tient en deux chiffres.".into(),

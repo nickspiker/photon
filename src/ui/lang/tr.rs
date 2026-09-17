@@ -681,12 +681,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Aç".into(),
         Msg::ViewerBack => "\u{2039} Geri".into(),
-        Msg::ViewerOriginal => "Orijinal".into(),
         Msg::ViewerDecoding => "çözülüyor\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} {} içinde {loss} kayıp \u{00B7} tampon {buf}", fmt_num(256)).into(),
         // CLIPPING, not cropping: the toggle paints blown channels black and crushed ones white (viewer.rs Viewer::clip) — kırpma reads as a crop, a different operation entirely.
-        Msg::ClipPill => "clipping".into(),
-        Msg::ExposureStops(s) => format!("{s} kademe").into(),
         Msg::ReaderTooLarge => "burada okunamayacak kadar büyük \u{2014} onun yerine kaydedildi".into(),
         Msg::AttachDropHint => "göndermek için sohbetin üzerine bir dosya bırak".into(),
         Msg::BaseLogNote => "Bu tabanda geçen süre, boyutlar ve uzunluklar Onikilik Metrik Ölçekleme kullanır \u{2014} ikiye katlanmalar, onikilik yazılmış: her katlanma için bir basamak, bir sayım değil bir logaritma, böylece bütün zaman iki basamağa sığar.".into(),

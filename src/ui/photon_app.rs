@@ -1408,19 +1408,18 @@ pub struct PhotonApp {
     img_pending: std::collections::HashSet<[u8; 32]>,
     img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
     img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
-    /// Linear VSF RGB originals from the opsin path (viewer.rs drain_img_linear).
-    img_linear_tx: std::sync::mpsc::Sender<([u8; 32], usize, usize, Vec<i32>)>,
-    img_linear_rx: std::sync::mpsc::Receiver<([u8; 32], usize, usize, Vec<i32>)>,
-    /// The open viewer's linear original (hash, w, h, pixels) — re-encoded at each exposure change; dropped with the viewer.
-    viewer_lin: Option<([u8; 32], usize, usize, std::sync::Arc<Vec<i32>>)>,
+    /// The viewer's decode from the worker — opsin's folded `Loaded`, or why it failed (viewer.rs drain_img_view).
+    img_view_tx: std::sync::mpsc::Sender<([u8; 32], Result<opsin::view::Loaded, String>)>,
+    img_view_rx: std::sync::mpsc::Receiver<([u8; 32], Result<opsin::view::Loaded, String>)>,
     /// Preview blobs the last render wanted: (contact handle, hash, held here) — drained into decode jobs / fetches on the tick (the walk cannot borrow &mut self).
     img_wants: Vec<([u8; 32], [u8; 32], bool)>,
     /// Preview blobs auto-fetched this session (one ask each).
     attach_auto_fetched: std::collections::HashSet<[u8; 32]>,
-    /// The open image viewer / text reader (viewer.rs) and the hit-id base of their pills (back, original, save, the pane itself).
+    /// The open image viewer / text reader (viewer.rs) and the hit-id base of their pills (back, save, the pane itself); `viewer_view_base` is the block opsin's view widgets are built on (stable across images, so the overlay tables cover them).
     viewer: Option<viewer::Viewer>,
     reader: Option<viewer::Reader>,
     viewer_base: HitId,
+    viewer_view_base: HitId,
     /// History pages opened off-thread (see HistPageOpened) — the drain merges; merging is the cheap half since the (timestamp, content-hash) index landed.
     hist_opened_tx: std::sync::mpsc::Sender<HistPageOpened>,
     hist_opened_rx: std::sync::mpsc::Receiver<HistPageOpened>,
@@ -1557,6 +1556,8 @@ pub struct PhotonApp {
     last_call_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight: content hash → (conversation contact index, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
     attach_fetch_inflight: std::collections::HashMap<[u8; 32], (usize, std::time::Instant, u8)>,
+    /// Blob requests served lately, by (requesting device, hash) — a second copy of the same ask within ten seconds is not served again (status.rs AttachReqReceived).
+    attach_served_recent: std::collections::HashMap<([u8; 32], [u8; 32]), std::time::Instant>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
     last_keygen_pickup: Option<std::time::Instant>,
     /// Our identity party id, memoized per seed: it is an ed25519 public-key derivation, and the tick asked for it once per contact per vsync (thirty-odd scalar multiplications a frame on an idle phone, 2026-09-10 profile).
@@ -2395,17 +2396,17 @@ impl PhotonApp {
                 tx
             },
             img_decoded_rx: std::sync::mpsc::channel().1,
-            img_linear_tx: {
+            img_view_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
             },
-            img_linear_rx: std::sync::mpsc::channel().1,
-            viewer_lin: None,
+            img_view_rx: std::sync::mpsc::channel().1,
             img_wants: Vec::new(),
             attach_auto_fetched: std::collections::HashSet::new(),
             viewer: None,
             reader: None,
             viewer_base: HIT_NONE,
+            viewer_view_base: HIT_NONE,
             hist_opened_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -2505,6 +2506,7 @@ impl PhotonApp {
             resume_vault_rx: None,
             last_call_redraw: None,
             attach_fetch_inflight: std::collections::HashMap::new(),
+            attach_served_recent: std::collections::HashMap::new(),
             express_seen: Vec::new(),
             identity_pid_cache: std::cell::Cell::new(None),
             last_peer_harvest: None,
@@ -3315,6 +3317,10 @@ impl PhotonApp {
             }
         }
         if matches!(self.state, AppState::Conversation) {
+            // The image viewer's widgets (opsin's pills + exposure slider) while it is open — hover, press, and the overlay tables ride this one walk like every other widget.
+            if let Some(view) = self.viewer.as_mut().and_then(|v| v.view.as_mut()) {
+                fluor::host::widget::Container::visit(view, f);
+            }
             // The compose box is the only focusable widget in a conversation; yielding it here wires click-to-focus, Tab, and key dispatch. Same `compose_ready` the render reads — one definition, so the walk and the paint can never disagree again.
             let compose_ready = self.compose_ready();
             if compose_ready {

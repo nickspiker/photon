@@ -97,6 +97,8 @@
 - [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 PHCALL7: clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/calls.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
+- [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes
+- [project_pigeon_fetch_fanout.md](project_pigeon_fetch_fanout.md) — 2026-09-17 pigeon re-uploads convicted: fetch fan-out + unconditional relay copies; one device per ask, relay only when unproven
 - [project_links.md](project_links.md) — message links = typed marks; label editable
 - [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; shaping/Cyrillic already free, Hindi cheap, CJK = payload call
 - [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates page + website

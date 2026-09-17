@@ -342,9 +342,11 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(1);
         self.link_consent_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(3);
-        // Viewer / reader overlay: back, original, save, the pane itself (a swallow — taps on the picture select no row), then the exposure row: −½ stop, +½ stop, reset, clip view.
+        // Viewer / reader overlay: back, (unused), save, the pane itself (a swallow — taps on the picture select no row); then the block opsin's view builds its widgets on.
         self.viewer_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(8);
+        self.viewer_view_base = self.hit_counter;
+        self.hit_counter = self.hit_counter.wrapping_add(super::viewer::VIEW_HIT_IDS);
         self.unattended_confirm_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
@@ -596,15 +598,11 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_zoom(&mut self, factor: f32, _anchor_x: Coord, anchor_y: Coord, ctx: &mut Context) {
-        // The image viewer owns the gesture while open: zoom about the pointer (the point under it holds still).
+        // The image viewer owns the gesture while open: opsin's view zooms about the pointer (the point under it holds still); before the decode lands the preview just sits fitted.
         if let Some(v) = self.viewer.as_mut() {
-            let cx = ctx.viewport.width_px as f32 * 0.5;
-            let cy = ctx.viewport.height_px as f32 * 0.5;
-            let (ax, ay) = (_anchor_x as f32 - cx, anchor_y as f32 - cy);
-            let new_zoom = (v.zoom * factor).clamp(super::viewer::ZOOM_MIN, super::viewer::ZOOM_MAX);
-            let f = new_zoom / v.zoom;
-            v.pan = ((v.pan.0 - ax) * f + ax, (v.pan.1 - ay) * f + ay);
-            v.zoom = new_zoom;
+            if let Some(view) = v.view.as_mut() {
+                view.zoom_around(factor, _anchor_x, anchor_y);
+            }
             self.scene_dirty = true;
             ctx.window.request_redraw();
             return;
@@ -1870,25 +1868,7 @@ impl FluorApp for PhotonApp {
                     0 => {
                         self.close_viewers();
                     }
-                    1 => self.request_full_image(),
-                    4 => self.viewer_exposure(-0.5, false, false),
-                    5 => self.viewer_exposure(0.5, false, false),
-                    6 => self.viewer_exposure(0.0, true, false),
-                    7 => self.viewer_exposure(0.0, false, true),
-                    2 => {
-                        let target = self
-                            .viewer
-                            .as_ref()
-                            .map(|v| (v.hash, v.name.clone()))
-                            .or_else(|| self.reader.as_ref().map(|r| (r.hash, r.name.clone())));
-                        if let Some((hash, name)) = target {
-                            self.ready_toast = Some(match self.attach_save(&name, &hash) {
-                                Some(dest) => tr(Msg::SavedTo(&dest)).into_owned(),
-                                None => tr(Msg::SaveFailed).into_owned(),
-                            });
-                            self.ready_toast_screen = None;
-                        }
-                    }
+                    2 => self.viewer_save(),
                     _ => {}
                 }
                 ctx.window.request_redraw();
@@ -1980,10 +1960,9 @@ impl FluorApp for PhotonApp {
                         if let Some(ci) = self.active_contact() {
                             let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
                             if v.kind.is_image() {
-                                // A held original opens in opsin where the binary exists (the desktop); otherwise the in-app viewer from whatever picture is here.
-                                if !(v.held && self.open_in_opsin(&v.hash, &name)) {
-                                    self.open_viewer(ci, v.hash);
-                                }
+                                // The in-app viewer IS opsin's view now — no separate window, on any platform.
+                                let _ = &name;
+                                self.open_viewer(ci, v.hash);
                             } else if v.held {
                                 self.open_reader(v.hash, name);
                             } else {
@@ -2109,6 +2088,37 @@ impl FluorApp for PhotonApp {
             };
         if !matches!(event, Event::CursorMoved { .. }) && !compose_typing {
             self.scene_dirty = true;
+        }
+        // THE IMAGE VIEWER IS OPSIN'S VIEW: while it is open, pointer, wheel and key events go to it first with the hit id under the cursor. Photon keeps what is photon's — its own Back/Save pills (their ids are not the view's, and a press on them must not start a pan under them), the arrow keys (they step between the conversation's images), Shift+Escape (the real exit). `Close` is the view's Escape asking to leave; an export request from its Save pill is photon's save.
+        if let Some(view) = self.viewer.as_mut().and_then(|v| v.view.as_mut()) {
+            let forward = matches!(event, Event::CursorMoved { .. } | Event::MouseInput { .. } | Event::MouseWheel { .. } | Event::KeyboardInput { .. } | Event::Focused(_));
+            let own_pill = |hit: HitId| self.viewer_base != HIT_NONE && hit != HIT_NONE && hit >= self.viewer_base && hit < self.viewer_base.wrapping_add(3);
+            let photon_key = match event {
+                Event::KeyboardInput { event: k } => matches!(k.logical_key, Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowRight)) || (matches!(k.logical_key, Key::Named(NamedKey::Escape)) && ctx.modifiers.shift_key()),
+                _ => false,
+            };
+            if forward && !photon_key {
+                let hit = self.chrome.as_ref().map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y)).unwrap_or(HIT_NONE);
+                if !(matches!(event, Event::MouseInput { .. }) && own_pill(hit)) {
+                    match view.on_event(event, ctx, hit) {
+                        EventResponse::Close => {
+                            self.close_viewers();
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        EventResponse::Handled => {
+                            let export = view.take_export_request();
+                            if export {
+                                self.viewer_save();
+                            }
+                            self.scene_dirty = true;
+                            ctx.window.request_redraw();
+                            return EventResponse::Handled;
+                        }
+                        _ => {}
+                    }
+                }
+            }
         }
         match event {
             Event::CursorMoved { .. } => {
@@ -2302,21 +2312,8 @@ impl FluorApp for PhotonApp {
                         MouseScrollDelta::Lines(x, y) => (*x, *y, false),
                         MouseScrollDelta::Pixels(x, y) => (*x as f32, *y as f32, true),
                     };
-                    if let Some(v) = self.viewer.as_mut() {
-                        if pixel {
-                            v.pan = (v.pan.0 + dx, v.pan.1 + dy);
-                        } else if dy != 0.0 {
-                            // opsin's wheel-zoom, verbatim: the asymmetric step curve, anchored at the pointer so the pixel under it holds still.
-                            let factor = fluor::geom::zoom_step_factor(dy);
-                            let cx = ctx.viewport.width_px as f32 * 0.5;
-                            let cy = ctx.viewport.height_px as f32 * 0.5;
-                            let (ax, ay) = (ctx.cursor_x as f32 - cx, ctx.cursor_y as f32 - cy);
-                            let new_zoom = (v.zoom * factor).clamp(super::viewer::ZOOM_MIN, super::viewer::ZOOM_MAX);
-                            let f = new_zoom / v.zoom;
-                            v.pan = ((v.pan.0 - ax) * f + ax, (v.pan.1 - ay) * f + ay);
-                            v.zoom = new_zoom;
-                        }
-                    } else if let Some(r) = self.reader.as_mut() {
+                    // The image viewer's wheel is opsin's view's (forwarded above); before the decode lands the preview just sits fitted.
+                    if let Some(r) = self.reader.as_mut() {
                         let step = if pixel { 1.0 } else { 24.0 };
                         r.scroll = (r.scroll - dy * step).max(0.0);
                         r.hscroll = (r.hscroll - dx * step).max(0.0);
@@ -3881,6 +3878,10 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
+        // The image viewer (opsin's view): its divider arrows and pill hand.
+        if let Some(c) = self.viewer.as_ref().and_then(|v| v.view.as_ref()).and_then(|view| view.cursor_for(x, y, hit)) {
+            return c;
+        }
         // The About page's passless.org link — a real hyperlink cue: hand cursor (the render bolds it on the same hover).
         if matches!(self.state, AppState::Settings(SettingsPage::About))
             && self.settings_btn_base != HIT_NONE
@@ -4052,9 +4053,9 @@ impl PhotonApp {
             let (idtx, idrx) = std::sync::mpsc::channel();
             self.img_decoded_tx = idtx;
             self.img_decoded_rx = idrx;
-            let (iltx, ilrx) = std::sync::mpsc::channel();
-            self.img_linear_tx = iltx;
-            self.img_linear_rx = ilrx;
+            let (ivtx, ivrx) = std::sync::mpsc::channel();
+            self.img_view_tx = ivtx;
+            self.img_view_rx = ivrx;
             let (hptx, hprx) = std::sync::mpsc::channel();
             self.hist_opened_tx = hptx;
             self.hist_opened_rx = hprx;

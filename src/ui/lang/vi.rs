@@ -676,11 +676,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Mở".into(),
         Msg::ViewerBack => "\u{2039} Quay lại".into(),
-        Msg::ViewerOriginal => "Bản gốc".into(),
         Msg::ViewerDecoding => "đang giải mã\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} mất {loss} trên {} \u{00B7} đệm {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "cháy sáng".into(),
-        Msg::ExposureStops(s) => format!("{s} khẩu").into(),
         Msg::ReaderTooLarge => "quá lớn để đọc ở đây \u{2014} đã lưu lại thay vì vậy".into(),
         Msg::AttachDropHint => "thả một tệp vào cuộc trò chuyện để gửi nó".into(),
         Msg::BaseLogNote => "Ở cơ số này, thời gian trước đây, kích thước và chiều dài dùng Thang Mét Thập Nhị Phân \u{2014} những lần nhân đôi, viết bằng chữ số thập nhị phân: một chữ số cho mỗi lần nhân đôi, là lô-ga-rít chứ không phải phép đếm, nên toàn bộ thời gian gói gọn trong hai chữ số.".into(),

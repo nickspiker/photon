@@ -687,11 +687,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "खोलो".into(),
         Msg::ViewerBack => "\u{2039} वापस".into(),
-        Msg::ViewerOriginal => "असली".into(),
         Msg::ViewerDecoding => "डिकोड हो रहा है\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} {} में से {loss} खोए \u{00B7} बफ़र {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "क्लिप".into(),
-        Msg::ExposureStops(s) => format!("{s} स्टॉप").into(),
         Msg::ReaderTooLarge => "यहाँ पढ़ने के लिए बहुत बड़ा \u{2014} इसलिए सेव कर दिया".into(),
         Msg::AttachDropHint => "भेजने के लिए फ़ाइल को बातचीत पर छोड़ो".into(),
         Msg::BaseLogNote => "इस गिनती में समय, आकार और लंबाई दर्जनी मीट्रिक पैमाने से चलते हैं \u{2014} दुगनापन, दर्जनी में लिखा हुआ: हर दुगनेपन पर एक अंक, गिनती नहीं बल्कि लघुगणक, इसलिए सारा समय दो अंकों में आ जाता है।".into(),

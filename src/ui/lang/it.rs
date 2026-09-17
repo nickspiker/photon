@@ -681,12 +681,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Apri".into(),
         Msg::ViewerBack => "\u{2039} Indietro".into(),
-        Msg::ViewerOriginal => "Originale".into(),
         Msg::ViewerDecoding => "decodifica\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} perdita {loss} su {} \u{00B7} buffer {buf}", fmt_num(256)).into(),
         // CLIPPING, not cropping: the toggle paints blown channels black and crushed ones white (viewer.rs Viewer::clip) — ritaglio reads as a crop, a different operation entirely.
-        Msg::ClipPill => "clipping".into(),
-        Msg::ExposureStops(s) => format!("{s} stop").into(),
         Msg::ReaderTooLarge => "troppo grande da leggere qui \u{2014} salvato invece".into(),
         Msg::AttachDropHint => "trascina un file sulla conversazione per inviarlo".into(),
         Msg::BaseLogNote => "Su questa base il tempo trascorso, le dimensioni e le lunghezze usano la Scala Metrica Duodecimale \u{2014} raddoppi, scritti in duodecimale: una cifra per raddoppio, un logaritmo e non un conteggio, così tutto il tempo sta in due cifre.".into(),

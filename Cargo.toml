@@ -136,8 +136,8 @@ icc-profile = "0.0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "bmp"] }
 # Camera RAW / DNG intake for attachment previews (typed attachments 2026-09-10): native-depth counts + both DNG ColorMatrices, decode ONLY — VSF-Image out is the only write it will ever learn.
 limbus = { path = "../limbus" }
-# opsin's ingest + colour pipeline for the attachment viewer (2026-09-11): DNG/RAW/JXL/JPEG/legacy → one native-depth spectral image → linear VSF RGB with the profile's matrix, exposure as a gain at display. Pipeline only — no winit host on Android.
-opsin = { path = "../opsin", default-features = false }
+# opsin's ingest + colour pipeline AND its viewer (2026-09-17): the attachment viewer IS opsin's `view::View` — image area, tool panel, HUD, keys — hosted inside the conversation screen; `view` pulls fluor without a window host, so Android builds it too.
+opsin = { path = "../opsin", default-features = false, features = ["view"] }
 # Music decode for the audio-attachment waveform band (2026-09-12, "drag/drop music... should be a good test"): symphonia turns a dropped mp3/ogg/flac into PCM for the same three-pyramid envelope a wave carries. Pure Rust, Android-clean.
 symphonia = { version = "0.5", default-features = false, features = ["mp3", "flac", "ogg", "vorbis", "isomp4", "aac", "wav", "pcm"] }
 # JPEG XL decode only (lumis exports): the attachment preview ingest, same as opsin.

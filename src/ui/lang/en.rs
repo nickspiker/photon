@@ -651,11 +651,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Open".into(),
         Msg::ViewerBack => "\u{2039} Back".into(),
-        Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decoding\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} loss {loss} of {} \u{00B7} buffer {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "clip".into(),
-        Msg::ExposureStops(s) => format!("{s} stops").into(),
         Msg::ReaderTooLarge => "too large to read here \u{2014} saved instead".into(),
         Msg::AttachDropHint => "drop a file onto the conversation to send it".into(),
         Msg::BaseLogNote => "Time-ago, sizes and lengths on this base use Dozenal Metric Scaling \u{2014} doublings, spelled dozenal: one digit per doubling, a logarithm rather than a count, so all of time fits in two digits.".into(),

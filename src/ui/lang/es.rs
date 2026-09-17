@@ -674,11 +674,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Abrir".into(),
         Msg::ViewerBack => "\u{2039} Volver".into(),
-        Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "decodificando\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} pérdida {loss} de {} \u{00B7} búfer {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "recorte".into(),
-        Msg::ExposureStops(s) => format!("{s} pasos").into(),
         Msg::ReaderTooLarge => "demasiado grande para leer aquí \u{2014} guardado".into(),
         Msg::AttachDropHint => "suelta un archivo sobre la conversación para enviarlo".into(),
         Msg::BaseLogNote => "Aquí el tiempo transcurrido, los tamaños y las longitudes usan Escala Métrica Duodecimal \u{2014} duplicaciones, escritas en duodecimal: un dígito por duplicación, un logaritmo y no un conteo, así todo el tiempo cabe en dos dígitos.".into(),

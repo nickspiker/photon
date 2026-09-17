@@ -686,11 +686,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Otwórz".into(),
         Msg::ViewerBack => "\u{2039} Wstecz".into(),
-        Msg::ViewerOriginal => "Oryginał".into(),
         Msg::ViewerDecoding => "dekodowanie\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} strata {loss} z {} \u{00B7} bufor {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "przepalenia".into(),
-        Msg::ExposureStops(s) => format!("{s} EV").into(),
         Msg::ReaderTooLarge => "za duży, by czytać tutaj \u{2014} zamiast tego zapisany".into(),
         Msg::AttachDropHint => "upuść plik na rozmowę, by go wysłać".into(),
         Msg::BaseLogNote => "W tej bazie czas wstecz, rozmiary i długości używają Dwunastkowego Skalowania Metrycznego \u{2014} podwojeń zapisanych dwunastkowo: jedna cyfra na podwojenie, logarytm zamiast zliczania, więc cały czas mieści się w dwóch cyfrach.".into(),

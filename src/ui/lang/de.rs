@@ -678,12 +678,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Öffnen".into(),
         Msg::ViewerBack => "\u{2039} Zurück".into(),
-        Msg::ViewerOriginal => "Original".into(),
         Msg::ViewerDecoding => "entschlüssele\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} Verlust {loss} von {} \u{00B7} Puffer {buf}", fmt_num(256)).into(),
         // CLIPPING, not cropping: the toggle paints blown channels black and crushed ones white (viewer.rs Viewer::clip) — Beschnitt is a print trim, a different operation entirely.
-        Msg::ClipPill => "Clipping".into(),
-        Msg::ExposureStops(s) => format!("{s} Blenden").into(),
         Msg::ReaderTooLarge => "zu groß zum Lesen hier \u{2014} stattdessen gespeichert".into(),
         Msg::AttachDropHint => "lass eine Datei auf das Gespräch fallen, um sie zu senden".into(),
         Msg::BaseLogNote => "Zeitabstände, Größen und Längen nutzen auf dieser Basis Duodezimale Metrische Skalierung \u{2014} Verdopplungen, duodezimal geschrieben: eine Ziffer je Verdopplung, ein Logarithmus statt einer Anzahl, so passt die ganze Zeit in zwei Ziffern.".into(),

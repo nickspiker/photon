@@ -677,11 +677,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Buksan".into(),
         Msg::ViewerBack => "\u{2039} Balik".into(),
-        Msg::ViewerOriginal => "Orihinal".into(),
         Msg::ViewerDecoding => "dini-decode\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} nawala {loss} sa {} \u{00B7} buffer {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "clip".into(),
-        Msg::ExposureStops(s) => format!("{s} na stop").into(),
         Msg::ReaderTooLarge => "masyadong malaki para basahin dito \u{2014} na-save na lang".into(),
         Msg::AttachDropHint => "ihulog ang file sa usapan para ipadala ito".into(),
         Msg::BaseLogNote => "Ang nakalipas na oras, ang mga laki at ang mga haba sa base na ito ay gumagamit ng Dozenal Metric Scaling \u{2014} pagdodoble, nakasulat sa duodesimal: isang digit kada pagdodoble, logaritmo sa halip na bilang, kaya kasya ang buong panahon sa dalawang digit.".into(),

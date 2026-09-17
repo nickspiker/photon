@@ -691,12 +691,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Відкрити".into(),
         Msg::ViewerBack => "\u{2039} Назад".into(),
-        Msg::ViewerOriginal => "Оригінал".into(),
         Msg::ViewerDecoding => "розбираю\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} втрати {loss} з {} \u{00B7} буфер {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "відсічка".into(),
         // EV замість слова «ступінь»: величина приходить готовим знаковим рядком, а на будь-яке українське слово вона тягла б своє закінчення.
-        Msg::ExposureStops(s) => format!("{s} EV").into(),
         Msg::ReaderTooLarge => "завелике, щоб читати тут \u{2014} натомість збережено".into(),
         Msg::AttachDropHint => "кинь файл на розмову, щоб надіслати його".into(),
         Msg::BaseLogNote => "Вік, розміри й довжини на цій основі йдуть дюжинним метричним масштабуванням \u{2014} подвоєннями, записаними дюжинно: одна цифра на подвоєння, логарифм, а не лічба, тож увесь час уміщається у дві цифри.".into(),

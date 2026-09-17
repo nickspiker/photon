@@ -716,12 +716,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Открыть".into(),
         Msg::ViewerBack => "\u{2039} Назад".into(),
-        Msg::ViewerOriginal => "Оригинал".into(),
         Msg::ViewerDecoding => "декодируем\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} потери {loss} из {} \u{00B7} буфер {buf}", fmt_num(256)).into(),
-        Msg::ClipPill => "клиппинг".into(),
         // «EV» вместо «ступеней»: значение приходит строкой, числовую форму слова не выбрать, а для фото-аудитории EV и есть ступень экспозиции.
-        Msg::ExposureStops(s) => format!("{s} EV").into(),
         Msg::ReaderTooLarge => "слишком велико, чтобы читать здесь \u{2014} вместо этого сохранено".into(),
         Msg::AttachDropHint => "перетащи файл в разговор, чтобы отправить его".into(),
         Msg::BaseLogNote => "Возраст, размеры и длины в этом основании используют Дюжинное Метрическое Масштабирование \u{2014} удвоения, записанные дюжинно: одна цифра на удвоение, логарифм, а не счёт, так что всё время помещается в две цифры.".into(),

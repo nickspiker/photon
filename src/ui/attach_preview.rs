@@ -8,99 +8,27 @@ use crate::types::{AttachKind, AttachMeta, MICRO_PREVIEW_MAX_EDGE};
 pub const PREVIEW_MAX_EDGE: usize = 512;
 /// Long edge of the "open original" render (a 50 MP photo folds to this on the way to the screen; the file itself stays untouched).
 pub const FULL_VIEW_MAX_EDGE: usize = 4096;
-/// Long edge of the LINEAR buffer the viewer keeps for its exposure control — twelve bytes a pixel, so a phone keeps 2048 (50 MB) and a desktop 4096.
+/// Long edge of the LINEAR buffer the viewer keeps — twelve bytes a pixel, so a phone keeps 2048 (50 MB) and a desktop 4096. opsin's view folds its display copy to this; the raw sensor counts stay whole for the histogram.
 pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } else { 4096 };
 
-/// THE COLOUR-MANAGED ORIGINAL (Nick 2026-09-11, "colour/spectral managed, vsf rgb as much as possible"): the bytes go thru opsin's ingest (limbus for DNG/RAW/TIFF with both DNG matrices and the illuminant, jxl-oxide, zune for JPEG, image-webp for WebP — PNG/GIF/BMP have no opsin arm yet and take the fallback below; opsin recognises the file by its bytes, never its name) into one native-depth spectral image, then `to_linear_in(VsfRgb)` — the profile's matrix, illuminant-normalised, integer pipeline — gives linear VSF RGB with 65535 = the profile's white. EXIF orientation is applied and the buffer folded to [`LINEAR_VIEW_MAX_EDGE`] here, off the UI thread; exposure is a gain at the display encode ([`encode_linear`]), so it is live. RAW stays CFA-binned (no demosaic) — the same picture opsin shows. None = opsin could not read it (the caller falls back to the gamma-2 path).
-pub fn full_image_linear(path: &std::path::Path, kind: AttachKind) -> Option<(usize, usize, Vec<i32>)> {
+/// The viewer's path for what opsin has no decoder for (PNG, GIF, BMP — anything its sniff calls Unknown): the image crate's decode, sRGB assumed, linearised into VSF RGB and folded to `max_edge`, handed back as LINEAR PLANAR u16 (white = 65535) for `opsin::convert::ingest_linear_vsf_rgb`, so opsin's view shows it thru the same pipe as everything else.
+pub fn legacy_linear_planar(bytes: &[u8], name: &str, kind: AttachKind, max_edge: usize) -> Option<(usize, usize, Vec<u16>)> {
     if !kind.is_image() {
         return None;
     }
-    let ext = path.extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
-    // opsin decides by the bytes, and since 2026-09-15 it opens ANYTHING — a file no decoder claims goes to its headerless guesser, which is right for the standalone viewer and wrong here: a PNG/GIF/BMP would render as guessed noise instead of taking the gamma-2 decode below. Only hand it what it has a real decoder for.
-    if matches!(opsin::sniff::sniff_path(path), None | Some(opsin::sniff::Kind::Unknown)) {
-        crate::logf!("attach: no opsin decoder for {}; gamma-2 path", if ext.is_empty() { "these bytes" } else { ext.as_str() });
-        return None;
-    }
-    {
-        let dec = match opsin::convert::load_any(path) {
-            Ok(d) => d,
-            Err(e) => {
-                crate::logf!("attach: opsin ingest declined {}: {}", ext, e);
-                return None;
-            }
-        };
-        let (w, h, lin) = match opsin::convert::to_linear_in(&dec, opsin::convert::Target::VsfRgb) {
-            Ok(v) => v,
-            Err(e) => {
-                crate::logf!("attach: opsin linear render failed: {}", e);
-                return None;
-            }
-        };
-        // opsin's to_linear_in already applied the EXIF orientation (convert.rs apply_orientation is its last step) — re-orienting here transposed rotated photos a second time with the wrong stride.
-        Some(fold_i32_to_edge(&lin, w, h, LINEAR_VIEW_MAX_EDGE))
-    }
-}
-
-/// Fold linear i32 RGB to `max_edge` on the long side: a box mean over the source block of each output pixel. Integer all the way; the buffer arrives already EXIF-oriented from opsin.
-fn fold_i32_to_edge(lin: &[i32], w: usize, h: usize, max_edge: usize) -> (usize, usize, Vec<i32>) {
-    use rayon::prelude::*;
-    let (tw, th) = fit_dims(w, h, max_edge);
-    let mut out = vec![0i32; tw * th * 3];
-    out.par_chunks_mut(tw * 3).enumerate().for_each(|(ty, row)| {
-        let y0 = ty * h / th;
-        let y1 = ((ty + 1) * h / th).max(y0 + 1).min(h);
-        let mut rem = [0i64; 3];
-        for tx in 0..tw {
-            let x0 = tx * w / tw;
-            let x1 = ((tx + 1) * w / tw).max(x0 + 1).min(w);
-            let mut acc = [0i64; 3];
-            let mut n = 0i64;
-            for sy in y0..y1 {
-                for sx in x0..x1 {
-                    let i = (sy * w + sx) * 3;
-                    acc[0] += lin[i] as i64;
-                    acc[1] += lin[i + 1] as i64;
-                    acc[2] += lin[i + 2] as i64;
-                    n += 1;
-                }
-            }
-            let n = n.max(1);
-            // The division remainder rides along the row per channel (the same carried-remainder law as call/qgain.rs): floor here, deficit into the next pixel — the row's sum is exact instead of every pixel sitting up to an LSB low.
-            for ch in 0..3 {
-                let t = acc[ch] + rem[ch];
-                let q = t.div_euclid(n);
-                rem[ch] = t - q * n;
-                row[tx * 3 + ch] = q as i32;
-            }
+    let f = decode_folded(bytes, name, kind, None, max_edge)?;
+    let n = f.w * f.h;
+    let mut planar = vec![0u16; n * 3];
+    for i in 0..n {
+        for ch in 0..3 {
+            // The fold hands back gamma-2 VSF RGB; the square is the exact inverse.
+            let g = f.px[i * 3 + ch].clamp(0.0, 1.0);
+            planar[ch * n + i] = (g * g * 65535.0 + 0.5) as u16;
         }
-    });
-    (tw, th, out)
+    }
+    Some((f.w, f.h, planar))
 }
 
-/// Display encode of linear VSF RGB at `ev` stops: gain, VSF RGB → Rec.2020 (the panel space every platform is tagged for), gamma 2, fluor's α + darkness pixel in the platform byte order. `clip` paints a blown channel black and a crushed one white, opsin's raw-inversion convention.
-pub fn encode_linear(lin: &[i32], ev: f32, clip: bool) -> Vec<u32> {
-    use rayon::prelude::*;
-    let m = transpose3(&vsf::colour::VSF_RGB2REC2020);
-    let gain = 2f32.powf(ev) / 65535.0;
-    lin.par_chunks_exact(3)
-        .map(|px| {
-            let c = [px[0] as f32 * gain, px[1] as f32 * gain, px[2] as f32 * gain];
-            let mut vis = [0u32; 3];
-            for o in 0..3 {
-                let v = m[o * 3] * c[0] + m[o * 3 + 1] * c[1] + m[o * 3 + 2] * c[2];
-                vis[o] = if clip && v >= 1.0 {
-                    0
-                } else if clip && v < 0.0 {
-                    255
-                } else {
-                    (v.clamp(0.0, 1.0).sqrt() * 255.0 + 0.5) as u32
-                };
-            }
-            fluor::theme::dark(fluor::theme::fmt((vis[0] << 16) | (vis[1] << 8) | vis[2]))
-        })
-        .collect()
-}
 /// rav1e base quantizer for preview blobs (the avatar uses 32 at 256 px; a hair coarser keeps a 512-px preview near the 32 KB target).
 const PREVIEW_QUANTIZER: usize = 40;
 

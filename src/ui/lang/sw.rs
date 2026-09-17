@@ -685,12 +685,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         Msg::OpenPill => "Fungua".into(),
         Msg::ViewerBack => "\u{2039} Rudi".into(),
-        Msg::ViewerOriginal => "Halisi".into(),
         Msg::ViewerDecoding => "inasimbua\u{2026}".into(),
         Msg::CallLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} upotevu {loss} kati ya {} \u{00B7} bafa {buf}", fmt_num(256)).into(),
         // CLIPPING, not cropping: the toggle paints blown channels black and crushed ones white (viewer.rs Viewer::clip) — kata reads as a cut, a different operation entirely.
-        Msg::ClipPill => "clipping".into(),
-        Msg::ExposureStops(s) => format!("hatua {s}").into(),
         Msg::ReaderTooLarge => "kubwa mno kusoma hapa \u{2014} imehifadhiwa badala yake".into(),
         Msg::AttachDropHint => "dondosha faili kwenye mazungumzo ili kulituma".into(),
         Msg::BaseLogNote => "Muda uliopita, ukubwa na urefu katika msingi huu hutumia Mizani ya Kumi na Mbili \u{2014} marudufu, yaliyoandikwa kwa kumi na mbili: tarakimu moja kwa kila rudufu, logarithimu badala ya hesabu, hivyo muda wote huingia katika tarakimu mbili.".into(),
