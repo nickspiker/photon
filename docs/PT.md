@@ -8,6 +8,19 @@ PT is a reliable UDP transport for VSF payloads. It handles:
 - Congestion control (blast-then-pipeline)
 - TCP fallback when UDP repeatedly fails
 
+## Spooled receive (2026-09-17, designed — the zero-bitmap spool is PT's buffer done right)
+
+`ReceiveBuffer` today is a pre-allocated RAM `Vec` PLUS a `BitVec` of received packets — a sidecar bitmap beside the data, held in memory, lost on restart. For SEALED payloads both halves are wrong by one insight each (Nick 2026-09-17):
+
+- The bitmap is redundant: a 256-bit window of ciphertext is all-zero with probability 2^-256, so a pre-zeroed buffer IS its own receipt bitmap (`storage/spool.rs`, the proof in its header). The data is the bookkeeping, atomically — "bitmap says held, data missing" becomes unrepresentable rather than avoided.
+- The RAM residence is why transfers are size-bound and die with the process: spool-backed, the buffer is a sparse file, the bound is disk, and an interrupted transfer resumes across restart from the file alone — the five-scalar VSF prelude self-verifies (parse success IS the presence test), then the zero-scan reconstructs the have-set with no other state.
+
+Verification decouples from transfer entirely: land + ACK on the hot path with no per-packet checking, ONE whole-payload blake3 at finalize (the SPEC already carries the hash; AEAD tags verify each sealed chunk as a side effect of decrypting). Fault localization on the rare mismatch is an interactive window-hash dialogue at link-tuned granularity — a megabyte on a slow link, a gigabyte for a terabyte on a fast one — computed on demand by both sides, never stored.
+
+The boundary, stated honestly: the zero rule is airtight only for payloads whose every window is ciphertext. Sealed blobs (attachment chunks, bridge pigeons, history bulk) qualify — that is the class that is large, resumable and worth spooling. Complete VSF files with plaintext framing (CLUTCH offers, control payloads) may contain honest zero windows in their structure, so they keep the RAM buffer — they are small, and their retry story is their own machinery's.
+
+Consolidation this implies (not yet built): the attachment wire's parallel reliability layer (`attach_manifest`/`attach_chunk`/WANT bitmaps) and the bridge pigeon should ride PT streams with spool-backed receive, so photon has ONE bulk-transfer story: PT moves packets, the spool is custody and resume, the prelude is the manifest, and the repair dialogue is the only verification protocol.
+
 ## Stream IDs
 
 Each transfer gets a stream ID from 'a'-'z' (26 concurrent streams per peer).
