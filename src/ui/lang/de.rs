@@ -719,6 +719,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(keine Ausgabe, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(die Shell ist gestorben: {e} — neue Sitzung beim nächsten Befehl)").into(),
+        Msg::PigeonLandFailed(d) => format!("(die abgelegte Datei konnte nicht in {d} landen)").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(frühere Ausgabe verworfen)\n{output}").into(),
         Msg::DeviceNotSibling => "Dieses Gerät ist noch nicht als Geschwistergerät eingebunden.".into(),
         Msg::ShellExited => "Shell beendet".into(),

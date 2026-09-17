@@ -101,7 +101,7 @@
 - [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; shaping/Cyrillic already free, Hindi cheap, CJK = payload call
 - [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates page + website
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot shipped; off-by-default toggle
-- [project_bridge.md](project_bridge.md) — BRIDGE = passless remote shell between siblings over PT
+- [project_bridge.md](project_bridge.md) — BRIDGE = passless remote shell between siblings over PT; PIGEONS (drop→host cwd via spool) BUILT 2026-09-17, field test PENDING; stage 4 (PT ReceiveBuffer spool-backed + attach migration) deferred
 - [project_chain_replication.md](project_chain_replication.md) — chains sync fleet-wide (mutated_osc, adopt-iff-newer)
 - [Per-device lanes](per-device-lanes.md) — every device transmits on its own lane; CRDT merge converges
 - [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 cutover closed; durability = docs/durability.md (FLEET-HOLDS-HISTORY)

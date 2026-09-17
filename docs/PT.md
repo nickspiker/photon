@@ -230,6 +230,17 @@ for (addr, pkt, use_tcp) in to_send {
 }
 ```
 
+### Built 2026-09-17: the bridge pigeon as the first spooled tenant (stages 1–3)
+
+The consolidation landed STAGED, because the receive map settled one fact: attachments ALREADY survive restart (chunks land as content-addressed vault blobs; `attach_fetch` rebuilds the WANT set from `blob_chunks_held`), so migrating the working attach path onto the spool is field risk with no functional gain until the new path is proven. What is live:
+
+- **Wire** — `pigeon_chunk` (protocol.rs) is byte-identical in shape to `attach_chunk` with ONE difference, the section name, and that name is load-bearing: the receiver's sniff-dispatch ladder routes an attach_chunk to the vault-install worker, which is exactly wrong for an ephemeral one-device drop. A test pins that the two parsers reject each other's frames. The announcement is a typed `RefKind::BridgePigeon` row whose content is the file name (a visible bubble both sides) carrying `BridgeWire.pigeon` (name, whole-file hash, size); the host's run gate matches `BridgeCmd` only, so it can never execute.
+- **Receive** — `network::pigeon::PigeonReceiver`: a zero-bitmap spool per whole-file hash in `runtime_dir()/pigeons`, opened (or resumed) on the announcement under the FLEET key and keyed to the announcing device (a valid frame from any other signer is refused); `chunk` is one `pwrite` into the slot; completion is the zero-window scan; `take_complete` detaches the whole spool so `finalize_inflight` runs the decrypt-walk + whole-file hash + landing on the seal worker, never the UI thread. A chunk that will not open keeps the spool (resumable); a spool that completes to the WRONG hash is shed on the spot — poison, not a resumable state.
+- **Landing** — `storage::land_blob`, shared with attachment Save: `name`, `name (2).ext`, `name (3).ext`… streamed from the vault, never overwriting. On a bridge that is the safety property: a drop can only ADD a file to a remote machine. The directory is the sibling's shell cwd as of its last command (`bridge::BridgeCwdMap`, written by the shell worker from the command sentinel), else home. The host answers the operator with a `BridgeOut` row naming the landed path (or `Msg::PigeonLandFailed`).
+- **Ephemeral both ends** — the client sheds its vault copy once the chunks are dispatched (PT's own send buffers carry any retransmit); the host sheds the spool and its vault copy once the file lands.
+
+Cross-device leg is FIELD-PENDING (compile + unit only here), like the bridge itself shipped. Deferred, field-proven-first: stage 4 makes PT's `ReceiveBuffer` itself spool-backed for sealed payloads (the hot `insert` runs under the PT mutex in the tokio recv task, so the disk write must be offloaded exactly as the attach path's seal_job already does) and migrates attachments onto it — one bulk-transfer story. Also not yet built: the window-hash repair dialogue (today a failed finalize is a re-drop away from a retry).
+
 ## File Structure
 
 ```

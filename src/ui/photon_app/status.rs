@@ -40,6 +40,7 @@ impl PhotonApp {
         timed_drain!("audio_cal", self.drain_audio_cal());
         timed_drain!("avatar", self.drain_avatar_downloads());
         timed_drain!("attach", self.drain_attach_installed());
+        timed_drain!("pigeon", self.drain_pigeon_landed());
         // Picked files the preparation worker finished (kind, dims, micro preview) → row + blob send.
         timed_drain!("attach_prep", self.drain_attach_prepared());
         // Decoded attachment pictures → the cache; preview wants → decode jobs / fetches.
@@ -326,6 +327,7 @@ impl PhotonApp {
                 StatusUpdate::AttachHaveReceived { .. } => "AttachHaveReceived",
                 StatusUpdate::AttachManifestReceived { .. } => "AttachManifestReceived",
                 StatusUpdate::AttachChunkReceived { .. } => "AttachChunkReceived",
+                StatusUpdate::PigeonChunkReceived { .. } => "PigeonChunkReceived",
                 StatusUpdate::AttachReqReceived { .. } => "AttachReqReceived",
                 StatusUpdate::MessageAck { .. } => "MessageAck",
                 StatusUpdate::AvatarRequestReceived { .. } => "AvatarRequestReceived",
@@ -3534,6 +3536,30 @@ impl PhotonApp {
                         });
                     } else {
                         crate::log("ATTACH: no wire key / no session for the chunk's conversation — dropped");
+                    }
+                }
+                // A bridge pigeon chunk: into its spool (a 256 KB pwrite — brief), and once the spool is whole, the decrypt-walk + landing run on the seal worker.
+                // Field-level borrows only (this handler holds `checker` borrowed from status_checker throughout), which is why this is inline rather than a &mut self method.
+                StatusUpdate::PigeonChunkReceived { content_hash, index, sealed, sender_pubkey } => {
+                    let signer = sender_pubkey.key;
+                    if let Err(e) = self.pigeon_rx.chunk(&content_hash, index, &sealed, &signer) {
+                        crate::logf!("PIGEON: chunk {} write failed: {}", index, e);
+                    } else if let Some(inf) = self.pigeon_rx.take_complete(&content_hash) {
+                        let seed = self.session.as_ref().map(|s| s.identity_seed);
+                        let ci = self.contacts.iter().position(|c| c.device_key() == Some(signer));
+                        if let (Some(seed), Some(ci)) = (seed, ci) {
+                            // The landing directory: the sibling's shell cwd as of its last command, else the shell's starting directory (home).
+                            let cwd = self.bridge_cwds.as_ref().and_then(|m| m.lock().ok()).and_then(|m| m.get(&signer).cloned()).filter(|c| !c.is_empty());
+                            let dir = cwd.map(std::path::PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| std::path::PathBuf::from("."));
+                            let tx = self.pigeon_landed_tx.clone();
+                            let wake = self.event_proxy.clone();
+                            queue_job(&self.seal_job_tx, move || {
+                                let dir_s = dir.to_string_lossy().into_owned();
+                                let landed = crate::network::pigeon::finalize_inflight(inf, &seed, &dir).unwrap_or(None);
+                                let _ = tx.send((ci, landed, dir_s));
+                                super::bridge::bridge_wake(&wake);
+                            });
+                        }
                     }
                 }
                 // Throttled PT transfer progress — drives the pill progress bars.

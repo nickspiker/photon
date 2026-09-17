@@ -722,6 +722,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(çıktı yok, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(kabuk öldü: {e} — sonraki komutta yeni bir oturum)").into(),
+        Msg::PigeonLandFailed(d) => format!("(bırakılan dosya {d} konumuna inemedi)").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(önceki çıktı atıldı)\n{output}").into(),
         Msg::DeviceNotSibling => "O cihaz henüz kardeş olarak bağlı değil.".into(),
         Msg::ShellExited => "kabuk çıktı".into(),

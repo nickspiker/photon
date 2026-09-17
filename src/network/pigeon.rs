@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
 
-/// One inbound pigeon mid-flight: the spool file and everything needed to finalize it. Keyed in [`PigeonReceiver`] by the whole-file plaintext hash the announcement named.
-struct Inflight {
+/// One inbound pigeon mid-flight: the spool file and everything needed to finalize it. Keyed in [`PigeonReceiver`] by the whole-file plaintext hash the announcement named. Detachable (`take`) so the finalize decrypt-walk can run off the UI thread.
+pub struct Inflight {
     desc: SpoolDesc,
     layout: SpoolLayout,
     file: File,
@@ -83,39 +83,62 @@ impl PigeonReceiver {
         if !self.is_complete(hash).ok()? {
             return None;
         }
-        let inf = self.inflight.get(hash)?;
-        let mut whole = Vec::with_capacity(inf.desc.size as usize);
-        for i in 0..inf.layout.lens.len() {
-            let sealed = spool::read_slot(&inf.file, &inf.layout, i).ok()?;
-            match crate::storage::decrypt_bytes(&sealed, &inf.wire_key) {
-                Ok(plain) => whole.extend_from_slice(&plain),
-                Err(e) => {
-                    crate::logf!("PIGEON: chunk {} failed to open — spool kept for re-fetch: {}", i, e);
-                    return None;
-                }
+        let inf = self.inflight.remove(hash)?;
+        match finalize_inflight(inf, seed, dir) {
+            Ok(landed) => landed,
+            Err(inf) => {
+                // A chunk that would not open: keep the spool for a re-fetch.
+                self.inflight.insert(*hash, inf);
+                None
             }
         }
-        if *blake3::hash(&whole).as_bytes() != *hash {
-            crate::logf!("PIGEON: reassembled bytes do not match the announced hash — shedding the poisoned spool");
-            let inf = self.inflight.remove(hash).unwrap();
-            let _ = std::fs::remove_file(&inf.path);
-            return None;
-        }
-        // The bytes are whole and verified. Store them once so land_blob can stream from the vault, then land into the shell directory and shed everything.
-        let inf = self.inflight.remove(hash)?;
-        let name = inf.desc.name.clone();
-        if let Err(e) = crate::storage::blob_store(seed, hash, &whole) {
-            crate::logf!("PIGEON: could not store the landed bytes: {}", e);
-            let _ = std::fs::remove_file(&inf.path);
-            return None;
-        }
-        let landed = crate::storage::land_blob(seed, hash, dir, &name);
-        // The pigeon is ephemeral: shed the spool and the vault copy whatever the landing did.
-        let _ = std::fs::remove_file(&inf.path);
-        crate::storage::blob_delete(hash);
-        let path = landed?;
-        Some(Landed { name, path, from_device: inf.from_device })
     }
+
+    /// Detach a COMPLETE pigeon so `finalize_inflight` can run it on a worker thread. None if unknown or not yet whole. The receiver forgets it; a chunk that would not open is a re-announce away from resuming (the spool file itself survives on disk).
+    pub fn take_complete(&mut self, hash: &[u8; 32]) -> Option<Inflight> {
+        if !self.is_complete(hash).ok()? {
+            return None;
+        }
+        self.inflight.remove(hash)
+    }
+}
+
+/// The decrypt-walk + whole-file hash + landing + shed for one detached pigeon, safe on any thread (it owns the spool handle). Err returns the pigeon for a chunk that would not open (resumable); a hash mismatch or a store failure sheds the spool and returns Ok(None) — a spool that completed to the wrong bytes is poison, not a resumable state.
+pub fn finalize_inflight(inf: Inflight, seed: &[u8; 32], dir: &std::path::Path) -> Result<Option<Landed>, Inflight> {
+    let hash = inf.desc.hash;
+    let mut whole = Vec::with_capacity(inf.desc.size as usize);
+    for i in 0..inf.layout.lens.len() {
+        let Ok(sealed) = spool::read_slot(&inf.file, &inf.layout, i) else {
+            return Err(inf);
+        };
+        match crate::storage::decrypt_bytes(&sealed, &inf.wire_key) {
+            Ok(plain) => whole.extend_from_slice(&plain),
+            Err(e) => {
+                crate::logf!("PIGEON: chunk {} failed to open — spool kept for re-fetch: {}", i, e);
+                return Err(inf);
+            }
+        }
+    }
+    if *blake3::hash(&whole).as_bytes() != hash {
+        crate::logf!("PIGEON: reassembled bytes do not match the announced hash — shedding the poisoned spool");
+        let _ = std::fs::remove_file(&inf.path);
+        return Ok(None);
+    }
+    // The bytes are whole and verified. Store them once so land_blob can stream from the vault, then land into the shell directory and shed everything.
+    let name = inf.desc.name.clone();
+    if let Err(e) = crate::storage::blob_store(seed, &hash, &whole) {
+        crate::logf!("PIGEON: could not store the landed bytes: {}", e);
+        let _ = std::fs::remove_file(&inf.path);
+        return Ok(None);
+    }
+    let landed = crate::storage::land_blob(seed, &hash, dir, &name);
+    // The pigeon is ephemeral: shed the spool and the vault copy whatever the landing did.
+    let _ = std::fs::remove_file(&inf.path);
+    crate::storage::blob_delete(&hash);
+    Ok(landed.map(|path| Landed { name, path, from_device: inf.from_device }))
+}
+
+impl PigeonReceiver {
 
     /// Forget an in-flight pigeon and shed its spool (a bridge session reset, or the operator withdrawing a drop). A no-op if it already finalized.
     pub fn drop_pigeon(&mut self, hash: &[u8; 32]) {

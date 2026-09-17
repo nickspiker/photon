@@ -492,6 +492,13 @@ pub enum StatusUpdate {
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
+    /// One sealed chunk of a BRIDGE PIGEON (a file dropped on the bridge) — spooled by network::pigeon and landed in the host shell's cwd, never vault-installed.
+    PigeonChunkReceived {
+        content_hash: [u8; 32],
+        index: u32,
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+    },
     /// A peer wants the blob for an attachment row it holds (offline race, or a fleet sibling with row-but-no-blob). The UI answers with an attach_blob if the blob is held.
     AttachReqReceived {
         conversation_token: [u8; 32],
@@ -2160,6 +2167,23 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
+                                    } else if let Ok(((_tok, content_hash, index, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_pigeon_chunk_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: pigeon_chunk REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::PigeonChunkReceived {
+                                                content_hash,
+                                                index,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                            },
+                                            &event_proxy_recv,
+                                        );
                                     } else if let Ok(((conversation_token, content_hash, index, sealed), sender_pubkey)) =
                                         crate::network::fgtw::protocol::parse_attach_chunk_vsf(&data)
                                     {
@@ -2702,6 +2726,28 @@ async fn run_checker(
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok(((_tok, content_hash, index, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_pigeon_chunk_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::PigeonChunkReceived {
+                                        content_hash,
+                                        index,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,
                                 );

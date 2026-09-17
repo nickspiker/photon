@@ -727,6 +727,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(कोई आउटपुट नहीं, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(शेल मर गया: {e} — अगले कमांड पर नया सेशन)").into(),
+        Msg::PigeonLandFailed(d) => format!("(छोड़ी गई फ़ाइल {d} में नहीं उतर सकी)").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(पहले का आउटपुट छोड़ दिया)\n{output}").into(),
         Msg::DeviceNotSibling => "वह डिवाइस अभी सगे डिवाइस के तौर पर नहीं बँधा है।".into(),
         Msg::ShellExited => "शेल बंद हो गया".into(),

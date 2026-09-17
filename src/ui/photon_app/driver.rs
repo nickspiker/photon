@@ -3084,7 +3084,12 @@ impl FluorApp for PhotonApp {
                 // A file dropped on an OPEN CONVERSATION = send it as an attachment. (Ready-screen drops stay the avatar pipeline below.)
                 if matches!(self.state, AppState::Conversation) {
                     if let Some(ci) = self.active_contact() {
-                        self.send_attachment_from_path(ci, path);
+                        // A drop on a BRIDGE (a sibling's shell) is a pigeon: ephemeral, lands in the host's cwd, never a fleet attachment (docs/PT.md spooled receive).
+                        if self.contacts.get(ci).is_some_and(|c| c.is_sibling) {
+                            self.send_bridge_pigeon(ci, std::path::Path::new(path));
+                        } else {
+                            self.send_attachment_from_path(ci, path);
+                        }
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
@@ -4038,6 +4043,9 @@ impl PhotonApp {
             let (aitx, airx) = std::sync::mpsc::channel();
             self.attach_installed_tx = aitx;
             self.attach_installed_rx = airx;
+            let (pltx, plrx) = std::sync::mpsc::channel();
+            self.pigeon_landed_tx = pltx;
+            self.pigeon_landed_rx = plrx;
             let (aptx, aprx) = std::sync::mpsc::channel();
             self.attach_prepared_tx = aptx;
             self.attach_prepared_rx = aprx;

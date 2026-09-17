@@ -717,6 +717,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(tanpa keluaran, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(shell mati: {e} — sesi baru pada perintah berikutnya)").into(),
+        Msg::PigeonLandFailed(d) => format!("(berkas yang dijatuhkan tidak bisa mendarat di {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(keluaran sebelumnya dibuang)\n{output}").into(),
         Msg::DeviceNotSibling => "Perangkat itu belum terikat sebagai saudara.".into(),
         Msg::ShellExited => "shell berhenti".into(),

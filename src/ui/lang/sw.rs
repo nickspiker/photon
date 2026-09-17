@@ -726,6 +726,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(hakuna matokeo, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(shell imekufa: {e} — kipindi kipya kwenye amri ijayo)").into(),
+        Msg::PigeonLandFailed(d) => format!("(faili lililodondoshwa halikuweza kutua kwenye {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(matokeo ya awali yametupwa)\n{output}").into(),
         Msg::DeviceNotSibling => "Kifaa hicho bado hakijafungwa kama ndugu.".into(),
         Msg::ShellExited => "shell imetoka".into(),

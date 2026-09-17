@@ -727,6 +727,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(brak wyjścia, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(powłoka padła: {e} — przy następnym poleceniu nowa sesja)").into(),
+        Msg::PigeonLandFailed(d) => format!("(upuszczony plik nie mógł wylądować w {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(wcześniejsze wyjście porzucone)\n{output}").into(),
         Msg::DeviceNotSibling => "To urządzenie nie jest jeszcze związane jako siostrzane.".into(),
         Msg::ShellExited => "powłoka zakończona".into(),

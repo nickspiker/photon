@@ -2048,6 +2048,12 @@ pub struct PhotonApp {
     /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_fg: Option<bridge::BridgeFgMap>,
+    /// HOST: each sibling's shell cwd (bridge::BridgeCwdMap) — where a dropped pigeon lands. Created with the executor, read at landing.
+    bridge_cwds: Option<bridge::BridgeCwdMap>,
+    /// HOST: in-flight bridge pigeons, one zero-bitmap spool each (network::pigeon). Fed by the announcement row and pigeon_chunk PT frames; finalize runs on the seal worker and reports back over `pigeon_landed`.
+    pigeon_rx: crate::network::pigeon::PigeonReceiver,
+    pigeon_landed_tx: std::sync::mpsc::Sender<(usize, Option<crate::network::pigeon::Landed>, String)>,
+    pigeon_landed_rx: std::sync::mpsc::Receiver<(usize, Option<crate::network::pigeon::Landed>, String)>,
     /// CLIENT side, any platform: the latest locus the bridge host reported — (device, host name, cwd) — rendered as the strip above the compose box so the operator is never blind to where commands land (field 2026-08-23: a pull meant for photon ran in keys/).
     bridge_locus: Option<([u8; 32], String, String)>,
     /// CLIENT side: Stop-press escalation for the in-flight command — (command eagle_time, presses so far); each press walks SIGINT → SIGTERM → SIGKILL, reset when a new command starts.
@@ -2705,6 +2711,10 @@ impl PhotonApp {
             bridge_partial_inflight: std::collections::HashMap::new(),
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_fg: None,
+            bridge_cwds: None,
+            pigeon_rx: Default::default(),
+            pigeon_landed_tx: std::sync::mpsc::channel().0,
+            pigeon_landed_rx: std::sync::mpsc::channel().1,
             bridge_locus: None,
             bridge_int: None,
             settings_custodian_check: None,

@@ -757,6 +757,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(вывода нет, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(оболочка умерла: {e} — следующая команда начнёт новую сессию)").into(),
+        Msg::PigeonLandFailed(d) => format!("(перетащенный файл не смог приземлиться в {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(ранний вывод отброшен)\n{output}").into(),
         Msg::DeviceNotSibling => "Это устройство ещё не привязано как родственное.".into(),
         Msg::ShellExited => "оболочка завершилась".into(),

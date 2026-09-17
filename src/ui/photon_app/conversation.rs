@@ -1172,6 +1172,8 @@ impl PhotonApp {
         // BRIDGE host: a TYPED command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push; the i64 is the command row's eagle_time (what the streamed output frames target). A Stop press defers likewise.
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         let mut bridge_run: Option<(usize, String, i64)> = None;
+        // A bridge PIGEON announcement (the operator dropped a file): open its spool once, on first receipt only, like a command.
+        let mut bridge_pigeon: Option<(usize, crate::network::message_package::BridgePigeon)> = None;
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         let mut bridge_ctl: Option<(usize, u64, i64)> = None;
         // Non-host builds: a typed command to answer with a "no shell here" final (deferred past the conv borrow).
@@ -1878,6 +1880,11 @@ impl PhotonApp {
                 }
                 self.scene_dirty = true;
                 // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once; a Stop press signals inline (bridge_interrupt_host bypasses the executor queue by design).
+                if is_new_row && contact_is_sibling {
+                    if let (Some((crate::types::RefKind::BridgePigeon, _)), Some(p)) = (wire_reference, bridge_wire.as_ref().and_then(|b| b.pigeon.clone())) {
+                        bridge_pigeon = Some((contact_idx, p));
+                    }
+                }
                 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
                 if is_new_row {
                     if bridge_reset {
@@ -2045,6 +2052,9 @@ impl PhotonApp {
             self.chat_replay_queue.extend(replays);
         }
         // BRIDGE host: dispatch the captured command (or a reset) LAST, past every borrow. The command's own bubble + ACK are already committed above, so the operator's row brightens (reached the terminal) before the reply lands. An empty cmd is the reset sentinel — the peer opened the bridge; drop our shell so their first command starts fresh. A Stop press signals the in-flight job's process group directly (never thru the executor queue — a busy worker must not delay its own interrupt).
+        if let Some((ci, p)) = bridge_pigeon {
+            self.on_pigeon_announced(ci, p);
+        }
         #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
         if let Some((ci, cmd, ts)) = bridge_run {
             if cmd.is_empty() {

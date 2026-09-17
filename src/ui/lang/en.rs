@@ -691,6 +691,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(no output, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(shell died: {e} — fresh session on the next command)").into(),
+        Msg::PigeonLandFailed(d) => format!("(the dropped file could not land in {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(earlier output dropped)\n{output}").into(),
         Msg::DeviceNotSibling => "That device isn't bound in as a sibling yet.".into(),
         Msg::ShellExited => "shell exited".into(),

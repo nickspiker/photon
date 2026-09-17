@@ -58,6 +58,8 @@ pub enum RefKind {
     BridgeCmd = 6,
     /// BRIDGE INTERRUPT — the operator's stop lever (Ctrl+K / the Stop pill), targeting the command row's eagle_time. The signal number rides the typed `bsig` wire field; the host signals the command's own process group, never bash. Hidden control row; late arrival after completion is a natural no-op.
     BridgeCtl = 7,
+    /// BRIDGE PIGEON (docs/PT.md spooled receive, 2026-09-17): the operator dropped a file on the bridge. The row's content is the file's name (a visible note on both sides), the typed `BridgeWire.pigeon` carries name + whole-file hash + size, and the bytes follow as `pigeon_chunk` PT frames the host spools and lands in its shell's cwd. Never a command: the host's run gate matches BridgeCmd only. No target; `i64` is 0.
+    BridgePigeon = 10,
     /// FETCH HINT (replicate among fleet, 2026-09-09): a hidden fleet-internal row targeting a recording row's eagle_time — every sibling that merges it fetches that blob now instead of on demand. Never displayed, never chain-transmitted.
     FetchHint = 9,
     /// WAVE RECORDING → its wave row (docs/calls.md, the wave card 2026-09-09). The kept `call.audio` attachment row targets the wave row's eagle_time (offer_osc+1); the renderer FOLDS the recording into that row's card (the edit-target pattern), so a wave is ONE event in the stream however many devices minted its pieces. Fleet-internal, never chain-transmitted.
@@ -76,6 +78,7 @@ impl RefKind {
             7 => Some(RefKind::BridgeCtl),
             8 => Some(RefKind::Wave),
             9 => Some(RefKind::FetchHint),
+            10 => Some(RefKind::BridgePigeon),
             _ => None,
         }
     }

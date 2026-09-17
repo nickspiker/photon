@@ -728,6 +728,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(aucune sortie, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(le shell est mort : {e} — nouvelle session à la prochaine commande)").into(),
+        Msg::PigeonLandFailed(d) => format!("(le fichier déposé n'a pas pu atterrir dans {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(sortie antérieure abandonnée)\n{output}").into(),
         Msg::DeviceNotSibling => "Cet appareil n\u{2019}est pas encore lié comme frère.".into(),
         Msg::ShellExited => "le shell s\u{2019}est terminé".into(),

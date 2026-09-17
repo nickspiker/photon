@@ -718,6 +718,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(kāore he putanga, putanga {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[putanga {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(kua mate te anga: {e} — he wātū hou ā te whakahau e whai ake)").into(),
+        Msg::PigeonLandFailed(d) => format!("(kāore i taea e te kōnae i tukuna te tau ki {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(kua whiua ngā putanga o mua)\n{output}").into(),
         Msg::DeviceNotSibling => "Kāore anō taua pūrere kia honoa hei taina.".into(),
         Msg::ShellExited => "kua mutu te anga".into(),

@@ -29,6 +29,9 @@ pub(super) struct BridgeEmit {
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) type BridgeFgMap =
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], i32>>>;
+/// Each sibling's shell CWD as of its last completed command — the bridge pigeon's landing directory ("show up in whatever folder the bridge is currently in", Nick 2026-09-17). The worker owns the shell and learns the cwd from the command sentinel; the UI thread reads it at landing time, so the map is the one seam between them. Absent or empty (no command run yet) = the shell's starting directory, which is home.
+pub(super) type BridgeCwdMap =
+    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>>;
 
 /// Every live descendant of `root`, breadth-first via `pgrep -P` (present on every unix host the bridge ships to). The foreground command and everything it spawned — bash itself excluded by construction.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -69,8 +72,8 @@ fn bridge_cap_tail(s: &str, cap: usize) -> String {
     tr(Msg::BridgeElided { bytes: start, output: &s[start..] }).into_owned()
 }
 
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
+/// Wake the event loop from a worker thread. Platform-agnostic (a plain event send) — the pigeon landing on any host uses it, so it carries no shell cfg gate.
+pub(super) fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
     if let Some(w) = w {
         let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
     }
@@ -82,6 +85,7 @@ fn spawn_bridge_worker(
     dev: [u8; 32],
     partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>>,
     fg: BridgeFgMap,
+    cwds: BridgeCwdMap,
     wake: Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>,
 ) -> std::sync::mpsc::Sender<(usize, String, i64)> {
     // Append `chunk` to the command's unsent-delta buffer (creating it on first output), bounding memory by trimming the FRONT with an explicit dropped-byte count. Wake only on the empty→occupied edge so a spewing build can't flood the event loop — the UI drain reads the buffer at its own pace.
@@ -150,6 +154,7 @@ fn spawn_bridge_worker(
                 match res {
                     Ok((code, cwd, _)) => {
                         last_cwd = cwd.clone();
+                        cwds.lock().unwrap().insert(dev, cwd.clone());
                         // "Finished" is a FIELD, not a message (Nick 2026-09-03): the exit code folds into whatever delta is still buffered and rides out on that frame. A command that never printed and failed still names itself; clean silent success stays an empty-bodied exit frame the client stamps without a bubble.
                         let text = if !emitted_any && code != 0 { tr(Msg::BridgeNoOutput(code)).into_owned() } else { String::new() };
                         push_delta(&partials, ci, ts, seq + 1, &text, Some(code), &host, &cwd);
@@ -634,6 +639,7 @@ impl PhotonApp {
             std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>,
         > = Default::default();
         let fg: BridgeFgMap = Default::default();
+        let cwds: BridgeCwdMap = self.bridge_cwds.get_or_insert_with(Default::default).clone();
         self.bridge_partials = Some(partials.clone());
         self.bridge_fg = Some(fg.clone());
         std::thread::Builder::new()
@@ -672,6 +678,7 @@ impl PhotonApp {
                                     dev,
                                     partials.clone(),
                                     fg.clone(),
+                                    cwds.clone(),
                                     wake.clone(),
                                 );
                                 let _ = tx.send((ci, cmd, ts));
@@ -812,6 +819,120 @@ impl PhotonApp {
             }
         } else {
             let _ = vault.delete_device(Self::REBOOT_CAPSULE_ENTRY);
+        }
+    }
+}
+
+// ── Bridge PIGEONS (docs/PT.md "Spooled receive", Nick 2026-09-17): a file dropped on the bridge lands in the host shell's cwd. Ephemeral both ends: the client sheds its vault copy once the chunks are dispatched, the host sheds the spool and its vault copy once the file lands. The bytes ride PT as `pigeon_chunk` frames sealed under the FLEET key (siblings); the announcement is a typed BridgePigeon row whose content is the file name, so both sides see "notes.txt" as a bubble.
+impl PhotonApp {
+    /// CLIENT: drop → pigeon. Stream the file into the vault (chunked past BLOB_CHUNK_SIZE), announce it on the durable chain, then seal + dispatch every chunk from the seal worker and shed the local copy.
+    pub(super) fn send_bridge_pigeon(&mut self, ci: usize, path: &std::path::Path) {
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        if name.is_empty() {
+            return;
+        }
+        let (hash, manifest) = match crate::storage::blob_store_file(&seed, path) {
+            Ok(v) => v,
+            Err(e) => {
+                crate::logf!("PIGEON: could not read the dropped file: {}", e);
+                return;
+            }
+        };
+        let size = manifest.as_ref().map(|m| m.size).unwrap_or_else(|| std::fs::metadata(path).map(|m| m.len()).unwrap_or(0));
+        let (device, addr_pair, relay_to, token) = {
+            let Some(c) = self.contacts.get(ci) else {
+                return;
+            };
+            let Some(device) = c.device_key() else {
+                return;
+            };
+            // Sibling exchanges seal under the fleet key; the token is a plain discriminator, so the handle hash serves (as attach_fetch does).
+            (device, c.race_addrs(), relay_unless_direct_trusted(c, crate::network::udp::get_local_ip()), c.handle_hash)
+        };
+        let Some((peer_addr, alt_addr)) = addr_pair else {
+            crate::log("PIGEON: sibling has no address yet — drop again once it is online");
+            return;
+        };
+        let Some(wire_key) = self.fleet_key_cached() else {
+            crate::log("PIGEON: no fleet key — cannot seal");
+            return;
+        };
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+            return;
+        };
+        let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
+        let dispatch = checker.history_dispatch();
+        // Announce on the durable chain FIRST so the host has its spool open before the first chunk can land; a chunk before its announcement is dropped by design (no manifest to size a spool by), and the sender's re-drop is the retry.
+        let wire = crate::network::message_package::BridgeWire {
+            pigeon: Some(crate::network::message_package::BridgePigeon { name: name.clone(), hash, size }),
+            ..Default::default()
+        };
+        self.send_chain_message(ci, &name, false, Some((crate::types::RefKind::BridgePigeon, 0)), Some(wire));
+        // The chunk list: the manifest's, or the whole blob as one chunk when it fit in a single store.
+        let chunks: Vec<[u8; 32]> = manifest.as_ref().map(|m| m.chunks.clone()).unwrap_or_else(|| vec![hash]);
+        let single = manifest.is_none();
+        queue_job(&self.seal_job_tx, move || {
+            let send = |vsf_bytes: Vec<u8>| {
+                let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: device, vsf_bytes, relay_to: relay_to.clone() });
+            };
+            let mut sent = 0usize;
+            for (i, h) in chunks.iter().enumerate() {
+                let plain = if single { crate::storage::blob_load(&seed, h) } else { crate::storage::blob_chunk_load(h) };
+                let Some(plain) = plain else {
+                    crate::logf!("PIGEON: chunk {} missing locally — skipped", i);
+                    continue;
+                };
+                match kete::encrypt_bytes(&plain, &wire_key).and_then(|sealed| crate::network::fgtw::protocol::build_pigeon_chunk_vsf(&token, &hash, i as u32, sealed, &kp_pub, &kp_sec)) {
+                    Ok(v) => {
+                        send(v);
+                        sent += 1;
+                    }
+                    Err(e) => crate::logf!("PIGEON: chunk {} frame build failed: {}", i, e),
+                }
+            }
+            crate::logf!("PIGEON: {} — {} of {} chunk(s) dispatched over PT; local copy shed", name, sent, chunks.len());
+            // Ephemeral: PT's own send buffers carry any retransmit; the vault copy has done its job.
+            crate::storage::blob_delete(&hash);
+        });
+    }
+
+    /// HOST: the announcement row landed — open (or resume) the spool for it under the fleet key, keyed to the announcing device so a chunk signed by anyone else is refused.
+    pub(super) fn on_pigeon_announced(&mut self, ci: usize, p: crate::network::message_package::BridgePigeon) {
+        let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
+            return;
+        };
+        let Some(wire_key) = self.fleet_key_cached() else {
+            crate::log("PIGEON: announced but no fleet key — cannot open a spool");
+            return;
+        };
+        let dir = crate::storage::runtime_dir().join("pigeons");
+        match self.pigeon_rx.announce(&dir, p.hash, p.name.clone(), p.size, crate::storage::BLOB_CHUNK_SIZE as u32, wire_key, dev) {
+            Ok(()) => crate::logf!("PIGEON: spool open for {} ({} bytes) from {}", p.name, p.size, crate::fp(&dev)),
+            Err(e) => crate::logf!("PIGEON: spool open failed for {}: {}", p.name, e),
+        }
+    }
+
+    /// Tick drain: a landed (or failed) pigeon answers the operator as a BridgeOut row naming where it landed, so the drop is confirmed in the same transcript that ran the commands.
+    pub(super) fn drain_pigeon_landed(&mut self) {
+        let mut landed = Vec::new();
+        while let Ok(v) = self.pigeon_landed_rx.try_recv() {
+            landed.push(v);
+        }
+        for (ci, res, dir) in landed {
+            let body = match res {
+                Some(l) => {
+                    crate::logf!("PIGEON: landed {} at {}", l.name, l.path);
+                    l.path
+                }
+                None => {
+                    crate::logf!("PIGEON: landing failed in {}", dir);
+                    tr(Msg::PigeonLandFailed(&dir)).into_owned()
+                }
+            };
+            self.send_chain_message(ci, &body, false, Some((crate::types::RefKind::BridgeOut, 0)), None);
         }
     }
 }

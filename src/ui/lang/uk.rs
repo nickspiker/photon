@@ -732,6 +732,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(виводу нема, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(оболонка померла: {e} — з наступною командою буде нова сесія)").into(),
+        Msg::PigeonLandFailed(d) => format!("(перетягнутий файл не зміг приземлитися в {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(попередній вивід відкинуто)\n{output}").into(),
         Msg::DeviceNotSibling => "Той пристрій ще не прив'язаний як побратим.".into(),
         Msg::ShellExited => "оболонка завершилася".into(),

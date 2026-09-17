@@ -879,6 +879,8 @@ pub enum Msg<'a> {
     BridgeNoOutput(i32),
     BridgeOutputExit { output: &'a str, code: i32 },
     BridgeShellDied(&'a str),
+    /// A bridge pigeon (dropped file) could not land in the host's shell directory — the host's transcript reply.
+    PigeonLandFailed(&'a str),
     EarlierOutputDropped(&'a str),
     DeviceNotSibling,
     ShellExited,

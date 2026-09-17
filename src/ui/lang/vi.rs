@@ -716,6 +716,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeNoOutput(code) => format!("(không có kết xuất, exit {})", fmt_i(code as i64)).into(),
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(shell đã chết: {e} — lệnh kế tiếp sẽ mở một phiên mới)").into(),
+        Msg::PigeonLandFailed(d) => format!("(tệp đã thả không thể hạ cánh vào {d})").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(đã bỏ phần kết xuất trước đó)\n{output}").into(),
         Msg::DeviceNotSibling => "Thiết bị đó chưa được buộc vào làm anh em.".into(),
         Msg::ShellExited => "shell đã thoát".into(),
