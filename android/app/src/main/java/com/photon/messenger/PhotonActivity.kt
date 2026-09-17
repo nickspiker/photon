@@ -80,6 +80,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     // Track full screen height (before keyboard)
     // Last IME bottom inset reported to Rust — dedupes the insets listener's redundant dispatches.
     private var lastImeInset = -1
+    // Last glass corner radius reported to Rust — dedupes the insets listener.
+    private var lastGlassRadius = -1
 
     // Scale gesture detector for pinch-to-zoom
     private lateinit var scaleGestureDetector: ScaleGestureDetector
@@ -202,6 +204,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
+    private external fun nativeGlassRadius(px: Int)  // The display's rounded-corner radius (WindowInsets.getRoundedCorner, API 31+); the chrome corners follow it
     private external fun nativeImeEditorText(contextPtr: Long): String  // honest-IME mirror: focused textbox's full text
     private external fun nativeImeEditorCursor(contextPtr: Long): Int   // honest-IME mirror: cursor in CHARS (code points)
     private external fun nativeImeReplace(contextPtr: Long, start: Int, end: Int, text: String)  // honest-IME write: TRUE range replace (char offsets)  // insets listener → Rust's IME-height mirror (ptr-less); the surface never resizes for the keyboard, Rust lifts its bottom strips instead
@@ -514,6 +517,20 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             if (imeHeight != lastImeInset) {
                 lastImeInset = imeHeight
                 nativeImeInset(imeHeight)
+            }
+            // THE GLASS RADIUS (Nick 2026-09-16): the physical corner radius the OS reports for each corner (API 31+) — the largest of the four is the chrome's small-corner radius, twice it the big one. Reported once per change; -1 = never reported.
+            if (Build.VERSION.SDK_INT >= 31) {
+                val wi = insets.toWindowInsets()
+                if (wi != null) {
+                    var r = 0
+                    for (pos in intArrayOf(android.view.RoundedCorner.POSITION_TOP_LEFT, android.view.RoundedCorner.POSITION_TOP_RIGHT, android.view.RoundedCorner.POSITION_BOTTOM_LEFT, android.view.RoundedCorner.POSITION_BOTTOM_RIGHT)) {
+                        r = maxOf(r, wi.getRoundedCorner(pos)?.radius ?: 0)
+                    }
+                    if (r != lastGlassRadius) {
+                        lastGlassRadius = r
+                        nativeGlassRadius(r)
+                    }
+                }
             }
             insets
         }

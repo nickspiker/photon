@@ -582,6 +582,13 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetForeground(
 /// Soft-keyboard bottom inset in surface pixels, mirrored from Kotlin's WindowInsets listener. The surface itself NEVER resizes for the IME (adjustNothing — the full-screen harmonic mean is the scale by construction); the app reads this to lift its bottom-anchored strips (compose bar + message list) above the keyboard. 0 = closed.
 #[cfg(target_os = "android")]
 static IME_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// The device glass corner radius in pixels (WindowInsets.getRoundedCorner, API 31+), 0 = unknown/unreported. Mirrored once from the Activity's insets listener; the chrome draws its corners from it (fluor glass_radius_px).
+static GLASS_RADIUS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+
+pub fn glass_radius_px() -> Option<f32> {
+    let r = GLASS_RADIUS.load(std::sync::atomic::Ordering::Relaxed);
+    (r > 0).then_some(r as f32)
+}
 
 /// Current soft-keyboard bottom inset in pixels (0 when closed).
 #[cfg(target_os = "android")]
@@ -663,6 +670,17 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeInset(
     px: jint,
 ) {
     IME_INSET.store(px.max(0), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// JNI ingress: the display's rounded-corner radius in pixels (the largest of the four the OS reports).
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeGlassRadius(
+    _env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    px: jint,
+) {
+    GLASS_RADIUS.store(px.max(0), std::sync::atomic::Ordering::Relaxed);
+    crate::logf!("DISPLAY: glass corner radius {} px (chrome corners: {} px TR/BL, {} px TL/BR)", px, px, px * 2);
 }
 
 /// Route mirror (calibration substrate): Kotlin's AudioDeviceCallback reports the routed OUTPUT device — coarse kind (0 speaker / 1 earpiece / 2 headset / 3 bluetooth / -1 unknown) + the calibration-profile identity string (device type + BT name when present).

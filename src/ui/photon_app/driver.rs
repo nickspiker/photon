@@ -576,7 +576,11 @@ impl FluorApp for PhotonApp {
             chrome.resize(ctx.viewport);
             // Maximize toggles always change size between user-sized and screen-sized, so on_resize is the natural sync point for full_edge mode (no perimeter hairline / corner cutout / shadow when the window fills the screen). On Android the surface is always fullscreen — soft-keyboard show/hide triggers an on_resize too, and ctx.is_maximized is hard-coded false there, so without this override the perimeter + corner cutout would re-appear every time the IME opens.
             #[cfg(target_os = "android")]
-            chrome.set_full_edge(true);
+            {
+                chrome.set_full_edge(true);
+                // The device glass radius (Nick 2026-09-16): TR/BL corners at the glass radius, TL/BR at twice it — the desktop window's 2:1 — and the perimeter hairline stays drawn for now so the corners can be lined up against the glass by eye before it comes off.
+                chrome.set_glass_radius(crate::platform::jni_android::glass_radius_px());
+            }
             #[cfg(not(target_os = "android"))]
             chrome.set_full_edge(ctx.is_maximized);
         }
@@ -3165,6 +3169,13 @@ impl FluorApp for PhotonApp {
         }
         if self.drain_voice_measure() {
             needs_redraw = true;
+        }
+        // The glass radius lands from the insets listener after the first layout — apply it the frame it arrives (no-op once installed).
+        #[cfg(target_os = "android")]
+        if let Some(chrome) = self.chrome.as_mut() {
+            if chrome.set_glass_radius(crate::platform::jni_android::glass_radius_px()) {
+                needs_redraw = true;
+            }
         }
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial = self.tick_serial.wrapping_add(1);
