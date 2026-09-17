@@ -14,9 +14,15 @@ artifact_gate() {
 
     # 2. Loose-file escape hatch: new fs::write / File::create outside the sanctioned modules. Storage is THE vault (kete) + the log; runtime artifacts live in runtime_dir. Everything else writing files is the sprawl coming back.
     # Sanctioned: storage/mod.rs (vault adapter, write_file, absorb walks), lib.rs (log machinery + crash sidecar), call/spool.rs (runtime-dir spool), platform/ (OS artifacts: autostart entries, control socket), bin/ + tests (tooling), ui/photon_app/attachments.rs (user-directed save-to-Downloads), ui/photon_app/input.rs (dev wipe walks), network/updates.rs (self-update artefact staging).
+    # A hit INSIDE a `#[cfg(test)]` module is a test fixture, and tests are already sanctioned above ("bin/ + tests (tooling)") — the grep just could not see the module boundary (2026-09-17: storage/spool.rs's torn-prelude test writes a corrupted byte back into its own scratch file). Convention holds every cfg(test) module at the bottom of its file, so "after the file's first #[cfg(test)] line" is the boundary.
     off=$(grep -rn --include="*.rs" -E "fs::write\(|File::create\(" src/ 2>/dev/null \
         | grep -v -E "^src/(storage/mod\.rs|lib\.rs|call/spool\.rs|platform/|bin/|network/updates\.rs|ui/photon_app/(attachments|input)\.rs)" \
-        | grep -v -E "^[^:]*:[0-9]+:\s*//")
+        | grep -v -E "^[^:]*:[0-9]+:\s*//" \
+        | while IFS=: read -r file line rest; do
+            test_start=$(grep -n -m1 -E "^\s*#\[cfg\(test\)\]" "$file" 2>/dev/null | cut -d: -f1)
+            if [ -n "$test_start" ] && [ "$line" -gt "$test_start" ]; then continue; fi
+            echo "$file:$line:$rest"
+        done)
     if [ -n "$off" ]; then
         echo "ARTIFACT GATE: loose-file write outside the sanctioned modules — state belongs in the vault (config census = log + vault); a new write location is an owner decision:"
         echo "$off"
