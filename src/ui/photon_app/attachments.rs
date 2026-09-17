@@ -23,6 +23,24 @@ pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Optio
     }
 }
 
+
+/// Land a held blob into `dir` under `name`, never overwriting: `name`, `name (2)`, `name (3)`… and stream chunk-by-chunk with a running hash so a chunked blob is never rebuilt in RAM. Shared by Save (into Downloads) and the bridge pigeon (into the host's shell cwd) — the only difference is the directory, and refusing to overwrite is not a nicety there but a safety property: a drop can only ADD a file to a remote machine, never silently replace one. Returns the path actually written.
+pub(super) fn land_blob(seed: &[u8; 32], content_hash: &[u8; 32], dir: &std::path::Path, name: &str) -> Option<String> {
+    let _ = std::fs::create_dir_all(dir);
+    let (stem, ext) = match name.rsplit_once('.') {
+        Some((s, e)) => (s.to_string(), format!(".{}", e)),
+        None => (name.to_string(), String::new()),
+    };
+    let mut dest = dir.join(name);
+    let mut i = 2;
+    while dest.exists() {
+        dest = dir.join(format!("{} ({}){}", stem, i, ext));
+        i += 1;
+    }
+    crate::storage::blob_write_file(seed, content_hash, &dest)?;
+    Some(dest.to_string_lossy().into_owned())
+}
+
 pub(super) fn raw_temp_path(kind: crate::types::AttachKind, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
     if kind != crate::types::AttachKind::RawImage {
         return None;
@@ -442,20 +460,8 @@ impl PhotonApp {
         } else {
             name
         };
-        // Dedupe: name, name (2), name (3)…
-        let mut dest = base.join(name);
-        let (stem, ext) = match name.rsplit_once('.') {
-            Some((s, e)) => (s.to_string(), format!(".{}", e)),
-            None => (name.to_string(), String::new()),
-        };
-        let mut i = 2;
-        while dest.exists() {
-            dest = base.join(format!("{} ({}){}", stem, i, ext));
-            i += 1;
-        }
-        // Streams chunk by chunk with a running hash — a chunked blob is never rebuilt in RAM.
-        crate::storage::blob_write_file(&seed, content_hash, &dest)?;
-        Some(dest.to_string_lossy().into_owned())
+        // Collision-suffix into the base dir and stream the blob there — the same landing a bridge pigeon does, factored out.
+        land_blob(&seed, content_hash, &base, name)
     }
 
     /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.
@@ -529,5 +535,30 @@ impl PhotonApp {
             self.msg_wrap = None;
             self.scene_dirty = true;
         }
+    }
+}
+
+#[cfg(test)]
+mod land_tests {
+    /// The no-overwrite property that makes a bridge drop safe: a colliding name lands beside the original as "name (2)", never on top of it — a drop can only ADD a file to a remote machine.
+    #[test]
+    fn landing_never_overwrites() {
+        crate::storage::isolate_test_storage();
+        let seed = [0x4Du8; 32];
+        let _v = crate::storage::open_session_vault(seed, [0x4E; 32], [0x4F; 32]).expect("vault");
+        let dir = std::env::temp_dir().join(format!("photon-land-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let hash = *blake3::hash(b"pigeon body one").as_bytes();
+        crate::storage::blob_store(&seed, &hash, b"pigeon body one").expect("store");
+        let first = super::land_blob(&seed, &hash, &dir, "notes.txt").expect("first lands");
+        assert!(first.ends_with("notes.txt"), "first keeps the name: {first}");
+        // A DIFFERENT blob under the SAME name must not clobber the first.
+        let hash2 = *blake3::hash(b"pigeon body two").as_bytes();
+        crate::storage::blob_store(&seed, &hash2, b"pigeon body two").expect("store2");
+        let second = super::land_blob(&seed, &hash2, &dir, "notes.txt").expect("second lands");
+        assert!(second.ends_with("notes (2).txt"), "collision suffixes before the extension: {second}");
+        assert_eq!(std::fs::read(&first).unwrap(), b"pigeon body one", "the first file is untouched");
+        assert_eq!(std::fs::read(&second).unwrap(), b"pigeon body two");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
