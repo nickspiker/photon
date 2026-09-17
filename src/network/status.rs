@@ -1782,6 +1782,8 @@ async fn run_checker(
         let mut unknown_ping_logged: Vec<[u8; 32]> = Vec::new();
         // Probe-REFLECTION rate cap: at most one reverse probe per device per minute. Reflection is how the side with NO working candidates ever validates its own direction (see the PunchProbe arm); the cap keeps two reflecting peers from probe ping-pong, and validation quiets both sides naturally (a validated side probes only its validated remote as keepalive).
         let mut reverse_probed: Vec<([u8; 32], std::time::Instant)> = Vec::new();
+        // RELAY-COORDINATED OPEN rate cap: one burst per device per 10 s (the presence cadence). A ping that reaches us over the relay is the "punch now" nudge the audit found missing (2026-09-17, Jon's Mac ↔ Nick's phone: both sides punched on their own presence cycles, never inside each other's NAT window) — the pinger fired its probes at our candidates the instant before this frame left, so its NAT holds a fresh mapping toward us RIGHT NOW; our probes at its published candidates land inside that window instead of ~10 s later on our own cycle.
+        let mut relay_nudged: Vec<([u8; 32], std::time::Instant)> = Vec::new();
         loop {
             // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
             // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder` (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes` points at whichever holds this iteration's frame.
@@ -2992,6 +2994,38 @@ async fn run_checker(
                                             }
                                             udp::send(&socket_recv, &probe_bytes, src_addr).await;
                                             crate::logf!("TRAVERSE: reflecting probe at pinger {} — their direct ping proved the address, validating our own direction", src_addr);
+                                        }
+                                    }
+
+                                    // RELAY-COORDINATED SIMULTANEOUS OPEN. A ping over the relay from a known device says: no direct path from them reached us, and they just punched our candidates. Answer inside their window — probe every address their signed record publishes (public, and LAN when it is plausibly ours), so both NATs see outbound traffic toward each other within one round trip. The ack matches by provenance like every other probe and validates the path.
+                                    if src_addr == RELAY_ADDR && sender_pubkey != our_pubkey_recv {
+                                        let now = std::time::Instant::now();
+                                        relay_nudged.retain(|(_, at)| now.duration_since(*at) < std::time::Duration::from_secs(10));
+                                        if !relay_nudged.iter().any(|(pk, _)| pk == sender_pubkey.as_bytes()) {
+                                            relay_nudged.push((*sender_pubkey.as_bytes(), now));
+                                            let record = peer_store_recv.lock().unwrap().get_all_peers().into_iter().find(|p| p.device_pubkey == sender_pubkey);
+                                            let mut targets: Vec<SocketAddr> = Vec::new();
+                                            if let Some(rec) = record {
+                                                if !crate::network::traverse::gather::is_bogus_addr(&rec.ip) {
+                                                    targets.push(rec.ip);
+                                                }
+                                                if let Some(std::net::IpAddr::V4(lan)) = rec.local_ip {
+                                                    if fgtw::traverse::gather::peer_lan_reachable(lan, crate::network::udp::get_local_ip()) {
+                                                        targets.push(SocketAddr::new(std::net::IpAddr::V4(lan), rec.ip.port()));
+                                                    }
+                                                }
+                                            }
+                                            if targets.is_empty() {
+                                                crate::logf!("TRAVERSE: relay ping from {} — no published candidate to punch toward (their record holds no public address); only a mapped port or their reflexive can open this", crate::fp(sender_pubkey.as_bytes()));
+                                            }
+                                            for cand in &targets {
+                                                let mut nonce = [0u8; 32];
+                                                nonce.copy_from_slice(blake3::hash(format!("nudge:{cand}").as_bytes()).as_bytes());
+                                                let (probe_bytes, provenance) = crate::network::traverse::punch::build_probe(&keypair_recv, our_pubkey_recv.clone(), nonce);
+                                                pending_probes_recv.lock().unwrap().insert(provenance, sender_pubkey.clone(), *cand, now);
+                                                udp::send(&socket_recv, &probe_bytes, *cand).await;
+                                                crate::logf!("TRAVERSE: relay ping from {} — punching {} inside their window (coordinated open)", crate::fp(sender_pubkey.as_bytes()), cand);
+                                            }
                                         }
                                     }
 

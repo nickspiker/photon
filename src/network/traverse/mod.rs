@@ -16,6 +16,7 @@
 //! which multiplexes one socket across the whole data plane. It therefore uses the state machines but NOT the crate's `driver` module — rustdesk, which has no such loop, uses the driver instead. That asymmetry is deliberate; see the crate docs before "fixing" it.
 
 pub mod gather;
+pub mod portmap;
 pub mod punch;
 
 pub use fgtw::traverse::{candidate, reflexive, session};

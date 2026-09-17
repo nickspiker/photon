@@ -7,6 +7,10 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A desktop or a phone on home Wi-Fi now asks its router to forward photon's port (NAT-PMP, PCP or UPnP, whichever the router speaks) and publishes the forwarded address, so friends reach it directly with no punch at all and the relay stays idle; on cellular there is no router to ask and nothing changes.
+- When a friend's presence ping arrives by way of the relay, photon punches toward every address that friend has published at that instant — inside the window the friend's own punch just opened — instead of waiting for its own next presence cycle; two home routers that never lined up now get a coordinated open every ten seconds.
+- A network move on a laptop that failed to re-ask the directory for its public address now says exactly which piece was missing, and the re-ask logs when it starts.
+- Android's glass corners are twice as deep, so the small corners sit inside the phone's glass arc instead of on top of it.
 - The Wave pill and a wave card's "wave back" now say "no direct path" and stay dim when a friend is reachable only through the relay — a wave placed there would connect and carry nothing — and flip back the moment a direct path opens.
 - A friend you can only reach through the relay now gets punched at from your side too: the address lookup that turns a published address into a working direct path used to run only while a brand-new contact was still connecting, so an established friend behind a home router could stay relay-only forever from one end. And the presence ring is honest about it — green means a proven direct path; a friend reached only over the relay reads amber until the punch lands.
 - Android lays out under the status bar now that it draws edge to edge: the orb, the back arrow, the call pill and every settings header start below the bar (and the orb sits in from the corner by the same height — on desktop by the height of the window controls); the window corners keep photon's own squircle, sized so the small corners sit just inside the phone's glass arc and the big ones at twice that.

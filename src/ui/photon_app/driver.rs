@@ -4122,6 +4122,7 @@ impl PhotonApp {
         }
 
         self.handle_query = Some(hq);
+        self.start_portmap();
 
         // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
         if tohu::session().is_none() {

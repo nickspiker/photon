@@ -5307,6 +5307,7 @@ impl PhotonApp {
         // Deferred probe-before-generate verdict (a blind_srv miss landed while S was None).
         if reseed_after {
             self.reseed_reflexive_from_fgtw();
+            self.start_portmap();
         }
         if check_s_genesis {
             self.maybe_generate_s();

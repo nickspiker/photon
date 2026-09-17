@@ -544,16 +544,20 @@ impl PhotonApp {
         }
         self.force_presence_sweep();
         self.reseed_reflexive_from_fgtw();
+        self.start_portmap();
     }
 
     /// Re-announce to FGTW off the UI thread: the ack carries what the server saw as our source — the only public address a carrier-NAT phone can learn before any peer reaches it, and the only one a home phone whose peers are all on its LAN ever learns (a LAN echo is never adopted as reflexive). Seeded by call_drought_tick from the mailbox. Fired on the interface-change edge and on a LAN-address move.
     pub(super) fn reseed_reflexive_from_fgtw(&self) {
-        if let (Some(kp), Some(hp), Some(seed), Some(port)) = (
+        let parts = (
             self.device_keypair.clone(),
             self.our_handle_proof(),
             self.session.as_ref().map(|s| s.identity_seed),
             self.handle_query.as_ref().map(|hq| hq.port()),
-        ) {
+        );
+        let missing = (parts.0.is_none(), parts.1.is_none(), parts.2.is_none(), parts.3.is_none());
+        if let (Some(kp), Some(hp), Some(seed), Some(port)) = parts {
+            crate::log("TRAVERSE: re-asking FGTW for our public address (interface change or LAN move)");
             let wake = self.event_proxy.clone();
             std::thread::Builder::new()
                 .name("reflexive-reseed".into())
@@ -576,6 +580,34 @@ impl PhotonApp {
                     }
                 })
                 .ok();
+        } else {
+            // The silent bail that hid Jon's Mac from FGTW all day (2026-09-17: a LAN move at 18:17 set the edge and nothing followed) — name the missing piece so the next log convicts it.
+            crate::logf!(
+                "TRAVERSE: cannot re-ask FGTW — missing {}{}{}{}",
+                if missing.0 { "device keypair " } else { "" },
+                if missing.1 { "handle proof " } else { "" },
+                if missing.2 { "session " } else { "" },
+                if missing.3 { "socket port " } else { "" },
+            );
+        }
+    }
+
+    /// PORT MAPPING on the home router (Nick 2026-09-17: "Or I do port mapping on my desktop. And all the things."). One worker per network epoch asks the gateway (NAT-PMP, then PCP, then UPnP) to forward our UDP port; the granted public address lands in the reflexive seed like an FGTW observation, so the published record aims peers straight at a port that needs no punch. Restarted on every LAN move (the gateway changed) and at startup once the socket exists; the previous worker is told to stop and its mapping lapses at the old router. Cellular has no gateway to ask and returns in one line.
+    pub(super) fn start_portmap(&mut self) {
+        let Some(port) = self.handle_query.as_ref().map(|hq| hq.port()) else {
+            return;
+        };
+        if let Some(prev) = self.portmap_stop.take() {
+            prev.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+        let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = stop.clone();
+        if std::thread::Builder::new()
+            .name("portmap".into())
+            .spawn(move || crate::network::traverse::portmap::run(port, flag))
+            .is_ok()
+        {
+            self.portmap_stop = Some(stop);
         }
     }
 

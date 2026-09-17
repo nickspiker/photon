@@ -2251,6 +2251,8 @@ pub struct PhotonApp {
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
+    /// Stop flag of the live port-mapping worker (see `start_portmap`); a LAN move retires it and starts one for the new gateway.
+    portmap_stop: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// This node's own LAN address, learned from our OWN looped-back discovery beacon (its source is kernel truth for the interface the beacon left on). The LAN counterpart of `our_reflexive`, and the record's LAN slot prefers it over `get_local_ip` — the routing trick asks which interface reaches the INTERNET, which on a phone routing internet over cellular names the CLAT/CGNAT interface while the Wi-Fi holds the real LAN address (the published record then carried no LAN entry and the peer parked on relay, 2026-08-11).
     our_lan_ip: Option<std::net::Ipv4Addr>,
     /// The address we last published a signed self-record for. Differs from `our_reflexive` exactly when the record peers hold for us is stale — on first learn, on a network change, or when the first echo beat attestation and there was no `handle_proof` to sign against yet.
@@ -2298,6 +2300,7 @@ impl PhotonApp {
             hit_counter: 0,
             event_proxy: None,
             our_reflexive: None,
+            portmap_stop: None,
             our_lan_ip: None,
             self_record_published_for: None,
             peer_store_loaded: false,
