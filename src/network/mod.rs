@@ -12,6 +12,8 @@ pub mod pairing_nfc;
 #[cfg(not(target_os = "android"))]
 pub mod peer_updates;
 pub mod pt;
+pub mod pigeon;
+
 pub mod status;
 pub mod tcp;
 pub mod traverse;
