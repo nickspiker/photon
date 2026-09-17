@@ -20,7 +20,11 @@ if [ "$(uname -s)" = "Darwin" ]; then
 else
     # CMAKE_TOOLCHAIN_FILE_* forces osxcross's cctools ar/ranlib for the vendored-libopus (audiopus_sys)
     # cmake build — without it CMake picks the host GNU ar and ld64 can't read the archive. See the toolchain file's header for the full story. Native Mac builds (the branch above) need none of this.
+    # The macOS SDK for crates whose build scripts ask `xcrun` where it is (coreaudio-sys behind cpal): no xcrun on Linux, so the osxcross SDK is named outright — the same line deploy.sh carries (2026-09-17: the dev publish failed on 'AudioUnit/AudioUnit.h' not found without it).
+    MACOS_SDK="$(ls -d /mnt/Harbor/Code/osxcross/target/SDK/MacOSX*.sdk | sort -V | tail -1)"
+    [ -d "$MACOS_SDK" ] || { echo "ERROR: no macOS SDK under osxcross/target/SDK"; exit 1; }
     CC_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
+    COREAUDIO_SDK_PATH="$MACOS_SDK" \
     CXX_aarch64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
     CARGO_TARGET_AARCH64_APPLE_DARWIN_LINKER=/mnt/Harbor/Code/osxcross/target/bin/aarch64-apple-darwin-clang-wrapper \
     OSXCROSS_TRIPLE=aarch64-apple-darwin \

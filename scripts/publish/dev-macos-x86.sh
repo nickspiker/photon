@@ -13,7 +13,11 @@ source scripts/lib/manifest.sh
 manifest_begin_dev_publish "macos-x86_64"
 
 echo "Building macOS x86_64 development binary..."
+# The macOS SDK for crates whose build scripts ask `xcrun` where it is (coreaudio-sys behind cpal): no xcrun on Linux, so the osxcross SDK is named outright — the same line deploy.sh carries (2026-09-17: the arm64 dev publish failed on 'AudioUnit/AudioUnit.h' not found without it).
+MACOS_SDK="$(ls -d /mnt/Harbor/Code/osxcross/target/SDK/MacOSX*.sdk | sort -V | tail -1)"
+[ -d "$MACOS_SDK" ] || { echo "ERROR: no macOS SDK under osxcross/target/SDK"; exit 1; }
 CC_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
+COREAUDIO_SDK_PATH="$MACOS_SDK" \
 CXX_x86_64_apple_darwin=/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper \
 OSXCROSS_TRIPLE=x86_64-apple-darwin \
 CMAKE_TOOLCHAIN_FILE_x86_64_apple_darwin="$(pwd)/scripts/lib/osxcross-cmake.toolchain" \
