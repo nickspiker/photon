@@ -76,6 +76,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Sinag".into(),
         Msg::IncomingCall => "\u{260E} papasok na alon".into(),
         Msg::IncomingCallNoPath => "\u{260E} papasok na alon \u{2014} \u{26A0} walang tuwirang daan".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} walang tuwirang daan").into(),
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} hindi pa masagot \u{2014} kumukonekta ulit kay {name}").into(),
         Msg::CallReconnecting => "\u{26A0} kumukonekta ulit\u{2026}".into(),

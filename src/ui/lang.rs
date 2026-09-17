@@ -251,6 +251,10 @@ pub enum Msg<'a> {
     BeamToggle,
     IncomingCall,
     IncomingCallNoPath,
+    /// The ☎ pill while the friend is online but only over the relay — a wave cannot carry voice there yet, so the pill says why instead of failing silently (Nick 2026-09-17).
+    CallStartNoPath,
+    /// The wave card's "wave back" in the same state.
+    WaveBackNoPath,
     CallActiveNoPath(&'a str),
     CallReconnecting,
     /// Answer tapped but no frame could go out (the friendship is mid-ceremony) — the ring keeps going, the person needs to know why nothing happened.

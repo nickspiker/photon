@@ -78,6 +78,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Луч".into(),
         Msg::IncomingCall => "\u{260E} входящая волна".into(),
         Msg::IncomingCallNoPath => "\u{260E} входящая волна \u{2014} \u{26A0} нет прямого пути".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} нет прямого пути").into(),
         // Имя вынесено вперёд и стоит в именительном: после «с» понадобился бы творительный, а подставляется чужая строка.
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} {name}: ответить пока нельзя \u{2014} восстанавливаем связь").into(),

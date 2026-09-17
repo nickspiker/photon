@@ -77,6 +77,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Mwale".into(),
         Msg::IncomingCall => "\u{260E} wimbi linaingia".into(),
         Msg::IncomingCallNoPath => "\u{260E} wimbi linaingia \u{2014} \u{26A0} hakuna njia ya moja kwa moja".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} hakuna njia ya moja kwa moja").into(),
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} bado haiwezi kupokea \u{2014} inaunganisha upya na {name}").into(),
         Msg::CallReconnecting => "\u{26A0} inaunganisha upya\u{2026}".into(),

@@ -76,6 +76,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Işın".into(),
         Msg::IncomingCall => "\u{260E} gelen dalga".into(),
         Msg::IncomingCallNoPath => "\u{260E} gelen dalga \u{2014} \u{26A0} doğrudan yol yok".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} doğrudan yol yok").into(),
         // "ile" bir edat: adın yalın kalmasını sağlar, ekin ses uyumunu tahmin etmek gerekmez.
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} henüz cevaplanamıyor \u{2014} {name} ile yeniden bağlanılıyor").into(),

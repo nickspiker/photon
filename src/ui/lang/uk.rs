@@ -88,6 +88,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Промінь".into(),
         Msg::IncomingCall => "\u{260E} вхідна хвиля".into(),
         Msg::IncomingCallNoPath => "\u{260E} вхідна хвиля \u{2014} \u{26A0} прямого шляху нема".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} прямого шляху нема").into(),
         // Ім'я лишається в називному після двокрапки: до нього не можна чіпляти закінчення, бо handle байт-точний.
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} поки не можу відповісти \u{2014} відновлюю зв'язок: {name}").into(),

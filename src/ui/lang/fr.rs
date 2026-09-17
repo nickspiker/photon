@@ -88,6 +88,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Faisceau".into(),
         Msg::IncomingCall => "\u{260E} onde entrante".into(),
         Msg::IncomingCallNoPath => "\u{260E} onde entrante \u{2014} \u{26A0} aucun chemin direct".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} aucun chemin direct").into(),
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} impossible de répondre pour l\u{2019}instant \u{2014} reconnexion avec {name}").into(),
         Msg::CallReconnecting => "\u{26A0} reconnexion\u{2026}".into(),

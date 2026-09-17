@@ -77,6 +77,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Wiązka".into(),
         Msg::IncomingCall => "\u{260E} fala przychodząca".into(),
         Msg::IncomingCallNoPath => "\u{260E} fala przychodząca \u{2014} \u{26A0} brak bezpośredniej ścieżki".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} brak bezpośredniej ścieżki").into(),
         // Imię idzie na początek jako temat zdania: po polsku "łączenie z {name}" wymusiłoby narzędnik na handle'u, a handle'i się nie odmienia.
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} {name} \u{2014} jeszcze nie można odebrać, trwa ponowne łączenie").into(),

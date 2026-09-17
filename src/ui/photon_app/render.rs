@@ -377,12 +377,20 @@ impl PhotonApp {
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
         // No calibration gate on placing a call (the doctrine retired 2026-09-07): every call opens with the v-chirp probe, so the route is measured before any voice connects.
+        // A WAVE NEEDS A DIRECT PATH (Nick 2026-09-17, the Jon waves: three connected, none carried a packet — relay media does not exist yet): online over the relay alone shows the pill dimmed and labelled "no direct path" instead of placing a wave that connects into silence. The punch pulse keeps trying behind it; the label flips back to Wave the moment a path validates.
+        let call_pill_no_path = self
+            .active_contact()
+            .and_then(|ci| self.contacts.get(ci))
+            .map_or(false, |c| {
+                !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some()) && !c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR)
+            });
         let call_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
-            });
+            })
+            && !call_pill_no_path;
         // Live call-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
         let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>, i64)> =
             self.active_call.as_ref().map(|c| {
@@ -986,8 +994,10 @@ impl PhotonApp {
                 let bar_off = self.conv_topbar_off.min(bar_h);
                 let call_cy = ((buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32)).max(strip_floor + pill_h * 0.6) - bar_off;
                 if let Some(b) = self.call_start_btn.as_mut() {
-                    b.set_rect(px + pill_w * 0.5, call_cy, pill_w, pill_h);
+                    let pw = pill_w * if call_pill_no_path { 1.8 } else { 1.0 };
+                    b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, call_cy, pw, pill_h);
                     b.set_font_size(pill_font);
+                    b.set_label(tr(if call_pill_no_path { Msg::CallStartNoPath } else { Msg::CallStart }));
                     b.set_enabled(call_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
@@ -3757,7 +3767,13 @@ impl PhotonApp {
                                         let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present(&h), self.call_playback.is_some() && self.call_playback_hash == Some(h))).unwrap_or((false, false));
                                         v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, self.msg_action_base.wrapping_add(11)));
                                     }
-                                    v.push((tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)));
+                                    // Wave back needs a direct path too (Nick 2026-09-17): over the relay alone the pill is dimmed and says so.
+                                    let wave_back_ok = self.contacts.get(ci).is_some_and(|c| c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR));
+                                    if wave_back_ok {
+                                        v.push((tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)));
+                                    } else {
+                                        v.push((tr(Msg::WaveBackNoPath), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE));
+                                    }
                                     v.push((tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE));
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
                                         let held = crate::types::parse_attachment_content(&rec.content).is_some_and(|(h, _, _)| crate::storage::blob_present(&h));

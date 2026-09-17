@@ -77,6 +77,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} किरण".into(),
         Msg::IncomingCall => "\u{260E} लहर आ रही है".into(),
         Msg::IncomingCallNoPath => "\u{260E} लहर आ रही है \u{2014} \u{26A0} सीधा रास्ता नहीं".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} सीधा रास्ता नहीं").into(),
         // अकर्तृक रूप: "जोड़ा जा रहा है" किसी के लिंग पर नहीं टिकता, जबकि "जुड़ रहे हैं" पढ़ने वाले पर टिक जाता।
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} अभी जवाब नहीं दिया जा सकता \u{2014} {name} से दोबारा जोड़ा जा रहा है").into(),

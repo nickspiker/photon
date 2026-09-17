@@ -52,6 +52,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BeamToggle => "\u{1F4F9} Beam".into(),
         Msg::IncomingCall => "\u{260E} incoming wave".into(),
         Msg::IncomingCallNoPath => "\u{260E} incoming wave \u{2014} \u{26A0} no direct path".into(),
+        Msg::CallStartNoPath => "\u{260E} no direct path".into(),
+        Msg::WaveBackNoPath => "no direct path".into(),
         Msg::CallActiveNoPath(dur) => format!("\u{260E} {dur} \u{2014} \u{26A0} no direct path").into(),
         Msg::AnswerFailedReconnecting(name) => format!("\u{26A0} can\u{2019}t answer yet \u{2014} reconnecting with {name}").into(),
         Msg::CallReconnecting => "\u{26A0} reconnecting\u{2026}".into(),
