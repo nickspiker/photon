@@ -14,46 +14,162 @@
 //!
 //! CRASH SOUNDNESS. Storage tears at sector granularity (≥ 512 bytes). A zero run of length ≥ 63 bytes must fully cover at least one slot-relative 32-byte window whatever its phase, so any torn or reordered page within a slot leaves a detectable zero window and the slot honestly reads missing — a re-fetch rewrites the same sealed bytes, idempotent by content addressing. The windows are SLOT-relative (slots pack tight, no alignment padding), and the tail window is end-aligned so a torn tail is caught too. The one length that could dodge the tail check is a slot under 32 bytes, which cannot occur: an AEAD seal is at least nonce + tag = 40 bytes.
 //!
-//! Custody: the spool holds wire-sealed bytes, so a spool on disk discloses exactly what the wire disclosed — nothing. Built for the bridge pigeon (ephemeral by construction: spool beside the landing directory, decrypt at finalize, shed both), but the primitive is transport-agnostic: any resumable sealed stream can spool this way.
+//! SELF-DESCRIPTION (Nick 2026-09-17, the follow-through: "the header for an encrypted VSF is not zeros and never will be — we should be able to self describe, receive and check as we go"): the spool opens with a PRELUDE — a complete VSF document carrying the transfer's own manifest (name, whole-file hash, sealed slot lengths, plaintext chunk hashes) — and the body slots follow it. So the file at the spool path is the ONLY state a resume needs: no vault entry, no sidecar, no in-RAM obligation across restarts.
+//! And the prelude needs no zero-heuristic at all, which is the sharper half of the observation: a VSF document SELF-VERIFIES — `read_verified` either parses it and confirms the provenance hash, or it does not. Parse success IS the presence test, and a torn prelude fails closed into "fresh spool" rather than into a wrong layout. The zero-window rule governs the body, where every byte is AEAD ciphertext and the guarantee is airtight; the prelude, which is plaintext VSF and COULD contain an honest 32-byte zero run (a zeroed hash field, a padded value), is governed by its own hash instead. Each region is checked by the mechanism that is actually sound for it.
+//! The prelude rides behind an 8-byte little-endian length — LOCAL file framing, never wire (the transport rule "complete VSF files only" is about what travels; this is a file layout, and the length is what lets the exact document slice reach `read_verified` without guessing).
+//!
+//! Custody: the spool holds wire-sealed bytes, so a spool on disk discloses exactly what the wire disclosed — nothing (the prelude adds the name and hashes, which the announcement already disclosed to this device). Built for the bridge pigeon (ephemeral by construction: spool beside the landing directory, decrypt at finalize, shed both), but the primitive is transport-agnostic: any resumable sealed stream can spool this way.
 
 use std::fs::File;
 use std::io;
 use std::path::Path;
+use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
+use vsf::VsfType;
 
 /// The window width: 256 bits. Per-window false-present probability 2^-256; also one SIMD register, so the scan is a memory-bandwidth `all_zero` sweep.
 pub const SPOOL_WINDOW: usize = 32;
 
-/// Where each slot's sealed bytes live: tight-packed prefix sums, no padding — total is exactly the sealed sum, and every offset is derivable from the manifest alone on any device.
+/// Everything the transfer IS, carried by the spool itself: the landing name, the whole-file plaintext hash, the sealed slot lengths (the body layout), and the per-chunk plaintext hashes so finalize verifies chunk-by-chunk as it decrypts — no whole-file second pass, no other record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpoolDesc {
+    pub name: String,
+    pub hash: [u8; 32],
+    pub size: u64,
+    pub sealed_lens: Vec<u64>,
+    pub chunk_hashes: Vec<[u8; 32]>,
+}
+
+/// Where each slot's sealed bytes live: `base` is the prelude region's end, then tight-packed prefix sums — total is base plus the sealed sum, and everything is derivable from the prelude alone.
 pub struct SpoolLayout {
+    pub base: u64,
     pub offsets: Vec<u64>,
     pub lens: Vec<u64>,
     pub total: u64,
 }
 
-/// Build the layout from the sealed slot lengths (the manifest's chunk count and the seal overhead give these on both ends). Every length must be ≥ [`SPOOL_WINDOW`]; an AEAD seal is ≥ 40 bytes, so this only trips on caller error.
-pub fn layout(slot_lens: &[u64]) -> Option<SpoolLayout> {
+/// Build the body layout atop the prelude region. Every length must be ≥ [`SPOOL_WINDOW`]; an AEAD seal is ≥ 40 bytes, so this only trips on caller error.
+pub fn layout(base: u64, slot_lens: &[u64]) -> Option<SpoolLayout> {
     if slot_lens.iter().any(|&l| l < SPOOL_WINDOW as u64) {
         return None;
     }
     let mut offsets = Vec::with_capacity(slot_lens.len());
-    let mut off = 0u64;
+    let mut off = base;
     for &l in slot_lens {
         offsets.push(off);
         off = off.checked_add(l)?;
     }
-    Some(SpoolLayout { offsets, lens: slot_lens.to_vec(), total: off })
+    Some(SpoolLayout { base, offsets, lens: slot_lens.to_vec(), total: off })
 }
 
-/// Create (or truncate) the spool: one `set_len` makes the whole extent a sparse zero hole — the "pre-zeroed" of the claim costs no write and no disk.
-pub fn create(path: &Path, layout: &SpoolLayout) -> io::Result<File> {
+const SPOOL_SECTION: &str = "spool";
+
+fn spool_schema() -> SectionSchema {
+    SectionSchema::new(SPOOL_SECTION)
+        .field("version", TypeConstraint::AnyUnsigned)
+        .field("name", TypeConstraint::Utf8Text)
+        .field("hash", TypeConstraint::AnyHash)
+        .field("size", TypeConstraint::AnyUnsigned)
+        .field("slen", TypeConstraint::AnyUnsigned) // one per slot: the SEALED length (layout)
+        .field("chash", TypeConstraint::AnyHash) // one per slot: the PLAINTEXT chunk hash (finalize verifies as it decrypts)
+}
+
+/// The prelude document: a COMPLETE VSF file (header, TOC, provenance hash), which is what lets it verify itself.
+fn prelude_doc(desc: &SpoolDesc) -> Result<Vec<u8>, String> {
+    let mut b = spool_schema()
+        .build()
+        .set("version", 1u8)
+        .map_err(|e| e.to_string())?
+        .set("name", VsfType::x(desc.name.clone()))
+        .map_err(|e| e.to_string())?
+        .set("hash", VsfType::hb(desc.hash.to_vec()))
+        .map_err(|e| e.to_string())?
+        .set("size", VsfType::u(desc.size as usize, false))
+        .map_err(|e| e.to_string())?;
+    for &l in &desc.sealed_lens {
+        b = b.append_multi("slen", vec![VsfType::u(l as usize, false)]).map_err(|e| e.to_string())?;
+    }
+    for h in &desc.chunk_hashes {
+        b = b.append_multi("chash", vec![VsfType::hb(h.to_vec())]).map_err(|e| e.to_string())?;
+    }
+    let section = b.encode().map_err(|e| e.to_string())?;
+    vsf::VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .provenance_only()
+        .add_unboxed(SPOOL_SECTION, section)
+        .build()
+        .map_err(|e| e.to_string())
+}
+
+/// Create the spool at `path`: prelude written eagerly (it is the only part that must survive to make the rest resumable), body a sparse zero hole. Returns the open file and the body layout.
+pub fn create(path: &Path, desc: &SpoolDesc) -> io::Result<(File, SpoolLayout)> {
+    let doc = prelude_doc(desc).map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
+    let base = 8 + doc.len() as u64;
+    let lay = layout(base, &desc.sealed_lens).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "spool slot under one window"))?;
     let f = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(true).open(path)?;
-    f.set_len(layout.total)?;
-    Ok(f)
+    f.set_len(lay.total)?;
+    pwrite_all(&f, &(doc.len() as u64).to_le_bytes(), 0)?;
+    pwrite_all(&f, &doc, 8)?;
+    Ok((f, lay))
 }
 
-/// Re-open an existing spool for resume. The caller re-derives the layout from the manifest and asks [`missing`] — the file itself is the only state.
-pub fn open(path: &Path) -> io::Result<File> {
-    std::fs::OpenOptions::new().read(true).write(true).open(path)
+/// Resume from the file ALONE. `Ok(None)` means the prelude does not verify — a torn or foreign file — and the caller starts fresh; it never means a wrong layout, because the prelude's own provenance hash stands between a torn header and a parse.
+pub fn resume(path: &Path) -> io::Result<Option<(SpoolDesc, SpoolLayout, File)>> {
+    let f = match std::fs::OpenOptions::new().read(true).write(true).open(path) {
+        Ok(f) => f,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e),
+    };
+    let file_len = f.metadata()?.len();
+    let mut lenb = [0u8; 8];
+    if file_len < 8 {
+        return Ok(None);
+    }
+    pread_exact(&f, &mut lenb, 0)?;
+    let doc_len = u64::from_le_bytes(lenb);
+    // A sane prelude is small; a wild length is a torn or foreign file, not an error to propagate.
+    if doc_len == 0 || doc_len > 1 << 20 || 8 + doc_len > file_len {
+        return Ok(None);
+    }
+    let mut doc = vec![0u8; doc_len as usize];
+    pread_exact(&f, &mut doc, 8)?;
+    // THE presence test: the document verifies itself or there is no prelude. No zero-heuristic here — plaintext VSF may contain honest zero runs, so it is judged by its hash, the mechanism that is sound for it.
+    if vsf::verification::read_verified(&doc, None).is_err() {
+        return Ok(None);
+    }
+    let Ok(section) = SectionBuilder::parse_document(spool_schema(), &doc, None) else {
+        return Ok(None);
+    };
+    let name = match section.get_fields("name").first().and_then(|f| f.values.first()) {
+        Some(VsfType::x(t)) => t.clone(),
+        _ => return Ok(None),
+    };
+    let Ok(hash) = section.get_value::<[u8; 32]>("hash") else {
+        return Ok(None);
+    };
+    let size = section.get_fields("size").first().and_then(|f| f.values.first()).and_then(|v| v.as_u64()).unwrap_or(0);
+    let sealed_lens: Vec<u64> = section.get_fields("slen").iter().filter_map(|f| f.values.first()).filter_map(|v| v.as_u64()).collect();
+    let chunk_hashes: Vec<[u8; 32]> = section
+        .get_fields("chash")
+        .iter()
+        .filter_map(|f| f.values.first())
+        .filter_map(|v| match v {
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+            _ => None,
+        })
+        .collect();
+    if sealed_lens.is_empty() || sealed_lens.len() != chunk_hashes.len() {
+        return Ok(None);
+    }
+    let desc = SpoolDesc { name, hash, size, sealed_lens, chunk_hashes };
+    let base = 8 + doc_len;
+    let Some(lay) = layout(base, &desc.sealed_lens) else {
+        return Ok(None);
+    };
+    if lay.total != file_len {
+        // A truncated body cannot lie its way to "held" (missing zeros still read missing), but a WRONG-LENGTH file is a different transfer at the same path — start fresh.
+        return Ok(None);
+    }
+    Ok(Some((desc, lay, f)))
 }
 
 // The muts feed the WINDOWS arm's seek_write loop; unix's write_all_at never rebinds them, hence the allow.
@@ -163,28 +279,56 @@ mod tests {
             .collect()
     }
 
+    fn desc_of(lens: &[u64]) -> SpoolDesc {
+        SpoolDesc {
+            name: "pigeon.bin".into(),
+            hash: [0xAB; 32],
+            size: lens.iter().sum::<u64>().saturating_sub(40 * lens.len() as u64),
+            sealed_lens: lens.to_vec(),
+            chunk_hashes: (0..lens.len()).map(|i| [i as u8 + 1; 32]).collect(),
+        }
+    }
+
     fn scratch(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!("photon-spool-{}-{}", std::process::id(), name))
     }
 
-    /// The theorem, end to end: write an arbitrary subset in arbitrary order, reopen cold, and the zero-scan reconstructs the subset EXACTLY — the file was the bitmap.
+    /// The theorem, end to end: write an arbitrary subset in arbitrary order, come back COLD through resume — nothing but the file — and the prelude self-verifies, the desc round-trips, and the zero-scan reconstructs the subset EXACTLY. The file was the state.
     #[test]
-    fn the_file_is_its_own_bitmap() {
+    fn the_file_is_its_own_bitmap_and_its_own_manifest() {
         let lens: Vec<u64> = vec![40, 262184, 63, 4096, 262184, 41, 1000];
-        let lay = layout(&lens).expect("layout");
+        let desc = desc_of(&lens);
         let p = scratch("bitmap");
-        let f = create(&p, &lay).expect("create");
+        let (f, lay) = create(&p, &desc).expect("create");
         let held = [1usize, 4, 5];
         for &i in &held {
             write_slot(&f, &lay, i, &sealed_bytes(0x9E37 + i as u64, lens[i] as usize)).expect("write");
         }
         drop(f);
-        // Cold resume: nothing but the file and the manifest-derived layout.
-        let f = open(&p).expect("open");
-        let miss = missing(&f, &lay).expect("scan");
+        let (back, lay2, f) = resume(&p).expect("io").expect("prelude verifies");
+        assert_eq!(back, desc, "the spool carried its own manifest");
+        assert_eq!(lay2.offsets, lay.offsets, "same layout from the file alone");
+        let miss = missing(&f, &lay2).expect("scan");
         for i in 0..lens.len() {
             assert_eq!(miss[i], !held.contains(&i), "slot {i}: the scan must equal the write-set complement");
         }
+        let _ = std::fs::remove_file(&p);
+    }
+
+    /// The prelude is judged by ITS OWN HASH, not the zero rule (plaintext VSF may hold honest zero runs): a torn prelude fails `read_verified` and resume says fresh — never a wrong layout.
+    #[test]
+    fn a_torn_prelude_fails_closed_to_fresh() {
+        let lens = vec![4096u64, 4096];
+        let p = scratch("tornprelude");
+        let (f, lay) = create(&p, &desc_of(&lens)).expect("create");
+        write_slot(&f, &lay, 0, &sealed_bytes(3, 4096)).expect("write");
+        drop(f);
+        // Corrupt one byte INSIDE the prelude document: parse or provenance now fails.
+        let mut bytes = std::fs::read(&p).expect("read");
+        bytes[12] ^= 0x5A;
+        std::fs::write(&p, &bytes).expect("write back");
+        assert!(resume(&p).expect("io").is_none(), "a torn prelude must read as no spool, not as a guessed layout");
+        assert!(resume(&scratch("never-existed")).expect("io").is_none(), "absent file is fresh, not an error");
         let _ = std::fs::remove_file(&p);
     }
 
@@ -192,9 +336,8 @@ mod tests {
     #[test]
     fn a_torn_write_reads_missing() {
         let lens = vec![262184u64, 262184];
-        let lay = layout(&lens).expect("layout");
         let p = scratch("torn");
-        let f = create(&p, &lay).expect("create");
+        let (f, lay) = create(&p, &desc_of(&lens)).expect("create");
         let whole = sealed_bytes(7, lens[0] as usize);
         pwrite_all(&f, &whole[..131072], lay.offsets[0]).expect("torn prefix");
         // Out-of-order writeback model: a full slot lands but one interior page never did.
@@ -206,25 +349,23 @@ mod tests {
         let _ = std::fs::remove_file(&p);
     }
 
-    /// THE COUNTEREXAMPLE the module header promises: plaintext breaks the scheme, because real files contain honest zero runs. An all-zero "chunk" — think executable padding — writes successfully and still reads missing, which in a plaintext design would be a fetch-forever livelock. This test exists so the seal is never "optimized" away: it is the bitmap.
+    /// THE COUNTEREXAMPLE the module header promises: plaintext breaks the zero rule, because real files contain honest zero runs. An all-zero "chunk" — think executable padding — writes successfully and still reads missing, which in a plaintext design would be a fetch-forever livelock. This test exists so the seal is never "optimized" away: it is the bitmap.
     #[test]
     fn plaintext_zeros_would_lie() {
         let lens = vec![4096u64];
-        let lay = layout(&lens).expect("layout");
         let p = scratch("plain");
-        let f = create(&p, &lay).expect("create");
+        let (f, lay) = create(&p, &desc_of(&lens)).expect("create");
         write_slot(&f, &lay, 0, &vec![0u8; 4096]).expect("write zeros");
         assert!(missing(&f, &lay).expect("scan")[0], "written zeros are indistinguishable from absence — encryption is the load-bearing premise, not an add-on");
         let _ = std::fs::remove_file(&p);
     }
 
-    /// Boundary honesty: slots pack tight with no padding, so total is the sealed sum, and a slot under one window is refused at layout (an AEAD seal is ≥ 40 bytes, so only a caller bug reaches this).
+    /// Boundary honesty: slots pack tight after the prelude, so total is base plus the sealed sum, and a slot under one window is refused at layout (an AEAD seal is ≥ 40 bytes, so only a caller bug reaches this).
     #[test]
     fn layout_is_tight_and_guards_the_window() {
-        let lay = layout(&[40, 100, 32]).expect("layout");
-        assert_eq!(lay.total, 172);
-        assert_eq!(lay.offsets, vec![0, 40, 140]);
-        assert!(layout(&[31]).is_none(), "a slot narrower than the window could dodge the scan");
-        assert!(layout(&[]).map(|l| l.total) == Some(0), "an empty layout is a zero-length spool, not an error");
+        let lay = layout(100, &[40, 100, 32]).expect("layout");
+        assert_eq!(lay.total, 272);
+        assert_eq!(lay.offsets, vec![100, 140, 240]);
+        assert!(layout(0, &[31]).is_none(), "a slot narrower than the window could dodge the scan");
     }
 }
