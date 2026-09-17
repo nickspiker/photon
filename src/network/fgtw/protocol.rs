@@ -2997,6 +2997,25 @@ pub fn parse_attach_chunk_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], 
     Ok(((tok, hash, idx, sealed), sender))
 }
 
+/// Build a `pigeon_chunk` frame: one sealed chunk of a BRIDGE PIGEON (docs/PT.md spooled receive). Byte-identical shape to an attach_chunk — the SEPARATE section name is the whole point: it routes the receiver to the spool-and-land path, never the vault-install path an attach_chunk takes (a pigeon is ephemeral one-device transfer, not fleet content to replicate). The `hash` is the whole-file plaintext hash the spool prelude announced; `idx` is the chunk index into the derived slot table.
+pub fn build_pigeon_chunk_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    index: u32,
+    sealed_chunk: Vec<u8>,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    build_attach_data_frame("pigeon_chunk", conversation_token, content_hash, Some(index), sealed_chunk, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `pigeon_chunk` frame → ((tok, hash, index, sealed_chunk), sender).
+pub fn parse_pigeon_chunk_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], u32, Vec<u8>), [u8; 32]), String> {
+    let ((tok, hash, idx, sealed), sender) = parse_attach_data_frame("pigeon_chunk", vsf_bytes)?;
+    let idx = idx.ok_or("pigeon_chunk missing idx")?;
+    Ok(((tok, hash, idx, sealed), sender))
+}
+
 /// Build an `attach_req` frame — "send me the blob for this attachment row". Fired on tapping a pill whose blob hasn't arrived (offline race, or a fleet sibling that only holds the row). Any device holding the blob answers with an `attach_blob`.
 pub fn build_attach_req_vsf(
     conversation_token: &[u8; 32],
@@ -4163,5 +4182,20 @@ mod local_ip_absent_tests {
             }
             other => panic!("expected PhonebookResponse, got {other:?}"),
         }
+    }
+    /// A pigeon_chunk round-trips and is a DISTINCT frame from attach_chunk — the section name is what keeps a pigeon out of the vault-install router. Same key/index/bytes, different claim.
+    #[test]
+    fn pigeon_chunk_is_its_own_frame() {
+        let kp = crate::network::fgtw::derive_device_keypair(b"pigeon-test-seed");
+        let (pk, sk) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
+        let tok = [0x11u8; 32];
+        let hash = [0x22u8; 32];
+        let sealed = vec![0x5Au8; 4096];
+        let frame = build_pigeon_chunk_vsf(&tok, &hash, 7, sealed.clone(), &pk, &sk).expect("build");
+        let ((rtok, rhash, ridx, rsealed), signer) = parse_pigeon_chunk_vsf(&frame).expect("parse");
+        assert_eq!((rtok, rhash, ridx, rsealed), (tok, hash, 7, sealed));
+        assert_eq!(signer, pk, "the signer is recoverable for the trust gate");
+        // The router must not confuse the two: an attach parser rejects a pigeon frame and vice versa.
+        assert!(parse_attach_chunk_vsf(&frame).is_err(), "a pigeon_chunk must not parse as attach_chunk — that is what keeps it off the vault-install path");
     }
 }
