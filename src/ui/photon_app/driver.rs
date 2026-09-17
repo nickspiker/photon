@@ -580,6 +580,8 @@ impl FluorApp for PhotonApp {
                 chrome.set_full_edge(true);
                 // The device glass radius (Nick 2026-09-16): TR/BL corners at the glass radius, TL/BR at twice it — the desktop window's 2:1 — and the perimeter hairline stays drawn for now so the corners can be lined up against the glass by eye before it comes off.
                 chrome.set_glass_radius(crate::platform::jni_android::glass_radius_px());
+                // The orb sits in from the corner by the status bar's height (Nick 2026-09-17) — the phone's twin of the desktop's controls-strip inset.
+                chrome.set_orb_inset(Some(crate::platform::jni_android::top_inset_px() as f32));
             }
             #[cfg(not(target_os = "android"))]
             chrome.set_full_edge(ctx.is_maximized);
@@ -3174,6 +3176,11 @@ impl FluorApp for PhotonApp {
         #[cfg(target_os = "android")]
         if let Some(chrome) = self.chrome.as_mut() {
             if chrome.set_glass_radius(crate::platform::jni_android::glass_radius_px()) {
+                needs_redraw = true;
+            }
+            // The status-bar inset lands from the same listener; the orb and every top-anchored layout follow it (ui::safe_top_px reads the static live, so the layouts are right on the next frame).
+            if chrome.set_orb_inset(Some(crate::platform::jni_android::top_inset_px() as f32)) {
+                self.scene_dirty = true;
                 needs_redraw = true;
             }
         }

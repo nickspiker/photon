@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Android lays out under the status bar now that it draws edge to edge: the orb, the back arrow, the call pill and every settings header start below the bar (and the orb sits in from the corner by the same height — on desktop by the height of the window controls); the window corners keep photon's own squircle, sized so the small corners sit just inside the phone's glass arc and the big ones at twice that.
 - Android draws edge to edge now — under the status bar and the gesture pill — so the window's corners are the phone's glass corners: the small corners follow the glass arc exactly and the big ones twice it, the same proportion the desktop window wears; the compose box keeps clear of the gesture pill, and for now the perimeter hairline stays visible so the fit can be checked by eye.
 - Photon's own clock now keeps counting while the phone sleeps: it had been following a clock that stops during suspend, so after a long sleep every stamped request ran minutes behind and the server refused log submissions ("timestamp outside valid window") — the same message a phone with a genuinely wrong clock sees.
 - A phone whose clock is off by more than a minute can attest and submit logs again: the requests are stamped with photon's own time, which the app already keeps independent of the system clock, instead of the clock the banner is warning you about.

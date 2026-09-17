@@ -8,6 +8,18 @@ pub mod display_profile;
 pub mod lms2006so;
 pub mod state;
 
+/// THE SAFE TOP (Nick 2026-09-17, "the top bit of Android is now the notification bar"): with the surface edge to edge, the status bar (or camera cutout) sits over the first N pixels of every screen. Every top-anchored layout starts its block here — the launch stack, the ready screen's avatar row, the settings header, the conversation's back arrow and call pill — and the chrome orb insets by the same amount. Zero everywhere but Android, where the Activity mirrors the OS inset.
+pub fn safe_top_px() -> usize {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::jni_android::top_inset_px().max(0) as usize
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        0
+    }
+}
+
 // Chromatic wave (sine-modulated visible-spectrum bar). Reads LMS2006SO; writes α + darkness pixels.
 pub mod chromatic_wave;
 

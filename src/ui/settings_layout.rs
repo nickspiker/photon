@@ -35,6 +35,9 @@ impl SettingsLayout {
     /// Portrait additionally left-insets the header past the chrome orb (top-left app icon) so the title never collides with it.
     pub fn compute(vp: &Viewport) -> Self {
         let root = Region::from_viewport(vp);
+        // Under the status bar (ui::safe_top_px): the header and every band below it shift down; the root keeps its width.
+        let top = (crate::ui::safe_top_px() as Coord).min(root.h - 1.0);
+        let root = Region::new(root.x, root.y + top, root.w, root.h - top);
         let portrait = root.h > root.w;
         let unit = hm((root.span / 32.0) * vp.ru.max(0.2), root.h / 13.0);
         let header_h = (unit * 2.1).min(root.w * 0.13).min(root.h * 0.15);

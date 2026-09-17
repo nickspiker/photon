@@ -55,8 +55,9 @@ impl ReadyLayout {
         let content_x = buf_w >> 3;
         let content_w = buf_w - 2 * content_x;
 
-        let block_y = 0;
-        let block_h = buf_h;
+        // The block starts under the status bar (see ui::safe_top_px); the unit budget is what remains.
+        let block_y = crate::ui::safe_top_px().min(buf_h.saturating_sub(1));
+        let block_h = buf_h - block_y;
 
         let perimeter = (buf_w + buf_h) as f32;
         let span = if perimeter > 0. {

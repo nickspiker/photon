@@ -982,9 +982,9 @@ impl PhotonApp {
                 let pill_w = unit * 2.5;
                 let px = buf_w as f32 - pill_w - unit * 0.5; // top-right, half a unit of margin from the edge
                 let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
-                let bar_h = buf_h as f32 * 0.06 + unit + pill_h;
+                let bar_h = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit + pill_h;
                 let bar_off = self.conv_topbar_off.min(bar_h);
-                let call_cy = (buf_h as f32 * 0.06).max(strip_floor + pill_h * 0.6) - bar_off;
+                let call_cy = ((buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32)).max(strip_floor + pill_h * 0.6) - bar_off;
                 if let Some(b) = self.call_start_btn.as_mut() {
                     b.set_rect(px + pill_w * 0.5, call_cy, pill_w, pill_h);
                     b.set_font_size(pill_font);
@@ -2857,9 +2857,9 @@ impl PhotonApp {
                     // Back arrow (top-left) — below the chrome title bar area. Slides off vertically by conv_topbar_off (scroll-tied, browser-toolbar style); the hit rect follows and stamps HIT_NONE once mostly gone so a ghost tap can't fire it.
                     // Half the old size (Nick 2026-09-15: "2x too big").
                     let back_size = unit * 0.575;
-                    let bar_h = buf_h as f32 * 0.06 + unit + back_size;
+                    let bar_h = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit + back_size;
                     let bar_off = self.conv_topbar_off.min(bar_h);
-                    let back_y = buf_h as f32 * 0.06 + unit - bar_off;
+                    let back_y = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit - bar_off;
                     let back_text = tr(Msg::BackToContacts);
                     let topbar_visible = bar_off < bar_h * 0.75;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
@@ -4826,7 +4826,7 @@ impl PhotonApp {
             // Back affordance (top-left) — same "‹ Contacts" idiom + hit-id as the Conversation screen. Navigation is a dedicated control; the orb is reserved for settings and never carries context actions.
             {
                 let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
-                let back_y = buf_h as f32 * 0.06 + unit;
+                let back_y = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit;
                 let back_size = unit * 1.15;
                 let back_text = tr(Msg::BackToContacts);
                 ctx.text.draw_text_left(
