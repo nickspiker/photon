@@ -1196,7 +1196,8 @@ fn run(
                 let p50 = sorted[sorted.len() / 2];
                 let p90 = sorted[sorted.len() * 9 / 10];
                 let measured_q8 = reaim_ring.iter().sum::<i64>() / reaim_ring.len() as i64;
-                let speech_like = p90 * 2 >= p50 * 5;
+                // 2× (was 2.5×): the 00:03 Kalispell wave (2026-09-17) rejected three windows of Nick's actual conversation at 2.0–2.5× — continuous talk without pauses modulates less over a 4 s window; the plausibility floor guards the first step against breath now, so the dynamics bar only needs to reject the truly flat.
+                let speech_like = p90 >= p50 * 2;
                 if !speech_like {
                     crate::logf!(
                         "CALL: level plan re-aim — {} frames at {} look flat (p90/p50 {}/{}), not speech; waiting",

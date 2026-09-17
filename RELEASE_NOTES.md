@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Photon's own clock now keeps counting while the phone sleeps: it had been following a clock that stops during suspend, so after a long sleep every stamped request ran minutes behind and the server refused log submissions ("timestamp outside valid window") — the same message a phone with a genuinely wrong clock sees.
 - A phone whose clock is off by more than a minute can attest and submit logs again: the requests are stamped with photon's own time, which the app already keeps independent of the system clock, instead of the clock the banner is warning you about.
 - Android touch is honest about gestures: a pinch no longer snaps to whichever finger lifted last and jerks the screen, and once a finger has scrolled or zoomed nothing gets selected on release — a tap is a tap only if the finger stayed put.
 - On a link so slow that a repaired packet would arrive too late to play, the wave stops asking for live repairs and lets the recording collect them at the end instead — the repair traffic was drowning what little bandwidth such a link had.

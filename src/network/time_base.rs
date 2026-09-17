@@ -8,11 +8,48 @@
 
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::sync::Mutex;
-use std::time::Instant;
 
-/// One measurement, anchored where it can't be invalidated: `true_osc` was true at the moment `mono` read, and the monotonic clock is the only thing we extrapolate from.
+/// THE CLOCK THAT COUNTS THROUGH SLEEP (field 2026-09-17: Nick's phone slept and photon's time fell 30 minutes behind — "Timestamp outside valid window: diff=1821s", growing to 3175 s an hour later — because `std::time::Instant` is CLOCK_MONOTONIC on Linux/Android, which STOPS while the device is suspended; every minute the phone slept was a minute the anchor never saw). CLOCK_BOOTTIME is the monotonic clock that includes suspend; macOS has mach_continuous_time for the same; Windows' GetTickCount64 counts through sleep at millisecond grain. All immune to the wall clock, which is the property the anchor exists for.
+fn boot_osc() -> i64 {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } == 0 {
+            return ((ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9) * crate::OSC_PER_SEC as f64) as i64;
+        }
+    }
+    #[cfg(target_os = "macos")]
+    {
+        extern "C" {
+            fn mach_continuous_time() -> u64;
+            fn mach_timebase_info(info: *mut [u32; 2]) -> i32;
+        }
+        let mut tb = [0u32; 2];
+        if unsafe { mach_timebase_info(&mut tb) } == 0 && tb[1] != 0 {
+            let ns = unsafe { mach_continuous_time() } as f64 * tb[0] as f64 / tb[1] as f64;
+            return (ns * 1e-9 * crate::OSC_PER_SEC as f64) as i64;
+        }
+    }
+    #[cfg(target_os = "windows")]
+    {
+        extern "system" {
+            fn GetTickCount64() -> u64;
+        }
+        let ms = unsafe { GetTickCount64() };
+        return (ms as f64 * 1e-3 * crate::OSC_PER_SEC as f64) as i64;
+    }
+    #[allow(unreachable_code)]
+    {
+        // Fallback (redox, an exotic host): the process-monotonic clock — correct while awake, blind to suspend.
+        static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+        let start = START.get_or_init(std::time::Instant::now);
+        (start.elapsed().as_secs_f64() * crate::OSC_PER_SEC as f64) as i64
+    }
+}
+
+/// One measurement, anchored where it can't be invalidated: `true_osc` was true at the moment `boot` read (the suspend-counting monotonic clock, in oscillations), and that clock is the only thing we extrapolate from.
 struct Anchor {
-    mono: Instant,
+    boot: i64,
     true_osc: i64,
     confidence_osc: i64,
 }
@@ -29,12 +66,12 @@ pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
     /// Past this age the standing anchor has drifted (quartz runs ±20-50 ppm ⇒ ~180 ms per hour), so any fresh reading outranks it.
     const STALE_OSC: i64 = 2 * 3600 * crate::OSC_PER_SEC;
 
-    let now_mono = Instant::now();
+    let now_boot = boot_osc();
     let mut slot = ANCHOR.lock().unwrap();
     let replace = match slot.as_ref() {
         None => true,
         Some(cur) => {
-            let age = (now_mono.duration_since(cur.mono).as_secs_f64() * crate::OSC_PER_SEC as f64) as i64;
+            let age = now_boot - cur.boot;
             confidence_osc <= cur.confidence_osc || age > STALE_OSC
         }
     };
@@ -49,7 +86,7 @@ pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
     // The consensus was true at `local_osc` by the LOCAL clock; that instant has already passed by however long the verdict took to reach us, so carry it forward on the monotonic clock rather than pretending it is now.
     let elapsed_since_local = vsf::eagle_time_oscillations() - local_osc;
     *slot = Some(Anchor {
-        mono: now_mono,
+        boot: now_boot,
         true_osc: local_osc + offset_osc + elapsed_since_local,
         confidence_osc,
     });
@@ -64,10 +101,7 @@ pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
 pub fn now_osc() -> i64 {
     let slot = ANCHOR.lock().unwrap();
     match slot.as_ref() {
-        Some(a) => {
-            let elapsed = a.mono.elapsed();
-            a.true_osc + (elapsed.as_secs_f64() * crate::OSC_PER_SEC as f64) as i64
-        }
+        Some(a) => a.true_osc + (boot_osc() - a.boot),
         None => vsf::eagle_time_oscillations(),
     }
 }
@@ -102,8 +136,7 @@ pub fn stamp_osc() -> i64 {
 pub fn offset_now() -> Option<(i64, i64)> {
     let slot = ANCHOR.lock().unwrap();
     let a = slot.as_ref()?;
-    let elapsed = a.mono.elapsed();
-    let true_now = a.true_osc + (elapsed.as_secs_f64() * crate::OSC_PER_SEC as f64) as i64;
+    let true_now = a.true_osc + (boot_osc() - a.boot);
     Some((true_now - vsf::eagle_time_oscillations(), a.confidence_osc))
 }
 
