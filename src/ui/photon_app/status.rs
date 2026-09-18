@@ -1112,8 +1112,11 @@ impl PhotonApp {
                                     ));
                                 }
                             }
-
-                            break;
+                            // NO `break` here (field 2026-09-18, Nick: "Leafy Sea Dragon from Leviathan shows offline but the other way is not").
+                            // Two rows know every OWN device: the self row (its fleet fold lists the whole fleet) and that device's sibling row.
+                            // The first match used to end the loop, so whichever row sat first in `contacts` absorbed the verdict and the other never heard it — the Mac's sibling row stayed `is_online false` for the whole session while the self row logged "device fe46a74b up", and the Fleet page painted the Mac grey.
+                            // Which row came first was load order, so the Pixel worked and the Mac did not.
+                            // Every row that knows the device carries its verdict; the per-row side effects (endpoint, edge flags, retransmit) are keyed by that row and are meant to fire once per row.
                         }
                     }
                     // BREADCRUMB (the other silent drop): a signature-verified presence verdict whose device matches NO contact — today this fell off the loop with zero trace. Session-deduped; bounded because only sig-verified devices reach this arm.

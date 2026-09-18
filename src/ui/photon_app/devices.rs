@@ -1640,6 +1640,24 @@ impl PhotonApp {
             ));
         }
         self.egged_cache = egged_cache;
+        // The page's verdicts, logged on change: which row, what it says, and the presence inputs behind it — so a "shows offline" report can be read against the model that fed it.
+        let sig: Vec<([u8; 32], bool, String)> = rows.iter().map(|(pk, _, online, _, _, _, tier, _)| (*pk, *online, super::tier_label(*tier).map(|c| c.into_owned()).unwrap_or_else(|| "offline".into()))).collect();
+        if sig != self.fleet_rows_logged {
+            for (pk, is_self, online, retired, name, _, tier, _) in &rows {
+                let c = self.contacts.iter().find(|c| c.is_sibling && c.device_key() == Some(*pk));
+                crate::logf!(
+                    "FLEET PAGE: {} \"{}\" — {}{}{} tier {:?}{}",
+                    crate::fp(pk),
+                    name,
+                    if *online { "online" } else { "offline" },
+                    if *is_self { " (this device)" } else { "" },
+                    if *retired { " (retired)" } else { "" },
+                    super::tier_label(*tier).map(|c| c.into_owned()).unwrap_or_else(|| "none".into()),
+                    c.map(|c| format!(" — row is_online {} clutch {:?} validated {:?} endpoints {:?}", c.is_online, c.clutch_state, c.validated_path.map(|(a, _)| a), c.device_endpoints.iter().map(|e| (crate::fp(&e.pubkey), e.online)).collect::<Vec<_>>())).unwrap_or_default()
+                );
+            }
+            self.fleet_rows_logged = sig;
+        }
         for pk in &self.fleet_retired {
             rows.push((
                 *pk,

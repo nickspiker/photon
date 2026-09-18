@@ -2155,6 +2155,8 @@ pub struct PhotonApp {
     avatar_probe_cache: std::collections::HashMap<[u8; 32], bool>,
     /// Egged-status probe results by sibling device key — fleet_device_rows' fanout_pairs::load answer, remembered. The Fleet page gathers rows every FRAME, so the per-sibling vault read was a per-frame librarian round trip; a pair secret changes only at ceremony completion, which invalidates its entry there. Same doctrine as avatar_probe_cache: the UI thread's steady state touches the vault zero times.
     egged_cache: std::collections::HashMap<[u8; 32], bool>,
+    /// What the Fleet page last showed, per row (device, online, tier word) — logged on every change so a screen that disagrees with the presence model leaves a trace (field 2026-09-18: Leviathan's page read the Mac offline while its own log said up).
+    fleet_rows_logged: Vec<([u8; 32], bool, String)>,
     /// One-shot window-geometry restore — a fluor `window_rect` (x, y, w, h in GLOBAL desktop units), armed with the zoom at settings load; the host applies it thru its maximize machinery, clamped into live surfaces.
     pending_geometry_restore: Option<(i32, i32, u32, u32)>,
     fleet_lock_armed: Option<[u8; 32]>,
@@ -2763,6 +2765,7 @@ impl PhotonApp {
             fleet_release_armed: None,
             avatar_probe_cache: std::collections::HashMap::new(),
             egged_cache: std::collections::HashMap::new(),
+            fleet_rows_logged: Vec::new(),
             pending_geometry_restore: None,
             fleet_lock_armed: None,
             settings_revoke_armed: false,
