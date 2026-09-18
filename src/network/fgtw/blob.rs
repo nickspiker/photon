@@ -320,25 +320,39 @@ pub fn put_log_blocking(
         fields.push(("note".to_string(), VsfType::v(b'e', sealed_note)));
     }
 
-    let vsf_bytes = build_signed_blob_vsf(device_keypair, "log_put", fields)?;
-
-    let response = client
-        .post(FGTW_URL)
-        .header("Content-Type", "application/octet-stream")
-        .body(vsf_bytes)
-        .send()
-        .map_err(|e| BlobError::Network(format!("log_put request failed: {}", e)))?;
-
-    let status = response.status();
-    let body = response.bytes().unwrap_or_default();
-    if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
-        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    // ONE RETRY ON A WINDOW REFUSAL (2026-09-17, Theresa's "timestamp outside valid window" on every submit): the worker's refusal carries its own clock; adopt it as photon's time base and stamp the frame again — the server judging the window is the time source that matters for this frame.
+    let mut fields = fields;
+    let mut retried = false;
+    loop {
+        let frame_fields: Vec<(String, VsfType)> = fields.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let vsf_bytes = build_signed_blob_vsf(device_keypair, "log_put", frame_fields)?;
+        let sent_at = std::time::Instant::now();
+        let response = client
+            .post(FGTW_URL)
+            .header("Content-Type", "application/octet-stream")
+            .body(vsf_bytes)
+            .send()
+            .map_err(|e| BlobError::Network(format!("log_put request failed: {}", e)))?;
+        let status = response.status();
+        let body = response.bytes().unwrap_or_default();
+        if let Some((reason, detail)) = fgtw::client::error_frame(&body) {
+            if let (Some(server_now), false) = (crate::network::time_base::server_now_from_detail(&detail), retried) {
+                let rtt_osc = (sent_at.elapsed().as_secs_f64() * crate::OSC_PER_SEC as f64) as i64;
+                crate::network::time_base::adopt_from_server(server_now, rtt_osc);
+                if let Some(ts) = fields.iter_mut().find(|(k, _)| k == "timestamp") {
+                    ts.1 = VsfType::e(vsf::types::EtType::e6(crate::network::time_base::now_osc()));
+                }
+                retried = true;
+                continue;
+            }
+            return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+        }
+        if !status.is_success() {
+            return Err(BlobError::ServerError(format!("transport {}", status)));
+        }
+        crate::logf!("FGTW: submitted diagnostic log ({} bytes){}", log_bytes.len(), if retried { " — on the second try, after the server re-anchored our clock" } else { "" });
+        return Ok(());
     }
-    if !status.is_success() {
-        return Err(BlobError::ServerError(format!("transport {}", status)));
-    }
-    crate::logf!("FGTW: submitted diagnostic log ({} bytes)", log_bytes.len());
-    Ok(())
 }
 
 /// List the submitted logs for a retrieval tag (the pull side of the capability).

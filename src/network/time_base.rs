@@ -97,6 +97,29 @@ pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
     );
 }
 
+/// Adopt the SERVER'S verdict (2026-09-17, Theresa's phone: "Timestamp outside valid window" on every log submit, and nothing to say whether photon's clock was ahead or behind): FGTW refused a frame we stamped and answered with its own clock in the refusal. That server is NTP-disciplined and is the one judging the window, so its reading outranks whatever anchor we hold — this REPLACES the standing anchor unconditionally (the standing one just proved itself wrong by over a minute), at the width the round trip allows: the server read its clock somewhere inside the trip, so the midpoint is the estimate and half the trip the honest width, floored at a quarter second. A later nunc consensus (±ms) refines it thru [`adopt`]'s ordinary rule.
+pub fn adopt_from_server(server_now_osc: i64, rtt_osc: i64) {
+    let rtt = rtt_osc.max(0);
+    let confidence_osc = (rtt / 2).max(crate::OSC_PER_SEC / 4);
+    let true_now = server_now_osc + rtt / 2;
+    let system_now = vsf::eagle_time_oscillations();
+    let before = now_osc();
+    *ANCHOR.lock().unwrap() = Some(Anchor { boot: boot_osc(), true_osc: true_now, confidence_osc });
+    crate::logf!(
+        "Clock: FGTW refused our stamp — re-anchored on the server's clock: photon time moves {} ms, now {} ms off the system clock (±{} ms); a nunc consensus will refine it",
+        (true_now - before) * 1000 / crate::OSC_PER_SEC,
+        (true_now - system_now) * 1000 / crate::OSC_PER_SEC,
+        confidence_osc * 1000 / crate::OSC_PER_SEC
+    );
+}
+
+/// The server's clock out of a window refusal: the `server_now=<oscillations>` the worker puts in its detail. `None` for any other error.
+pub fn server_now_from_detail(detail: &str) -> Option<i64> {
+    let at = detail.find("server_now=")? + "server_now=".len();
+    let digits: String = detail[at..].chars().take_while(|c| c.is_ascii_digit()).collect();
+    digits.parse().ok()
+}
+
 /// True time in oscillations, extrapolated from the anchor on the monotonic clock. Falls back to the raw system clock when nunc has never reached consensus — a device that has never been online still has to send.
 pub fn now_osc() -> i64 {
     let slot = ANCHOR.lock().unwrap();
@@ -151,6 +174,26 @@ mod tests {
         *ANCHOR.lock().unwrap() = None;
         LAST_ISSUED.store(i64::MIN, Ordering::Relaxed);
         g
+    }
+
+    #[test]
+    fn a_server_refusal_re_anchors_over_a_standing_anchor_and_nunc_refines_it() {
+        let _g = hold_clean();
+        // A tight but WRONG standing anchor: photon time ten minutes ahead of true.
+        adopt(crate::OSC_PER_SEC * 600, crate::OSC_PER_SEC / 1000, vsf::eagle_time_oscillations());
+        let system = vsf::eagle_time_oscillations();
+        assert!(now_osc() - system > crate::OSC_PER_SEC * 599);
+        // The server says its clock is the system clock (true), over a 400 ms round trip: the anchor is replaced despite being "tighter", at ±250 ms (the quarter-second floor beats 200 ms).
+        adopt_from_server(system, crate::OSC_PER_SEC * 2 / 5);
+        let off = now_osc() - vsf::eagle_time_oscillations();
+        assert!(off.abs() < crate::OSC_PER_SEC, "re-anchored near true time, got {} ms", off * 1000 / crate::OSC_PER_SEC);
+        assert_eq!(offset_now().map(|(_, c)| c), Some(crate::OSC_PER_SEC / 4));
+        // A nunc consensus at ±3 ms then outranks the server's width.
+        adopt(0, crate::OSC_PER_SEC * 3 / 1000, vsf::eagle_time_oscillations());
+        assert_eq!(offset_now().map(|(_, c)| c), Some(crate::OSC_PER_SEC * 3 / 1000));
+        // The refusal detail parses; anything else does not.
+        assert_eq!(server_now_from_detail("Timestamp outside valid window: client is 1821s behind the server (server_now=123456789)"), Some(123456789));
+        assert_eq!(server_now_from_detail("bad_signature: nope"), None);
     }
 
     /// Stamps never repeat and never regress, even when the anchor is corrected backward mid-stream — the row-identity guarantee.

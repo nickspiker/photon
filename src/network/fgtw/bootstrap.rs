@@ -70,7 +70,17 @@ pub async fn load_bootstrap_peers(
     port: u16,
     identity_seed: &[u8; 32],
 ) -> BootstrapResult {
-    match load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await {
+    // ONE RETRY ON A WINDOW REFUSAL (2026-09-17): a phone whose photon clock is off by over a minute could neither attest nor announce — the refusal now carries the server's clock, so adopt it and announce again. The whole inner call re-runs (a challenge is single-use); its elapsed time bounds the round trip, so the anchor's width is honest, and a later nunc consensus refines it.
+    let started = std::time::Instant::now();
+    let mut result = load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await;
+    if let Err(e) = &result {
+        if let Some(server_now) = crate::network::time_base::server_now_from_detail(e) {
+            let rtt_osc = (started.elapsed().as_secs_f64() * crate::OSC_PER_SEC as f64) as i64;
+            crate::network::time_base::adopt_from_server(server_now, rtt_osc);
+            result = load_bootstrap_peers_inner(device_key, handle_proof, port, identity_seed).await;
+        }
+    }
+    match result {
         Ok((peers, observed_addr, identity_count)) => BootstrapResult {
             peers,
             error: None,
