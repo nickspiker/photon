@@ -3702,6 +3702,7 @@ fn contact_status_line(
     our_device: Option<[u8; 32]>,
     identity_seed: Option<&[u8; 32]>,
     has_siblings: bool,
+    fs: Option<&crate::storage::fleet_settings::FleetSettings>,
 ) -> String {
     if c.clutch_proof_gave_up {
         return tr(Msg::DifferentIdentity).into_owned();
@@ -3710,8 +3711,9 @@ fn contact_status_line(
         // has_siblings gates the whole elsewhere-branch: a fleet of ONE can never truthfully be "secured on another of your devices" — Emma's ghost (2026-09-08) was a stale/foreign owner claim rendering a phantom voca name on a single-device fleet. With no siblings the claim is impossible by construction, so fall thru to the contact's own honest step detail (the census owner-fp line names the ghost bytes for diagnosis).
         match c.ceremony_owner {
             Some(owner) if Some(owner) != our_device => {
+                // The owner's RENAMED machine name (fleet settings `fleet.name.<pk>`), falling back to the generated default inside machine_name — the same resolver every other surface uses. This was the one site calling device_name_default directly, so "securing on …" named the device by its factory name and never the one the owner set (Nick 2026-09-18).
                 let name = identity_seed
-                    .map(|seed| crate::network::fgtw::fleet::device_name_default(&owner, seed))
+                    .map(|seed| machine_name(&owner, seed, fs))
                     .unwrap_or_else(|| tr(Msg::AnotherDevice).into_owned());
                 return if c.owner_woven {
                     tr(Msg::SecuredOn(&name)).into_owned()
