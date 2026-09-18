@@ -35,7 +35,7 @@
 
 ## Active / open
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; open = live strand pull, never-friended receive commit, offer refresh, Withdraw
-- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — OPEN: restarts re-run ceremonies, fresh index-0 eras (10/hr), era_pull can't answer
+- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows → double encap → deterministic proof mismatch → zombie → re-run; fixed (our_party_id); field verify pending; ghost 1be949c1 retire flow still open
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
 - [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows port not built; macOS drag-to-monitor VANISHES (pinned)

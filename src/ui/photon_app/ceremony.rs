@@ -183,14 +183,9 @@ impl PhotonApp {
         use crate::crypto::clutch::derive_conversation_token;
 
         let mut changed = false;
-        let our_handle_hash = match self
-            .session
-            .as_ref()
-            .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-        {
-            Some(h) => h,
-            None => return changed,
-        };
+        if self.session.is_none() {
+            return changed;
+        }
 
         let mut kem_encap_spawn: Option<(
             ContactId,
@@ -204,6 +199,14 @@ impl PhotonApp {
         while let Ok(result) = self.clutch_kem_decap_rx.try_recv() {
             let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) else {
                 crate::log("CLUTCH: decap result for a contact that no longer exists — dropped");
+                continue;
+            };
+            // OUR slot key is the PARTY id, which for a sibling row is the device-derived pid, not the shared identity seed (the same seam every other drain applies).
+            // This drain read the identity slot for every row (field 2026-09-17/18, every sibling round on all three of Nick's devices): for a sibling that slot does not exist, so `already_sent_kem` below read false even tho the encap arm had already stored our secrets under the sibling pid and sent the response.
+            // A SECOND encap then fired "after decap", its result overwrote the first secrets in the real slot, and the eggs were computed from secrets the peer never saw — the peer had decapsulated the first response and dropped the second as a duplicate.
+            // Deterministic PROOF MISMATCH on every sibling round: "Awaiting proof" until the resend budget ran out, a zombie discard at the next launch, a fresh round, the same collision — and two unilateral index-0 eras per pair that chain-sync could never reconcile.
+            let Some(our_handle_hash) = self.our_party_id(&self.contacts[idx]) else {
+                crate::log("CLUTCH: decap result with no party id — dropped");
                 continue;
             };
             let contact = &mut self.contacts[idx];
