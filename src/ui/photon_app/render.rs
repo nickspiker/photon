@@ -2428,15 +2428,20 @@ impl PhotonApp {
                             .into()
                         };
                         // NAME the path, don't just colour the avatar ring with it (Nick 2026-09-08). Same resolution the ring uses, so the word and the colour are one fact — and the legend line below turns the whole scheme from folklore into something the screen explains.
-                        let connection_line = if is_self {
-                            tr(Msg::AlwaysReachableSelf)
+                        // The word and its colour are one fact: the path's colour (cyan LAN, green WAN, amber relay) on the online line, the label grey otherwise — the same rule the Fleet page's status line follows (Nick 2026-09-18).
+                        let (connection_line, connection_colour) = if is_self {
+                            (tr(Msg::AlwaysReachableSelf), *theme::LABEL_COLOUR)
                         } else if contact.is_online {
-                            match super::tier_label(super::path_tier_shown(contact, true)).as_deref() {
-                                Some(w) => tr(Msg::OnlineVia(w)),
-                                None => tr(Msg::Online),
-                            }
+                            let shown = super::path_tier_shown(contact, true);
+                            (
+                                match super::tier_label(shown).as_deref() {
+                                    Some(w) => tr(Msg::OnlineVia(w)),
+                                    None => tr(Msg::Online),
+                                },
+                                super::shown_tier_colour(shown).unwrap_or(*theme::LABEL_COLOUR),
+                            )
                         } else {
-                            tr(Msg::Offline)
+                            (tr(Msg::Offline), *theme::LABEL_COLOUR)
                         };
                         // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
                         settings_line(
@@ -2499,7 +2504,7 @@ impl PhotonApp {
                             rows[6],
                             &connection_line,
                             hspan2,
-                            *theme::LABEL_COLOUR,
+                            connection_colour,
                             400,
                         );
                         if !is_self && contact.is_online {
@@ -5512,12 +5517,13 @@ impl PhotonApp {
                         } else if row_locked {
                             (tr(Msg::RevokedBadge), theme::PILL_RED.1)
                         } else if *online {
+                            // The status word wears the SAME colour as the name — the path's colour (cyan LAN, green WAN, amber relay), never a flat "online" green (Nick 2026-09-18: "my pixel is online thru LAN but it's green. Should be cyan. Device name however is the correct colour").
                             (
                                 match tier_word.as_deref() {
                                     Some(w) => tr(Msg::OnlineVia(w)),
                                     None => tr(Msg::Online),
                                 },
-                                *theme::SEARCH_FOUND_COLOUR,
+                                tier_colour.unwrap_or(*theme::SEARCH_FOUND_COLOUR),
                             )
                         } else {
                             (tr(Msg::Offline), *theme::LABEL_COLOUR)

@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The Fleet page's status line and a contact's connection line now wear the path's own colour — cyan on the LAN, green across the WAN, amber over the relay — instead of a flat green for anything online, so the word and the colour agree with the device name beside them.
 - Opening a conversation no longer waits on the vault: whether an attachment or a wave recording is held here is answered from memory and checked in the background, so a conversation opens at once even while a large wave is still arriving (the phone used to freeze for seconds, and once until Android killed it, while it re-checked all 545 pieces of a recording behind every incoming piece); and a crash on the Android side now writes its own stack into the log before the app dies, so the next "random close" can be read.
 ## v99
 
