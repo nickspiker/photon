@@ -1,25 +1,26 @@
-//! Kept-recording transcode + reader (docs/calls.md — endpoint memory).
+//! Kept-recording REPACK + reader (docs/calls.md — endpoint memory).
 //!
-//! The live call spools already-ENCODED per-direction mono Opus frames (cheap: ~25 MB/hour, `call/spool.rs`). At KEEP the user wants a real audio FILE with **one channel per participant** (ch0 = local mic, ch1 = remote), so this module transcodes the spool ONCE: decrypt → decode each direction → time-align onto a shared 10 ms grid by eagle-osc → interleave → re-encode one mono Opus stream per channel, in the `PHCALL6` container. Playback ([`crate::call::playback`]) reads it back and sums the channels to mono.
+//! The live call spools already-ENCODED per-direction mono Opus frames (cheap: ~25 MB/hour, `call/spool.rs`): our clean mic as 10 ms archive packets, the remote's wire packets as they arrived (5 ms, at whatever rung the wire ran) with the fills the peer served slotted in by window seq. At KEEP the user wants a real audio FILE with **one channel per participant** (ch0 = local mic, ch1 = remote) — and since PHCALL8 (Nick 2026-09-17: "if we have a packet, no need to fetch, regardless of quality … I don't see any reason to recode") the keep is a REPACK, not a transcode: every packet the spool holds goes into the container byte for byte, a hole stays a hole (a zero-length packet = silence at play), and nothing is encoded at keep except a stray PCM fallback frame. The one decode pass left is for the envelope. Playback ([`crate::call::playback`]) reads it back and sums the channels to mono.
 //!
-//! **N > 2 (future multi-party — the stubbed "add handle").** Every slot is `nchan` side-by-side MONO packets whatever N is, so multi-party needs no format change — `opus` 0.3.1 has no multistream encoder anyway. Same magic, same reader, one downmix path.
+//! **N > 2 (future multi-party — the stubbed "add handle").** Every slot is `nchan` channels of side-by-side MONO packets whatever N is, so multi-party needs no format change — `opus` 0.3.1 has no multistream encoder anyway. Same magic, same reader, one downmix path.
 //!
-//! **Container:** see [`CONTAINER_MAGIC_V7`] — every slot is `nchan` side-by-side `[len u16 LE][opus]` mono packets. Empty slots are encoded silence — the grid is dense so playback never has to reason about gaps.
-//!
-//! Transcode is a second lossy Opus generation over the spooled frames (decode-then-re-encode) — the accepted cost of "cheap live spool, rich keep". It is O(call length); run it OFF the UI thread (see `keep_recording`).
+//! **Container:** see [`CONTAINER_MAGIC_V8`] — per 10 ms slot, per channel, that channel's `sub` packets (`[len u16 LE][opus]` each): one 10 ms packet for the archive channel, two 5 ms packets for a wire channel. Holes are zero-length packets, so the grid is dense and playback never has to reason about gaps.
 
 use crate::call::spool::{drain_records, Record, SpoolTicket};
 
-/// 10 ms at 48 kHz — the ARCHIVE frame (PHCALL6 slot + KeptStream playback unit). Deliberately unchanged by the 5ms flag day: every previously-kept recording plays without migration.
+/// 10 ms at 48 kHz — the ARCHIVE frame (the container slot + KeptStream playback unit). Deliberately unchanged by the 5ms flag day: every previously-kept recording plays without migration.
 const FRAME: usize = 480;
-/// The LIVE spool frame — 5ms CELT packets since the 2026-09-08 flag day (platform FRAME_SAMPLES). Two input slots fold into one archive slot at transcode.
+/// The LIVE spool frame — 5ms CELT packets since the 2026-09-08 flag day (platform FRAME_SAMPLES). Two wire packets sit side by side in one archive slot.
 const FRAME_IN: usize = crate::platform::audio::FRAME_SAMPLES;
+const _: () = assert!(FRAME == 2 * FRAME_IN, "a container slot is exactly two wire frames");
 /// Input-grid slots per second (5 ms spool packets).
 const SLOTS_PER_SEC: i64 = 200;
-/// PHCALL7 (the ordering fix, 2026-09-12): magic ‖ `[nchan u8][sample_rate u32 LE][base_osc i64 LE][slots u32 LE][env_per_sec u8][env_len u32 LE = 0]` ‖ `[prof_len u32 LE]` ‖ profile bytes (`slots × 3`: gain u16 8.8 LE + verdict u8 per 10ms slot — the DUCKING PROFILE, so the as-heard stream is derivable and no second stream is ever stored or sent) ‖ `slots × nchan` MONO Opus packets (channel order within each slot). Channel 0's packets are the live ARCHIVE stream verbatim — one high-end encode of the clean mic made during the call, never re-encoded here. No envelope region (the wave.env exchange carries it); PHCALL≤6 read support deleted per the house flag-day rule.
+/// PHCALL7 (the ordering fix, 2026-09-12; READ ONLY now — the waves kept between 2026-09-12 and the PHCALL8 flag day play thru this arm): magic ‖ `[nchan u8][sample_rate u32 LE][base_osc i64 LE][slots u32 LE][env_per_sec u8][env_len u32 LE = 0]` ‖ `[prof_len u32 LE]` ‖ profile bytes (`slots × 3`: gain u16 8.8 LE + verdict u8 per 10ms slot — the DUCKING PROFILE) ‖ `slots × nchan` MONO Opus packets (channel order within each slot), every channel one 10 ms packet per slot: channel 0 the archive verbatim, the rest a second lossy generation.
 pub const CONTAINER_MAGIC_V7: &[u8; 8] = b"PHCALL7\0";
-/// Per-channel archive bitrate: CELT fullband is transparent for speech well below this; a two-party hour is ~115 MB.
-const ARCHIVE_KBPS: i32 = 128_000;
+/// PHCALL8 (the verbatim keep, Nick 2026-09-17): the V7 header ‖ `[sub u8 × nchan]` (packets per slot per channel: 1 = one 10 ms packet, 2 = two 5 ms packets) ‖ `[prof_len u32 LE]` ‖ profile ‖ per slot, per channel, its `sub` packets `[len u16 LE][opus]`. Channel 0 is the live archive stream verbatim (sub 1), every other channel is the wire stream verbatim on its own 5 ms lattice (sub 2) — the packets the peer sent at whatever rung the wire ran plus the fills it served, holes as zero-length packets. Nothing here was re-encoded.
+pub const CONTAINER_MAGIC_V8: &[u8; 8] = b"PHCALL8\0";
+/// The bitrate for the ONE case the keep still encodes: a stray PCM fallback cell (a received plaid frame the live re-encode declined) — the high rung, so it never drags its neighbours down.
+const FALLBACK_KBPS: i32 = 160_000;
 /// Envelope components per bin per channel (Nick 2026-09-12, the tuned bands): [0] total power `x²`; [1] RED = double-box T64 low band squared (−3dB ≈ 240 Hz — the fundamental and warmth); [2] GREEN = (T4 − T16) bell squared (peak ≈ 2.4 kHz — formants and consonant identity, the ear's most sensitive region); [3] BLUE = (x − T2) shelf squared (≈ 7.7 kHz up — sibilance and air). Dyadic widths so every normalization is a shift; each box is a running put-one-on-take-one-off accumulator, 1:1 with the sample rate.
 pub const ENV_COMPONENTS: usize = 4;
 /// Envelope pyramid capacity (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2"): the working buffer is this many bins per channel, and a recording stores whatever count it ends on (0..=ENV_CAP), so `env_len` is genuinely variable now.
@@ -366,7 +367,7 @@ fn mono_decoder() -> Option<opus::Decoder> {
     opus::Decoder::new(48_000, opus::Channels::Mono).ok()
 }
 
-/// Decode one channel's slot (or silence) with its running decoder, at the caller's frame size — `FRAME_IN` for live-spool input (transcode + preview), `FRAME` for PHCALL6 archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
+/// Decode one channel's slot (or silence) with its running decoder, at the caller's frame size — `FRAME_IN` for live-spool input (the keep's envelope pass + the preview), `FRAME` for archive playback. Silence slots do NOT touch the decoder (no frame was ever encoded there — the gap is genuine), so the next real frame decodes in step.
 fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> Vec<i16> {
     match cell {
         Some(Cell::Opus(opus)) => {
@@ -388,7 +389,7 @@ fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> 
     }
 }
 
-/// KEEP with transcode → one mono Opus stream per channel in the `PHCALL6` container, stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket (dropping it crypto-shreds the spool key either way); removes the spool file on success. `None` = nothing recorded (treat keep as delete) or a codec init failure.
+/// KEEP → the `PHCALL8` container (every spooled packet verbatim, one decode pass for the envelope), stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket (dropping it crypto-shreds the spool key either way); removes the spool file on success. `None` = nothing recorded (treat keep as delete) or a codec init failure.
 pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<Kept> {
     let records = drain_records(&ticket)?;
     let Some(t) = build_container(&records) else {
@@ -408,9 +409,9 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
     Some(Kept { hash, size, env, secs: t.secs })
 }
 
-/// The transcode core: drained spool records → a `PHCALL6` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
+/// The keep core: drained spool records → a `PHCALL8` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
 pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
-    // THE ORDERING FIX (Nick 2026-09-12): channel 0 is the live ARCHIVE stream verbatim — the clean pre-duck encode made during the call — so the keep repackages instead of re-encoding it (no second lossy generation; a 13-minute keep drops from minutes of encodes to a pass of decodes for the envelope). The remaining channels build from the wire/fill grid exactly as before, and a legacy spool with no archive records falls back to the full grid path whole.
+    // THE ORDERING FIX (Nick 2026-09-12): channel 0 is the live ARCHIVE stream verbatim — the clean pre-duck encode made during the call. THE VERBATIM KEEP (Nick 2026-09-17): every other channel is verbatim too — the wire packets on their 5 ms seq lattice, fills included, holes kept — so the keep encodes nothing and its one decode pass feeds the envelope. A legacy spool with no archive records carries channel 0 as its wire copies (sub 2) the same way.
     let arch: Vec<&Record> = records.iter().filter(|r| r.is_arch()).collect();
     let rest: Vec<Record> = records.iter().filter(|r| !r.is_arch()).cloned().collect();
     let grid_res = grid_from_records(&rest);
@@ -438,6 +439,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         }
     }
     let slots_out = slots.div_ceil(2).max(arch_by_slot.len()).max(1);
+    // Packets per slot per channel: the archive channel is one 10 ms packet, a wire channel two 5 ms packets.
+    let subs: Vec<u8> = (0..nchan).map(|ch| if ch == 0 && has_arch { 1 } else { 2 }).collect();
     // Envelope: every decoded sample streams into the EnvPyramid at its absolute archive index — fixed integer bins from birth, fold-by-2 on overflow, no total needed up front (see the struct doc). The band rigs carry across slots so the filters see one continuous signal per channel.
     let mut pyramid = EnvPyramid::new(nchan);
 
@@ -446,68 +449,70 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     let mut profile: Vec<u8> = Vec::with_capacity(if has_arch { slots_out * 3 } else { 0 });
 
     let mut decs: Vec<opus::Decoder> = (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?;
-    let mut pkt = vec![0u8; 4000];
     let write_pkt = |container: &mut Vec<u8>, enc: &[u8]| {
         container.extend_from_slice(&(enc.len() as u16).to_le_bytes());
         container.extend_from_slice(enc);
     };
+    // The one encoder the keep may still need, made only when a PCM cell turns up (a received plaid frame whose live re-encode failed — rare, and never our own mic since the archive stream exists).
+    let mut fallback_encs: Vec<Option<opus::Encoder>> = (0..nchan).map(|_| None).collect();
+    let mut pkt = vec![0u8; 4000];
 
-    // ONE MONO STREAM PER PARTY (since PHCALL5, 2026-09-10): the local channel is a single lossy generation from the raw mic, every channel at the same transparent bitrate; nchan side-by-side mono packets per slot.
-    {
-        // N > 2 fallback: nchan side-by-side MONO packets per slot (no multistream Opus in this crate).
-        let mut encs: Vec<opus::Encoder> = (0..nchan)
-            .map(|_| {
-                let mut e = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok()?;
-                let _ = e.set_vbr(true);
-                let _ = e.set_bitrate(opus::Bitrate::Bits(ARCHIVE_KBPS));
-                // Complexity 6 of 10: about half the CPU of the default at 128 kbps with no audible cost — a 13-minute wave is 160k encodes on a phone that may already be dozing (Emma's keep took 53 minutes at the default, 2026-09-11).
-                let _ = e.set_complexity(6);
-                Some(e)
-            })
-            .collect::<Option<_>>()?;
-        let mut arch_dec = mono_decoder()?;
-        for slot_out in 0..slots_out {
-            for ch in 0..nchan {
-                if ch == 0 && has_arch {
-                    // Verbatim: the archive packet IS the slot; it decodes once for the envelope only. A hole writes a zero-length packet (playback yields silence there) and a default profile entry.
-                    match arch_by_slot.get(slot_out).copied().flatten() {
-                        Some(r) => {
-                            let mut pcm = vec![0i16; FRAME];
-                            let _ = arch_dec.decode(&r.bytes, &mut pcm, false);
-                            for (i, &s) in pcm.iter().enumerate() {
-                                pyramid.push(0, slot_out * FRAME + i, s);
-                            }
-                            write_pkt(&mut container, &r.bytes);
-                            let (g, v) = r.proc.unwrap_or((256, 0));
-                            profile.extend_from_slice(&g.to_le_bytes());
-                            profile.push(v);
+    let mut arch_dec = mono_decoder()?;
+    for slot_out in 0..slots_out {
+        for ch in 0..nchan {
+            if ch == 0 && has_arch {
+                // Verbatim: the archive packet IS the slot; it decodes once for the envelope only. A hole writes a zero-length packet (playback yields silence there) and a default profile entry.
+                match arch_by_slot.get(slot_out).copied().flatten() {
+                    Some(r) => {
+                        let mut pcm = vec![0i16; FRAME];
+                        let _ = arch_dec.decode(&r.bytes, &mut pcm, false);
+                        for (i, &s) in pcm.iter().enumerate() {
+                            pyramid.push(0, slot_out * FRAME + i, s);
                         }
-                        None => {
-                            for i in 0..FRAME {
-                                pyramid.push(0, slot_out * FRAME + i, 0);
+                        write_pkt(&mut container, &r.bytes);
+                        let (g, v) = r.proc.unwrap_or((256, 0));
+                        profile.extend_from_slice(&g.to_le_bytes());
+                        profile.push(v);
+                    }
+                    None => {
+                        for i in 0..FRAME {
+                            pyramid.push(0, slot_out * FRAME + i, 0);
+                        }
+                        write_pkt(&mut container, &[]);
+                        profile.extend_from_slice(&256u16.to_le_bytes());
+                        profile.push(0);
+                    }
+                }
+                continue;
+            }
+            // A wire channel: its two 5 ms cells verbatim — the packet as it arrived (or was served), a hole as a zero-length packet. The decode is for the envelope only; a PCM cell is the one thing encoded here.
+            for half in 0..2 {
+                let slot_in = slot_out * 2 + half;
+                let cell = if slot_in < slots && ch < gr_nchan { grid[ch][slot_in].as_ref() } else { None };
+                let pcm = decode_slot_n(&mut decs[ch], &cell.cloned(), FRAME_IN);
+                for (i, &s) in pcm.iter().enumerate() {
+                    pyramid.push(ch, slot_out * FRAME + half * FRAME_IN + i, s);
+                }
+                match cell {
+                    Some(Cell::Opus(bytes)) => write_pkt(&mut container, bytes),
+                    Some(Cell::Pcm(..)) => {
+                        let enc = match fallback_encs[ch].as_mut() {
+                            Some(e) => e,
+                            None => {
+                                let mut e = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).ok()?;
+                                let _ = e.set_vbr(true);
+                                let _ = e.set_bitrate(opus::Bitrate::Bits(FALLBACK_KBPS));
+                                fallback_encs[ch] = Some(e);
+                                fallback_encs[ch].as_mut()?
                             }
-                            write_pkt(&mut container, &[]);
-                            profile.extend_from_slice(&256u16.to_le_bytes());
-                            profile.push(0);
+                        };
+                        match enc.encode(&pcm, &mut pkt) {
+                            Ok(n) => write_pkt(&mut container, &pkt[..n]),
+                            Err(_) => write_pkt(&mut container, &[]),
                         }
                     }
-                    continue;
+                    None => write_pkt(&mut container, &[]),
                 }
-                let mut pcm = vec![0i16; FRAME];
-                for half in 0..2 {
-                    let slot_in = slot_out * 2 + half;
-                    let p = if slot_in < slots && ch < gr_nchan {
-                        decode_slot_n(&mut decs[ch], &grid[ch][slot_in], FRAME_IN)
-                    } else {
-                        vec![0i16; FRAME_IN]
-                    };
-                    pcm[half * FRAME_IN..half * FRAME_IN + FRAME_IN].copy_from_slice(&p);
-                }
-                for (i, &s) in pcm.iter().enumerate() {
-                    pyramid.push(ch, slot_out * FRAME + i, s);
-                }
-                let n = encs[ch].encode(&pcm, &mut pkt).ok()?;
-                write_pkt(&mut container, &pkt[..n]);
             }
         }
     }
@@ -516,18 +521,19 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         return None;
     }
     // The container carries NO envelope since the wave.env exchange (2026-09-12): env_len writes 0 and the envelope lives as a standalone VSF tensor blob per party. The header keeps the field so the layout is unchanged.
-    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V7.len() + 22 + container.len());
-    out.extend_from_slice(CONTAINER_MAGIC_V7);
+    let mut out = Vec::with_capacity(CONTAINER_MAGIC_V8.len() + 22 + nchan + 4 + profile.len() + container.len());
+    out.extend_from_slice(CONTAINER_MAGIC_V8);
     out.push(nchan as u8);
     out.extend_from_slice(&48_000u32.to_le_bytes());
     out.extend_from_slice(&base.to_le_bytes());
     out.extend_from_slice(&(slots_out as u32).to_le_bytes());
     out.push(ENV_PER_SEC as u8);
     out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&subs);
     out.extend_from_slice(&(profile.len() as u32).to_le_bytes());
     out.extend_from_slice(&profile);
     out.extend_from_slice(&container);
-    // Our OWN channel's shareable envelope (ch0 = the raw mic): minted here where the samples were just decoded anyway; a short wave (< ENV_MIN_SHARE_SAMPLES) ships none by design.
+    // Our OWN channel's shareable envelope (ch0 = the clean mic): minted here where the samples were just decoded anyway; a short wave (< ENV_MIN_SHARE_SAMPLES) ships none by design.
     let env = if pyramid.total_samples >= ENV_MIN_SHARE_SAMPLES {
         pyramid.finish_u8(0).map(|(bins, peak_q48, data)| crate::call::wave_env::write(48_000, 1u32 << pyramid.s_log2, bins, peak_q48, &data))
     } else {
@@ -548,11 +554,12 @@ pub struct KeptStream {
 }
 
 enum Inner {
-    /// PHCALL6: nchan mono decoders, `nchan` packets per slot.
+    /// PHCALL7/8: nchan mono decoders; per slot each channel carries `subs[ch]` packets (1 = a 10 ms packet, 2 = two 5 ms packets).
     Multi {
         bytes: Vec<u8>,
         cur: usize,
         decs: Vec<opus::Decoder>,
+        subs: Vec<u8>,
     },
     /// Live-spool grid (the Ended-screen PREVIEW path): 5ms input slots, slot-iterated + interleaved on the fly.
     Grid {
@@ -562,22 +569,43 @@ enum Inner {
     },
 }
 
-/// Open a kept-call blob for playback — `PHCALL6` only (PHCALL1-5 read support deleted with their flag days, no backwards compat — unknown magic is unknown magic). `None` on unknown magic or codec init failure.
+/// Open a kept-call blob for playback — `PHCALL8` (the verbatim keep) and `PHCALL7` (the waves kept before it). PHCALL1-6 read support deleted with their flag days, no backwards compat — unknown magic is unknown magic. `None` on unknown magic or codec init failure.
 pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
-    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC_V7 {
+    if bytes.len() < 8 + 22 {
+        return None;
+    }
+    let v8 = &bytes[..8] == CONTAINER_MAGIC_V8;
+    if !v8 && &bytes[..8] != CONTAINER_MAGIC_V7 {
         return None;
     }
     let nchan = bytes[8] as usize;
-    // header: [nchan u8][rate u32][base i64][slots u32][env_per_sec u8][env_len u32] = 22 bytes after magic; envelope then packets follow.
+    // header: [nchan u8][rate u32][base i64][slots u32][env_per_sec u8][env_len u32] = 22 bytes after magic; V8 then names each channel's packets per slot; the envelope region (always empty now) and the profile follow, then the packets.
     let total = u32::from_le_bytes(bytes[8 + 13..8 + 17].try_into().ok()?) as usize;
     let env_per_sec = bytes[8 + 17];
     let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
-    let env_end = 8 + 22 + nchan * env_len * ENV_COMPONENTS;
-    if bytes.len() < env_end + 4 || nchan == 0 {
+    if nchan == 0 {
         return None;
     }
-    let envelope = bytes[8 + 22..env_end].to_vec();
-    // The ducking profile (V7): present for playback-side reconstruction later, skipped by every current reader.
+    let mut at = 8 + 22;
+    let subs: Vec<u8> = if v8 {
+        if bytes.len() < at + nchan {
+            return None;
+        }
+        let v = bytes[at..at + nchan].to_vec();
+        at += nchan;
+        if v.iter().any(|&s| s != 1 && s != 2) {
+            return None;
+        }
+        v
+    } else {
+        vec![1; nchan]
+    };
+    let env_end = at + nchan * env_len * ENV_COMPONENTS;
+    if bytes.len() < env_end + 4 {
+        return None;
+    }
+    let envelope = bytes[at..env_end].to_vec();
+    // The ducking profile: present for playback-side reconstruction later, skipped by every current reader.
     let prof_len = u32::from_le_bytes(bytes[env_end..env_end + 4].try_into().ok()?) as usize;
     if bytes.len() < env_end + 4 + prof_len {
         return None;
@@ -587,6 +615,7 @@ pub fn open_blob(bytes: &[u8]) -> Option<KeptStream> {
         bytes: body,
         cur: 0,
         decs: (0..nchan).map(|_| mono_decoder()).collect::<Option<_>>()?,
+        subs,
     };
     Some(KeptStream { nchan, total, envelope, env_per_sec, inner })
 }
@@ -617,9 +646,10 @@ impl KeptStream {
         let start = slot.saturating_sub(SEEK_PRIME);
         let nchan = self.nchan;
         match &mut self.inner {
-            Inner::Multi { bytes, cur, decs } => {
+            Inner::Multi { bytes, cur, decs, subs } => {
                 *cur = 0;
-                for _ in 0..start * nchan {
+                let per_slot: usize = subs.iter().map(|&s| s as usize).sum();
+                for _ in 0..start * per_slot {
                     if read_pkt(bytes, cur).is_none() {
                         return;
                     }
@@ -646,19 +676,27 @@ impl KeptStream {
     pub fn next_frame(&mut self) -> Option<Vec<i16>> {
         let nchan = self.nchan;
         match &mut self.inner {
-            Inner::Multi { bytes, cur, decs } => {
+            Inner::Multi { bytes, cur, decs, subs } => {
                 let mut out = vec![0i16; FRAME * nchan];
-                for ch in 0..nchan {
-                    let Some(opus) = read_pkt(bytes, cur) else {
-                        if ch == 0 {
-                            return None; // clean end on a slot boundary
+                'slot: for ch in 0..nchan {
+                    let sub = subs[ch] as usize;
+                    let frame = FRAME / sub;
+                    for k in 0..sub {
+                        let Some(opus) = read_pkt(bytes, cur) else {
+                            if ch == 0 && k == 0 {
+                                return None; // clean end on a slot boundary
+                            }
+                            break 'slot; // truncated tail mid-slot — emit what we have
+                        };
+                        // A zero-length packet is a hole: silence, and the decoder is left untouched (no frame was ever encoded there — the gap is genuine), so the next real packet decodes in step.
+                        if opus.is_empty() {
+                            continue;
                         }
-                        break; // truncated tail mid-slot — emit what we have
-                    };
-                    let mut pcm = vec![0i16; FRAME];
-                    let _ = decs[ch].decode(opus, &mut pcm, false);
-                    for (i, &s) in pcm.iter().enumerate() {
-                        out[i * nchan + ch] = s;
+                        let mut pcm = vec![0i16; frame];
+                        let _ = decs[ch].decode(opus, &mut pcm, false);
+                        for (i, &s) in pcm.iter().enumerate() {
+                            out[(k * frame + i) * nchan + ch] = s;
+                        }
                     }
                 }
                 Some(out)
@@ -756,7 +794,7 @@ mod tests {
 
     #[test]
     fn transcode_round_trips_to_stereo() {
-        // Build two directions of encoded frames, transcode to a PHCALL6 container, reopen, assert stereo + audible. No storage/vault (build_container is the transcode core).
+        // Build two directions of encoded frames, repack to a PHCALL8 container, reopen, assert stereo + audible. No storage/vault (build_container is the keep core).
         let mut enc =
             opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
         let mut buf = vec![0u8; 4000];
@@ -776,7 +814,7 @@ mod tests {
         // 10 archive slots = 4800 samples, under ENV_MIN_SHARE_SAMPLES — a short wave ships no envelope by design; the receiver derives it from the audio.
         assert!(t.env.is_none(), "a short wave must not mint a wave.env");
         let container = t.container;
-        assert_eq!(&container[..8], CONTAINER_MAGIC_V7);
+        assert_eq!(&container[..8], CONTAINER_MAGIC_V8);
         let envs = envelopes_from_blob(&container).expect("derive from audio");
         assert_eq!(envs.len(), 2);
         assert!(envs[0].bins > 0 && envs[0].data.iter().any(|&b| b > 0), "derived envelope shows no signal");
@@ -857,7 +895,7 @@ mod tests {
 
     #[test]
     fn archive_records_keep_verbatim() {
-        // The ordering fix: channel 0's container packets are the spooled ARCHIVE packets byte-for-byte (no re-encode), and the ducking profile rides the header region.
+        // The ordering fix + the verbatim keep: channel 0's container packets are the spooled ARCHIVE packets byte-for-byte, channel 1's are the WIRE packets byte-for-byte (no re-encode anywhere), and the ducking profile rides the header region.
         use crate::call::spool::{ARCH_CHAN, PROC_FLAG};
         let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
         let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
@@ -870,39 +908,92 @@ mod tests {
             arch_pkts.push(buf[..n].to_vec());
             records.push(Record { chan: ARCH_CHAN | PROC_FLAG, osc: i * (ops / 100), seq: Some((i as u32, 0)), proc: Some((300, 1)), bytes: buf[..n].to_vec() });
         }
-        // A remote channel too, 5ms wire pairs.
+        // A remote channel too, 5ms wire pairs — kept verbatim since PHCALL8.
         let mut wenc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        let mut wire_pkts: Vec<Vec<u8>> = Vec::new();
         for i in 0..20i64 {
             let tone: Vec<i16> = (0..FRAME_IN).map(|s| ((s as f32 * 0.11).sin() * 3000.0) as i16).collect();
             let n = wenc.encode(&tone, &mut buf).unwrap();
+            wire_pkts.push(buf[..n].to_vec());
             records.push(Record { chan: 1, osc: i * (ops / 200), seq: None, proc: None, bytes: buf[..n].to_vec() });
         }
         let t = build_container(&records).unwrap();
         let c = &t.container;
-        assert_eq!(&c[..8], CONTAINER_MAGIC_V7);
+        assert_eq!(&c[..8], CONTAINER_MAGIC_V8);
         let nchan = c[8] as usize;
         assert_eq!(nchan, 2);
         let slots_out = u32::from_le_bytes(c[8 + 13..8 + 17].try_into().unwrap()) as usize;
         assert_eq!(slots_out, 10);
-        let prof_len = u32::from_le_bytes(c[8 + 22..8 + 26].try_into().unwrap()) as usize;
+        // V8: packets per slot per channel — the archive channel one 10 ms packet, the wire channel two 5 ms packets.
+        assert_eq!(&c[8 + 22..8 + 24], &[1, 2]);
+        let prof_at = 8 + 24;
+        let prof_len = u32::from_le_bytes(c[prof_at..prof_at + 4].try_into().unwrap()) as usize;
         assert_eq!(prof_len, slots_out * 3, "one profile entry per slot");
-        let prof = &c[8 + 26..8 + 26 + prof_len];
+        let prof = &c[prof_at + 4..prof_at + 4 + prof_len];
         assert_eq!(u16::from_le_bytes(prof[0..2].try_into().unwrap()), 300);
         assert_eq!(prof[2], 1);
-        // Walk the packets: slot-major, ch0 then ch1; ch0 must be the archive bytes verbatim.
-        let mut cur = 8 + 26 + prof_len;
-        for pkt in arch_pkts.iter().take(slots_out) {
-            let read = |cur: &mut usize| -> Vec<u8> {
-                let n = u16::from_le_bytes(c[*cur..*cur + 2].try_into().unwrap()) as usize;
-                *cur += 2;
-                let b = c[*cur..*cur + n].to_vec();
-                *cur += n;
-                b
-            };
+        // Walk the packets: slot-major, ch0 (one packet) then ch1 (two packets); ch0 must be the archive bytes verbatim and ch1 the wire packets verbatim — THE VERBATIM KEEP: nothing re-encoded on either side.
+        let mut cur = prof_at + 4 + prof_len;
+        let read = |cur: &mut usize| -> Vec<u8> {
+            let n = u16::from_le_bytes(c[*cur..*cur + 2].try_into().unwrap()) as usize;
+            *cur += 2;
+            let b = c[*cur..*cur + n].to_vec();
+            *cur += n;
+            b
+        };
+        for (slot, pkt) in arch_pkts.iter().take(slots_out).enumerate() {
             let ch0 = read(&mut cur);
-            let _ch1 = read(&mut cur);
             assert_eq!(&ch0, pkt, "channel 0 must carry the archive packet untouched");
+            let a = read(&mut cur);
+            let b = read(&mut cur);
+            assert_eq!(a, wire_pkts[slot * 2], "channel 1 must carry the wire packet untouched");
+            assert_eq!(b, wire_pkts[slot * 2 + 1]);
         }
+        assert_eq!(cur, c.len(), "nothing after the last slot");
+        // And it plays: two channels, ten frames, audible on both.
+        let mut ks = open_blob(c).unwrap();
+        let mut frames = 0;
+        let (mut e0, mut e1) = (0i64, 0i64);
+        while let Some(f) = ks.next_frame() {
+            e0 += f.iter().step_by(2).map(|&s| s.unsigned_abs() as i64).sum::<i64>();
+            e1 += f.iter().skip(1).step_by(2).map(|&s| s.unsigned_abs() as i64).sum::<i64>();
+            frames += 1;
+        }
+        assert_eq!(frames, 10);
+        assert!(e0 > 0 && e1 > 0, "both channels decode ({e0}, {e1})");
+    }
+
+    #[test]
+    fn a_hole_in_the_wire_channel_is_a_zero_length_packet_and_plays_as_silence() {
+        use crate::call::spool::{ARCH_CHAN, PROC_FLAG};
+        let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        let mut buf = vec![0u8; 4000];
+        let mut records: Vec<Record> = Vec::new();
+        for i in 0..4i64 {
+            let tone: Vec<i16> = (0..FRAME).map(|s| ((s as f32 * 0.07).sin() * 6000.0) as i16).collect();
+            let n = enc.encode(&tone, &mut buf).unwrap();
+            records.push(Record { chan: ARCH_CHAN | PROC_FLAG, osc: i * (ops / 100), seq: Some((i as u32, 0)), proc: Some((256, 0)), bytes: buf[..n].to_vec() });
+        }
+        // Remote: windows 0 and 2 arrived (two frames each), window 1 was lost and never filled.
+        let mut wenc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        for (seq, slot0) in [(0u32, 0i64), (2, 4)] {
+            for k in 0..2i64 {
+                let tone: Vec<i16> = (0..FRAME_IN).map(|s| ((s as f32 * 0.11).sin() * 3000.0) as i16).collect();
+                let n = wenc.encode(&tone, &mut buf).unwrap();
+                records.push(Record { chan: 1, osc: (slot0 + k) * (ops / 200), seq: Some((seq, k as u8)), proc: None, bytes: buf[..n].to_vec() });
+            }
+        }
+        let t = build_container(&records).unwrap();
+        let mut ks = open_blob(&t.container).unwrap();
+        let mut frames = Vec::new();
+        while let Some(f) = ks.next_frame() {
+            frames.push(f);
+        }
+        assert_eq!(frames.len(), 4);
+        let ch1_energy = |f: &Vec<i16>| f.iter().skip(1).step_by(2).map(|&s| s.unsigned_abs() as i64).sum::<i64>();
+        assert!(ch1_energy(&frames[0]) > 0 && ch1_energy(&frames[2]) > 0);
+        assert_eq!(ch1_energy(&frames[1]), 0, "the lost window is silence, not a guess");
     }
 
     #[test]

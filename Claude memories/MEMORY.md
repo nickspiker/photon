@@ -94,7 +94,7 @@
 
 ## Shipped arcs (hooks)
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP phases 1-6 shipped 2026-08-20
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 PHCALL7: clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 PHCALL7: clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons; PHCALL8 2026-09-17 = verbatim keep (no transcode, holes stay holes)
 - [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/calls.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes

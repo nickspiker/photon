@@ -3262,15 +3262,24 @@ impl PhotonApp {
                             .filter(|m| chat_row_visible(raw_msgs, m, conv_filter))
                             .collect();
                         let n = visible.len();
-                        // The recording that folds into each wave row's card: wave row ts → the live call.audio row referencing it (RefKind::Wave).
-                        let rec_over: std::collections::HashMap<i64, &crate::types::ChatMessage> = raw_msgs
-                            .iter()
-                            .filter(|m| !m.deleted && crate::types::is_call_recording(&m.content))
-                            .filter_map(|m| match m.reference {
-                                Some((crate::types::RefKind::Wave, t)) => Some((t, m)),
-                                _ => None,
-                            })
-                            .collect();
+                        // The recording that folds into each wave row's card: wave row ts → the live call.audio row referencing it (RefKind::Wave). TWO recordings for one wave (field 2026-09-17: the phone minted a second keep of the same wave 75 s after the first) fold to the one HELD here, then the larger — never "the last row the walk met", which read "fetch" on the very device that made the wave.
+                        let rec_over: std::collections::HashMap<i64, &crate::types::ChatMessage> = {
+                            let mut m: std::collections::HashMap<i64, &crate::types::ChatMessage> = std::collections::HashMap::new();
+                            let rank = |r: &crate::types::ChatMessage| -> (bool, u64) {
+                                crate::types::parse_attachment_content(&r.content).map_or((false, 0), |(h, _, size)| (crate::storage::blob_present(&h), size))
+                            };
+                            for r in raw_msgs.iter().filter(|r| !r.deleted && crate::types::is_call_recording(&r.content)) {
+                                if let Some((crate::types::RefKind::Wave, t)) = r.reference {
+                                    match m.get(&t) {
+                                        Some(cur) if rank(cur) >= rank(r) => {}
+                                        _ => {
+                                            m.insert(t, r);
+                                        }
+                                    }
+                                }
+                            }
+                            m
+                        };
                         // The wave.env rows that fold into each card: wave ts → (our env blob hash, their env blob hash) — each party's own shared 3-channel tensor (call/wave_env.rs).
                         let env_over: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = {
                             let mut m: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = std::collections::HashMap::new();
