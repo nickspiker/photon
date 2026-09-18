@@ -131,6 +131,7 @@
 
 ## References
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
+- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes (spirix glyph formatter): dozenal test red 3 days, v99 shipped ASCII dozenal digits; ff-only ALL path siblings before any build here
 - [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail with rewritten history: verify vs origin, reset --hard, fast-forward ALL sibling deps together ([project_two_machine_git_divergence.md](project_two_machine_git_divergence.md))
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; restore untouched, style commit separate
 - [VSF TOC section-name trap](vsf-toc-section-name-trap.md) — section names live in the header TOC; bare parse gives name=""
