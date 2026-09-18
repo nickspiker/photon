@@ -80,7 +80,7 @@
 - [project_rarangi_messages_fleet.md](project_rarangi_messages_fleet.md) — rows: table=friendship_id, pk=monotonic u64; fleet=a conversation
 - [project_avatar_encryption_wall.md](project_avatar_encryption_wall.md) — avatars v'e'-encrypted per-handle; admin can't decrypt
 - [project_vsf_canonical_signing.md](project_vsf_canonical_signing.md) — ONE VSF signing scheme: ge over BLAKE3(file, ge zeroed)
-- [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc-time = clock validator; one load-bearing use (update stamp)
+- [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc consensus IS photon's time base (BOOTTIME anchor); v99: a server window refusal re-anchors + retries, worker logs refusals with device
 - [project_theme_rec2020.md](project_theme_rec2020.md) — theme colours VSF RGB thru vsf_rgb_to_bt2020; Rec.2020 out everywhere
 - [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset mirror + ime_lift)
 - [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor; jitter slack 80 ms + setpoint 1/512; session ownership + HANDOVER lock; never `git add -A` (shared tree)
