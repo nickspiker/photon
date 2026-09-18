@@ -4843,16 +4843,19 @@ impl PhotonApp {
                     // A hole-punch (or keepalive) round-tripped. Record/refresh it on the matching contact (any device in the friend's fleet) so `race_addrs` prefers this direct path, keeping the public/LAN as the alternate. First-wins on the address (we stop full-punching once a path is set, so among a single cycle's candidates the first to round-trip — ≈ the lowest-latency path — wins); the timestamp is refreshed on every ack for that same path (keepalive liveness). Any validation clears the graceful-failure counter.
                     let now = std::time::Instant::now();
                     let mut refire: Option<usize> = None;
-                    if let Some((idx, contact)) = self
+                    // Never validate the unspecified sentinel (0.0.0.0 / ::) — that's the RELAY_ADDR a relayed message carries, and a punch to it round-trips locally. Validating it poisons addressing: sends go nowhere and relay_to empties out because validated_path looks Some (a peer's proof vanished exactly this way). Bail before touching any state.
+                    if remote.ip().is_unspecified() {
+                        continue;
+                    }
+                    // EVERY row that knows the device takes the ack, not the first one (field 2026-09-18, Nick: the Mac "shows online now but thru a relay altho the other direction shows direct").
+                    // An OWN device is known by two rows — the self row thru its fleet fold and the device's sibling row — and a first-match `find` handed the Mac's punch ack to whichever sat first in `contacts`: the self row took it, the Mac's sibling row kept `validated_path None`, and the Fleet page painted Relay while PT was already retargeting its queue onto the proven v6 path.
+                    // Same defect the presence arm had (its `break`); the per-row bookkeeping below is meant to run once per row.
+                    for (idx, contact) in self
                         .contacts
                         .iter_mut()
                         .enumerate()
-                        .find(|(_, c)| c.knows_device(&peer_pubkey.key))
+                        .filter(|(_, c)| c.knows_device(&peer_pubkey.key))
                     {
-                        // Never validate the unspecified sentinel (0.0.0.0 / ::) — that's the RELAY_ADDR a relayed message carries, and a punch to it round-trips locally. Validating it poisons addressing: sends go nowhere and relay_to empties out because validated_path looks Some (a peer's proof vanished exactly this way). Bail before touching any state.
-                        if remote.ip().is_unspecified() {
-                            continue;
-                        }
                         contact.punch_unvalidated_cycles = 0;
                         // A direct path just proved out — this contact is no longer relay-only, so drop the lime-yellow and show normal green.
                         contact.reached_via_relay = false;
