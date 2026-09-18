@@ -38,6 +38,7 @@
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows → double encap → deterministic proof mismatch → zombie → re-run; fixed (our_party_id); field verify pending; ghost 1be949c1 retire flow still open
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
+- [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent: bare-rect click-thru vs band-inflated region + un-kicked re-entry poll; FIXED in fluor (hittable_rect + entry-edge wake) 2026-09-18, field test PENDING
 - [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows port not built; macOS drag-to-monitor VANISHES (pinned)
 - [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design PINNED (unnotified flag + one-active-clearer)
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted Jennifer's Windows dark-theme search text
