@@ -147,6 +147,7 @@ class PhotonConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        PhotonLog.installCrashLogger()
         live = this
         createNotificationChannel()
         val wifi = applicationContext.getSystemService(WIFI_SERVICE) as android.net.wifi.WifiManager

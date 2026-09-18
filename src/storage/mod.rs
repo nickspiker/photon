@@ -468,13 +468,40 @@ pub fn blob_chunk_load(chunk_hash: &[u8; 32]) -> Option<Vec<u8>> {
     (blake3::hash(&plain).as_bytes() == chunk_hash).then_some(plain)
 }
 
-/// Whether the blob for `content_hash` is held locally — stored-bytes presence, NO decrypt (render-path cheap): one vault presence probe for a whole-value blob, a hash-set lookup for a chunked blob already proven complete, and the manifest walk once per session otherwise. False before a session exists.
+/// Whether the blob for `content_hash` is KNOWN to be held locally — a cache lookup and nothing else. NEVER a vault call (field 2026-09-18, the ANR: the UI thread parked inside a vault round trip while 1.4 s chunk commits of an incoming 142 MB wave flushed, and a chunked recording's presence walk was 545 such round trips per frame — "render took 10103ms on Conversation"). A hash nobody has probed yet reads `false` here and joins [`take_presence_wanted`]'s list; the UI tick hands that list to a worker ([`blob_present_probe_now`]), which fills the cache and repaints. Callers that must not act on a provisional `false` (a fetch, a decode) read [`blob_present_known`] and wait on `None`.
 pub fn blob_present(content_hash: &[u8; 32]) -> bool {
+    blob_present_known(content_hash) == Some(true)
+}
+
+/// The cache's answer as it stands: `Some(held)` after a probe, `None` while one is pending (queued here). Layout and pill labels take [`blob_present_or_pending`]; anything with a side effect waits for `Some`.
+pub fn blob_present_known(content_hash: &[u8; 32]) -> Option<bool> {
     if let Some(known) = BLOB_PRESENCE.lock().unwrap().as_ref().and_then(|m| m.get(content_hash).copied()) {
-        return known;
+        return Some(known);
     }
+    // No session yet: nothing to probe and nothing to remember — the answer changes the moment the session opens.
+    if blob_addr(content_hash).is_none() || device_vault_if_open().is_none() {
+        return None;
+    }
+    let mut w = PRESENCE_WANTED.lock().unwrap();
+    if !w.contains(content_hash) {
+        w.push(*content_hash);
+    }
+    None
+}
+
+/// Held, or not yet known — the optimistic reading for what the screen DRAWS (a Play pill, a picture band): a held blob must not flash "fetch" for the frame its probe takes on a cold cache, and a missing one turns to fetch the moment the probe lands.
+pub fn blob_present_or_pending(content_hash: &[u8; 32]) -> bool {
+    blob_present_known(content_hash).unwrap_or(true)
+}
+
+/// Hashes whose presence a caller asked about with no cached answer — the UI tick takes them to a worker that runs [`blob_present_probe_now`] on each.
+pub fn take_presence_wanted() -> Vec<[u8; 32]> {
+    std::mem::take(&mut *PRESENCE_WANTED.lock().unwrap())
+}
+
+/// The probe itself — vault reads, so OFF the UI thread (the presence worker, the chunk receive job, the row-landing fetch gate): one stored-bytes probe for a whole-value blob, the manifest walk for a chunked one; the answer is cached either way.
+pub fn blob_present_probe_now(content_hash: &[u8; 32]) -> bool {
     let (Some(v), Some(addr)) = (device_vault(), blob_addr(content_hash)) else {
-        // No vault or no name key yet: nothing to remember — the answer changes the moment the session opens.
         return false;
     };
     let present = blob_present_probe(&v, &addr, content_hash);
@@ -482,10 +509,13 @@ pub fn blob_present(content_hash: &[u8; 32]) -> bool {
     present
 }
 
-/// The session-wide answer cache behind [`blob_present`]: the conversation render asks several times per attachment row per frame (progress bar, meta line, strip pill, image band, viewer pills), and each uncached ask is a vault probe under the vault mutex — for a chunked blob a manifest read plus one probe per chunk. Field: ~1.1 s per frame on a conversation holding one attachment (PERF: render stages, 2026-09-10). Every write path that can change the answer forgets its hash ([`blob_presence_forget`]); a chunk landing forgets its PARENT hash at the receive site, since the chunk store only knows the chunk.
+/// The session-wide answer cache behind [`blob_present`]: the conversation render asks several times per attachment row per frame (progress bar, meta line, strip pill, image band, viewer pills), and each uncached ask is a vault round trip — so only the worker ever fills it.
 static BLOB_PRESENCE: std::sync::Mutex<Option<std::collections::HashMap<[u8; 32], bool>>> = std::sync::Mutex::new(None);
 
-/// Drop the remembered presence answer for `content_hash` (the next [`blob_present`] probes the vault again). Called by every blob write/delete here, and by the chunk receive path for the blob the chunk belongs to.
+/// Hashes waiting for a probe (see [`blob_present_known`]).
+static PRESENCE_WANTED: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());
+
+/// Drop the remembered presence answer for `content_hash` (the next ask queues a probe). Called by every blob write/delete here, and by the chunk receive path for the blob the chunk belongs to.
 pub fn blob_presence_forget(content_hash: &[u8; 32]) {
     if let Some(m) = BLOB_PRESENCE.lock().unwrap().as_mut() {
         m.remove(content_hash);
@@ -955,9 +985,14 @@ mod tests {
         let p2 = vec![0xAB; 300_000];
         let h2 = *blake3::hash(&p2).as_bytes();
         blob_store(&identity, &h2, &p2).unwrap();
-        assert!(blob_present(&h2));
+        // The render-side ask is a cache lookup and queues the probe; the probe itself is what answers from the vault.
+        assert_eq!(blob_present_known(&h2), None);
+        assert!(take_presence_wanted().contains(&h2));
+        assert!(blob_present_probe_now(&h2));
+        assert!(blob_present(&h2), "the probe's answer is cached");
         assert_eq!(blob_load(&identity, &h2), Some(p2));
         blob_delete(&h2);
+        assert!(!blob_present_probe_now(&h2));
         assert!(!blob_present(&h2));
     }
 

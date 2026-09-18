@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Opening a conversation no longer waits on the vault: whether an attachment or a wave recording is held here is answered from memory and checked in the background, so a conversation opens at once even while a large wave is still arriving (the phone used to freeze for seconds, and once until Android killed it, while it re-checked all 545 pieces of a recording behind every incoming piece); and a crash on the Android side now writes its own stack into the log before the app dies, so the next "random close" can be read.
 ## v99
 
 - A phone whose clock is off by more than a minute no longer gets stuck at "timestamp outside valid window": the server's refusal now says whether you are ahead or behind and carries its own clock, photon adopts that as its time base on the spot and sends again — for log submissions and for attesting alike — and the server keeps a note of every such refusal so the cause can be read later.

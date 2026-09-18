@@ -44,6 +44,7 @@ impl PhotonApp {
         // Picked files the preparation worker finished (kind, dims, micro preview) → row + blob send.
         timed_drain!("attach_prep", self.drain_attach_prepared());
         // Decoded attachment pictures → the cache; preview wants → decode jobs / fetches.
+        timed_drain!("presence", self.drain_presence_probes());
         timed_drain!("img_decoded", self.drain_img_decoded());
         timed_drain!("img_view", self.drain_img_view());
         timed_drain!("img_wants", self.drain_img_wants());
@@ -3520,7 +3521,7 @@ impl PhotonApp {
                                         Ok(()) => {
                                             // The chunk store forgot the CHUNK's presence; the blob it belongs to is what the render asks about.
                                             crate::storage::blob_presence_forget(&content_hash);
-                                            let complete = crate::storage::blob_present(&content_hash);
+                                            let complete = crate::storage::blob_present_probe_now(&content_hash);
                                             let _ = tx.send(AttachInstalled {
                                                 sniffed: (index == 0).then(|| crate::types::sniff(&plain, &sniff_name)),
                                                 manifest: None,

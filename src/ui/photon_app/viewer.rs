@@ -65,7 +65,7 @@ pub(super) fn audio_band_lines_of(m: &crate::types::ChatMessage) -> usize {
     let Some((h, _, _)) = crate::types::parse_attachment_content(&m.content) else {
         return 0;
     };
-    if crate::storage::blob_present(&h) { super::render::IMG_PREVIEW_LINES } else { 0 }
+    if crate::storage::blob_present_or_pending(&h) { super::render::IMG_PREVIEW_LINES } else { 0 }
 }
 
 /// The picture shown while the original decodes: (w, h, pixels) — the preview blob, else the row's micro thumb (found in `msgs`, the open conversation's rows).
@@ -108,11 +108,16 @@ impl PhotonApp {
             return;
         }
         let (ci, hash, name, kind) = (v.ci, v.hash, v.name.clone(), v.kind);
-        if !crate::storage::blob_present(&hash) {
-            if self.attach_auto_fetched.insert(hash) {
-                self.attach_fetch(ci, &hash);
+        match crate::storage::blob_present_known(&hash) {
+            Some(true) => {}
+            Some(false) => {
+                if self.attach_auto_fetched.insert(hash) {
+                    self.attach_fetch(ci, &hash);
+                }
+                return;
             }
-            return;
+            // The probe is on its way; the tick asks again.
+            None => return,
         }
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
@@ -251,6 +256,33 @@ impl PhotonApp {
             self.scene_dirty = true;
         }
         was
+    }
+
+    /// PRESENCE PROBES OFF THE UI THREAD (field 2026-09-18, the ANR): every hash the render asked about with no cached answer goes to the seal worker in one job; when it reports back the wrap re-measures (a band may have appeared) and the screen repaints. The render never waits on the vault for a presence answer again.
+    pub(super) fn drain_presence_probes(&mut self) {
+        let mut landed = false;
+        while self.presence_rx.try_recv().is_ok() {
+            landed = true;
+        }
+        if landed {
+            self.msg_wrap = None;
+            self.scene_dirty = true;
+        }
+        let wanted = crate::storage::take_presence_wanted();
+        if wanted.is_empty() {
+            return;
+        }
+        let tx = self.presence_tx.clone();
+        let wake = self.event_proxy.clone();
+        queue_job(&self.seal_job_tx, move || {
+            for h in &wanted {
+                crate::storage::blob_present_probe_now(h);
+            }
+            let _ = tx.send(());
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+            }
+        });
     }
 
     /// Decoded previews the worker finished: into the cache (a failure is remembered as None so the walk stops asking), the wrap re-measures (the band grows to the preview size).

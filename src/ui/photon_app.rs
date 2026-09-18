@@ -764,12 +764,12 @@ fn display_row(msg: &crate::types::ChatMessage) -> String {
     if let (Some(a), Some((hash, name, _size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
         if name.as_str() != "call.audio" {
             if a.kind.is_image() {
-                let has_visual = crate::types::parse_micro_image(&msg.preview).is_some() || a.preview_hash.is_some() || crate::storage::blob_present(&hash);
+                let has_visual = crate::types::parse_micro_image(&msg.preview).is_some() || a.preview_hash.is_some() || crate::storage::blob_present_or_pending(&hash);
                 return if has_visual { String::new() } else { "\u{2026}".to_string() };
             }
             // A music pigeon is its waveform alone, like a picture is its picture (Nick 2026-09-12: "no name, just like images, just the waveform").
             if a.kind == crate::types::AttachKind::Audio {
-                return if crate::storage::blob_present(&hash) { String::new() } else { "\u{2026}".to_string() };
+                return if crate::storage::blob_present_or_pending(&hash) { String::new() } else { "\u{2026}".to_string() };
             }
             if a.kind.is_text() && !msg.preview.is_empty() {
                 let text = String::from_utf8_lossy(&msg.preview);
@@ -787,7 +787,7 @@ fn display_row(msg: &crate::types::ChatMessage) -> String {
 fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let size_str = crate::types::size_label(size);
-        let held = crate::storage::blob_present(&hash);
+        let held = crate::storage::blob_present_or_pending(&hash);
         if name == "call.audio" {
             // A kept call recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
             //  - ▶ (U+25B6) replaces the paperclip: 📎 (U+1F4CE) has no glyph in the bubble font and rendered as a tofu rectangle; ▶ IS covered (the Ended panel's Play button uses it).
@@ -1408,6 +1408,9 @@ pub struct PhotonApp {
     img_pending: std::collections::HashSet<[u8; 32]>,
     img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
     img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
+    /// Presence probes landed (viewer.rs drain_presence_probes) — the wrap re-measures and the screen repaints.
+    presence_tx: std::sync::mpsc::Sender<()>,
+    presence_rx: std::sync::mpsc::Receiver<()>,
     /// The viewer's decode from the worker — opsin's folded `Loaded`, or why it failed (viewer.rs drain_img_view).
     img_view_tx: std::sync::mpsc::Sender<([u8; 32], Result<opsin::view::Loaded, String>)>,
     img_view_rx: std::sync::mpsc::Receiver<([u8; 32], Result<opsin::view::Loaded, String>)>,
@@ -2396,6 +2399,11 @@ impl PhotonApp {
                 tx
             },
             img_decoded_rx: std::sync::mpsc::channel().1,
+            presence_tx: {
+                let (tx, _) = std::sync::mpsc::channel();
+                tx
+            },
+            presence_rx: std::sync::mpsc::channel().1,
             img_view_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

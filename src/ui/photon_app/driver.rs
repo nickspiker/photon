@@ -4056,6 +4056,9 @@ impl PhotonApp {
             let (ivtx, ivrx) = std::sync::mpsc::channel();
             self.img_view_tx = ivtx;
             self.img_view_rx = ivrx;
+            let (prtx, prrx) = std::sync::mpsc::channel();
+            self.presence_tx = prtx;
+            self.presence_rx = prrx;
             let (hptx, hprx) = std::sync::mpsc::channel();
             self.hist_opened_tx = hptx;
             self.hist_opened_rx = hprx;

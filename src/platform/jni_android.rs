@@ -1283,6 +1283,13 @@ pub extern "C" fn Java_com_photon_messenger_PhotonMessagingService_nativeSetFcmT
 
 // ============================================================================
 
+/// `PhotonLog.flush()` — the buffered records to disk now; the Kotlin crash logger calls it between logging the stack and letting the process die.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonLog_nativeFlush(_env: JNIEnv<'_>, _this: JObject<'_>) {
+    crate::flush_log_buffer();
+}
+
 /// Kotlin's `PhotonLog` object routes every line the Java layer used to send to logcat into the same structured VSF log as the Rust side (photon.log.vsf) — logcat is retired across the board, ONE durable pullable log. `level` carries photon's `LogLevel` discriminant (1=Debug, 2=Info, 3=Warn, 4=Error); lines logged before the JNI data dir lands buffer in the sink's pending queue and flush when it opens.
 #[cfg(target_os = "android")]
 #[no_mangle]

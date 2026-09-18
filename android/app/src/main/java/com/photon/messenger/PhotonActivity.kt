@@ -376,6 +376,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        PhotonLog.installCrashLogger()
         live = this // the Service reaches here for the call-start mic prompt
         applyCallIntent(intent)
 

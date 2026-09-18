@@ -2760,7 +2760,7 @@ impl PhotonApp {
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, area_top as isize, buf_w as isize, buf_h as isize, self.viewer_base.wrapping_add(3));
                     // Topmost first: pills paint before the picture, the picture before the backdrop — everything wins exactly its own pixels.
                     if let Some(v) = self.viewer.as_mut() {
-                        let held = crate::storage::blob_present(&v.hash);
+                        let held = crate::storage::blob_present_or_pending(&v.hash);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, held, None, "Oxanium");
                         match v.view.as_mut() {
@@ -3515,7 +3515,7 @@ impl PhotonApp {
                                 if a.kind.is_image() {
                                     if let Some(ph) = a.preview_hash {
                                         if !self.img_cache.contains_key(&ph) && !self.img_pending.contains(&ph) && !self.img_wants.iter().any(|(_, h, _)| *h == ph) {
-                                            let held = crate::storage::blob_present(&ph);
+                                            let held = crate::storage::blob_present_or_pending(&ph);
                                             if held || !self.attach_auto_fetched.contains(&ph) {
                                                 self.img_wants.push((peer_handle_hash, ph, held));
                                             }
@@ -3540,7 +3540,7 @@ impl PhotonApp {
                                 let relevant = if want_outbound {
                                     !self.attach_confirmed.contains(&hash)
                                 } else {
-                                    !crate::storage::blob_present(&hash)
+                                    !crate::storage::blob_present_or_pending(&hash)
                                 };
                                 // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback. OUTBOUND chunked: (total − in flight) done, plus the in-flight transfers' own fractions, over the total we dispatched.
                                 let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| *have as f32 / (*total).max(1) as f32).or_else(|| {
@@ -3676,7 +3676,7 @@ impl PhotonApp {
                                                 Msg::BlobSendingSuffix
                                             },
                                         ));
-                                    } else if !crate::storage::blob_present(&hash) {
+                                    } else if !crate::storage::blob_present_or_pending(&hash) {
                                         detail.push_str(&tr(Msg::BlobNotHereSuffix));
                                     }
                                 }
@@ -3762,7 +3762,7 @@ impl PhotonApp {
                                     // PLAY IS A BUTTON ON THIS ROW (Nick 2026-09-12: "to play requires two steps and no scrolling"): select the row, then press play — the band itself never starts playback. Then wave back, beam back, export, and discard sits with delete below.
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
-                                        let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present(&h), self.call_playback.is_some() && self.call_playback_hash == Some(h))).unwrap_or((false, false));
+                                        let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present_or_pending(&h), self.call_playback.is_some() && self.call_playback_hash == Some(h))).unwrap_or((false, false));
                                         v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, self.msg_action_base.wrapping_add(11)));
                                     }
                                     // Wave back needs a direct path too (Nick 2026-09-17): over the relay alone the pill is dimmed and says so.
@@ -3774,7 +3774,7 @@ impl PhotonApp {
                                     }
                                     v.push((tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE));
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
-                                        let held = crate::types::parse_attachment_content(&rec.content).is_some_and(|(h, _, _)| crate::storage::blob_present(&h));
+                                        let held = crate::types::parse_attachment_content(&rec.content).is_some_and(|(h, _, _)| crate::storage::blob_present_or_pending(&h));
                                         if held {
                                             v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
                                         }
@@ -3818,7 +3818,7 @@ impl PhotonApp {
                                 if let Some((hash, _, _)) =
                                     crate::types::parse_attachment_content(&msg.content)
                                 {
-                                    let held = crate::storage::blob_present(&hash);
+                                    let held = crate::storage::blob_present_or_pending(&hash);
                                     let is_rec = crate::types::is_call_recording(&msg.content);
                                     // Opening is a tap on the visual itself (2026-09-12); the strip's pill is the file verb: fetch it, play a standalone recording, or save it.
                                     // A held music pigeon gets PLAY/STOP in the action row itself, beside save and delete (Nick 2026-09-12: "same line as reply/save/delete") — the same glyphs the wave card's play wears.
@@ -4119,7 +4119,9 @@ impl PhotonApp {
                                                     if self.wave_env.contains_key(&eh) || self.wave_env_pending.contains(&eh) {
                                                         continue;
                                                     }
-                                                    if crate::storage::blob_present(&eh) {
+                                                    // Tri-state on purpose: a pending probe is neither a load nor a fetch want — the tick comes back once it lands.
+                                                    let known = crate::storage::blob_present_known(&eh);
+                                                    if known == Some(true) {
                                                         self.wave_env_pending.insert(eh);
                                                         let (tx, wake) = (tx0.clone(), wake0.clone());
                                                         let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
@@ -4132,11 +4134,11 @@ impl PhotonApp {
                                                             #[cfg(target_os = "android")]
                                                             let _ = wake;
                                                         });
-                                                    } else {
+                                                    } else if known == Some(false) {
                                                         self.wave_env_wants.push((ci, eh));
                                                     }
                                                 }
-                                                let side_unresolvable = |h: Option<[u8; 32]>| h.is_none_or(|x| !crate::storage::blob_present(&x));
+                                                let side_unresolvable = |h: Option<[u8; 32]>| h.is_none_or(|x| crate::storage::blob_present_known(&x) == Some(false));
                                                 if held && !self.wave_env.contains_key(&hash) && !self.wave_env_pending.contains(&hash) && (side_unresolvable(env_ours_h) || side_unresolvable(env_theirs_h)) {
                                                     self.wave_env_pending.insert(hash);
                                                     let (tx, wake) = (tx0.clone(), wake0.clone());
@@ -4271,7 +4273,7 @@ impl PhotonApp {
                                     if let (Some(a), Some((hash, _, _))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
                                         let slot = vi % super::MSG_HIT_SPAN as usize;
                                         if slot < self.msg_attach_visuals.len() {
-                                            self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present(&hash), kind: a.kind, x0: cx - bw * 0.5, x1: cx + bw * 0.5, y0: (cy - bh * 0.5).max(list_top), y1: (cy + bh * 0.5).min(list_bottom) });
+                                            self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present_or_pending(&hash), kind: a.kind, x0: cx - bw * 0.5, x1: cx + bw * 0.5, y0: (cy - bh * 0.5).max(list_top), y1: (cy + bh * 0.5).min(list_bottom) });
                                         }
                                     }
                                 }
@@ -4377,7 +4379,7 @@ impl PhotonApp {
                                     let top = y - react_off - (lines.len() - 1) as f32 * intra - msg_size * 0.6;
                                     let bot = y - react_off + msg_size * 0.6;
                                     if slot < self.msg_attach_visuals.len() {
-                                        self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present(&hash), kind: a.kind, x0: pad_x, x1: buf_w as f32 - pad_x, y0: top.max(list_top), y1: bot.min(list_bottom) });
+                                        self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present_or_pending(&hash), kind: a.kind, x0: pad_x, x1: buf_w as f32 - pad_x, y0: top.max(list_top), y1: bot.min(list_bottom) });
                                     }
                                 }
                             }

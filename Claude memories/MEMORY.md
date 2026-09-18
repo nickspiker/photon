@@ -5,6 +5,7 @@
 - [feedback_build_dev_script.md](feedback_build_dev_script.md) — compile via ./scripts/dev.sh, never bare cargo build; android = scripts/android/dev-adb.sh
 - [feedback-one-build-per-check.md](feedback-one-build-per-check.md) — never build twice to read one result: capture once to scratchpad, grep the capture
 - [feedback_test_discipline.md](feedback_test_discipline.md) — publish IS the compile gate; ONE full cargo test per batch (never --lib alone: skips tests/)
+- [feedback_render_never_touches_vault.md](feedback_render_never_touches_vault.md) — HARD: the UI/render thread makes NO vault call (2026-09-18 ANR); presence = cache + worker probe
 - [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy reload mid-CLUTCH; check log for a round in flight, batch fixes
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits "Built with Claude Fable 5" ([feedback_commit_attribution.md](feedback_commit_attribution.md))
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only

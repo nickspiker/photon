@@ -2584,7 +2584,7 @@ impl PhotonApp {
                         .iter()
                         .filter(|m| !m.deleted && crate::types::is_call_recording(&m.content))
                         .filter_map(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
-                        .filter(|h| !crate::storage::blob_present(h))
+                        .filter(|h| !crate::storage::blob_present_probe_now(h))
                         .collect();
                     for h in recs {
                         crate::logf!("CALL: sibling's recording {}… — fetching (waves held on this device)", hex::encode(&h[..4]));
@@ -2595,7 +2595,7 @@ impl PhotonApp {
                 for t in hints {
                     let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h)));
                     if let Some(h) = hash {
-                        if !crate::storage::blob_present(&h) {
+                        if !crate::storage::blob_present_probe_now(&h) {
                             crate::logf!("CALL: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));
                             self.attach_fetch(idx, &h);
                         }
