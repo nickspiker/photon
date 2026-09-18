@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v100
+
 - The Fleet page's status line and a contact's connection line now wear the path's own colour — cyan on the LAN, green across the WAN, amber over the relay — instead of a flat green for anything online, so the word and the colour agree with the device name beside them.
 - Opening a conversation no longer waits on the vault: whether an attachment or a wave recording is held here is answered from memory and checked in the background, so a conversation opens at once even while a large wave is still arriving (the phone used to freeze for seconds, and once until Android killed it, while it re-checked all 545 pieces of a recording behind every incoming piece); and a crash on the Android side now writes its own stack into the log before the app dies, so the next "random close" can be read.
 - A device of your own that answers is now shown online on the Fleet page from every other device: a presence verdict used to land on only the first row that knew the device, so depending on load order one of your machines could stay grey while another device of yours knew it was up (Leviathan showed the Mac offline while the Mac showed Leviathan online); the same first-row rule hid a proven direct path, so a device of yours could read "relay" here while it read "direct" from the other side; the Fleet page also logs each row's state whenever it changes.
