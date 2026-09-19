@@ -1,5 +1,6 @@
 //! Fleet device management — add-device/join flows, roster sync, fleet key custody, checkpoints, lockout, log submission, and reseeding the derived key sets.
 
+use fgtw::pq::FleetSigner;
 use super::*;
 
 impl PhotonApp {
@@ -314,7 +315,7 @@ impl PhotonApp {
         let Some((_, t, sig, _, _)) = self.pending_depart_req.clone() else {
             return;
         };
-        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_keypair.clone()) else {
+        let (Some(hp), Some(kp)) = (self.our_handle_proof(), self.device_signer()) else {
             return;
         };
         match crate::network::fgtw::fleet::depart_device_consented(&kp, &hp, &pk, t, &sig) {
@@ -323,7 +324,7 @@ impl PhotonApp {
                 self.pending_depart_req = None;
                 if intent == 1 {
                     // New owner: the release rides the same approval — the hardware walks out the door attestable.
-                    match crate::network::fgtw::fleet::release_device(&kp, &hp, &pk) {
+                    match crate::network::fgtw::fleet::release_device(kp.keypair(), &hp, &pk) {
                         Ok(()) => {
                             crate::logf!("FLEET: released the brand on {} — hardware free for its new owner", name);
                             self.settings_set(
@@ -372,15 +373,17 @@ impl PhotonApp {
                 return;
             }
         }
-        let (Some(hp), Some(kp)) = (hp, self.device_keypair.clone()) else {
+        let (Some(hp), Some(kp)) = (hp, self.device_signer()) else {
             crate::log("SECURITY: no session/keypair to request departure with");
             self.ready_toast = Some(tr(Msg::NoIdentityToRemove).into_owned());
             return;
         };
         let t = vsf::eagle_time_oscillations();
-        let me = kp.public.to_bytes();
+        let me = kp.keypair().public.to_bytes();
         let msg = fgtw::fleet::departreq_signing_bytes(&hp, &me, t);
-        let sig = kp.sign(&msg).to_bytes().to_vec();
+        // The consent as an egg-list blob, signed with every scheme this device holds. The fold verifies it against the bundle the chain holds for us and demands the floor; declaring runs on every attest, so by the time a device can depart its declared set IS its full set. (A device whose declare never landed gets BadConsent at approve and retries — never a silently weaker consent.)
+        let mask = kp.bundle().map(|b| b.mask()).unwrap_or(fgtw::fleet::scheme::MASK_BASE);
+        let sig = fgtw::pq::eggs_to_bytes(&kp.eggs(&msg, mask));
         // Approval words: three voca words from a fresh nonce, shown on THIS screen until completion; only their blake3 rides the request. The approver types what this screen shows — live contact with the departing device, the mirror of add's ceremony.
         let base = voca::FULL.alphabet.len() as u64;
         let nonce = rand::random::<u64>() % base.pow(3);
@@ -397,7 +400,7 @@ impl PhotonApp {
             words = format!("{z}{words}");
         }
         let commit: [u8; 32] = *blake3::hash(words.to_lowercase().as_bytes()).as_bytes();
-        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.secret.as_bytes(), intent, Some(&commit)) {
+        match crate::network::fgtw::protocol::build_depart_req_vsf(t, &sig, &me, kp.keypair().secret.as_bytes(), intent, Some(&commit)) {
             Ok(frame) => {
                 self.dispatch_frame_to_siblings(frame);
                 self.depart_request_t = Some(t);
@@ -1536,7 +1539,7 @@ impl PhotonApp {
         self.add_device_checking = true;
         if let (Some(hp), Some(kp), Some(tx)) = (
             self.our_handle_proof(),
-            self.device_keypair.clone(),
+            self.device_signer(),
             self.add_device_tx.clone(),
         ) {
             std::thread::spawn(move || {
@@ -1699,6 +1702,26 @@ impl PhotonApp {
     }
 
     /// The devices the fleet has LOCKED OUT (treat-as-stolen): per-key entries `fleet.locked.<hex pubkey>` unioned with the legacy one-blob key (see FleetSettings::pubkey_set_union for why per-key — the B4 race where concurrent locks of DIFFERENT devices dropped one). The sweep clears `locked_out` only on an AFFIRMATIVE emptied entry (see unlocked_tombstones), never on mere absence.
+    /// What this device signs fleet writes with — the full bundle when it has one, else the bare keypair. `None` before the keypair exists.
+    pub(super) fn device_signer(&self) -> Option<crate::network::fgtw::fleet::DeviceSigner> {
+        use crate::network::fgtw::fleet::DeviceSigner;
+        self.signing_bundle
+            .clone()
+            .map(DeviceSigner::Pq)
+            .or_else(|| self.device_keypair.clone().map(DeviceSigner::Ed))
+    }
+
+    /// Publish this device's key bundle off-thread, if it has one beyond Ed25519. Fired on every attest, so a device on a build that knows the new schemes declares itself the first time it runs — and when the last member does, the fleet's floor rises on its own. Idempotent: the wrapper skips when the chain already holds this bundle.
+    pub(super) fn spawn_declare_device(&self, handle_proof: &[u8; 32]) {
+        use crate::network::fgtw::fleet::{self, DeviceSigner};
+        let Some(DeviceSigner::Pq(bundle)) = self.device_signer() else { return };
+        let hp = *handle_proof;
+        std::thread::spawn(move || match fleet::declare_device(&bundle, &hp) {
+            Ok(()) => crate::log("FLEET: key bundle declared (or already on the chain)"),
+            Err(e) => crate::logf!("FLEET: key-bundle declare failed (will retry next attest): {}", e),
+        });
+    }
+
     pub(super) fn locked_devices(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()
@@ -2270,7 +2293,7 @@ impl PhotonApp {
         if handle.is_empty() {
             return;
         }
-        let Some(device_key) = self.device_keypair.clone() else {
+        let Some(device_key) = self.device_signer() else {
             self.add_join_status = tr(Msg::NoDeviceKey).into_owned();
             return;
         };
@@ -2298,7 +2321,7 @@ impl PhotonApp {
         std::thread::spawn(move || {
             // Derive the COMPLETE session roots once. identity_seed is microseconds; the ~1s memory-hard proof is reused from the probe when the caller passed it (the add-this-device branch already paid it), else computed here. Joined hands them to the attest worker so it never re-derives.
             let identity_seed = crate::storage::contacts::derive_identity_seed(&handle);
-            let me = device_key.public.to_bytes();
+            let me = device_key.keypair().public.to_bytes();
             // SHOW THE WORDS FIRST — they only need identity_seed (microseconds) + the device pubkey, NOT the ~1s memory-hard handle_proof or the radio. Deferring this behind either left the screen on "Preparing…" for the whole proof (and, on Android, behind a blocking BLE-advertise JNI call) — the "stuck on Preparing" report. The words are this device's OWN pubkey masked to the fleet: shoulder-surfing them is inert (nothing binds without the request signature below; the mask makes them noise outside this fleet).
             let _ = tx.send(JoinUpdate::ShowWords(fleet::masked_device_words(
                 &me,
@@ -2378,7 +2401,7 @@ impl PhotonApp {
             }
             // PUSH-DRIVEN, no deadline, no poll cadence. The hub events (request / fleet) wake each check instantly; the ONLY timers are the ones the protocol/transport demand — the binding request's 5-minute freshness (re-post at ~3.5min when no event arrives sooner) and a degraded-transport fallback cadence when the socket is dead. The user standing at the screen is the timeout: the ceremony ends when the bind lands, when they tap the orb (the stop flag), or on a hard network error. The request is WITHDRAWN by this device (its author) on every exit — green, cancel, or wrong-fleet — and lapses by stamp if the thread dies unclean.
             let withdraw = |why: &str| {
-                if let Err(e) = fleet::bindreq_withdraw(&device_key, &hp) {
+                if let Err(e) = fleet::bindreq_withdraw(device_key.keypair(), &hp) {
                     crate::logf!(
                         "JOIN: request withdraw ({}) failed (lapses anyway): {}",
                         why,
@@ -2418,7 +2441,7 @@ impl PhotonApp {
                         crate::log("JOIN: bound — this device is in the fleet chain");
                         withdraw("green");
                         // The wrap opens with the ira keypair + identity seed alone (docs/fleet-key.md) — no vault, no pair secret, no ceremony. It succeeds the moment the sponsor's green-confirm GROW lands; before that there is no wrap for us and the key arrives via the post-attest fleet-event sync.
-                        let fleet_key = fleet::recover_fleet_key(&hp, &device_key, &identity_seed)
+                        let fleet_key = fleet::recover_fleet_key(&hp, device_key.keypair(), &identity_seed)
                             .ok()
                             .flatten();
                         crate::logf!(

@@ -5238,14 +5238,12 @@ impl PhotonApp {
         for (t, sig, leaver, intent, words_commit) in depart_reqs_after {
             let Some(hp) = self.our_handle_proof() else { continue };
             let msg = fgtw::fleet::departreq_signing_bytes(&hp, &leaver, t);
-            let valid = ed25519_dalek::VerifyingKey::from_bytes(&leaver)
+            // Receipt-time check, deliberately shallow: the blob parses, and its Ed25519 egg verifies against the leaver's device key — enough to drop junk before it reaches a human. The PQ eggs are verified by the FOLD when the approver publishes the consented Remove (depart_device_consented fetches the chain, which holds the leaver's declared bundle and the floor); doing that here would mean a blocking chain fetch on the status tick.
+            let valid = fgtw::pq::eggs_from_bytes(&sig)
                 .ok()
-                .and_then(|vk| {
-                    let s: [u8; 64] = sig.as_slice().try_into().ok()?;
-                    use ed25519_dalek::Verifier;
-                    vk.verify(&msg, &ed25519_dalek::Signature::from_bytes(&s)).ok()
-                })
-                .is_some();
+                .and_then(|eggs| eggs.into_iter().find(|e| e.scheme == fgtw::fleet::scheme::ED25519))
+                .map(|e| fgtw::pq::verify_egg(fgtw::fleet::scheme::ED25519, &leaver, &msg, &e.sig))
+                .unwrap_or(false);
             if !valid {
                 crate::logf!("SECURITY: depart_req from {} carries an INVALID request signature — dropped", crate::fp(&leaver));
                 continue;

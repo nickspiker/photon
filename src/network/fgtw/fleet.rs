@@ -43,6 +43,7 @@ pub use fgtw::fleet::{
     OpKind, SuccessorRecord, BINDREQ_FRESH_OSC, CONSENT_WINDOW_OSC,
 };
 pub use fgtw::fstate::{merge_rosters, roster_from_bytes, roster_to_bytes, RosterEntry};
+pub use fgtw::pq::{eggs_from_bytes, eggs_to_bytes, verify_egg, verify_eggs, FleetSigner, KeyBundle, SigningBundle};
 pub use fgtw::pair::{
     device_name_default, first_bad_pair_word, keyed_pseudonym, masked_device_words, pair_word_list,
     pair_word_tokens, pair_words, parse_pair_event, word_mask, PAIR_WORD_COUNT,
@@ -139,9 +140,42 @@ pub fn current_members_with_ts(handle_proof: &[u8; 32]) -> Result<(Vec<[u8; 32]>
     fgtw::client::current_members_with_ts(&PhotonTransport, handle_proof)
 }
 
+/// Publish this device's key bundle to the chain — the op that lifts the fleet's scheme floor once every member has done it. Idempotent when the chain already holds at least this bundle.
+pub fn declare_device(signer: &impl FleetSigner, handle_proof: &[u8; 32]) -> Result<(), String> {
+    fgtw::client::declare_device(&PhotonTransport, signer, handle_proof)
+}
+
+/// Whatever this device can sign with: the full three-scheme bundle when the fingerprint was in Rust's hands to derive it from, else the bare Ed25519 keypair. One type for every fleet-write site, so a site never has to know which it holds — the fold decides what a bare keypair can and cannot do.
+#[derive(Clone)]
+pub enum DeviceSigner {
+    Pq(SigningBundle),
+    Ed(Keypair),
+}
+
+impl FleetSigner for DeviceSigner {
+    fn keypair(&self) -> &Keypair {
+        match self {
+            DeviceSigner::Pq(b) => b.keypair(),
+            DeviceSigner::Ed(k) => k,
+        }
+    }
+    fn eggs(&self, msg: &[u8], schemes: scheme::Mask) -> Vec<Egg> {
+        match self {
+            DeviceSigner::Pq(b) => b.eggs(msg, schemes),
+            DeviceSigner::Ed(k) => k.eggs(msg, schemes),
+        }
+    }
+    fn bundle(&self) -> Option<KeyBundle> {
+        match self {
+            DeviceSigner::Pq(b) => b.bundle(),
+            DeviceSigner::Ed(_) => None,
+        }
+    }
+}
+
 /// Existing-device side of device-ADD: bind the device a verified binding request names, carrying its consent into the Add op.
 pub fn bind_device(
-    member_key: &Keypair,
+    member_key: &impl FleetSigner,
     handle_proof: &[u8; 32],
     req: &BindRequest,
 ) -> Result<(), String> {
@@ -155,7 +189,7 @@ pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<()
 
 /// APPROVER half of the bilateral removal: countersign a sibling's departure request and publish the consented Remove. The mirror of the add ceremony's sponsor step.
 pub fn depart_device_consented(
-    approver_key: &Keypair,
+    approver_key: &impl FleetSigner,
     handle_proof: &[u8; 32],
     leaving: &[u8; 32],
     consent_t: i64,
@@ -218,7 +252,7 @@ pub fn unlock_device(
 
 /// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join. Returns the published `eagle_time` stamp (oscillations) so the caller can derive the proximity beacon from the exact offer the sponsor reads back.
 pub fn bindreq_put(
-    device_key: &Keypair,
+    device_key: &impl FleetSigner,
     identity_seed: &[u8; 32],
     handle_proof: &[u8; 32],
     nfc_secret: &[u8; 32],

@@ -1583,6 +1583,8 @@ pub struct PhotonApp {
     search_status: Option<(String, u32)>,
     /// Device keypair injected externally (Android: from `NetworkContext` via `set_device_keypair` before `init`). When `Some`, `init` uses it directly; when `None`, `init` derives a fresh keypair from `get_machine_fingerprint` (desktop path). Android MUST set this before `init` runs — leaving it `None` on Android would silently downgrade to a zeroed placeholder keypair, which would be a critical key-derivation failure.
     device_keypair: Option<crate::network::fgtw::Keypair>,
+    /// This device's full signing bundle — Ed25519 plus the Falcon and SPHINCS+ keys derived from the same machine fingerprint — when that fingerprint was available to Rust at init. `None` on Android, where the fingerprint lives Java-side and only the Ed25519 keypair is injected; such a device signs single-egg and cannot lift the fleet floor until the fingerprint reaches the native side.
+    signing_bundle: Option<crate::network::fgtw::fleet::SigningBundle>,
     /// One-shot Android soft-keyboard request. `change_focus` sets `Some(true)` when focus enters a textbox and `Some(false)` when it leaves; `wants_keyboard` returns and clears the value. The Activity reads the JNI signal after each touch and calls `InputMethodManager.show/hide` accordingly. Stays `None` on idle frames so the Activity doesn't churn the IME.
     pending_keyboard_request: Option<bool>,
     /// One-shot: set true when the compose box is cleared on send, so the Android host restarts IME input and a predictive keyboard doesn't re-materialise the just-sent text. Drained by `wants_input_reset`.
@@ -2817,6 +2819,7 @@ impl PhotonApp {
             settings_removeshred_armed: false,
             dialed_call_ids: Default::default(),
             fleet_call_elsewhere: None,
+            signing_bundle: None,
             about_version_spelled: false,
             about_riddle_revealed: false,
         }

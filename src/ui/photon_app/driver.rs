@@ -3988,14 +3988,18 @@ impl PhotonApp {
             .as_ref()
             .expect("event_proxy must be set before init (host contract)");
         // Prefer an externally-injected keypair (Android: PhotonContext sets it from NetworkContext before AndroidShell::new calls init). Fall back to deriving from the OS machine fingerprint — desktop reads /etc/machine-id etc., Android has no in-Rust fallback (Build.FINGERPRINT lives Java-side) so a missing keypair there is a panic-worthy programmer error: shipping a zero-derived keypair would silently downgrade every cryptographic identity in the app.
-        let keypair = match self.device_keypair.take() {
-            Some(kp) => kp,
+        // The PQ bundle derives from the SAME fingerprint as the Ed25519 key, so "same hardware, same keys" holds for every scheme — an injected keypair (Android) brings no fingerprint and therefore no bundle.
+        let (keypair, signing_bundle) = match self.device_keypair.take() {
+            Some(kp) => (kp, None),
             None => {
                 #[cfg(not(target_os = "android"))]
                 {
                     let fingerprint = get_machine_fingerprint()
                         .expect("device-key derivation: machine fingerprint unavailable");
-                    crate::network::fgtw::derive_device_keypair(&fingerprint)
+                    (
+                        crate::network::fgtw::derive_device_keypair(&fingerprint),
+                        Some(crate::network::fgtw::fleet::SigningBundle::derive(&fingerprint)),
+                    )
                 }
                 #[cfg(target_os = "android")]
                 {
@@ -4010,6 +4014,7 @@ impl PhotonApp {
         };
         // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
         self.device_keypair = Some(keypair.clone());
+        self.signing_bundle = signing_bundle;
         // Hand the device secret to storage so the pre-identity device vault (D2 binding, opt-in flags, reboot capsule) resolves from here on — on Android this is the ONLY route (no in-Rust fingerprint oracle).
         crate::storage::install_device_secret(*keypair.secret.as_bytes());
         #[cfg(not(target_os = "android"))]

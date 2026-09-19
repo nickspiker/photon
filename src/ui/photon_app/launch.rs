@@ -169,6 +169,8 @@ impl PhotonApp {
                 crate::storage::device_binding::bind(&data.handle_proof);
                 // UNATTENDED MODE: if the operator has opted this box into auto-attest-on-reboot, refresh the reboot capsule now that we hold a live session, so the NEXT reboot resumes without a handle. No-op (and the capsule is cleared) when the toggle is off — see refresh_reboot_capsule.
                 self.refresh_reboot_capsule();
+                // Declare this device's key bundle to the chain. Every attest, off-thread, idempotent — the first run of a build that knows the new schemes is what lifts a device to three eggs, and the last device to do so lifts the whole fleet's floor.
+                self.spawn_declare_device(&data.handle_proof);
                 self.pending_broadcast_signal = 1;
                 // Re-anchor the sticky-freshness timer off this fresh post so the periodic ensure doesn't immediately double-fire (and so a re-attest after a logout re-schedules cleanly rather than riding a stale pre-logout deadline).
                 self.next_session_broadcast = Some(
