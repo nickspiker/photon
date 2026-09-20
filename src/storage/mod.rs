@@ -619,19 +619,12 @@ pub fn blob_store_file(identity_seed: &[u8; 32], path: &std::path::Path) -> Resu
     Ok((hash, Some(m)))
 }
 
-/// Land a held blob into `dir` under `name`, never overwriting: `name`, `name (2)`, `name (3)`… and stream chunk-by-chunk with a running hash so a chunked blob is never rebuilt in RAM. Shared by attachment Save (into Downloads) and the bridge pigeon (into the host's shell cwd) — the only difference is the directory, and refusing to overwrite is not a nicety there but a safety property: a drop can only ADD a file to a remote machine, never silently replace one. Returns the path actually written.
+/// Land a held blob into `dir` under EXACTLY `name`, replacing whatever had that name, streamed chunk-by-chunk with a running hash so a chunked blob is never rebuilt in RAM. Shared by attachment Save (into Downloads) and the bridge pigeon (into the host's shell cwd) — the only difference is the directory. Returns the path written.
+///
+/// Overwrite is the rule, not an option (Nick, 2026-09-20). This used to collision-suffix — `name (2)` — as a "safety property", and it cost a real afternoon: a script dropped over the bridge landed under a name nobody asked for, the hook kept running the stale one, and the push it was meant to fix stayed refused with nothing to point at. A transfer that changes the name it was given has not delivered the file. Rollback belongs to snapshots on the receiving host, never to the writer inventing a name.
 pub fn land_blob(seed: &[u8; 32], content_hash: &[u8; 32], dir: &std::path::Path, name: &str) -> Option<String> {
     let _ = std::fs::create_dir_all(dir);
-    let (stem, ext) = match name.rsplit_once('.') {
-        Some((st, e)) => (st.to_string(), format!(".{}", e)),
-        None => (name.to_string(), String::new()),
-    };
-    let mut dest = dir.join(name);
-    let mut i = 2;
-    while dest.exists() {
-        dest = dir.join(format!("{} ({}){}", stem, i, ext));
-        i += 1;
-    }
+    let dest = dir.join(name);
     blob_write_file(seed, content_hash, &dest)?;
     Some(dest.to_string_lossy().into_owned())
 }

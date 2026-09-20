@@ -439,7 +439,7 @@ impl PhotonApp {
         }
     }
 
-    /// Save a held blob to the user's Downloads dir (name deduped). Returns the destination on success.
+    /// Save a held blob to the user's Downloads dir under its own name, replacing an earlier save of that name. Returns the destination on success.
     pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Option<String> {
         let seed = self.session.as_ref().map(|s| s.identity_seed)?;
         #[cfg(target_os = "android")]
@@ -456,7 +456,7 @@ impl PhotonApp {
         } else {
             name
         };
-        // Collision-suffix into the base dir and stream the blob there — the same landing a bridge pigeon does, factored out.
+        // Stream the blob under exactly that name, replacing any earlier save — the same landing a bridge pigeon does, factored out.
         crate::storage::land_blob(&seed, content_hash, &base, name)
     }
 
@@ -537,8 +537,9 @@ impl PhotonApp {
 #[cfg(test)]
 mod land_tests {
     /// The no-overwrite property that makes a bridge drop safe: a colliding name lands beside the original as "name (2)", never on top of it — a drop can only ADD a file to a remote machine.
+    /// The name given is the name landed, and a second drop under it REPLACES the first — no `(2)`, no backup, no third path. The suffixing this replaced hid a bridge-dropped script under a name nobody asked for.
     #[test]
-    fn landing_never_overwrites() {
+    fn landing_overwrites_under_the_given_name() {
         crate::storage::isolate_test_storage();
         let seed = [0x4Du8; 32];
         let _v = crate::storage::open_session_vault(seed, [0x4E; 32], [0x4F; 32]).expect("vault");
@@ -548,13 +549,13 @@ mod land_tests {
         crate::storage::blob_store(&seed, &hash, b"pigeon body one").expect("store");
         let first = crate::storage::land_blob(&seed, &hash, &dir, "notes.txt").expect("first lands");
         assert!(first.ends_with("notes.txt"), "first keeps the name: {first}");
-        // A DIFFERENT blob under the SAME name must not clobber the first.
+        // A DIFFERENT blob under the SAME name replaces the first, at the same path.
         let hash2 = *blake3::hash(b"pigeon body two").as_bytes();
         crate::storage::blob_store(&seed, &hash2, b"pigeon body two").expect("store2");
         let second = crate::storage::land_blob(&seed, &hash2, &dir, "notes.txt").expect("second lands");
-        assert!(second.ends_with("notes (2).txt"), "collision suffixes before the extension: {second}");
-        assert_eq!(std::fs::read(&first).unwrap(), b"pigeon body one", "the first file is untouched");
-        assert_eq!(std::fs::read(&second).unwrap(), b"pigeon body two");
+        assert_eq!(second, first, "the same name lands at the same path");
+        assert_eq!(std::fs::read(&second).unwrap(), b"pigeon body two", "and holds the new bytes");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no second file was minted");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
