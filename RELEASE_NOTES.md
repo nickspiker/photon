@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v101
+
 ## v100
 
 - The Fleet page's status line and a contact's connection line now wear the path's own colour — cyan on the LAN, green across the WAN, amber over the relay — instead of a flat green for anything online, so the word and the colour agree with the device name beside them.
