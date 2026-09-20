@@ -3987,10 +3987,10 @@ impl PhotonApp {
             .event_proxy
             .as_ref()
             .expect("event_proxy must be set before init (host contract)");
-        // Prefer an externally-injected keypair (Android: PhotonContext sets it from NetworkContext before AndroidShell::new calls init). Fall back to deriving from the OS machine fingerprint — desktop reads /etc/machine-id etc., Android has no in-Rust fallback (Build.FINGERPRINT lives Java-side) so a missing keypair there is a panic-worthy programmer error: shipping a zero-derived keypair would silently downgrade every cryptographic identity in the app.
-        // The PQ bundle derives from the SAME fingerprint as the Ed25519 key, so "same hardware, same keys" holds for every scheme — an injected keypair (Android) brings no fingerprint and therefore no bundle.
+        // Prefer an externally-injected keypair (Android: PhotonContext sets it from NetworkContext before AndroidShell::new calls init, together with the signing bundle derived from the same oracle). Fall back to deriving from the OS machine fingerprint — desktop reads /etc/machine-id etc.; a missing keypair on Android is a panic-worthy programmer error, since shipping a zero-derived keypair would silently downgrade every cryptographic identity in the app.
+        // The PQ bundle derives from the SAME fingerprint as the Ed25519 key, so "same hardware, same keys" holds for every scheme on every platform.
         let (keypair, signing_bundle) = match self.device_keypair.take() {
-            Some(kp) => (kp, None),
+            Some(kp) => (kp, self.signing_bundle.take()),
             None => {
                 #[cfg(not(target_os = "android"))]
                 {

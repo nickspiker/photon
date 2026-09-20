@@ -340,6 +340,7 @@ impl PhotonContext {
         // Inject the NetworkContext-derived device keypair BEFORE AndroidShell::new calls app.init — PhotonApp::init takes the keypair via `device_keypair.take()` and would panic on Android if it found `None`. The cryptographic identity for every contact / message / chain advance flows from this keypair, so the safety check is load-bearing.
         let mut app = PhotonApp::new();
         app.set_device_keypair(network.keypair.clone());
+        app.set_signing_bundle(network.signing_bundle.clone());
         info!(
             "PhotonContext: wired device keypair pubkey {}",
             hex::encode(network.keypair.public.as_bytes())
@@ -1331,6 +1332,8 @@ fn derive_device_keypair(fingerprint: &[u8]) -> Keypair {
 #[cfg(target_os = "android")]
 pub struct NetworkContext {
     pub keypair: Keypair,
+    /// Every scheme this device signs with, derived from the SAME oracle as `keypair` (whose Ed25519 half it contains byte-for-byte), so "same hardware, same keys" holds on Android exactly as on desktop. Until this existed the phone signed single-egg and could never declare, which pinned every fleet it was in at the Ed25519 floor (2026-09-20).
+    pub signing_bundle: crate::network::fgtw::fleet::SigningBundle,
     pub peer_store: Arc<Mutex<PeerStore>>,
     /// Primary ring directory — Activity passes `context.filesDir.absolutePath` (app-private internal storage, `/data/user/0/<pkg>/files`).
     pub data_dir: String,
@@ -1378,6 +1381,12 @@ impl NetworkContext {
             }
         };
         let keypair = derive_device_keypair(&oracle);
+        let signing_bundle = crate::network::fgtw::fleet::SigningBundle::derive(&oracle);
+        debug_assert_eq!(
+            fgtw::pq::FleetSigner::keypair(&signing_bundle).public.to_bytes(),
+            keypair.public.to_bytes(),
+            "the bundle's Ed25519 half must be the device key"
+        );
 
         info!(
             "NetworkContext: Device pubkey: {}",
@@ -1388,6 +1397,7 @@ impl NetworkContext {
 
         Self {
             keypair,
+            signing_bundle,
             peer_store,
             data_dir: data_dir.to_string(),
             shadow_dir: shadow_dir.to_string(),

@@ -2830,6 +2830,11 @@ impl PhotonApp {
         self.device_keypair = Some(keypair);
     }
 
+    /// Inject the full signing bundle beside the keypair, before `init` — Android's `NetworkContext` derives both from the one device oracle. On desktop `init` derives the bundle itself from the fingerprint.
+    pub fn set_signing_bundle(&mut self, bundle: crate::network::fgtw::fleet::SigningBundle) {
+        self.signing_bundle = Some(bundle);
+    }
+
     /// Take the one-shot image-picker request. JNI shim polls this once per frame; returns `true` exactly on the frame the user taps the avatar so the Activity launches `ACTION_GET_CONTENT` once per tap.
     /// Android: drain the paperclip's system-file-picker request (mirrors [`Self::take_picker_request`]).
     pub fn take_attach_picker_request(&mut self) -> bool {
