@@ -24,9 +24,11 @@ android_build() {
         exit 1
     fi
 
+    # The Gradle project builds in the SAME tree the .so came from. Under a deploy that is the snapshot: build.gradle reads versionName from `../Cargo.toml` and versionCode from `git rev-list --count HEAD`, and only the snapshot holds the injected ship version and the tag-authority commit. Running gradle in the live android/ shipped v101 with the APK stamped 0.100.1 — the live tree's dev-line number — while the Rust inside it correctly reported 0.101.0 (2026-09-20). One tree per build, no exceptions.
+    local proj="${SNAP_DIR:-.}/android"
     echo "Copying .so into the Android project..."
-    mkdir -p android/app/src/main/jniLibs/arm64-v8a
-    cp "$so" android/app/src/main/jniLibs/arm64-v8a/
+    mkdir -p "$proj/app/src/main/jniLibs/arm64-v8a"
+    cp "$so" "$proj/app/src/main/jniLibs/arm64-v8a/"
 
     # SYMBOLS (2026-09-10): Gradle strips the .so it packages, so a tombstone's rel_pc can only be symbolized against the unstripped build kept here — one reflink per published build, named by the version and commit the APK reports. Symbolize with: llvm-symbolizer --obj=<file> 0x<rel_pc>
     local symdir="/mnt/Harbor/Code/photon-symbols/android-arm64"
@@ -39,13 +41,27 @@ android_build() {
 
     # photon-specific: google-services.json (Firebase). The shared keystore lib exports TOKEN_KEYS_DIR but no longer copies this itself (it's app-agnostic now); other apps sharing keystore.sh skip it.
 
-    cp "$TOKEN_KEYS_DIR/google-services.json" android/app/
+    cp "$TOKEN_KEYS_DIR/google-services.json" "$proj/app/"
 
     echo "Building APK with Gradle..."
-    ( cd android && ./gradlew assembleRelease --rerun-tasks )
+    ( cd "$proj" && ./gradlew assembleRelease --rerun-tasks )
 
+    # The artefact path deploy.sh hashes and uploads is the LIVE one, so under a snapshot the APK is reflinked back into place — and the stamp inside it is checked against the version the tree was built as, so a wrong wrapper can never again ship silently.
     APK_PATH="android/app/build/outputs/apk/release/app-release.apk"
-    echo "APK built: $APK_PATH"
+    if [ "$proj" != "./android" ] && [ "$proj" != "android" ]; then
+        mkdir -p "$(dirname "$APK_PATH")"
+        cp --reflink=auto "$proj/app/build/outputs/apk/release/app-release.apk" "$APK_PATH"
+    fi
+    local stamped="" aapt
+    aapt="$(command -v aapt 2>/dev/null || ls "${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/nonexistent}}"/build-tools/*/aapt 2>/dev/null | sort -V | tail -1)"
+    if [ -x "$aapt" ]; then
+        stamped="$("$aapt" dump badging "$APK_PATH" 2>/dev/null | grep -oE "versionName='[^']+'" | cut -d"'" -f2)"
+    fi
+    if [ -n "$stamped" ] && [ "$stamped" != "$ver" ]; then
+        echo "ERROR: APK versionName is '$stamped' but the tree built as '$ver' — the wrapper and the code disagree; refusing to hand this APK to the deploy"
+        exit 1
+    fi
+    echo "APK built: $APK_PATH (versionName ${stamped:-unverified — no aapt}, expected $ver)"
 }
 
 # Install the built APK over USB ADB.
