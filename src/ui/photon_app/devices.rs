@@ -1892,6 +1892,7 @@ impl PhotonApp {
             Some(kp) => kp,
             None => return,
         };
+        let signer = crate::network::fgtw::fleet::signer_for(&kp);
         std::thread::spawn(move || {
             match crate::network::fgtw::fleet::unlock_device(&kp, &hp, &pk) {
                 Ok(()) => crate::logf!(
@@ -1903,6 +1904,10 @@ impl PhotonApp {
                     crate::fp(&pk),
                     e
                 ),
+            }
+            match crate::network::fgtw::fleet::unlock_device_chain(&signer, &hp, &pk) {
+                Ok(()) => crate::logf!("FLEET: chain lock cleared for {}", crate::fp(&pk)),
+                Err(e) => crate::logf!("FLEET: chain unlock failed for {} ({}) — will re-drive on next attest", crate::fp(&pk), e),
             }
         });
     }
@@ -2007,8 +2012,9 @@ impl PhotonApp {
             Some(kp) => kp,
             None => return,
         };
-        std::thread::spawn(
-            move || match crate::network::fgtw::fleet::lock_device(&kp, &hp, &pk) {
+        let signer = crate::network::fgtw::fleet::signer_for(&kp);
+        std::thread::spawn(move || {
+            match crate::network::fgtw::fleet::lock_device(&kp, &hp, &pk) {
                 Ok(()) => crate::logf!(
                     "FLEET: worker lock recorded for {} — brick now survives a wipe",
                     crate::fp(&pk)
@@ -2018,8 +2024,13 @@ impl PhotonApp {
                     crate::fp(&pk),
                     e
                 ),
-            },
-        );
+            }
+            // The chain half: what lets the floor stop waiting on a device nobody will ever hold again.
+            match crate::network::fgtw::fleet::lock_device_chain(&signer, &hp, &pk) {
+                Ok(()) => crate::logf!("FLEET: chain lock recorded for {} — it no longer holds the floor", crate::fp(&pk)),
+                Err(e) => crate::logf!("FLEET: chain lock failed for {} ({}) — will re-drive on next attest", crate::fp(&pk), e),
+            }
+        });
     }
 
     /// Re-push every locally-locked device to the worker (durable reconcile). Called on attest-success — an infrequent, non-spammy edge — so a lock whose initial push failed (offline, stale-chain race) eventually reaches the worker; the puts are idempotent so re-pushing a known lock costs one no-op write.

@@ -285,6 +285,16 @@ pub fn lock_device(
     fgtw::client::device_lock(&PhotonTransport, &signer_for(member_key), handle_proof, locked)
 }
 
+/// Lock a device out ON THE CHAIN — the companion of [`lock_device`] (the worker's refusal, which survives a wipe). This is the half that lifts the floor: a locked device stops holding the fleet at its capability and signs nothing that folds, so a lost phone can be written off without anyone needing its key. Idempotent.
+pub fn lock_device_chain(signer: &impl FleetSigner, handle_proof: &[u8; 32], locked: &[u8; 32]) -> Result<(), String> {
+    fgtw::client::lock_device_chain(&PhotonTransport, signer, handle_proof, locked)
+}
+
+/// Reverse [`lock_device_chain`]. Idempotent.
+pub fn unlock_device_chain(signer: &impl FleetSigner, handle_proof: &[u8; 32], locked: &[u8; 32]) -> Result<(), String> {
+    fgtw::client::unlock_device_chain(&PhotonTransport, signer, handle_proof, locked)
+}
+
 /// Unlock a device the fleet previously locked (the owner's deliberate reversal) — the worker deletes the lock so the device announces normally again. Same member-gated auth.
 pub fn unlock_device(
     member_key: &Keypair,
