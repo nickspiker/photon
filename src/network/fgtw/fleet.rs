@@ -285,10 +285,11 @@ pub fn post_fanout(
     handle_proof: &[u8; 32],
     device_key: &Keypair,
     revision: u64,
-    kfp: &[u8; 32],
+    fleet_key: &[u8; 32],
     wraps: &[FanoutWrap],
 ) -> Result<(), String> {
-    fgtw::client::post_fanout(&PhotonTransport, handle_proof, device_key, revision, kfp, wraps)
+    // Takes the KEY, not its fingerprint: the v3 header also carries the epoch public bundle, and both derive from the key inside the crate.
+    fgtw::client::post_fanout(&PhotonTransport, handle_proof, device_key, revision, fleet_key, wraps)
 }
 
 /// Fetch the current fan-out (revision + kfp + rotator + wraps), or None if none published yet.
