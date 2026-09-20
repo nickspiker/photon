@@ -1478,13 +1478,13 @@ pub fn build_clutch_offer_vsf(
     // Stamp the PINNED send-time (Contact::clutch_round_started), NOT a fresh clock read — every re-send of this offer carries the identical time so the provenance is stable and the clutch never rotates.
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(send_time_osc)
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build ClutchOffer VSF: {}", e))?;
 
     // Sign the file (computes file hash, signs it, patches ge)
-    let signed = vsf::verification::sign_file(unsigned, device_secret)?;
+    let signed = crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)?;
 
     // TIME-based provenance (this party's device key + its pinned send-time), the shared helper the receiver mirrors from the offer's creation_time header. Restores the original design; the old key-based hash rotated the ceremony on every re-key.
     let offer_provenance =
@@ -1759,13 +1759,13 @@ pub fn build_clutch_kem_response_vsf(
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_hash(*ceremony_id)
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build ClutchKemResponse VSF: {}", e))?;
 
     // Sign the file
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse and verify a VSF ClutchKemResponse message.
@@ -2039,7 +2039,7 @@ pub fn build_clutch_complete_vsf(
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_hash(*ceremony_id)
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section(
             "clutch_complete",
             vec![
@@ -2054,7 +2054,7 @@ pub fn build_clutch_complete_vsf(
         .map_err(|e| format!("Failed to build ClutchComplete VSF: {}", e))?;
 
     // Sign the file
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse and verify a VSF ClutchComplete message.
@@ -2206,11 +2206,11 @@ pub fn build_friend_knock_vsf(
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build friend_knock VSF: {}", e))?;
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `friend_knock`. Returns (conversation token, sender device pubkey). The caller authorizes by token-matching its OWN roster — signature validity alone is NOT authorization, and an unmatched token is a stranger to drop silently.
@@ -2249,11 +2249,11 @@ pub fn build_chain_pull_vsf(
     }
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build chain_pull VSF: {}", e))?;
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `chain_pull`. Returns (conversation token, sender device pubkey). The receiver authorizes by sibling membership (knows_device), exactly like ckpt_req.
@@ -2309,11 +2309,11 @@ pub fn build_depart_req_vsf(
     .to_section();
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build depart_req VSF: {}", e))?;
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `depart_req`. Returns (consent_t, consent_sig, sender device pubkey = the leaving device, intent, words_commit). Intent 0 + no commitment = a pre-intent build's request — approve treats it as desk with no words gate.
@@ -2343,11 +2343,11 @@ pub fn build_chain_pull_miss_vsf(
     section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build chain_pull_miss VSF: {}", e))?;
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `chain_pull_miss`. Returns (conversation token, sender device pubkey).
@@ -2386,13 +2386,13 @@ pub fn build_history_request_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build hist_req VSF: {}", e))?;
 
     // Canonical scheme-1: sign_file computes the content hp + ge over the whole file.
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `hist_req` frame. Returns (payload, sender_pubkey). The caller authorizes the sender against the conversation's contact (known device + mutual) — signature validity alone is NOT authorization.
@@ -2478,12 +2478,12 @@ pub fn build_history_page_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build hist_page VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `hist_page` frame. Returns ((conversation_token, request_id, epoch_k, sealed_blob), sender_pubkey). The blob is opaque here; the requester opens it with the friendship history key (`ek` absent) or the epoch hist_page key (`ek` present — fleet route). A SIBLING page without `ek` is a pre-epoch build's — the receive arm drops it loudly, no tolerant branch.
@@ -2547,12 +2547,12 @@ pub fn build_chain_sync_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build chain_sync VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `chain_sync` frame. Returns ((conversation_token, epoch_k, sealed_chains), sender_pubkey). The blob is opaque here; the receiver opens it with the epoch's chain_sync key (AEAD failure = drop). A frame without `ek` is a pre-epoch build's — the flag-day rejects it here, loudly, no tolerant branch.
@@ -2619,12 +2619,12 @@ pub fn build_ckpt_root_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build ckpt_root VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `ckpt_root` frame. Returns ((k, fanout_epoch, sealed_root), sender_pubkey).
@@ -2672,12 +2672,12 @@ pub fn build_focus_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build focus VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `focus` frame. Returns ((conversation_token, osc, active), sender_pubkey).
@@ -2719,12 +2719,12 @@ pub fn build_attention_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build attn VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify an `attn` frame. Returns (osc, sender_pubkey) — the holder is the signer.
@@ -2763,12 +2763,12 @@ pub fn build_ckpt_req_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build ckpt_req VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `ckpt_req` frame. Returns (have_k, sender_pubkey).
@@ -2807,12 +2807,12 @@ pub fn build_ckpt_state_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build ckpt_state VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `ckpt_state` frame. Returns ((k, sealed_state), sender_pubkey).
@@ -2864,12 +2864,12 @@ pub fn build_attach_blob_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build attach_blob VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify an `attach_blob` frame. Returns ((conversation_token, content_hash, sealed_blob), sender_pubkey). The caller authorizes the sender against the conversation's contact — signature validity alone is NOT authorization.
@@ -2950,11 +2950,11 @@ fn build_attach_data_frame(
     section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![len], sealed)));
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build {name} VSF: {}", e))?;
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 fn parse_attach_data_frame(
@@ -3046,12 +3046,12 @@ pub fn build_attach_req_want_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build attach_req VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify an `attach_req` frame. Returns ((conversation_token, content_hash, want bitmap), sender_pubkey). Same caller-side authorization rule as attach_blob.
@@ -3097,12 +3097,12 @@ pub fn build_attach_have_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build attach_have VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify an `attach_have` frame. Returns ((conversation_token, content_hash), sender_pubkey).
@@ -3148,12 +3148,12 @@ pub fn build_wfd_cred_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build wfd_cred VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `wfd_cred` frame. Returns ((conversation_token, sealed_cred), sender_pubkey); the blob only opens with the pair's wfd seal key (AEAD failure = drop).
@@ -3200,12 +3200,12 @@ pub fn build_chain_reset_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build chain_reset VSF: {}", e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a `chain_reset` frame. Returns ((conversation_token, sealed_nonce), sender_pubkey); the blob only opens with the fleet key (AEAD failure = drop, non-member noise).
@@ -3351,12 +3351,12 @@ fn build_blind_frame_vsf(
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signature_ed25519(*device_pubkey, [0u8; 64])
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Failed to build {} VSF: {}", section_name, e))?;
 
-    vsf::verification::sign_file(unsigned, device_secret)
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
 /// Parse + verify a blind frame of the expected section name. Returns (payload, sender_pubkey). Signature validity is NOT authorization — the caller gates on knows_device + is_mutual.

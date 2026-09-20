@@ -1781,11 +1781,11 @@ pub fn upload_avatar_from_seed(
     section.add_field("avatar_vsf", VsfType::v(b'e', signed_vsf));
     let unsigned_put = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
+        .signed_only_eggs(VsfType::ke(device_key.public.to_bytes().to_vec()), &crate::network::fgtw::fleet::envelope_slots(&device_key.public.to_bytes()))
         .add_section_direct(section)
         .build()
         .map_err(|e| format!("Build avatar_put VSF: {}", e))?;
-    let put_vsf = vsf::verification::sign_file(unsigned_put, device_secret.as_bytes())
+    let put_vsf = crate::network::fgtw::fleet::sign_device_envelope(unsigned_put, &device_key.public.to_bytes(), device_secret.as_bytes())
         .map_err(|e| format!("Sign avatar_put VSF: {}", e))?;
 
     let response = crate::network::http::blocking()

@@ -482,14 +482,14 @@ pub fn inbox_drain_blocking(
     // Canonical whole-file signing (ge over BLAKE3(file, ge zeroed)) — the scheme the worker's verify_file_signature_webcrypto checks (build_signed_blob_vsf's header is provenance-only, which that verify rejects; see log_put's detached-signature note).
     let unsigned = vsf::VsfBuilder::new()
         .creation_time_oscillations(crate::network::time_base::now_osc())
-        .signed_only(VsfType::ke(device_keypair.public.as_bytes().to_vec()))
+        .signed_only_eggs(VsfType::ke(device_keypair.public.to_bytes().to_vec()), &crate::network::fgtw::fleet::envelope_slots(&device_keypair.public.to_bytes()))
         .add_section(
             "inbox_drain",
             vec![("hp".to_string(), VsfType::hP(handle_proof.to_vec()))],
         )
         .build()
         .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
-    let vsf_bytes = vsf::verification::sign_file(unsigned, device_keypair.secret.as_bytes())
+    let vsf_bytes = crate::network::fgtw::fleet::sign_device_envelope(unsigned, &device_keypair.public.to_bytes(), device_keypair.secret.as_bytes())
         .map_err(|e| BlobError::Network(format!("Sign inbox_drain: {}", e)))?;
 
     let response = client

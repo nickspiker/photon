@@ -339,7 +339,6 @@ fn build_announce_message(
     challenge_hash: [u8; 32],
     avatar_pub_key: Option<[u8; 32]>,
 ) -> Result<Vec<u8>, String> {
-    use vsf::verification::sign_file;
     use vsf::{VsfBuilder, VsfType};
 
     // 1. Build encrypted payload: hb(challenge_hash) + hP(handle_proof) + u(port) + t_u3(local_ip)? + ke(avatar_pub)?
@@ -365,7 +364,7 @@ fn build_announce_message(
     // 3. Build VSF with ke/ge at HEADER level (not inside section) for full file integrity
     let unsigned_bytes = VsfBuilder::new()
         .creation_time_oscillations(crate::network::time_base::now_osc())
-        .signed_only(VsfType::ke(device_key.public.to_bytes().to_vec()))
+        .signed_only_eggs(VsfType::ke(device_key.public.to_bytes().to_vec()), &crate::network::fgtw::fleet::envelope_slots(&device_key.public.to_bytes()))
         .add_section(
             "announce",
             vec![("payload".to_string(), VsfType::v(b'e', encrypted))],
@@ -373,7 +372,7 @@ fn build_announce_message(
         .build()?;
 
     // 4. Sign the entire file (header-level signature)
-    let vsf_bytes = sign_file(unsigned_bytes, device_key.secret.as_bytes())?;
+    let vsf_bytes = crate::network::fgtw::fleet::sign_device_envelope(unsigned_bytes, &device_key.public.to_bytes(), device_key.secret.as_bytes())?;
 
     #[cfg(feature = "development")]
     crate::log(&crate::network::inspect::vsf_inspect(

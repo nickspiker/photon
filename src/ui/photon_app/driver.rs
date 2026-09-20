@@ -4015,6 +4015,10 @@ impl PhotonApp {
         // Stash a clone for app-level operations that need the keypair after init (avatar upload via `upload_avatar`). The clone is cheap (Ed25519 keypair is ~64 bytes); we can't ask HandleQuery for it back because its constructor moves the keypair into the worker threads.
         self.device_keypair = Some(keypair.clone());
         self.signing_bundle = signing_bundle;
+        crate::network::fgtw::fleet::install_device_signer(match &self.signing_bundle {
+            Some(b) => crate::network::fgtw::fleet::DeviceSigner::Pq(b.clone()),
+            None => crate::network::fgtw::fleet::DeviceSigner::Ed(keypair.clone()),
+        });
         // Hand the device secret to storage so the pre-identity device vault (D2 binding, opt-in flags, reboot capsule) resolves from here on — on Android this is the ONLY route (no in-Rust fingerprint oracle).
         crate::storage::install_device_secret(*keypair.secret.as_bytes());
         #[cfg(not(target_os = "android"))]

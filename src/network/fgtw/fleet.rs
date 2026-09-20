@@ -106,7 +106,7 @@ pub fn fetch_successor(handle_proof: &[u8; 32]) -> Result<Option<SuccessorRecord
 
 /// Publish OUR succession record when we re-found this identity — member-gated (this device must fold as a current member of the chain the worker holds for `handle_proof`).
 pub fn publish_successor(device_key: &Keypair, record: &SuccessorRecord) -> Result<(), String> {
-    fgtw::client::publish_successor(&PhotonTransport, device_key, record)
+    fgtw::client::publish_successor(&PhotonTransport, &signer_for(device_key), record)
 }
 
 /// Ensure this device is a current fleet member before an authorised write (genesis-claim if no fleet yet).
@@ -115,7 +115,7 @@ pub fn ensure_member(
     handle_proof: &[u8; 32],
     identity_seed: &[u8; 32],
 ) -> Result<(), String> {
-    fgtw::client::ensure_member(&PhotonTransport, device_key, handle_proof, identity_seed)
+    fgtw::client::ensure_member(&PhotonTransport, &signer_for(device_key), handle_proof, identity_seed)
 }
 
 /// The current device-pubkey member set (empty if no fleet yet).
@@ -152,6 +152,42 @@ pub enum DeviceSigner {
     Ed(Keypair),
 }
 
+/// The process's device signer, installed once at init (driver.rs) beside `storage::install_device_secret`. Every device-signed envelope built anywhere in photon — request builders that were handed only a `(pubkey, secret)` pair, fgtw wrappers handed a bare `Keypair` — resolves through it, so an envelope carries everything this device holds at the envelope tier (Ed25519 + Falcon) without threading a bundle through 60 call sites. A key that is not this device's (a test key, a peer's) falls back to a single Ed25519 egg.
+static DEVICE_SIGNER: std::sync::OnceLock<DeviceSigner> = std::sync::OnceLock::new();
+
+pub fn install_device_signer(signer: DeviceSigner) {
+    let _ = DEVICE_SIGNER.set(signer);
+}
+
+/// The signer to use for `device_pubkey`: the installed one when it IS that device, else `None`.
+fn installed_signer_for(device_pubkey: &[u8; 32]) -> Option<&'static DeviceSigner> {
+    DEVICE_SIGNER.get().filter(|s| s.keypair().public.to_bytes() == *device_pubkey)
+}
+
+/// Upgrade a bare keypair to the full device signer when it is this device's key.
+pub fn signer_for(device_key: &Keypair) -> DeviceSigner {
+    match installed_signer_for(&device_key.public.to_bytes()) {
+        Some(s) => s.clone(),
+        None => DeviceSigner::Ed(device_key.clone()),
+    }
+}
+
+/// The header slots an envelope signed by `device_pubkey` must reserve — the argument to `VsfBuilder::signed_only_eggs`.
+pub fn envelope_slots(device_pubkey: &[u8; 32]) -> Vec<(u8, usize)> {
+    let mask = installed_signer_for(device_pubkey)
+        .map(fgtw::pq::envelope_mask)
+        .unwrap_or(scheme::MASK_BASE);
+    fgtw::pq::reserve_eggs(mask)
+}
+
+/// Sign a device envelope whose header was reserved with `envelope_slots(device_pubkey)`: with the installed signer when this is that device, else with one Ed25519 egg from `device_secret`.
+pub fn sign_device_envelope(unsigned: Vec<u8>, device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    match installed_signer_for(device_pubkey) {
+        Some(s) => fgtw::pq::sign_envelope(unsigned, s),
+        None => fgtw::pq::sign_envelope(unsigned, &Keypair::from_seed(device_secret)),
+    }
+}
+
 impl FleetSigner for DeviceSigner {
     fn keypair(&self) -> &Keypair {
         match self {
@@ -184,7 +220,7 @@ pub fn bind_device(
 
 /// This device's own self-signed departure. RETIRED as a publish path (the worker refuses bare removes since the bilateral cutover) — kept only so old call sites fail with the worker's clear message instead of a missing symbol.
 pub fn depart_device(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
-    fgtw::client::depart_device(&PhotonTransport, device_key, handle_proof)
+    fgtw::client::depart_device(&PhotonTransport, &signer_for(device_key), handle_proof)
 }
 
 /// APPROVER half of the bilateral removal: countersign a sibling's departure request and publish the consented Remove. The mirror of the add ceremony's sponsor step.
@@ -229,7 +265,7 @@ pub fn release_device(
     handle_proof: &[u8; 32],
     released: &[u8; 32],
 ) -> Result<(), String> {
-    fgtw::client::device_release(&PhotonTransport, member_key, handle_proof, released)
+    fgtw::client::device_release(&PhotonTransport, &signer_for(member_key), handle_proof, released)
 }
 
 /// Lock a device out of its fleet at the worker (treat-as-stolen) — the worker-authoritative brick that refuses the device at announce forever, surviving any wipe of its local lock cache. `member_key` must be a current fleet member.
@@ -238,7 +274,7 @@ pub fn lock_device(
     handle_proof: &[u8; 32],
     locked: &[u8; 32],
 ) -> Result<(), String> {
-    fgtw::client::device_lock(&PhotonTransport, member_key, handle_proof, locked)
+    fgtw::client::device_lock(&PhotonTransport, &signer_for(member_key), handle_proof, locked)
 }
 
 /// Unlock a device the fleet previously locked (the owner's deliberate reversal) — the worker deletes the lock so the device announces normally again. Same member-gated auth.
@@ -247,7 +283,7 @@ pub fn unlock_device(
     handle_proof: &[u8; 32],
     locked: &[u8; 32],
 ) -> Result<(), String> {
-    fgtw::client::device_unlock(&PhotonTransport, member_key, handle_proof, locked)
+    fgtw::client::device_unlock(&PhotonTransport, &signer_for(member_key), handle_proof, locked)
 }
 
 /// NEW device: post (or refresh) its binding request — device-signed + identity-co-signed consent to join. Returns the published `eagle_time` stamp (oscillations) so the caller can derive the proximity beacon from the exact offer the sponsor reads back.
@@ -268,7 +304,7 @@ pub fn bindreq_put(
 
 /// NEW device: withdraw its own request (on green, or on ceremony cancel). Best-effort — the stamp lapses anyway.
 pub fn bindreq_withdraw(device_key: &Keypair, handle_proof: &[u8; 32]) -> Result<(), String> {
-    fgtw::client::bindreq_withdraw(&PhotonTransport, device_key, handle_proof)
+    fgtw::client::bindreq_withdraw(&PhotonTransport, &signer_for(device_key), handle_proof)
 }
 
 /// EXISTING device: the fresh, signature-verified binding requests for OUR fleet — the matcher's candidate set.
@@ -277,7 +313,7 @@ pub fn bindreq_list(
     handle_proof: &[u8; 32],
     identity_seed: &[u8; 32],
 ) -> Result<Vec<BindRequest>, String> {
-    fgtw::client::bindreq_list(&PhotonTransport, member_key, handle_proof, identity_seed)
+    fgtw::client::bindreq_list(&PhotonTransport, &signer_for(member_key), handle_proof, identity_seed)
 }
 
 /// Publish a fan-out to the always-online slot (device-signed envelope).
@@ -289,7 +325,7 @@ pub fn post_fanout(
     wraps: &[FanoutWrap],
 ) -> Result<(), String> {
     // Takes the KEY, not its fingerprint: the v3 header also carries the epoch public bundle, and both derive from the key inside the crate.
-    fgtw::client::post_fanout(&PhotonTransport, handle_proof, device_key, revision, fleet_key, wraps)
+    fgtw::client::post_fanout(&PhotonTransport, handle_proof, &signer_for(device_key), revision, fleet_key, wraps)
 }
 
 /// Fetch the current fan-out (revision + kfp + rotator + wraps), or None if none published yet.
@@ -407,7 +443,7 @@ pub fn push_checkpoint(
     fgtw::client::push_checkpoint(
         &PhotonTransport,
         handle_proof,
-        device_key,
+        &signer_for(device_key),
         k,
         commit,
         fanout_epoch,
@@ -538,7 +574,7 @@ pub fn push_fstate(
         &PhotonTransport,
         &PhotonSealer,
         handle_proof,
-        device_key,
+        &signer_for(device_key),
         fleet_key,
         state,
     )

@@ -54,13 +54,13 @@ fn build_signed_vsf(
     // Build unsigned VSF
     let unsigned_bytes = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .signed_only(VsfType::ke(keypair.public.as_bytes().to_vec()))
+        .signed_only_eggs(VsfType::ke(keypair.public.to_bytes().to_vec()), &crate::network::fgtw::fleet::envelope_slots(&keypair.public.to_bytes()))
         .add_section(section_name, fields)
         .build()
         .map_err(|e| format!("Build VSF: {}", e))?;
 
     // Canonical vsf signing (fills hp, then ge over BLAKE3(file, ge zeroed)) — matches the scheme the worker verifies. The old code signed the bare hp value, which the worker's file-hash verification REJECTED, so every relay send died with bad_signature (masked because relay is a non-fatal last-resort fallback).
-    vsf::verification::sign_file(unsigned_bytes, keypair.secret.as_bytes())
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned_bytes, &keypair.public.to_bytes(), keypair.secret.as_bytes())
 }
 
 /// Send a message via FGTW conduit relay
