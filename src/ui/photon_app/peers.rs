@@ -13,24 +13,26 @@ impl PhotonApp {
     /// The published address is the REFLEXIVE one — what peers actually observe on the live UDP data socket — not fgtw.org's `cf-connecting-ip`, which reflects a TLS flow and is only right for cone NATs. That is also why the device can sign it at all: until reflexive discovery existed, a device did not know its own public address and could not commit to one.
     /// Converge our identity's PRIMARY registry onto a freshly-adopted fold (cutover Phase 4): read the stored view, plan the minimal placement-signed writes, put each. A `stale` rejection means a racing sibling landed first — success by other hands, logged and dropped.
     pub(super) fn spawn_registry_converge(&self, handle_proof: [u8; 32], fold: Vec<[u8; 32]>) {
-        let Some(kp) = self.device_keypair.as_ref() else {
+        let Some(signer) = self.device_signer() else {
             return;
         };
-        let sk = ed25519_dalek::SigningKey::from_bytes(kp.secret.as_bytes());
         crate::network::http::runtime().spawn(async move {
             let view = match crate::network::fgtw::phonebook_client::fetch_devices(&handle_proof).await {
                 Ok((view, _)) => view,
                 // No registry yet (or an unreadable one): converge from empty — the plan re-mints everything.
                 Err(_) => fgtw::phonebook::RegistryView::default(),
             };
-            let plan = fgtw::phonebook::registry_plan(&sk, &handle_proof, &fold, &view, vsf::eagle_time_oscillations(), None);
+            // Sign with what the chain knows we hold — the worker holds a member's eggs to the fleet's floor against its declared bundle.
+            let me = fgtw::pq::FleetSigner::keypair(&signer).public.to_bytes();
+            let mask = crate::network::fgtw::fleet::declared_mask(&handle_proof, &me);
+            let plan = fgtw::phonebook::registry_plan(&signer, mask, &handle_proof, &fold, &view, vsf::eagle_time_oscillations(), None);
             if plan.is_empty() {
                 return;
             }
             let total = plan.len();
             let mut stored = 0usize;
-            for rec in &plan {
-                match crate::network::fgtw::phonebook_client::put_record(rec).await {
+            for (rec, eggs) in &plan {
+                match crate::network::fgtw::phonebook_client::put_record(rec, eggs).await {
                     Ok(()) => stored += 1,
                     Err(e) => crate::logf!("PHONEBOOK: registry write skipped ({})", e),
                 }
@@ -84,10 +86,14 @@ impl PhotonApp {
         );
 
         // ALSO publish to the seed's registry. Gossip alone cannot bootstrap: carrying a record needs a validated path, a path needs a punch, and a punch needs an address we could only have learned from a peer we cannot yet reach. The seed breaks that circle — it is the one place reachable without already knowing anyone. Fire-and-forget off-thread: this is a discovery-path nicety, and a seed that is down must never stall the UI or the local store (which is already updated above and persists regardless).
-        let secret = kp.secret.clone();
+        let Some(signer) = self.device_signer() else {
+            return;
+        };
         let local = local_ip; // the same beacon-first LAN value the signed record carries — the seed must never publish a WORSE address than gossip does
         crate::network::http::runtime().spawn(async move {
-            match crate::network::fgtw::phonebook_client::publish_address(&secret, &hp, addr, local)
+            let me = fgtw::pq::FleetSigner::keypair(&signer).public.to_bytes();
+            let mask = crate::network::fgtw::fleet::declared_mask(&hp, &me);
+            match crate::network::fgtw::phonebook_client::publish_address(&signer, mask, &hp, addr, local)
                 .await
             {
                 Ok(()) => crate::logf!("PHONEBOOK: address record published to the seed registry"),

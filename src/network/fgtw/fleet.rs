@@ -119,6 +119,14 @@ pub fn ensure_member(
 }
 
 /// The current device-pubkey member set (empty if no fleet yet).
+/// The scheme set the chain knows `device` can sign with — Ed25519 alone before its Declare, its declared bundle after. What a device passes as the mask when it signs anything a verifier will hold to its declared bundle (phonebook records); an egg for an undeclared scheme fails closed there. Ed25519 alone when the chain cannot be fetched.
+pub fn declared_mask(handle_proof: &[u8; 32], device: &[u8; 32]) -> scheme::Mask {
+    match fgtw::client::fetch(&PhotonTransport, handle_proof) {
+        Ok(Some(chain)) => chain.declared_mask(device),
+        _ => scheme::MASK_BASE,
+    }
+}
+
 pub fn current_members(handle_proof: &[u8; 32]) -> Result<Vec<[u8; 32]>, String> {
     fgtw::client::current_members(&PhotonTransport, handle_proof)
 }

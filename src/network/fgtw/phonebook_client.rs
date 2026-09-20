@@ -2,7 +2,7 @@
 //!
 //! This is the replacement for the announce echo. The old `announce` response carried the whole peer list, which is how every contact learned an address on a cold start; dropping it is what made the per-record registry cutover possible (there is no aggregate blob to echo once records are addressed individually), but until this module existed there was NO seed-side discovery at all — only gossip against a store that starts empty, over paths that need an address to establish.
 //!
-//! The wire is deliberately thin: a record is 256 self-describing bytes carrying its own signature, so it crosses as raw bytes and is verified by the RECEIVER against the codec both sides share ([`fgtw::phonebook`]). Nothing here is trusted because the seed said it — a record that fails `verify_address` is dropped exactly as if it had never arrived.
+//! The wire is deliberately thin: a record is 256 self-describing bytes, its signatures ride beside it as the egg blob the record points at by content address, and both cross as raw bytes to be verified by the RECEIVER against the codec both sides share ([`fgtw::phonebook`]). Nothing here is trusted because the seed said it — a record that fails `verify_address` is dropped exactly as if it had never arrived.
 //!
 //! What this does NOT do: prove the device belongs to the identity's fleet. `verify_address` proves only that the holder of `device_pubkey` signed this address under this `handle_proof`; a stranger can mint a row for any scraped `handle_proof`. That binding is the PRIMARY registry's job and is still open — see [`resolve_device_address`] for what a caller may and may not conclude.
 
@@ -66,40 +66,35 @@ async fn post(body: Vec<u8>) -> Result<Vec<u8>, PhonebookError> {
 ///
 /// The address published must be one we actually believe in — a quorum-corroborated reflexive address, never the relay sentinel. The caller owns that check; signing an unreachable address produces a signed claim that we cannot be reached, and gossip would propagate it faithfully.
 pub async fn publish_address(
-    device_secret: &ed25519_dalek::SigningKey,
+    signer: &impl fgtw::pq::FleetSigner,
+    mask: fgtw::fleet::scheme::Mask,
     handle_proof: &[u8; 32],
     addr: std::net::SocketAddr,
     local_ip: Option<std::net::IpAddr>,
 ) -> Result<(), PhonebookError> {
-    let rec = Record::sign_device_address(
-        device_secret,
+    let (rec, eggs) = Record::sign_device_address(
+        signer,
+        mask,
         handle_proof,
         &ip_to_bytes(addr.ip()),
         addr.port(),
         &local_ip.map(ip_to_bytes).unwrap_or([0u8; 16]),
         vsf::eagle_time_oscillations(),
     );
-    debug_assert!(rec.verify_address(), "a record we just signed must verify");
-
-    let body = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .add_section(
-            "pb_put",
-            vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))],
-        )
-        .build()
-        .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
-    post(body).await?;
-    Ok(())
+    debug_assert!(rec.verify_address(&eggs), "a record we just signed must verify");
+    put_record(&rec, &eggs).await
 }
 
-/// Publish one already-signed registry record (primary or secondary) — the converge path's writer. The worker re-verifies the record's own signatures and the slot-local epoch before storing; a `stale` answer is fine (a racing sibling landed first) and surfaces as Rejected for the caller to ignore.
-pub async fn put_record(rec: &Record) -> Result<(), PhonebookError> {
+/// Publish one already-signed registry record (primary or secondary) with its egg blob — the converge path's writer. The worker re-verifies the record's eggs and the slot-local epoch before storing; a `stale` answer is fine (a racing sibling landed first) and surfaces as Rejected for the caller to ignore.
+pub async fn put_record(rec: &Record, eggs: &[u8]) -> Result<(), PhonebookError> {
     let body = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .add_section(
             "pb_put",
-            vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))],
+            vec![
+                ("rec".to_string(), VsfType::v(b'r', rec.0.to_vec())),
+                ("eggs".to_string(), VsfType::v(b'r', eggs.to_vec())),
+            ],
         )
         .build()
         .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
@@ -122,11 +117,17 @@ pub async fn fetch_devices(
     let bytes = post(body).await?;
 
     let schema = vsf::schema::SectionSchema::new("pb_devices")
-        .field("rec", vsf::schema::TypeConstraint::Any);
+        .field("rec", vsf::schema::TypeConstraint::Any)
+        .field("eggs", vsf::schema::TypeConstraint::Any);
     let section = vsf::schema::SectionBuilder::parse_document(schema, &bytes, None)
         .map_err(|_| PhonebookError::NotFound)?;
     let mut view = fgtw::phonebook::RegistryView::default();
     let mut addresses = Vec::new();
+    for field in section.get_fields("eggs") {
+        if let Some(VsfType::v(_, b)) = field.values.first() {
+            view.add_blob(b.clone());
+        }
+    }
     for field in section.get_fields("rec") {
         let Some(VsfType::v(_, b)) = field.values.first() else {
             continue;
@@ -151,7 +152,7 @@ pub async fn fetch_devices(
     }
     let pointed: Vec<[u8; 32]> = view.devices();
     addresses.retain(|a| {
-        a.verify_address()
+        view.blob(a).is_some_and(|eggs| a.verify_address(eggs))
             && a.handle_proof() == *handle_proof
             && pointed.contains(&a.device_pubkey())
     });
@@ -173,9 +174,9 @@ pub async fn resolve_device_address(device_pubkey: &[u8; 32]) -> Result<Record, 
         .map_err(|e| PhonebookError::Network(format!("build: {}", e)))?;
     let bytes = post(body).await?;
 
-    let rec = parse_pb_rec(&bytes).ok_or(PhonebookError::NotFound)?;
+    let (rec, eggs) = parse_pb_rec(&bytes).ok_or(PhonebookError::NotFound)?;
     // Verify before returning: a record that fails is absence, not data.
-    if !rec.verify_address() {
+    if !rec.verify_address(&eggs) {
         return Err(PhonebookError::Unverified);
     }
     // The record must be the one we asked for. Without this a seed could answer any query with any valid record and silently redirect us to a device we never asked about.
@@ -185,12 +186,13 @@ pub async fn resolve_device_address(device_pubkey: &[u8; 32]) -> Result<Record, 
     Ok(rec)
 }
 
-/// Pull the raw 256-byte record out of a `pb_rec` response frame. Verified read: header + provenance self-consistency before any field is trusted; the record's own signature is checked by the caller on top.
-fn parse_pb_rec(bytes: &[u8]) -> Option<Record> {
-    let schema =
-        vsf::schema::SectionSchema::new("pb_rec").field("rec", vsf::schema::TypeConstraint::Any);
+/// Pull the raw 256-byte record and its egg blob out of a `pb_rec` response frame. Verified read: header + provenance self-consistency before any field is trusted; the record's own eggs are checked by the caller on top. A frame without a blob yields an empty one, which verifies as nothing.
+fn parse_pb_rec(bytes: &[u8]) -> Option<(Record, Vec<u8>)> {
+    let schema = vsf::schema::SectionSchema::new("pb_rec")
+        .field("rec", vsf::schema::TypeConstraint::Any)
+        .field("eggs", vsf::schema::TypeConstraint::Any);
     let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, None).ok()?;
-    match section
+    let rec = match section
         .get_fields("rec")
         .first()
         .and_then(|f| f.values.first())
@@ -198,10 +200,15 @@ fn parse_pb_rec(bytes: &[u8]) -> Option<Record> {
         Some(VsfType::v(_, b)) if b.len() == STRIDE => {
             let mut a = [0u8; STRIDE];
             a.copy_from_slice(b);
-            Some(Record(a))
+            Record(a)
         }
-        _ => None,
-    }
+        _ => return None,
+    };
+    let eggs = match section.get_fields("eggs").first().and_then(|f| f.values.first()) {
+        Some(VsfType::v(_, b)) => b.clone(),
+        _ => Vec::new(),
+    };
+    Some((rec, eggs))
 }
 
 /// v4 as `::ffff:a.b.c.d` so the field is fixed width — the record layout stores one 16-byte slot for either family.
@@ -243,9 +250,10 @@ pub fn record_local_addr(rec: &Record) -> Option<std::net::SocketAddr> {
 mod tests {
     use super::*;
 
-    fn key(seed: u8) -> ed25519_dalek::SigningKey {
-        ed25519_dalek::SigningKey::from_bytes(&[seed; 32])
+    fn key(seed: u8) -> fgtw::keys::Keypair {
+        fgtw::keys::Keypair::from_seed(&[seed; 32])
     }
+    const B: fgtw::fleet::scheme::Mask = fgtw::fleet::scheme::MASK_BASE;
 
     /// A v4 address must survive the mapped-form round trip as a REAL v4 — if it came back as `::ffff:a.b.c.d` it would never compare equal to the same address learned off the wire, and the punch would treat it as a v6 host that needs no hole.
     #[test]
@@ -262,15 +270,16 @@ mod tests {
         let dev = key(1);
         let addr: std::net::SocketAddr = "66.135.65.206:4383".parse().unwrap();
         let lan: std::net::IpAddr = "192.168.0.40".parse().unwrap();
-        let rec = Record::sign_device_address(
+        let (rec, eggs) = Record::sign_device_address(
             &dev,
+            B,
             &[3u8; 32],
             &ip_to_bytes(addr.ip()),
             addr.port(),
             &ip_to_bytes(lan),
             77,
         );
-        assert!(rec.verify_address());
+        assert!(rec.verify_address(&eggs));
         assert_eq!(record_socket_addr(&rec), Some(addr));
         assert_eq!(
             record_local_addr(&rec),
@@ -282,7 +291,7 @@ mod tests {
     #[test]
     fn an_empty_address_slot_is_absence() {
         let dev = key(2);
-        let rec = Record::sign_device_address(&dev, &[3u8; 32], &[0u8; 16], 0, &[0u8; 16], 5);
+        let (rec, _) = Record::sign_device_address(&dev, B, &[3u8; 32], &[0u8; 16], 0, &[0u8; 16], 5);
         assert_eq!(record_socket_addr(&rec), None);
         assert_eq!(record_local_addr(&rec), None);
     }
@@ -292,14 +301,14 @@ mod tests {
     fn a_record_for_another_device_has_a_different_key() {
         let ours = key(1);
         let theirs = key(9);
-        let rec = Record::sign_device_address(&theirs, &[3u8; 32], &[1u8; 16], 4383, &[0u8; 16], 5);
+        let (rec, eggs) = Record::sign_device_address(&theirs, B, &[3u8; 32], &[1u8; 16], 4383, &[0u8; 16], 5);
         assert!(
-            rec.verify_address(),
+            rec.verify_address(&eggs),
             "their record is genuinely valid — validity is not enough"
         );
         assert_ne!(
             rec.key(),
-            Some(key_address(&ours.verifying_key().to_bytes())),
+            Some(key_address(&ours.public.to_bytes())),
             "a valid record for the wrong device must not satisfy our query"
         );
     }
@@ -335,17 +344,17 @@ mod tests {
             .expect("runtime");
         let mut seed = [0u8; 32];
         seed[..8].copy_from_slice(&vsf::eagle_time_oscillations().to_le_bytes());
-        let dev = ed25519_dalek::SigningKey::from_bytes(&seed);
-        let pubkey = dev.verifying_key().to_bytes();
+        let dev = fgtw::keys::Keypair::from_seed(&seed);
+        let pubkey = dev.public.to_bytes();
         let addr: std::net::SocketAddr = "203.0.113.7:4383".parse().unwrap();
         let lan: std::net::IpAddr = "192.168.7.7".parse().unwrap();
 
-        rt.block_on(publish_address(&dev, &[0xABu8; 32], addr, Some(lan)))
+        rt.block_on(publish_address(&dev, B, &[0xABu8; 32], addr, Some(lan)))
             .expect("publish succeeds");
         let rec = rt
             .block_on(resolve_device_address(&pubkey))
             .expect("resolve finds it");
-        assert!(rec.verify_address());
+        assert!(record_socket_addr(&rec).is_some());
         assert_eq!(
             record_socket_addr(&rec),
             Some(addr),
@@ -367,17 +376,29 @@ mod tests {
     #[test]
     fn a_pb_rec_frame_parses_back_to_the_record() {
         let dev = key(4);
-        let rec = Record::sign_device_address(&dev, &[3u8; 32], &[7u8; 16], 4383, &[8u8; 16], 12);
+        let (rec, eggs) = Record::sign_device_address(&dev, B, &[3u8; 32], &[7u8; 16], 4383, &[8u8; 16], 12);
         let frame = vsf::VsfBuilder::new()
             .creation_time_oscillations(vsf::eagle_time_oscillations())
             .add_section(
                 "pb_rec",
-                vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))],
+                vec![
+                    ("rec".to_string(), VsfType::v(b'r', rec.0.to_vec())),
+                    ("eggs".to_string(), VsfType::v(b'r', eggs.clone())),
+                ],
             )
             .build()
             .expect("frame builds");
-        let parsed = parse_pb_rec(&frame).expect("frame parses");
+        let (parsed, parsed_eggs) = parse_pb_rec(&frame).expect("frame parses");
         assert_eq!(parsed.0, rec.0);
-        assert!(parsed.verify_address());
+        assert_eq!(parsed_eggs, eggs);
+        assert!(parsed.verify_address(&parsed_eggs));
+        // The worker serves a record whose blob went missing bare; that is absence, not a record.
+        let bare = vsf::VsfBuilder::new()
+            .creation_time_oscillations(vsf::eagle_time_oscillations())
+            .add_section("pb_rec", vec![("rec".to_string(), VsfType::v(b'r', rec.0.to_vec()))])
+            .build()
+            .expect("frame builds");
+        let (bare_rec, bare_eggs) = parse_pb_rec(&bare).expect("frame parses");
+        assert!(!bare_rec.verify_address(&bare_eggs));
     }
 }
