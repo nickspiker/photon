@@ -34,6 +34,12 @@ Each transfer gets a stream ID from 'a'-'z' (26 concurrent streams per peer).
 
 Stream IDs route packets to the correct transfer state.
 
+### The send window (2026-09-21)
+
+At most **thirteen** large transfers are live per peer — `PTManager::STREAMS_IN_FLIGHT`, half the alphabet — and the ids rotate `a..z` by modulo **per peer**. The rest queue FIFO in `pending_outbound` and release in `tick()` on the completion or failure edge of a live one (a completed outbound transfer is swept by that same tick; it used to linger with two copies of its payload until the peer was cleared).
+
+Why half: the receiver evicts an incomplete inbound transfer when a new SPEC arrives on its stream id, and a late packet from an old holder must find no live twin. With thirteen live and twenty-six ids, an id comes back around only after its previous holder was retired at least thirteen releases earlier. The field case that forced it: a 345 MB bridge pigeon (1383 chunks) fired every chunk at once, wrapped the alphabet fifty times over, and the chunks killed each other mid-flight — 62 of 1383 landed, 1609 `Transfer FAILED`. Every bulk sender rides the window without knowing it (pigeons, attachment serves, history pages, offers). A retarget re-aims queued transfers too; `clear_outbound` (relay says offline, CLUTCH completion) drops the queue with the ladder.
+
 ## Packet Types
 
 ### DATA Packet (Binary, minimal overhead)

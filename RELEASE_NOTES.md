@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A large file dropped on the bridge now arrives: the transport sends at most thirteen pieces at a time to one machine and releases the next as each lands, instead of firing every piece at once — a 345 MB drop fired 1383 pieces into a space with 26 slots, they trampled each other mid-flight and 62 landed. The same window now governs every large send (attachments, history, pairing offers), and a finished send no longer sits in memory holding two copies of itself until something else clears it.
 - A file dropped on the bridge shows a progress bar on its row while it crosses: the receiving machine reports how many pieces have landed as they land, the bar fills from that on the sending side and from its own spool on the receiving side, and the "landed at …" line follows once it is whole; the receiver also stops re-reading its entire spool after every piece, which on a large drop was gigabytes of disk reads on the drawing thread.
 ## v101
 

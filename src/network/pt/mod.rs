@@ -80,10 +80,45 @@ pub struct PTManager {
     keypair: Keypair,
     /// Stale timeout (no activity for this long = abort)
     stale_timeout: Duration,
-    /// Next stream_id to allocate for outbound transfers (per peer would be better but this is simpler)
-    next_stream_id: u8,
+    /// Next stream id per peer, rotating a..z by modulo. Per PEER, because the collision that matters is (peer, stream): a global counter let one peer's ids come back around while its earlier holder was still in flight.
+    next_stream_id: std::collections::HashMap<PeerKey, u8>,
     /// Monotonic transfer ID counter for external tracking
     next_transfer_id: usize,
+    /// Large payloads waiting for a slot in their peer's window, FIFO. Released in `tick()` on the completion/failure edge of an in-flight transfer.
+    pending_outbound: std::collections::VecDeque<PendingOutbound>,
+    /// Peers whose window is currently full — so the park and the drain each log once, not per transfer.
+    window_parked: std::collections::HashSet<PeerKey>,
+}
+
+/// How a peer is told apart for the send window and its stream-id rotation: by device key when the caller gave one (a retarget moves the address, the window must not care), else by address.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+enum PeerKey {
+    Device([u8; 32]),
+    Addr(SocketAddr),
+}
+
+impl std::fmt::Display for PeerKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PeerKey::Device(pk) => write!(f, "device {}", hex::encode(&pk[..4])),
+            PeerKey::Addr(a) => write!(f, "{}", a),
+        }
+    }
+}
+
+fn peer_key(recipient_pubkey: Option<[u8; 32]>, peer_addr: SocketAddr) -> PeerKey {
+    match recipient_pubkey {
+        Some(pk) => PeerKey::Device(pk),
+        None => PeerKey::Addr(crate::network::udp::canon_socketaddr(peer_addr)),
+    }
+}
+
+/// A large payload parked behind the window: everything `start_transfer` needs, held verbatim.
+struct PendingOutbound {
+    peer_addr: SocketAddr,
+    alt_addr: Option<SocketAddr>,
+    data: Vec<u8>,
+    recipient_pubkey: Option<[u8; 32]>,
 }
 
 impl PTManager {
@@ -95,8 +130,10 @@ impl PTManager {
             outbound_packets: Vec::new(),
             keypair,
             stale_timeout: Duration::from_secs(30),
-            next_stream_id: b'a',
+            next_stream_id: std::collections::HashMap::new(),
             next_transfer_id: 0,
+            pending_outbound: std::collections::VecDeque::new(),
+            window_parked: std::collections::HashSet::new(),
         }
     }
 
@@ -107,15 +144,26 @@ impl PTManager {
 
     // ========================================================================= Transfer Stream Management ('a'-'z') =========================================================================
 
-    /// Allocate next available stream_id ('a'-'z', wraps around)
-    fn allocate_stream_id(&mut self) -> u8 {
-        let id = self.next_stream_id;
-        self.next_stream_id = if self.next_stream_id >= b'z' {
-            b'a'
-        } else {
-            self.next_stream_id + 1
-        };
+    /// THE SEND WINDOW (Nick 2026-09-21, the 345 MB pigeon that never showed up): at most this many large transfers in flight per peer — half the stream alphabet, a..m — so the other half is cooling.
+    /// The stream id space is 26 per peer and the RECEIVER evicts an incomplete inbound transfer when a new SPEC arrives on its stream id; 1383 chunks fired at once wrapped the alphabet fifty times over and the chunks killed each other mid-flight (62 of 1383 landed, 1609 "Transfer FAILED").
+    /// With ids rotating by modulo and at most thirteen live, an id comes back around only after twenty-six allocations, and its previous holder was retired at least thirteen releases ago — a late packet from it finds no live twin.
+    pub const STREAMS_IN_FLIGHT: usize = 13;
+
+    /// Allocate this peer's next stream id, a..z rotating by modulo.
+    fn allocate_stream_id(&mut self, key: PeerKey) -> u8 {
+        let slot = self.next_stream_id.entry(key).or_insert(0);
+        let id = b'a' + *slot;
+        *slot = (*slot + 1) % 26;
         id
+    }
+
+    /// Large transfers live for this peer right now (a completed or failed one has left the window even before the sweep removes it).
+    fn in_flight_for(&self, key: PeerKey) -> usize {
+        self.outbound
+            .iter()
+            .filter(|t| peer_key(t.recipient_pubkey, t.peer_addr) == key)
+            .filter(|t| !matches!(t.state, TransferState::Complete | TransferState::Failed))
+            .count()
     }
 
     /// Max VSF size for single UDP packet (no sharding needed) 1KB threshold - VSF this size or smaller sent directly Larger VSF gets sharded into [lowercase letter][packet number][1KB DATA] packets
@@ -183,8 +231,27 @@ impl PTManager {
             }
         }
 
-        // Large payload - full SPEC/DATA/ACK/COMPLETE flow
-        let stream_id = self.allocate_stream_id();
+        // Large payload - full SPEC/DATA/ACK/COMPLETE flow, behind the per-peer window.
+        let key = peer_key(recipient_pubkey, peer_addr);
+        if self.in_flight_for(key) >= Self::STREAMS_IN_FLIGHT {
+            if self.window_parked.insert(key) {
+                crate::logf!("PT: window full toward {} ({} in flight) — queuing behind it", peer_addr, Self::STREAMS_IN_FLIGHT);
+            }
+            self.pending_outbound.push_back(PendingOutbound { peer_addr, alt_addr, data, recipient_pubkey });
+            return Vec::new();
+        }
+        self.start_transfer(peer_addr, alt_addr, data, recipient_pubkey)
+    }
+
+    /// Open a large transfer now (the window has room): allocate the peer's next stream id, build and mark the SPEC, track it. Returns the SPEC bytes.
+    fn start_transfer(
+        &mut self,
+        peer_addr: SocketAddr,
+        alt_addr: Option<SocketAddr>,
+        data: Vec<u8>,
+        recipient_pubkey: Option<[u8; 32]>,
+    ) -> Vec<u8> {
+        let stream_id = self.allocate_stream_id(peer_key(recipient_pubkey, peer_addr));
         let transfer_id = self.next_transfer_id;
         self.next_transfer_id += 1;
 
@@ -244,6 +311,13 @@ impl PTManager {
             {
                 t.peer_addr = primary;
                 t.alt_addr = alt;
+                moved += 1;
+            }
+        }
+        for p in self.pending_outbound.iter_mut() {
+            if p.recipient_pubkey.as_ref() == Some(pubkey) && !same_addr(p.peer_addr, primary) {
+                p.peer_addr = primary;
+                p.alt_addr = alt;
                 moved += 1;
             }
         }
@@ -686,6 +760,8 @@ impl PTManager {
                 peer_addr
             );
         }
+        // The ladder is parked for this peer: what waited behind the window goes with it (the sender's re-drop or re-ask is the retry, as for the transfers themselves).
+        self.pending_outbound.retain(|p| !same_addr(p.peer_addr, *peer_addr));
     }
 
     /// Periodic tick - check timeouts, send retransmits Returns TickSend structs with:
@@ -898,9 +974,32 @@ impl PTManager {
             }
         }
 
-        // Remove failed transfers
-        self.outbound.retain(|t| t.state != TransferState::Failed);
+        // Remove failed transfers — and COMPLETED outbound ones, which nothing reads after the peer's pt_done (they used to linger with two copies of their payload until a CLUTCH completion or a relay-offline verdict cleared the peer: a 345 MB pigeon retained ~700 MB).
+        self.outbound.retain(|t| !matches!(t.state, TransferState::Failed | TransferState::Complete));
         self.inbound.retain(|t| t.state != TransferState::Failed);
+
+        // Release what waited behind a window that now has room: FIFO per peer, one SPEC per released transfer (to its alt address too, as the direct send does).
+        let mut kept = std::collections::VecDeque::new();
+        while let Some(p) = self.pending_outbound.pop_front() {
+            let key = peer_key(p.recipient_pubkey, p.peer_addr);
+            if self.in_flight_for(key) >= Self::STREAMS_IN_FLIGHT {
+                kept.push_back(p);
+                continue;
+            }
+            let spec_bytes = self.start_transfer(p.peer_addr, p.alt_addr, p.data, p.recipient_pubkey);
+            if let Some(alt) = p.alt_addr.filter(|a| !same_addr(*a, p.peer_addr)) {
+                to_send.push(TickSend { peer_addr: alt, wire_bytes: spec_bytes.clone(), tcp_payload: None, relay: None });
+            }
+            to_send.push(TickSend { peer_addr: p.peer_addr, wire_bytes: spec_bytes, tcp_payload: None, relay: None });
+        }
+        self.pending_outbound = kept;
+        let still_parked: std::collections::HashSet<PeerKey> = self.pending_outbound.iter().map(|p| peer_key(p.recipient_pubkey, p.peer_addr)).collect();
+        for key in self.window_parked.clone() {
+            if !still_parked.contains(&key) {
+                crate::logf!("PT: window drained toward {} — nothing left queued", key);
+                self.window_parked.remove(&key);
+            }
+        }
 
         to_send
     }
@@ -1125,6 +1224,51 @@ mod tests {
             .take_inbound_data(peer_addr, b'a')
             .expect("Should have received data");
         assert_eq!(received, data);
+    }
+
+    /// The window: thirteen large transfers live per peer, the rest wait; a completion swept by tick releases the next in FIFO order with the peer's next stream id, and ids rotate a..z by modulo per peer.
+    #[test]
+    fn window_holds_half_the_alphabet_and_releases_on_the_completion_edge() {
+        let mut mgr = PTManager::new(test_keypair());
+        let peer: SocketAddr = "192.168.1.161:4383".parse().unwrap();
+        let pk = [0x5Au8; 32];
+        let mut specs = 0;
+        for i in 0..40u8 {
+            if !mgr.send_with_pubkey(peer, vec![i; 3000], Some(pk)).is_empty() {
+                specs += 1;
+            }
+        }
+        assert_eq!(specs, PTManager::STREAMS_IN_FLIGHT, "exactly the window's worth of SPECs go out at once");
+        assert_eq!(mgr.outbound.len(), PTManager::STREAMS_IN_FLIGHT);
+        assert_eq!(mgr.pending_outbound.len(), 40 - PTManager::STREAMS_IN_FLIGHT);
+        let ids: Vec<u8> = mgr.outbound.iter().map(|t| t.stream_id).collect();
+        assert_eq!(ids, (0..13u8).map(|n| b'a' + n).collect::<Vec<_>>(), "a..m in flight");
+        // Nothing releases while the window is full.
+        assert!(mgr.tick().is_empty());
+        // Three complete → three released, with the next ids n, o, p.
+        for t in mgr.outbound.iter_mut().take(3) {
+            t.state = TransferState::Complete;
+        }
+        let released = mgr.tick();
+        assert_eq!(released.len(), 3);
+        assert_eq!(mgr.outbound.len(), PTManager::STREAMS_IN_FLIGHT, "swept three, released three");
+        assert_eq!(mgr.pending_outbound.len(), 40 - PTManager::STREAMS_IN_FLIGHT - 3);
+        let newest: Vec<u8> = mgr.outbound.iter().rev().take(3).map(|t| t.stream_id).collect();
+        assert_eq!(newest, vec![b'p', b'o', b'n']);
+        // The released transfer carries the first parked payload (FIFO), not the last.
+        assert_eq!(mgr.outbound[PTManager::STREAMS_IN_FLIGHT - 3].original_payload.as_ref().unwrap()[0], 13);
+        // Rotation: after twenty-six allocations the id comes back to 'a'.
+        for _ in 0..40 {
+            for t in mgr.outbound.iter_mut() {
+                t.state = TransferState::Complete;
+            }
+            mgr.tick();
+        }
+        assert!(mgr.pending_outbound.is_empty(), "everything released");
+        assert_eq!(mgr.allocate_stream_id(peer_key(Some(pk), peer)), b'a' + (40 % 26) as u8);
+        // A different peer has its own alphabet.
+        let other: SocketAddr = "10.0.0.9:4383".parse().unwrap();
+        assert_eq!(mgr.allocate_stream_id(peer_key(Some([0x11u8; 32]), other)), b'a');
     }
 
     #[test]
