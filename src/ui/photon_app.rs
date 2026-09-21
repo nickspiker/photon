@@ -893,6 +893,16 @@ impl ChatFilter {
     }
 }
 
+/// One bridge pigeon's progress as the row draws it: which sibling device it is with, the name the row carries (the row holds the name, not the hash — so the row finds its bar by device + name, newest first), and chunks got of chunks in all.
+pub(crate) struct PigeonProgress {
+    pub(crate) device: [u8; 32],
+    pub(crate) name: String,
+    pub(crate) got: u32,
+    pub(crate) of: u32,
+    /// When this entry last moved — the tie-break when one name was dropped twice.
+    pub(crate) at: std::time::Instant,
+}
+
 /// An attachment's VISUAL as drawn this frame (the picture band, or a code row's preview lines), slot-indexed like [`PhotonApp::msg_hit_rows`]: a tap inside opens it, a tap on the rest of the row opens the actions (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it").
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AttachVisual {
@@ -2060,6 +2070,8 @@ pub struct PhotonApp {
     pigeon_rx: crate::network::pigeon::PigeonReceiver,
     pigeon_landed_tx: std::sync::mpsc::Sender<(usize, Option<crate::network::pigeon::Landed>, String)>,
     pigeon_landed_rx: std::sync::mpsc::Receiver<(usize, Option<crate::network::pigeon::Landed>, String)>,
+    /// BOTH ENDS: how far each bridge pigeon has got, keyed by its whole-file hash — the sender learns it from the host's pigeon_ack frames, the host from its own spool. Draws the bar on the pigeon row; RAM-only like the rows themselves.
+    pigeon_progress: std::collections::HashMap<[u8; 32], PigeonProgress>,
     /// CLIENT side, any platform: the latest locus the bridge host reported — (device, host name, cwd) — rendered as the strip above the compose box so the operator is never blind to where commands land (field 2026-08-23: a pull meant for photon ran in keys/).
     bridge_locus: Option<([u8; 32], String, String)>,
     /// CLIENT side: Stop-press escalation for the in-flight command — (command eagle_time, presses so far); each press walks SIGINT → SIGTERM → SIGKILL, reset when a new command starts.
@@ -2732,6 +2744,7 @@ impl PhotonApp {
             pigeon_rx: Default::default(),
             pigeon_landed_tx: std::sync::mpsc::channel().0,
             pigeon_landed_rx: std::sync::mpsc::channel().1,
+            pigeon_progress: std::collections::HashMap::new(),
             bridge_locus: None,
             bridge_int: None,
             settings_custodian_check: None,

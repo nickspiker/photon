@@ -874,6 +874,8 @@ impl PhotonApp {
         // The chunk list: the manifest's, or the whole blob as one chunk when it fit in a single store.
         let chunks: Vec<[u8; 32]> = manifest.as_ref().map(|m| m.chunks.clone()).unwrap_or_else(|| vec![hash]);
         let single = manifest.is_none();
+        // The row's bar starts empty here and fills from the host's pigeon_ack frames — the host's spool is the only truth about what has landed (Nick 2026-09-20: "we definitely need a progress bar when sending shit thru the bridge").
+        self.pigeon_progress.insert(hash, super::PigeonProgress { device, name: name.clone(), got: 0, of: chunks.len() as u32, at: std::time::Instant::now() });
         queue_job(&self.seal_job_tx, move || {
             let send = |vsf_bytes: Vec<u8>| {
                 let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: device, vsf_bytes, relay_to: relay_to.clone() });
@@ -910,10 +912,40 @@ impl PhotonApp {
         };
         let dir = crate::storage::runtime_dir().join("pigeons");
         match self.pigeon_rx.announce(&dir, p.hash, p.name.clone(), p.size, crate::storage::BLOB_CHUNK_SIZE as u32, wire_key, dev) {
-            Ok(()) => crate::logf!("PIGEON: spool open for {} ({} bytes) from {}", p.name, p.size, crate::fp(&dev)),
+            Ok(()) => {
+                let (got, of) = self.pigeon_rx.progress(&p.hash).unwrap_or((0, 0));
+                crate::logf!("PIGEON: spool open for {} ({} bytes) from {} — {} of {} chunk(s) already held", p.name, p.size, crate::fp(&dev), got, of);
+                // The host's own row wears the same bar, from its spool; a resumed spool starts part-way.
+                self.pigeon_progress.insert(p.hash, super::PigeonProgress { device: dev, name: p.name.clone(), got, of, at: std::time::Instant::now() });
+            }
             Err(e) => crate::logf!("PIGEON: spool open failed for {}: {}", p.name, e),
         }
     }
+
+    /// CLIENT: the host's word on a pigeon we dropped. Monotonic — a late or reordered ack never walks the bar back. Only a device this fleet knows may speak.
+    pub(super) fn on_pigeon_ack(&mut self, content_hash: [u8; 32], got: u32, of: u32, from: [u8; 32]) {
+        if !self.contacts.iter().any(|c| c.is_sibling && c.device_key() == Some(from)) {
+            return;
+        }
+        if let Some(pp) = self.pigeon_progress.get_mut(&content_hash) {
+            if got > pp.got || of != pp.of {
+                pp.got = got.max(pp.got);
+                pp.of = of;
+                pp.at = std::time::Instant::now();
+                let whole = pp.got >= pp.of;
+                if whole {
+                    crate::logf!("PIGEON: {} — host {} holds every one of {} chunk(s); landing next", pp.name, crate::fp(&from), pp.of);
+                }
+                super::bridge::bridge_wake(&self.event_proxy);
+                self.scene_dirty = true;
+                if whole {
+                    // The bar is full; the host's "landed at …" row is the next thing the operator sees.
+                    self.pigeon_progress.remove(&content_hash);
+                }
+            }
+        }
+    }
+
 
     /// Tick drain: a landed (or failed) pigeon answers the operator as a BridgeOut row naming where it landed, so the drop is confirmed in the same transcript that ran the commands.
     pub(super) fn drain_pigeon_landed(&mut self) {
@@ -922,6 +954,8 @@ impl PhotonApp {
             landed.push(v);
         }
         for (ci, res, dir) in landed {
+            // The bar has done its job either way — the row that follows says where it landed, or that it did not.
+            self.pigeon_progress.retain(|_, pp| pp.got < pp.of);
             let body = match res {
                 Some(l) => {
                     crate::logf!("PIGEON: landed {} at {}", l.name, l.path);
@@ -934,5 +968,34 @@ impl PhotonApp {
             };
             self.send_chain_message(ci, &body, false, Some((crate::types::RefKind::BridgeOut, 0)), None);
         }
+    }
+}
+
+/// The pigeon_ack thinning rule: send on the first chunk, the last, and every time the bar crosses one sixty-fourth — at most ~65 frames per pigeon however large, every one of them for a small pigeon.
+pub(super) fn pigeon_ack_due(prev_got: u32, got: u32, of: u32) -> bool {
+    if got == 0 || of == 0 {
+        return false;
+    }
+    if got >= of || prev_got == 0 {
+        return true;
+    }
+    (prev_got as u64 * 64 / of as u64) != (got as u64 * 64 / of as u64)
+}
+
+#[cfg(test)]
+mod ack_thinning {
+    use super::pigeon_ack_due;
+
+    /// A large pigeon's acks are bounded; a small one's are every chunk.
+    #[test]
+    fn at_most_sixty_five_acks_however_large() {
+        let count = |of: u32| (1..=of).filter(|&g| pigeon_ack_due(g - 1, g, of)).count();
+        assert_eq!(count(1), 1);
+        assert_eq!(count(20), 20, "every chunk of a small pigeon");
+        assert!(count(545) <= 65, "545 chunks → {} acks", count(545));
+        assert!(count(100_000) <= 65);
+        assert!(pigeon_ack_due(544, 545, 545), "the last chunk always speaks");
+        assert!(pigeon_ack_due(0, 1, 545), "and the first");
+        assert!(!pigeon_ack_due(0, 0, 545));
     }
 }

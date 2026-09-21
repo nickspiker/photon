@@ -19,6 +19,9 @@ pub struct Inflight {
     wire_key: [u8; 32],
     /// Which sender device announced it — the trust gate re-checks each chunk's signer against this.
     from_device: [u8; 32],
+    /// Which slots this process has seen land, seeded from the spool's own zero-scan at announce (a resumed spool starts with what the last run left).
+    /// This is the per-chunk answer to "how far along" and the gate on the final disk scan: the scan used to run after EVERY chunk (a 142 MB pigeon read its whole spool 545 times over, on the UI thread); now it runs once, when this bitmap says the spool is whole.
+    present: Vec<bool>,
 }
 
 /// What a completed pigeon produced: the file landed at this path in the host's shell directory. The receiver has already shed the spool and forgotten the transfer.
@@ -52,30 +55,40 @@ impl PigeonReceiver {
             Some((d, lay, f)) if d.hash == hash && d.size == size => (f, lay),
             _ => spool::create(&path, &desc)?,
         };
-        self.inflight.insert(hash, Inflight { desc, layout, file, path, wire_key, from_device });
+        let present: Vec<bool> = spool::missing(&file, &layout)?.iter().map(|m| !m).collect();
+        self.inflight.insert(hash, Inflight { desc, layout, file, path, wire_key, from_device, present });
         Ok(())
     }
 
-    /// True once every chunk of this pigeon is present (the zero-scan says nothing is missing).
+    /// True once every chunk of this pigeon is present: the RAM bitmap says so AND the spool's own zero-scan agrees (the disk is the truth; the bitmap only spares us reading it per chunk).
     pub fn is_complete(&self, hash: &[u8; 32]) -> std::io::Result<bool> {
         match self.inflight.get(hash) {
-            Some(inf) => Ok(spool::missing(&inf.file, &inf.layout)?.iter().all(|m| !m)),
-            None => Ok(false),
+            Some(inf) if inf.present.iter().all(|p| *p) => Ok(spool::missing(&inf.file, &inf.layout)?.iter().all(|m| !m)),
+            _ => Ok(false),
         }
     }
 
+    /// How far along one pigeon is: (chunks landed, chunks in all). None for a pigeon this receiver does not hold.
+    pub fn progress(&self, hash: &[u8; 32]) -> Option<(u32, u32)> {
+        let inf = self.inflight.get(hash)?;
+        Some((inf.present.iter().filter(|p| **p).count() as u32, inf.present.len() as u32))
+    }
+
     /// Land one sealed chunk. The signer must match the announcer (the caller has already verified the frame's signature; this rejects a valid frame from the wrong device). A chunk for an unknown or out-of-range slot is dropped, not an error — a late frame after finalize is a natural no-op.
-    pub fn chunk(&mut self, hash: &[u8; 32], idx: u32, sealed: &[u8], signer: &[u8; 32]) -> std::io::Result<()> {
-        let Some(inf) = self.inflight.get(hash) else {
-            return Ok(());
+    /// Returns the pigeon's progress after this chunk — (landed, total) — when the chunk was accepted (a duplicate counts as accepted, it just moves nothing), None when it was refused.
+    pub fn chunk(&mut self, hash: &[u8; 32], idx: u32, sealed: &[u8], signer: &[u8; 32]) -> std::io::Result<Option<(u32, u32)>> {
+        let Some(inf) = self.inflight.get_mut(hash) else {
+            return Ok(None);
         };
         if signer != &inf.from_device {
-            return Ok(());
+            return Ok(None);
         }
         if (idx as usize) >= inf.layout.lens.len() {
-            return Ok(());
+            return Ok(None);
         }
-        spool::write_slot(&inf.file, &inf.layout, idx as usize, sealed)
+        spool::write_slot(&inf.file, &inf.layout, idx as usize, sealed)?;
+        inf.present[idx as usize] = true;
+        Ok(Some((inf.present.iter().filter(|p| **p).count() as u32, inf.present.len() as u32)))
     }
 
     /// Finalize a whole spool into `dir`: decrypt each slot in order, verify the reassembled plaintext against the announced hash, land it under a non-overwriting name, and shed the spool. Returns None if the pigeon is unknown, incomplete, a chunk fails to open (a torn slot the zero-scan should have caught, so this is defence in depth), or the whole-file hash mismatches. On any failure the spool is kept for a re-fetch, EXCEPT a hash mismatch, which sheds it — a spool that completed to the wrong bytes is poison, not a resumable state.
@@ -184,10 +197,11 @@ mod tests {
             rx.chunk(&hash, i as u32, &chunks[i], &from).expect("chunk");
         }
         assert!(!rx.is_complete(&hash).unwrap(), "not complete — chunk 1 is missing");
-        rx.chunk(&hash, 1, &chunks[1], &[0xEE; 32]).expect("wrong signer");
+        assert_eq!(rx.progress(&hash), Some((3, 4)), "three of four landed");
+        assert_eq!(rx.chunk(&hash, 1, &chunks[1], &[0xEE; 32]).expect("wrong signer"), None, "a wrong-signer chunk is refused");
         assert!(!rx.is_complete(&hash).unwrap(), "a wrong-signer chunk must not count");
-        rx.chunk(&hash, 2, &chunks[2], &from).expect("dup"); // idempotent
-        rx.chunk(&hash, 1, &chunks[1], &from).expect("chunk");
+        assert_eq!(rx.chunk(&hash, 2, &chunks[2], &from).expect("dup"), Some((3, 4)), "a duplicate is accepted and moves nothing");
+        assert_eq!(rx.chunk(&hash, 1, &chunks[1], &from).expect("chunk"), Some((4, 4)));
         assert!(rx.is_complete(&hash).unwrap(), "all four present now");
 
         let landed = rx.finalize(&hash, &seed, &land_dir).expect("finalize lands");

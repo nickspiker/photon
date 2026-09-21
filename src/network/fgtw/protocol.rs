@@ -3128,6 +3128,54 @@ pub fn parse_attach_have_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), 
     Ok(((conversation_token, content_hash), sender_pubkey))
 }
 
+/// Build a `pigeon_ack` frame — the host's running word on a bridge pigeon: `got` chunks of `of` are in its spool. Fired on the landing edge of a chunk (thinned to at most sixty-four per pigeon plus the last), it is what draws the progress bar on the sender's row; purely informational, PT already carries the bytes.
+pub fn build_pigeon_ack_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    got: u32,
+    of: u32,
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("pigeon_ack");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+    section.add_field("got", VsfType::u(got as usize, false));
+    section.add_field("of", VsfType::u(of as usize, false));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build pigeon_ack VSF: {}", e))?;
+
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `pigeon_ack` frame → ((tok, hash, got, of), sender).
+pub fn parse_pigeon_ack_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], u32, u32), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("pigeon_ack verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "pigeon_ack" {
+        return Err(format!("Expected 'pigeon_ack' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_))).ok_or("pigeon_ack missing tok")?;
+    let content_hash = field_hash32(fields, "hash", |v| matches!(v, VsfType::hb(_))).ok_or("pigeon_ack missing hash")?;
+    let got = field_u64(fields, "got").and_then(|n| u32::try_from(n).ok()).ok_or("pigeon_ack missing got")?;
+    let of = field_u64(fields, "of").and_then(|n| u32::try_from(n).ok()).ok_or("pigeon_ack missing of")?;
+
+    Ok(((conversation_token, content_hash, got, of), sender_pubkey))
+}
+
 /// Build a `wfd_cred` frame — the Wi-Fi Direct group credential a pair pre-provisions over the normal channel (docs/offgrid.md). The blob is AEAD-sealed under the pair's wfd seal key (relationship-seed-derived), so the signed outer frame carries nothing readable to a third party; the recipient matches it to the friendship by the conversation token.
 pub fn build_wfd_cred_vsf(
     conversation_token: &[u8; 32],

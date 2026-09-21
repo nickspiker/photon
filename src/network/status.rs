@@ -475,6 +475,13 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
+    /// A bridge host's running word on a pigeon we dropped: `got` of `of` chunks sit in its spool. Draws the bar on the pigeon row.
+    PigeonAckReceived {
+        content_hash: [u8; 32],
+        got: u32,
+        of: u32,
+        sender_pubkey: DevicePubkey,
+    },
     /// A chunked blob's manifest arrived (typed attachments Phase 1): sealed like a blob; the UI stores it and starts (or resumes) counting chunks.
     AttachManifestReceived {
         conversation_token: [u8; 32],
@@ -669,6 +676,7 @@ impl StatusUpdate {
             StatusUpdate::AttachHaveReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
+            StatusUpdate::PigeonAckReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AttachReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AvatarRequestReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
@@ -2793,6 +2801,29 @@ async fn run_checker(
                                     &status_tx_recv,
                                     StatusUpdate::AttachHaveReceived {
                                         content_hash,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // A bridge host's pigeon progress word — small, signed, same mandatory packet-ack; reaches us direct or off the pipe alike.
+                            if let Ok(((_tok, content_hash, got, of), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_pigeon_ack_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::PigeonAckReceived {
+                                        content_hash,
+                                        got,
+                                        of,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
                                     &event_proxy_recv,

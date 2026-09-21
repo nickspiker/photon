@@ -3540,6 +3540,7 @@ impl PhotonApp {
                                 + img_band_h
                                 + audio_band_h;
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
+                            let mut bar_frac: Option<f32> = None;
                             if let Some((hash, _, _)) =
                                 crate::types::parse_attachment_content(&msg.content)
                             {
@@ -3558,34 +3559,43 @@ impl PhotonApp {
                                     })
                                 });
                                 if relevant {
-                                    if let Some(frac) = chunk_frac.or_else(|| {
+                                    bar_frac = chunk_frac.or_else(|| {
                                         self.attach_progress
                                             .iter()
                                             .find(|(_, _, _, ob)| *ob == want_outbound)
                                             .map(|(_, done, total, _)| *done as f32 / (*total).max(1) as f32)
-                                    }) {
-                                        let frac = frac.clamp(0.0, 1.0);
-                                        let bar_w = (buf_w as f32 - pad_x * 2.0) * frac;
-                                        let (bx, bw) = if msg.is_outgoing {
-                                            (
-                                                (buf_w as f32 - pad_x - bar_w) as isize,
-                                                bar_w as isize,
-                                            )
-                                        } else {
-                                            (pad_x as isize, bar_w as isize)
-                                        };
-                                        paint::fill_rect(
-                                            &mut canvas,
-                                            bx,
-                                            (y + msg_size * 0.55) as isize,
-                                            bw,
-                                            (ru.max(1.0) * 2.0) as isize,
-                                            *theme::PROGRESS_FILL,
-                                            Some(list_clip),
-                                            None,
-                                        );
-                                    }
+                                    });
                                 }
+                            }
+                            // A BRIDGE PIGEON'S BAR (Nick 2026-09-20: "we definitely need a progress bar when sending shit thru the bridge"): the row carries the file's name, the progress map carries the host's word (or, on the host, its own spool count) keyed by hash — matched by sibling device + name, the newest entry when a name was dropped twice. Drawn while chunks are still landing; a whole pigeon drops its bar and the host's "landed at …" row follows.
+                            if matches!(msg.reference, Some((crate::types::RefKind::BridgePigeon, _))) {
+                                if let Some(dev) = contact.device_key() {
+                                    bar_frac = self
+                                        .pigeon_progress
+                                        .values()
+                                        .filter(|pp| pp.device == dev && pp.name == msg.content && pp.got < pp.of)
+                                        .max_by_key(|pp| pp.at)
+                                        .map(|pp| pp.got as f32 / pp.of.max(1) as f32);
+                                }
+                            }
+                            if let Some(frac) = bar_frac {
+                                let frac = frac.clamp(0.0, 1.0);
+                                let bar_w = (buf_w as f32 - pad_x * 2.0) * frac;
+                                let (bx, bw) = if msg.is_outgoing {
+                                    ((buf_w as f32 - pad_x - bar_w) as isize, bar_w as isize)
+                                } else {
+                                    (pad_x as isize, bar_w as isize)
+                                };
+                                paint::fill_rect(
+                                    &mut canvas,
+                                    bx,
+                                    (y + msg_size * 0.55) as isize,
+                                    bw,
+                                    (ru.max(1.0) * 2.0) as isize,
+                                    *theme::PROGRESS_FILL,
+                                    Some(list_clip),
+                                    None,
+                                );
                             }
                             // Divider under this message (between it and the next-newer one).
                             // Full-bleed divider at the version-watermark treatment: pure white, α=1/8 (VERSION_COLOUR is exactly that, and darkness-0 white is channel-order invariant). Positioned at the MIDPOINT of the inter-message gap (0.8·msg_size below the baseline centre): at 0.5 it sat flush against the descenders — good padding above, none below.

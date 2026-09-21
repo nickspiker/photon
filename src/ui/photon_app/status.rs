@@ -329,6 +329,7 @@ impl PhotonApp {
                 StatusUpdate::AttachManifestReceived { .. } => "AttachManifestReceived",
                 StatusUpdate::AttachChunkReceived { .. } => "AttachChunkReceived",
                 StatusUpdate::PigeonChunkReceived { .. } => "PigeonChunkReceived",
+                StatusUpdate::PigeonAckReceived { .. } => "PigeonAckReceived",
                 StatusUpdate::AttachReqReceived { .. } => "AttachReqReceived",
                 StatusUpdate::MessageAck { .. } => "MessageAck",
                 StatusUpdate::AvatarRequestReceived { .. } => "AvatarRequestReceived",
@@ -403,6 +404,8 @@ impl PhotonApp {
         let mut chain_pull_reqs_after: Vec<([u8; 32], [u8; 32], Option<u64>, Option<u32>)> = Vec::new();
         // Era observations from the pong loop (which holds the chains borrow) — dispatched after it (era ratchet stage 2).
         let mut era_triggers_after: Vec<(crate::types::friendship::FriendshipId, super::era::RepairTrigger)> = Vec::new();
+        // Pigeon progress words, applied after the drain (on_pigeon_ack takes &mut self).
+        let mut pigeon_acks_after: Vec<([u8; 32], u32, u32, [u8; 32])> = Vec::new();
         // A sibling's presence VERDICT changed (first probe, or online↔offline): the computed ceremony owner may have moved — recomputed after the drain (era.rs).
         let mut owner_edge = false;
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
@@ -3551,9 +3554,41 @@ impl PhotonApp {
                 // Field-level borrows only (this handler holds `checker` borrowed from status_checker throughout), which is why this is inline rather than a &mut self method.
                 StatusUpdate::PigeonChunkReceived { content_hash, index, sealed, sender_pubkey } => {
                     let signer = sender_pubkey.key;
-                    if let Err(e) = self.pigeon_rx.chunk(&content_hash, index, &sealed, &signer) {
-                        crate::logf!("PIGEON: chunk {} write failed: {}", index, e);
-                    } else if let Some(inf) = self.pigeon_rx.take_complete(&content_hash) {
+                    let landed = match self.pigeon_rx.chunk(&content_hash, index, &sealed, &signer) {
+                        Err(e) => {
+                            crate::logf!("PIGEON: chunk {} write failed: {}", index, e);
+                            None
+                        }
+                        Ok(v) => v,
+                    };
+                    // The host's running word back to the sender (pigeon_ack): on the landing EDGE, thinned by pigeon_ack_due so a 545-chunk pigeon costs ~65 tiny frames on the small-packet lane, not 545 queued ahead of the next chat line. The same count moves this end's own bar.
+                    if let Some((got, of)) = landed {
+                        let prev = self.pigeon_progress.get(&content_hash).map_or(0, |pp| pp.got);
+                        if let Some(pp) = self.pigeon_progress.get_mut(&content_hash) {
+                            pp.got = got;
+                            pp.of = of;
+                            pp.at = std::time::Instant::now();
+                            self.scene_dirty = true;
+                        }
+                        if super::bridge::pigeon_ack_due(prev, got, of) {
+                            let ci = self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(signer));
+                            if let (Some(ci), Some(kp)) = (ci, self.device_keypair.as_ref()) {
+                                let c = &self.contacts[ci];
+                                let tok = c.handle_hash;
+                                let addrs = c.race_addrs();
+                                let relay_to = super::relay_unless_direct_trusted(c, crate::network::udp::get_local_ip());
+                                match crate::network::fgtw::protocol::build_pigeon_ack_vsf(&tok, &content_hash, got, of, kp.public.as_bytes(), kp.secret.as_bytes()) {
+                                    Ok(vsf_bytes) => {
+                                        let (peer_addr, alt_addr) = addrs.unwrap_or((crate::network::status::RELAY_ADDR, None));
+                                        checker.send_history(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: signer, vsf_bytes, relay_to });
+                                    }
+                                    Err(e) => crate::logf!("PIGEON: ack frame build failed: {}", e),
+                                }
+                            }
+                        }
+                    }
+                    if landed.is_some_and(|(got, of)| got >= of) {
+                        if let Some(inf) = self.pigeon_rx.take_complete(&content_hash) {
                         let seed = self.session.as_ref().map(|s| s.identity_seed);
                         let ci = self.contacts.iter().position(|c| c.device_key() == Some(signer));
                         if let (Some(seed), Some(ci)) = (seed, ci) {
@@ -3569,6 +3604,7 @@ impl PhotonApp {
                                 super::bridge::bridge_wake(&wake);
                             });
                         }
+                        }
                     }
                 }
                 // Throttled PT transfer progress — drives the pill progress bars.
@@ -3578,6 +3614,10 @@ impl PhotonApp {
                         self.scene_dirty = true;
                         changed = true;
                     }
+                }
+                // A bridge host's word on a pigeon we dropped — moves the row's bar.
+                StatusUpdate::PigeonAckReceived { content_hash, got, of, sender_pubkey } => {
+                    pigeon_acks_after.push((content_hash, got, of, sender_pubkey.key));
                 }
                 // Blob-landed confirmation from the receiver: the sender's pill flips to delivered.
                 StatusUpdate::AttachHaveReceived {
@@ -5175,6 +5215,9 @@ impl PhotonApp {
             if let Some(ci) = self.contacts.iter().position(|c| c.friendship_id == Some(fid) && !c.is_sibling) {
                 self.repair_dispatch(ci, trigger);
             }
+        }
+        for (hash, got, of, from) in pigeon_acks_after {
+            self.on_pigeon_ack(hash, got, of, from);
         }
         for (token, sender_key) in chain_pull_misses_after {
             // A miss answering an era_pull means "no sibling holds a newer era" — a repair-decision input, never the wipe-debris re-key below.

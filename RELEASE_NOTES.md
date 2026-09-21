@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A file dropped on the bridge shows a progress bar on its row while it crosses: the receiving machine reports how many pieces have landed as they land, the bar fills from that on the sending side and from its own spool on the receiving side, and the "landed at …" line follows once it is whole; the receiver also stops re-reading its entire spool after every piece, which on a large drop was gigabytes of disk reads on the drawing thread.
 ## v101
 
 ## v100
