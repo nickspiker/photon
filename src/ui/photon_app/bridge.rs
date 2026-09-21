@@ -451,8 +451,10 @@ impl PhotonApp {
             // ANSWER the no-op (field 2026-08-26, "not sure it stopped and no way to tell"): the operator pressed Stop and this host holds nothing to signal — commonest after a host restart orphaned the stream (a self-restarting deploy). A tiny final for the target says so and ends the client's in-flight state.
             crate::log("BRIDGE: interrupt arrived with no command in flight — answering with a no-op final");
             // seq None on purpose: the replace arm treats a seq-less final as fill-if-unfinished — it completes a row the client still shows as running, but never clobbers one already finished (e.g. by the client's own stream-loss stamp).
+            // delta: true is load-bearing (field 2026-09-20): without it the client took the legacy whole-snapshot arm and REPLACED the command's entire transcript with this one-line verdict — "Stop clears the last message".
             let wire = crate::network::message_package::BridgeWire {
                 exit: Some(-1),
+                delta: true,
                 ..Default::default()
             };
             self.send_chain_message(
@@ -758,13 +760,16 @@ impl PhotonApp {
             if is_final {
                 // The exit-carrying delta rides the full durable path (host row + retransmit + held-row re-serve) — it is the one frame that must survive.
                 self.bridge_partial_inflight.remove(&e.ci);
-                self.send_chain_message(
+                let sent = self.send_chain_message(
                     e.ci,
                     &body,
                     false,
                     Some((crate::types::RefKind::BridgeOut, e.target)),
                     Some(wire),
                 );
+                let exit_code = e.fin.unwrap_or(i32::MIN);
+                let verdict = if sent { "sent" } else { "HELD — send_chain_message refused it; it re-serves with the held rows" };
+                crate::logf!("BRIDGE: final for target {} (seq {}, exit {}, {} byte(s)) {}", e.target, e.seq, exit_code, e.body.len(), verdict);
             } else {
                 // Mid-command deltas ride chain_transmit directly with an eagle_time minted HERE so the own-ACK gate can watch this exact frame leave pending. A refused send (window full, no address yet) puts the spool back intact — the transcript never loses a byte to flow control.
                 let et = vsf::eagle_time_oscillations();

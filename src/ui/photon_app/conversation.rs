@@ -1856,7 +1856,10 @@ impl PhotonApp {
                                 if let Some(s) = seq {
                                     row.bridge_seq = s;
                                 }
-                                row.bridge_exit = exit.or(row.bridge_exit);
+                            }
+                            // The exit lands whether or not the frame counted as newer (field 2026-09-20: a final judged "not newer" left the prompt held until Stop). An exit can never regress a finished row, and an unfinished row with an exit in hand has no reason to keep the operator waiting.
+                            if row.bridge_exit.is_none() {
+                                row.bridge_exit = exit;
                             }
                             bridge_replaced = true;
                         } else {
