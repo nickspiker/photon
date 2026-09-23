@@ -7,8 +7,13 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The Fleet page shows where your fleet stands on the new signatures: a line at the top names the strength every device has proved and how many have declared the full set, and each device's card says what it signs with — so a machine still to be updated is visible rather than guessed at, and a device you have locked out reads as locked there too.
+- A device you lock out is now refused by the fleet itself as well as by the server: the lock-out is written into your fleet's own record beside the server's copy, so the locked device stops counting toward what your fleet can prove and nothing it signs is accepted, even by a device that never reaches the server.
+- The Android app now signs with the full set like a desktop does, deriving its signing keys from the same source as its identity, so a phone no longer holds the whole fleet back to the weakest signature.
 - A large file dropped on the bridge now arrives: the transport sends at most thirteen pieces at a time to one machine and releases the next as each lands, instead of firing every piece at once — a 345 MB drop fired 1383 pieces into a space with 26 slots, they trampled each other mid-flight and 62 landed. The same window now governs every large send (attachments, history, pairing offers), and a finished send no longer sits in memory holding two copies of itself until something else clears it.
 - A file dropped on the bridge shows a progress bar on its row while it crosses: the receiving machine reports how many pieces have landed as they land, the bar fills from that on the sending side and from its own spool on the receiving side, and the "landed at …" line follows once it is whole; the receiver also stops re-reading its entire spool after every piece, which on a large drop was gigabytes of disk reads on the drawing thread.
+- On the bridge, pressing Stop no longer wipes the command's output — it adds its verdict at the end, where it belongs — and a command that ends while its last output is still arriving now always gives the prompt back instead of leaving it stuck.
+- The Android app's version number matches the photon inside it again: v101's wrapper said 0.100.1 while its contents were 0.101.0, because the wrapper was built from a different copy of the source than the code was.
 ## v101
 
 ## v100
