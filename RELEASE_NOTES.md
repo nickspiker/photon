@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v102
+
 - The Fleet page shows where your fleet stands on the new signatures: a line at the top names the strength every device has proved and how many have declared the full set, and each device's card says what it signs with — so a machine still to be updated is visible rather than guessed at, and a device you have locked out reads as locked there too.
 - A device you lock out is now refused by the fleet itself as well as by the server: the lock-out is written into your fleet's own record beside the server's copy, so the locked device stops counting toward what your fleet can prove and nothing it signs is accepted, even by a device that never reaches the server.
 - The Android app now signs with the full set like a desktop does, deriving its signing keys from the same source as its identity, so a phone no longer holds the whole fleet back to the weakest signature.
