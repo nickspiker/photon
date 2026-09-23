@@ -585,6 +585,12 @@ pub enum Msg<'a> {
     // ---- fleet page ----
     FleetTitle,
     FleetTapToCopy,
+    /// The fleet's signature floor line: which scheme set every member has proved, and how many members have declared the full basket.
+    FleetSigFloor(&'a str, usize, usize),
+    /// A device card's signing line: the schemes the chain knows this device signs with.
+    DeviceSigns(&'a str),
+    /// Chain lock-out badge on a device card.
+    ChainLocked,
     ThisDevice,
     RetiredStillYours,
     RevokedBadge,

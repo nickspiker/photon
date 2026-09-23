@@ -822,6 +822,22 @@ impl PhotonApp {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
 
+        // Scheme facts off our own chain (spawn_scheme_refresh): latest wins.
+        if let Some(facts) = self.fleet_schemes_rx.as_ref().and_then(|rx| rx.try_iter().last()) {
+            let changed = self.fleet_schemes.as_ref().map_or(true, |c| c.floor != facts.floor || c.declared != facts.declared || c.locked != facts.locked);
+            if changed {
+                crate::logf!(
+                    "FLEET: schemes — floor {}, {}/{} declared the basket, {} chain-locked",
+                    super::scheme_words(facts.floor),
+                    facts.full_count(),
+                    facts.members,
+                    facts.locked.len()
+                );
+                self.fleet_schemes = Some(facts);
+                self.scene_dirty = true;
+            }
+        }
+
         // Contact-fleet refresh results: fold-and-honour a friend's current device set, and ARM the fold-respecting trust rule. OUR OWN hp routes to sibling reconcile FIRST and never into any contact's fleet_members — the self-contact and every sibling contact carry our hp, and folding our own fleet into one of them would make it swallow sibling pongs/paths via first-match `knows_device` routing.
         let member_updates: Vec<([u8; 32], Vec<[u8; 32]>, i64, [u8; 32], bool)> = self
             .contact_members_rx
@@ -845,6 +861,8 @@ impl PhotonApp {
                     // The fold-freshness tripwire's SENDER half: publish our own chain-tip eagle time to the RX worker, which stamps it into every sealed pong tail (ftip). Every chain-changing path funnels thru this drain, so one line covers attest, device add/remove, roster merge, and the 45s refold. fetch_max inside — a stale R2 self-read can't regress the claim.
                     crate::network::status::set_own_fleet_tip(tip_ts);
                     self.reconcile_fleet_siblings(&members);
+                    // The chain moved: re-read what it says about schemes (a Declare, a Lock, a join) for the Fleet page.
+                    self.spawn_scheme_refresh(&hp);
                     // Cutover: OUR fold is the primary registry's truth — converge on the fold-change edge (any member may; writes are idempotent and epoch-guarded, so racing siblings settle).
                     if self.registry_converged_fold != members {
                         self.registry_converged_fold = members.clone();

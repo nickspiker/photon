@@ -425,6 +425,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- fleet page ----
         Msg::FleetTitle => "Ō pūrere".into(),
         Msg::FleetTapToCopy => "Pāwhiritia he ingoa kia tāruatia tōna kī.".into(),
+        Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor} — {n} of {total} devices declared the full basket").into(),
+        Msg::DeviceSigns(s) => format!("signs with {s}").into(),
+        Msg::ChainLocked => "locked out on the chain".into(),
         Msg::ThisDevice => "tēnei pūrere".into(),
         Msg::RetiredStillYours => "kua whakatā \u{2014} nāu tonu".into(),
         Msg::RevokedBadge => "kua tangohia te mana".into(),

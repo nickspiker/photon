@@ -371,6 +371,7 @@ impl PhotonApp {
         let ime_lift = self.ime_lift();
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
         let fleet_locked_set = self.locked_devices();
+        let fleet_schemes = self.fleet_schemes.clone();
         // Hoisted for the call overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a call is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
         let call_pill_show = self
             .active_contact()
@@ -5474,6 +5475,13 @@ impl PhotonApp {
                     let mut flow = Flow::new(inset, settings_content_scroll);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTitle), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::FleetTapToCopy), hspan2 * 0.82, *theme::LABEL_COLOUR, 400);
+                    // SIGNATURE FLOOR — the migration from one egg to the basket, fleet-wide: the floor every member has proved (what every op is held to), and how many have declared the full three-family basket. The floor reaches the basket the moment the last live member declares; a chain-locked member is left out of that count.
+                    if let Some(fs) = fleet_schemes.as_ref() {
+                        let floor_words = super::scheme_words(fs.floor);
+                        let at_basket = fs.floor == fgtw::fleet::scheme::MASK_ALL;
+                        let (colour, weight) = if at_basket { (*theme::CONTACT_NAME_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
+                        flow.line(&mut canvas, ctx.text, &tr(Msg::FleetSigFloor(&floor_words, fs.full_count(), fs.members)), hspan2 * 0.82, colour, weight);
+                    }
                     flow.gap(hspan2 * 0.8);
                     for (i, (pk, is_self, online, retired, name, link, tier, about)) in
                         devices.iter().enumerate()
@@ -5544,6 +5552,17 @@ impl PhotonApp {
                         // The CLUTCH ladder detail is its own sentence — it used to be smuggled into the status line, which is why the transport never had room to be named.
                         if !link.is_empty() && !*is_self {
                             flow.line(&mut canvas, ctx.text, link, hspan2 * 0.75, *theme::LABEL_COLOUR, 400);
+                        }
+                        // SIGNING line — what the chain knows this device signs with, and whether the chain has locked it out. "Ed25519" alone here is the device that still needs a build past the basket; three names is one that has declared.
+                        if let Some(fs) = fleet_schemes.as_ref() {
+                            if let Some(mask) = fs.declared.get(pk) {
+                                let words = super::scheme_words(*mask);
+                                let colour = if *mask == fgtw::fleet::scheme::MASK_ALL { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::DeviceSigns(&words)), hspan2 * 0.7, colour, 400);
+                            }
+                            if fs.locked.contains(pk) {
+                                flow.line(&mut canvas, ctx.text, &tr(Msg::ChainLocked), hspan2 * 0.7, *theme::LABEL_COLOUR, 600);
+                            }
                         }
                         // BUILD line — version · commit · os arch off the sealed pong tail (self shows its own build). A stale version here IS the not-updated indicator.
                         if !about.is_empty() {

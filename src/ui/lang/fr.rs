@@ -434,6 +434,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- fleet page ----
         Msg::FleetTitle => "Tes appareils".into(),
         Msg::FleetTapToCopy => "Touche un nom pour copier sa clé.".into(),
+        Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor} — {n} of {total} devices declared the full basket").into(),
+        Msg::DeviceSigns(s) => format!("signs with {s}").into(),
+        Msg::ChainLocked => "locked out on the chain".into(),
         Msg::ThisDevice => "cet appareil".into(),
         Msg::RetiredStillYours => "retiré \u{2014} toujours à toi".into(),
         Msg::RevokedBadge => "révoqué".into(),

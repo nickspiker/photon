@@ -1336,6 +1336,32 @@ pub(crate) const MSG_HIT_SPAN: HitId = 256;
 /// Photon-desktop as a `FluorApp`. Owns fluor's `DefaultChrome` (window frame), the dense hit-id counter for widget allocation, and an optional event-loop proxy clone for waking from background tasks.
 ///
 /// `chrome` is `Option` because [`DefaultChrome::new`] needs the actual viewport size, which the host doesn't hand the app until [`FluorApp::init`] fires. `new()` is parameterless; everything else allocates in `init`.
+/// What the chain says about signing schemes across the fleet — see `PhotonApp::fleet_schemes`.
+#[derive(Clone, Debug, Default)]
+pub struct FleetSchemes {
+    pub floor: fgtw::fleet::scheme::Mask,
+    pub declared: std::collections::HashMap<[u8; 32], fgtw::fleet::scheme::Mask>,
+    pub locked: Vec<[u8; 32]>,
+    pub members: usize,
+}
+
+impl FleetSchemes {
+    /// Members whose declared set is the full basket.
+    pub fn full_count(&self) -> usize {
+        self.declared.values().filter(|m| **m == fgtw::fleet::scheme::MASK_ALL).count()
+    }
+}
+
+/// Spell a scheme mask for people: `Ed25519 · Falcon · SPHINCS+`.
+pub fn scheme_words(mask: fgtw::fleet::scheme::Mask) -> String {
+    use fgtw::fleet::scheme;
+    let mut v = Vec::new();
+    if mask & (1 << scheme::ED25519) != 0 { v.push("Ed25519"); }
+    if mask & (1 << scheme::FALCON512) != 0 { v.push("Falcon"); }
+    if mask & (1 << scheme::SPHINCS_PLUS) != 0 { v.push("SPHINCS+"); }
+    if v.is_empty() { "none".into() } else { v.join(" \u{00b7} ") }
+}
+
 pub struct PhotonApp {
     chrome: Option<DefaultChrome>,
     hit_counter: HitId,
@@ -2169,6 +2195,10 @@ pub struct PhotonApp {
     avatar_probe_cache: std::collections::HashMap<[u8; 32], bool>,
     /// Egged-status probe results by sibling device key — fleet_device_rows' fanout_pairs::load answer, remembered. The Fleet page gathers rows every FRAME, so the per-sibling vault read was a per-frame librarian round trip; a pair secret changes only at ceremony completion, which invalidates its entry there. Same doctrine as avatar_probe_cache: the UI thread's steady state touches the vault zero times.
     egged_cache: std::collections::HashMap<[u8; 32], bool>,
+    /// The fleet's signature-scheme facts, read off OUR chain: the floor every member has proved, each member's declared mask, and the chain-locked set. Refreshed off-thread on every own-fold adopt and after every declare; rendered on the Fleet page so the migration from one egg to the basket is visible per device and as a whole.
+    fleet_schemes: Option<FleetSchemes>,
+    fleet_schemes_rx: Option<std::sync::mpsc::Receiver<FleetSchemes>>,
+    fleet_schemes_tx: Option<std::sync::mpsc::Sender<FleetSchemes>>,
     /// What the Fleet page last showed, per row (device, online, tier word) — logged on every change so a screen that disagrees with the presence model leaves a trace (field 2026-09-18: Leviathan's page read the Mac offline while its own log said up).
     fleet_rows_logged: Vec<([u8; 32], bool, String)>,
     /// One-shot window-geometry restore — a fluor `window_rect` (x, y, w, h in GLOBAL desktop units), armed with the zoom at settings load; the host applies it thru its maximize machinery, clamped into live surfaces.
@@ -2780,6 +2810,9 @@ impl PhotonApp {
             fleet_release_armed: None,
             avatar_probe_cache: std::collections::HashMap::new(),
             egged_cache: std::collections::HashMap::new(),
+            fleet_schemes: None,
+            fleet_schemes_rx: None,
+            fleet_schemes_tx: None,
             fleet_rows_logged: Vec::new(),
             pending_geometry_restore: None,
             fleet_lock_armed: None,

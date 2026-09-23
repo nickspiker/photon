@@ -1722,6 +1722,30 @@ impl PhotonApp {
         });
     }
 
+    /// Off-thread: read the fleet's scheme facts off our chain (floor, per-member declared masks, chain-locked set) and post them for the Fleet page. Fired on every own-fold adopt and after every declare, so the page shows a migration the moment the chain does.
+    pub(super) fn spawn_scheme_refresh(&mut self, handle_proof: &[u8; 32]) {
+        if self.fleet_schemes_rx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel::<super::FleetSchemes>();
+            self.fleet_schemes_rx = Some(rx);
+            self.fleet_schemes_tx = Some(tx);
+        }
+        let Some(tx) = self.fleet_schemes_tx.clone() else { return };
+        let hp = *handle_proof;
+        let wake = self.event_proxy.clone();
+        std::thread::spawn(move || {
+            let Ok(Some(chain)) = crate::network::fgtw::fleet::fetch(&hp) else { return };
+            let Ok((members, floor)) = chain.fold_full() else { return };
+            let declared = members.iter().map(|m| (*m, chain.declared_mask(m))).collect();
+            let locked = chain.locked_out().unwrap_or_default();
+            let facts = super::FleetSchemes { floor, declared, locked, members: members.len() };
+            if tx.send(facts).is_ok() {
+                if let Some(w) = wake.as_ref() {
+                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                }
+            }
+        });
+    }
+
     pub(super) fn locked_devices(&self) -> Vec<[u8; 32]> {
         self.fleet_settings
             .as_ref()

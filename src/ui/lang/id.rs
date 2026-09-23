@@ -422,6 +422,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- fleet page ----
         Msg::FleetTitle => "Perangkatmu".into(),
         Msg::FleetTapToCopy => "Ketuk sebuah nama untuk menyalin kuncinya.".into(),
+        Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor} — {n} of {total} devices declared the full basket").into(),
+        Msg::DeviceSigns(s) => format!("signs with {s}").into(),
+        Msg::ChainLocked => "locked out on the chain".into(),
         Msg::ThisDevice => "perangkat ini".into(),
         Msg::RetiredStillYours => "pensiun \u{2014} tetap milikmu".into(),
         Msg::RevokedBadge => "dicabut".into(),

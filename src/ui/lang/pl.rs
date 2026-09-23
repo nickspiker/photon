@@ -430,6 +430,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- fleet page ----
         Msg::FleetTitle => "Twoje urządzenia".into(),
         Msg::FleetTapToCopy => "Dotknij nazwy, by skopiować jej klucz.".into(),
+        Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor} — {n} of {total} devices declared the full basket").into(),
+        Msg::DeviceSigns(s) => format!("signs with {s}").into(),
+        Msg::ChainLocked => "locked out on the chain".into(),
         Msg::ThisDevice => "to urządzenie".into(),
         Msg::RetiredStillYours => "wycofane \u{2014} wciąż twoje".into(),
         Msg::RevokedBadge => "unieważnione".into(),

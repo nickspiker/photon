@@ -423,6 +423,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- fleet page ----
         Msg::FleetTitle => "Mga device mo".into(),
         Msg::FleetTapToCopy => "Pindutin ang pangalan para kopyahin ang susi nito.".into(),
+        Msg::FleetSigFloor(floor, n, total) => format!("Signatures: fleet floor {floor} — {n} of {total} devices declared the full basket").into(),
+        Msg::DeviceSigns(s) => format!("signs with {s}").into(),
+        Msg::ChainLocked => "locked out on the chain".into(),
         Msg::ThisDevice => "ang device na ito".into(),
         Msg::RetiredStillYours => "retirado \u{2014} sa iyo pa rin".into(),
         Msg::RevokedBadge => "binawi".into(),
