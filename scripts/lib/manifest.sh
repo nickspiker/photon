@@ -2,6 +2,7 @@
 # Callers cd to the repo root first and have R2_BUCKET/R2_PATH/R2_BASE_URL from publish.sh.
 
 R2_DEV_URL="https://brobdingnagian.holdmyoscilloscope.com/photon"
+source "$(dirname "${BASH_SOURCE[0]}")/wrangler-auth.sh"
 
 # The current tree's full X.Y.Z version and FULL 40-hex git commit — what a published artefact is stamped with.
 manifest_full_version() { grep -m1 '^version' Cargo.toml | sed -E 's/.*"([0-9]+\.[0-9]+\.[0-9]+)".*/\1/'; }

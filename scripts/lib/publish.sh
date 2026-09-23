@@ -9,6 +9,8 @@ R2_BASE_URL="https://brobdingnagian.holdmyoscilloscope.com/$R2_PATH"
 
 # Never let wrangler open its interactive "report this error to Cloudflare?" prompt — on a transient upload failure it blocks the publish (or an unattended deploy) forever instead of exiting nonzero for the retry below.
 export WRANGLER_SEND_METRICS=false
+# Headless auth from the keys dir when no wrangler login exists (see wrangler-auth.sh).
+source "$(dirname "${BASH_SOURCE[0]}")/wrangler-auth.sh"
 
 # publish_r2 <object-name> <local-file> [content-type]
 # Retries the put twice on failure (transient "fetch failed" socket drops mid-upload are the observed mode; the object create is atomic, so a re-put is safe).

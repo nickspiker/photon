@@ -1,5 +1,6 @@
 #!/bin/bash
 set -e
+source scripts/lib/wrangler-auth.sh
 # Anchor to the repo root like dev.sh does — every source/sub-script below is repo-relative, and the bridge runs commands from wherever its shell happens to sit (field 2026-08-26: invoked from /, died at the first source).
 cd "$(dirname "$0")"
 
