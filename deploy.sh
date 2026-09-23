@@ -427,7 +427,14 @@ echo ""
 echo "Deploying website..."
 # Guarded: past the provenance tag the release is permanent, so a website hiccup must not abort into the EXIT trap.
 PHASE_T0=$SECONDS
-(cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh) || echo "WARNING: website deploy failed (non-fatal — the release is live; re-deploy the site when convenient)."
+# Pages needs its own credential — the R2 token this deploy exports for the puts cannot touch it (see wrangler-auth.sh). Say exactly what to create when there is none, rather than letting wrangler's "Authentication error [code: 10000]" stand as the whole explanation.
+if wrangler_pages_available; then
+    (wrangler_pages_auth && cd /mnt/Chiton/MEGA/holdmyoscilloscope && ./deploy.sh) || echo "WARNING: website deploy failed (non-fatal — the release is live; re-deploy the site when convenient)."
+else
+    echo "WARNING: website NOT deployed — no credential can reach Cloudflare Pages (the R2 token cannot, and the browser login is absent or expired)."
+    echo "         Fix once: mint a token at https://dash.cloudflare.com/profile/api-tokens with 'Cloudflare Pages: Edit' and save its value as ONE line in ${TOKEN_KEYS_DIR:-/mnt/Harbor/Code/keys}/cloudflare-pages-token"
+    echo "         (or one token carrying both that and 'Workers R2 Storage: Edit', saved as cloudflare-api-token, which serves the R2 puts too). The release itself is live; re-run the site deploy after."
+fi
 note_time "website deploy" $((SECONDS - PHASE_T0))
 
 # Rollback traps were already disarmed right after R2 went live (above), where the release became permanent.
