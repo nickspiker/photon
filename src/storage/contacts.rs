@@ -955,6 +955,8 @@ pub fn save_messages(
     // DELTA GATE (2026-09-02, the ten-thousand-year letter): this loop used to re-put EVERY row on EVERY save — one new message on a 72-row table cost ~72 row transactions × 4-5 durable commits each ≈ 300 serial commits ≈ 8-12 fdatasyncs apiece on a commit-per-write vault (group commit reverted 2026-08-21), which is the convicted mechanism behind 40s-to-minutes "sends" and the restart vanish (the starved writer died with the queue). The vault's identical-overwrite skip can't help: kete's fresh-random-nonce AEAD makes byte-identical plaintext re-encrypt differently, so every unchanged row re-committed FOR REAL. The gate compares the would-be record against the decoded durable row (Record: PartialEq; decode is width-tolerant so round-trips compare equal; reads ride the warm kete cache) and skips identical rows — one new message = ONE row transaction. Rows written by an older field schema compare unequal and re-put once (harmless upsert, self-healing), then go quiet. The legacy-key sweep below still runs off the FULL snapshot, unchanged.
     let mut delta_written = 0usize;
     let mut delta_skipped = 0usize;
+    // Rows the delta gate proved stale, held until the loop ends so the whole persist rides ONE transaction.
+    let mut dirty: Vec<(Pk, Record)> = Vec::new();
     for msg in conv.messages.iter() {
         // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving. `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
         let content_hash = blake3::hash(msg.content.as_bytes());
@@ -1006,9 +1008,20 @@ pub fn save_messages(
             delta_skipped += 1;
             continue;
         }
-        db.put_row_in(&table, Pk::bytes(&row_key), &rec)
+        // COLLECTED, NOT WRITTEN YET — one transaction per persist instead of one per row (field 2026-09-24).
+        // `put_row_in` costs two durable commits and a whole-catalog re-encode EVERY row: the phone's mean vault commit was 567ms with 146 of the day's 394 over the SLOW line, so a 50-row history page spent the better part of a minute on the vault thread with every other caller blocked behind it.
+        dirty.push((
+            Pk::Bytes(std::borrow::Cow::Owned(row_key.to_vec())),
+            rec,
+        ));
+    }
+    // The whole delta lands as ONE WAL record and ONE superroot flip — same atomicity as the row-at-a-time form, two commits for the page rather than two per row.
+    if !dirty.is_empty() {
+        let rows: Vec<(Pk, &Record)> =
+            dirty.iter().map(|(pk, rec)| (pk.clone(), rec)).collect();
+        db.put_rows_in(&table, &rows)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
-        delta_written += 1;
+        delta_written = dirty.len();
     }
     if delta_skipped > 0 {
         crate::logf!(
@@ -1315,6 +1328,8 @@ pub fn save_messages_page(
     }
     let table = conversation_table(&[our_party_id(storage), *their_identity_seed]);
     let mut db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+    // Rows that survive the delta gate, held until the page is fully built so the whole page lands in ONE transaction — see the note on the flush below.
+    let mut dirty: Vec<(Pk, Record)> = Vec::new();
     for msg in msgs {
         let content_hash = blake3::hash(msg.content.as_bytes());
         let mut rec = Record::new()
@@ -1351,7 +1366,17 @@ pub fn save_messages_page(
         {
             continue;
         }
-        db.put_row_in(&table, Pk::bytes(&row_key), &rec)
+        dirty.push((
+            Pk::Bytes(std::borrow::Cow::Owned(row_key.to_vec())),
+            rec,
+        ));
+    }
+    // ONE TRANSACTION PER PAGE, NOT PER ROW (field 2026-09-24): this is the backfill's own write path, so a 50-row page used to cost 100 durable commits and 50 whole-catalog re-encodes.
+    // The phone's mean vault commit that day was 567ms — 146 of 394 over the 200ms SLOW line, worst 2659ms — and every vault caller, reads included, waits behind each one.
+    // Same atomicity as before: one WAL record, one superroot flip, the page whole or not at all.
+    if !dirty.is_empty() {
+        let rows: Vec<(Pk, &Record)> = dirty.iter().map(|(pk, rec)| (pk.clone(), rec)).collect();
+        db.put_rows_in(&table, &rows)
             .map_err(|e| StorageError::Vault(e.to_string()))?;
     }
     Ok(())
