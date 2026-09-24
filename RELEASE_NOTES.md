@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v103
+
 - Voice is now called a **wave**, and video a **beam**, everywhere in the app: the ring panel, the notification, the stream filter, the settings and all sixteen languages. The word "call" is gone on purpose, and the About page says why in one paragraph — a call hands your voice to a company to carry, and everyone agrees to pretend nobody kept a copy, which stopped being true when data itself became the storage medium; a wave has no carrier and keeps its own recording, which is yours.
 - This build cannot wave with an older one, in either direction, and wave recordings kept before it no longer open. Everything a wave is named by changed at once — the marker its signals ride under, the keys it derives, and the container its recording is written in — so both devices must be on this build or newer. Messages, attachments and everything else are untouched.
 - A brand-new phone can get into your fleet again: a fresh device signs with every signature it holds, including one your fleet has not been told about yet, and the check refused the whole envelope over the one signature it had no key for — so the phone could never attest, never declare what it signs with, and never get in ("envelope: eggs do not verify at the required tier"). A signature nobody can check proves nothing, so it is now passed over instead of failing everything beside it; the fleet's own records still demand the full set.
