@@ -15,7 +15,7 @@ else
 fi
 
 export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/25.2.9519653"
-# CMake-based -sys crates (audiopus_sys builds vendored libopus for calls): CMake's built-in Android support probes ANDROID_NDK_ROOT/ANDROID_NDK — the _HOME name alone is invisible to it ("Neither the NDK or a standalone toolchain was found"). Do NOT export CMAKE_GENERATOR here: it leaks into host-side cmake builds in the same shell and trips generator-mismatch against their cached build dirs.
+# CMake-based -sys crates (audiopus_sys builds vendored libopus for waves): CMake's built-in Android support probes ANDROID_NDK_ROOT/ANDROID_NDK — the _HOME name alone is invisible to it ("Neither the NDK or a standalone toolchain was found"). Do NOT export CMAKE_GENERATOR here: it leaks into host-side cmake builds in the same shell and trips generator-mismatch against their cached build dirs.
 export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
 export ANDROID_NDK="$ANDROID_NDK_HOME"
 # The NDK ships one prebuilt toolchain per host OS. Note the macOS one is named darwin-x86_64 even on Apple Silicon (it runs via Rosetta), so probe rather than assuming the host arch.

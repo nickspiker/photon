@@ -419,7 +419,7 @@ Breaking one message doesn't reveal others (forward secrecy via BLAKE3 preimage 
 
 **Encryption layer:**
 
-The chain state XOR is not the only encryption. The braid's message layer is **XChaCha20** (the 192-bit-nonce variant), and the at-rest + control planes (vault, capsules, avatars, fleet-key wraps, call media) all use **XChaCha20-Poly1305 AEAD**:
+The chain state XOR is not the only encryption. The braid's message layer is **XChaCha20** (the 192-bit-nonce variant), and the at-rest + control planes (vault, capsules, avatars, fleet-key wraps, wave media) all use **XChaCha20-Poly1305 AEAD**:
 
 ```rust
 encryption_key = BLAKE3_KDF(chain_state, "photon.chain.xchacha.v1")
@@ -770,11 +770,11 @@ Photon demonstrates the social attestation and recovery model works before apply
 ### The units (wave-particle duality, taken literally)
 
 - **photon** — a message: discrete, quantized, arrives whole. *"Shoot me a photon."* The unit is the noun and the verb takes care of itself: "photon me when you land."
-- **wave** — a voice call: continuous, real-time. *"Wave me."* An incoming call is someone *waving*; a declined call is a wave that passes. The gesture and the physics mean the same thing.
-- **beam** — a video call: a directed, continuous stream of light you can see by. *"Beam me."*
+- **wave** — voice: continuous, real-time. *"Wave me."* An inbound one is someone *waving*; a declined one is a wave that passes. The gesture and the physics mean the same thing, and neither of them is a phone call (docs/lexicon.md retires that word: a call is a circuit somebody else holds open, and a digital one is recorded by whoever carries it — a wave has no carrier and keeps its own recording, in the open).
+- **beam** — video: a directed, continuous stream of light you can see by. *"Beam me."* Designed, not built.
 - **detected** — a read receipt, consent-gated: a photon is not an observation until the detector fires, and the sender learns nothing until the receiver's detector does. Delivery states: *in flight*, *arrived*, *detected*.
 
-Texts are particles, calls are waves. Photon: particles and waves.
+Texts are particles, voice is waves. Photon: particles and waves.
 
 Full cross-stack glossary: `GLOSSARY.md` in the ferros repo.
 

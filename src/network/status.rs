@@ -1667,11 +1667,11 @@ async fn run_checker(
 
     // The RELAY PIPE inject channel. Frames that arrive over the live WebSocket pipe are pushed here and the receiver task's select! pulls them out AS IF they'd arrived on the UDP socket, tagged RELAY_ADDR.
     // That means the ENTIRE existing dispatch — PT DATA, ping/pong presence, chat, acks, CLUTCH — runs on relayed bytes with zero bespoke per-message-type handling. A generous bound so a burst (a 548 KB CLUTCH offer arrives as one frame) never blocks the WS reader.
-    // VOICE MEDIA egress (docs/calls.md): the engine's packets must leave from THIS socket — the port the peer's NAT already knows — so a dedicated awaited forwarder lives here (the polled request queues would add tens of ms; media gets its own task like the relay pipe).
+    // VOICE MEDIA egress (docs/waves.md): the engine's packets must leave from THIS socket — the port the peer's NAT already knows — so a dedicated awaited forwarder lives here (the polled request queues would add tens of ms; media gets its own task like the relay pipe).
     {
         let (media_tx, mut media_rx) =
             tokio::sync::mpsc::unbounded_channel::<(Vec<u8>, SocketAddr)>();
-        crate::call::install_media_tx(media_tx);
+        crate::wave::install_media_tx(media_tx);
         let media_socket = socket_recv.clone();
         tokio::spawn(async move {
             while let Some((bytes, addr)) = media_rx.recv().await {
@@ -1817,14 +1817,14 @@ async fn run_checker(
                         None => &buf[..len],
                     };
 
-                    // VOICE MEDIA FAST PATH (docs/calls.md): one-byte high-ASCII magic check BEFORE the entire parse ladder (every other frame leads with plain ASCII: VSF 'R', PT lowercase) — 50 packets/second must not pay for trial parsing, PT acks, or StatusUpdates. Matches route raw to the call engine's sink; with no live call they silently drop (also the correct fate for post-hangup stragglers). The magic collides with nothing here: VSF opens "RÅ<", PT DATA opens with a lowercase stream id.
-                    if crate::call::packet::is_media_packet(msg_bytes) {
-                        crate::call::deliver_media(msg_bytes, src_addr);
+                    // VOICE MEDIA FAST PATH (docs/waves.md): one-byte high-ASCII magic check BEFORE the entire parse ladder (every other frame leads with plain ASCII: VSF 'R', PT lowercase) — 50 packets/second must not pay for trial parsing, PT acks, or StatusUpdates. Matches route raw to the wave engine's sink; with no live wave they silently drop (also the correct fate for post-hangup stragglers). The magic collides with nothing here: VSF opens "RÅ<", PT DATA opens with a lowercase stream id.
+                    if crate::wave::packet::is_media_packet(msg_bytes) {
+                        crate::wave::deliver_media(msg_bytes, src_addr);
                         continue;
                     }
-                    // EXPRESS CALL SIGNALS (signal.rs): same fast-path treatment as media — the sealed out-of-band offer/answer copy that beats the ordered lane. Parked raw; the UI tick trial-opens against its friendship keys.
-                    if crate::call::signal::is_express_frame(msg_bytes) {
-                        crate::call::deliver_express(msg_bytes, src_addr);
+                    // EXPRESS WAVE SIGNALS (signal.rs): same fast-path treatment as media — the sealed out-of-band offer/answer copy that beats the ordered lane. Parked raw; the UI tick trial-opens against its friendship keys.
+                    if crate::wave::signal::is_express_frame(msg_bytes) {
+                        crate::wave::deliver_express(msg_bytes, src_addr);
                         continue;
                     }
 
@@ -3892,27 +3892,27 @@ async fn run_checker(
                                     // PUSH ECHOES DON'T RE-AIM, COUNTER-PUSH, OR GET ANSWERED (field 2026-09-13 22:08, the re-aim storm: one real drought push entered the reciprocity pair — re-aim + request-back on receive, answer-with-ourselves on push — and with no damping the two phones ping-ponged pushes at 1 Hz for the rest of the wave, re-aiming at the SAME address every second while the transport drowned). A push naming the address media already aims at changes nothing: it is the reflection of our own push, and every reciprocal action stops at it.
                                     let mut push_echo = false;
                                     {
-                                        let call_peer = crate::call::call_peer_device();
+                                        let wave_peer = crate::wave::wave_peer_device();
                                         let mut store = peer_store_recv.lock().unwrap();
                                         for rec in peers {
                                             // The wave's own peer told us where it moved: aim media there at once rather than waiting for the drought probe (push reroute, 2026-09-11). The record self-verifies inside merge_peer and only a strictly newer one is adopted, so this cannot be replayed backwards. A LAN-scope address is left to the probe's policy — it is only a route if we share that LAN.
-                                            let live = call_peer == Some(*rec.device_pubkey.as_bytes());
+                                            let live = wave_peer == Some(*rec.device_pubkey.as_bytes());
                                             let moved_to = rec.ip;
                                             let rec_dev = *rec.device_pubkey.as_bytes();
                                             if store.merge_peer(rec) {
                                                 merged += 1;
                                                 let lan_scope = matches!(moved_to.ip().to_canonical(), std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4));
-                                                let unchanged = crate::call::call_tx_addr().is_some_and(|cur| {
+                                                let unchanged = crate::wave::wave_tx_addr().is_some_and(|cur| {
                                                     cur.port() == moved_to.port() && cur.ip().to_canonical() == moved_to.ip().to_canonical()
                                                 });
                                                 if live && unchanged {
                                                     push_echo = true;
                                                 }
                                                 if live && !unchanged && !lan_scope && !crate::network::traverse::gather::is_bogus_addr(&moved_to) {
-                                                    crate::logf!("CALL: the wave's peer pushed a new address — media re-aimed at {}", moved_to);
-                                                    crate::call::set_peer_redirect(moved_to);
+                                                    crate::logf!("WAVE: the wave's peer pushed a new address — media re-aimed at {}", moved_to);
+                                                    crate::wave::set_peer_redirect(moved_to);
                                                     // THE OTHER HALF (field 2026-09-12, wifi off mid-wave): we re-aimed at their new cellular address, a carrier NAT that opens only for flows THEY start — and they were still probing our old door. The UI pushes OUR freshest record to this device on the next tick (the store reply below can be stale).
-                                                    crate::call::request_address_push(rec_dev);
+                                                    crate::wave::request_address_push(rec_dev);
                                                 }
                                             }
                                         }
@@ -4693,8 +4693,8 @@ async fn run_checker(
 
         // Process LAN discovery requests via multicast (more reliable than broadcast)
         while let Ok(request) = lan_broadcast_rx.try_recv() {
-            // CALL-ACTIVE QUIESCENCE: while the audio session is live, the periodic multicast/broadcast beacons stand down (Emma's 2026-09-01 call log: discovery churn every ~3s riding the same socket + recv path as the media). The request is consumed (not queued — the next periodic sweep re-fires after the call), and the UNICAST form still flows: WFD group-up needs it and it's one targeted frame.
-            if crate::call::MEDIA_QUIET.load(std::sync::atomic::Ordering::Relaxed)
+            // WAVE-ACTIVE QUIESCENCE: while the audio session is live, the periodic multicast/broadcast beacons stand down (Emma's 2026-09-01 wave log: discovery churn every ~3s riding the same socket + recv path as the media). The request is consumed (not queued — the next periodic sweep re-fires after the wave), and the UNICAST form still flows: WFD group-up needs it and it's one targeted frame.
+            if crate::wave::MEDIA_QUIET.load(std::sync::atomic::Ordering::Relaxed)
                 && request.unicast.is_none()
             {
                 continue;

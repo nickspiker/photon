@@ -1,6 +1,6 @@
-//! Calibration substrate — the profile types, the learned-result mailbox, and the envelope helpers shared by the in-call learner ([`super::learn`]) and the v-chirp connect probe ([`super::vchirp`]).
+//! Calibration substrate — the profile types, the learned-result mailbox, and the envelope helpers shared by the in-wave learner ([`super::learn`]) and the v-chirp connect probe ([`super::vchirp`]).
 //!
-//! The Wave calibration ritual that used to live here (echo check + voice check, the Settings page ceremony) is GONE (2026-09-07): every call now opens with the v-chirp probe on the live route, so per-route coupling is measured at every connect instead of once per ceremony. Voice profiles still accumulate from the learner's in-call evidence.
+//! The Wave calibration ritual that used to live here (echo check + voice check, the Settings page ceremony) is GONE (2026-09-07): every wave now opens with the v-chirp probe on the live route, so per-route coupling is measured at every connect instead of once per ceremony. Voice profiles still accumulate from the learner's in-wave evidence.
 
 use std::sync::Mutex;
 
@@ -33,7 +33,7 @@ pub enum CalResult {
     Voice(VoiceProfile),
 }
 
-/// A measured profile with the evidence weight the blend needs — posted by the engine teardown (learner), a mid-call route swap, or the v-chirp fit thread.
+/// A measured profile with the evidence weight the blend needs — posted by the engine teardown (learner), a mid-wave route swap, or the v-chirp fit thread.
 pub struct LearnedResult {
     pub result: CalResult,
     /// Sample weight: accepted estimator windows (echo) or seconds of voiced speech (voice).

@@ -24,7 +24,7 @@
 ## The implementation reality — the lossy OWF IS built (corrected 2026-06-29)
 
 The provably-lossy OWF **exists and is used everywhere**: it is `ihi::chaos_amp` (the 32-op data-dependent ALU, `ihi/src/chaos_amp.rs`), wrapped by `ihi::spaghettify` (`ihi/src/spaghettify.rs`).
-It matches the patent `lossy` claim point-for-point: data-dependent op selection from a 32-op menu (`val[4:0]`); 11 lossy + 3 extreme-lossy ops (POPCNT, SAT_ADD/SUB, PCNT_REPLACE) that destroy bits *within* the rounds and compound across them; ~10^482 op-selection paths (> atoms^2); ~700–2500 cumulative bits destroyed per call.
+It matches the patent `lossy` claim point-for-point: data-dependent op selection from a 32-op menu (`val[4:0]`); 11 lossy + 3 extreme-lossy ops (POPCNT, SAT_ADD/SUB, PCNT_REPLACE) that destroy bits *within* the rounds and compound across them; ~10^482 op-selection paths (> atoms^2); ~700–2500 cumulative bits destroyed per wave.
 Crucially the data-dependency governs *op selection*, not memory access — the exact thing the patent distinguishes from memory-hard functions.
 `chaos_amp` is **bit-exact with PIPE silicon** (`/mnt/Harbor/Code/pipe/rtl/chaos_amp_v2.v`).
 

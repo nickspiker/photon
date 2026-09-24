@@ -64,7 +64,7 @@ My devices see a molecule as one more conversation: chains blob (lanes, eras, KE
 - Conversation: author name and `party_colour` of the author's party id on each row; the delivered ring fills by the fraction of members that ACKed. Header lists members.
 - New molecule: pick from your contacts; a molecule page with members, Add (your contacts only), Leave.
 - Honest surfaces: "history before you joined isn't shared" when D5 is off; "N members haven't received this yet" is the delivered fraction, nothing timered.
-- Calls in molecules are out of scope for v1 (calls.md is pairwise).
+- Waves in molecules are out of scope for v1 (waves.md is pairwise).
 
 ## 7. Concrete additions
 
@@ -97,7 +97,7 @@ My devices see a molecule as one more conversation: chains blob (lanes, eras, KE
 2. Genesis + invite over the pairwise braid + member record + three-fleet text with strand-pull + fleet replication. Field: three fleets, one member offline thru a session.
 3. Eras: KEM bundles in member records, shrink mint on leave, cadence ratchet, the minter-id race.
 4. UI: molecule row, author colours, delivered fraction, molecule page, D5 policy surface.
-5. Later: molecule calls; add-consent gate; the relay fan-out if molecules outgrow per-device sends (fleet invariants say any size, so nothing here assumes small).
+5. Later: molecule waves; add-consent gate; the relay fan-out if molecules outgrow per-device sends (fleet invariants say any size, so nothing here assumes small).
 
 ## 10. Lifecycle — the phase diagram (2026-09-15, Nick + Claude)
 
@@ -163,4 +163,4 @@ Decisions settled at planning, superseding earlier sections where they differ:
 - Step 5's last piece: a frame from a never-friended member passes the door (token-scoped admission) but the receive commit still resolves the sender thru the contact fold and drops it. The commit path is contact-indexed thruout; the fix is a peer-view resolution there.
 - A molecule control row (offer / join / wrap) is never re-served bare; a lost offer is re-sent by the sponsor on the next roster edge (the `offered` list) — that refresh is not yet wired.
 - The delivered ring on a molecule row fills at full coverage only; a fractional fill from the ledger is a render change.
-- Phase 1.5 (Withdraw), phase 2 (words, NFC, doors), phase 3 (roundcode, attachments, calls).
+- Phase 1.5 (Withdraw), phase 2 (words, NFC, doors), phase 3 (roundcode, attachments, waves).

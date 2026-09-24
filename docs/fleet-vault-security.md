@@ -53,7 +53,7 @@ For a loaner — someone you trusted enough to hand the hardware to, with RAM-wi
 If you genuinely fear the borrower will cold-boot your DEK out of RAM, the problem isn't the crypto.
 
 **The forward-secrecy dial lives at the DEK**, per scope: stable DEK = cheap revoke (light switch); rotate-and-re-encrypt = scrub extracted access (work-chat).
-Your call per domain.
+Your ruling per domain.
 
 Bonus: device add/remove is **rare** (people don't churn devices) *and* now **cheap** (KEK re-wrap).
 Rare × cheap = a non-event.

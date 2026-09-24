@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Voice is now called a **wave**, and video a **beam**, everywhere in the app: the ring panel, the notification, the stream filter, the settings and all sixteen languages. The word "call" is gone on purpose, and the About page says why in one paragraph — a call hands your voice to a company to carry, and everyone agrees to pretend nobody kept a copy, which stopped being true when data itself became the storage medium; a wave has no carrier and keeps its own recording, which is yours.
+- This build cannot wave with an older one, in either direction, and wave recordings kept before it no longer open. Everything a wave is named by changed at once — the marker its signals ride under, the keys it derives, and the container its recording is written in — so both devices must be on this build or newer. Messages, attachments and everything else are untouched.
+
 ## v102
 
 - The Fleet page shows where your fleet stands on the new signatures: a line at the top names the strength every device has proved and how many have declared the full set, and each device's card says what it signs with — so a machine still to be updated is visible rather than guessed at, and a device you have locked out reads as locked there too.
@@ -27,7 +30,7 @@ One sentence per line, however long; plain language for the person who installs 
 ## v99
 
 - A phone whose clock is off by more than a minute no longer gets stuck at "timestamp outside valid window": the server's refusal now says whether you are ahead or behind and carries its own clock, photon adopts that as its time base on the spot and sends again — for log submissions and for attesting alike — and the server keeps a note of every such refusal so the cause can be read later.
-- Keeping a wave no longer re-encodes it: the recording is the packets the wave actually carried — your side as it was archived during the call, the other side exactly as it arrived plus whatever was filled in afterwards, a lost moment left silent rather than guessed — so a long wave keeps in seconds instead of minutes on a phone, and a wave card with two recordings of the same wave now shows the one this device holds instead of asking to fetch it.
+- Keeping a wave no longer re-encodes it: the recording is the packets the wave actually carried — your side as it was archived during the wave, the other side exactly as it arrived plus whatever was filled in afterwards, a lost moment left silent rather than guessed — so a long wave keeps in seconds instead of minutes on a phone, and a wave card with two recordings of the same wave now shows the one this device holds instead of asking to fetch it.
 - The picture viewer is opsin's, whole: open any image — DNG and RAW included — and you get opsin's image area with pan and zoom, the tool panel (navigator, 1:1 and Fit, Save, Info, rotate, crop, the raw histogram with its scale and clip pills, the exposure slider, the chromaticity chart), the frame-info readout, and opsin's keys; the Back pill at the top-left, Escape, or the phone's back gesture leaves it; the old three-tier viewer with its half-stop pills is gone.
 - A pigeon is now fetched from one device at a time (the friend's devices with a proven direct path first, then their other devices, then your own), instead of asking every device at once and having each of them send the whole file; a served pigeon rides the relay only when the direct path to the asker is unproven; and a pigeon already held here ignores late copies of its manifest and chunks — together the re-uploads and re-downloads that showed up as repeated transfers of the same pigeon.
 - Android's glass corners are a tenth smaller, and a release build draws no hairline along the glass — the corner beyond the curve is plain black.
@@ -37,7 +40,7 @@ One sentence per line, however long; plain language for the person who installs 
 - Android's glass corners are twice as deep, so the small corners sit inside the phone's glass arc instead of on top of it.
 - The Wave pill and a wave card's "wave back" now say "no direct path" and stay dim when a friend is reachable only through the relay — a wave placed there would connect and carry nothing — and flip back the moment a direct path opens.
 - A friend you can only reach through the relay now gets punched at from your side too: the address lookup that turns a published address into a working direct path used to run only while a brand-new contact was still connecting, so an established friend behind a home router could stay relay-only forever from one end. And the presence ring is honest about it — green means a proven direct path; a friend reached only over the relay reads amber until the punch lands.
-- Android lays out under the status bar now that it draws edge to edge: the orb, the back arrow, the call pill and every settings header start below the bar (and the orb sits in from the corner by the same height — on desktop by the height of the window controls); the window corners keep photon's own squircle, sized so the small corners sit just inside the phone's glass arc and the big ones at twice that.
+- Android lays out under the status bar now that it draws edge to edge: the orb, the back arrow, the wave pill and every settings header start below the bar (and the orb sits in from the corner by the same height — on desktop by the height of the window controls); the window corners keep photon's own squircle, sized so the small corners sit just inside the phone's glass arc and the big ones at twice that.
 - Android draws edge to edge now — under the status bar and the gesture pill — so the window's corners are the phone's glass corners: the small corners follow the glass arc exactly and the big ones twice it, the same proportion the desktop window wears; the compose box keeps clear of the gesture pill, and for now the perimeter hairline stays visible so the fit can be checked by eye.
 - Photon's own clock now keeps counting while the phone sleeps: it had been following a clock that stops during suspend, so after a long sleep every stamped request ran minutes behind and the server refused log submissions ("timestamp outside valid window") — the same message a phone with a genuinely wrong clock sees.
 - A phone whose clock is off by more than a minute can attest and submit logs again: the requests are stamped with photon's own time, which the app already keeps independent of the system clock, instead of the clock the banner is warning you about.
@@ -48,7 +51,7 @@ One sentence per line, however long; plain language for the person who installs 
 - Before you attest, the orb's Security page now offers Wipe: a phone that was someone else's, or a handle nobody will type again, can be cleared to a blank slate without the old handle, and the hint says what stays true afterwards.
 - The Base page, with arabic numerals selected, now explains what base ten is: where the numerals came from, how recent zero is, that other bases exist, and why photon's magnitudes are counted the way a slide rule multiplies.
 - WebP pictures open in the colour-managed viewer with live exposure, and the viewer recognises every picture by its bytes rather than its file name.
-- The wave's self-aim correction now fires at the same threshold as its first step, so an energetic greeting or a hesitant first word can no longer leave a call a few decibels off for its whole length.
+- The wave's self-aim correction now fires at the same threshold as its first step, so an energetic greeting or a hesitant first word can no longer leave a wave a few decibels off for its whole length.
 ## v98
 
 - Atoms and molecules: tap New atom on the contacts screen to found a conversation that is yours alone, titled or not, and it is an atom; open its panel and press Create a molecule! to offer a friend a bond over the conversation you already have with them, and the moment they tap Bind it is a molecule — the same thing under a different count, the way a lone hydrogen becomes H₂.
@@ -61,16 +64,16 @@ One sentence per line, however long; plain language for the person who installs 
 - The self-aim's first step needs a plausibly loud voice before it trusts itself, so a quiet first word can no longer set the level hot for the next twenty seconds.
 - The wave's self-aim waits for real speech: it needs four seconds of sound that moves the way a voice does before it trusts a measurement, so breath and handling before the conversation starts can no longer aim the level wrong, and it allows itself one correction later if the first aim proves badly off.
 - After a Wi-Fi stall the backlog of the other person's voice is shed from the pauses, not from the words — before, a few seconds of stall could cut whole phrases out of what you heard.
-- A wave answered while the ringback was still winding down could go out silent — your side heard them, they heard nothing — because the ringback's cleanup and the call's start fought over the microphone; the session now has one owner at a time and a refused microphone open is retried.
+- A wave answered while the ringback was still winding down could go out silent — your side heard them, they heard nothing — because the ringback's cleanup and the wave's start fought over the microphone; the session now has one owner at a time and a refused microphone open is retried.
 - Opening a conversation asks the contact if they are there and gives them one second: no answer and the header shows offline right away, flipping back the moment they respond.
-- The wave's ear for "is this speech?" is now relative to the room: it tracks this call's own quiet and counts only sound well above it, so background noise can never be mistaken for a voice and crank the send level, and the quiet itself — measured, not the manufacturer's claim — seeds the level for a microphone the app has never heard speak.
-- A wave now aims its send level by listening to itself: a few seconds in, once it has heard enough of your actual voice, it corrects its gain once to put you exactly on the plan — so a quiet posture no longer makes you inaudible and a stale calibration no longer makes you crackle, whatever the last call measured.
-- The volume readout the wave's diagnostics rely on now reads the control that actually governs the call's loudness, as a plain fraction of full — vendor loudness curves had it reporting near-mute on phones that sounded fine.
-- The crackling wave is fixed: a voice calibration learned from quiet test calls could drive the send level far past the plan and pin every syllable against the ceiling — the gain is now capped, and a calibration that a real call proves badly wrong is replaced on the spot instead of nudged toward the truth over many calls.
+- The wave's ear for "is this speech?" is now relative to the room: it tracks this wave's own quiet and counts only sound well above it, so background noise can never be mistaken for a voice and crank the send level, and the quiet itself — measured, not the manufacturer's claim — seeds the level for a microphone the app has never heard speak.
+- A wave now aims its send level by listening to itself: a few seconds in, once it has heard enough of your actual voice, it corrects its gain once to put you exactly on the plan — so a quiet posture no longer makes you inaudible and a stale calibration no longer makes you crackle, whatever the last wave measured.
+- The volume readout the wave's diagnostics rely on now reads the control that actually governs the wave's loudness, as a plain fraction of full — vendor loudness curves had it reporting near-mute on phones that sounded fine.
+- The crackling wave is fixed: a voice calibration learned from quiet test waves could drive the send level far past the plan and pin every syllable against the ceiling — the gain is now capped, and a calibration that a real wave proves badly wrong is replaced on the spot instead of nudged toward the truth over many waves.
 
 ## v97
 
-- A wave on Android now starts on your headset when one is connected — wired first, then Bluetooth, then the earpiece — instead of ignoring it, and a new pill on the call screen shows the device that is playing and cycles through the available outputs when you tap it.
+- A wave on Android now starts on your headset when one is connected — wired first, then Bluetooth, then the earpiece — instead of ignoring it, and a new pill on the wave screen shows the device that is playing and cycles through the available outputs when you tap it.
 - Waves connect away from home: when your phone changes networks — leaving the house, dropping to cellular, carrier-shared addresses — it re-learns its public address right away, and again at the moment you dial if it still has none, where before both sides could sit silent for half a minute aiming at a dead address.
 - Waves ride congestion by watching delay the way it actually behaves: a steadily climbing round trip means the link is over capacity, so the wave drops its rate in one jump to just under what the link measured, and it will not climb again until the delay flattens out.
 - The two ends of a wave now tell each other what actually arrived: your send rate answers to the far side's losses instead of your own, loss with no delay building behind it is treated as radio noise rather than congestion, and raw uncompressed audio only runs after a clean loss-free stretch and steps back down the moment the listener starts starving.
@@ -84,7 +87,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## v96
 
-- Waves connect the instant they are answered: your voice flows from the first captured frame, and an answer now always reaches the caller (it rides the relay like the ring does), so "answered on one side, silent on the other" is gone.
+- Waves connect the instant they are answered: your voice flows from the first captured frame, and an answer now always reaches the origin (it rides the relay like the ring does), so "answered on one side, silent on the other" is gone.
 - The level plan, the way the telephone network ran it: the microphone is read raw at 24-bit and calibrated per device and per input (the calibration follows your device through your fleet settings, so it survives a reinstall), scaled once by a fixed constant, and a shout rounds smoothly into the ceiling instead of crackling. Every wave transmits at the same known loudness; the volume rocker on the listening phone is the only adjustment, and it governs the wave while it rides the earpiece.
 - Nothing touches your voice on the way out: no gate, no ducking, no automatic level. Echo is handled on the listening side — while your mic is hot the other person is turned down in your speaker for that moment, the speaker is held where their echo stays under −36 dB, and the far room's quiet is quiet. None of it is recorded; a kept wave holds every party as they sounded.
 - Raw PCM ("plaid") runs wherever the path has headroom, not only on a LAN: a wave climbs to it while the round trip holds steady and steps back to the codec at the first sign of loss. Same-room waves now run it in both directions.
@@ -101,26 +104,26 @@ One sentence per line, however long; plain language for the person who installs 
 - Waveforms are rendered a new way, everywhere they appear: every stored sample lands in its screen column at its own height, and the edge pixels are shaded by how many of them reach that row, so the contour is smooth at any width with nothing invented and nothing thrown away.
 - Waveform colour is now the balance of three tuned voice bands — warmth below 240 Hz reads red, presence around 2.4 kHz reads green, sibilance and air above 8 kHz read blue — as vivid in a whisper as in a shout.
 - A wave now records your voice clean, before echo ducking touches it, and the ducking itself is saved as data beside it; the other side's card gets your true waveform, not the ducked one.
-- Keeping a wave is near-instant now: the recording is written once during the call at archive quality, so the keep packages it instead of re-encoding it, and recordings take a fraction of the space they did.
+- Keeping a wave is near-instant now: the recording is written once during the wave at archive quality, so the keep packages it instead of re-encoding it, and recordings take a fraction of the space they did.
 - A wave's waveform card colours in seconds after hangup on both sides — the envelope travels ahead of the audio.
 - Drop a song into any conversation and the row IS its waveform, left channel up, right channel down; tap it for the options and the play button, tap play to listen, tap along the band to seek while it plays.
 - Pictures and songs travel without their filenames; a picture is the picture and a song is its waveform, and nothing about your camera or your files rides along.
 - On the desktop, opening a picture opens it in opsin, with exposure and the full raw pipeline; the in-app viewer stays for phones.
 - The viewer is a real full screen now: while it is open the conversation underneath stops being drawn entirely, which also ends the black-rectangle open.
 - The reaction buttons and the option buttons are dark with bright labels, as they were always meant to be, instead of blinding.
-- A wave no longer appears twice on the timeline when your other devices lived the same call.
+- A wave no longer appears twice on the timeline when your other devices lived the same wave.
 - Old kept recordings and their previews from before this version do not play or draw; the recording format changed for all of the above and takes no baggage along.
-- The call screen's ring reads cyan for a same-network wave that runs over IPv6, not just over a private IPv4 address.
+- The wave screen's ring reads cyan for a same-network wave that runs over IPv6, not just over a private IPv4 address.
 - When the other side's phone changes network mid-wave, yours now sends its own address straight back and tries every address it knows for them, so a wave can pick up again on mobile data instead of dropping.
 - The earpiece route is kept only where it keeps the low-latency audio path; a phone whose vendor audio policy claims voice streams falls back to the loudspeaker at full speed rather than the earpiece at 40 ms.
-- Waves on Android play through the earpiece, the way a phone call does, while keeping the same low-latency audio path; the volume rocker adjusts the earpiece during a wave and media the rest of the time.
+- Waves on Android play through the earpiece, the way a telephone earpiece does, while keeping the same low-latency audio path; the volume rocker adjusts the earpiece during a wave and media the rest of the time.
 ## v94
 
 - Presence pings to a friend with several devices are now booked against the device that owns each address, so a good answer from one of their other devices no longer counts as a mismatch and gets re-asked forever.
 - Waveforms are drawn the way Lumis draws its histogram: folded at four sub-columns per pixel and lit by coverage at the tip, so the bars are anti-aliased in both directions instead of stair-stepped.
 - The option buttons under a message are now near-black, each with a hint of its verb's colour.
 - The "photon isn't responding" prompt at launch is gone: the vault now opens on a worker thread while the launch screen stays responsive, instead of holding the main thread for several seconds as the vault grew with kept waves.
-- The call screen now repaints once a second while a wave runs, so the timer, the live stats and the path ring keep up; the ring also reads cyan on the same network as it should, where it stayed green before.
+- The wave screen now repaints once a second while a wave runs, so the timer, the live stats and the path ring keep up; the ring also reads cyan on the same network as it should, where it stayed green before.
 - The stream filter button no longer hides behind message rows.
 - Tapping beside an attachment opens its details: name, type, size and dimensions with the time up top, and reply, save and delete below, every option a real button.
 - An attachment row is now just the attachment: the picture, the first lines of a code or text file, or the waveform, with no size or hint line. Tap the picture or the code to open it; tap the row beside it for reply, save and delete.
@@ -130,8 +133,8 @@ One sentence per line, however long; plain language for the person who installs 
 - An attachment or wave that nobody answers for is asked for again every twenty seconds instead of showing "fetching" forever.
 - Waveforms are brighter and truer: bar height is the actual loudness against one fixed scale for everyone, and colour is the balance of low, middle and high frequencies in the voice, vivid whether the moment is quiet or loud.
 - A wave that has already ended can no longer ring again when its original ring arrives late over the relay.
-- A hangup, a ring and a reconnect signal now travel on the path the wave's audio is using, and always carry a relay copy, so the other side hears you hang up and rings when you call back even when your address book points at a different one of their devices.
-- The call screen's avatar now wears the presence ring in the colour of the path the wave is actually on: cyan on the same network, green across the internet, amber while it has no direct route yet.
+- A hangup, a ring and a reconnect signal now travel on the path the wave's audio is using, and always carry a relay copy, so the other side hears you hang up and rings when you wave back even when your address book points at a different one of their devices.
+- The wave screen's avatar now wears the presence ring in the colour of the path the wave is actually on: cyan on the same network, green across the internet, amber while it has no direct route yet.
 - A phone that changes network mid-wave now tells the other side straight away, from Android's own network signal and from the first five seconds of silence, instead of ringing a dead address for thirty seconds.
 - The doubling scale is now a pure logarithm: one second, one bit, one wavelength read Zil, and every age and size reads one digit lower than before (an hour is Stelor, a byte Ter, a megabyte ZilaStelor). Nothing reads as a word: "now" for an age, "empty" for a size.
 - Hexadecimal is now linear everywhere: every timer, age and duration is a plain seconds count, a round trip is seconds with a hexadecimal fraction, and sizes are the bit count, so nothing on that base is scaled or split into minutes.
@@ -151,13 +154,13 @@ One sentence per line, however long; plain language for the person who installs 
 - A wave now tries to survive a network change: when audio stops arriving, each side aims its audio at the other's other known addresses in turn and sends its "I'm here" signal everywhere including the relay, instead of talking to the address that just died.
 
 - When your phone changes network mid-wave it now tells the person you are talking to directly, over the relay, and their audio re-aims at once instead of hunting for you.
-- Call signalling refuses a repeated or stale frame, so a copy captured off the network cannot be replayed to redirect a wave.
+- Wave signalling refuses a repeated or stale frame, so a copy captured off the network cannot be replayed to redirect a wave.
 
-- A wave now aims at the device that answered rather than at whichever of that person's devices was easiest to reach. A wave with someone's phone was being sent to their laptop, which is why a call could show a healthy green ring and carry no sound at all.
+- A wave now aims at the device that answered rather than at whichever of that person's devices was easiest to reach. A wave with someone's phone was being sent to their laptop, which is why a wave could show a healthy green ring and carry no sound at all.
 
-- Waves now work between a phone on mobile data and a phone on home wi-fi. A device on a home network was telling everyone its public address was its home address, because the only devices watching it were on that same network, so a friend on mobile data had nowhere real to send audio. Messages still got through, which is why this looked like a call-only fault.
+- Waves now work between a phone on mobile data and a phone on home wi-fi. A device on a home network was telling everyone its public address was its home address, because the only devices watching it were on that same network, so a friend on mobile data had nowhere real to send audio. Messages still got through, which is why this looked like a wave-only fault.
 
-- When your phone changes network it now tells the friends who could not find you, not just the ones who already could, and they answer with where they are, so a call between mobile data and home wi-fi has both sides' real addresses after one exchange.
+- When your phone changes network it now tells the friends who could not find you, not just the ones who already could, and they answer with where they are, so a wave between mobile data and home wi-fi has both sides' real addresses after one exchange.
 - A phone on home wi-fi no longer mistakes its home address for its public one, and forgets its old public address when it changes networks.
 
 
@@ -230,10 +233,10 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## v87
 
-- Calls on Android run on a new audio path with far lower latency, measured against the phone's own hardware floor.
+- Waves on Android run on a new audio path with far lower latency, measured against the phone's own hardware floor.
 - An existing conversation can be re-keyed in place without losing anything, and the fleet's ceremony owner is chosen automatically.
 - Two devices that had drifted onto different keys for one friend now converge on their own.
-- A call no longer drops the instant it is answered.
+- A wave no longer drops the instant it is answered.
 - A stale copy of a friendship on a wiped device can no longer block repairs for the rest of the fleet.
 
 ## v86
@@ -243,5 +246,5 @@ One sentence per line, however long; plain language for the person who installs 
 - Buttons wrap like text on every screen, and every number honours the dozenal or decimal setting.
 - Fonts are bundled, so the same symbols render on every device and colour glyphs render in colour.
 - A message no longer waits a second to send, and a delivered message is always acknowledged.
-- Answering a call from the notification, or with the screen off, brings up the call screen.
+- Answering a wave from the notification, or with the screen off, brings up the wave screen.
 - Storage no longer reports itself degraded after a full reinstall.

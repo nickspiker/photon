@@ -1,6 +1,6 @@
 # Device lease — borrowed hardware without moving title
 
-Design 2026-09-04 (Nick + review of the retired/Release support call). Extends docs/lifecycle.md; supersedes the parked "transfer vs loan-annotation" question in the loaner notes: the answer is a LEASE, and transfer (Release) stays the rare deliberate act it already is.
+Design 2026-09-04 (Nick + review of the retired/Release support thread). Extends docs/lifecycle.md; supersedes the parked "transfer vs loan-annotation" question in the loaner notes: the answer is a LEASE, and transfer (Release) stays the rare deliberate act it already is.
 
 ## The axes
 
@@ -42,7 +42,7 @@ The stranger case needs NO naming and NO friendship: the lender taps "lend", the
 
 A "household lease" where the guest types their own handle on the owner's hardware was staged first and CUT the same day (Nick: typing a handle on a loaned device "makes me nervous" — correctly). A handle is seed-grade; entering it on foreign hardware hands that hardware's owner the guest's identity. Family trust changes who received the seed, not whether it was given. docs/key-custody.md's invariant — the borrowed keyboard never sees the handle — is universal, so there is exactly ONE lease flow:
 
-- **The delegated guest session**: grant + recall at the worker, session request from the loaned device, approval + handle entry on the GUEST'S OWN hardware, killable session key delivered. Builds with the pairing-v2 + fleet-inbox + session-capsule cluster, after voice calls.
+- **The delegated guest session**: grant + recall at the worker, session request from the loaned device, approval + handle entry on the GUEST'S OWN hardware, killable session key delivered. Builds with the pairing-v2 + fleet-inbox + session-capsule cluster, after waves.
 - Until it exists, the departure-intent menu ships with TWO options (new owner / desk) — a loaner option that could not complete would be the dangling-flow sin this rework exists to kill.
 
 ## Interactions with standing doctrine

@@ -514,7 +514,7 @@ impl PhotonApp {
             .and_then(|fs| fs.effective("waves.plaid_wan"))
             .and_then(crate::storage::fleet_settings::as_bool)
             .unwrap_or(true);
-        crate::call::PLAID_WAN_ALLOWED.store(plaid_wan, std::sync::atomic::Ordering::Relaxed);
+        crate::wave::PLAID_WAN_ALLOWED.store(plaid_wan, std::sync::atomic::Ordering::Relaxed);
         if let Some(cb) = self.settings_plaid_wan_check.as_mut() {
             cb.set_checked(plaid_wan);
         }
@@ -649,7 +649,7 @@ impl PhotonApp {
                     continue;
                 }
                 let (sz, cat) = if let Some((_, name, size)) = crate::types::parse_attachment_content(&m.content) {
-                    if name == "call.audio" {
+                    if name == "wave.audio" {
                         (size, VaultFilter::Waves)
                     } else {
                         match m.attach.map(|a| a.kind) {
@@ -682,7 +682,7 @@ impl PhotonApp {
         self.vault_breakdown = Some(rows);
     }
 
-    /// The stored calibration for the CURRENT route/mic as an engine snapshot — read here on the UI thread at call start (the engine can't touch settings). None when no echo profile exists (the engine then runs reactive + learner).
+    /// The stored calibration for the CURRENT route/mic as an engine snapshot — read here on the UI thread at wave start (the engine can't touch settings). None when no echo profile exists (the engine then runs reactive + learner).
     /// Snapshot the vault's stats on a worker; the drain lands it and repaints. Event-edged: page entry and the Refresh pill call this, nothing polls.
     pub(super) fn request_vault_stats(&mut self) {
         if self.vault_stats_rx.is_none() {
@@ -713,7 +713,7 @@ impl PhotonApp {
         }
     }
 
-    pub(super) fn cal_snapshot(&self) -> Option<crate::call::engine::CalSnapshot> {
+    pub(super) fn cal_snapshot(&self) -> Option<crate::wave::engine::CalSnapshot> {
         let fs = self.fleet_settings.as_ref()?;
         let route = crate::platform::audio::route_id();
         if route.is_empty() {
@@ -735,11 +735,11 @@ impl PhotonApp {
             .device_local(&format!("audio.cal.voice.{mic}.floor"))
             .and_then(crate::storage::fleet_settings::as_f32)
             .filter(|f| *f > 0.0);
-        Some(crate::call::engine::CalSnapshot { g_norm, delay_bins, voiced, floor })
+        Some(crate::wave::engine::CalSnapshot { g_norm, delay_bins, voiced, floor })
     }
 
-    /// Blend one LEARNED profile into the stored one (the v-chirp probe and the in-call learner both post thru this). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count.
-    pub(super) fn store_learned_result(&mut self, lr: &crate::call::calibrate::LearnedResult) {
+    /// Blend one LEARNED profile into the stored one (the v-chirp probe and the in-wave learner both post thru this). Echo g rides learn::blend_g (asymmetric: duck-more fast, duck-less slow + solid-only); voice gain/floor ride a symmetric EMA with the same sample weighting. `<base>.n` carries the accumulated sample count.
+    pub(super) fn store_learned_result(&mut self, lr: &crate::wave::calibrate::LearnedResult) {
         if !self.ensure_fleet_settings() {
             return;
         }
@@ -751,18 +751,18 @@ impl PhotonApp {
             fs.device_local(k).and_then(|v| v.as_u64()).unwrap_or(0) as f32
         };
         let conf = if lr.solid {
-            crate::call::learn::Confidence::Solid
+            crate::wave::learn::Confidence::Solid
         } else {
-            crate::call::learn::Confidence::Usable
+            crate::wave::learn::Confidence::Usable
         };
         let fields: Vec<(String, vsf::VsfType)> = match &lr.result {
-            crate::call::calibrate::CalResult::Echo(p) => {
+            crate::wave::calibrate::CalResult::Echo(p) => {
                 let base = format!("audio.cal.echo.{}", p.route_id);
                 let fs = self.fleet_settings.as_ref().unwrap();
                 let stored_g = read_f32(fs, &format!("{base}.g"));
                 let stored_n = read_n(fs, &format!("{base}.n"));
                 let (g, n) = match stored_g {
-                    Some(g0) => crate::call::learn::blend_g(g0, stored_n, p.g_norm, lr.windows as usize, conf),
+                    Some(g0) => crate::wave::learn::blend_g(g0, stored_n, p.g_norm, lr.windows as usize, conf),
                     None => (p.g_norm, lr.windows as f32),
                 };
                 crate::logf!(
@@ -783,14 +783,14 @@ impl PhotonApp {
                 }
                 f
             }
-            crate::call::calibrate::CalResult::Voice(p) => {
+            crate::wave::calibrate::CalResult::Voice(p) => {
                 let base = format!("audio.cal.voice.{}", p.mic_id);
                 let fs = self.fleet_settings.as_ref().unwrap();
                 // n restarts when no .voiced exists yet — the gain-era profiles left n=100 behind, which would give a first voiced write a fifth of the weight it earned.
                 let stored_voiced = read_f32(fs, &format!("{base}.voiced")).filter(|v| *v > 0.0);
                 let stored_n = if stored_voiced.is_some() { read_n(fs, &format!("{base}.n")) } else { 0.0 };
                 let w = lr.windows as f32;
-                // FLOOR-ONLY post (voiced 0 = the sentinel, 2026-09-15 "normalize on quiet"): a call where nobody talked 3 s still measured its quiet — blend the floor, leave voiced and its count untouched.
+                // FLOOR-ONLY post (voiced 0 = the sentinel, 2026-09-15 "normalize on quiet"): a wave where nobody talked 3 s still measured its quiet — blend the floor, leave voiced and its count untouched.
                 if p.voiced <= 0.0 {
                     let floor = match read_f32(fs, &format!("{base}.floor")).filter(|f| *f > 0.0) {
                         Some(f0) => f0 + (w / (w + stored_n + 20.0)) * (p.floor - f0),
@@ -803,7 +803,7 @@ impl PhotonApp {
                     );
                     vec![(format!("{base}.floor"), vsf::VsfType::f5(floor))]
                 } else {
-                // RE-SEED on a gross mismatch (field 2026-09-15, the crackling wave): a measurement ≥2× off the store means the store is WRONG, not noisy — Nick's quiet-test-wave profile (45, n 100) met real speech at 165 and the inertial blend moved it to 65, leaving the next wave still ~21× hot. A wrong calibration is replaced, not nudged; the count restarts so the next calls own the evidence.
+                // RE-SEED on a gross mismatch (field 2026-09-15, the crackling wave): a measurement ≥2× off the store means the store is WRONG, not noisy — Nick's quiet-test-wave profile (45, n 100) met real speech at 165 and the inertial blend moved it to 65, leaving the next wave still ~21× hot. A wrong calibration is replaced, not nudged; the count restarts so the next waves own the evidence.
                 let reseed = stored_voiced.is_some_and(|v0| v0 > 0.0 && (p.voiced >= v0 * 2.0 || p.voiced <= v0 * 0.5));
                 let alpha = if reseed { 1.0 } else { w / (w + stored_n + 20.0) };
                 let voiced = match stored_voiced {
@@ -814,10 +814,10 @@ impl PhotonApp {
                     Some(f0) => f0 + alpha * (p.floor - f0),
                     None => p.floor,
                 };
-                // The count caps at 40 (was 100 — Nick's profile had become immovable): a full call still moves a settled store meaningfully, a short one still barely dents it.
+                // The count caps at 40 (was 100 — Nick's profile had become immovable): a full wave still moves a settled store meaningfully, a short one still barely dents it.
                 let n = if reseed { w.min(40.0) } else { (stored_n + w).min(40.0) };
                 crate::logf!(
-                    "CAL: learned voice {} — mic \"{}\" voiced {} floor {} n {} (the next call's makeup denominator; fleet-synced device-local)",
+                    "CAL: learned voice {} — mic \"{}\" voiced {} floor {} n {} (the next wave's makeup denominator; fleet-synced device-local)",
                     if reseed { "RE-SEEDED (measurement ≥2x off the store)" } else { "blended" },
                     p.mic_id,
                     format!("{voiced:.1}"),
@@ -842,7 +842,7 @@ impl PhotonApp {
         self.persist_and_push_settings();
     }
 
-    /// The Wave page's profile list: every mic this device has measured — (mic id, voiced, fine floor, calls of evidence). Read from this device's own entries (profiles are device-local); a voiced of 0 is the floor-only sentinel (or a forgotten profile) and lists with voice 0.
+    /// The Wave page's profile list: every mic this device has measured — (mic id, voiced, fine floor, waves of evidence). Read from this device's own entries (profiles are device-local); a voiced of 0 is the floor-only sentinel (or a forgotten profile) and lists with voice 0.
     pub(super) fn voice_profiles(&self) -> Vec<(String, f32, f32, u32)> {
         let Some(fs) = self.fleet_settings.as_ref() else { return Vec::new() };
         let Some(dev) = fs.devices.iter().find(|d| d.device_pubkey == fs.our_device) else { return Vec::new() };
@@ -911,10 +911,10 @@ impl PhotonApp {
 
     /// Kick the measure-now ritual (the Wave page). No-op while a wave is live or one is already listening.
     pub(super) fn start_voice_measure(&mut self) {
-        if self.active_call.is_some() || self.wave_measure_rx.is_some() {
+        if self.active_wave.is_some() || self.wave_measure_rx.is_some() {
             return;
         }
-        self.wave_measure_rx = crate::call::measure::start(6);
+        self.wave_measure_rx = crate::wave::measure::start(6);
         if self.wave_measure_rx.is_none() {
             crate::log("CAL: measure now — the audio session refused to open");
         }
@@ -940,9 +940,9 @@ impl PhotonApp {
         }
     }
 
-    /// Drain measured profiles (v-chirp probe mid-call, learner at teardown/route-swap) into stored settings — toast-free, silent bookkeeping.
+    /// Drain measured profiles (v-chirp probe mid-wave, learner at teardown/route-swap) into stored settings — toast-free, silent bookkeeping.
     pub(super) fn drain_audio_cal(&mut self) {
-        for lr in crate::call::calibrate::take_learned() {
+        for lr in crate::wave::calibrate::take_learned() {
             self.store_learned_result(&lr);
         }
     }

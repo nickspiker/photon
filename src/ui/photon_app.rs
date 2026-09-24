@@ -42,7 +42,7 @@ use fluor::host::WakeSender;
 mod attachments;
 mod viewer;
 mod bridge;
-mod call_ui;
+mod wave_ui;
 mod ceremony;
 mod era;
 mod conversation;
@@ -762,7 +762,7 @@ fn is_bond_offer_row(m: &crate::types::ChatMessage) -> bool {
 
 fn display_row(msg: &crate::types::ChatMessage) -> String {
     if let (Some(a), Some((hash, name, _size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
-        if name.as_str() != "call.audio" {
+        if name.as_str() != "wave.audio" {
             if a.kind.is_image() {
                 let has_visual = crate::types::parse_micro_image(&msg.preview).is_some() || a.preview_hash.is_some() || crate::storage::blob_present_or_pending(&hash);
                 return if has_visual { String::new() } else { "\u{2026}".to_string() };
@@ -788,10 +788,10 @@ fn display_content(content: &str) -> String {
     if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
         let size_str = crate::types::size_label(size);
         let held = crate::storage::blob_present_or_pending(&hash);
-        if name == "call.audio" {
-            // A kept call recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
+        if name == "wave.audio" {
+            // A kept wave recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
             //  - ▶ (U+25B6) replaces the paperclip: 📎 (U+1F4CE) has no glyph in the bubble font and rendered as a tofu rectangle; ▶ IS covered (the Ended panel's Play button uses it).
-            //  - the size renders in DOZENAL (fmt_num honours the fleet toggle) now that the toggle exists — the row is drawn in Oxanium (see the call.audio font switch in render.rs) so the dozenal control-byte glyphs resolve instead of tofu-ing.
+            //  - the size renders in DOZENAL (fmt_num honours the fleet toggle) now that the toggle exists — the row is drawn in Oxanium (see the wave.audio font switch in render.rs) so the dozenal control-byte glyphs resolve instead of tofu-ing.
             tr(Msg::RecordingBubble { size: &size_str, fetching: !held }).into_owned()
         } else {
             // Files keep the paperclip + DECIMAL size in the default bubble font (see the FileBubble arm's comment in en.rs).
@@ -813,7 +813,7 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
         return false;
     }
     // A kept recording FOLDS into its wave row's card (RefKind::Wave → offer_osc+1); it draws standalone only when the wave row never reached this device.
-    let is_recording = crate::types::is_call_recording(&m.content);
+    let is_recording = crate::types::is_wave_recording(&m.content);
     if let Some((crate::types::RefKind::Wave, t)) = m.reference {
         if raw.iter().any(|x| x.timestamp == t && x.wave.is_some() && !x.deleted) {
             return false;
@@ -1583,16 +1583,16 @@ pub struct PhotonApp {
     tick_stat_dirty: u32,
     /// Per-section tick cost since the last report (label, summed ms) — the idle screen's 3 ms tick on a phone (2026-09-10) had to be named section by section.
     tick_prof: Vec<(&'static str, f32)>,
-    /// Express frames opened recently, by nonce — the replay guard's memory (bounded; oldest dropped in blocks). See call_ui::drain_express_signals.
+    /// Express frames opened recently, by nonce — the replay guard's memory (bounded; oldest dropped in blocks). See wave_ui::drain_express_signals.
     express_seen: Vec<[u8; 24]>,
     /// Android keep hold: +1 = a keep transcode started (hold a partial wake lock), −1 = it finished (release), 0 = nothing; polled by Kotlin each frame like the session broadcast.
     pub pending_keep_hold: i8,
     /// A wave just started with no reachable address for this device: the next tick pushes our record to it and sweeps presence (set from the engine-start path, which holds only &self).
-    call_needs_addresses: std::cell::Cell<Option<[u8; 32]>>,
+    wave_needs_addresses: std::cell::Cell<Option<[u8; 32]>>,
     /// The resume's vault-open worker: (its channel, the remembered session, the boot instant). Some while the open is in flight; the tick polls it and finishes the resume when the handle lands.
     resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, tohu::SessionIdentity, std::time::Instant)>,
-    /// The last frame the ACTIVE call screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "call screen should update at most every second").
-    last_call_redraw: Option<std::time::Instant>,
+    /// The last frame the ACTIVE wave screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "wave screen should update at most every second").
+    last_wave_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight: content hash → (conversation contact index, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
     attach_fetch_inflight: std::collections::HashMap<[u8; 32], (usize, std::time::Instant, u8)>,
     /// Blob requests served lately, by (requesting device, hash) — a second copy of the same ask within ten seconds is not served again (status.rs AttachReqReceived).
@@ -1713,35 +1713,35 @@ pub struct PhotonApp {
     fleet_focus_claim: Option<([u8; 32], [u8; 32], i64)>,
     /// Fleet ATTENTION holder (2026-08-18): the device with the human's newest input, (device_pubkey, osc), LWW by osc with device-byte tie-break, Lamport-bumped at the sender so local input supersedes any clock skew. `None` = bootstrap/single-device — every gate defaults to legacy behavior. Frames flow only on the transition edge (a NON-holder receives qualifying input), so the fleet is silent while the human stays put. Both ding-suppression gates require holding attention: a parked-but-focused screen must not silently discharge alert duty while the human is demonstrably at another device. RAM-only; dies with the session. Mutate ONLY thru set_fleet_attention (it mirrors the desktop banner-gate atomic).
     fleet_attention: Option<([u8; 32], i64)>,
-    /// The one live call (docs/calls.md) — None = no call. Singular by design (v1); a second inbound offer gets an automatic Busy.
-    active_call: Option<crate::call::ActiveCall>,
-    /// Call overlay controls — retained fluor Buttons (no hand-rolled pills). Painted front-first on EVERY screen (a ring must be answerable from wherever the user is — docs/calls.md); registered cross-screen in `visit_app_widgets` so hover/press/dispatch ride the same walk as every other Button. `call_status_btn` is a non-interactive label chip (full-brightness, never in the walk, never stamped). `call_start_btn` = ☎ Call (conversation, no live call); `call_action_btn` = Answer / Hang up / Keep (phase decides the verb); `call_decline_btn` = Decline / Delete (ringing/ended only).
-    call_status_btn: Option<Button>,
-    call_start_btn: Option<Button>,
+    /// The one live wave (docs/waves.md) — None = no wave. Singular by design (v1); a second inbound offer gets an automatic Busy.
+    active_wave: Option<crate::wave::ActiveWave>,
+    /// Wave overlay controls — retained fluor Buttons (no hand-rolled pills). Painted front-first on EVERY screen (a ring must be answerable from wherever the user is — docs/waves.md); registered cross-screen in `visit_app_widgets` so hover/press/dispatch ride the same walk as every other Button. `wave_status_btn` is a non-interactive label chip (full-brightness, never in the walk, never stamped). `wave_start_btn` = ☎ Wave (conversation, no live wave); `wave_action_btn` = Answer / Hang up / Keep (phase decides the verb); `wave_decline_btn` = Decline / Delete (ringing/ended only).
+    wave_status_btn: Option<Button>,
+    wave_start_btn: Option<Button>,
     /// Beam (video) — a stub button, rendered disabled beside the Wave button until video lands. Never dispatches.
-    call_beam_btn: Option<Button>,
-    /// Reject — the silent dismissal on the ring panel (no signal to the caller; the wave row's Rejected outcome stops every sibling's ring on merge).
-    call_reject_btn: Option<Button>,
-    /// Beam back / Beam toggle — the ring panel's video answer and the active panel's video switch, both STUBS rendered disabled until video lands (Nick 2026-09-09: choose audio-only while they beam, switchable in-call). Never dispatches.
-    call_beam_back_btn: Option<Button>,
-    call_action_btn: Option<Button>,
-    call_decline_btn: Option<Button>,
-    /// In-call full-screen (Active) controls — same retained-Button pattern as the four above. `call_speaker_btn` = the route pill (Android: label = the playing device, tap cycles thru the available outputs); `call_addhandle_btn` = add-a-handle (stubbed no-op); `call_back_btn` = minimize ("back to contact"). (The Ended keep/delete panel + its play button died with record-by-default, 2026-09-08 — playback lives on the recording bubble.)
-    call_speaker_btn: Option<Button>,
-    call_addhandle_btn: Option<Button>,
-    call_back_btn: Option<Button>,
-    /// The Active call is minimized to a strip (Phase 3) / compact bar — the full-screen call panel yields to the screen underneath so messaging + navigation stay live. Reset on every phase start and forced false on Ringing/Ended (always full-screen).
-    call_minimized: bool,
-    /// Live recording-playback handle (end-screen preview + history rows). Held so the worker keeps running (dropping the handle stops it); a new play or a starting call replaces/stops it.
-    call_playback: Option<crate::call::playback::PlaybackHandle>,
+    beam_btn: Option<Button>,
+    /// Reject — the silent dismissal on the ring panel (no signal to the origin; the wave row's Rejected outcome stops every sibling's ring on merge).
+    wave_reject_btn: Option<Button>,
+    /// Beam back / Beam toggle — the ring panel's video answer and the active panel's video switch, both STUBS rendered disabled until video lands (Nick 2026-09-09: choose audio-only while they beam, switchable in-wave). Never dispatches.
+    beam_back_btn: Option<Button>,
+    wave_action_btn: Option<Button>,
+    wave_decline_btn: Option<Button>,
+    /// In-wave full-screen (Active) controls — same retained-Button pattern as the four above. `wave_speaker_btn` = the route pill (Android: label = the playing device, tap cycles thru the available outputs); `wave_addhandle_btn` = add-a-handle (stubbed no-op); `wave_back_btn` = minimize ("back to contact"). (The Ended keep/delete panel + its play button died with record-by-default, 2026-09-08 — playback lives on the recording bubble.)
+    wave_speaker_btn: Option<Button>,
+    wave_addhandle_btn: Option<Button>,
+    wave_back_btn: Option<Button>,
+    /// The Active wave is minimized to a strip (Phase 3) / compact bar — the full-screen wave panel yields to the screen underneath so messaging + navigation stay live. Reset on every phase start and forced false on Ringing/Ended (always full-screen).
+    wave_minimized: bool,
+    /// Live recording-playback handle (end-screen preview + history rows). Held so the worker keeps running (dropping the handle stops it); a new play or a starting wave replaces/stops it.
+    wave_playback: Option<crate::wave::playback::PlaybackHandle>,
     /// Which kept-recording blob the live playback belongs to — so its conversation bubble renders ■ + progress and a re-tap stops IT (not restart). None when nothing plays.
-    call_playback_hash: Option<[u8; 32]>,
+    wave_playback_hash: Option<[u8; 32]>,
     /// The conversation stream filter (top-bar pill). Session state.
     conv_filter: ChatFilter,
-    /// Calls this fleet REJECTED (silent dismissal): by call id (this device's own ring) and by offer stamp (a sibling's reject learned thru the wave row before or after this device's ring started). A re-expressed offer for either never rings. Session-local; a rejected call is over long before a relaunch.
-    rejected_calls: std::collections::HashSet<[u8; 16]>,
-    /// Call ids this device has ENDED (answered, hung up, dropped, missed): an offer for one of them is a late copy, not a ring (field 2026-09-11 23:34, the ghost ring — a relay pipe reconnected and delivered the original dial's offer beats half a minute after the wave had ended; each beat is a distinct nonce and the clocks sat inside the stamp window).
-    ended_calls: std::collections::HashSet<[u8; 16]>,
+    /// Waves this fleet REJECTED (silent dismissal): by wave id (this device's own ring) and by offer stamp (a sibling's reject learned thru the wave row before or after this device's ring started). A re-expressed offer for either never rings. Session-local; a rejected wave is over long before a relaunch.
+    rejected_waves: std::collections::HashSet<[u8; 16]>,
+    /// Wave ids this device has ENDED (answered, hung up, dropped, missed): an offer for one of them is a late copy, not a ring (field 2026-09-11 23:34, the ghost ring — a relay pipe reconnected and delivered the original dial's offer beats half a minute after the wave had ended; each beat is a distinct nonce and the clocks sat inside the stamp window).
+    ended_waves: std::collections::HashSet<[u8; 16]>,
     rejected_offers: std::collections::HashSet<i64>,
     /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
     strip_dismissed: Option<(usize, i64, bool)>,
@@ -2106,10 +2106,10 @@ pub struct PhotonApp {
     settings_custodian_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page global chime on/off — a custom `Checkbox`.
     settings_chime_check: Option<fluor::widgets::Checkbox>,
-    /// Notifications: vibrate on new message (`notify.vibrate_msg`) + the call pair (`notify.ring_call` / `notify.vibrate_call`). Persisted fleet-wide; enforcement is the alert paths' to honor (Android vibration rides Kotlin — follow-up).
+    /// Notifications: vibrate on new message (`notify.vibrate_msg`) + the wave pair (`notify.ring_wave` / `notify.vibrate_wave`). Persisted fleet-wide; enforcement is the alert paths' to honor (Android vibration rides Kotlin — follow-up).
     settings_vibrate_msg_check: Option<fluor::widgets::Checkbox>,
-    settings_ring_call_check: Option<fluor::widgets::Checkbox>,
-    settings_vibrate_call_check: Option<fluor::widgets::Checkbox>,
+    settings_ring_wave_check: Option<fluor::widgets::Checkbox>,
+    settings_vibrate_wave_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page presence-visibility toggle — a custom `Checkbox`.
     settings_presence_check: Option<fluor::widgets::Checkbox>,
     /// Updates-page auto-update on/off — a custom `Checkbox`.
@@ -2121,8 +2121,8 @@ pub struct PhotonApp {
     /// Wave-page "Try raw audio beyond the local network" (`waves.plaid_wan`, linked, default ON).
     settings_plaid_wan_check: Option<fluor::widgets::Checkbox>,
     /// The measure-now ritual in flight (the Wave page shows "listening…" while Some) and its last verdict.
-    wave_measure_rx: Option<std::sync::mpsc::Receiver<crate::call::measure::MeasureResult>>,
-    wave_measured: Option<crate::call::measure::MeasureResult>,
+    wave_measure_rx: Option<std::sync::mpsc::Receiver<crate::wave::measure::MeasureResult>>,
+    wave_measured: Option<crate::wave::measure::MeasureResult>,
     /// The Wave page's profile list (mic, voiced, floor, n) — refreshed on page entry, forget, and a measure verdict (the render holds the chrome borrow, so it reads a snapshot).
     wave_profiles: Vec<(String, f32, f32, u32)>,
     /// The live value of `waves.hold` for the merge path.
@@ -2217,10 +2217,10 @@ pub struct PhotonApp {
     /// Self-update state (docs/updates.md): off-thread check/apply results drain here. tx kept so both channel checks + an apply share ONE receiver.
     update_rx: Option<std::sync::mpsc::Receiver<UpdateEvent>>,
     update_tx: Option<std::sync::mpsc::Sender<UpdateEvent>>,
-    /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `call.audio` row mint. Lazily created on first keep (see `call_keep_sender`).
-    call_keep_rx: Option<std::sync::mpsc::Receiver<call_ui::CallKeepResult>>,
+    /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `wave.audio` row mint. Lazily created on first keep (see `wave_keep_sender`).
+    wave_keep_rx: Option<std::sync::mpsc::Receiver<wave_ui::WaveKeepResult>>,
     /// Wave-card envelopes by SOURCE hash: an env blob's hash maps to a one-entry vec (that party's tensor); a recording's hash maps to the audio-derived per-channel vec. None = the load/parse failed (a durable miss, not a respawn loop). Session cache.
-    wave_env: std::collections::HashMap<[u8; 32], Option<Vec<std::sync::Arc<crate::call::wave_env::WaveEnv>>>>,
+    wave_env: std::collections::HashMap<[u8; 32], Option<Vec<std::sync::Arc<crate::wave::wave_env::WaveEnv>>>>,
     /// Loads in flight (one per hash).
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
     /// Far-party env blobs seen but not held: (ci, hash) queued by the render, fetched once per session by drain_wave_env_wants.
@@ -2229,9 +2229,9 @@ pub struct PhotonApp {
     wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
     /// The playing music pigeon, if any (desktop; Android stubs until music routes thru its audio engine).
     music_play: Option<music_play::MusicPlay>,
-    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,
-    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<crate::call::wave_env::WaveEnv>>)>>,
-    call_keep_tx: Option<std::sync::mpsc::Sender<call_ui::CallKeepResult>>,
+    wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<crate::wave::wave_env::WaveEnv>>)>>,
+    wave_env_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<Vec<crate::wave::wave_env::WaveEnv>>)>>,
+    wave_keep_tx: Option<std::sync::mpsc::Sender<wave_ui::WaveKeepResult>>,
     /// Per-channel manifest state, populated by the auto-check on each Updates-page open — drives each button's label (target version, dozenal), colour, and enabled-ness.
     update_release: ChannelCheck,
     update_dev: ChannelCheck,
@@ -2264,7 +2264,7 @@ pub struct PhotonApp {
     pub pending_clipboard_copy: Option<String>,
     /// OFF-GRID add-a-friend (docs/offgrid.md open house): the typed handle + its derived handle_proof, armed by an add submitted while the registry is unreachable. The pt_disc beacon that matches this proof CREATES the contact (device key + address from the beacon) — the registry's job, done by proximity. Cleared on match or on leaving the flow.
     pub pending_woods_add: Option<(String, [u8; 32])>,
-    /// Ring-panel avatar cache: the caller's avatar (or gradient) pre-scaled to the full-screen panel diameter — the list-size `avatar_scaled` is far too small to blit large. (diameter, pixels); rebuilt when the panel diameter changes, dropped when no call is ringing.
+    /// Ring-panel avatar cache: the origin's avatar (or gradient) pre-scaled to the full-screen panel diameter — the list-size `avatar_scaled` is far too small to blit large. (diameter, pixels); rebuilt when the panel diameter changes, dropped when no wave is ringing.
     pub ring_avatar_scaled: Option<(usize, Vec<u8>)>,
     /// The off-thread handle_proof derivation for the pending woods add (the ~1s memory-hard PoW never runs on the UI thread).
     pub woods_add_rx: Option<std::sync::mpsc::Receiver<(String, [u8; 32])>>,
@@ -2290,10 +2290,10 @@ pub struct PhotonApp {
     fleet_approve_armed: Option<[u8; 32]>,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
-    /// call_ids THIS device dialed this session — the license for the stray-answer loud-kill (call_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
-    dialed_call_ids: std::collections::HashSet<[u8; 16]>,
-    /// Fleet call-presence chip: a wave is running on ANOTHER of our devices — `(call_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
-    fleet_call_elsewhere: Option<([u8; 16], Option<[u8; 32]>, [u8; 32])>,
+    /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
+    dialed_wave_ids: std::collections::HashSet<[u8; 16]>,
+    /// Fleet wave-presence chip: a wave is running on ANOTHER of our devices — `(wave_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
+    fleet_wave_elsewhere: Option<([u8; 16], Option<[u8; 32]>, [u8; 32])>,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
     about_version_spelled: bool,
     /// One tap on the version reveals the dozenal index; ONE tap within the index reveals the custodian riddle easter egg beneath it (session-permanent once found, hidden with the index when the version collapses).
@@ -2556,9 +2556,9 @@ impl PhotonApp {
             tick_prof: Vec::new(),
             last_keygen_pickup: None,
             pending_keep_hold: 0,
-            call_needs_addresses: std::cell::Cell::new(None),
+            wave_needs_addresses: std::cell::Cell::new(None),
             resume_vault_rx: None,
-            last_call_redraw: None,
+            last_wave_redraw: None,
             attach_fetch_inflight: std::collections::HashMap::new(),
             attach_served_recent: std::collections::HashMap::new(),
             express_seen: Vec::new(),
@@ -2612,23 +2612,23 @@ impl PhotonApp {
             fleet_epoch_prev: None,
             fleet_focus_claim: None,
             fleet_attention: None,
-            active_call: None,
-            call_status_btn: None,
-            call_start_btn: None,
-            call_beam_btn: None,
-            call_beam_back_btn: None,
-            call_reject_btn: None,
-            call_action_btn: None,
-            call_decline_btn: None,
-            call_speaker_btn: None,
-            call_addhandle_btn: None,
-            call_back_btn: None,
-            call_minimized: false,
-            call_playback: None,
-            call_playback_hash: None,
+            active_wave: None,
+            wave_status_btn: None,
+            wave_start_btn: None,
+            beam_btn: None,
+            beam_back_btn: None,
+            wave_reject_btn: None,
+            wave_action_btn: None,
+            wave_decline_btn: None,
+            wave_speaker_btn: None,
+            wave_addhandle_btn: None,
+            wave_back_btn: None,
+            wave_minimized: false,
+            wave_playback: None,
+            wave_playback_hash: None,
             conv_filter: ChatFilter::All,
-            rejected_calls: std::collections::HashSet::new(),
-            ended_calls: std::collections::HashSet::new(),
+            rejected_waves: std::collections::HashSet::new(),
+            ended_waves: std::collections::HashSet::new(),
             rejected_offers: std::collections::HashSet::new(),
             strip_dismissed: None,
             conv_filter_hit: HIT_NONE,
@@ -2780,8 +2780,8 @@ impl PhotonApp {
             settings_custodian_check: None,
             settings_chime_check: None,
             settings_vibrate_msg_check: None,
-            settings_ring_call_check: None,
-            settings_vibrate_call_check: None,
+            settings_ring_wave_check: None,
+            settings_vibrate_wave_check: None,
             settings_presence_check: None,
             settings_autoupdate_check: None,
             settings_hardlogs_check: None,
@@ -2823,7 +2823,7 @@ impl PhotonApp {
             pending_lock: None,
             update_rx: None,
             update_tx: None,
-            call_keep_rx: None,
+            wave_keep_rx: None,
             wave_env: std::collections::HashMap::new(),
             wave_env_wants: Vec::new(),
             music_play: None,
@@ -2831,7 +2831,7 @@ impl PhotonApp {
             wave_env_pending: std::collections::HashSet::new(),
             wave_env_tx: None,
             wave_env_rx: None,
-            call_keep_tx: None,
+            wave_keep_tx: None,
             update_release: ChannelCheck::Idle,
             update_dev: ChannelCheck::Idle,
             update_notes: None,
@@ -2863,8 +2863,8 @@ impl PhotonApp {
             depart_words_entry: None,
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
-            dialed_call_ids: Default::default(),
-            fleet_call_elsewhere: None,
+            dialed_wave_ids: Default::default(),
+            fleet_wave_elsewhere: None,
             signing_bundle: None,
             about_version_spelled: false,
             about_riddle_revealed: false,
@@ -3297,33 +3297,33 @@ impl Container for PhotonApp {
 impl PhotonApp {
     /// Every APP widget (NOT chrome) active on the current screen, yielded to `f` — the single per-widget registry (see [`Container::visit`]). Screen-gated: an off-screen widget is neither dispatched to, tab-focusable, hover-lit, nor damage-claimed. An inherent method (not part of `Container`) so hover/damage passes can call it directly.
     fn visit_app_widgets(&mut self, f: &mut dyn FnMut(&mut dyn Widget)) {
-        // Call controls ride EVERY screen (a ring must be answerable from wherever the user is — docs/calls.md), so they're yielded BEFORE the per-state matches — hover/press/dispatch/apply_pressed/overlay-tint all walk this one registry. The status chip is NOT yielded (non-interactive label). Visibility mirrors the render gate exactly: a live call yields the action (+ decline in ringing/ended); an open callable conversation with no call yields the ☎ start pill. A dimmed (not-yet-reachable) start pill is drawn but withheld here so a dead tap can't dispatch.
-        if let Some(phase) = self.active_call.as_ref().map(|c| c.phase) {
-            use crate::call::CallPhase;
-            // The action button is live in EVERY phase (Answer / End call / Hang up / Keep).
-            if let Some(b) = self.call_action_btn.as_mut() {
+        // Wave controls ride EVERY screen (a ring must be answerable from wherever the user is — docs/waves.md), so they're yielded BEFORE the per-state matches — hover/press/dispatch/apply_pressed/overlay-tint all walk this one registry. The status chip is NOT yielded (non-interactive label). Visibility mirrors the render gate exactly: a live wave yields the action (+ decline in ringing/ended); an open callable conversation with no wave yields the ☎ start pill. A dimmed (not-yet-reachable) start pill is drawn but withheld here so a dead tap can't dispatch.
+        if let Some(phase) = self.active_wave.as_ref().map(|c| c.phase) {
+            use crate::wave::WavePhase;
+            // The action button is live in EVERY phase (Answer / End wave / Hang up / Keep).
+            if let Some(b) = self.wave_action_btn.as_mut() {
                 f(b);
             }
             match phase {
-                CallPhase::Ringing => {
-                    if let Some(b) = self.call_decline_btn.as_mut() {
+                WavePhase::Ringing => {
+                    if let Some(b) = self.wave_decline_btn.as_mut() {
                         f(b);
                     }
-                    if let Some(b) = self.call_reject_btn.as_mut() {
+                    if let Some(b) = self.wave_reject_btn.as_mut() {
                         f(b);
                     }
                 }
-                // Active full-screen in-call controls; a minimized Active call yields only the action (the strip / compact bar's End).
-                CallPhase::Active if !self.call_minimized => {
+                // Active full-screen in-wave controls; a minimized Active wave yields only the action (the strip / compact bar's End).
+                WavePhase::Active if !self.wave_minimized => {
                     // The route pill (Android): cycle the wave's output among the available devices.
                     #[cfg(target_os = "android")]
-                    if let Some(b) = self.call_speaker_btn.as_mut() {
+                    if let Some(b) = self.wave_speaker_btn.as_mut() {
                         f(b);
                     }
-                    if let Some(b) = self.call_addhandle_btn.as_mut() {
+                    if let Some(b) = self.wave_addhandle_btn.as_mut() {
                         f(b);
                     }
-                    if let Some(b) = self.call_back_btn.as_mut() {
+                    if let Some(b) = self.wave_back_btn.as_mut() {
                         f(b);
                     }
                 }
@@ -3337,11 +3337,11 @@ impl PhotonApp {
                     !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
                 });
             if callable {
-                if let Some(b) = self.call_start_btn.as_mut() {
+                if let Some(b) = self.wave_start_btn.as_mut() {
                     f(b);
                 }
                 // The Beam stub joins the walk for hover/disabled tint only — it's permanently disabled, so it never dispatches.
-                if let Some(b) = self.call_beam_btn.as_mut() {
+                if let Some(b) = self.beam_btn.as_mut() {
                     f(b);
                 }
             }
@@ -3459,10 +3459,10 @@ impl PhotonApp {
                 }
                 // The wave toggles moved home to the Wave page (Nick 2026-09-16).
                 SettingsPage::Wave => {
-                    if let Some(cb) = self.settings_ring_call_check.as_mut() {
+                    if let Some(cb) = self.settings_ring_wave_check.as_mut() {
                         f(cb);
                     }
-                    if let Some(cb) = self.settings_vibrate_call_check.as_mut() {
+                    if let Some(cb) = self.settings_vibrate_wave_check.as_mut() {
                         f(cb);
                     }
                     if let Some(cb) = self.settings_wave_hold_check.as_mut() {
@@ -3821,7 +3821,7 @@ pub(crate) fn contact_conn_tier(c: &crate::types::Contact) -> ConnTier {
 
 /// Presence-ring tier (user spec, VSF-authored in theme.rs): cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only, grey = offline. LAN = the validated direct path is a private / link-local / ULA address; a same-site GLOBAL v6 path (e.g. two phones on one home /64) still reads green — refining that needs a same-prefix check against our own addresses, later.
 pub(crate) fn ring_tier_colour(c: &crate::types::Contact, has_remote: bool) -> u32 {
-    // Zero-remote rows must come thru row_ring_tier (the sibling fold); a direct call with has_remote=false is the single-device degenerate answer.
+    // Zero-remote rows must come thru row_ring_tier (the sibling fold); a direct fold with has_remote=false is the single-device degenerate answer.
     let tier = if has_remote {
         contact_conn_tier(c)
     } else {
@@ -4017,7 +4017,7 @@ fn human_bytes(n: u64) -> String {
     }
 }
 
-/// The About slab band offsets, in slab units (attest proportions, wave doubled to 12u per Nick's call): air 0..0.75, wave 0.75..12.75, wordmark 10.75..14.25 (overlapping the wave's bottom by 2u). ONE set of constants for the bg-pass bands AND the card's cursor advance — the "killswitch ready is higher than the Photon text" overlap (2026-09-02) was exactly these numbers living in two places and only one getting the wave-doubling edit.
+/// The About slab band offsets, in slab units (attest proportions, wave doubled to 12u per Nick's ruling): air 0..0.75, wave 0.75..12.75, wordmark 10.75..14.25 (overlapping the wave's bottom by 2u). ONE set of constants for the bg-pass bands AND the card's cursor advance — the "killswitch ready is higher than the Photon text" overlap (2026-09-02) was exactly these numbers living in two places and only one getting the wave-doubling edit.
 pub(super) const ABOUT_SLAB_AIR: f32 = 0.75;
 pub(super) const ABOUT_SLAB_WAVE_H: f32 = 12.0;
 pub(super) const ABOUT_SLAB_LOGO_TOP: f32 = ABOUT_SLAB_AIR + ABOUT_SLAB_WAVE_H - 2.0;

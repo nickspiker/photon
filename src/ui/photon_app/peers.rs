@@ -116,7 +116,7 @@ impl PhotonApp {
             return; // the address-change edge without an address: nothing new to say yet
         }
         // Who is wrong right now: the wave's peer device first, then anyone whose pin points at where we no longer are.
-        let mut targets: Vec<[u8; 32]> = self.active_call.as_ref().and_then(|c| c.peer_device).into_iter().collect();
+        let mut targets: Vec<[u8; 32]> = self.active_wave.as_ref().and_then(|c| c.peer_device).into_iter().collect();
         for c in self.contacts.iter().filter(|c| c.validated_path.is_some()) {
             if let Some(d) = c.device_key() {
                 if !targets.contains(&d) {

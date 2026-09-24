@@ -532,20 +532,20 @@ All communication is direct peer-to-peer UDP:
 - IP changes drop connection (explicit reconnect required)
 - Seeds to find initial peers are hardcoded into client
 
-### 6.1 Optional FGTW Call Forwarding
+### 6.1 Optional FGTW Path Forwarding
 
 **User consent required. Off by default.**
 
 ```
 Settings:
-  ☐ Allow call forwarding
-    Use FGTW signaling for invisible IP changes during calls.
-    Prevents dropped calls when switching networks.
+  ☐ Allow path forwarding
+    Use FGTW signaling for invisible IP changes mid-wave.
+    Prevents dropped waves when switching networks.
 
     Metadata shared with FGTW:
     - Your IP address when it changes
     - Eagle Timestamp of IP changes
-    - Device pubkeys of all parties in call
+    - Device pubkeys of all parties in the wave
 
     FGTW cannot:
     - Read message content (rolling chain encrypted)
@@ -578,7 +578,7 @@ fn handle_ip_change(
 
     // 2. FGTW broadcasts to all peers in registry
     // 3. Peers update UDP destination
-    // 4. Call continues
+    // 4. The wave continues
 
     // Total interruption: <16ms (sub-frame)
 }
@@ -587,7 +587,7 @@ fn handle_ip_change(
 **Why device identity, not handle:**
 - A user may have multiple devices in the same conversation
 - Each device has a unique IP address
-- FGTW broadcasts to all devices in the call registry
+- FGTW broadcasts to all devices in the wave registry
 - Device pubkey from HAC-KDF is already unique per-device
 
 **FGTW Worker (edge.fgtw.org):**
@@ -599,7 +599,7 @@ async fn handle_ip_update(req: Request, env: Env) -> Result<Response> {
     let update: IpUpdate = req.json().await?;
     verify_device_signature(&update)?;
 
-    // 1. Get all devices in this call registry
+    // 1. Get all devices in this wave registry
     let registry_key = &update.ceremony_id;
     let devices: Vec<DeviceEntry> = env.kv("CALL_REGISTRY")
         .get(registry_key)
@@ -625,11 +625,11 @@ async fn handle_ip_update(req: Request, env: Env) -> Result<Response> {
 ```
 
 **Security properties:**
-- FGTW learns: Which devices are in call, their IPs, timing
+- FGTW learns: Which devices are in the wave, their IPs, timing
 - FGTW cannot: Read content, impersonate devices, link device to user
 - Device pubkeys are ephemeral per-Clutch (not persistent identity)
 - User explicitly consents to metadata tradeoff
-- Fallback: If FGTW unavailable, call drops (same as default behavior)
+- Fallback: If FGTW unavailable, the wave drops (same as default behavior)
 
 ---
 
@@ -758,7 +758,7 @@ An attacker must compromise **ALL** of:
 
 **In Development:**
 - 🚧 Friendship-based ceremony chains (friendship.rs scaffolded)
-- 🚧 FGTW call forwarding (optional, requires consent)
+- 🚧 FGTW path forwarding (optional, requires consent)
 
 **Future:**
 - ⏳ ferros OS integration

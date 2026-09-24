@@ -3994,7 +3994,7 @@ mod pong_seal_tests {
     }
 
     #[test]
-    fn about_is_disclosed_only_when_the_caller_grants_it() {
+    fn about_is_disclosed_only_when_the_origin_grants_it() {
         // The disclosure policy (Nick 2026-08-31): About is fleet-internal. The builder writes `abt` iff the caller passed Some — a friend-bound tail (None) carries NO about field at all, and the sealed blob must not even contain the string.
         let key = [0x24u8; 32];
         let about = "v0.70.12 \u{b7} deadbeef1234 \u{b7} linux x86_64";

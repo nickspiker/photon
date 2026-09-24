@@ -1,8 +1,8 @@
-//! Voice calls (docs/calls.md) — 1:1, fleet-native, wire-invisible.
+//! Waves (docs/waves.md) — 1:1, fleet-native, wire-invisible.
 //!
-//! The three planes: SIGNALING rides the friendship lanes as encrypted control rows (a call is indistinguishable from a message on the wire — no relay ever learns a call happened); MEDIA is an ephemeral UDP plane under a basket-derived key ([`keys`]); HISTORY is ordinary rows (missed/completed/duration) plus the optional kept recording on the attachment plane.
+//! The three planes: SIGNALING rides the friendship lanes as encrypted control rows (a wave is indistinguishable from a message on the wire — no relay ever learns a wave happened); MEDIA is an ephemeral UDP plane under a basket-derived key ([`keys`]); HISTORY is ordinary rows (missed/completed/duration) plus the optional kept recording on the attachment plane.
 //!
-//! No timers anywhere: ringing stops on answer/decline/hangup edges, the caller's patience is the timeout, and the intra-call key ratchet steps on packet COUNT, not clocks.
+//! No timers anywhere: ringing stops on answer/decline/hangup edges, the origin's patience is the timeout, and the intra-wave key ratchet steps on packet COUNT, not clocks.
 
 pub mod calibrate;
 pub mod qgain;
@@ -24,10 +24,10 @@ pub mod signal;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
-/// The media ingress sink: installed by the call engine at call start, cleared at teardown. The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. `None` (no live call) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
+/// The media ingress sink: installed by the wave engine at wave start, cleared at teardown. The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. `None` (no live wave) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
 static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>>> = Mutex::new(None);
 
-/// True exactly while a call engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
+/// True exactly while a wave engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
 pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Sink generation: each install bumps it; an engine clears only the generation it installed (a drained engine exiting seconds after hangup must not tear down the next wave's sink).
@@ -100,9 +100,9 @@ pub fn send_media(bytes: Vec<u8>, addr: SocketAddr) -> bool {
     }
 }
 
-/// Where a call stands. The phases are edges, not timers: Outgoing ends on answer/decline/busy or OUR hangup (the caller's patience is the timeout); Ringing ends on local answer/decline, a sibling's answer, or the caller's hangup; Active ends on either side's hangup.
+/// Where a wave stands. The phases are edges, not timers: Outgoing ends on answer/decline/busy or OUR hangup (the origin's patience is the timeout); Ringing ends on local answer/decline, a sibling's answer, or the origin's hangup; Active ends on either side's hangup.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CallPhase {
+pub enum WavePhase {
     /// We sent the offer; nothing answered yet.
     Outgoing,
     /// Their offer reached us; we are ringing.
@@ -114,7 +114,7 @@ pub enum CallPhase {
 /// Live wave playback runs this many stops below full scale (1 stop = x2 amplitude = one bit-shift): the headset default while the speaker toggle is parked (Nick 2026-09-03, field waves 1-2 — the loudspeaker at max media volume ran ~2.5 stops hot). Shared so the ringback lands at the SAME loudness as the conversation that follows it.
 pub const OUTPUT_PAD_STOPS: u32 = 4;
 
-/// Silences the desktop ring loop when dropped (or explicitly). The loop thread replays the relationship ring cadence (`chirp::Chirp::ring_from_hash`) until this flag flips; holding the guard inside [`ActiveCall`] makes every teardown edge — decline, sibling answer, caller hangup, call overwrite — a ring-stop edge for free, honoring the no-timers rule (the flag IS an edge).
+/// Silences the desktop ring loop when dropped (or explicitly). The loop thread replays the relationship ring cadence (`chirp::Chirp::ring_from_hash`) until this flag flips; holding the guard inside [`ActiveWave`] makes every teardown edge — decline, sibling answer, origin hangup, wave overwrite — a ring-stop edge for free, honoring the no-timers rule (the flag IS an edge).
 pub struct RingGuard(pub std::sync::Arc<std::sync::atomic::AtomicBool>);
 
 impl Drop for RingGuard {
@@ -123,24 +123,24 @@ impl Drop for RingGuard {
     }
 }
 
-/// The one live call (v1: singular — a second inbound offer during any phase gets an automatic `Busy`).
-pub struct ActiveCall {
-    pub call_id: [u8; 16],
+/// The one live wave (v1: singular — a second inbound offer during any phase gets an automatic `Busy`).
+pub struct ActiveWave {
+    pub wave_id: [u8; 16],
     /// The friend on the other end (their handle hash — the contact key).
     pub peer_handle_hash: [u8; 32],
-    pub we_are_caller: bool,
-    pub phase: CallPhase,
+    pub we_are_origin: bool,
+    pub phase: WavePhase,
     /// Eagle osc at the current phase's start (answer re-stamps it — the duration base).
     pub phase_osc: i64,
-    /// Eagle osc frozen at the Active→Ended edge, so the end-screen call-duration summary doesn't keep growing while the Keep/Delete decision is open. `None` until hangup. A single stamp at the end edge — no timer.
+    /// Eagle osc frozen at the Active→Ended edge, so the end-screen wave-duration summary doesn't keep growing while the Keep/Delete decision is open. `None` until hangup. A single stamp at the end edge — no timer.
     pub final_osc: Option<i64>,
     /// The offer row's eagle stamp — identical on BOTH fleets (it's the row's wire timestamp), so summary rows minted independently at offer_osc+1 dedup across every device.
     pub offer_osc: i64,
-    pub caller_nonce: [u8; 32],
-    pub callee_nonce: Option<[u8; 32]>,
-    /// The lane key the offer row was sealed under — the doomed egg (keys.rs). Captured at the send COMMIT (caller, via drain_braid_tx matching the offer content) or at decrypt (callee, pre-advance).
+    pub origin_nonce: [u8; 32],
+    pub answer_nonce: Option<[u8; 32]>,
+    /// The lane key the offer row was sealed under — the doomed egg (keys.rs). Captured at the send COMMIT (origin, via drain_braid_tx matching the offer content) or at decrypt (answerer, pre-advance).
     pub offer_lane_key: Option<[u8; 32]>,
-    /// The basket-derived call secret, once both nonces exist. The media engine builds its StepChains from this; teardown drops it (RAM only, never persisted).
+    /// The basket-derived wave secret, once both nonces exist. The media engine builds its StepChains from this; teardown drops it (RAM only, never persisted).
     pub secret: Option<[u8; 32]>,
     /// The running media engine (Active phase). Teardown = explicit `stop()` — the thread zeroizes its chains and releases audio on exit.
     pub engine: Option<engine::EngineHandle>,
@@ -148,21 +148,21 @@ pub struct ActiveCall {
     pub spool: Option<spool::SpoolTicket>,
     /// Desktop ring-loop stopper (Ringing phase only; `None` on Android — Kotlin owns playback there). Dropped or cleared = ring stops at the next cadence boundary.
     pub ring: Option<RingGuard>,
-    /// Outgoing-wave ringback stopper (Outgoing phase only): the callee's own ring cadence playing in OUR earpiece, plus the room-coupling probe it measures. Dropped on every teardown edge — answered, declined, hung up, glare-folded — so the ringback stops without a timer.
+    /// Outgoing-wave ringback stopper (Outgoing phase only): the answering side's own ring cadence playing in OUR earpiece, plus the room-coupling probe it measures. Dropped on every teardown edge — answered, declined, hung up, glare-folded — so the ringback stops without a timer.
     pub ringback: Option<ringback::RingbackGuard>,
-    /// The source address the peer's most recent EXPRESS signal arrived from — the freshest known direct path to the device actually driving this call. Express replies target it first (answer rides back the offer's path); the contact's validated path is only the fallback when this is unknown.
+    /// The source address the peer's most recent EXPRESS signal arrived from — the freshest known direct path to the device actually driving this wave. Express replies target it first (answer rides back the offer's path); the contact's validated path is only the fallback when this is unknown.
     pub express_addr: Option<SocketAddr>,
-    /// The peer DEVICE driving this call (offer's device for the callee, answer's device for the caller), gated thru `knows_device` before storage. Reply routing resolves this device's freshest endpoint addresses; `None` (pre-device-id peer) falls back to source-address routing.
+    /// The peer DEVICE driving this wave (offer's device for the answering side, answer's device for the origin), gated thru `knows_device` before storage. Reply routing resolves this device's freshest endpoint addresses; `None` (pre-device-id peer) falls back to source-address routing.
     pub peer_device: Option<[u8; 32]>,
-    /// Receive drought crossed the reconnect threshold (call_drought_tick) — the panel shows "reconnecting", anchors are firing. Cleared the moment media resumes.
+    /// Receive drought crossed the reconnect threshold (wave_drought_tick) — the panel shows "reconnecting", anchors are firing. Cleared the moment media resumes.
     pub reconnecting: bool,
     /// Eagle osc of the last anchor this side fired into a drought — the re-fire spacing check (a measurement cadence, not a UI timer).
     pub last_anchor_osc: i64,
-    /// Ring-lease heartbeat (2026-09-08): caller side = osc we last BEAT the offer (re-express every ~1s during Outgoing); callee side = osc we last RECEIVED an offer beat. The callee drops a Ringing call after 3 missed beats (~3s) — the caller stopping its beat (answered elsewhere / hung up / gone) is the universal stop, needing no delivered edge. A lease on the offer heartbeat, NOT a UI timer.
+    /// Ring-lease heartbeat (2026-09-08): origin side = osc we last BEAT the offer (re-express every ~1s during Outgoing); answerer side = osc we last RECEIVED an offer beat. The answering side drops a Ringing wave after 3 missed beats (~3s) — the origin stopping its beat (answered elsewhere / hung up / gone) is the universal stop, needing no delivered edge. A lease on the offer heartbeat, NOT a UI timer.
     pub last_beat_osc: i64,
-    /// The friendship era key that OPENED this call's first express frame from the peer (the offer on the callee, the answer on the caller) — every express reply for this call seals under it first, so a one-era skew between the two fleets never strands an answer (field 2026-09-10: Esme re-keyed, Nick's phone had not; his offers opened on her retired era, her answers under her current one were "opened by no friendship").
+    /// The friendship era key that OPENED this wave's first express frame from the peer (the offer on the answering side, the answer on the origin) — every express reply for this wave seals under it first, so a one-era skew between the two fleets never strands an answer (field 2026-09-10: Esme re-keyed, Nick's phone had not; his offers opened on her retired era, her answers under her current one were "opened by no friendship").
     pub express_key: Option<[u8; 32]>,
-    /// Which candidate endpoint the drought's media probe is on (call_drought_tick walks the peer's candidates one per anchor round). Reset when media resumes.
+    /// Which candidate endpoint the drought's media probe is on (wave_drought_tick walks the peer's candidates one per anchor round). Reset when media resumes.
     pub reconnect_probe: u32,
     /// Offer beats that arrived as EXPRESS frames while Ringing. Zero means the ring came by the lane alone (no direct path, no relay-carried express yet), and the ring lease must not lapse on the express cadence.
     pub express_beats: u32,
@@ -172,7 +172,7 @@ pub struct ActiveCall {
 pub static LAST_LINK_RTT_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static LAST_LINK_LOSS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 pub static LAST_LINK_TARGET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// The wire rung the engine is sending on (index into engine::TIER_NAMES), for the call panel's live line.
+/// The wire rung the engine is sending on (index into engine::TIER_NAMES), for the wave panel's live line.
 pub static LAST_LINK_TIER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// THE LAST WAVE (the Wave settings page, Nick 2026-09-16 "a wave config screen"): the engine's teardown writes one summary; the page renders it. Session-only — the log holds history.
@@ -193,7 +193,7 @@ pub struct LastWave {
     pub tier_downs: u32,
     /// The peer's worst reported loss in one second (0 = a v96 peer that never said).
     pub peer_lost_max: u32,
-    /// The level plan: the makeup the call started on and ended on (×10), the whole-call voiced level, and the re-aim steps as (voiced evidence, from ×10, to ×10).
+    /// The level plan: the makeup the wave started on and ended on (×10), the whole-wave voiced level, and the re-aim steps as (voiced evidence, from ×10, to ×10).
     pub makeup_start_x10: u32,
     pub makeup_end_x10: u32,
     pub measured_voiced: u32,
@@ -210,7 +210,7 @@ pub fn last_wave() -> Option<LastWave> {
 /// The Wave page's "plaid off-LAN" preference (`waves.plaid_wan`, default ON): OFF = the raw rung is never tried beyond a LAN-class path, whatever the headroom says — some links are simply happier at 128 kbps and a person may say so once.
 pub static PLAID_WAN_ALLOWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
 
-/// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this call. Written by the engine thread, read by the UI's drought measurement.
+/// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this wave. Written by the engine thread, read by the UI's drought measurement.
 pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Eagle osc at engine start — the drought baseline before the first packet ever arrives (0 = no engine).
 pub static MEDIA_START_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
@@ -218,16 +218,16 @@ pub static MEDIA_START_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::At
 /// A fresh peer address for the LIVE engine's TX, set by an authenticated express Anchor's source (drain_express_signals) and drained by the engine loop. The media-plane "address follows authenticated packets" rule can't heal a both-sides-moved deadlock — this is the signal-plane override that can.
 static PEER_REDIRECT: Mutex<Option<SocketAddr>> = Mutex::new(None);
 
-/// Where the engine is sending media RIGHT NOW (None between waves, the sentinel while it waits for the peer's first packet): the call screen's presence ring reads the path from this (Nick 2026-09-11: "no coloured ring around the avatar on the call screen reflecting the WAN/LAN/Direct status").
-static CALL_TX_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
+/// Where the engine is sending media RIGHT NOW (None between waves, the sentinel while it waits for the peer's first packet): the wave screen's presence ring reads the path from this (Nick 2026-09-11: "no coloured ring around the avatar on the wave screen reflecting the WAN/LAN/Direct status").
+static WAVE_TX_ADDR: Mutex<Option<SocketAddr>> = Mutex::new(None);
 
-pub fn set_call_tx_addr(addr: Option<SocketAddr>) {
+pub fn set_wave_tx_addr(addr: Option<SocketAddr>) {
     // CANONICAL (field 2026-09-12: the ring stayed green on the same LAN): the dual-stack socket reports a v4 peer as an IPv4-mapped IPv6 address, and a mapped address is not `IpAddr::V4` — every reader that asks "is this private" would have called it public.
-    *CALL_TX_ADDR.lock().unwrap() = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
+    *WAVE_TX_ADDR.lock().unwrap() = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
 }
 
-pub fn call_tx_addr() -> Option<SocketAddr> {
-    *CALL_TX_ADDR.lock().unwrap()
+pub fn wave_tx_addr() -> Option<SocketAddr> {
+    *WAVE_TX_ADDR.lock().unwrap()
 }
 
 /// A device that just pushed us its new address mid-wave, so the UI pushes ours back to it on the next tick (the network thread cannot: our freshest reflexive lives in the app).
@@ -241,15 +241,15 @@ pub fn take_address_push() -> Option<[u8; 32]> {
     ADDRESS_PUSH_WANTED.lock().unwrap().take()
 }
 
-/// The DEVICE on the other end of the live call, for the network thread (it has no view of the UI's ActiveCall). A pushed address record for this device re-aims media the moment it lands — the push reroute, 2026-09-11.
-static CALL_PEER_DEVICE: Mutex<Option<[u8; 32]>> = Mutex::new(None);
+/// The DEVICE on the other end of the live wave, for the network thread (it has no view of the UI's ActiveWave). A pushed address record for this device re-aims media the moment it lands — the push reroute, 2026-09-11.
+static WAVE_PEER_DEVICE: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 
-pub fn set_call_peer_device(dev: Option<[u8; 32]>) {
-    *CALL_PEER_DEVICE.lock().unwrap() = dev;
+pub fn set_wave_peer_device(dev: Option<[u8; 32]>) {
+    *WAVE_PEER_DEVICE.lock().unwrap() = dev;
 }
 
-pub fn call_peer_device() -> Option<[u8; 32]> {
-    *CALL_PEER_DEVICE.lock().unwrap()
+pub fn wave_peer_device() -> Option<[u8; 32]> {
+    *WAVE_PEER_DEVICE.lock().unwrap()
 }
 
 pub fn set_peer_redirect(addr: SocketAddr) {

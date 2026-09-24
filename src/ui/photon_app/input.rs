@@ -72,7 +72,7 @@ impl PhotonApp {
             tb.set_font_size(font_size, ctx.text);
             // Exclude the overlaid send button's footprint (7/8-height square + 1/16 inset, matching the button block below) so typing never runs under the arrow.
             tb.set_right_inset(compose_h * 7.0 / 8.0 + compose_h / 16.0);
-            // Bottom-anchored growth: the box's bottom edge stays where the single-line bar sat; extra lines grow UPWARD into the list, capped at a third of the screen (the field call: line COUNT varies wildly with zoom, screen fraction doesn't).
+            // Bottom-anchored growth: the box's bottom edge stays where the single-line bar sat; extra lines grow UPWARD into the list, capped at a third of the screen (the field ruling: line COUNT varies wildly with zoom, screen fraction doesn't).
             let bottom_y = compose_cy + compose_h * 0.5;
             tb.set_layout(
                 compose_cx,
@@ -1042,8 +1042,8 @@ impl PhotonApp {
         self.peer_store_persisted_len = 0;
         self.registry_converged_fold.clear();
         self.self_record_published_for = None;
-        // Live call dies with the identity.
-        self.active_call = None;
+        // Live wave dies with the identity.
+        self.active_wave = None;
         // Bridge: locus/interrupt client state everywhere; host-side maps where the shell host exists.
         self.bridge_locus = None;
         self.bridge_int = None;

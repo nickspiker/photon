@@ -26,12 +26,12 @@ impl PhotonApp {
         let preloop_t = std::time::Instant::now();
         let preloop_ms_f: f32;
         // Peer avatars: install any completed downloads, then kick a fetch (once/session/handle) for any contact still without one. Cache-first + dedup'd by avatar_dl_started, so this is cheap to run every tick — it spawns at most one thread per peer per session.
-        // Express call signals FIRST — a doorbell outranks every other drain on the tick (rare + tiny; empty = one mutex).
-        timed_drain!("call_express", self.drain_express_signals());
-        // Media-liveness measurement on the live call (two atomic loads when idle).
-        timed_drain!("call_drought", self.call_drought_tick());
-        // Ring-lease heartbeat: caller beats the offer ~1s, callee lapses a stale ring ~3s (two atomics + a compare when idle).
-        timed_drain!("call_ring", self.call_ring_tick());
+        // Express wave signals FIRST — a doorbell outranks every other drain on the tick (rare + tiny; empty = one mutex).
+        timed_drain!("wave_express", self.drain_express_signals());
+        // Media-liveness measurement on the live wave (two atomic loads when idle).
+        timed_drain!("wave_drought", self.wave_drought_tick());
+        // Ring-lease heartbeat: caller beats the offer ~1s, the answering side lapses a stale ring ~3s (two atomics + a compare when idle).
+        timed_drain!("wave_ring", self.wave_ring_tick());
         // Preview worker finished → flip the Play/Stop pill back (one atomic read when idle).
         self.tick_playback_done();
         // One-shot: recover waves a crash left mid-keep (flag-guarded; a bool check per tick after).
@@ -596,7 +596,7 @@ impl PhotonApp {
                                                     parked_key_fp: None,
                                                 });
                                         }
-                                        // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a call ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
+                                        // SENDER-SIDE RE-SERVE (Nick's go, 2026-08-20) — the delivery-side fix the pull-gate comment above promises. The pending list only retransmits rows it still holds; a row implied-delivered by a FLEET ack that THIS peer device never received leaves their lane wedged forever — they gap-buffer every later row (twice on 2026-08-20 that hostage was a wave ANSWER). The sealed tip is per-device cryptographic testimony of what they hold contiguously, and their row_count deficit is content-level evidence they lack rows — so when WE are strictly ahead, re-serve the oldest rows above the tip from the DURABLE store at their ORIGINAL stamps (the lane-rotation flush's proven semantics). The receiver's row-store dedup absorbs anything it already had and Re-ACKs it, clearing the fresh pending; a genuinely missing row processes normally and un-jams the gap cascade.
                                         if n_rows > record.row_count {
                                             // Cap = rows TRANSMITTED per testimony, not bursts attempted (2026-09-01): the serial-send gate lets ~1 row out per burst, so a burst-attempt cap of 2 parked any hole deeper than ~2 rows forever ('re-serving 8 → re-served 1' in the field log). 16 covers the deficit window; the deferred loop below charges actual transmits.
                                             const RESERVE_ROWS_PER_TESTIMONY: u8 = 16;
@@ -633,7 +633,7 @@ impl PhotonApp {
                                                 }
                                             };
                                             if allowed {
-                                                // LIVE pendings only (2026-09-01, the head-gap last boss): a pending that exhausted MAX_SEND_ATTEMPTS never retransmits again — it sits in the list solely so a late ACK can clear it — yet the old whole-list exclusion treated it as "already retransmitting" and hid exactly the head row the peer's in-order gate was starving on (the MacBook's ringing-answered-silent call: the ANSWER buffered behind one exhausted pending forever). Given-up rows are re-servable; live ones still are not (their ladder covers them).
+                                                // LIVE pendings only (2026-09-01, the head-gap last boss): a pending that exhausted MAX_SEND_ATTEMPTS never retransmits again — it sits in the list solely so a late ACK can clear it — yet the old whole-list exclusion treated it as "already retransmitting" and hid exactly the head row the peer's in-order gate was starving on (the MacBook's ringing-answered-silent wave: the ANSWER buffered behind one exhausted pending forever). Given-up rows are re-servable; live ones still are not (their ladder covers them).
                                                 let pending_times: std::collections::HashSet<i64> =
                                                     chains
                                                         .pending_messages
@@ -1389,7 +1389,7 @@ impl PhotonApp {
                                 c.ping_backoff = 0;
                                 c.last_pinged = None;
                             }
-                            // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a call ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
+                            // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a wave ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
                             if !self.contacts[contact_idx].is_sibling && !chains.molecule {
                                 // Groups: the friend-history walk is a pairwise protocol; a group gap waits on the sender's retransmit and (later) group re-serve — never a friendship walk against a group conversation.
                                 let conv = &mut self.conversations[conv_pos];
@@ -4903,7 +4903,7 @@ impl PhotonApp {
                         contact.last_heard = Some(now);
                         // The same-LAN judgment, made ONCE here at the edge (get_local_ip binds a socket — never per frame): private address on OUR subnet (or WFD group) = LAN; private-but-foreign (carrier CGNAT 10.x, colliding home /24s) = a real direct path that is NOT "same room" (the 2026-08-30 cyan lie: a Verizon-CGNAT path to a peer hundreds of miles away rang LAN). Canonical form first — punch acks arrive v4-mapped (::ffff:a.b.c.d).
                         let canon = crate::network::udp::canon_socketaddr(remote);
-                        // Our LAN identity is judged TOWARD this peer: the default-route probe picks cellular on a dual-radio phone and voids the same-subnet check (WAN badge on a pure-LAN call, field 2026-09-08).
+                        // Our LAN identity is judged TOWARD this peer: the default-route probe picks cellular on a dual-radio phone and voids the same-subnet check (WAN badge on a pure-LAN wave, field 2026-09-08).
                         let our_v4 = crate::network::udp::get_local_ip().or_else(|| match canon.ip() {
                             std::net::IpAddr::V4(p) => crate::network::udp::get_local_ip_toward(p),
                             _ => None,

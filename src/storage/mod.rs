@@ -723,7 +723,7 @@ mod blob_manifest_tests {
 
 /// Process-lifetime artifacts (single-instance lock, control socket) live in the RUNTIME dir, not config — they are not state, and the config-dir census is exactly two files (log + vault). tmpfs where available, so a crash leaves nothing behind past reboot.
 pub fn runtime_dir() -> std::path::PathBuf {
-    // Android: the APP-PRIVATE data dir, never the process temp dir — `temp_dir()` there is /data/local/tmp, which an app generally cannot write (field 2026-09-09: Emma's phone logged "no spool" on every wave while Nick's happened to allow it; the call spool lives here now, so recording-by-default holds on every device).
+    // Android: the APP-PRIVATE data dir, never the process temp dir — `temp_dir()` there is /data/local/tmp, which an app generally cannot write (field 2026-09-09: Emma's phone logged "no spool" on every wave while Nick's happened to allow it; the wave spool lives here now, so recording-by-default holds on every device).
     #[cfg(target_os = "android")]
     if let Ok(d) = photon_config_dir() {
         return d.join("runtime");

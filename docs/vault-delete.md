@@ -24,4 +24,4 @@ So the zero-write erased nothing, freed nothing (the COW-unlink + plow-reap is w
 
 ## Record-by-default durability (the same decision's other half)
 
-A wave records like an email saves: the per-call spool key persists in the vault at call START (`call.spool.<id8>` register), so a battery death mid-wave recovers at next launch (`spool::recover_orphans` → the normal keep-transcode). Delete-later is the vault's UnlinkOnly reclaim. Ordering law: blob stored → register dropped → file removed; every crash window resolves at recovery (file+register = re-finish, idempotent by content hash; file-without-register = stray, deleted).
+A wave records like an email saves: the per-wave spool key persists in the vault at wave START (`wave.spool.<id8>` register), so a battery death mid-wave recovers at next launch (`spool::recover_orphans` → the normal keep-transcode). Delete-later is the vault's UnlinkOnly reclaim. Ordering law: blob stored → register dropped → file removed; every crash window resolves at recovery (file+register = re-finish, idempotent by content hash; file-without-register = stray, deleted).

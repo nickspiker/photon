@@ -165,7 +165,7 @@ impl PhotonApp {
                 c.discard_clutch_round();
                 discarded += 1;
             }
-            // DERIVED STATE, never written here: the owner is recomputed on every edge and at the keygen pickup after a load, so persisting it bought nothing — and 13 synchronous vault writes on a presence verdict were two 1.8 s UI hangs in the middle of a call (Nick's phone 2026-09-09 01:55, 46 windows lost).
+            // DERIVED STATE, never written here: the owner is recomputed on every edge and at the keygen pickup after a load, so persisting it bought nothing — and 13 synchronous vault writes on a presence verdict were two 1.8 s UI hangs in the middle of a wave (Nick's phone 2026-09-09 01:55, 46 windows lost).
             c.ceremony_owner = Some(owner);
             moved += 1;
         }

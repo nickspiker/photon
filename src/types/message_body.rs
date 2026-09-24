@@ -22,7 +22,7 @@ pub enum Span {
     Text(String),
     /// A hyperlink. `href` is a validated https/mailto target; `text` is what's shown (which MAY differ from the href — the render-time confirm sheet shows the true href as the anti-spoof).
     Link { href: String, text: String },
-    /// An INLINE attachment — the same blob an attachment row carries, but riding in a rich body interleaved with text/links. `hash` is the BLAKE3 content-hash (the blob key, reused verbatim by [`crate::storage::blob_load`] and the PT transfer); `name`/`size` are the filename + byte length. Its plaintext contribution is the FILENAME, so a legacy reader shows a readable `photo.jpg` inline and the woven bytes stay stable. Single-attachment and `call.audio` rows keep the legacy marker path ([`crate::types::attachment_content`]); this variant is only for the interleaved case.
+    /// An INLINE attachment — the same blob an attachment row carries, but riding in a rich body interleaved with text/links. `hash` is the BLAKE3 content-hash (the blob key, reused verbatim by [`crate::storage::blob_load`] and the PT transfer); `name`/`size` are the filename + byte length. Its plaintext contribution is the FILENAME, so a legacy reader shows a readable `photo.jpg` inline and the woven bytes stay stable. Single-attachment and `wave.audio` rows keep the legacy marker path ([`crate::types::attachment_content`]); this variant is only for the interleaved case.
     Attachment { hash: [u8; 32], name: String, size: u64 },
 }
 
@@ -55,7 +55,7 @@ impl Span {
     }
 }
 
-/// The scheme allowlist — `https://` and `mailto:` only (Nick's call 2026-09-02). Case-insensitive on the scheme, byte-verbatim on the rest; a bare scheme with no target is rejected. `http`, `file`, `javascript`, `data`, custom schemes: all refused, so a link field can never smuggle a dangerous target past the type.
+/// The scheme allowlist — `https://` and `mailto:` only (Nick's ruling 2026-09-02). Case-insensitive on the scheme, byte-verbatim on the rest; a bare scheme with no target is rejected. `http`, `file`, `javascript`, `data`, custom schemes: all refused, so a link field can never smuggle a dangerous target past the type.
 pub fn href_allowed(href: &str) -> bool {
     let lower = href.to_ascii_lowercase();
     (lower.starts_with("https://") && href.len() > "https://".len())
@@ -327,7 +327,7 @@ mod tests {
         wire.extend(VsfType::x("javascript:alert(1)".to_string()).flatten());
         wire.extend(VsfType::x("click me".to_string()).flatten());
         let back = MessageBody::decode(&wire).unwrap();
-        // Degraded to plain text — no Link reaches the caller.
+        // Degraded to plain text — no Link reaches the origin.
         assert_eq!(back, MessageBody::plain("click me"));
     }
 

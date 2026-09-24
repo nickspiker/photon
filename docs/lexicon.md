@@ -6,16 +6,20 @@ Photon names its surfaces with old words carrying exact meanings. This file hold
 
 > **wave** … [ME *waven*, fr. OE *wafian* to wave with the hands; akin to OE *wæfan* to clothe] **1 a**: to flutter in a breeze (*waving* battle streamers) **b**: to float, play, or shake in an air current; to move up and down or to and fro: FLAP **2 b**: to motion with the hands, or with something held in them, in signal, greeting, or salute … **7**: to move before the wind with a wavelike motion and appearance (field of *waving* grain) — **n** … a signal made by waving (a *wave* of the hand) … a waving of the arms, or an up-and-down motion of an extended flag.
 
-The senses that carry the word: a wave is a *signal made with what you hold* and a *motion the medium itself makes*. Sound is both at once. Photon's waves — voice calls, everything the device emits and hears — wear it honestly. (The Wave settings page that carried this epigraph retired 2026-09-07 with the calibration ritual; the v-chirp probe measures at every connect instead.)
+The senses that carry the word: a wave is a *signal made with what you hold* and a *motion the medium itself makes*. Sound is both at once. Photon's waves — the voice plane, everything the device emits and hears — wear it honestly. (The Wave settings page that carried this epigraph retired 2026-09-07 with the calibration ritual; the v-chirp probe measures at every connect instead.)
 
 ## beam
 
 > **beam** … [ME *beem*, fr. OE *bēam* **tree**, beam; akin to OHG *boum* tree, ON *bathmr*, Goth *bagms*] — the word meant TREE before it meant timber, and timber before it meant a directed shaft of light.
 
-A beam is something that grew, was cut true, and now carries load — or light — in one straight line. The Beam page (camera/video, when it lands) inherits the whole migration: trunk → timber → directed light.
+A beam is something that grew, was cut true, and now carries load — or light — in one straight line. Photon's beams are video: the beam of light, aimed at one person, carrying what it was cut to carry. The Beam surface inherits the whole migration: trunk → timber → directed light. Designed, not built.
 
-## call
+## call — retired 2026-09-23
 
-> **call** … senses spanning: to summon; to ring; to make a visit; to name; *call in question*; *call to mind* — the full verb family Photon's call plane implements, one page of a 1960 dictionary at a time.
+> **call** … senses spanning: to summon; to ring; to make a visit; to name; *call in question*; *call to mind*.
+
+The verb family is fine; the noun was the problem. A *call* names a circuit some third party holds open — their wires, their switch, their account, and by long habit the assumption that nobody kept a copy. That assumption was a fact about the price of magnetic tape, not about telephony, and it has been false since data became the storage medium: carrying a digital conversation and writing it down are now the same operation, so every call IS recorded, by the carrier rather than by either speaker.
+
+Photon has no carrier and keeps its own recording, on purpose and in the open, so it does not get to borrow the word. Waves and beams replaced it everywhere; the reasoning lives in docs/waves.md, and the platform API names that still say `call` (`CATEGORY_CALL`, `STREAM_VOICE_CALL`, `ConnectionService`) are Android's nouns, not ours.
 
 *(Transcriptions are curated from the legible captures; the full-resolution masters carry every sense for anyone who wants the rest. Entries expand as more pages get shot.)*

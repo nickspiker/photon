@@ -1,4 +1,4 @@
-//! The in-call passive calibration learner (Nick's insight 2026-09-03): a running call already contains both Wave measurements — far-end-talking-alone stretches measure the speaker→mic coupling (we KNOW the far signal, we rendered it), near-end-talking-alone stretches measure the user's natural voice level. This module is the PURE math: streams in, estimates out, no platform or engine dependency — the KATs below are the proof the design demanded.
+//! The in-wave passive calibration learner (Nick's insight 2026-09-03): a running wave already contains both Wave measurements — far-end-talking-alone stretches measure the speaker→mic coupling (we KNOW the far signal, we rendered it), near-end-talking-alone stretches measure the user's natural voice level. This module is the PURE math: streams in, estimates out, no platform or engine dependency — the KATs below are the proof the design demanded.
 //!
 //! **Model** per 10ms bin, far-active: `mic[t] ≈ g·far[t−d] + floor + speech[t]`, all envelopes ≥ 0 (mean |sample|; linear when `g·far ≳ 2·floor`).
 //!
@@ -29,7 +29,7 @@ const CLUSTER_TOL: i64 = 2;
 const CLUSTER_FRAC: f32 = 0.6;
 /// The estimate pool: last N accepted windows; g = 25th percentile (min-statistics — needs ≥25% clean windows, which the r-gate guarantees), delay = median.
 const POOL: usize = 30;
-/// Confidence tiers: "usable" ducks in-call with wide margins; "solid" is the only tier persisted.
+/// Confidence tiers: "usable" ducks in-wave with wide margins; "solid" is the only tier persisted.
 const USABLE_N: usize = 10;
 const USABLE_SPREAD: f32 = 1.0; // IQR/median
 const SOLID_N: usize = 20;
@@ -625,7 +625,7 @@ mod tests {
         }
     }
 
-    /// Clean call: g and delay recovered within tolerance, confidence reaches Solid.
+    /// Clean wave: g and delay recovered within tolerance, confidence reaches Solid.
     #[test]
     fn kat_recover_g_and_delay() {
         let mut rng = Rng(42);
@@ -637,7 +637,7 @@ mod tests {
         let g = e.g_norm.expect("pool speaks");
         assert!((g - 0.3).abs() / 0.3 < 0.05, "g {g} vs 0.3 within 5%");
         assert_eq!(e.delay_bins, Some(17), "delay exact");
-        assert_eq!(e.confidence, Confidence::Solid, "clean 40s call is solid (windows {})", e.windows);
+        assert_eq!(e.confidence, Confidence::Solid, "clean 40s wave is solid (windows {})", e.windows);
     }
 
     /// The executable bias derivation: uncorrected LS over-estimates by ≈ floor/(p̄(1+cv²)); floor-subtraction removes it.

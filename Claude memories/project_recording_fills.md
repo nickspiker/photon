@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-Recording fills shipped 2026-09-10 in photon 5a2e33d (docs/calls.md "Recording fills").
+Recording fills shipped 2026-09-10 in photon 5a2e33d (docs/waves.md "Recording fills").
 What one side lost is what the other side sent and spooled, so the kept wave asks it back: live (eight wanted seqs per FILL datagram every 40 ms, served off the peer's spool by window seq) and in a post-hangup DRAIN (audio off, tail up to the peer's final window count, 2.5 s deadline, both engines exit when both are satisfied).
 FILL datagrams = packet.rs FILL_MAGIC 0xC8 sealed under keys::fill_secret's own StepChains; a pre-fill peer never sees them, and a peer that never sent one gets no drain.
 Spool records carry [seq][slot] (SEQ_FLAG); served-after frames are FILL_FLAG and the transcode slots them by seq beside arrived windows (record.rs seq lattice keeps a lost window's hole).

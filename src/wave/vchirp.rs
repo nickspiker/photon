@@ -1,4 +1,4 @@
-//! The V-chirp connect probe (Nick 2026-09-07, lengthened to 1s 2026-09-08): every call opens with the SAME one-second sound — an up log sweep and its time-reversal overlaid — played thru the live call output path and matched-filtered against the mic, so both sides measure their own speaker→mic coupling `g` and render→capture delay BEFORE any voice connects. This replaces the Wave calibration ritual: first-call-zero-echo is now a property of every call, not a ceremony the user must remember to run per route.
+//! The V-chirp connect probe (Nick 2026-09-07, lengthened to 1s 2026-09-08): every wave opens with the SAME one-second sound — an up log sweep and its time-reversal overlaid — played thru the live wave output path and matched-filtered against the mic, so both sides measure their own speaker→mic coupling `g` and render→capture delay BEFORE any voice connects. This replaces the Wave calibration ritual: first-wave-zero-echo is now a property of every wave, not a ceremony the user must remember to run per route.
 //!
 //! Why a V (up + down overlaid), not a single sweep or noise:
 //! - **Delay-Doppler split = clock-skew meter.** A render-vs-capture sample-rate mismatch shifts a chirp's matched-filter peak, with OPPOSITE sign for opposite sweep directions (the radar V-chirp trick). Mean of the two lags = true delay with the skew cancelled; difference = the skew itself — the same physics the jitter buffer's splice counters only see indirectly.
@@ -6,7 +6,7 @@
 //! - **Robust to "hello".** ~1s × ~19.8kHz of swept bandwidth ≈ 43dB of processing gain — near speech at answer is uncorrelated with the sweep and barely dents the peak, exactly where the learner's envelope statistics are weakest.
 //! - Sweeps beat a fixed-seed noise burst (≈MLS) on our two field realities: speaker nonlinearity (distortion products land away from a sweep's linear peak; they smear an MLS everywhere) and clock drift (shifts a sweep's peak; shreds MLS alignment).
 //!
-//! Template spec (Nick's calls, 2026-09-07): 200Hz → 20kHz log sweep, no fade shaping — the device's own frequency taper rounds the ends, and the raw sweep doubles as a loop frequency-response probe later. The 200Hz end starts AT a zero crossing (phase 0), and the total phase is trimmed to a whole number of cycles so BOTH ends of both legs sit on zeros. The down leg is the exact time-reversal of the up leg — one stored waveform serves as both matched-filter references.
+//! Template spec (Nick's rulings, 2026-09-07): 200Hz → 20kHz log sweep, no fade shaping — the device's own frequency taper rounds the ends, and the raw sweep doubles as a loop frequency-response probe later. The 200Hz end starts AT a zero crossing (phase 0), and the total phase is trimmed to a whole number of cycles so BOTH ends of both legs sit on zeros. The down leg is the exact time-reversal of the up leg — one stored waveform serves as both matched-filter references.
 //!
 //! Units: `g` is fitted in the ENVELOPE domain (mean |sample| per 10ms bin, median per-bin ratio at the matched delay) — the learner/duck's unit, capturing total leak including early reverb, where the matched filter's coherent gain would read only the direct path and under-duck (the one failure the whole echo design exists to prevent). The matched filter contributes what envelopes can't: sample-precise delay, the skew split, and the corruption gates.
 
@@ -14,13 +14,13 @@ pub const SAMPLE_RATE: usize = 48_000;
 const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
 /// Sweep length: HALF a second (Nick 2026-09-10: "same length but the duration half"), padded to the same one-second emission by a quarter second of silence at each end — the leading silence hands the fit a clean room-floor pre-roll, the trailing one gives the echo tail room, and the shorter sweep halves the anchor drift a short-running capture clock (Nick's phone: 175-193 fps) accumulates across the measurement. Processing gain drops 3 dB from the 1 s sweep; the V's self-validation stands.
 pub const PAD_SAMPLES: usize = SAMPLE_RATE / 4;
-/// Sweep length: 1s (Nick 2026-09-08 — only the middle of the 200Hz→20kHz span is audible thru a phone transducer, so the perceived sound is well under the full second). 4× the original 250ms: +6dB processing gain (TB ≈ 19.8k ≈ 43dB), 100 envelope bins for the g median instead of 25, and far better leg-agreement statistics — both first field calls rejected on legs disagreeing at 250ms.
+/// Sweep length: 1s (Nick 2026-09-08 — only the middle of the 200Hz→20kHz span is audible thru a phone transducer, so the perceived sound is well under the full second). 4× the original 250ms: +6dB processing gain (TB ≈ 19.8k ≈ 43dB), 100 envelope bins for the g median instead of 25, and far better leg-agreement statistics — both first field waves rejected on legs disagreeing at 250ms.
 pub const CHIRP_SAMPLES: usize = SAMPLE_RATE / 2;
 const F0: f64 = 200.0;
 const F1: f64 = 20_000.0;
 /// Peak of the summed legs: -9dB FS — the same loudness law as the old ritual prompt (full scale at media volume is DEAFENING, field 2026-09-02); measurement-neutral since g is a ratio.
 const PEAK_TARGET: f64 = 11_585.0;
-/// Delay scan: one second of capture positions — the leading pad (250 ms) plus 750 ms of render→capture path, generously beyond any wired/builtin route (bt scans live in the learner, which refines delay in-call anyway).
+/// Delay scan: one second of capture positions — the leading pad (250 ms) plus 750 ms of render→capture path, generously beyond any wired/builtin route (bt scans live in the learner, which refines delay in-wave anyway).
 pub const MAX_LAG_SAMPLES: usize = SAMPLE_RATE;
 /// Post-scan tail: 100ms of room after the last scannable echo position.
 const TAIL_SAMPLES: usize = SAMPLE_RATE / 10;
@@ -109,10 +109,10 @@ pub fn spectral_bands(ratios_by_bin: &[(usize, f32)]) -> [f32; 5] {
     bands
 }
 
-/// A finished probe fit. `delay_samples` is the echo's offset WITHIN the capture buffer (the caller anchors it to the render timeline); `skew_samples` = up-leg lag − down-leg lag, the clock-skew diagnostic.
+/// A finished probe fit. `delay_samples` is the echo's offset WITHIN the capture buffer (the origin anchors it to the render timeline); `skew_samples` = up-leg lag − down-leg lag, the clock-skew diagnostic.
 #[derive(Debug, Clone)]
 pub struct Fit {
-    /// Envelope-domain coupling (NOT volume-normalized — the caller divides by its live vol_lin).
+    /// Envelope-domain coupling (NOT volume-normalized — the origin divides by its live vol_lin).
     pub g: f32,
     pub delay_samples: usize,
     pub skew_samples: i64,
@@ -123,7 +123,7 @@ pub struct Fit {
     pub floor: f32,
     /// False = no peak stood above the correlation noise: a clean route (headset), g meaningless, floor still real.
     pub coupled: bool,
-    /// The measured impulse response: taps[k] = IR at lag (ir_start + k), fitted against the SUM template — the NLMS canceller's seed (born converged; see call/nlms.rs).
+    /// The measured impulse response: taps[k] = IR at lag (ir_start + k), fitted against the SUM template — the NLMS canceller's seed (born converged; see wave/nlms.rs).
     pub ir_start: usize,
     pub taps: Vec<f32>,
     /// Rough spectral coupling per band (SPECTRAL_BAND_EDGES_HZ), the same envelope-ratio unit as `g`.
@@ -161,7 +161,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     }
     // Envelope bins + floor first — needed by both verdicts.
     let cap_env: Vec<f32> = cap.chunks(BIN).filter(|c| c.len() == BIN).map(|c| env_i16(c)).collect();
-    let floor = crate::call::calibrate::quietest_run(&cap_env, 20.min(cap_env.len().max(1)));
+    let floor = crate::wave::calibrate::quietest_run(&cap_env, 20.min(cap_env.len().max(1)));
     // Reference legs at the EMITTED amplitude, i16-quantized (error ≪ any acoustic term).
     let leg_scale = built().1;
     let up = up_leg();
@@ -174,11 +174,11 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     if psr_up < PSR_MIN || psr_down < PSR_MIN {
         return Some(Fit { g: 0.0, delay_samples: 0, skew_samples: 0, g_up, g_down, floor, coupled: false, ir_start: 0, taps: Vec::new(), bands: [0.0; 5] });
     }
-    // Corruption gates: the two legs measured the same physics or the run is garbage. Reject details logged — two field calls said only "legs disagreed" and left nothing to diagnose which gate or by how much.
+    // Corruption gates: the two legs measured the same physics or the run is garbage. Reject details logged — two field waves said only "legs disagreed" and left nothing to diagnose which gate or by how much.
     let skew = lag_up as i64 - lag_down as i64;
     if skew.abs() > LEG_LAG_SPLIT_MAX {
         crate::logf!(
-            "CALL: v-chirp reject — lag split {} samples (up {} down {}, gate {}); g {} / {}, psr {} / {}",
+            "WAVE: v-chirp reject — lag split {} samples (up {} down {}, gate {}); g {} / {}, psr {} / {}",
             skew,
             lag_up,
             lag_down,
@@ -193,7 +193,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     let (lo, hi) = (g_up.min(g_down).max(1e-6), g_up.max(g_down));
     if hi / lo > LEG_GAIN_RATIO_MAX {
         crate::logf!(
-            "CALL: v-chirp reject — leg gain ratio {} (up {} down {}, gate {}); lags {} / {}, psr {} / {}",
+            "WAVE: v-chirp reject — leg gain ratio {} (up {} down {}, gate {}); lags {} / {}, psr {} / {}",
             format!("{:.2}", hi / lo),
             format!("{g_up:.4}"),
             format!("{g_down:.4}"),
@@ -230,9 +230,9 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     // IR export for the NLMS seed: cross-correlate the capture against the SUM template (what actually played) over the tap window around the matched delay. h[k] = <cap(lag), tpl>/|tpl|² — the least-squares IR at each lag, band-limited to the sweep (which is the whole audible path; fine, that's the band echo lives in).
     let tpl = template();
     let tpl_energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9);
-    let ir_start = delay.saturating_sub(crate::call::nlms::PRE);
-    let mut taps: Vec<f32> = Vec::with_capacity(crate::call::nlms::TAPS);
-    for k in 0..crate::call::nlms::TAPS {
+    let ir_start = delay.saturating_sub(crate::wave::nlms::PRE);
+    let mut taps: Vec<f32> = Vec::with_capacity(crate::wave::nlms::TAPS);
+    for k in 0..crate::wave::nlms::TAPS {
         let lag = ir_start + k;
         let dot: i64 = if lag + tpl.len() <= cap.len() {
             cap[lag..lag + tpl.len()].iter().zip(tpl).map(|(&c, &t)| c as i64 * t as i64).sum()
@@ -263,12 +263,12 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
     let _ = std::thread::Builder::new().name("vchirp-fit".into()).spawn(move || {
         let t0 = std::time::Instant::now();
         let Some(f) = fit(&cap, MAX_LAG_SAMPLES) else {
-            crate::log("CALL: v-chirp fit rejected — legs disagreed (speech/movement/resampler?) — no seed, duck stays on its prior");
+            crate::log("WAVE: v-chirp fit rejected — legs disagreed (speech/movement/resampler?) — no seed, duck stays on its prior");
             return;
         };
         if !f.coupled {
             crate::logf!(
-                "CALL: v-chirp — clean route \"{}\" (no coupling above correlation noise; legs g {} / {}), floor {}, fit {}ms",
+                "WAVE: v-chirp — clean route \"{}\" (no coupling above correlation noise; legs g {} / {}), floor {}, fit {}ms",
                 route,
                 format!("{:.4}", f.g_up),
                 format!("{:.4}", f.g_down),
@@ -284,10 +284,10 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let anchor_ms = (cap_anchor_osc - render_start_osc) as f64 / ops * 1000.0;
         let acoustic_ms = f.delay_samples as f64 * 1000.0 / SAMPLE_RATE as f64;
         let delay_bins_raw = (lag_osc / ops * 100.0).round().max(0.0) as usize;
-        // A delay AT the grid's bound is not a room, it is the two clock anchors disagreeing (Brittany 2026-09-09: 1500 ms with a 1.4 s capture-anchor offset — the duck then muted her 1.5 s after every phrase of Nick's). No seed, nothing persisted; the reactive duck and the learner carry the call.
+        // A delay AT the grid's bound is not a room, it is the two clock anchors disagreeing (Brittany 2026-09-09: 1500 ms with a 1.4 s capture-anchor offset — the duck then muted her 1.5 s after every phrase of Nick's). No seed, nothing persisted; the reactive duck and the learner carry the wave.
         if delay_bins_raw >= 150 {
             crate::logf!(
-                "CALL: v-chirp reject — delay {}ms at the grid bound (capture anchor {}ms after render start, acoustic lag {}ms, legs g {} / {}): clock anchors disagree, no seed",
+                "WAVE: v-chirp reject — delay {}ms at the grid bound (capture anchor {}ms after render start, acoustic lag {}ms, legs g {} / {}): clock anchors disagree, no seed",
                 delay_bins_raw * 10,
                 format!("{anchor_ms:.0}"),
                 format!("{acoustic_ms:.1}"),
@@ -303,9 +303,9 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         // THE SEED'S LAG IS THE PHYSICAL RENDER→CAPTURE DELAY, on the reference timeline (nlms.rs: `from = frame_pos − ir_start − n + 1`), NOT the chirp's position inside the capture buffer — the capture starts at probe start, the sweep sits a quarter-second pad later (2026-09-10 Azie/Nick: the position-as-lag seed sat 250 ms wrong; Nick's filter never found its reference window, Azie's adapted from a wrong seed and read −17 dB). lag_osc already holds the physical delay; convert it to samples and back off by the pre-roll.
         let lag_ref_samples = (lag_osc / ops * SAMPLE_RATE as f64).round().max(0.0) as usize;
-        let ir_start = lag_ref_samples.saturating_sub(crate::call::nlms::PRE);
+        let ir_start = lag_ref_samples.saturating_sub(crate::wave::nlms::PRE);
         crate::logf!(
-            "CALL: v-chirp — g {} delay {}ms (anchor {}ms + capture pos {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",
+            "WAVE: v-chirp — g {} delay {}ms (anchor {}ms + capture pos {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",
             format!("{g_norm:.4}"),
             delay_bins * 10,
             format!("{anchor_ms:.0}"),
@@ -322,9 +322,9 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
             format!("{:.3}", f.bands[3] / scale),
             format!("{:.3}", f.bands[4] / scale)
         );
-        // Persist thru the learned-profile drain (same blend as the in-call learner, solid tier — a fresh direct measurement of THIS route).
-        crate::call::calibrate::post_learned(vec![crate::call::calibrate::LearnedResult {
-            result: crate::call::calibrate::CalResult::Echo(crate::call::calibrate::EchoProfile {
+        // Persist thru the learned-profile drain (same blend as the in-wave learner, solid tier — a fresh direct measurement of THIS route).
+        crate::wave::calibrate::post_learned(vec![crate::wave::calibrate::LearnedResult {
+            result: crate::wave::calibrate::CalResult::Echo(crate::wave::calibrate::EchoProfile {
                 g_norm,
                 delay_ms: (delay_bins * 10) as u32,
                 cal_vol_db: crate::platform::audio::current_volume_db().map(|_| 0.0),

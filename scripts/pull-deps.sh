@@ -94,7 +94,7 @@ main() {
             fail=1; continue
         fi
 
-        # Report a dirty tree but never touch it: uncommitted work is the human's call, and a deploy off a dirty tree ships something no commit describes.
+        # Report a dirty tree but never touch it: uncommitted work is the human's to judge, and a deploy off a dirty tree ships something no commit describes.
         if [ -n "$(git -C "$d" status --porcelain 2>/dev/null)" ]; then
             dirty="$dirty $r"
             state="$state  [DIRTY]"

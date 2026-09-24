@@ -1,11 +1,11 @@
-//! The media engine (docs/calls.md) — one thread per call: mic frames (5ms CELT, the 2026-09-08 latency flag day) → Opus → RaptorQ window → sealed packets out; packets in → window decode → Opus → speaker.
+//! The media engine (docs/waves.md) — one thread per wave: mic frames (5ms CELT, the 2026-09-08 latency flag day) → Opus → RaptorQ window → sealed packets out; packets in → window decode → Opus → speaker.
 //!
 //! Shape choices, and why:
 //! - **Opus RESTRICTED_LOWDELAY (CELT), CBR, on a channel-aware ladder.** No SILK prediction, no in-band FEC, 2.5ms lookahead — loss repair belongs to the fountain code, not psychoacoustic guesswork. Within a rung the wire is constant-size CBR (traffic-shape privacy); the rung climbs/drops only on channel evidence (see the TIER_RATES block).
 //! - **RaptorQ over a tier-sized window (8×5ms at the floor, down to 2×5ms at the top rungs), one datagram per window.** Frames length-prefix into that rung's fixed slots; the sealed payload is [ctrl][source(N)][repair(N−1)] — the repair PIGGYBACKS on the next window's datagram, so the two copies ride 10-40ms apart (burst-loss immunity), and seq IS the window id. The ctrl byte names both rungs; steady-state latency is untouched (only loss RECOVERY waits one window).
 //! - **No PLC.** A window that can't decode is silence (the playback queue runs dry and renders zeros) — never synthesized guesswork.
-//! - **The peer's address FOLLOWS its authenticated packets**: a media packet that opens under the call key re-points our TX at its source address. NAT rebinds and (later) device handoff work without any signaling — the AEAD is the authorization.
-//! - Teardown zeroizes both step chains ([`keys::StepChain`] Drop) — the call becomes undecryptable everywhere, forever.
+//! - **The peer's address FOLLOWS its authenticated packets**: a media packet that opens under the wave key re-points our TX at its source address. NAT rebinds and (later) device handoff work without any signaling — the AEAD is the authorization.
+//! - Teardown zeroizes both step chains ([`keys::StepChain`] Drop) — the wave becomes undecryptable everywhere, forever.
 
 use super::keys::{Direction, StepChain};
 use super::packet;
@@ -20,16 +20,16 @@ const TIER_FRAMES: [usize; 5] = [8, 4, 2, 2, 1];
 // Repair symbols per window — with the symbol spanning the WHOLE window (see `oti`), 1 repair = 2 packets per window and the window survives EITHER packet lost. This beats the old 3-source+2-repair spread on both axes: fewer bytes (2 packets not 5) AND better loss odds (window dies only when BOTH packets drop, p² vs the old ≥3-of-5 tail).
 const REPAIR_PACKETS: u32 = 1;
 
-// CHANNEL-AWARE CBR LADDER (Nick's call 2026-08-19, flag day #2): four rungs 16k → 128k, every call starts at rung 0 and climbs on evidence — TCP-slow-start for voice.
+// CHANNEL-AWARE CBR LADDER (Nick's ruling 2026-08-19, flag day #2): four rungs 16k → 128k, every wave starts at rung 0 and climbs on evidence — TCP-slow-start for voice.
 // The rate is CHANNEL-driven, never content-driven: within a rung everything is constant-size CBR (the VBR phoneme side channel stays closed), and a rung switch only tells an observer what the network already shows them.
 // Slots and windows are TIER-SIZED so low rungs are genuinely cheap on the wire — a fixed max-size slot would pad 16k out to 128k's cost (the padding trap).
-// The ctrl byte names each symbol's rung (a switch between windows makes the bundle's two symbols different sizes — length alone went ambiguous when the repair started piggybacking); a mid-call switch decodes seamlessly.
+// The ctrl byte names each symbol's rung (a switch between windows makes the bundle's two symbols different sizes — length alone went ambiguous when the repair started piggybacking); a mid-wave switch decodes seamlessly.
 // Dynamics are AIMD on edges, not timers: CLIMB_CLEAN_WINDOWS completed windows → one rung up; a lost window → DROP_RUNGS_ON_LOSS down.
-// Climb evidence is RECEIVE-side cleanliness — a proxy for the channel both ways until a call_stats feedback frame exists (deferred in docs/calls.md); comment here so nobody mistakes it for measured TX loss.
+// Climb evidence is RECEIVE-side cleanliness — a proxy for the channel both ways until a wave_stats feedback frame exists (deferred in docs/waves.md); comment here so nobody mistakes it for measured TX loss.
 // Opus bandwidth follows bitrate automatically (NB at 16k thru fullband at 128k), so this ladder IS the 8kHz→48kHz ramp with the PCM interface pinned at 48k.
 // FLAG-DAY: pre-ladder builds cannot parse this wire at all; the whole fleet updates together.
 pub const TIER_RATES: [i32; 5] = [16_000, 32_000, 64_000, 128_000, 768_000];
-/// The rungs' names for the call panel (Nick 2026-09-11: "spaceball themed names for the quality rungs"): Spaceballs' speeds, bottom to top, the top rung already being plaid.
+/// The rungs' names for the wave panel (Nick 2026-09-11: "spaceball themed names for the quality rungs"): Spaceballs' speeds, bottom to top, the top rung already being plaid.
 pub const TIER_NAMES: [&str; 5] = ["sublight", "light speed", "ridiculous speed", "ludicrous speed", "plaid"];
 
 /// A rung's name; anything off the ladder reads as the floor.
@@ -41,10 +41,10 @@ const RAW_TIER: usize = 4;
 const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 /// Clean 10 ms windows in a row that earn the plaid rung (1 s at the 128 kbps rung's cadence).
 const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
-/// Lost windows inside LOSS_WINDOW that push a plaid call back to 128 kbps: 20 of ~400 = a 5 % loss rate. Below that the crispies are the price of the hot buffer.
+/// Lost windows inside LOSS_WINDOW that push a plaid wave back to 128 kbps: 20 of ~400 = a 5 % loss rate. Below that the crispies are the price of the hot buffer.
 const PLAID_LOSSES_TO_DROP: usize = 20;
-// PLAID ANYWHERE THE PATH HAS HEADROOM (Nick 2026-09-14: "my calls from here to Pennsylvania on my 350 megabit interwebs and his gig interwebs should be plaid all the way down"). The LAN gate was a proxy for bandwidth; the honest gate is the path itself: a queue that is filling shows up as RTT GROWTH before it shows up as loss (bufferbloat's tell), so the raw rung is earned only while the RTT floor has not risen, and one loss cluster at plaid steps straight back to the codec (drop-hold waived for that edge). Plaid's loss behaviour is BETTER than Opus's (memoryless: one lost 5 ms datagram is exactly 5 ms of hole with a fade at each edge; CELT's overlap-add damages the neighbour and synthesizes the splice) — the only thing the 768 kbps costs is headroom, and headroom is what this measures.
-/// The raw rung is off the table while the recent RTT floor sits this far above the call's own floor: a queue is building somewhere on the path.
+// PLAID ANYWHERE THE PATH HAS HEADROOM (Nick 2026-09-14: "my waves from here to Pennsylvania on my 350 megabit interwebs and his gig interwebs should be plaid all the way down"). The LAN gate was a proxy for bandwidth; the honest gate is the path itself: a queue that is filling shows up as RTT GROWTH before it shows up as loss (bufferbloat's tell), so the raw rung is earned only while the RTT floor has not risen, and one loss cluster at plaid steps straight back to the codec (drop-hold waived for that edge). Plaid's loss behaviour is BETTER than Opus's (memoryless: one lost 5 ms datagram is exactly 5 ms of hole with a fade at each edge; CELT's overlap-add damages the neighbour and synthesizes the splice) — the only thing the 768 kbps costs is headroom, and headroom is what this measures.
+/// The raw rung is off the table while the recent RTT floor sits this far above the wave's own floor: a queue is building somewhere on the path.
 const PLAID_RTT_GROWTH_MS: u32 = 40;
 /// Off-LAN, the raw rung also wants a LOSS-FREE recent history — the RTT floor is blind to radio loss (field 2026-09-14, Nick/Emma on cellular: eight 16↔32 kbps flaps with 876 windows lost in twenty seconds, then a clean second and the ladder climbed 32→64→128→plaid in three seconds, and Nick's cellular uplink drowned under 768 kbps — Emma's receive fell to 152 fps with nothing to declare lost). No loss cluster inside this window, and the loss ring near-empty, before plaid is earned away from home.
 const PLAID_OFF_LAN_LOSS_QUIET: std::time::Duration = std::time::Duration::from_secs(30);
@@ -76,7 +76,7 @@ const SLOPE_CAPACITY_MARGIN: f32 = 0.85;
 const PEER_LOSS_CATASTROPHIC: u32 = 20;
 /// The corroborating-queue threshold for a loss drop: ema this far over the floor says the loss is congestion's.
 const LOSS_BLOAT_CORROBORATION_MS: f32 = 100.0;
-/// BUFFERBLOAT'S OTHER TELL (field 2026-09-14 17:30, the double-plaid cellular wave: per-window loss near zero yet RTT ema climbed 60 ms → 3.5 s while the FLOOR held 38 — under a standing queue the min slips thru but the mean drowns): off-LAN plaid drops, and the raw rung is barred, while the RTT ema sits this far above the call's floor.
+/// BUFFERBLOAT'S OTHER TELL (field 2026-09-14 17:30, the double-plaid cellular wave: per-window loss near zero yet RTT ema climbed 60 ms → 3.5 s while the FLOOR held 38 — under a standing queue the min slips thru but the mean drowns): off-LAN plaid drops, and the raw rung is barred, while the RTT ema sits this far above the wave's floor.
 const PLAID_RTT_EMA_BLOAT_MS: f32 = 250.0;
 // RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
 /// Window seqs asked per fill datagram.
@@ -91,7 +91,7 @@ const FILL_LIVE_HORIZON_MS: f32 = 600.0;
 const FILL_REQ_DRAIN: std::time::Duration = std::time::Duration::from_millis(8);
 /// Drain heartbeat: flags + our final window count go out at least this often so the peer's tail list closes.
 const FILL_HEARTBEAT: std::time::Duration = std::time::Duration::from_millis(40);
-/// The post-hangup drain deadline — a peer that vanished (the call died with the link) must not hold the recording open; what landed by now is the recording.
+/// The post-hangup drain deadline — a peer that vanished (the wave died with the link) must not hold the recording open; what landed by now is the recording.
 const DRAIN_MAX: std::time::Duration = std::time::Duration::from_millis(2500);
 /// The wanted set's cap: a link losing more than this many windows is not one a drain can mend.
 const FILL_WANTED_CAP: usize = 4096;
@@ -103,7 +103,7 @@ const TX_INDEX_CAP: usize = 1 << 20;
 const TIER_MAX_ENC: [usize; 5] = [12, 22, 42, 82, 486];
 /// Completed-window streak that earns one rung up (~0.25s at 10ms windows, ~1s at the floor's 40ms) — the fast first climb keeps the POTS-ish floor a blink on a clean link.
 const CLIMB_CLEAN_WINDOWS: u32 = 25;
-/// LADDER HYSTERESIS (field 2026-09-09, the Emma+Nick LAN call: 27 ups / 13 downs in 53s — a burst of paired losses dropped two rungs per lost window and 25 clean windows climbed back in a quarter second at the top rungs, so the rate flapped 16↔64 kbps every 300ms for five seconds). Three edges-not-timers rules on top of AIMD: a climb needs CLIMB_HOLD since the last change as well as the clean streak (so the streak means the same at every rung); a drop needs LOSSES_TO_DROP lost windows inside LOSS_WINDOW (one lost pair on an otherwise clean channel is not a congestion signal); and no climb for DROP_HOLD after a drop.
+/// LADDER HYSTERESIS (field 2026-09-09, the Emma+Nick LAN wave: 27 ups / 13 downs in 53s — a burst of paired losses dropped two rungs per lost window and 25 clean windows climbed back in a quarter second at the top rungs, so the rate flapped 16↔64 kbps every 300ms for five seconds). Three edges-not-timers rules on top of AIMD: a climb needs CLIMB_HOLD since the last change as well as the clean streak (so the streak means the same at every rung); a drop needs LOSSES_TO_DROP lost windows inside LOSS_WINDOW (one lost pair on an otherwise clean channel is not a congestion signal); and no climb for DROP_HOLD after a drop.
 const CLIMB_HOLD: std::time::Duration = std::time::Duration::from_millis(1000);
 const LOSS_WINDOW: std::time::Duration = std::time::Duration::from_millis(2000);
 const LOSSES_TO_DROP: usize = 2;
@@ -123,7 +123,7 @@ const fn tier_window_bytes(tier: usize) -> usize {
 
 // THE MIC IS UNTOUCHED (Nick 2026-09-13: "mic needs untouched before it hits the wire, filtering is always done on the speaker side which is only temporary… if the mic level gets hot, drop the speaker volume right before it gets played, do not keep record of post filtered values"). No AGC, no canceller, no duck on the TX path: the captured frame is what the wire carries, so the wire copy IS the good copy of every party and a kept wave needs only its missed windows filled. The echo control is the SPEAKER duck in platform::audio (`SPEAKER_DUCK_MIC_FULL`): the render frame is scaled by the mic level of the moment, right before the DAC, and nothing records it. The PID level loop, the chirp-seeded NLMS subtract and the linear mic duck that lived here until this day are in the history.
 // NO OUTPUT PAD ON THE WAVE (2026-09-13 19:53 wave, Brittany: "quiet even at max volume" — her normalizer rode its gain to the 16× clamp against Nick's 147-mean mic, and the 4-stop pad composed into the same stage capped the EFFECTIVE lift at 16/16 = 1.0: her rx(play) tallied 148, bit-for-bit his raw level). The pad predates the normalizer (raw full-scale plaid ran the loudspeaker hot, 2026-09-03); now the RX_TARGET_LEVEL IS the output level control (~−18 dBFS mean), the rocker governs the rest, and padding the normalizer's output four stops only threw away the headroom it exists to provide. The ringback keeps its own pad (it is a full-scale clip, not a normalized stream — super::OUTPUT_PAD_STOPS lives on for it).
-// THE LEVEL PLAN (Nick 2026-09-13 night: "keep the levels fixed if the mic is calibrated and let the user listening do the volume adjustment with the rocker… calibrated mic level goes on the wire and in the archive"). Bell ran the telephone network exactly this way — every link at a defined level, the earpiece knob the only variable — and calibrated capture brings it back: the Unprocessed preset is CDD-calibrated (94 dB SPL ≡ ~520 RMS), so the mic's number MEANS an SPL. TX applies ONE fixed makeup constant (a recording level — deterministic, invertible, not an AGC) and the cubic rail shaper (qgain::cubic_rail: slope 3/2 at the origin, folded in below; slope 0 at the rails; 3rd-order-only distortion; exactly invertible), and that shaped calibrated signal IS the wire and the archive. RX applies NOTHING adaptive: decode → speaker duck → DAC, the rocker is the only adjustment, per call, thru the OS voice stream. A quiet talker is quiet, like standing next to them. The RX normalizer (one afternoon of life, three field waves) is deleted, not demoted — its whole job was unknown mic levels, and the plan makes them known.
+// THE LEVEL PLAN (Nick 2026-09-13 night: "keep the levels fixed if the mic is calibrated and let the user listening do the volume adjustment with the rocker… calibrated mic level goes on the wire and in the archive"). Bell ran the telephone network exactly this way — every link at a defined level, the earpiece knob the only variable — and calibrated capture brings it back: the Unprocessed preset is CDD-calibrated (94 dB SPL ≡ ~520 RMS), so the mic's number MEANS an SPL. TX applies ONE fixed makeup constant (a recording level — deterministic, invertible, not an AGC) and the cubic rail shaper (qgain::cubic_rail: slope 3/2 at the origin, folded in below; slope 0 at the rails; 3rd-order-only distortion; exactly invertible), and that shaped calibrated signal IS the wire and the archive. RX applies NOTHING adaptive: decode → speaker duck → DAC, the rocker is the only adjustment, per wave, thru the OS voice stream. A quiet talker is quiet, like standing next to them. The RX normalizer (one afternoon of life, three field waves) is deleted, not demoted — its whole job was unknown mic levels, and the plan makes them known.
 /// The wire's voiced-speech mean |sample| — the plan level. 2048 ≈ −22 dBFS RMS with speech's 12-15 dB crest factor putting peaks near −8 dBFS: the rail is rarely touched and the rocker has headroom both ways (4096 until 2026-09-14 — "pretty hot": peaks at full scale on every syllable, the rail working constantly). Bell's plan ran speech near −20 dBm0; this is that. The shaper's origin slope is 3/2, so the pre-shaper target is ×⅔ of this.
 const TX_WIRE_TARGET: i64 = 2048;
 /// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
@@ -133,28 +133,28 @@ const CDD_REF_SENS_DBFS: f32 = -36.0;
 
 pub struct EngineParams {
     pub secret: [u8; 32],
-    pub we_are_caller: bool,
+    pub we_are_origin: bool,
     pub peer_addr: SocketAddr,
-    /// Recording spool (key, path) — recording by default; None only when the spool couldn't be minted (disk trouble; the call proceeds unrecorded, logged).
+    /// Recording spool (key, path) — recording by default; None only when the spool couldn't be minted (disk trouble; the wave proceeds unrecorded, logged).
     pub spool: Option<([u8; 32], std::path::PathBuf)>,
-    /// The stored calibration for the route/mic this call starts on — read on the UI thread (the engine can't touch settings). None = uncalibrated: reactive duck + PID until the in-call learner reaches Usable and arms the predictive path itself.
+    /// The stored calibration for the route/mic this wave starts on — read on the UI thread (the engine can't touch settings). None = uncalibrated: reactive duck + PID until the in-wave learner reaches Usable and arms the predictive path itself.
     pub cal: Option<CalSnapshot>,
     /// The peer sits on a LAN-class direct path — the ladder may climb past 128 kbps to the raw PCM plaid rung.
     pub plaid_allowed: bool,
 }
 
-/// The stored profile snapshot for this route/mic. Since the level plan, the engine reads ONE field: `voiced`, this device's measured raw voiced level, which sets the fixed TX makeup for the whole call. g/delay/floor ride along for the log and future loudspeaker work.
+/// The stored profile snapshot for this route/mic. Since the level plan, the engine reads ONE field: `voiced`, this device's measured raw voiced level, which sets the fixed TX makeup for the whole wave. g/delay/floor ride along for the log and future loudspeaker work.
 #[derive(Debug, Clone, Copy)]
 pub struct CalSnapshot {
     pub g_norm: f32,
     pub delay_bins: usize,
-    /// This mic's measured raw voiced mean |sample| (blended across calls, fleet-synced per device+input) — the makeup's denominator. None until the first call measures it.
+    /// This mic's measured raw voiced mean |sample| (blended across waves, fleet-synced per device+input) — the makeup's denominator. None until the first wave measures it.
     pub voiced: Option<f32>,
-    /// This mic's measured quiet (fractional coarse units since 2026-09-15 — the fine floor): the seed's second rung when no voiced profile exists, ranked ABOVE the vendor sensitivity (Nick: "normalize on quiet" — the quiet is measured on this device, the vendor number is marketing). None until a call measures it; a talkless call still posts one.
+    /// This mic's measured quiet (fractional coarse units since 2026-09-15 — the fine floor): the seed's second rung when no voiced profile exists, ranked ABOVE the vendor sensitivity (Nick: "normalize on quiet" — the quiet is measured on this device, the vendor number is marketing). None until a wave measures it; a talkless wave still posts one.
     pub floor: Option<f32>,
 }
 
-/// Handle held by the UI's ActiveCall. Dropping it does NOT stop the engine — call `stop()` (teardown is an explicit edge).
+/// Handle held by the UI's ActiveWave. Dropping it does NOT stop the engine — call `stop()` (teardown is an explicit edge).
 pub struct EngineHandle {
     stop: Arc<AtomicBool>,
     pub muted: Arc<AtomicBool>,
@@ -167,7 +167,7 @@ impl EngineHandle {
         self.stop.store(true, Ordering::SeqCst);
     }
 
-    /// Hand the engine thread's join handle to whoever must wait for the spool to go quiet (end_call → the keep).
+    /// Hand the engine thread's join handle to whoever must wait for the spool to go quiet (end_wave → the keep).
     pub fn take_thread(&self) -> Option<std::thread::JoinHandle<()>> {
         self.thread.lock().ok().and_then(|mut t| t.take())
     }
@@ -194,19 +194,19 @@ pub fn start(params: EngineParams) -> EngineHandle {
     // CLAIM the session (start_owned): against a live ringback session this is the click-free handover, and the ringback's own late stop becomes a no-op because the generation moved on.
     let _ = crate::platform::audio::start_owned();
     match std::thread::Builder::new()
-        .name("call-engine".into())
+        .name("wave-engine".into())
         .spawn(move || {
-            // Android: the engine thread runs the 5ms capture→send cadence; at default priority both phones in the 2026-09-09 LAN call produced 194 of 200 frames a second (the receiver underruns, the jitter target ratchets). URGENT_AUDIO's nice (-19) is what the platform grants an app's own audio threads.
+            // Android: the engine thread runs the 5ms capture→send cadence; at default priority both phones in the 2026-09-09 LAN wave produced 194 of 200 frames a second (the receiver underruns, the jitter target ratchets). URGENT_AUDIO's nice (-19) is what the platform grants an app's own audio threads.
             #[cfg(target_os = "android")]
             {
                 let rc = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -19) };
-                crate::logf!("CALL: engine thread priority → -19 ({})", if rc == 0 { "ok" } else { "refused" });
+                crate::logf!("WAVE: engine thread priority → -19 ({})", if rc == 0 { "ok" } else { "refused" });
             }
             run(params, stop, muted, sink_rx, sink_gen)
         }) {
         Ok(j) => *handle.thread.lock().unwrap() = Some(j),
         Err(_) => {
-            crate::log("CALL: engine thread spawn failed");
+            crate::log("WAVE: engine thread spawn failed");
             super::clear_media_sink_gen(sink_gen);
             crate::platform::audio::stop();
         }
@@ -221,10 +221,10 @@ fn run(
     sink_rx: std::sync::mpsc::Receiver<(Vec<u8>, SocketAddr)>,
     sink_gen: u64,
 ) {
-    let (tx_dir, rx_dir) = if params.we_are_caller {
-        (Direction::CallerToCallee, Direction::CalleeToCaller)
+    let (tx_dir, rx_dir) = if params.we_are_origin {
+        (Direction::OriginToAnswer, Direction::AnswerToOrigin)
     } else {
-        (Direction::CalleeToCaller, Direction::CallerToCallee)
+        (Direction::AnswerToOrigin, Direction::OriginToAnswer)
     };
     let mut tx_chain = StepChain::new(&params.secret, tx_dir);
     let mut rx_chain = StepChain::new(&params.secret, rx_dir);
@@ -253,11 +253,11 @@ fn run(
     let mut encoder = match opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay) {
         Ok(mut e) => {
             let _ = e.set_vbr(false); // CBR — traffic-shape privacy (VBR leaks the speech envelope via packet sizes)
-            let _ = e.set_bitrate(opus::Bitrate::Bits(TIER_RATES[0])); // every call starts at the ladder floor and climbs on evidence
+            let _ = e.set_bitrate(opus::Bitrate::Bits(TIER_RATES[0])); // every wave starts at the ladder floor and climbs on evidence
             e
         }
         Err(e) => {
-            crate::logf!("CALL: opus encoder init failed: {}", e);
+            crate::logf!("WAVE: opus encoder init failed: {}", e);
             teardown(sink_gen);
             return;
         }
@@ -265,7 +265,7 @@ fn run(
     let mut decoder = match opus::Decoder::new(48_000, opus::Channels::Mono) {
         Ok(d) => d,
         Err(e) => {
-            crate::logf!("CALL: opus decoder init failed: {}", e);
+            crate::logf!("WAVE: opus decoder init failed: {}", e);
             teardown(sink_gen);
             return;
         }
@@ -276,7 +276,7 @@ fn run(
         .as_ref()
         .and_then(|(k, p)| super::spool::SpoolWriter::create(k, p));
     if spool.is_none() {
-        crate::log("CALL: no spool — this call is not being recorded");
+        crate::log("WAVE: no spool — this wave is not being recorded");
     }
     let mut peer = params.peer_addr;
     // The plaid gate as the engine LIVES it: seeded by the spawn's read of the initial address, re-evaluated on every media re-point (see "PLAID FOLLOWS THE PATH").
@@ -286,7 +286,7 @@ fn run(
     // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
-    // Repair symbols waiting to ship: window n's datagram carries the repair of window n−2 (2026-09-09, the Emma/Nick and Brittany/Nick LAN calls: losses came in consecutive PAIRS, and with the repair one datagram behind its source a two-datagram burst killed the window every time — 65 and 121 lost windows on a 5ms LAN). Two back, a two-datagram burst can never take both symbols of one window; a lost source now waits one extra window for its repair, and only when it was lost.
+    // Repair symbols waiting to ship: window n's datagram carries the repair of window n−2 (2026-09-09, the Emma/Nick and Brittany/Nick LAN waves: losses came in consecutive PAIRS, and with the repair one datagram behind its source a two-datagram burst killed the window every time — 65 and 121 lost windows on a 5ms LAN). Two back, a two-datagram burst can never take both symbols of one window; a lost source now waits one extra window for its repair, and only when it was lost.
     let mut repair_queue: std::collections::VecDeque<(usize, Vec<u8>)> = std::collections::VecDeque::new();
     let mut window_buf: Vec<u8> = Vec::with_capacity(tier_window_bytes(TIER_RATES.len() - 1));
     let mut frames_in_window = 0usize;
@@ -300,14 +300,14 @@ fn run(
     let mut last_tier_drop: Option<std::time::Instant> = None;
     let mut recent_losses: std::collections::VecDeque<std::time::Instant> = std::collections::VecDeque::new();
     let (mut tier_ups, mut tier_downs) = (0u32, 0u32);
-    // The TX level plan: the makeup denominator resolves ONCE, at engine start — stored per-input voiced profile (measured on past calls, fleet-synced) beats the vendor's reported sensitivity beats the CDD default. Fixed for the whole call; never adapted inside one.
+    // The TX level plan: the makeup denominator resolves ONCE, at engine start — stored per-input voiced profile (measured on past waves, fleet-synced) beats the vendor's reported sensitivity beats the CDD default. Fixed for the whole wave; never adapted inside one.
     let (cal_voiced, cal_src) = match params.cal.as_ref().and_then(|c| c.voiced).filter(|v| *v >= 8.0) {
         Some(v) => (v as i64, "stored"),
-        // QUIET OUTRANKS THE VENDOR (Nick 2026-09-15, "normalize on quiet"): a stored fine floor × a nominal 20× speech-over-quiet seeds the makeup when no voiced profile exists yet — the quiet was MEASURED on this device where the sensitivity is a vendor claim (sign flips between vendors, ~10 dB off even when plausible). Bounded like the sensitivity estimate; the in-call re-aim corrects it from real speech within seconds anyway.
+        // QUIET OUTRANKS THE VENDOR (Nick 2026-09-15, "normalize on quiet"): a stored fine floor × a nominal 20× speech-over-quiet seeds the makeup when no voiced profile exists yet — the quiet was MEASURED on this device where the sensitivity is a vendor claim (sign flips between vendors, ~10 dB off even when plausible). Bounded like the sensitivity estimate; the in-wave re-aim corrects it from real speech within seconds anyway.
         None => match params.cal.as_ref().and_then(|c| c.floor).filter(|f| *f > 0.05) {
             Some(f) => (((f * 20.0).clamp(16.0, 512.0)) as i64, "floor-derived (stored quiet x 20)"),
             None => match crate::platform::audio::mic_sensitivity_dbfs() {
-            // Only a PLAUSIBLE sensitivity is believed (field 2026-09-13 23:47: Nick's vendor reports ~−8 dBFS at 94 dB SPL — physically absurd — and the derived 2048 gave a 1.3× makeup, his voice at 66 on the wire). Real elements sit −25..−50 dBFS; outside that the report is garbage and the default carries until the first call's measurement stores the truth.
+            // Only a PLAUSIBLE sensitivity is believed (field 2026-09-13 23:47: Nick's vendor reports ~−8 dBFS at 94 dB SPL — physically absurd — and the derived 2048 gave a 1.3× makeup, his voice at 66 on the wire). Real elements sit −25..−50 dBFS; outside that the report is garbage and the default carries until the first wave's measurement stores the truth.
             Some(s) if (-50.0..=-25.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity"),
             // Nick's vendor reports +37.0 where Emma's reports −37.0 — the HAL's sign convention is backwards. A positive magnitude in the plausible band is believed, negated.
             Some(s) if (25.0..=50.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((-s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity (vendor sign flipped)"),
@@ -318,35 +318,35 @@ fn run(
     };
     // Clamped to qgain's 16× budget (field 2026-09-15, the crackling wave: Nick's stored voiced 45 — calibrated on quiet afternoon test waves — minted a 30.3× makeup against real speech at 165, wire ran ~6000 against the 2048 target, and every syllable's peaks sat on the rail; Brittany mirror-imaged it at 16.4× on voiced 83 vs 490). A too-low cap means a quiet wave and a rocker; a too-high makeup means crackle — quiet errs safe.
     let tx_makeup_uncapped: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
-    // mut for the ONE-TIME re-aim below — the profile aims the first seconds, this call's own measurement aims the rest.
-    let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(16 * crate::call::qgain::UNITY);
+    // mut for the ONE-TIME re-aim below — the profile aims the first seconds, this wave's own measurement aims the rest.
+    let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(16 * crate::wave::qgain::UNITY);
     crate::logf!(
-        "CALL: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
-        format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
+        "WAVE: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
+        format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
         TX_WIRE_TARGET,
         cal_voiced,
         cal_src,
         if tx_makeup_uncapped > tx_makeup_q32 {
-            format!("; capped from {:.1}x", tx_makeup_uncapped as f64 / crate::call::qgain::UNITY as f64)
+            format!("; capped from {:.1}x", tx_makeup_uncapped as f64 / crate::wave::qgain::UNITY as f64)
         } else {
             String::new()
         }
     );
-    let mut tx_stage = crate::call::qgain::QGain::new(tx_makeup_q32);
-    // This call's own measurement of the raw mic (pre-makeup): a min-statistic floor and the voiced mean above it — posted at teardown as the NEXT call's makeup denominator, blended and fleet-synced per input.
-    // QUIET IS THE ANCHOR (Nick 2026-09-15, "normalize on quiet"): everything voiced is decided RELATIVE to this call's own measured quiet, because the speech-over-quiet ratio is the one statistic the device's unknown input gain cancels out of. Two trackers, both in FULL 24-bit resolution (256 = one coarse unit — the integer floor was quantization-blind: two phones both said "floor 1" with speech at 90 and 22):
+    let mut tx_stage = crate::wave::qgain::QGain::new(tx_makeup_q32);
+    // This wave's own measurement of the raw mic (pre-makeup): a min-statistic floor and the voiced mean above it — posted at teardown as the NEXT wave's makeup denominator, blended and fleet-synced per input.
+    // QUIET IS THE ANCHOR (Nick 2026-09-15, "normalize on quiet"): everything voiced is decided RELATIVE to this wave's own measured quiet, because the speech-over-quiet ratio is the one statistic the device's unknown input gain cancels out of. Two trackers, both in FULL 24-bit resolution (256 = one coarse unit — the integer floor was quantization-blind: two phones both said "floor 1" with speech at 90 and 22):
     // raw_floor_q8 — the min-statistic fine floor, stored per mic at teardown (the seed's quiet rung);
     // noise_est_q8 — a slow-rise / fast-fall room tracker, the voiced gate's bar (the min undershoots bursty room noise by 10×+ — HVAC, rustling — which is how noise at 19 coarse passed a floor-anchored gate and aimed 64× at silence).
     let mut raw_floor_q8: i64 = i64::MAX;
     let mut noise_est_q8: i64 = 0;
     let mut voiced_sum_q8: i64 = 0;
-    // The re-aim's evidence: every voiced frame mean since the last decision (fresh evidence per step; cleared on fire and on a failed dynamics gate). Two steps per call at most — the first from 4 s of speech, one correction if 8 s of later evidence proves it ≥2× wrong (field 2026-09-15 16:54–16:57: four waves in a row fired on 2 s of pre-conversation breath and handling at 7–25 coarse — "4–12× its quiet", the relative gate satisfied — and hit the 64× cap; the real speech that followed ran 53–115 and the wire sat 1.5–2× hot on the rail: "splotchy").
+    // The re-aim's evidence: every voiced frame mean since the last decision (fresh evidence per step; cleared on fire and on a failed dynamics gate). Two steps per wave at most — the first from 4 s of speech, one correction if 8 s of later evidence proves it ≥2× wrong (field 2026-09-15 16:54–16:57: four waves in a row fired on 2 s of pre-conversation breath and handling at 7–25 coarse — "4–12× its quiet", the relative gate satisfied — and hit the 64× cap; the real speech that followed ran 53–115 and the wire sat 1.5–2× hot on the rail: "splotchy").
     let mut reaim_ring: Vec<i64> = Vec::with_capacity(4096);
     let mut reaim_steps: u8 = 0;
     let makeup_start_q32 = tx_makeup_q32;
     let mut reaim_history: Vec<(u32, u32, u32)> = Vec::new();
     let mut voiced_frames: i64 = 0;
-    // `mut`: live route tracking below re-evaluates this on a mid-call swap (the old engine cached it once — a BT headset connecting mid-call kept ducking a route with no acoustic path).
+    // `mut`: live route tracking below re-evaluates this on a mid-wave swap (the old engine cached it once — a BT headset connecting mid-wave kept ducking a route with no acoustic path).
     let mut route_ducks = !matches!(
         crate::platform::audio::route(),
         crate::platform::audio::AudioRoute::Headset
@@ -382,12 +382,12 @@ fn run(
     let mut loss_integ: f32 = 0.0;
     let mut last_underruns: usize = 0;
     let mut jitter_target: usize = TIER_FRAMES[0];
-    // Link tail state: the peer's newest stamp + when it arrived (for the hold), and RTT statistics (min / EMA / max, sample count) over the call and over the last stats window.
+    // Link tail state: the peer's newest stamp + when it arrived (for the hold), and RTT statistics (min / EMA / max, sample count) over the wave and over the last stats window.
     let mut peer_stamp: Option<(u32, std::time::Instant)> = None;
     // Peer-loss governance state (see LINK_TAIL_V2): the tail byte's per-second baseline, the peer's max reported loss this local second, whether this peer speaks the byte at all, the last moment they reported loss, and the fill-ask pressure counter.
     let mut tail_lost_base: u64 = 0;
     let mut peer_loss_sec_max: u32 = 0;
-    let mut peer_loss_max_call: u32 = 0;
+    let mut peer_loss_max_wave: u32 = 0;
     let mut peer_sends_loss = false;
     let mut last_peer_loss_at: Option<std::time::Instant> = None;
     let mut fill_asks_sec: u32 = 0;
@@ -425,12 +425,12 @@ fn run(
     let (mut fills_asked, mut fills_got_live, mut fills_got_drain, mut fills_nacked, mut fills_served, mut fills_served_drain) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
-    // Capture cadence forensics (2026-09-09: both phones, both calls, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
+    // Capture cadence forensics (2026-09-09: both phones, both waves, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
     let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
 
     crate::logf!(
-        "CALL: engine up — tx {} → {}, ladder {}..{} kbps (start {}{}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
-        if params.we_are_caller { "c>e" } else { "e>c" },
+        "WAVE: engine up — tx {} → {}, ladder {}..{} kbps (start {}{}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
+        if params.we_are_origin { "c>e" } else { "e>c" },
         peer,
         TIER_RATES[0] / 1000,
         TIER_RATES[TIER_RATES.len() - 1] / 1000,
@@ -439,16 +439,16 @@ fn run(
         TIER_FRAMES[0],
         REPAIR_PACKETS,
         if route_ducks { "mic untouched, speaker ducks on the mic level" } else { "mic untouched, no duck — headset" },
-        // Calibration substrate readout: WHICH output path + volume this call runs on — the profile key the calibrated duck will look up, loggable now so field logs start naming routes before the calibration lands.
+        // Calibration substrate readout: WHICH output path + volume this wave runs on — the profile key the calibrated duck will look up, loggable now so field logs start naming routes before the calibration lands.
         crate::platform::audio::route_id(),
         crate::platform::audio::current_volume_db()
             .map(|db| format!("{db:.1}dB"))
             .unwrap_or_else(|| "?".into())
     );
 
-    // NO CONNECT PROBE (Nick 2026-09-13 night: "Drop it! I'd connect right away"): the wave's first sound is the caller's voice — no chirp, no probe hold, TX from the first captured frame. The chirp existed to measure coupling/delay/floor for subtraction and prediction, all deleted under the level plan; vchirp/learn stay as modules for the calibration ritual and future loudspeaker work.
+    // NO CONNECT PROBE (Nick 2026-09-13 night: "Drop it! I'd connect right away"): the wave's first sound is the origin's voice — no chirp, no probe hold, TX from the first captured frame. The chirp existed to measure coupling/delay/floor for subtraction and prediction, all deleted under the level plan; vchirp/learn stay as modules for the calibration ritual and future loudspeaker work.
     let start_instant = std::time::Instant::now();
-    // Drought baseline + stale-state drain: the UI measures receive drought against max(start, last rx), and a previous call's redirect must never re-point this one. The ringback left LOCAL_SOURCE set — network audio owns the queue from the first pass.
+    // Drought baseline + stale-state drain: the UI measures receive drought against max(start, last rx), and a previous wave's redirect must never re-point this one. The ringback left LOCAL_SOURCE set — network audio owns the queue from the first pass.
     super::MEDIA_START_OSC.store(vsf::eagle_time_oscillations(), Ordering::Relaxed);
     super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed);
     let _ = super::take_peer_redirect();
@@ -459,7 +459,7 @@ fn run(
         if stop.load(Ordering::Relaxed) && draining.is_none() {
             if peer_fills && spool.is_some() {
                 draining = Some(std::time::Instant::now());
-                crate::logf!("CALL: draining — {} window(s) wanted so far, peer at {} window(s)", wanted.len(), peer_windows.map_or("?".to_string(), |w| w.to_string()));
+                crate::logf!("WAVE: draining — {} window(s) wanted so far, peer at {} window(s)", wanted.len(), peer_windows.map_or("?".to_string(), |w| w.to_string()));
             } else {
                 break;
             }
@@ -496,7 +496,7 @@ fn run(
                 continue; // audio is over — the mic is closed, anything left in the queue is not part of the wave
             }
             if cap_first_osc.is_none() {
-                crate::log("CALL: audio connected — voice from the first captured frame (no probe)");
+                crate::log("WAVE: audio connected — voice from the first captured frame (no probe)");
             }
             cap_first_osc.get_or_insert(cap_osc);
             cap_last_osc = cap_osc;
@@ -541,7 +541,7 @@ fn run(
                 for (o, s) in frame.iter_mut().zip(frame24.iter()) {
                     let acc = *s as i64 * tx_makeup_q32 + carry;
                     carry = acc & 0xFF_FFFF_FFFF;
-                    *o = crate::call::qgain::cubic_rail(acc >> 40) as i16;
+                    *o = crate::wave::qgain::cubic_rail(acc >> 40) as i16;
                 }
                 tx_stage.set_carry(carry);
             }
@@ -573,7 +573,7 @@ fn run(
                 match encoder.encode(&frame, &mut enc) {
                     Ok(n) => (enc, n),
                     Err(e) => {
-                        crate::logf!("CALL: opus encode error: {}", e);
+                        crate::logf!("WAVE: opus encode error: {}", e);
                         continue;
                     }
                 }
@@ -654,12 +654,12 @@ fn run(
                 tx_chain.advance_to(StepChain::step_for_seq(seq));
                 if let Some(wire) = packet::seal(&tx_chain, seq, &payload) {
                     if !super::send_media(wire, peer) {
-                        crate::log("CALL: media TX channel gone — engine stopping");
+                        crate::log("WAVE: media TX channel gone — engine stopping");
                         stop.store(true, Ordering::SeqCst);
                     }
                     pkts_out += 1;
                 }
-                // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the call ended); its ~20-40ms tail is protected only by its source — accepted.
+                // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the wave ended); its ~20-40ms tail is protected only by its source — accepted.
                 repair_queue.push_back((tier, own_repair));
                 window_id = window_id.wrapping_add(1);
                 window_buf.clear();
@@ -669,7 +669,7 @@ fn run(
 
         // ---- RX: sealed packets → fountain windows → opus → speaker ----
         while let Ok((bytes, src)) = sink_rx.try_recv() {
-            // DROP-REASON TALLY (docs/calls.md diagnostics): every RX reject below is a silent `continue`, so a dead call is indistinguishable at engine-down between "packets never reached this device" (addressing/NAT) and "packets arrived but won't decrypt" (basket-secret desync). Count them apart. Field 2026-08-19: a call went Active but engine-down read "0 in" with zero other signal — this tally is the tripwire that says which half broke. `rx_seen` counts datagrams the recv-worker fast-path actually handed us (magic already matched), so `rx_seen > 0 && pkts_in == 0` = arrived-but-undecryptable = secret mismatch; `rx_seen == 0` = never arrived = look at the target address / relay.
+            // DROP-REASON TALLY (docs/waves.md diagnostics): every RX reject below is a silent `continue`, so a dead wave is indistinguishable at engine-down between "packets never reached this device" (addressing/NAT) and "packets arrived but won't decrypt" (basket-secret desync). Count them apart. Field 2026-08-19: a wave went Active but engine-down read "0 in" with zero other signal — this tally is the tripwire that says which half broke. `rx_seen` counts datagrams the recv-worker fast-path actually handed us (magic already matched), so `rx_seen > 0 && pkts_in == 0` = arrived-but-undecryptable = secret mismatch; `rx_seen == 0` = never arrived = look at the target address / relay.
             rx_seen += 1;
             let Some((header, sealed)) = packet::parse_header(&bytes) else {
                 rx_drop_parse += 1;
@@ -728,7 +728,7 @@ fn run(
                 }
                 continue;
             }
-            // No call-id or direction check — both live in the key now: the AEAD below is the whole gate (a stale call's straggler or a cross-direction packet just fails to open).
+            // No wave-id or direction check — both live in the key now: the AEAD below is the whole gate (a stale wave's straggler or a cross-direction packet just fails to open).
             let Some(payload) = packet::open(&mut rx_chain, &header, sealed) else {
                 rx_drop_open += 1;
                 continue; // wrong key/step/tamper — silence, never a guess
@@ -741,16 +741,16 @@ fn run(
             if newer {
                 rx_max_seq = Some(header.seq);
                 if src != peer && src != crate::network::status::RELAY_ADDR {
-                    crate::logf!("CALL: peer media now from {} (was {})", src, peer);
+                    crate::logf!("WAVE: peer media now from {} (was {})", src, peer);
                     peer = src;
-                    super::set_call_tx_addr(Some(peer));
-                    // PLAID FOLLOWS THE PATH (field 2026-09-14 01:42, Emma/Nick: the callee's engine started aimed at 0.0.0.0 — "plaid off — not a LAN path" — and stayed off for the whole wave after media re-pointed to the caller's LAN address; the caller ran plaid the other way). The gate is re-evaluated on every re-point: a LAN-class peer arms it, a WAN one disarms it (the ladder's next climb or drop honours the new answer).
+                    super::set_wave_tx_addr(Some(peer));
+                    // PLAID FOLLOWS THE PATH (field 2026-09-14 01:42, Emma/Nick: the answering side's engine started aimed at 0.0.0.0 — "plaid off — not a LAN path" — and stayed off for the whole wave after media re-pointed to the origin's LAN address; the origin ran plaid the other way). The gate is re-evaluated on every re-point: a LAN-class peer arms it, a WAN one disarms it (the ladder's next climb or drop honours the new answer).
                     let lan = match peer.ip().to_canonical() {
                         std::net::IpAddr::V4(v4) => v4.is_private() || v4.is_link_local(),
                         std::net::IpAddr::V6(v6) => (v6.segments()[0] & 0xffc0) == 0xfe80 || (v6.segments()[0] & 0xfe00) == 0xfc00,
                     };
                     if lan != plaid_allowed {
-                        crate::logf!("CALL: plaid {} — the path is now {}", if lan { "armed" } else { "off" }, if lan { "LAN-class" } else { "not LAN-class" });
+                        crate::logf!("WAVE: plaid {} — the path is now {}", if lan { "armed" } else { "off" }, if lan { "LAN-class" } else { "not LAN-class" });
                         plaid_allowed = lan;
                         if !lan && pending_tier == RAW_TIER {
                             // Raw PCM must not ride a WAN path: step down to the top codec rung at the next window boundary.
@@ -793,7 +793,7 @@ fn run(
                     let lost = t[10] as u32;
                     if lost > 0 {
                         peer_loss_sec_max = peer_loss_sec_max.max(lost);
-                        peer_loss_max_call = peer_loss_max_call.max(lost);
+                        peer_loss_max_wave = peer_loss_max_wave.max(lost);
                         last_peer_loss_at = Some(std::time::Instant::now());
                     }
                 }
@@ -904,7 +904,7 @@ fn run(
                         }
                     }
                     // (The jitter target is the loss loop's, set in the play loop below; the arrival granularity is its floor.)
-                    // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the call-start latency ratchet, field 2026-09-08).
+                    // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the wave-start latency ratchet, field 2026-09-08).
                     rx_done.insert(wid, frames);
                     have_set(&mut rx_have, wid);
                     wanted.remove(&wid);
@@ -917,7 +917,7 @@ fn run(
                     let peer_quiet = |d: std::time::Duration| !peer_sends_loss || last_peer_loss_at.map_or(true, |t| now.duration_since(t) >= d);
                     let next = pending_tier + 1;
                     let need = if next == RAW_TIER { PLAID_CLIMB_CLEAN_WINDOWS } else { CLIMB_CLEAN_WINDOWS };
-                    // Plaid climbs anywhere the path has headroom: the recent RTT floor must sit within PLAID_RTT_GROWTH_MS of the call's own floor.
+                    // Plaid climbs anywhere the path has headroom: the recent RTT floor must sit within PLAID_RTT_GROWTH_MS of the wave's own floor.
                     // The floor in hand: the current window's min once it has a hundred samples (~half a second), else the last closed window's.
                     let floor_now = if win_rtt_n >= 100 { win_rtt_min } else { recent_rtt_floor };
                     let loss_quiet = last_tier_drop.map_or(true, |t| now.duration_since(t) >= PLAID_OFF_LAN_LOSS_QUIET)
@@ -940,9 +940,9 @@ fn run(
                         tier_ups += 1;
                         last_tier_change = now;
                         if pending_tier == RAW_TIER {
-                            crate::log("CALL: tier up → plaid (raw 48 kHz PCM, 768 kbps, one 5 ms frame per datagram)");
+                            crate::log("WAVE: tier up → plaid (raw 48 kHz PCM, 768 kbps, one 5 ms frame per datagram)");
                         } else {
-                            crate::logf!("CALL: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
+                            crate::logf!("WAVE: tier up → {} kbps", TIER_RATES[pending_tier] / 1000);
                         }
                     }
                 }
@@ -983,7 +983,7 @@ fn run(
                         last_tier_drop = Some(now);
                         recent_losses.clear();
                         clean_rx_windows = 0;
-                        crate::logf!("CALL: tier down → {} kbps (plaid on probation: {} underruns in one window — the far uplink is drowning)", TIER_RATES[pending_tier] / 1000, underruns - last_underruns);
+                        crate::logf!("WAVE: tier down → {} kbps (plaid on probation: {} underruns in one window — the far uplink is drowning)", TIER_RATES[pending_tier] / 1000, underruns - last_underruns);
                     }
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, lost, TIER_FRAMES[tier]);
@@ -1031,7 +1031,7 @@ fn run(
                         last_tier_drop = Some(now);
                         recent_losses.clear();
                         crate::logf!(
-                            "CALL: tier down → {} kbps ({} windows lost within {}s)",
+                            "WAVE: tier down → {} kbps ({} windows lost within {}s)",
                             TIER_RATES[pending_tier] / 1000,
                             need,
                             LOSS_WINDOW.as_secs()
@@ -1123,15 +1123,15 @@ fn run(
         if let Some(a) = super::take_peer_redirect() {
             // A path that has carried authenticated media is never yanked off by a signal (field 2026-09-12: the other side's rescue probe re-anchored a live LAN wave onto a dead IPv6 address). The media plane's own forward-progress rule still re-points TX when the PEER'S packets arrive from somewhere new — that is the heal that stays.
             if a != peer && rx_max_seq.is_none() {
-                crate::logf!("CALL: peer re-anchored via express → {} (was {})", a, peer);
+                crate::logf!("WAVE: peer re-anchored via express → {} (was {})", a, peer);
                 peer = a;
-                super::set_call_tx_addr(Some(peer));
+                super::set_wave_tx_addr(Some(peer));
             } else if a != peer {
-                crate::logf!("CALL: express named {} but media has flowed from {} — keeping the working path", a, peer);
+                crate::logf!("WAVE: express named {} but media has flowed from {} — keeping the working path", a, peer);
             }
         }
 
-        // Live readout once a second (the call panel's stats line on every build); the log line keeps its 10 s cadence below.
+        // Live readout once a second (the wave panel's stats line on every build); the log line keeps its 10 s cadence below.
         if last_live_stats.elapsed() >= std::time::Duration::from_secs(1) {
             last_live_stats = std::time::Instant::now();
             if rtt_n > 0 {
@@ -1154,7 +1154,7 @@ fn run(
                 super::LAST_LINK_LOSS.store(losses, Ordering::Relaxed);
                 super::LAST_LINK_TARGET.store(jitter_target as u32, Ordering::Relaxed);
                 crate::logf!(
-                    "CALL: link — rtt {} ms (min {} max {}, {} samples this window), loss {}/256 ring ({} lost this window), jitter target {} depth {} underruns {}",
+                    "WAVE: link — rtt {} ms (min {} max {}, {} samples this window), loss {}/256 ring ({} lost this window), jitter target {} depth {} underruns {}",
                     if win_rtt_n > 0 { format!("{:.0}", rtt_ema) } else { "?".to_string() },
                     if win_rtt_n > 0 { win_rtt_min.to_string() } else { "?".to_string() },
                     win_rtt_max,
@@ -1173,7 +1173,7 @@ fn run(
             }
             let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
             crate::logf!(
-                "CALL: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; k {} volume {} wire {}",
+                "WAVE: echo — speaker mean gain {}‰ over {} render frames, {} at half or under; k {} volume {} wire {}",
                 spk_mean,
                 spk_frames,
                 spk_half,
@@ -1187,7 +1187,7 @@ fn run(
             .map_or(1.0, |db| 10f32.powf(db / 20.0));
         if last_est.elapsed() >= std::time::Duration::from_secs(1) {
             last_est = std::time::Instant::now();
-            // THE RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS call holds 4 s of speech-like far-quiet-gated voiced evidence, the makeup steps exactly onto the plan; one correction is allowed if 8 s of later evidence proves that step ≥2× wrong; then it is fixed for the call — two calibration corrections from ground truth at most, never an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
+            // THE RE-AIM (Nick "Go", 2026-09-15): session-to-session speech levels swing ±14 dB on the same phone (490→99 and 45→165 in one night — position, effort, room), so a history-fixed makeup lands crackling-hot or whisper-quiet somewhere. Once THIS wave holds 4 s of speech-like far-quiet-gated voiced evidence, the makeup steps exactly onto the plan; one correction is allowed if 8 s of later evidence proves that step ≥2× wrong; then it is fixed for the wave — two calibration corrections from ground truth at most, never an AGC. The initial 16× profile cap does not bind a fresh measurement (a genuinely quiet mic may need more); the kernel budget (128×) does.
             let need = if reaim_steps == 0 { 800 } else { 1600 };
             if reaim_steps < 2 && reaim_ring.len() >= need {
                 // DYNAMICS GATE: speech modulates — its loud frames run several times its median; breath, handling and room sit flat. A flat window is not speech however far above the quiet it sits: discard it and wait for evidence that moves.
@@ -1200,7 +1200,7 @@ fn run(
                 let speech_like = p90 >= p50 * 2;
                 if !speech_like {
                     crate::logf!(
-                        "CALL: level plan re-aim — {} frames at {} look flat (p90/p50 {}/{}), not speech; waiting",
+                        "WAVE: level plan re-aim — {} frames at {} look flat (p90/p50 {}/{}), not speech; waiting",
                         reaim_ring.len(),
                         measured_q8 >> 8,
                         p90 >> 8,
@@ -1210,29 +1210,29 @@ fn run(
                 } else if reaim_steps == 0 && measured_q8 < 24 * 256 {
                     // FIRST-STEP PLAUSIBILITY (2026-09-15 17:40, Emma: voiced 14 with real modulation — the first tentative words before the phone reached her ear — aimed 64× and ran 18 s hot until the correction): no calibrated Unprocessed mic we have met puts conversational speech under 24 coarse (53–490 across four phones); a first step needs that much, the correction has 8 s of evidence and no floor.
                     crate::logf!(
-                        "CALL: level plan re-aim — {} frames at {} modulate like speech but sit under the plausibility floor for a first aim; waiting",
+                        "WAVE: level plan re-aim — {} frames at {} modulate like speech but sit under the plausibility floor for a first aim; waiting",
                         reaim_ring.len(),
                         measured_q8 >> 8
                     );
                     reaim_ring.clear();
                 } else if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {
                     let ideal = (((TX_WIRE_TARGET * 2 / 3) << 40) / measured_q8)
-                        .clamp(crate::call::qgain::UNITY / 8, 64 * crate::call::qgain::UNITY);
+                        .clamp(crate::wave::qgain::UNITY / 8, 64 * crate::wave::qgain::UNITY);
                     // Both steps fire past 1.5× off-aim (inside that band the rocker covers it); the correction is earned by its EVIDENCE (8 s against 4 s), not a wider band — the 42-minute Kalispell↔Southworth wave (2026-09-16): Theresa's greeting energy aimed the first step at 243, her conversation ran 143, and the 2× correction band let a 1.7× (−4.6 dB) quiet aim stand for the whole wave; Emma's quiet first words showed the same bias the other way.
                     let (num, den) = (3, 2);
                     if ideal * den >= tx_makeup_q32 * num || tx_makeup_q32 * den >= ideal * num {
                         crate::logf!(
-                            "CALL: level plan re-aim {} — this call's voiced {} over {} frames ({}x its quiet, p90/p50 {}/{}), makeup {} → {}",
+                            "WAVE: level plan re-aim {} — this wave's voiced {} over {} frames ({}x its quiet, p90/p50 {}/{}), makeup {} → {}",
                             if reaim_steps == 0 { "(first)" } else { "(correction, final)" },
                             measured_q8 >> 8,
                             reaim_ring.len(),
                             measured_q8 / noise_est_q8.max(1),
                             p90 >> 8,
                             p50 >> 8,
-                            format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
-                            format!("{:.1}x", ideal as f64 / crate::call::qgain::UNITY as f64)
+                            format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
+                            format!("{:.1}x", ideal as f64 / crate::wave::qgain::UNITY as f64)
                         );
-                        reaim_history.push(((measured_q8 >> 8) as u32, (tx_makeup_q32 * 10 / crate::call::qgain::UNITY) as u32, (ideal * 10 / crate::call::qgain::UNITY) as u32));
+                        reaim_history.push(((measured_q8 >> 8) as u32, (tx_makeup_q32 * 10 / crate::wave::qgain::UNITY) as u32, (ideal * 10 / crate::wave::qgain::UNITY) as u32));
                         tx_makeup_q32 = ideal;
                     }
                     reaim_steps += 1;
@@ -1253,7 +1253,7 @@ fn run(
                         (b - f) / ((slope_buckets.len() - 1) as f32 * 0.1) > SLOPE_CLIMB_MS_PER_SEC
                     });
                 if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && !queue_agrees && peer_loss_sec_max < PEER_LOSS_CATASTROPHIC {
-                    crate::logf!("CALL: peer reported {} lost with a flat queue (ema {:.0} over floor {}) — radio loss, holding {} kbps", peer_loss_sec_max, rtt_ema, if rtt_min == u32::MAX { 0 } else { rtt_min }, TIER_RATES[pending_tier] / 1000);
+                    crate::logf!("WAVE: peer reported {} lost with a flat queue (ema {:.0} over floor {}) — radio loss, holding {} kbps", peer_loss_sec_max, rtt_ema, if rtt_min == u32::MAX { 0 } else { rtt_min }, TIER_RATES[pending_tier] / 1000);
                 }
                 if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC) {
                     if plaid_probation {
@@ -1264,7 +1264,7 @@ fn run(
                     last_tier_change = now;
                     last_tier_drop = Some(now);
                     clean_rx_windows = 0;
-                    crate::logf!("CALL: tier down → {} kbps (the peer reported {} lost in their last second — their receive governs our tier)", TIER_RATES[pending_tier] / 1000, peer_loss_sec_max);
+                    crate::logf!("WAVE: tier down → {} kbps (the peer reported {} lost in their last second — their receive governs our tier)", TIER_RATES[pending_tier] / 1000, peer_loss_sec_max);
                 }
                 // DELAY-GRADIENT DROP: the slope convicts a building queue and C = R/(1+s) names the rung — one right-sized jump, fired while the queue is still growing (see SLOPE_DROP_MS_PER_SEC).
                 if slope_buckets.len() >= 5 && last_slope_drop.elapsed() >= std::time::Duration::from_secs(2) && pending_tier > 0 {
@@ -1291,7 +1291,7 @@ fn run(
                             last_slope_drop = now;
                             clean_rx_windows = 0;
                             slope_buckets.clear();
-                            crate::logf!("CALL: tier down → {} kbps (rtt slope {:.0} ms/s: the queue is building — capacity ≈ {:.0} kbps, one jump to the rung under it)", TIER_RATES[pending_tier] / 1000, slope_ms, r / (1.0 + s) / 1000.0);
+                            crate::logf!("WAVE: tier down → {} kbps (rtt slope {:.0} ms/s: the queue is building — capacity ≈ {:.0} kbps, one jump to the rung under it)", TIER_RATES[pending_tier] / 1000, slope_ms, r / (1.0 + s) / 1000.0);
                         }
                     }
                 }
@@ -1303,7 +1303,7 @@ fn run(
                     last_tier_change = now;
                     last_tier_drop = Some(now);
                     clean_rx_windows = 0;
-                    crate::logf!("CALL: tier down → {} kbps (plaid on probation: rtt ema {:.0} ms over a {} ms floor — a standing queue is building)", TIER_RATES[pending_tier] / 1000, rtt_ema, rtt_min);
+                    crate::logf!("WAVE: tier down → {} kbps (plaid on probation: rtt ema {:.0} ms over a {} ms floor — a standing queue is building)", TIER_RATES[pending_tier] / 1000, rtt_ema, rtt_min);
                 }
                 // FILL-ASK PRESSURE (works against v96 peers and thru one-way tails): a plaid-probation sender hammered with fill requests IS the far side saying "I am not receiving you".
                 if pending_tier == RAW_TIER && !plaid_allowed && fill_asks_sec >= PLAID_FILL_ASK_DROP_PER_SEC {
@@ -1313,7 +1313,7 @@ fn run(
                     last_tier_change = now;
                     last_tier_drop = Some(now);
                     clean_rx_windows = 0;
-                    crate::logf!("CALL: tier down → {} kbps (plaid on probation: {} fill asks in one second — the far side is not receiving us)", TIER_RATES[pending_tier] / 1000, fill_asks_sec);
+                    crate::logf!("WAVE: tier down → {} kbps (plaid on probation: {} fill asks in one second — the far side is not receiving us)", TIER_RATES[pending_tier] / 1000, fill_asks_sec);
                 }
                 peer_loss_sec_max = 0;
                 fill_asks_sec = 0;
@@ -1322,7 +1322,7 @@ fn run(
             let rid = crate::platform::audio::route_id();
             if rid != live_route && !rid.is_empty() {
                 crate::logf!(
-                    "CALL: route swapped \"{}\" → \"{}\" — the speaker duck re-arms for the new route",
+                    "WAVE: route swapped \"{}\" → \"{}\" — the speaker duck re-arms for the new route",
                     live_route,
                     rid
                 );
@@ -1335,19 +1335,19 @@ fn run(
             }
         }
 
-        // 1ms poll granularity (was 4ms): captured frames and just-arrived packets wait at most 1ms for their loop pass, shaving ~6ms off the round trip for the cost of a few more wakeups — cheap on a call-dedicated thread.
+        // 1ms poll granularity (was 4ms): captured frames and just-arrived packets wait at most 1ms for their loop pass, shaving ~6ms off the round trip for the cost of a few more wakeups — cheap on a wave-dedicated thread.
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
 
     crate::logf!(
-        "CALL: engine down — {} pkts out, {} in, {} windows lost",
+        "WAVE: engine down — {} pkts out, {} in, {} windows lost",
         pkts_out,
         pkts_in,
         windows_lost
     );
     if peer_fills || fills_asked > 0 {
         crate::logf!(
-            "CALL: fills — asked {} ({} still wanted), got {} live + {} in the drain, {} nacked; served {} ({} in the drain); drain {} ms, peer {}",
+            "WAVE: fills — asked {} ({} still wanted), got {} live + {} in the drain, {} nacked; served {} ({} in the drain); drain {} ms, peer {}",
             fills_asked,
             wanted.len(),
             fills_got_live,
@@ -1361,7 +1361,7 @@ fn run(
     }
     if rtt_n > 0 {
         crate::logf!(
-            "CALL: link — rtt {} ms over the call (min {} max {} ema {:.0}, {} samples); final jitter target {}",
+            "WAVE: link — rtt {} ms over the wave (min {} max {} ema {:.0}, {} samples); final jitter target {}",
             format!("{:.0}", rtt_ema),
             rtt_min,
             rtt_max,
@@ -1372,16 +1372,16 @@ fn run(
     }
     if raw_out > 0 || raw_in > 0 || holes_faded > 0 {
         crate::logf!(
-            "CALL: plaid — {} raw frames out, {} in; {} hole(s) faded",
+            "WAVE: plaid — {} raw frames out, {} in; {} hole(s) faded",
             raw_out,
             raw_in,
             holes_faded
         );
     }
-    // The diagnostic that separates the two silent-failure worlds (see the RX loop): rx_seen=0 → media never arrived (target address / NAT / relay); rx_seen>0 with pkts_in=0 and rx_drop_open>0 → arrived but the basket secret didn't match (key derivation desync). Only logged when something was received or dropped, so a clean call stays quiet.
+    // The diagnostic that separates the two silent-failure worlds (see the RX loop): rx_seen=0 → media never arrived (target address / NAT / relay); rx_seen>0 with pkts_in=0 and rx_drop_open>0 → arrived but the basket secret didn't match (key derivation desync). Only logged when something was received or dropped, so a clean wave stays quiet.
     if rx_seen > 0 || rx_drop_parse > 0 || rx_drop_shape > 0 || rx_drop_open > 0 {
         crate::logf!(
-            "CALL: rx tally — seen {} → parse-drop {}, open-drop {}, shape-drop {}, decoded {}",
+            "WAVE: rx tally — seen {} → parse-drop {}, open-drop {}, shape-drop {}, decoded {}",
             rx_seen,
             rx_drop_parse,
             rx_drop_open,
@@ -1389,18 +1389,18 @@ fn run(
             pkts_in
         );
     }
-    // CAPTURE/RENDER CADENCE (field 2026-09-08: Brittany's phone TX ran 15808 frames over a ~40s call = 2x realtime, the phone trimmed half at playout = the scratchy; a device whose fast-path delivers double must NAME itself). Frames-per-second each way against the call's wall-clock; a healthy 5ms path reads ~200.
-    let call_secs = start_instant.elapsed().as_secs_f64().max(0.001);
+    // CAPTURE/RENDER CADENCE (field 2026-09-08: Brittany's phone TX ran 15808 frames over a ~40s wave = 2x realtime, the phone trimmed half at playout = the scratchy; a device whose fast-path delivers double must NAME itself). Frames-per-second each way against the wave's wall-clock; a healthy 5ms path reads ~200.
+    let wave_secs = start_instant.elapsed().as_secs_f64().max(0.001);
     crate::logf!(
-        "CALL: cadence — tx {} fps, rx {} fps over {}s (nominal 200)",
-        format!("{:.0}", tx_frames as f64 / call_secs),
-        format!("{:.0}", rx_frames as f64 / call_secs),
-        format!("{:.1}", call_secs)
+        "WAVE: cadence — tx {} fps, rx {} fps over {}s (nominal 200)",
+        format!("{:.0}", tx_frames as f64 / wave_secs),
+        format!("{:.0}", rx_frames as f64 / wave_secs),
+        format!("{:.1}", wave_secs)
     );
     if let Some(first) = cap_first_osc {
         let hal_secs = (cap_last_osc - first).max(0) as f64 / vsf::OSCILLATIONS_PER_SECOND as f64;
         crate::logf!(
-            "CALL: capture — {} frames over {}s of HAL time ({} fps by the HAL clock; 200 nominal)",
+            "WAVE: capture — {} frames over {}s of HAL time ({} fps by the HAL clock; 200 nominal)",
             tx_frames,
             format!("{hal_secs:.1}"),
             format!("{:.0}", if hal_secs > 0.0 { tx_frames as f64 / hal_secs } else { 0.0 })
@@ -1410,13 +1410,13 @@ fn run(
     let tx_level = if tx_frames > 0 { tx_energy / (tx_frames * FRAME_SAMPLES as u64) } else { 0 };
     let rx_level = if rx_frames > 0 { rx_energy / (rx_frames * FRAME_SAMPLES as u64) } else { 0 };
     crate::logf!(
-        "CALL: audio level — tx(mic) {} over {} frames, rx(play) {} over {} frames",
+        "WAVE: audio level — tx(mic) {} over {} frames, rx(play) {} over {} frames",
         tx_level,
         tx_frames,
         rx_level,
         rx_frames
     );
-    // Ladder + speaker-duck readout: where the call ended up, how it moved, and how often the speaker was pulled down by a hot mic.
+    // Ladder + speaker-duck readout: where the wave ended up, how it moved, and how often the speaker was pulled down by a hot mic.
     let (spk_frames, spk_half, spk_mean) = crate::platform::audio::speaker_duck_stats();
     let fine_floor = if raw_floor_q8 == i64::MAX { None } else { Some(raw_floor_q8 as f32 / 256.0) };
     // THE LAST WAVE summary for the Wave settings page — one write, session-only.
@@ -1435,9 +1435,9 @@ fn run(
             tier_end: tier,
             tier_ups,
             tier_downs,
-            peer_lost_max: peer_loss_max_call,
-            makeup_start_x10: (makeup_start_q32 * 10 / crate::call::qgain::UNITY) as u32,
-            makeup_end_x10: (tx_makeup_q32 * 10 / crate::call::qgain::UNITY) as u32,
+            peer_lost_max: peer_loss_max_wave,
+            makeup_start_x10: (makeup_start_q32 * 10 / crate::wave::qgain::UNITY) as u32,
+            makeup_end_x10: (tx_makeup_q32 * 10 / crate::wave::qgain::UNITY) as u32,
             measured_voiced: if voiced_frames > 0 { (voiced_sum_q8 / voiced_frames >> 8) as u32 } else { 0 },
             reaims: reaim_history.clone(),
             underruns: js.2 as u64,
@@ -1445,18 +1445,18 @@ fn run(
         });
     }
     crate::logf!(
-        "CALL: level plan — makeup {} ({}, cal voiced {}); this call measured voiced {} floor {} over {} frames",
-        format!("{:.1}x", tx_makeup_q32 as f64 / crate::call::qgain::UNITY as f64),
+        "WAVE: level plan — makeup {} ({}, cal voiced {}); this wave measured voiced {} floor {} over {} frames",
+        format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
         cal_src,
         cal_voiced,
         if voiced_frames > 0 { (voiced_sum_q8 / voiced_frames >> 8).to_string() } else { "?".into() },
         fine_floor.map(|f| format!("{f:.2}")).unwrap_or_else(|| "?".into()),
         voiced_frames
     );
-    // ≥3 s of voiced speech earns a full profile post; a call with a measured quiet but no speech still posts its FLOOR alone (voiced 0 = the floor-only sentinel) — the quiet rung of the next call's seed needs no one to have talked. The blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
+    // ≥3 s of voiced speech earns a full profile post; a wave with a measured quiet but no speech still posts its FLOOR alone (voiced 0 = the floor-only sentinel) — the quiet rung of the next wave's seed needs no one to have talked. The blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
     if voiced_frames >= 600 || (fine_floor.is_some() && tx_frames >= 600) {
-        crate::call::calibrate::post_learned(vec![crate::call::calibrate::LearnedResult {
-            result: crate::call::calibrate::CalResult::Voice(crate::call::calibrate::VoiceProfile {
+        crate::wave::calibrate::post_learned(vec![crate::wave::calibrate::LearnedResult {
+            result: crate::wave::calibrate::CalResult::Voice(crate::wave::calibrate::VoiceProfile {
                 voiced: if voiced_frames >= 600 { (voiced_sum_q8 / voiced_frames) as f32 / 256.0 } else { 0.0 },
                 floor: fine_floor.unwrap_or(0.0),
                 mic_id: crate::platform::audio::mic_id(),
@@ -1466,7 +1466,7 @@ fn run(
         }]);
     }
     crate::logf!(
-        "CALL: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",
+        "WAVE: ladder — ended {}, {} up(s), {} down(s); speaker mean gain {}‰ over {} render frames, {} at half or under",
         if tier == RAW_TIER { "plaid (raw PCM)".to_string() } else { format!("{} kbps", TIER_RATES[tier] / 1000) },
         tier_ups,
         tier_downs,
@@ -1475,7 +1475,7 @@ fn run(
         spk_half
     );
     teardown(sink_gen);
-    // tx_chain/rx_chain drop here — zeroized; the call is cryptographically gone.
+    // tx_chain/rx_chain drop here — zeroized; the wave is cryptographically gone.
 }
 
 /// One step of the loss-rate loop: record this window slot (lost or played) in the 256-bit ring, compute the loss rate's error in stops against LOSS_SETPOINT, P + I it onto the jitter target above the arrival floor, and set the buffer's target. Returns the target set.
@@ -1583,7 +1583,7 @@ fn have_set(bits: &mut Vec<u64>, w: u32) {
     let i = (w / 64) as usize;
     if i >= bits.len() {
         if i >= (1 << 22) {
-            return; // 2^28 windows — not a call
+            return; // 2^28 windows — not a wave
         }
         bits.resize(i + 1, 0);
     }
@@ -1722,7 +1722,7 @@ mod fill_tests {
         let at = w.append_seq(super::super::spool::RAW_FLAG, 3, Some((2, 0)), &[8; RAW_FRAME_BYTES]).unwrap();
         index.push_back(SentFrame { seq: 2, slot: 0, tier: RAW_TIER as u8, at });
         drop(w);
-        let params = EngineParams { secret: [0; 32], we_are_caller: true, peer_addr: "127.0.0.1:1".parse().unwrap(), spool: Some((key, path.clone())), cal: None, plaid_allowed: false };
+        let params = EngineParams { secret: [0; 32], we_are_origin: true, peer_addr: "127.0.0.1:1".parse().unwrap(), spool: Some((key, path.clone())), cal: None, plaid_allowed: false };
         let mut reader = None;
         let (t, win) = serve_window(&params, &mut reader, &index, 1).unwrap();
         assert_eq!(t, 0);

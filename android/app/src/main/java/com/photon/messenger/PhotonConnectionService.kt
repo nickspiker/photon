@@ -45,14 +45,14 @@ class PhotonConnectionService : Service() {
         const val CHANNEL_ID = "photon_connection_quiet"
         const val NOTIFICATION_ID = 1001
         const val MESSAGE_NOTIFICATION_ID = 1002
-        const val CALL_NOTIFICATION_ID = 1003
-        /// Dedicated call channel — see postCallNotification for why calls never share the message channel's (user-degradable) importance.
-        const val CALL_CHANNEL_ID = "photon.calls"
-        const val ACTION_ANSWER_CALL = "com.photon.ANSWER_CALL"
-        /** Activity intent extras for the call surface: the full-screen intent carries INCOMING_CALL so the Activity shows over the keyguard and lights the screen; the notification's Answer carries CALL_ACTION=answer so the Activity (which notifications MAY start — a Service on Android 10+ may not) hands the verdict to Rust and is in hand with the call screen. */
-        const val EXTRA_INCOMING_CALL = "com.photon.INCOMING_CALL"
-        const val EXTRA_CALL_ACTION = "com.photon.CALL_ACTION"
-        const val ACTION_DECLINE_CALL = "com.photon.DECLINE_CALL"
+        const val WAVE_NOTIFICATION_ID = 1003
+        /// Dedicated wave channel — see postWaveNotification for why waves never share the message channel's (user-degradable) importance.
+        const val WAVE_CHANNEL_ID = "photon.waves"
+        const val ACTION_ANSWER_WAVE = "com.photon.ANSWER_WAVE"
+        /** Activity intent extras for the wave surface: the full-screen intent carries INCOMING_WAVE so the Activity shows over the keyguard and lights the screen; the notification's Answer carries WAVE_ACTION=answer so the Activity (which notifications MAY start — a Service on Android 10+ may not) hands the verdict to Rust and is in hand with the wave screen. */
+        const val EXTRA_INCOMING_WAVE = "com.photon.INCOMING_WAVE"
+        const val EXTRA_WAVE_ACTION = "com.photon.WAVE_ACTION"
+        const val ACTION_DECLINE_WAVE = "com.photon.DECLINE_WAVE"
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
         const val SESSION_ACTION = "com.photon.SESSION"
@@ -110,10 +110,10 @@ class PhotonConnectionService : Service() {
     // Seeds never leave Rust — nativeSendSessionBroadcast reads tohu::session() internally.
     private external fun nativeSendSessionBroadcast(context: android.content.Context)
     private external fun nativeClearSessionBroadcast(context: android.content.Context)
-    private external fun nativeCallAction(answer: Boolean)  // Answer/Decline from the call notification → Rust's pending-action latch (the app tick drains it)
+    private external fun nativeWaveAction(answer: Boolean)  // Answer/Decline from the wave notification → Rust's pending-action latch (the app tick drains it)
     private external fun nativeAudioRoute(kind: Int, id: String)  // Route mirror: routed output device kind + calibration-profile identity (AudioDeviceCallback)
     private external fun nativeVolumeDb(db: Float)
-    private external fun nativeMicInfo(unprocessedDeclared: Boolean, sensitivityDbfs: Float, desc: String)  // Volume mirror: voice-call stream dB, at start + on VOLUME_CHANGED
+    private external fun nativeMicInfo(unprocessedDeclared: Boolean, sensitivityDbfs: Float, desc: String)  // Volume mirror: STREAM_VOICE_CALL dB, at start + on VOLUME_CHANGED
     private external fun nativeAudioMic(id: String)  // Mic mirror: routed input identity (the voice-profile key)
 
 
@@ -123,7 +123,7 @@ class PhotonConnectionService : Service() {
     // my network is going thru a relay", 2026-07-26). Battery cost is the multicast filter staying
     // open — the price of same-room discovery actually working.
     private var multicastLock: android.net.wifi.WifiManager.MulticastLock? = null
-    // Held for the DURATION OF A WAVE only (field 2026-09-09, Emma+Nick LAN call): without it the phone's WiFi power-save bunched the sender's datagrams and dropped them in consecutive PAIRS — 65 lost FEC windows on one side of a 53s call on a 5ms LAN, the ladder flapping 16↔64 kbps, the jitter buffer peaking past a second and trimming hundreds of frames. LOW_LATENCY (API 29+) asks the driver to leave power-save; HIGH_PERF is the older equivalent.
+    // Held for the DURATION OF A WAVE only (field 2026-09-09, Emma+Nick LAN wave): without it the phone's WiFi power-save bunched the sender's datagrams and dropped them in consecutive PAIRS — 65 lost FEC windows on one side of a 53s wave on a 5ms LAN, the ladder flapping 16↔64 kbps, the jitter buffer peaking past a second and trimming hundreds of frames. LOW_LATENCY (API 29+) asks the driver to leave power-save; HIGH_PERF is the older equivalent.
     private var waveWifiLock: android.net.wifi.WifiManager.WifiLock? = null
     // The LOW_LATENCY mode is honoured only while the app is foreground AND THE SCREEN IS ON — and the proximity sensor turns the screen off at the ear (2026-09-09, Brittany/Nick: both phones held the low-latency lock, one side still lost 121 windows in pairs). HIGH_PERF has no screen condition; both are held for the wave.
     private var waveWifiPerfLock: android.net.wifi.WifiManager.WifiLock? = null
@@ -160,7 +160,7 @@ class PhotonConnectionService : Service() {
         reportPriorExits()
     }
 
-    /** Calibration substrate (docs plan 2026-09-02): mirror the routed OUTPUT device + the voice-call volume down to Rust, edge-driven — an AudioDeviceCallback for route changes and the system VOLUME_CHANGED broadcast for the knob. Rust keys calibration profiles on the route identity and scales the echo prediction by the dB delta from calibration time. */
+    /** Calibration substrate (docs plan 2026-09-02): mirror the routed OUTPUT device + the `STREAM_VOICE_CALL` volume down to Rust, edge-driven — an AudioDeviceCallback for route changes and the system VOLUME_CHANGED broadcast for the knob. Rust keys calibration profiles on the route identity and scales the echo prediction by the dB delta from calibration time. */
     private fun registerAudioMirrors() {
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         am.registerAudioDeviceCallback(object : android.media.AudioDeviceCallback() {
@@ -174,7 +174,7 @@ class PhotonConnectionService : Service() {
         pushVolumeMirror()
     }
 
-    /** The routed OUTPUT + INPUT identities, mirrored to Rust (calibration-profile key + the call-screen route pill). While a wave holds a communication device, THAT device is the truth (2026-09-14: the old static ranking said "bt:X15" while the forced earpiece was actually playing); otherwise the static ranking mirrors Android's own media routing priority. */
+    /** The routed OUTPUT + INPUT identities, mirrored to Rust (calibration-profile key + the wave-screen route pill). While a wave holds a communication device, THAT device is the truth (2026-09-14: the old static ranking said "bt:X15" while the forced earpiece was actually playing); otherwise the static ranking mirrors Android's own media routing priority. */
     fun pushRouteMirror() {
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         val outs = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
@@ -187,7 +187,7 @@ class PhotonConnectionService : Service() {
             android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 1
             else -> 0
         }
-        val comm = if (callAudioRunning && Build.VERSION.SDK_INT >= 31) am.communicationDevice else null
+        val comm = if (waveAudioRunning && Build.VERSION.SDK_INT >= 31) am.communicationDevice else null
         val dev = comm ?: outs.maxByOrNull { rank(it.type) }
         if (dev != null) {
             when (rank(dev.type)) {
@@ -217,7 +217,7 @@ class PhotonConnectionService : Service() {
         try { nativeAudioMic(micId) } catch (e: Throwable) { PhotonLog.w(TAG, "mic mirror failed: ${e.message}") }
     }
 
-    /** Which USAGE the Rust render stream actually opened with — reported by native code after every output open (call_service_void renderUsageVoice/renderUsageMedia), so the volume mirror reads the stream that truly governs the wave instead of guessing from the route (field 2026-09-15: Nick's mirror said −32 dB while he heard the far side fine). */
+    /** Which USAGE the Rust render stream actually opened with — reported by native code after every output open (wave_service_void renderUsageVoice/renderUsageMedia), so the volume mirror reads the stream that truly governs the wave instead of guessing from the route (field 2026-09-15: Nick's mirror said −32 dB while he heard the far side fine). */
     @Volatile var renderVoiceUsage = false
     fun renderUsageVoice() { renderVoiceUsage = true; pushVolumeMirror() }
     fun renderUsageMedia() { renderVoiceUsage = false; pushVolumeMirror() }
@@ -287,11 +287,11 @@ class PhotonConnectionService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Answer/Decline pressed ON the call notification (docs/calls.md redesign 2026-08-30): hand the verdict to Rust (the app tick drains it into answer/decline on the UI thread), drop the notification, and — on answer — bring the Activity forward so the call screen is in hand.
+        // Answer/Decline pressed ON the wave notification (docs/waves.md redesign 2026-08-30): hand the verdict to Rust (the app tick drains it into answer/decline on the UI thread), drop the notification, and — on answer — bring the Activity forward so the wave screen is in hand.
         when (intent?.action) {
-            ACTION_ANSWER_CALL, ACTION_DECLINE_CALL -> {
-                // Decline still arrives here (no UI needed). Answer now rides an ACTIVITY intent (see postCallNotification) — this arm keeps handling it for any stale PendingIntent, but never tries to startActivity from a Service: Android 10+ silently drops that unless the app is already in the foreground, which is exactly "the notification went away and nothing came up" (field 2026-09-08).
-                callAction(intent.action == ACTION_ANSWER_CALL)
+            ACTION_ANSWER_WAVE, ACTION_DECLINE_WAVE -> {
+                // Decline still arrives here (no UI needed). Answer now rides an ACTIVITY intent (see postWaveNotification) — this arm keeps handling it for any stale PendingIntent, but never tries to startActivity from a Service: Android 10+ silently drops that unless the app is already in the foreground, which is exactly "the notification went away and nothing came up" (field 2026-09-08).
+                waveAction(intent.action == ACTION_ANSWER_WAVE)
                 return START_STICKY
             }
         }
@@ -340,12 +340,12 @@ class PhotonConnectionService : Service() {
             }
         }
 
-        // EXPLICIT dataSync-only foreground type at launch. The two-arg startForeground inherits the manifest's FULL type set (dataSync|microphone), and Android 14 (targetSDK 34) hard-rejects a microphone-type FGS start without RECORD_AUDIO granted + the app in an eligible state — which is every fresh launch now that the mic prompt is deferred to the first call (launch crash on Android 14 Samsungs, field 2026-08-19; pre-14 devices don't enforce and were fine). The mic type is ADDED at call time by promoteForeground(true) in startCapture and dropped again at stopCallAudio.
+        // EXPLICIT dataSync-only foreground type at launch. The two-arg startForeground inherits the manifest's FULL type set (dataSync|microphone), and Android 14 (targetSDK 34) hard-rejects a microphone-type FGS start without RECORD_AUDIO granted + the app in an eligible state — which is every fresh launch now that the mic prompt is deferred to the first wave (launch crash on Android 14 Samsungs, field 2026-08-19; pre-14 devices don't enforce and were fine). The mic type is ADDED at wave time by promoteForeground(true) in startCapture and dropped again at stopWaveAudio.
         promoteForeground(false)
         return START_STICKY
     }
 
-    /** (Re)assert the foreground notification with explicit FGS types: dataSync always, microphone only when a call is actively capturing (withMic). API 29- has no typed startForeground; the MICROPHONE constant is API 30+. SecurityException is caught, not fatal: an ineligible mic promotion (e.g., backgrounded edge) degrades to listen-only instead of crashing the whole app. */
+    /** (Re)assert the foreground notification with explicit FGS types: dataSync always, microphone only when a wave is actively capturing (withMic). API 29- has no typed startForeground; the MICROPHONE constant is API 30+. SecurityException is caught, not fatal: an ineligible mic promotion (e.g., backgrounded edge) degrades to listen-only instead of crashing the whole app. */
     private fun promoteForeground(withMic: Boolean) {
         val notification = buildNotification()
         try {
@@ -626,30 +626,30 @@ class PhotonConnectionService : Service() {
     }
 
     /** Answer/Decline verdict from either the notification action or the Activity that the Answer action launched: latch it for Rust (the app tick drains it into answer/decline on the UI thread), drop the notification, and kick a tick so a backgrounded process acts NOW. */
-    fun callAction(answer: Boolean) {
-        nativeCallAction(answer)
-        cancelCallNotification()
+    fun waveAction(answer: Boolean) {
+        nativeWaveAction(answer)
+        cancelWaveNotification()
         requestServiceTick()
     }
 
-    // Proximity wake lock for an in-hand call: screen off against the ear, back on when the phone comes away — the OS handles the sensor, we only hold the lock for the call's duration. Not every device supports the level; then it stays null and the screen simply stays lit.
+    // Proximity wake lock for an in-hand wave: screen off against the ear, back on when the phone comes away — the OS handles the sensor, we only hold the lock for the wave's duration. Not every device supports the level; then it stays null and the screen simply stays lit.
     private val proximityLock: PowerManager.WakeLock? by lazy {
         val pm = getSystemService(POWER_SERVICE) as PowerManager
         if (pm.isWakeLockLevelSupported(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK)) {
-            pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "photon:callProximity").apply { setReferenceCounted(false) }
+            pm.newWakeLock(PowerManager.PROXIMITY_SCREEN_OFF_WAKE_LOCK, "photon:waveProximity").apply { setReferenceCounted(false) }
         } else {
-            PhotonLog.i(TAG, "callAudio: no proximity wake lock on this device — screen stays on during calls")
+            PhotonLog.i(TAG, "waveAudio: no proximity wake lock on this device — screen stays on during waves")
             null
         }
     }
 
-    /** Backgrounded/locked ring (called from Rust): the OS's blessed incoming-call surface — CATEGORY_CALL, fullScreenIntent (locked phone launches straight into the in-app ring panel), Answer/Decline actions ON the notification so nothing can cover them, ongoing (only a stop edge cancels it — see cancelCallNotification). */
-    fun postCallNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String, gapMs: Int) {
+    /** Backgrounded/locked ring (called from Rust): the OS's blessed incoming-wave surface — CATEGORY_CALL, fullScreenIntent (locked phone launches straight into the in-app ring panel), Answer/Decline actions ON the notification so nothing can cover them, ongoing (only a stop edge cancels it — see cancelWaveNotification). */
+    fun postWaveNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String, gapMs: Int) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            // Calls get their OWN channel (field 2026-09-08: Brittany's ring posted silently with no heads-up and no full-screen). Reusing the message channel meant inheriting whatever importance the user (or Android's notification cooldown) had degraded it to — channel importance is CACHED from first creation and an app can never raise it back, so re-declaring IMPORTANCE_HIGH on the shared id was a no-op. A fresh call-only channel starts at HIGH, and a user silencing messages no longer silences calls.
+            // Waves get their OWN channel (field 2026-09-08: Brittany's ring posted silently with no heads-up and no full-screen). Reusing the message channel meant inheriting whatever importance the user (or Android's notification cooldown) had degraded it to — channel importance is CACHED from first creation and an app can never raise it back, so re-declaring IMPORTANCE_HIGH on the shared id was a no-op. A fresh wave-only channel starts at HIGH, and a user silencing messages no longer silences waves.
             val channel = NotificationChannel(
-                CALL_CHANNEL_ID,
-                "Photon calls",
+                WAVE_CHANNEL_ID,
+                "Photon waves",
                 NotificationManager.IMPORTANCE_HIGH
             ).apply {
                 description = "Incoming waves"
@@ -664,26 +664,26 @@ class PhotonConnectionService : Service() {
             1,
             Intent(this, PhotonActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(EXTRA_INCOMING_CALL, true),
+                .putExtra(EXTRA_INCOMING_WAVE, true),
             PendingIntent.FLAG_IMMUTABLE
         )
-        // Answer is an ACTIVITY intent: a notification action may start an Activity where a Service may not, so the tap both answers (the Activity forwards the verdict here) and lands on the call screen.
+        // Answer is an ACTIVITY intent: a notification action may start an Activity where a Service may not, so the tap both answers (the Activity forwards the verdict here) and lands on the wave screen.
         val answer = PendingIntent.getActivity(
             this,
             2,
             Intent(this, PhotonActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
-                .putExtra(EXTRA_INCOMING_CALL, true)
-                .putExtra(EXTRA_CALL_ACTION, "answer"),
+                .putExtra(EXTRA_INCOMING_WAVE, true)
+                .putExtra(EXTRA_WAVE_ACTION, "answer"),
             PendingIntent.FLAG_IMMUTABLE
         )
         val decline = PendingIntent.getService(
             this,
             3,
-            Intent(this, PhotonConnectionService::class.java).setAction(ACTION_DECLINE_CALL),
+            Intent(this, PhotonConnectionService::class.java).setAction(ACTION_DECLINE_WAVE),
             PendingIntent.FLAG_IMMUTABLE
         )
-        val notification = NotificationCompat.Builder(this, CALL_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, WAVE_CHANNEL_ID)
             .setContentTitle(sender)
             .setContentText(text)
             .setSmallIcon(android.R.drawable.sym_action_call)
@@ -697,10 +697,10 @@ class PhotonConnectionService : Service() {
             .addAction(0, "Answer", answer)
             .build()
         val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(CALL_NOTIFICATION_ID, notification)
-        // Android 14+ gates full-screen intents behind a user-grantable special access; when it's denied the FSI is silently stripped and the call is just a shade entry. Log the truth so a field pull names it (the fix is Settings → Apps → Photon → "full-screen notifications").
+        nm.notify(WAVE_NOTIFICATION_ID, notification)
+        // Android 14+ gates full-screen intents behind a user-grantable special access; when it's denied the FSI is silently stripped and the wave is just a shade entry. Log the truth so a field pull names it (the fix is Settings → Apps → Photon → "full-screen notifications").
         val fsi = if (Build.VERSION.SDK_INT >= 34) nm.canUseFullScreenIntent() else true
-        PhotonLog.i(TAG, "call notification posted (channel=$CALL_CHANNEL_ID fullScreenIntent=${if (fsi) "granted" else "DENIED - shade only"})")
+        PhotonLog.i(TAG, "wave notification posted (channel=$WAVE_CHANNEL_ID fullScreenIntent=${if (fsi) "granted" else "DENIED - shade only"})")
         startRingLoop(wav, gapMs)
         vibrateChirp(timings, amplitudes, repeat = true)
     }
@@ -717,9 +717,9 @@ class PhotonConnectionService : Service() {
         }
     }
 
-    /** Ring-stop edge (answered anywhere, declined, caller hangup): tear the ongoing call notification down. */
-    fun cancelCallNotification() {
-        getSystemService(NotificationManager::class.java).cancel(CALL_NOTIFICATION_ID)
+    /** Ring-stop edge (answered anywhere, declined, origin hangup): tear the ongoing wave notification down. */
+    fun cancelWaveNotification() {
+        getSystemService(NotificationManager::class.java).cancel(WAVE_NOTIFICATION_ID)
         stopRingLoop()
     }
 
@@ -728,7 +728,7 @@ class PhotonConnectionService : Service() {
      *  silence — `gapMs` of zeros is appended HERE so the repeat gap costs a local memset instead of
      *  2 s of zeros marshalled across JNI on every ring. MODE_STATIC + setLoopPoints(-1) loops it in
      *  the audio HAL: no timer, no wakeup, seamless. Stopped only by a ring-stop edge
-     *  (cancelCallNotification — answered here, answered/declined by a sibling, caller hangup). */
+     *  (cancelWaveNotification — answered here, answered/declined by a sibling, origin hangup). */
     private var ringTrack: AudioTrack? = null
 
     private fun startRingLoop(wav: ByteArray, gapMs: Int) {
@@ -873,45 +873,45 @@ class PhotonConnectionService : Service() {
     }
 
     // ------------------------------------------------------------------
-    // Voice-call audio (docs/calls.md): Kotlin owns the device loops, Rust owns the queues.
+    // Wave audio (docs/waves.md): Kotlin owns the device loops, Rust owns the queues.
     // AudioRecord uses VOICE_COMMUNICATION — that source selection is what engages the vendor
     // The device loops moved to Rust on 2026-09-09 (platform/audio_aaudio.rs: AAudio exclusive low-latency, HAL-stamped frames) — Kotlin keeps the permission, the FGS type and the proximity lock.
     // ------------------------------------------------------------------
 
-    private external fun nativeMicGranted()  // RECORD_AUDIO landed mid-call: Rust opens the AAudio input leg it could not open at start.
+    private external fun nativeMicGranted()  // RECORD_AUDIO landed mid-wave: Rust opens the AAudio input leg it could not open at start.
 
-    @Volatile private var callAudioRunning = false
+    @Volatile private var waveAudioRunning = false
 
-    /** The capture leg's Android half (2026-09-09, AAudio move): the device loop lives in Rust now (platform/audio_aaudio.rs, exclusive low-latency streams with HAL timestamps). Kotlin's part is the permission and the foreground-service microphone type: missing permission → prompt at THIS call (PhotonActivity.requestMicPermission), whose grant callback re-enters here so the prompting call goes hot. Public for that callback. */
+    /** The capture leg's Android half (2026-09-09, AAudio move): the device loop lives in Rust now (platform/audio_aaudio.rs, exclusive low-latency streams with HAL timestamps). Kotlin's part is the permission and the foreground-service microphone type: missing permission → prompt at THIS wave (PhotonActivity.requestMicPermission), whose grant callback re-enters here so the prompting call goes hot. Public for that callback. */
     fun startCapture() {
-        if (!callAudioRunning) return
+        if (!waveAudioRunning) return
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==
             android.content.pm.PackageManager.PERMISSION_GRANTED
         if (!hasMic) {
-            PhotonLog.w(TAG, "callAudio: RECORD_AUDIO not granted — prompting at the call; listen-only until granted")
+            PhotonLog.w(TAG, "waveAudio: RECORD_AUDIO not granted — prompting at the wave; listen-only until granted")
             PhotonActivity.live?.requestMicPermission()
             return
         }
-        // Android 14 FGS discipline: the microphone type is added to the foreground service ONLY now — at an actual call, with the permission granted and the app foreground.
+        // Android 14 FGS discipline: the microphone type is added to the foreground service ONLY now — at an actual wave, with the permission granted and the app foreground.
         promoteForeground(true)
-        try { nativeMicGranted() } catch (e: Throwable) { PhotonLog.w(TAG, "callAudio: nativeMicGranted failed", e) }
+        try { nativeMicGranted() } catch (e: Throwable) { PhotonLog.w(TAG, "waveAudio: nativeMicGranted failed", e) }
     }
 
-    /** Called from Rust as the call goes ACTIVE: the ring's keyguard flags (showWhenLocked + turnScreenOn) have done their job, and a STICKY turnScreenOn fights the proximity blank for the rest of the wave (2026-09-14, "screen doesn't blank at the ear" — the OS keeps re-lighting a turnScreenOn activity). Clearing them re-arms the blank; the proximity lock is already held. */
-    fun callWentActive() {
-        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }
+    /** Called from Rust as the wave goes ACTIVE: the ring's keyguard flags (showWhenLocked + turnScreenOn) have done their job, and a STICKY turnScreenOn fights the proximity blank for the rest of the wave (2026-09-14, "screen doesn't blank at the ear" — the OS keeps re-lighting a turnScreenOn activity). Clearing them re-arms the blank; the proximity lock is already held. */
+    fun waveWentActive() {
+        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setWaveLockScreenFlags(false) } }
         // Re-assert the lock on the active edge too: an answer that raced the route change can have skipped the acquire.
-        if (callAudioRunning && earpieceRouted) {
+        if (waveAudioRunning && earpieceRouted) {
             try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         }
-        PhotonLog.i(TAG, "callAudio: active — keyguard flags cleared, proximity blank armed (earpiece=" + earpieceRouted + ", held=" + (proximityLock?.isHeld ?: false) + ")")
+        PhotonLog.i(TAG, "waveAudio: active — keyguard flags cleared, proximity blank armed (earpiece=" + earpieceRouted + ", held=" + (proximityLock?.isHeld ?: false) + ")")
     }
 
-    /** Called from Rust (call_service_void) as a call goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
+    /** Called from Rust (wave_service_void) as a wave goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
     // THE EARPIECE, WITHOUT THE VOICE PIPELINE (Nick 2026-09-12): setCommunicationDevice (API 31) routes this app's voice-usage streams to the device named, with no audio-mode change — the streams stay on the fast path. Cleared at hangup so media plays from the loudspeaker again.
-    // CALL-START POLICY (field 2026-09-14, Nick: "took me a minute to figure out it wasn't using the bluetooth headset at all"): the old arm forced the BUILT-IN earpiece over a connected headset — its keep-the-current-device guard never fired because no communication device is set at call start. The start route now prefers wired > bluetooth > earpiece from availableCommunicationDevices, and cycleCallRoute() (the in-call route pill) walks the full list mid-wave.
+    // WAVE-START POLICY (field 2026-09-14, Nick: "took me a minute to figure out it wasn't using the bluetooth headset at all"): the old arm forced the BUILT-IN earpiece over a connected headset — its keep-the-current-device guard never fired because no communication device is set at wave start. The start route now prefers wired > bluetooth > earpiece from availableCommunicationDevices, and cycleWaveRoute() (the in-wave route pill) walks the full list mid-wave.
     @Volatile var earpieceRouted = false
-    private fun routeCallAudio(on: Boolean) {
+    private fun routeWaveAudio(on: Boolean) {
         if (Build.VERSION.SDK_INT < 31) return
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         try {
@@ -924,23 +924,23 @@ class PhotonConnectionService : Service() {
                 }
                 val pick = am.availableCommunicationDevices.maxByOrNull { pref(it.type) }
                 if (pick == null || pref(pick.type) == 0) {
-                    PhotonLog.i(TAG, "callAudio: no headset or earpiece to route — loudspeaker")
+                    PhotonLog.i(TAG, "waveAudio: no headset or earpiece to route — loudspeaker")
                     earpieceRouted = false
                 } else {
                     val ok = am.setCommunicationDevice(pick)
                     earpieceRouted = ok && pick.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                    PhotonLog.i(TAG, "callAudio: start route ${pick.productName} (type ${pick.type}) ${if (ok) "set" else "REFUSED"}")
+                    PhotonLog.i(TAG, "waveAudio: start route ${pick.productName} (type ${pick.type}) ${if (ok) "set" else "REFUSED"}")
                 }
             } else {
                 am.clearCommunicationDevice()
                 earpieceRouted = false
             }
-        } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route change failed", e) }
+        } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: route change failed", e) }
         applyRouteSideEffects()
     }
 
-    /** The in-call route pill (Rust: call_service_void "cycleCallRoute"): advance the wave's output to the next available communication device — earpiece → speaker → headset → bluetooth, whatever the list holds this moment. */
-    fun cycleCallRoute() {
+    /** The in-wave route pill (Rust: wave_service_void "cycleWaveRoute"): advance the wave's output to the next available communication device — earpiece → speaker → headset → bluetooth, whatever the list holds this moment. */
+    fun cycleWaveRoute() {
         if (Build.VERSION.SDK_INT < 31) return
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         try {
@@ -951,14 +951,14 @@ class PhotonConnectionService : Service() {
             val next = avail[(idx + 1) % avail.size]
             val ok = am.setCommunicationDevice(next)
             earpieceRouted = ok && next.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-            PhotonLog.i(TAG, "callAudio: route cycled to ${next.productName} (type ${next.type})${if (ok) "" else " — REFUSED"}")
-        } catch (e: Exception) { PhotonLog.w(TAG, "callAudio: route cycle failed", e) }
+            PhotonLog.i(TAG, "waveAudio: route cycled to ${next.productName} (type ${next.type})${if (ok) "" else " — REFUSED"}")
+        } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: route cycle failed", e) }
         applyRouteSideEffects()
     }
 
-    /** Everything that follows a communication-device change, start / cycle / clear alike. THE ROCKER GOVERNS THE WAVE (field 2026-09-13, Brittany: "the volume adjust on the phone didn't seem to actually adjust the volume of my voice"): our render track carries USAGE_VOICE_COMMUNICATION on the earpiece, which the voice-call stream controls, but without an in-communication mode the rocker keeps adjusting the media stream — binding the Activity's volume control stream to the voice stream while the wave rides the earpiece points the rocker at the stream the wave plays on; cleared back to the default otherwise. The proximity lock follows the route (mid-call swaps included): earpiece holds it — at the ear, blanking is right — anything else releases it, waiting for the sensor to clear so the screen never flashes at the ear. The mirrors re-push so Rust's calibration identity and the route pill's label track the device actually playing. */
+    /** Everything that follows a communication-device change, start / cycle / clear alike. THE ROCKER GOVERNS THE WAVE (field 2026-09-13, Brittany: "the volume adjust on the phone didn't seem to actually adjust the volume of my voice"): our render track carries USAGE_VOICE_COMMUNICATION on the earpiece, which STREAM_VOICE_CALL governs, but without an in-communication mode the rocker keeps adjusting the media stream — binding the Activity's volume control stream to the voice stream while the wave rides the earpiece points the rocker at the stream the wave plays on; cleared back to the default otherwise. The proximity lock follows the route (mid-wave swaps included): earpiece holds it — at the ear, blanking is right — anything else releases it, waiting for the sensor to clear so the screen never flashes at the ear. The mirrors re-push so Rust's calibration identity and the route pill's label track the device actually playing. */
     private fun applyRouteSideEffects() {
-        if (callAudioRunning) {
+        if (waveAudioRunning) {
             try {
                 if (earpieceRouted) proximityLock?.acquire()
                 else proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) }
@@ -974,9 +974,9 @@ class PhotonConnectionService : Service() {
         pushRouteMirror()
     }
 
-    fun startCallAudio() {
-        if (callAudioRunning) return
-        callAudioRunning = true
+    fun startWaveAudio() {
+        if (waveAudioRunning) return
+        waveAudioRunning = true
         // Mic introspection for the level plan (Nick 2026-09-13: "how are we getting absolute levels on the mic in question?"): does this vendor DECLARE the CDD Unprocessed calibration, and what sensitivity does each input report. Mirrored to Rust, logged there, and the makeup's second-priority source after the stored per-input voiced profile.
         try {
             val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
@@ -991,7 +991,7 @@ class PhotonConnectionService : Service() {
                 .minByOrNull { if (it.location == android.media.MicrophoneInfo.LOCATION_MAINBODY) 0 else 1 }
             nativeMicInfo(declared, chosen?.sensitivity ?: Float.NaN, desc)
         } catch (e: Throwable) { PhotonLog.w(TAG, "mic introspection failed: ${e.message}") }
-        routeCallAudio(true)
+        routeWaveAudio(true)
         acquireWaveWifiLock()
         // Proximity blanks the screen ONLY on the earpiece route (2026-09-14, "still being a bugger"): on speaker/headset a hand or pocket over the sensor was turning the screen off mid-wave. Earpiece = at the ear = blanking is right.
         if (earpieceRouted) {
@@ -1002,23 +1002,23 @@ class PhotonConnectionService : Service() {
         if (hasMic) {
             promoteForeground(true)
         } else {
-            PhotonLog.w(TAG, "callAudio: RECORD_AUDIO not granted — prompting at the call; listen-only until granted")
+            PhotonLog.w(TAG, "waveAudio: RECORD_AUDIO not granted — prompting at the wave; listen-only until granted")
             PhotonActivity.live?.requestMicPermission()
         }
-        PhotonLog.i(TAG, "callAudio: chores up (proximity lock, FGS mic type=$hasMic) — streams are Rust's")
+        PhotonLog.i(TAG, "waveAudio: chores up (proximity lock, FGS mic type=$hasMic) — streams are Rust's")
     }
 
     /** Called from Rust at hangup, after its streams are closed. */
-    fun stopCallAudio() {
-        callAudioRunning = false
-        routeCallAudio(false)
+    fun stopWaveAudio() {
+        waveAudioRunning = false
+        routeWaveAudio(false)
         releaseWaveWifiLock()
         // RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY: the screen comes back only once the sensor clears — a bare release() mid-cover flashed the screen on against the ear at hangup.
         try { proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) } } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock release failed", e) }
-        // The call surface no longer needs to sit over the keyguard.
-        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setCallLockScreenFlags(false) } }
-        // Drop the microphone FGS type the moment the call ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).
+        // The wave surface no longer needs to sit over the keyguard.
+        PhotonActivity.live?.let { a -> a.runOnUiThread { a.setWaveLockScreenFlags(false) } }
+        // Drop the microphone FGS type the moment the wave ends — back to dataSync-only (privacy indicator off, Android 14 mic-FGS accounting closed).
         promoteForeground(false)
-        PhotonLog.i(TAG, "callAudio: stopped")
+        PhotonLog.i(TAG, "waveAudio: stopped")
     }
 }

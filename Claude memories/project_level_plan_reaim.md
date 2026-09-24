@@ -5,7 +5,7 @@ metadata:
   type: project
 ---
 
-State of the wave level plan and jitter after the 2026-09-14/15 field week (docs/calls.md is canonical for the plan; this is the tuning ledger).
+State of the wave level plan and jitter after the 2026-09-14/15 field week (docs/waves.md is canonical for the plan; this is the tuning ledger).
 
 **Level plan (engine.rs TX block):**
 - Makeup seed priority: stored voiced → **stored fine floor × 20** ("normalize on quiet", Nick) → vendor sensitivity (sign-flip arm) → default. Initial makeup capped 16× (a stale profile can't crackle); the in-call re-aim may go to 64×.

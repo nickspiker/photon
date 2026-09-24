@@ -57,18 +57,18 @@ pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str
     notify_with_chirp(msg_hp, chirp::Chirp::from_hash(*chirp_seed), sender, text)
 }
 
-/// The call flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument held in the call cadence (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding.
+/// The wave flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument held in the wave cadence (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding.
 /// Kotlin LOOPS this one until a ring-stop edge (a phone rings until answered); we hand over one cadence plus the repeat gap in ms, and it appends the silence itself rather than marshalling 2 s of zeros per ring.
 #[cfg(target_os = "android")]
-pub fn notify_incoming_call(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str, audible: bool) {
+pub fn notify_incoming_wave(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str, audible: bool) {
     notify_with_chirp_via(
         ring_hp,
         chirp::Chirp::ring_from_hash(*chirp_seed),
         sender,
         text,
-        // CALL-CLASS notification (CATEGORY_CALL + fullScreenIntent + Answer/Decline actions) — the OS's blessed incoming-call surface for a backgrounded/locked app.
-        "postCallNotification",
-        // Muted (notify.ring_call off) still posts the notification; gap None tells Kotlin to skip the ring loop entirely.
+        // WAVE-CLASS notification (CATEGORY_CALL + fullScreenIntent + Answer/Decline actions) — the OS's blessed incoming-wave surface (CATEGORY_CALL is the API name, nothing more) for a backgrounded/locked app.
+        "postWaveNotification",
+        // Muted (notify.ring_wave off) still posts the notification; gap None tells Kotlin to skip the ring loop entirely.
         if audible { Some(ring_gap_ms()) } else { None },
     )
 }
@@ -114,30 +114,30 @@ pub fn play_ring_chirp(chirp_seed: &[u8; 32]) {
     }
 }
 
-/// Tear the call notification down on any ring-stop edge (answered here, answered/declined by a sibling, caller hangup) — an ongoing CATEGORY_CALL notification never auto-cancels.
+/// Tear the wave notification down on any ring-stop edge (answered here, answered/declined by a sibling, origin hangup) — an ongoing CATEGORY_CALL notification never auto-cancels.
 #[cfg(target_os = "android")]
-pub fn cancel_call_notification() {
-    let _ = call_service_void("cancelCallNotification");
+pub fn cancel_wave_notification() {
+    let _ = wave_service_void("cancelWaveNotification");
 }
 
-/// Answer/Decline pressed ON the notification (backgrounded ring): Kotlin's action intents land here; the app's tick drains it into answer_call/decline_call on the UI thread.
+/// Answer/Decline pressed ON the notification (backgrounded ring): Kotlin's action intents land here; the app's tick drains it into answer_wave/decline_wave on the UI thread.
 #[cfg(target_os = "android")]
-static PENDING_CALL_ACTION: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
+static PENDING_WAVE_ACTION: std::sync::Mutex<Option<bool>> = std::sync::Mutex::new(None);
 
 #[cfg(target_os = "android")]
-pub fn take_call_action() -> Option<bool> {
-    PENDING_CALL_ACTION.lock().unwrap().take()
+pub fn take_wave_action() -> Option<bool> {
+    PENDING_WAVE_ACTION.lock().unwrap().take()
 }
 
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeCallAction(
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeWaveAction(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     answer: jni::sys::jboolean,
 ) {
-    *PENDING_CALL_ACTION.lock().unwrap() = Some(answer != 0);
-    info!("call action from notification: {}", if answer != 0 { "answer" } else { "decline" });
+    *PENDING_WAVE_ACTION.lock().unwrap() = Some(answer != 0);
+    info!("wave action from notification: {}", if answer != 0 { "answer" } else { "decline" });
 }
 
 /// Shared body: dedup on the hash pointer, render the given chirp to WAV + haptic, post to Kotlin.
@@ -146,7 +146,7 @@ fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text:
     notify_with_chirp_via(msg_hp, chirp, sender, text, "postMessageNotification", None)
 }
 
-/// Shared marshal for both notification flavors — `method` names the Kotlin post entry point (message vs call class).
+/// Shared marshal for both notification flavors — `method` names the Kotlin post entry point (message vs wave class).
 #[cfg(target_os = "android")]
 fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, method: &str, ring_gap_ms: Option<i32>) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
@@ -213,7 +213,7 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
                 }
             };
 
-            // The call flavor takes a trailing gap-ms int (Kotlin loops the ring and renders the silence); the message flavor doesn't.
+            // The wave flavor takes a trailing gap-ms int (Kotlin loops the ring and renders the silence); the message flavor doesn't.
             let (sig, args): (&str, Vec<jni::objects::JValue>) = match ring_gap_ms {
                 Some(gap) => (
                     "([B[J[ILjava/lang/String;Ljava/lang/String;I)V",
@@ -246,9 +246,9 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
     }
 }
 
-/// Call a zero-arg void method on the foreground service (the MESSAGE_NOTIFIER global ref) — the generic form of the notification-post pattern, used by call audio start/stop. Returns false when the service ref isn't registered or the call throws. Callable from any thread.
+/// Call a zero-arg void method on the foreground service (the MESSAGE_NOTIFIER global ref) — the generic form of the notification-post pattern, used by wave audio start/stop. Returns false when the service ref isn't registered or the call throws. Callable from any thread.
 #[cfg(target_os = "android")]
-pub fn call_service_void(method: &str) -> bool {
+pub fn wave_service_void(method: &str) -> bool {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
         return false;
     };
@@ -256,14 +256,14 @@ pub fn call_service_void(method: &str) -> bool {
         Ok(mut env) => {
             if env.call_method(svc.as_obj(), method, "()V", &[]).is_err() {
                 let _ = env.exception_clear();
-                error!("call_service_void: {} failed", method);
+                error!("wave_service_void: {} failed", method);
                 false
             } else {
                 true
             }
         }
         Err(e) => {
-            error!("call_service_void: JVM attach failed: {:?}", e);
+            error!("wave_service_void: JVM attach failed: {:?}", e);
             false
         }
     }
@@ -298,7 +298,7 @@ pub fn open_url(url: &str) -> bool {
     }
 }
 
-/// The RECORD_AUDIO grant landed mid-call (PhotonActivity's permission launcher → Service.startCapture): open the AAudio input leg the missing permission skipped.
+/// The RECORD_AUDIO grant landed mid-wave (PhotonActivity's permission launcher → Service.startCapture): open the AAudio input leg the missing permission skipped.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeMicGranted(_env: JNIEnv<'_>, _class: JClass<'_>) {
@@ -739,7 +739,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioM
     crate::platform::audio::on_mic_mirror(id);
 }
 
-/// Volume mirror (calibration substrate): the voice-call stream volume in dB, at service start + on every VOLUME_CHANGED broadcast.
+/// Volume mirror (calibration substrate): the STREAM_VOICE_CALL volume in dB, at service start + on every VOLUME_CHANGED broadcast.
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeVolumeDb(
@@ -750,7 +750,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeVolume
     crate::platform::audio::on_volume_mirror(db);
 }
 
-/// Kotlin's mic introspection at call-audio start: the CDD Unprocessed declaration, the chosen input's 94 dB SPL sensitivity (NaN = unknown), and the input inventory (type:address:location:sensitivity per mic).
+/// Kotlin's mic introspection at wave-audio start: the CDD Unprocessed declaration, the chosen input's 94 dB SPL sensitivity (NaN = unknown), and the input inventory (type:address:location:sensitivity per mic).
 #[cfg(target_os = "android")]
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeMicInfo(
@@ -924,7 +924,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativePollSessionBroa
     ctx.shell.app().take_broadcast_signal() as jint
 }
 
-/// Raised by Kotlin's default-network callback when the phone's network changes (wifi off, cellular on, a new wifi); taken once per tick by the UI (call_drought_tick → on_network_changed).
+/// Raised by Kotlin's default-network callback when the phone's network changes (wifi off, cellular on, a new wifi); taken once per tick by the UI (wave_drought_tick → on_network_changed).
 static NETWORK_CHANGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_os = "android")]

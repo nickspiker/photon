@@ -1,8 +1,8 @@
 //! Chirp-seeded NLMS echo canceller (Nick 2026-09-08: "go for the NLMS... since we have a profile from the connect chirp, no need for RLS"). Pure math — the engine owns the wiring.
 //!
-//! The design in one paragraph: the v-chirp probe measures the speaker→mic impulse response at every connect, so the filter is BORN converged — NLMS's one weakness (slow convergence on colored signals) never applies, and RLS's O(L²) selling point buys nothing. The canceller is causal and inline: `residual[n] = mic[n] − Σ h[k]·ref[n − ir_start − k]`, zero added samples of latency — the cost is CPU only (~2×TAPS MACs per sample, a few percent of one core at 48k). Adaptation is gated by the caller on the far-talks-alone classification the duck already computes; frozen under double-talk (the standard divergence defense). The duck demotes to RESIDUAL suppressor while a filter is armed — the moment calls become genuinely full-duplex.
+//! The design in one paragraph: the v-chirp probe measures the speaker→mic impulse response at every connect, so the filter is BORN converged — NLMS's one weakness (slow convergence on colored signals) never applies, and RLS's O(L²) selling point buys nothing. The canceller is causal and inline: `residual[n] = mic[n] − Σ h[k]·ref[n − ir_start − k]`, zero added samples of latency — the cost is CPU only (~2×TAPS MACs per sample, a few percent of one core at 48k). Adaptation is gated by the origin on the far-talks-alone classification the duck already computes; frozen under double-talk (the standard divergence defense). The duck demotes to RESIDUAL suppressor while a filter is armed — the moment waves become genuinely full-duplex.
 //!
-//! Alignment: mic and reference each advance by pure SAMPLE COUNT from their session anchors (contiguous streams), so per-frame stamp wobble never smears the filter; the one-time anchor offset and any true clock skew land inside the filter's PRE-roll window and NLMS tracks the slow residual drift. A route swap disarms (new physics — the next call's chirp re-seeds).
+//! Alignment: mic and reference each advance by pure SAMPLE COUNT from their session anchors (contiguous streams), so per-frame stamp wobble never smears the filter; the one-time anchor offset and any true clock skew land inside the filter's PRE-roll window and NLMS tracks the slow residual drift. A route swap disarms (new physics — the next wave's chirp re-seeds).
 
 /// Filter length: ~42.7ms of echo path at 48k — room tail on a speakerphone, anchored at the chirp-measured delay.
 pub const TAPS: usize = 2048;
@@ -54,7 +54,7 @@ impl RefRing {
         self.end
     }
 
-    /// A contiguous window [from, from+len) as a slice, or None if any of it has aged out / not arrived (the caller skips the frame — never zero-padded guesswork).
+    /// A contiguous window [from, from+len) as a slice, or None if any of it has aged out / not arrived (the origin skips the frame — never zero-padded guesswork).
     fn window(&self, from: i64, len: usize) -> Option<&[f32]> {
         if from < self.start as i64 || (from + len as i64) > self.end as i64 {
             return None;
@@ -94,7 +94,7 @@ impl Nlms {
             .then(|| 10.0 * (self.pre_e / self.post_e).log10())
     }
 
-    /// A canceller that MADE ECHO WORSE must be shot (field 2026-09-08: a −43dB chirp barely passed the fit gate and seeded a misaligned filter → −17.8dB ERLE, i.e. +17.8dB of injected garbage = the "scratchy"). After a probation window of adapted frames, net-negative ERLE means the seed was garbage — the caller disarms and falls back to the duck. `false` until probation completes (never judge on one noisy frame).
+    /// A canceller that MADE ECHO WORSE must be shot (field 2026-09-08: a −43dB chirp barely passed the fit gate and seeded a misaligned filter → −17.8dB ERLE, i.e. +17.8dB of injected garbage = the "scratchy"). After a probation window of adapted frames, net-negative ERLE means the seed was garbage — the origin disarms and falls back to the duck. `false` until probation completes (never judge on one noisy frame).
     pub fn is_net_harmful(&self) -> bool {
         const PROBATION: u64 = 200; // ~2s of far-talk-alone adaptation before any verdict
         self.diverged || (self.adapted_frames >= PROBATION && self.recent_post > self.recent_pre)
@@ -105,7 +105,7 @@ impl Nlms {
         (self.adapted_frames > 0 && self.recent_post > 0.0).then(|| 10.0 * (self.recent_pre / self.recent_post).log10())
     }
 
-    /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. `ref_gain` = vol_lin_now ÷ vol_lin_at_seed — the taps are measured at the probe's volume, and the DAC gain sits between the reference and the room, so a mid-call volume change scales the echo without touching h; folding the ratio into the reference keeps the filter honest instantly (adaptation then refines in seed-volume units). Frames whose reference window isn't fully resident pass thru untouched.
+    /// Cancel one mic frame in place. `frame_pos` = the frame's first sample in the REFERENCE timeline (mic count + one-time anchor offset). `adapt` = the far-talks-alone gate. `ref_gain` = vol_lin_now ÷ vol_lin_at_seed — the taps are measured at the probe's volume, and the DAC gain sits between the reference and the room, so a mid-wave volume change scales the echo without touching h; folding the ratio into the reference keeps the filter honest instantly (adaptation then refines in seed-volume units). Frames whose reference window isn't fully resident pass thru untouched.
     pub fn cancel_frame(&mut self, mic: &mut [i16], ring: &RefRing, frame_pos: i64, adapt: bool, ref_gain: f32) {
         let n = self.h.len();
         let len = mic.len();

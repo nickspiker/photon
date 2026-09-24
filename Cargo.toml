@@ -151,14 +151,14 @@ sha2 = "0.10.9"
 sha3 = "0.11.0-rc.3"
 i256 = "0.2.3"
 chacha20 = { version = "0.9.1", features = ["std"] }
-poly1305 = "0.8"  # hand-composed RFC 8439 for the call media plane's truncated tag (packet.rs)
+poly1305 = "0.8"  # hand-composed RFC 8439 for the wave media plane's truncated tag (packet.rs)
 futures = "0.3.31"
 resize = "0.8.8"
 rgb = "0.8.52"
 base64 = "0.22.1"
 bitvec = "1.0.1"
 libc = "0.2.178"
-# Voice calls (docs/calls.md): fountain-coded loss repair over the media window — pure Rust RFC 6330. Redundancy is the loss dial; Opus in-band FEC/PLC stays OFF (restricted-lowdelay), raptor owns repair.
+# Waves (docs/waves.md): fountain-coded loss repair over the media window — pure Rust RFC 6330. Redundancy is the loss dial; Opus in-band FEC/PLC stays OFF (restricted-lowdelay), raptor owns repair.
 raptorq = "2.0.1"
 # Opus via vendored libopus (audiopus_sys builds it with CMake — the NDK env exports in scripts/lib/android-env.sh exist for exactly this). RESTRICTED_LOWDELAY only: CELT, 2.5ms lookahead, no SILK prediction, no voip-mode weirdness.
 opus = "0.3.1"
@@ -239,7 +239,7 @@ arboard = "3.4"
 fluor = { path = "../fluor", default-features = false, features = ["host-winit", "emoji"] }
 # Per-contact notification chime: deterministic modal bell from spaghettify(their_handle_hash + our_identity_seed). Desktop-only - rodio's playback stack does not belong in the Android/Redox dep graphs (Android will use platform notifications).
 chirp = { path = "../chirp" }
-# Voice-call mic capture + playback (rodio already carries cpal transitively; the explicit dep pins the same version for the call audio thread pair). Android does NOT use cpal — capture/playback cross JNI to Kotlin AudioRecord/AudioTrack with the VOICE_COMMUNICATION source, which is what engages the vendor echo canceller (docs/calls.md echo layer 1).
+# Wave mic capture + playback (rodio already carries cpal transitively; the explicit dep pins the same version for the wave audio thread pair). Android does NOT use cpal — capture/playback cross JNI to Kotlin AudioRecord/AudioTrack with the VOICE_COMMUNICATION source, which is what engages the vendor echo canceller (docs/waves.md echo layer 1).
 cpal = "0.17"
 
 [dev-dependencies]

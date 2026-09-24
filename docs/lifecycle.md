@@ -1,6 +1,6 @@
 # The identity/device lifecycle — flow tree, screen names, conventions
 
-> Status: DESIGN, agreed 2026-07-17 (session notes). This is the canonical map of every screen a device passes thru from first launch to final exit, the names we call them, and the visual conventions they share.
+> Status: DESIGN, agreed 2026-07-17 (session notes). This is the canonical map of every screen a device passes thru from first launch to final exit, the names we give them, and the visual conventions they share.
 > Driven by three live flow defects: the handle-collision screen reading as device-pairing, a device double-attesting two handles, and the last device of a fleet shredding itself into an orphaned identity with no ceremony.
 
 ## The state model (what the screens render)

@@ -4,7 +4,7 @@
 
 ## 0. The fork, and the decision
 
-**Option A — build §14.5 as written:** a grow-only, content-addressed, fleet-key-sealed set per friendship in R2. Buys: wiped-*sole*-device history recovery, and a resync guarantee independent of sibling liveness. Costs: message content (sealed) parked on rented infrastructure forever — a retention/subpoena/traffic-record surface that exists only because we created it; a second sync protocol (have-set digests, union merge) beside the lane/history machinery that already converges in the field; horizon + cursor + shred logic operating against a remote store; standing R2 cost and abuse surface; months of work in front of voice calls.
+**Option A — build §14.5 as written:** a grow-only, content-addressed, fleet-key-sealed set per friendship in R2. Buys: wiped-*sole*-device history recovery, and a resync guarantee independent of sibling liveness. Costs: message content (sealed) parked on rented infrastructure forever — a retention/subpoena/traffic-record surface that exists only because we created it; a second sync protocol (have-set digests, union merge) beside the lane/history machinery that already converges in the field; horizon + cursor + shred logic operating against a remote store; standing R2 cost and abuse surface; months of work in front of waves.
 
 **Option B — fleet-holds-history (DECIDED):** the fleet IS the durable store. Message content never touches infrastructure, sealed or not — the always-online footprint stays exactly what it is today: the roster/key fan-out slot, checkpoint custody, and blind deposits (small frames, store-and-forward toward a handle proof). Durability = replication across your own devices; the resync guarantee is re-stated over sibling reachability (§2). Horizon and crypto-shred become **local** operations (§3–§4), which makes them *stronger*, not weaker — there is no third-party copy to fail to destroy.
 
@@ -48,7 +48,7 @@ The horizon is a per-conversation retention dial, default **keep-forever** (the 
 
 The one thing Option A bought that B doesn't: a single-device user who wipes that device. The answer is an **export**, not infrastructure: a user-initiated, passphrase-sealed history archive (VSF, the vault codec we already have) written to a file/drive of their choosing. Sovereign, offline, zero standing cost, zero retention surface — and it composes with §4 (an export is above-horizon content only). UI: one button next to the retention dial. This is deliberately Phase-later; the honest single-copy warning (§1) ships first.
 
-## 6. Build order (all post-voice-calls unless pulled forward)
+## 6. Build order (all post-wave unless pulled forward)
 
 1. **Single-copy warning** (§1) — small UI, ships with the next batch.
 2. **Sync cursors on the pong edge** (§2) — one field + bookkeeping; useful diagnostics even before any horizon exists.
@@ -56,4 +56,4 @@ The one thing Option A bought that B doesn't: a single-device user who wipes tha
 4. **Epoch-key shred behind the convergence gate** (§4).
 5. **Sealed export** (§5).
 
-Nothing here blocks voice calls; item 1 is the only near-term obligation. The spec debt this doc retires: braid.md §14.5 (slot substrate — explicitly not built, superseded), §14.6 (linearizer — already retired by lanes), §14.7–14.8 (re-derived above).
+Nothing here blocks waves; item 1 is the only near-term obligation. The spec debt this doc retires: braid.md §14.5 (slot substrate — explicitly not built, superseded), §14.6 (linearizer — already retired by lanes), §14.7–14.8 (re-derived above).

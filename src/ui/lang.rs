@@ -221,7 +221,7 @@ pub enum Msg<'a> {
     Delete,
     Keep,
     Play,
-    EndCall,
+    EndWave,
     HangUp,
     Attest,
     Cancel,
@@ -232,7 +232,7 @@ pub enum Msg<'a> {
     // ---- page names (nav rail + contact tabs) ----
     PageName(SettingsPage),
     ContactPageName(ContactPage),
-    // ---- call screen ----
+    // ---- wave screen ----
     SpeakerToggleOn,
     SpeakerToggleOff,
     SpeakerPlain,
@@ -240,36 +240,36 @@ pub enum Msg<'a> {
     AddHandle,
     AddHandlePlain,
     BackToContact,
-    CallStart,
+    WaveStart,
     // Beam = video (wave's sibling) — stubbed, unwired; the label ships so the button can exist before the feature.
     BeamStart,
     /// The ring panel's audio answer (and the wave card's option): answering is choosing audio.
     WaveBack,
     /// The video answer / the wave card's option — a stub until video lands.
     BeamBack,
-    /// The in-call video switch — a stub until video lands.
+    /// The in-wave video switch — a stub until video lands.
     BeamToggle,
-    IncomingCall,
-    IncomingCallNoPath,
+    IncomingWave,
+    IncomingWaveNoPath,
     /// The ☎ pill while the friend is online but only over the relay — a wave cannot carry voice there yet, so the pill says why instead of failing silently (Nick 2026-09-17).
-    CallStartNoPath,
+    WaveStartNoPath,
     /// The wave card's "wave back" in the same state.
     WaveBackNoPath,
-    CallActiveNoPath(&'a str),
-    CallReconnecting,
+    WaveActiveNoPath(&'a str),
+    WaveReconnecting,
     /// Answer tapped but no frame could go out (the friendship is mid-ceremony) — the ring keeps going, the person needs to know why nothing happened.
     AnswerFailedReconnecting(&'a str),
-    CallDroppedRow,
+    WaveDroppedRow,
     /// A dropped wave with its live duration — the wave card header.
-    CallDroppedDur(&'a str),
-    CallChipElsewhere(&'a str),
-    CallChipElsewhereUnknown,
+    WaveDroppedDur(&'a str),
+    WaveChipElsewhere(&'a str),
+    WaveChipElsewhereUnknown,
     StopPlayback,
-    CallEndedDur(&'a str),
-    CallingName(&'a str),
-    CallRow,
-    MissedCallRow,
-    CallDeclinedRow,
+    WaveEndedDur(&'a str),
+    WavingName(&'a str),
+    WaveRow,
+    MissedWaveRow,
+    WaveDeclinedRow,
     BusyRow,
     // ---- launch / handle / join ----
     YesForever,
@@ -402,10 +402,10 @@ pub enum Msg<'a> {
     // The ceremony ladder's step text, zero-indexed 0..=11 — the prefix (.⟨dozenal digit⟩ or n/12) is the caller's (Contact::clutch_status_detail).
     ClutchStep(u8),
     ClutchSecured,
-    // ---- compact call bar ----
-    CallBarCalling(&'a str),
-    CallBarInCall(&'a str),
-    CallBarKeepRecording,
+    // ---- compact wave bar ----
+    WaveBarWaving(&'a str),
+    WaveBarInWave(&'a str),
+    WaveBarKeepRecording,
     NoDirectPathSuffix,
     // ---- message details strip + action pills ----
     SentDetail { age: &'a str, state: &'a str },
@@ -680,11 +680,11 @@ pub enum Msg<'a> {
     NotificationsTitle,
     ChimeNewMessage,
     VibrateNewMessage,
-    RingIncomingCall,
+    RingIncomingWave,
     /// Notifications page: hold every wave recording on this device (replication by default).
     HoldWavesOnDevice,
     KeepEditHistory,
-    VibrateIncomingCall,
+    VibrateIncomingWave,
     PresenceCheckbox,
     PerContactOverride,
     // ---- updates ----
@@ -767,7 +767,7 @@ pub enum Msg<'a> {
     /// "This device's voice" — the calibration section head.
     WaveVoiceHead,
     WaveVoiceWhy,
-    /// One mic's profile: voiced level, quiet floor, calls of evidence.
+    /// One mic's profile: voiced level, quiet floor, waves of evidence.
     WaveMicLine { mic: &'a str, voiced: &'a str, floor: &'a str, n: &'a str },
     WaveNoProfiles,
     WaveForget,
@@ -852,8 +852,8 @@ pub enum Msg<'a> {
     OpenPill,
     ViewerBack,
     ViewerDecoding,
-    /// The call panel's live line: rung name (a proper noun, untranslated), round trip as a frequency, loss of 256, buffer frames.
-    CallLiveStats { rung: &'a str, freq: &'a str, loss: &'a str, buf: &'a str },
+    /// The wave panel's live line: rung name (a proper noun, untranslated), round trip as a frequency, loss of 256, buffer frames.
+    WaveLiveStats { rung: &'a str, freq: &'a str, loss: &'a str, buf: &'a str },
     ReaderTooLarge,
     AttachDropHint,
     InspectFailed(&'a str),

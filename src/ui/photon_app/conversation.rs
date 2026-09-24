@@ -269,8 +269,8 @@ impl PhotonApp {
             let standing = self.molecule_rosters[gi].1.standing();
             self.conversations.push(crate::types::Conversation::new_molecule(*gid, standing));
         }
-        self.call_playback = None;
-        self.call_playback_hash = None;
+        self.wave_playback = None;
+        self.wave_playback_hash = None;
         self.active_conversation = Some(id);
         self.compose_reply_to = None;
         self.compose_edit_of = None;
@@ -300,8 +300,8 @@ impl PhotonApp {
     /// Open the conversation this contact row stands for.
     pub(super) fn open_conversation_with(&mut self, ci: usize) {
         // Switching conversations stops a wave that was playing in the one we leave.
-        self.call_playback = None;
-        self.call_playback_hash = None;
+        self.wave_playback = None;
+        self.wave_playback_hash = None;
         self.active_conversation = self
             .contacts
             .get(ci)
@@ -1157,8 +1157,8 @@ impl PhotonApp {
         let mut fork_sibling_reset: Option<usize> = None;
         let mut fork_friend_rekey: Option<usize> = None;
         let mut sibling_push: Option<(usize, ChatMessage)> = None;
-        // Call signal deferred past the `chains` borrow — the state machine takes &mut self (docs/calls.md).
-        let mut call_signal_evt: Option<(usize, crate::call::signal::CallSignal, Option<[u8; 32]>, i64)> = None;
+        // Wave signal deferred past the `chains` borrow — the state machine takes &mut self (docs/waves.md).
+        let mut wave_signal_evt: Option<(usize, crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
         let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // Group control row landed (docs/molecules.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
@@ -1459,7 +1459,7 @@ impl PhotonApp {
             // Update bidirectional entropy state (derive weave hash from full message context)
             chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
 
-            // CALL BASKET CAPTURE (docs/calls.md): the lane key THIS frame decrypted under, taken pre-advance — for a call-offer row it is the doomed egg of the call-key basket (the advance below destroys it, which is exactly why it's forward-secret). A cheap copy on every frame; only the call-signal arm reads it.
+            // WAVE BASKET CAPTURE (docs/waves.md): the lane key THIS frame decrypted under, taken pre-advance — for a wave-offer row it is the doomed egg of the wave-key basket (the advance below destroys it, which is exactly why it's forward-secret). A cheap copy on every frame; only the wave-signal arm reads it.
             let rx_lane_key_pre_advance = chains.current_key(&lane).copied();
 
             // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
@@ -1559,7 +1559,7 @@ impl PhotonApp {
             }
 
             // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
-            // CALL SIGNALING (docs/calls.md): an offer/answer/hangup rides the lane as a hidden control row — persist it (re-ACK durable, the probe pattern), push it to our siblings (ring/stop fan-out), and hand it to the state machine WITH the pre-advance lane key (the basket's doomed egg, meaningful for offers).
+            // WAVE SIGNALING (docs/waves.md): an offer/answer/hangup rides the lane as a hidden control row — persist it (re-ACK durable, the probe pattern), push it to our siblings (ring/stop fan-out), and hand it to the state machine WITH the pre-advance lane key (the basket's doomed egg, meaningful for offers).
             // ERA RATCHET ROW (crypto/era.rs, plan §3): Init / Resp / Nudge — persist a HIDDEN row with its ack_hash (re-ACK durability, the probe pattern), NEVER push it to siblings (the era itself replicates by chain-sync), and hand it to on_era_signal after the borrow ends with the package's typed KEM material.
             if let Some(sig) = crate::crypto::era::EraSignal::parse(&message_text) {
                 let era_row =
@@ -1576,7 +1576,7 @@ impl PhotonApp {
                 persist_ci = Some(contact_idx);
                 // The whole typed group wire goes to the handler (the invite's secrets live ONLY there — the row inserted above is the bare kind marker).
                 molecule_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.clone(), pkg_era_kem.take(), timestamp));
-            } else if let Some(sig) = crate::call::signal::CallSignal::parse(&message_text) {
+            } else if let Some(sig) = crate::wave::signal::WaveSignal::parse(&message_text) {
                 let sig_row =
                     ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
                         .with_ack_hash(plaintext_hash);
@@ -1584,10 +1584,10 @@ impl PhotonApp {
                 persist_ci = Some(contact_idx);
                 sibling_push = Some((contact_idx, sig_row));
                 recv_seal_idx = Some(contact_idx);
-                call_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
+                wave_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
             } else
             // Hidden DELETE marker: the friend tombstoned a message — apply it here, persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
-            // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): a friend's marker may tombstone ONLY rows THEY authored (incoming here) and never a wave — their delete can't reach into our words or our archive of a shared call.
+            // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): a friend's marker may tombstone ONLY rows THEY authored (incoming here) and never a wave — their delete can't reach into our words or our archive of a shared wave.
             if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
                 let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
                 {
@@ -1916,7 +1916,7 @@ impl PhotonApp {
                     conv_state_pos = Some(conv_pos);
                 }
 
-                // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `will_ding` (not looking, no live sibling clearer, real friend row) gates the call — the fleet-wide half of the 2026-07-23 design on top of the local `looking` gate. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
+                // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `will_ding` (not looking, no live sibling clearer, real friend row) gates the wave — the fleet-wide half of the 2026-07-23 design on top of the local `looking` gate. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
                 if will_ding && is_new_row {
                     // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
                     #[cfg(target_os = "android")]
@@ -1987,8 +1987,8 @@ impl PhotonApp {
             );
         }
         // The tail — everything the arm ran after the `chains` borrow ended or after the loop, direct calls now.
-        if let Some((ci, sig, rx_key, ts)) = call_signal_evt {
-            self.on_call_signal(ci, sig, rx_key, ts, false, false);
+        if let Some((ci, sig, rx_key, ts)) = wave_signal_evt {
+            self.on_wave_signal(ci, sig, rx_key, ts, false, false);
         }
         if let Some((ci, sig, kem, ts)) = era_signal_evt {
             self.on_era_signal(ci, sig, kem, ts);
@@ -2288,7 +2288,7 @@ impl PhotonApp {
             else {
                 continue;
             };
-            // A GROUP page from a sibling (docs/molecules.md step 6): rows merge into the group conversation verbatim (same identity, their flags are ours); no contact stands behind the token, so the contact-scoped extras (chirp, attach fetch, call signals) are skipped here.
+            // A GROUP page from a sibling (docs/molecules.md step 6): rows merge into the group conversation verbatim (same identity, their flags are ours); no contact stands behind the token, so the contact-scoped extras (chirp, attach fetch, wave signals) are skipped here.
             if from_sibling {
                 if let Some(gid) = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g) {
                     self.hist_rid_map.remove(&request_id);
@@ -2574,7 +2574,7 @@ impl PhotonApp {
                     .collect();
                 self.summary_chirp_and_flag(idx, conv_pos, &undischarged);
             }
-            // CALL signals via sibling merge are STOP edges ONLY (docs/calls.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
+            // WAVE signals via sibling merge are STOP edges ONLY (docs/waves.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
             if from_sibling {
                 // A sibling's REJECT (a wave row with outcome Rejected) stops this device's ring for that offer; a FETCH HINT makes this device hold the recording now.
                 let rejects: Vec<i64> = fresh.iter().filter(|m| m.wave.is_some_and(|w| w.outcome == crate::types::WaveOutcome::Rejected)).map(|m| m.timestamp).collect();
@@ -2585,12 +2585,12 @@ impl PhotonApp {
                 if self.wave_hold {
                     let recs: Vec<[u8; 32]> = fresh
                         .iter()
-                        .filter(|m| !m.deleted && crate::types::is_call_recording(&m.content))
+                        .filter(|m| !m.deleted && crate::types::is_wave_recording(&m.content))
                         .filter_map(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
                         .filter(|h| !crate::storage::blob_present_probe_now(h))
                         .collect();
                     for h in recs {
-                        crate::logf!("CALL: sibling's recording {}… — fetching (waves held on this device)", hex::encode(&h[..4]));
+                        crate::logf!("WAVE: sibling's recording {}… — fetching (waves held on this device)", hex::encode(&h[..4]));
                         self.attach_fetch(idx, &h);
                     }
                 }
@@ -2599,20 +2599,20 @@ impl PhotonApp {
                     let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h)));
                     if let Some(h) = hash {
                         if !crate::storage::blob_present_probe_now(&h) {
-                            crate::logf!("CALL: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));
+                            crate::logf!("WAVE: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));
                             self.attach_fetch(idx, &h);
                         }
                     }
                 }
-                let sigs: Vec<(crate::call::signal::CallSignal, i64, bool)> = fresh
+                let sigs: Vec<(crate::wave::signal::WaveSignal, i64, bool)> = fresh
                     .iter()
                     .filter_map(|m| {
-                        crate::call::signal::CallSignal::parse(&m.content)
+                        crate::wave::signal::WaveSignal::parse(&m.content)
                             .map(|s| (s, m.timestamp, m.is_outgoing))
                     })
                     .collect();
                 for (sig, ts, out) in sigs {
-                    self.on_call_signal(idx, sig, None, ts, true, out);
+                    self.on_wave_signal(idx, sig, None, ts, true, out);
                 }
             }
             // Persist the cursor off-thread (coalesced 13-byte record; the rows ride the coalescing message writer below).

@@ -85,7 +85,7 @@ Two neighbours of the current era may exist on a blob at once.
 **Pending** is the next era, derived but not yet written to: phase one of a two-phase cutover, used by the in-band ratchet (a later stage); `cut_over_to_pending` flips it to current with the `rotate_our_lane` shape (our lane and pendings reset, undelivered rows re-serve on a fresh lane under the new root).
 
 A completed ceremony **supersedes** (`supersede_with`): the fresh era becomes current and the one we held becomes retired.
-Nothing is destroyed at ceremony START any more — the offer that used to `friendship_id.take()` and delete the chains now only resets the ceremony round, so sends, express call signals and the compose bar ride the current era until completion.
+Nothing is destroyed at ceremony START any more — the offer that used to `friendship_id.take()` and delete the chains now only resets the ceremony round, so sends, express wave signals and the compose bar ride the current era until completion.
 This is what Emma's 2026-09-08 log paid for: `cannot send — no friendship chain`, `express frame opened by no friendship`, and a compose bar replaced by the ceremony ladder, all because a re-CLUTCH wiped the live chain the moment it decided to run.
 
 Era order (`era_superseded_by`): within one lineage the index is the truth; across lineages the newer genesis wins; the equal-genesis legacy tie falls to root byte-order, as before.

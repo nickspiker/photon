@@ -18,7 +18,7 @@ pub fn set_relay_reachable(up: bool) {
     RELAY_REACHABLE.store(up, Ordering::Relaxed);
 }
 
-/// The device's default network is METERED (cellular, tethered hotspot) — mirrored from Android's ConnectivityManager on capability-change edges. A metered-only reachable friend widens the bearer trigger: co-located peers should ride the direct radio, not the tower. The wins stack — zero data cost, single radio hop instead of phone→tower→core→tower→phone (a call RTT drops from ~50-100ms to ~2-5ms, and measured P2P throughput runs ~8× a congested cellular uplink), and for a sustained call the radio power is comparable while the latency/cost win is total.
+/// The device's default network is METERED (cellular, tethered hotspot) — mirrored from Android's ConnectivityManager on capability-change edges. A metered-only reachable friend widens the bearer trigger: co-located peers should ride the direct radio, not the tower. The wins stack — zero data cost, single radio hop instead of phone→tower→core→tower→phone (a wave RTT drops from ~50-100ms to ~2-5ms, and measured P2P throughput runs ~8× a congested cellular uplink), and for a sustained call the radio power is comparable while the latency/cost win is total.
 pub static NET_METERED: AtomicBool = AtomicBool::new(false);
 
 pub fn net_metered() -> bool {
@@ -407,7 +407,7 @@ static OPEN_HOUSE: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex
 static DELIBERATE_ARMED: AtomicBool = AtomicBool::new(false);
 static STRANDED_ARMED: AtomicBool = AtomicBool::new(false);
 
-/// The UNIVERSAL discovery identity (user call 2026-09-01: "always use blake3('Photon WiFi direct v0'), further auth once we know it's photon-capable"). One static token names the APP, not a person or a pair; real authentication happens at the chain layer the moment frames flow (a hostile joiner sees ciphertext and unresolvable knocks — the same trust story open house always had). This retires the per-pair provisioned-credential layer, whose distribution dependency kept the whole bearer dark in the field (nothing minted the pairwise seed). Down the line the same token is the substrate for opt-in friend relaying.
+/// The UNIVERSAL discovery identity (user ruling 2026-09-01: "always use blake3('Photon WiFi direct v0'), further auth once we know it's photon-capable"). One static token names the APP, not a person or a pair; real authentication happens at the chain layer the moment frames flow (a hostile joiner sees ciphertext and unresolvable knocks — the same trust story open house always had). This retires the per-pair provisioned-credential layer, whose distribution dependency kept the whole bearer dark in the field (nothing minted the pairwise seed). Down the line the same token is the substrate for opt-in friend relaying.
 pub fn universal_token() -> [u8; WFD_TOKEN_LEN] {
     let h = blake3::hash(b"Photon WiFi direct v0");
     let mut t = [0u8; WFD_TOKEN_LEN];

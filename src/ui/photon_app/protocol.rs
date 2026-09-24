@@ -447,18 +447,18 @@ impl PhotonApp {
             .settings_vibrate_msg_check
             .as_mut()
             .map(|c| (c.take_toggle(), c.is_checked()));
-        let ring_call = self
-            .settings_ring_call_check
+        let ring_wave = self
+            .settings_ring_wave_check
             .as_mut()
             .map(|c| (c.take_toggle(), c.is_checked()));
-        let vib_call = self
-            .settings_vibrate_call_check
+        let vib_wave = self
+            .settings_vibrate_wave_check
             .as_mut()
             .map(|c| (c.take_toggle(), c.is_checked()));
         for (toggle, key) in [
             (vib_msg, "notify.vibrate_msg"),
-            (ring_call, "notify.ring_call"),
-            (vib_call, "notify.vibrate_call"),
+            (ring_wave, "notify.ring_wave"),
+            (vib_wave, "notify.vibrate_wave"),
         ] {
             if let Some((true, checked)) = toggle {
                 if self.settings_set(key, vsf::VsfType::u0(checked)) {
@@ -475,7 +475,7 @@ impl PhotonApp {
             .as_mut()
             .map(|cb| (cb.take_toggle(), cb.is_checked()));
         if let Some((true, checked)) = plaid_wan_toggle {
-            crate::call::PLAID_WAN_ALLOWED.store(checked, std::sync::atomic::Ordering::Relaxed);
+            crate::wave::PLAID_WAN_ALLOWED.store(checked, std::sync::atomic::Ordering::Relaxed);
             if self.settings_set("waves.plaid_wan", vsf::VsfType::u0(checked)) {
                 crate::logf!("SETTINGS: waves.plaid_wan = {} (linked write)", checked);
             }
@@ -1185,11 +1185,11 @@ impl PhotonApp {
         if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
             cb.set_label(tr(Msg::VibrateNewMessage));
         }
-        if let Some(cb) = self.settings_ring_call_check.as_mut() {
-            cb.set_label(tr(Msg::RingIncomingCall));
+        if let Some(cb) = self.settings_ring_wave_check.as_mut() {
+            cb.set_label(tr(Msg::RingIncomingWave));
         }
-        if let Some(cb) = self.settings_vibrate_call_check.as_mut() {
-            cb.set_label(tr(Msg::VibrateIncomingCall));
+        if let Some(cb) = self.settings_vibrate_wave_check.as_mut() {
+            cb.set_label(tr(Msg::VibrateIncomingWave));
         }
         if let Some(cb) = self.settings_presence_check.as_mut() {
             cb.set_label(tr(Msg::PresenceCheckbox));

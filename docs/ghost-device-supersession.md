@@ -3,7 +3,7 @@
 ## The incident
 
 The phone re-attested (its device id moved `1be949c1` → `cacbc223`), but the published fleet membership chain still carries `1be949c1`.
-Every fleet fan-out (messages, chain-sync, pings, doorbell) therefore sprays a permanently dead leg: the 2026-09-02 field day logged 50+ relay drops to `1be949c1` in minutes, and stale rosters holding the ghost were a convicted contributor to the no-ring call incident (2026-08-29).
+Every fleet fan-out (messages, chain-sync, pings, doorbell) therefore sprays a permanently dead leg: the 2026-09-02 field day logged 50+ relay drops to `1be949c1` in minutes, and stale rosters holding the ghost were a convicted contributor to the no-ring wave incident (2026-08-29).
 
 ## Why it can't just be removed
 
@@ -30,4 +30,4 @@ Every spray at the ghost burns retransmit ladders and (pre-PT-retarget) delayed 
 ## Recommendation
 
 B now (small, reversible, kills the daily bleeding), A as a designed part of the fleet-key redesign (it needs the same era machinery anyway).
-Not built — awaiting Nick's call.
+Not built — awaiting Nick's ruling.

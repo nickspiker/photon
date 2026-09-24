@@ -11,6 +11,6 @@
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Photon uses Bluetooth to detect and pair your other devices in person during setup.</string>
 	<key>NSMicrophoneUsageDescription</key>
-	<string>Photon uses the microphone for voice calls. Audio is end-to-end encrypted and never touches a server.</string>
+	<string>Photon uses the microphone for waves — voice, between your devices and your friends'. Audio is end-to-end encrypted and never touches a server.</string>
 </dict>
 </plist>

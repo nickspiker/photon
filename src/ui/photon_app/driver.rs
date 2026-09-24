@@ -97,7 +97,7 @@ impl FluorApp for PhotonApp {
         // Calibration phase edges wake the loop thru this proxy — without it, a finished Wave measurement painted only when something else stirred the loop (the "hang on forever until you scroll" field report, 2026-09-02).
         {
             let cal_proxy = proxy.clone();
-            crate::call::calibrate::register_wake(move || {
+            crate::wave::calibrate::register_wake(move || {
                 let _ = cal_proxy.send(PhotonEvent::NetworkUpdate);
             });
         }
@@ -362,37 +362,37 @@ impl FluorApp for PhotonApp {
         self.hit_counter = self.hit_counter.wrapping_add(40); // 8 pills + 32 Add-page contact rows
         self.ready_filter_base = self.hit_counter;
         self.hit_counter = self.hit_counter.wrapping_add(5); // All / Friends / Atoms / Molecules / New atom
-        // Call controls (docs/calls.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
-        self.call_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.call_start_btn = Some(Button::new(
+        // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
+        self.wave_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_start_btn = Some(Button::new(
             &mut self.hit_counter,
             0.,
             0.,
             1.,
             1.,
             12.,
-            tr(Msg::CallStart),
+            tr(Msg::WaveStart),
         ));
-        self.call_action_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.call_decline_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
-        self.call_speaker_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::SpeakerPlain)));
-        self.call_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::AddHandlePlain)));
-        self.call_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
+        self.wave_action_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_decline_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_speaker_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::SpeakerPlain)));
+        self.wave_addhandle_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::AddHandlePlain)));
+        self.wave_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BackToContact)));
         // Beam (video) — a STUB: rendered disabled beside the Wave button until video lands; constructed LAST so the status/start/action/decline contiguous-id contract holds.
-        self.call_beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
-        self.call_beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
-        self.call_reject_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
+        self.beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
+        self.beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
+        self.wave_reject_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
         for b in [
-            self.call_status_btn.as_mut(),
-            self.call_start_btn.as_mut(),
-            self.call_action_btn.as_mut(),
-            self.call_decline_btn.as_mut(),
-            self.call_speaker_btn.as_mut(),
-            self.call_addhandle_btn.as_mut(),
-            self.call_back_btn.as_mut(),
-            self.call_beam_btn.as_mut(),
-            self.call_beam_back_btn.as_mut(),
-            self.call_reject_btn.as_mut(),
+            self.wave_status_btn.as_mut(),
+            self.wave_start_btn.as_mut(),
+            self.wave_action_btn.as_mut(),
+            self.wave_decline_btn.as_mut(),
+            self.wave_speaker_btn.as_mut(),
+            self.wave_addhandle_btn.as_mut(),
+            self.wave_back_btn.as_mut(),
+            self.beam_btn.as_mut(),
+            self.beam_back_btn.as_mut(),
+            self.wave_reject_btn.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -419,7 +419,7 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
-        // The message-vibrate + call-alert pair (defaults ON — a phone that neither rings nor buzzes is a missed call). Android enforcement rides Kotlin; the settings persist fleet-wide now.
+        // The message-vibrate + wave-alert pair (defaults ON — a phone that neither rings nor buzzes is a missed wave). Android enforcement rides Kotlin; the settings persist fleet-wide now.
         self.settings_vibrate_msg_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::VibrateNewMessage),
@@ -430,9 +430,9 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
-        self.settings_ring_call_check = Some(fluor::widgets::Checkbox::new(
+        self.settings_ring_wave_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            tr(Msg::RingIncomingCall),
+            tr(Msg::RingIncomingWave),
             0.,
             0.,
             1.,
@@ -440,9 +440,9 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
-        self.settings_vibrate_call_check = Some(fluor::widgets::Checkbox::new(
+        self.settings_vibrate_wave_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            tr(Msg::VibrateIncomingCall),
+            tr(Msg::VibrateIncomingWave),
             0.,
             0.,
             1.,
@@ -637,7 +637,7 @@ impl FluorApp for PhotonApp {
         mods: fluor::event::ModifiersState,
         ctx: &mut Context,
     ) -> EventResponse {
-        // CALL overlay controls are now retained Buttons (call_action/decline/start) — their activation rides `dispatch_release` + the `take_click` poll in the Released and key paths (`dispatch_call_button_clicks`), NOT this hit-id branch. Nothing to do here.
+        // WAVE overlay controls are now retained Buttons (wave_action/decline/start) — their activation rides `dispatch_release` + the `take_click` poll in the Released and key paths (`dispatch_wave_button_clicks`), NOT this hit-id branch. Nothing to do here.
 
         // Unattended-confirm (Security page) ARM/DISARM/cancel — dispatched HERE, at the top of on_activate, BEFORE any state gate. (These pills previously sat inside the `AppState::Conversation` block and so never fired on the Settings page — the arm click reached on_activate but was skipped.)
         if self.unattended_confirm.is_some() {
@@ -699,7 +699,7 @@ impl FluorApp for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // "Copy words" on the JOIN words screen: space-separated (the AddDevice entry tokenizes either form; spaces read naturally in an email/messenger paste). The words are a short-lived pairing secret for OUR OWN fleet — sharing them over a channel the user trusts is their call; the bind still requires the sponsor device to confirm.
+        // "Copy words" on the JOIN words screen: space-separated (the AddDevice entry tokenizes either form; spaces read naturally in an email/messenger paste). The words are a short-lived pairing secret for OUR OWN fleet — sharing them over a channel the user trusts is theirs to judge; the bind still requires the sponsor device to confirm.
         if hit_id == self.join_copywords_hit_id && self.join_copywords_hit_id != HIT_NONE {
             if let Some(words) = self.add_join_words.clone() {
                 // camelCase → space-separated, same split the words screen renders.
@@ -808,8 +808,8 @@ impl FluorApp for PhotonApp {
                 self.state = AppState::Ready;
                 self.active_conversation = None;
                 // Leaving the conversation stops a playing wave (Nick 2026-09-10: "when you navigate back to contacts the playback needs to stop").
-                self.call_playback = None;
-                self.call_playback_hash = None;
+                self.wave_playback = None;
+                self.wave_playback_hash = None;
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -1620,9 +1620,9 @@ impl FluorApp for PhotonApp {
                         // PLAY/STOP for a music pigeon (slot 9) — the action-row twin of the wave card's glyph.
                         // PLAY / STOP the wave's recording (slot 11): the only way a wave starts playing.
                         11 => {
-                            // The RECORDING row specifically ("call.audio") — three rows reference a wave (the recording, our wave.env, the PEER's wave.env off the friend chain), and the first-match finder used to grab an env row in the minute before the transcode landed, toasting "fetching from your devices" at a wave whose recording was right here (Nick, 2026-09-13).
+                            // The RECORDING row specifically ("wave.audio") — three rows reference a wave (the recording, our wave.env, the PEER's wave.env off the friend chain), and the first-match finder used to grab an env row in the minute before the transcode landed, toasting "fetching from your devices" at a wave whose recording was right here (Nick, 2026-09-13).
                             let rec_hash = self.conv_of(sci).and_then(|v| {
-                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts) && crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "call.audio")).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts) && crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "wave.audio")).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
                             });
                             if let Some(hash) = rec_hash {
                                 if crate::storage::blob_present(&hash) {
@@ -1765,8 +1765,8 @@ impl FluorApp for PhotonApp {
                                 if !held {
                                     self.attach_fetch(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
-                                } else if name == "call.audio" {
-                                    // A kept call recording — tap toggles play/stop on this very bubble (call/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
+                                } else if name == "wave.audio" {
+                                    // A kept wave recording — tap toggles play/stop on this very bubble (wave/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
                                     self.toggle_recording_playback(hash);
                                 } else {
                                     match self.attach_save(&name, &hash) {
@@ -1811,17 +1811,17 @@ impl FluorApp for PhotonApp {
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {
                             self.selected_msg = None;
-                            self.start_call(sci);
+                            self.start_wave(sci);
                             self.scene_dirty = true;
                         }
                         // The wave card's recording options: SAVE (blob held → Downloads) or FETCH (missing → ask the fleet), and REPLICATE (a fleet-internal fetch hint so every sibling holds the blob now, not on demand).
                         7 | 8 => {
-                            // Same "call.audio"-only selection as the play slot: export/replicate act on the recording, never a wave.env row that happens to reference the same wave.
+                            // Same "wave.audio"-only selection as the play slot: export/replicate act on the recording, never a wave.env row that happens to reference the same wave.
                             let rec = self.conv_of(sci).and_then(|v| {
                                 v.messages
                                     .iter()
                                     .filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
-                                    .find(|m| crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "call.audio"))
+                                    .find(|m| crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "wave.audio"))
                                     .and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, n, _)| (m.timestamp, h, n)))
                             });
                             if let Some((rec_ts, hash, name)) = rec {
@@ -1846,7 +1846,7 @@ impl FluorApp for PhotonApp {
                                     self.persist_messages_async(sci);
                                     self.push_rows_to_siblings(sci, std::slice::from_ref(&hint), None);
                                     self.ready_toast = Some(tr(Msg::ReplicatingToFleet).into_owned());
-                                    crate::logf!("CALL: replicate hint pushed for recording {}…", hex::encode(&hash[..4]));
+                                    crate::logf!("WAVE: replicate hint pushed for recording {}…", hex::encode(&hash[..4]));
                                 }
                             }
                             self.scene_dirty = true;
@@ -2245,11 +2245,11 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
-                // Call overlay controls (cross-screen) clear their hover too — otherwise a tint sticks when the pointer leaves the window mid-call.
+                // Wave overlay controls (cross-screen) clear their hover too — otherwise a tint sticks when the pointer leaves the window mid-wave.
                 for btn in [
-                    self.call_start_btn.as_mut(),
-                    self.call_action_btn.as_mut(),
-                    self.call_decline_btn.as_mut(),
+                    self.wave_start_btn.as_mut(),
+                    self.wave_action_btn.as_mut(),
+                    self.wave_decline_btn.as_mut(),
                 ]
                 .into_iter()
                 .flatten()
@@ -2668,8 +2668,8 @@ impl FluorApp for PhotonApp {
                     }
                     ctx.window.request_redraw();
                 }
-                // Call overlay controls (answer/decline/start) — same release-edge poll.
-                self.dispatch_call_button_clicks(ctx);
+                // Wave overlay controls (answer/decline/start) — same release-edge poll.
+                self.dispatch_wave_button_clicks(ctx);
                 EventResponse::Pass
             }
             Event::KeyboardInput { event: kev, .. } => {
@@ -2819,8 +2819,8 @@ impl FluorApp for PhotonApp {
                             self.broadcast_focus_claim(false);
                             self.state = AppState::Ready;
                             self.active_conversation = None;
-                            self.call_playback = None;
-                            self.call_playback_hash = None;
+                            self.wave_playback = None;
+                            self.wave_playback_hash = None;
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -2980,12 +2980,12 @@ impl FluorApp for PhotonApp {
                             if attach_clicked {
                                 self.compose_attach_click();
                             }
-                            // Call overlay controls — Enter/Space activation when one holds focus.
-                            let call_clicked = self.dispatch_call_button_clicks(ctx);
+                            // Wave overlay controls — Enter/Space activation when one holds focus.
+                            let wave_clicked = self.dispatch_wave_button_clicks(ctx);
                             if attest_clicked
                                 || plus_clicked
                                 || send_clicked
-                                || call_clicked
+                                || wave_clicked
                                 || matches!(resp, EventResponse::Handled)
                             {
                                 ctx.window.request_redraw();
@@ -3122,11 +3122,11 @@ impl FluorApp for PhotonApp {
             self.state,
             AppState::Launch(LaunchState::Attesting) | AppState::Searching
         ) || self.add_in_flight
-            // The full-screen ring panel's pulse rings animate every frame while a call is Ringing (phase is a pure function of now; the wakeup is what keeps frames coming).
+            // The full-screen ring panel's pulse rings animate every frame while a wave is Ringing (phase is a pure function of now; the wakeup is what keeps frames coming).
             || self
-                .active_call
+                .active_wave
                 .as_ref()
-                .map_or(false, |c| c.phase == crate::call::CallPhase::Ringing);
+                .map_or(false, |c| c.phase == crate::wave::WavePhase::Ringing);
         let anim = animating.then(Instant::now);
         // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run. Interval tapers with idle time, so as the user stays away the scheduled wake naturally pushes further out.
         let presence = matches!(self.state, AppState::Ready).then(|| {
@@ -3147,16 +3147,16 @@ impl FluorApp for PhotonApp {
                 last + std::time::Duration::from_secs(45)
             })
         });
-        // Live call timer: an Active call recomputes its duration each frame, so it needs frames flowing — but only at ~2 Hz (seconds granularity), not the pulse's full rate. A minimized Active call still ticks so the strip's timer stays honest. Ringing already animates at full rate above.
-        let call_timer = self
-            .active_call
+        // Live wave timer: an Active wave recomputes its duration each frame, so it needs frames flowing — but only at ~2 Hz (seconds granularity), not the pulse's full rate. A minimized Active wave still ticks so the strip's timer stays honest. Ringing already animates at full rate above.
+        let wave_timer = self
+            .active_wave
             .as_ref()
-            .map_or(false, |c| c.phase == crate::call::CallPhase::Active)
+            .map_or(false, |c| c.phase == crate::wave::WavePhase::Active)
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
         // The conversation-enter presence probe's verdict deadline (Nick 2026-09-15: "going into a contact should trigger a ping and 1s timeout for offline/no response") — one wake at the deadline, nothing while it isn't armed.
         let probe = self.presence_probe.map(|(_, at)| at + std::time::Duration::from_secs(1));
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold, call_timer, probe]
+        [blink, anim, presence, pairing, fleet_refold, wave_timer, probe]
             .into_iter()
             .flatten()
             .min()
@@ -3525,35 +3525,35 @@ impl FluorApp for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
-        // Answer/Decline pressed on the Android call notification (backgrounded ring): the action intent latched a flag on the service thread; drain it here on the UI thread that owns the call state.
+        // Answer/Decline pressed on the Android wave notification (backgrounded ring): the action intent latched a flag on the service thread; drain it here on the UI thread that owns the wave state.
         #[cfg(target_os = "android")]
-        if let Some(answer) = crate::platform::jni_android::take_call_action() {
+        if let Some(answer) = crate::platform::jni_android::take_wave_action() {
             if answer {
-                self.answer_call();
+                self.answer_wave();
             } else {
-                self.decline_call();
+                self.decline_wave();
             }
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
-        // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing call just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
+        // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing wave just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
         if self
-            .active_call
+            .active_wave
             .as_ref()
-            .map_or(false, |c| c.phase == crate::call::CallPhase::Ringing)
+            .map_or(false, |c| c.phase == crate::wave::WavePhase::Ringing)
         {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
-        // An ACTIVE call repaints once a second (field 2026-09-12: the wakeups flowed at 2 Hz but nothing marked the scene, so the timer, the live stats and the path ring froze on their first frame).
-        if self.active_call.as_ref().map_or(false, |c| matches!(c.phase, crate::call::CallPhase::Active | crate::call::CallPhase::Outgoing)) {
-            if self.last_call_redraw.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1)) {
-                self.last_call_redraw = Some(now);
+        // An ACTIVE wave repaints once a second (field 2026-09-12: the wakeups flowed at 2 Hz but nothing marked the scene, so the timer, the live stats and the path ring froze on their first frame).
+        if self.active_wave.as_ref().map_or(false, |c| matches!(c.phase, crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing)) {
+            if self.last_wave_redraw.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1)) {
+                self.last_wave_redraw = Some(now);
                 self.scene_dirty = true;
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
         } else {
-            self.last_call_redraw = None;
+            self.last_wave_redraw = None;
         }
 
         // Rubber-band spring: any scroll axis stretched past its bounds eases back exponentially (overshoot × e^(−8t) — C∞ in time, ~90% recovered in 0.3 s), snapping the final sub-third-pixel so the animation terminates. Runs only while an axis is out of range, so steady-state ticks are free. Scroll moves content (and its hit stamps), so a spring frame is a full scene frame with chrome invalidated — same as the wheel handler's frames.
@@ -3662,7 +3662,7 @@ impl FluorApp for PhotonApp {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
-        // Keep-transcode results: a finished N-channel recording mints its `call.audio` row here (off-thread transcode posted back over the channel).
+        // Keep-transcode results: a finished N-channel recording mints its `wave.audio` row here (off-thread transcode posted back over the channel).
         self.drain_wave_env_wants();
         // A playing music pigeon sweeps its playhead (and clears itself at the end of the song — an edge, not a timer).
         if let Some(m) = self.music_play.as_ref() {
@@ -3679,7 +3679,7 @@ impl FluorApp for PhotonApp {
         if self.drain_wave_env() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
-        if self.drain_call_keep() {
+        if self.drain_wave_keep() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.
@@ -3914,11 +3914,11 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
-        // Call overlay controls (cross-screen) — pointer cursor when hovered.
+        // Wave overlay controls (cross-screen) — pointer cursor when hovered.
         for btn in [
-            self.call_start_btn.as_ref(),
-            self.call_action_btn.as_ref(),
-            self.call_decline_btn.as_ref(),
+            self.wave_start_btn.as_ref(),
+            self.wave_action_btn.as_ref(),
+            self.wave_decline_btn.as_ref(),
         ]
         .into_iter()
         .flatten()
@@ -4582,11 +4582,11 @@ impl PhotonApp {
                 return None;
             }
             raw.iter()
-                .find(|r| !r.deleted && crate::types::is_call_recording(&r.content) && matches!(r.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                .find(|r| !r.deleted && crate::types::is_wave_recording(&r.content) && matches!(r.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
                 .and_then(|r| crate::types::parse_attachment_content(&r.content).map(|(h, _, _)| h))
         }) else { return };
-        if self.call_playback.is_some() && self.call_playback_hash == Some(hash) {
-            self.call_playback = None;
+        if self.wave_playback.is_some() && self.wave_playback_hash == Some(hash) {
+            self.wave_playback = None;
             self.scene_dirty = true;
         }
     }

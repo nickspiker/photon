@@ -62,7 +62,7 @@ pub enum RefKind {
     BridgePigeon = 10,
     /// FETCH HINT (replicate among fleet, 2026-09-09): a hidden fleet-internal row targeting a recording row's eagle_time — every sibling that merges it fetches that blob now instead of on demand. Never displayed, never chain-transmitted.
     FetchHint = 9,
-    /// WAVE RECORDING → its wave row (docs/calls.md, the wave card 2026-09-09). The kept `call.audio` attachment row targets the wave row's eagle_time (offer_osc+1); the renderer FOLDS the recording into that row's card (the edit-target pattern), so a wave is ONE event in the stream however many devices minted its pieces. Fleet-internal, never chain-transmitted.
+    /// WAVE RECORDING → its wave row (docs/waves.md, the wave card 2026-09-09). The kept `wave.audio` attachment row targets the wave row's eagle_time (offer_osc+1); the renderer FOLDS the recording into that row's card (the edit-target pattern), so a wave is ONE event in the stream however many devices minted its pieces. Fleet-internal, never chain-transmitted.
     Wave = 8,
 }
 
@@ -95,7 +95,7 @@ pub enum WaveOutcome {
     Answered = 4,
     /// Answered, then the media path died past the drop line — carries strictly more than Answered.
     Dropped = 5,
-    /// REJECTED (Nick 2026-09-09): the callee dismissed the ring across the fleet WITHOUT telling the caller — no signal leaves the fleet, the caller's own patience mints their missed wave. Shown small, in this conversation only.
+    /// REJECTED (Nick 2026-09-09): the answering side dismissed the ring across the fleet WITHOUT telling the caller — no signal leaves the fleet, the caller's own patience mints their missed wave. Shown small, in this conversation only.
     Rejected = 6,
 }
 
@@ -274,7 +274,7 @@ pub struct ChatMessage {
     pub marks: Vec<MessageMark>,
     /// WAVE ROW payload (the wave card, 2026-09-09): `Some` = this row IS a wave (content empty). Persisted, fleet-synced as typed page columns, merged by outcome rank + max seconds. Never on the friend wire — each fleet keeps its own record of a wave.
     pub wave: Option<WaveInfo>,
-    /// RECORDING ROW envelope thumbnail: `nchan × WAVE_THUMB_BUCKETS × 4` bytes, channel-major then bucket-major, each bucket `[amplitude, red, green, blue]` in eighth-STOPS below full scale (0 = full scale, 255 = silence floor) — the colour bands are high-pass energies at three scales (call/record.rs). Empty on every other row. Persisted + fleet-synced so any sibling draws the waveform before it holds the blob.
+    /// RECORDING ROW envelope thumbnail: `nchan × WAVE_THUMB_BUCKETS × 4` bytes, channel-major then bucket-major, each bucket `[amplitude, red, green, blue]` in eighth-STOPS below full scale (0 = full scale, 255 = silence floor) — the colour bands are high-pass energies at three scales (wave/record.rs). Empty on every other row. Persisted + fleet-synced so any sibling draws the waveform before it holds the blob.
     pub envelope: Vec<u8>,
     /// TYPED ATTACHMENT metadata (2026-09-10): kind sniffed from the bytes, pixel dims, preview-blob hash — beside the content string that keeps the row's identity (hash + name + size). Persisted, fleet-synced as page columns, sent to the friend as typed package fields. None on every non-attachment row and on pre-feature attachment rows.
     pub attach: Option<crate::types::AttachMeta>,
@@ -404,17 +404,18 @@ pub const CHAIN_PROBE_MARKER: &str = "\u{1}\u{2}photon-chain-probe\u{2}\u{1}";
 /// Prefix for the hidden DELETE marker message: `{prefix}{timestamp}` — a normal chain message (ACKed, retransmitted, re-ACK-durable via its stored hidden row, exactly the probe pattern) instructing the peer to tombstone the row with that eagle timestamp. Control bytes make user-content collision effectively impossible.
 pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
 
-/// Prefix for call-signaling rows (docs/calls.md): offer/answer/decline/busy/hangup/taken ride the lanes as ordinary encrypted messages — a call is indistinguishable from a text on the wire. Grammar + parsing live in `crate::call::signal`; the type layer only owns the marker so `is_control_content` can hide them.
-pub const CALL_PREFIX: &str = "\u{1}\u{2}photon-call\u{2}\u{1}";
+/// Prefix for wave-signaling rows (docs/waves.md): offer/answer/decline/busy/hangup/taken ride the lanes as ordinary encrypted messages — a wave is indistinguishable from a text on the wire. Grammar + parsing live in `crate::wave::signal`; the type layer only owns the marker so `is_control_content` can hide them.
+/// The bytes moved from `photon-call` to `photon-wave` on the 2026-09-23 flag day: a build on either side of it reads the other's signal rows as ordinary text and shows nothing, which is the honest failure — the whole fleet crosses together.
+pub const WAVE_PREFIX: &str = "\u{1}\u{2}photon-wave\u{2}\u{1}";
 /// Era-ratchet control row (crypto/era.rs EraSignal): Init / Resp / Nudge ride the lane as hidden rows — window bypass and every hide-filter come free with is_control_content. The sender stores NO row (a dead Init must never re-serve on the new era); the receiver persists a hidden row with its ack_hash for re-ACK durability and never pushes it to siblings (the era itself replicates by chain-sync).
 pub const ERA_PREFIX: &str = "\u{1}\u{2}photon-era\u{2}\u{1}";
 
 
-/// True for any CONTROL message content (chain probe, delete marker, call signaling) — machinery rows that no UI, digest, weave window, or history page may surface.
+/// True for any CONTROL message content (chain probe, delete marker, wave signaling) — machinery rows that no UI, digest, weave window, or history page may surface.
 pub fn is_control_content(content: &str) -> bool {
     content == CHAIN_PROBE_MARKER
         || content.starts_with(DELETE_MARKER_PREFIX)
-        || content.starts_with(CALL_PREFIX)
+        || content.starts_with(WAVE_PREFIX)
         || content.starts_with(ERA_PREFIX)
         || content.starts_with(crate::types::molecule::MOLECULE_PREFIX)
 }
@@ -445,9 +446,9 @@ pub fn parse_attachment_content(content: &str) -> Option<([u8; 32], String, u64)
     Some((hash, name.to_string(), size))
 }
 
-/// Is this attachment row a kept CALL RECORDING (filename `call.audio`)? Recordings play, not save — the renderer gives them a ▶ pill and the tap routes to playback (call/playback.rs), unlike a file which saves/fetches.
-pub fn is_call_recording(content: &str) -> bool {
-    parse_attachment_content(content).is_some_and(|(_, name, _)| name == "call.audio")
+/// Is this attachment row a kept WAVE RECORDING (filename `wave.audio`)? Recordings play, not save — the renderer gives them a ▶ pill and the tap routes to playback (wave/playback.rs), unlike a file which saves/fetches.
+pub fn is_wave_recording(content: &str) -> bool {
+    parse_attachment_content(content).is_some_and(|(_, name, _)| name == "wave.audio")
 }
 
 /// Human-readable byte size for attachment pills — dozenal-doctrine exempt? NO: digits render at the edge; this returns arabic-free unit steps with the NUMBER left to the renderer. Kept simple: returns (whole_units, unit_label) so the caller renders the number in dozenal glyphs.

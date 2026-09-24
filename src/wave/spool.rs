@@ -1,16 +1,16 @@
-//! The recording spool (docs/calls.md) — recording by default, ENDPOINT MEMORY, not wire retention.
+//! The recording spool (docs/waves.md) — recording by default, ENDPOINT MEMORY, not wire retention.
 //!
-//! The wire story is untouched: media step-keys still zeroize as the call runs; the spool is the endpoint keeping audio it already legitimately had — the already-ENCODED frames, so an hour of call costs ~25MB and "record" is just not-discarding what Opus produced. Each record is individually sealed under a random per-call **spool key** held in RAM (a [`SpoolTicket`]): at hangup, *delete* = drop the ticket (key zeroizes, the file is ciphertext-garbage — instant true shred), *keep* = decrypt once into the call container and store it as an ordinary content-addressed blob. An app crash before the decision is equivalent to delete — the key lived nowhere else, which is the honest default.
+//! The wire story is untouched: media step-keys still zeroize as the wave runs; the spool is the endpoint keeping audio it already legitimately had — the already-ENCODED frames, so an hour of wave costs ~25MB and "record" is just not-discarding what Opus produced. Each record is individually sealed under a random per-wave **spool key** held in RAM (a [`SpoolTicket`]): at hangup, *delete* = drop the ticket (key zeroizes, the file is ciphertext-garbage — instant true shred), *keep* = decrypt once into the wave container and store it as an ordinary content-addressed blob. An app crash before the decision is equivalent to delete — the key lived nowhere else, which is the honest default.
 //!
-//! Container (one SEGMENT — this device's view; multi-segment reassembly rides the handoff work): `"PHCALL1\0"` then records of `[dir u8 (0=local mic, 1=remote)] [osc i64 LE] [len u16 LE] [opus frame]`. Every frame eagle-stamped so notes/transcription later are annotation layers on the same timeline.
+//! Container (one SEGMENT — this device's view; multi-segment reassembly rides the handoff work): `"PHWAVE1\0"` then records of `[dir u8 (0=local mic, 1=remote)] [osc i64 LE] [len u16 LE] [opus frame]`. Every frame eagle-stamped so notes/transcription later are annotation layers on the same timeline.
 //!
-//! A KEPT call is fleet-internal: the blob + an attachment-style row that is inserted locally and pushed to OUR siblings only — never chain-transmitted. The friend's fleet keeps (or deletes) its own recording; neither side is the other's archive.
+//! A KEPT wave is fleet-internal: the blob + an attachment-style row that is inserted locally and pushed to OUR siblings only — never chain-transmitted. The friend's fleet keeps (or deletes) its own recording; neither side is the other's archive.
 
 use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305};
 use std::io::Write;
 use zeroize::Zeroize;
 
-pub const CONTAINER_MAGIC: &[u8; 8] = b"PHCALL1\0";
+pub const CONTAINER_MAGIC: &[u8; 8] = b"PHWAVE1\0";
 
 /// The keep/delete decision material — outlives the engine thread. Dropping it without `finalize` IS the shred (the key zeroizes; the spool file becomes garbage).
 pub struct SpoolTicket {
@@ -24,11 +24,11 @@ impl Drop for SpoolTicket {
     }
 }
 
-/// Mint a fresh spool (key + path) for a call. The engine writes it; the ticket decides its fate.
-pub fn mint(call_id8: &[u8; 8]) -> Option<([u8; 32], std::path::PathBuf, SpoolTicket)> {
+/// Mint a fresh spool (key + path) for a wave. The engine writes it; the ticket decides its fate.
+pub fn mint(wave_id8: &[u8; 8]) -> Option<([u8; 32], std::path::PathBuf, SpoolTicket)> {
     let dir = crate::storage::runtime_dir();
     std::fs::create_dir_all(&dir).ok()?;
-    let path = dir.join(format!("callspool-{}.tmp", hex::encode(call_id8)));
+    let path = dir.join(format!("wavespool-{}.tmp", hex::encode(wave_id8)));
     let key: [u8; 32] = rand::random();
     Some((
         key,
@@ -37,15 +37,15 @@ pub fn mint(call_id8: &[u8; 8]) -> Option<([u8; 32], std::path::PathBuf, SpoolTi
     ))
 }
 
-/// DURABLE SPOOL REGISTER (record-by-default, Nick 2026-09-08): the per-call spool key used to live ONLY in RAM — "crash = delete", honest under keep/delete, a LIE under record-by-default (a dead battery at 1h59m of a 2h wave threw the recording away). The register persists {key ‖ peer ‖ offer_osc} in the device vault at call start; launch-time recovery finds orphaned spool files, reads their registers, and finishes the keep the crash interrupted. Deleting a recording later is the vault's UnlinkOnly space-reclaim — the security boundary is the boot-gated vault key, not erasure (docs/vault-delete.md).
+/// DURABLE SPOOL REGISTER (record-by-default, Nick 2026-09-08): the per-wave spool key used to live ONLY in RAM — "crash = delete", honest under keep/delete, a LIE under record-by-default (a dead battery at 1h59m of a 2h wave threw the recording away). The register persists {key ‖ peer ‖ offer_osc} in the device vault at wave start; launch-time recovery finds orphaned spool files, reads their registers, and finishes the keep the crash interrupted. Deleting a recording later is the vault's UnlinkOnly space-reclaim — the security boundary is the boot-gated vault key, not erasure (docs/vault-delete.md).
 const REG_LEN: usize = 32 + 32 + 8;
 
-fn reg_key(call_id8: &[u8; 8]) -> String {
-    format!("call.spool.{}", hex::encode(call_id8))
+fn reg_key(wave_id8: &[u8; 8]) -> String {
+    format!("wave.spool.{}", hex::encode(wave_id8))
 }
 
-/// Persist the spool register — called at call start, the moment the ticket exists.
-pub fn persist_register(call_id8: &[u8; 8], ticket: &SpoolTicket, peer: &[u8; 32], offer_osc: i64) {
+/// Persist the spool register — called at wave start, the moment the ticket exists.
+pub fn persist_register(wave_id8: &[u8; 8], ticket: &SpoolTicket, peer: &[u8; 32], offer_osc: i64) {
     let Some(v) = crate::storage::device_vault() else {
         return;
     };
@@ -53,20 +53,20 @@ pub fn persist_register(call_id8: &[u8; 8], ticket: &SpoolTicket, peer: &[u8; 32
     reg.extend_from_slice(&ticket.key);
     reg.extend_from_slice(peer);
     reg.extend_from_slice(&offer_osc.to_le_bytes());
-    match v.write(&reg_key(call_id8), &reg) {
-        Ok(()) => crate::logf!("CALL: spool register persisted ({})", hex::encode(call_id8)),
-        Err(e) => crate::logf!("CALL: spool register persist FAILED ({}) — a crash mid-wave loses this recording", e),
+    match v.write(&reg_key(wave_id8), &reg) {
+        Ok(()) => crate::logf!("WAVE: spool register persisted ({})", hex::encode(wave_id8)),
+        Err(e) => crate::logf!("WAVE: spool register persist FAILED ({}) — a crash mid-wave loses this recording", e),
     }
 }
 
-/// Drop the register — the keep completed (blob stored) or the recording was deliberately discarded. Ordering law: the caller deletes the register BEFORE the spool file is removed, so every crash window resolves at recovery (file+register → re-finish the keep, idempotent by content hash; file-without-register → stray, deleted).
-pub fn drop_register(call_id8: &[u8; 8]) {
+/// Drop the register — the keep completed (blob stored) or the recording was deliberately discarded. Ordering law: the origin deletes the register BEFORE the spool file is removed, so every crash window resolves at recovery (file+register → re-finish the keep, idempotent by content hash; file-without-register → stray, deleted).
+pub fn drop_register(wave_id8: &[u8; 8]) {
     if let Some(v) = crate::storage::device_vault() {
-        let _ = v.delete(&reg_key(call_id8));
+        let _ = v.delete(&reg_key(wave_id8));
     }
 }
 
-/// Launch-time recovery: every orphaned spool file whose register survives becomes a (ticket, peer, offer_osc, call_id8) ready for the normal keep-transcode; a file with no register is a stray (pre-durability, or its keep completed thru the crash window) and is deleted.
+/// Launch-time recovery: every orphaned spool file whose register survives becomes a (ticket, peer, offer_osc, wave_id8) ready for the normal keep-transcode; a file with no register is a stray (pre-durability, or its keep completed thru the crash window) and is deleted.
 pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
     let mut out = Vec::new();
     let Some(v) = crate::storage::device_vault() else {
@@ -78,7 +78,7 @@ pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
     };
     for e in entries.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
-        let Some(hexid) = name.strip_prefix("callspool-").and_then(|n| n.strip_suffix(".tmp")) else {
+        let Some(hexid) = name.strip_prefix("wavespool-").and_then(|n| n.strip_suffix(".tmp")) else {
             continue;
         };
         let Some(id8) = hex::decode(hexid).ok().and_then(|b| <[u8; 8]>::try_from(b).ok()) else {
@@ -93,7 +93,7 @@ pub fn recover_orphans() -> Vec<(SpoolTicket, [u8; 32], i64, [u8; 8])> {
             }
             _ => {
                 let _ = std::fs::remove_file(e.path());
-                crate::logf!("CALL: stray spool file removed ({name})");
+                crate::logf!("WAVE: stray spool file removed ({name})");
             }
         }
     }
@@ -196,7 +196,7 @@ impl SpoolWriter {
         let file = match std::fs::File::create(path) {
             Ok(f) => f,
             Err(e) => {
-                crate::logf!("CALL: spool file create FAILED at {} — {}", path.display(), e);
+                crate::logf!("WAVE: spool file create FAILED at {} — {}", path.display(), e);
                 return None;
             }
         };
@@ -208,17 +208,17 @@ impl SpoolWriter {
         })
     }
 
-    /// One encoded frame: dir 0 = local mic, 1 = remote. Failures are logged-not-fatal — a full disk must not kill the call.
+    /// One encoded frame: dir 0 = local mic, 1 = remote. Failures are logged-not-fatal — a full disk must not kill the wave.
     pub fn append(&mut self, dir: u8, osc: i64, opus: &[u8]) {
         self.append_seq(dir & !SEQ_FLAG, osc, None, opus);
     }
 
-    /// A frame with its window identity (`SEQ_FLAG` is set for the caller when `seq` is given). Returns where the record landed, for the fill server's index.
+    /// A frame with its window identity (`SEQ_FLAG` is set for the origin when `seq` is given). Returns where the record landed, for the fill server's index.
     pub fn append_seq(&mut self, chan: u8, osc: i64, seq: Option<(u32, u8)>, frame: &[u8]) -> Option<RecordAt> {
         self.append_seq_proc(chan & !PROC_FLAG, osc, seq, None, frame)
     }
 
-    /// A frame with its window identity and, when `proc` is given, the live path's verdict on it (`PROC_FLAG` set for the caller).
+    /// A frame with its window identity and, when `proc` is given, the live path's verdict on it (`PROC_FLAG` set for the origin).
     pub fn append_seq_proc(&mut self, chan: u8, osc: i64, seq: Option<(u32, u8)>, proc: Option<(u16, u8)>, frame: &[u8]) -> Option<RecordAt> {
         let mut plain = Vec::with_capacity(1 + 8 + 5 + 3 + frame.len());
         let mut c = chan;
@@ -249,7 +249,7 @@ impl SpoolWriter {
     }
 }
 
-/// A read-only view of a spool the engine is still writing: opens the records the writer's index names. The fill server reads the windows the peer asks for straight off disk (the page cache makes a just-written record free), so a whole call's worth of sent audio never has to sit in RAM.
+/// A read-only view of a spool the engine is still writing: opens the records the writer's index names. The fill server reads the windows the peer asks for straight off disk (the page cache makes a just-written record free), so a whole wave's worth of sent audio never has to sit in RAM.
 pub struct SpoolReader {
     cipher: XChaCha20Poly1305,
     file: std::fs::File,
@@ -274,7 +274,7 @@ impl SpoolReader {
     }
 }
 
-/// Decrypt the spool into its raw records `[(channel, osc, opus)…]` in write order (`channel` is the old `dir` byte — 0=local mic, 1=remote, generalizing to a per-participant index). A truncated/corrupt tail record (engine mid-write at the stop edge) ends the read — at most one lost frame, never an error. Shared by [`finalize`] (the PHCALL1 packer) and the N-channel transcode in [`crate::call::record`], so the decrypt/nonce discipline lives in exactly one place.
+/// Decrypt the spool into its raw records `[(channel, osc, opus)…]` in write order (`channel` is the old `dir` byte — 0=local mic, 1=remote, generalizing to a per-participant index). A truncated/corrupt tail record (engine mid-write at the stop edge) ends the read — at most one lost frame, never an error. Shared by [`finalize`] (the PHWAVE1 packer) and the N-channel transcode in [`crate::wave::record`], so the decrypt/nonce discipline lives in exactly one place.
 pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<Record>> {
     let cipher = XChaCha20Poly1305::new_from_slice(&ticket.key).ok()?;
     let bytes = std::fs::read(&ticket.path).ok()?;
@@ -301,7 +301,7 @@ pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<Record>> {
     Some(out)
 }
 
-/// KEEP into the flat PHCALL1 container (one segment, records `[dir][osc][len][opus]`), stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket; the spool file is removed after a successful store. This is the raw (untranscoded) keep — [`crate::call::record::finalize_nchannel`] is the current keep path (a true N-channel audio file); `finalize` stays for the KAT / any consumer that wants the bare spool packed 1:1.
+/// KEEP into the flat PHWAVE1 container (one segment, records `[dir][osc][len][opus]`), stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket; the spool file is removed after a successful store. This is the raw (untranscoded) keep — [`crate::wave::record::finalize_nchannel`] is the current keep path (a true N-channel audio file); `finalize` stays for the KAT / any consumer that wants the bare spool packed 1:1.
 pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 32], u64)> {
     let records = drain_records(&ticket)?;
     let mut container = Vec::with_capacity(CONTAINER_MAGIC.len() + records.len() * 32);

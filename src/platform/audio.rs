@@ -1,6 +1,6 @@
-//! Call audio I/O — the ONE capture/playback surface for voice calls (docs/calls.md), platform-split under a shared queue core.
+//! Wave audio I/O — the ONE capture/playback surface for waves (docs/waves.md), platform-split under a shared queue core.
 //!
-//! The call engine speaks 48kHz mono i16 in 5ms frames (240 samples — the 2026-09-08 latency flag day; was 10ms/480) and never touches a device API: it drains `captured_frames()` and feeds `queue_playback()`. Under that:
+//! The wave engine speaks 48kHz mono i16 in 5ms frames (240 samples — the 2026-09-08 latency flag day; was 10ms/480) and never touches a device API: it drains `captured_frames()` and feeds `queue_playback()`. Under that:
 //! - **Desktop**: a dedicated audio thread owns the cpal input+output streams (cpal streams are !Send — built and parked on their own thread, torn down when `stop()` clears the active flag). Device-rate/channel conversion happens at the callback edge via a naive linear resampler — correctness first; a better resampler is a drop-in.
 //! - **Android**: Kotlin owns AudioRecord/AudioTrack and crosses JNI into the same queues: `nativeAudioCaptured` pushes mic frames, `nativeAudioNextFrame` pulls render frames. Both ends ride the LOW-LATENCY paths (capture: VOICE_RECOGNITION raw fast-track; render: USAGE_MEDIA fast mixer) — vendor voice-pipeline processing is deliberately OFF both ways (Nick, latency-first 2026-08-20), so echo control belongs to OUR canceller over RENDER_REF. Start/stop ride the MESSAGE_NOTIFIER service ref like notifications do.
 //!
@@ -12,7 +12,7 @@ use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 use std::sync::Mutex;
 
-/// The call engine's sample rate — everything above the device edge is 48kHz mono.
+/// The wave engine's sample rate — everything above the device edge is 48kHz mono.
 pub const SAMPLE_RATE: u32 = 48_000;
 /// 5ms @ 48kHz mono — the CELT frame the engine encodes (the 2026-09-08 flag day: halving the frame halves the fill wait, the window batch, AND the jitter quantum in one move).
 pub const FRAME_SAMPLES: usize = 240;
@@ -32,13 +32,13 @@ const CAPTURE_Q_MAX: usize = 50; // 500ms
 const PLAYBACK_Q_MAX: usize = 240; // 1.2s of 5ms frames — must EXCEED the 200-frame v-chirp (drop-oldest at push beheaded the 1s chirp against the old 100, field 2026-09-08: the second beheading mechanism after the ceiling trims)
 const RENDER_REF_MAX: usize = 100; // 500ms of 5ms frames
 
-/// The in-call learner's far-end reference: (eagle osc at DAC-enqueue, mean |sample| envelope) per rendered frame — the envelope-only sibling of RENDER_REF, deep enough (~10s) for the learner's sliding correlation windows without cloning 48KB frame snapshots per tick. Silence/priming frames land as env 0.0, which is the CORRECT reference (that is what actually hit the DAC). Post-jitter post-splice, so the render→capture delay measured against it is route-constant.
+/// The in-wave learner's far-end reference: (eagle osc at DAC-enqueue, mean |sample| envelope) per rendered frame — the envelope-only sibling of RENDER_REF, deep enough (~10s) for the learner's sliding correlation windows without cloning 48KB frame snapshots per tick. Silence/priming frames land as env 0.0, which is the CORRECT reference (that is what actually hit the DAC). Post-jitter post-splice, so the render→capture delay measured against it is route-constant.
 static RENDER_ENV: Mutex<VecDeque<(i64, f32)>> = Mutex::new(VecDeque::new());
 const RENDER_ENV_MAX: usize = 2048; // ~10s of 5ms frames
 /// Monotonic count of entries ever pushed — the cursor base for `render_env_since`.
 static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
-// LOSS-RATE JITTER BUFFER (Nick 2026-09-10, replacing the event ratchet): the render side plays silence until the queue reaches `JITTER_TARGET` frames (priming), then drains steadily; a dry queue (underrun) renders silence, counts, and re-primes. The TARGET itself is set by the call engine's loss-rate loop (engine.rs: late = lost, a PID on the loss rate over the last 256 windows toward 1/256) — nothing here grows or decays it any more. The only actuator left here is the one-sample splice that glides the standing depth onto the target (the fine clock control), plus a stall guard that sheds a queue standing far past the target after an arrival stall.
+// LOSS-RATE JITTER BUFFER (Nick 2026-09-10, replacing the event ratchet): the render side plays silence until the queue reaches `JITTER_TARGET` frames (priming), then drains steadily; a dry queue (underrun) renders silence, counts, and re-primes. The TARGET itself is set by the wave engine's loss-rate loop (engine.rs: late = lost, a PID on the loss rate over the last 256 windows toward 1/256) — nothing here grows or decays it any more. The only actuator left here is the one-sample splice that glides the standing depth onto the target (the fine clock control), plus a stall guard that sheds a queue standing far past the target after an arrival stall.
 const JITTER_FLOOR: usize = 1; // one frame — the queue is frame-quantized, so zero is mechanically meaningless
 const JITTER_CAP: usize = 24; // 120ms — the most the engine's loop may ask for, even on a bad relay
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
@@ -49,7 +49,7 @@ pub fn set_jitter_target(frames: usize) {
 }
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
 // STALL GUARD: after an arrival stall the whole backlog lands at once and the queue stands far past the target; the one-sample splice would take most of a minute to shed 200ms, so a queue past target + STALL_SLACK sheds frames now, bounded per render. This is not depth control (the loss loop owns the target) — it is the one case where standing latency is pure debris.
-const STALL_SLACK: usize = 16; // 80ms past target (2026-09-15 18:31: at 4 the guard fought the loss loop on a bursty Wi-Fi — aggregated arrivals push the depth 8–12 frames for a moment, the guard shed them, the queue then ran dry in the next inter-burst gap, 50 underruns and 910 trims in one 66 s wave; a real stall lands 200+ frames and still trips this). Was 4 — 20ms past target (2026-09-10 field: the loop held target 1 while the standing depth sat at 5-17 frames for a whole call — the splice alone sheds a sample a frame, so the guard must do the shedding)
+const STALL_SLACK: usize = 16; // 80ms past target (2026-09-15 18:31: at 4 the guard fought the loss loop on a bursty Wi-Fi — aggregated arrivals push the depth 8–12 frames for a moment, the guard shed them, the queue then ran dry in the next inter-burst gap, 50 underruns and 910 trims in one 66 s wave; a real stall lands 200+ frames and still trips this). Was 4 — 20ms past target (2026-09-10 field: the loop held target 1 while the standing depth sat at 5-17 frames for a whole wave — the splice alone sheds a sample a frame, so the guard must do the shedding)
 const STALL_MAX_DROP_PER_RENDER: usize = 4;
 /// The recent render level (mean |sample|, fast attack / ~0.6 s decay) the stall guard reads pauses against, and the voiced-frame drop cadence counter (one voiced frame per eight renders at most).
 static RENDER_LEVEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -88,12 +88,12 @@ fn best_splice(f: &[i16]) -> usize {
     best
 }
 
-// Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims vs splice rate). Reset per call in clear_queues, logged at session teardown.
+// Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims vs splice rate). Reset per wave in clear_queues, logged at session teardown.
 static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 static JITTER_DEPTH_PEAK: AtomicUsize = AtomicUsize::new(0);
 static JITTER_TRIMS: AtomicUsize = AtomicUsize::new(0);
 
-/// Per-call jitter diagnostics: (target_frames, current_depth, underruns, peak_depth, trims, samples_dropped, samples_duplicated). 10ms per frame; the splice counts are SAMPLES (20.8µs each) — a settled drift shows a steady low rate, a hammering rate means an upstream nominal-rate bug.
+/// Per-wave jitter diagnostics: (target_frames, current_depth, underruns, peak_depth, trims, samples_dropped, samples_duplicated). 10ms per frame; the splice counts are SAMPLES (20.8µs each) — a settled drift shows a steady low rate, a hammering rate means an upstream nominal-rate bug.
 pub fn jitter_stats() -> (usize, usize, usize, usize, usize, usize, usize) {
     (
         JITTER_TARGET.load(Ordering::Relaxed),
@@ -109,9 +109,9 @@ pub fn jitter_stats() -> (usize, usize, usize, usize, usize, usize, usize) {
 /// Peak-held mean |sample| of what the device is rendering (~80ms decay) — the engine's soft duck reads this as the far-end activity signal, covering the device-buffer + acoustic lag without sample-accurate alignment.
 static FAR_LEVEL: AtomicUsize = AtomicUsize::new(0);
 // THE SPEAKER DUCK (Nick 2026-09-13: "if the mic level gets hot, drop the speaker volume right before it gets played, do not keep record of post filtered values"). The mic goes to the wire untouched; the only echo control is here, on the render frame, in the moment: gain = 1 − near / SPEAKER_DUCK_MIC_FULL clamped to [0, 1], where `near` is the mean |sample| of the newest captured mic frame (the engine notes it per frame). No slew, no floor, no hold, and nothing downstream records the scaled frame — the learner's envelope tap and the canceller reference read what was emitted, which is the point of them.
-/// The duck gain in Q32, PRE-COMPUTED on the capture side (`note_near_level` does the subtract-and-shift once per captured frame) so the render pull carries zero arithmetic beyond load + kernel. Unity outside a call and while the mic is muted.
-static SPEAKER_DUCK_GAIN: AtomicI64 = AtomicI64::new(crate::call::qgain::UNITY);
-/// The duck kernel's carried remainder (see call/qgain.rs) — only the render thread touches it.
+/// The duck gain in Q32, PRE-COMPUTED on the capture side (`note_near_level` does the subtract-and-shift once per captured frame) so the render pull carries zero arithmetic beyond load + kernel. Unity outside a wave and while the mic is muted.
+static SPEAKER_DUCK_GAIN: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+/// The duck kernel's carried remainder (see wave/qgain.rs) — only the render thread touches it.
 static SPEAKER_DUCK_CARRY: AtomicI64 = AtomicI64::new(0);
 /// THE COUPLING-AWARE DUCK LAW (Nick 2026-09-13 night: the duck should scale with what the speaker actually leaks into the mic — rocker down = less echo = less duck; and "we scale our values so we don't lose any data or have any hard discontinuities"). gain = UNITY − near·k·2^7, where `near` is the plan-unit mic mean and `k` (Q16) is the MEASURED echo-per-emitted: during frames where the far side is rendering and the near mic sits under the emitted level, the mic is mostly echo, so k ≈ near/emitted — an EMA (>>6 per qualifying frame, τ ≈ a third of a second of far-talk-alone). Passive, no chirp, no volume mirror (the mirror lies on exclusive-MMAP routes — Nick's reads −32 dB while sounding proper); a rocker change re-converges k over ~a second of their speech, CONTINUOUSLY — the gain never steps, and the render kernel's carried remainder stays exact across every gain change. At k = K_REF (1/16, the earpiece midpoint) the law is exactly the old FULL=8192 map: plan-level talking halves the speaker, a shout silences it.
 /// k's neutral seed in Q16 (1/16), and its clamp: 1/256 (a clean earpiece barely ducks) to 1/2 (a hot loudspeaker ducks hard).
@@ -129,7 +129,7 @@ static EMITTED_LEVEL: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_HALF: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_GAIN_SUM: AtomicUsize = AtomicUsize::new(0);
-/// The engine arms the speaker duck for routes with an acoustic path (earpiece, loudspeaker, unknown) and disarms it for a headset, at engine start and on a mid-call route swap.
+/// The engine arms the speaker duck for routes with an acoustic path (earpiece, loudspeaker, unknown) and disarms it for a headset, at engine start and on a mid-wave route swap.
 static SPEAKER_DUCK_ARMED: AtomicBool = AtomicBool::new(false);
 
 /// What the far end is acoustically coupled to — the echo-layer dispatcher. `Headset` = no acoustic path, bypass everything.
@@ -167,7 +167,7 @@ pub fn route_override() -> Option<AudioRoute> {
 
 // ---------------------------------------------------------------------------
 // Route IDENTITY + device volume — the calibration substrate (docs plan 2026-09-02).
-// A calibration profile keys on WHICH output path is live (`speaker` vs `bt:<name>` couple very differently), and the echo prediction scales with the device volume the profile was measured at. Desktop fills these from the cpal device sniff (no portable volume API → volume stays None, the in-call tracker absorbs drift); Android mirrors both down from Kotlin (AudioDeviceCallback + volume broadcast), the nativeImeInset pattern.
+// A calibration profile keys on WHICH output path is live (`speaker` vs `bt:<name>` couple very differently), and the echo prediction scales with the device volume the profile was measured at. Desktop fills these from the cpal device sniff (no portable volume API → volume stays None, the in-wave tracker absorbs drift); Android mirrors both down from Kotlin (AudioDeviceCallback + volume broadcast), the nativeImeInset pattern.
 // ---------------------------------------------------------------------------
 
 /// Normalized identity of the current OUTPUT path — the calibration-profile key. Examples: `speaker`, `earpiece`, `headset`, `bt:AirPods Pro`, `unknown:ALSA default`. Empty until the first device sniff/mirror.
@@ -179,7 +179,7 @@ static VOLUME_DB: Mutex<Option<f32>> = Mutex::new(None);
 /// Identity of the current INPUT (mic) — the voice-profile key (Nick 2026-09-02: the voice measurement is a property of the MIC + user, not the output route; splitting the keys means switching speaker→earpiece keeps your voice profile). `builtin-mic` / `bt:<name>` / `mic:<device>`; empty until mirrored.
 static MIC_ID: Mutex<String> = Mutex::new(String::new());
 
-/// Kotlin's mic introspection at call-audio start (Android): whether the vendor DECLARES the CDD Unprocessed calibration, the chosen input's 94 dB SPL sensitivity in dBFS (NaN = vendor reports unknown), and the input inventory string. The makeup's second-priority source; the log's ground truth for "is this raw feed calibrated or lawless".
+/// Kotlin's mic introspection at wave-audio start (Android): whether the vendor DECLARES the CDD Unprocessed calibration, the chosen input's 94 dB SPL sensitivity in dBFS (NaN = vendor reports unknown), and the input inventory string. The makeup's second-priority source; the log's ground truth for "is this raw feed calibrated or lawless".
 static MIC_INFO: Mutex<Option<(bool, f32, String)>> = Mutex::new(None);
 
 pub fn set_mic_info(unprocessed_declared: bool, sensitivity_dbfs: f32, desc: String) {
@@ -261,7 +261,7 @@ pub fn set_speaker_duck(armed: bool) {
 
 /// The duck law: the FIXED presence slope `UNITY − near·2^20` (full duck at plan-unit mic 4096 = twice the plan level, as 8192 was to the old 4096 plan — the field-passed 0.95.21 shape). k is measured and PRINTED but deliberately out of the gain path (2026-09-13 23:30: the 35× mic makeup sits INSIDE the echo loop, so true plan-unit coupling on a normal earpiece is ~0.3-1.0 — feeding measured k in as the slope silenced the far voice at any k ≈ 0.4; the coupling-aware law needs the margin form, gain ≤ ε·near/(k·far), designed against k telemetry across rocker positions, not another guessed slope).
 pub fn duck_gain_q32(near: i64, _k_q16: i64) -> i64 {
-    (crate::call::qgain::UNITY - (near << 20)).clamp(0, crate::call::qgain::UNITY)
+    (crate::wave::qgain::UNITY - (near << 20)).clamp(0, crate::wave::qgain::UNITY)
 }
 
 /// The engine notes the plan-unit mean |sample| of each captured mic frame here; the k estimator and the Q32 duck gain both run HERE (capture cadence) so the render pull only loads. Muted zeros keep k untouched and the gain at unity.
@@ -307,7 +307,7 @@ pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
 
-/// SESSION OWNERSHIP (field 2026-09-15 15:45, "Emma could not hear me"): every `start_owned` claims the session with a fresh generation; `stop_owned(gen)` tears it down ONLY while that generation still owns it. The ringback's late teardown (its thread finishes the probe estimate after the answer) used to race the engine's start on the UI thread — the engine's fresh input open met the ringback's still-closing input ("start: Disconnected"), then the ringback's stopCallAudio pulled the foreground mic type and the earpiece route out from under the live wave: 0 packets out for the whole call. A stale owner's stop is now a logged no-op.
+/// SESSION OWNERSHIP (field 2026-09-15 15:45, "Emma could not hear me"): every `start_owned` claims the session with a fresh generation; `stop_owned(gen)` tears it down ONLY while that generation still owns it. The ringback's late teardown (its thread finishes the probe estimate after the answer) used to race the engine's start on the UI thread — the engine's fresh input open met the ringback's still-closing input ("start: Disconnected"), then the ringback's stopWaveAudio pulled the foreground mic type and the earpiece route out from under the live wave: 0 packets out for the whole wave. A stale owner's stop is now a logged no-op.
 static SESSION_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn start_owned() -> Option<u64> {
@@ -424,23 +424,23 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             }
         }
     };
-    // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC — Q32 with the carried remainder (call/qgain.rs), the gain pre-shifted at capture time, so this path is load + mul-add-shift-and per sample. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
+    // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC — Q32 with the carried remainder (wave/qgain.rs), the gain pre-shifted at capture time, so this path is load + mul-add-shift-and per sample. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
     let mut frame = frame;
     if !LOCAL_SOURCE.load(Ordering::Relaxed) && SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) {
         SPEAKER_FRAMES.fetch_add(1, Ordering::Relaxed);
         let duck = SPEAKER_DUCK_GAIN.load(Ordering::Relaxed);
         SPEAKER_GAIN_SUM.fetch_add((duck >> 22) as usize, Ordering::Relaxed);
-        if duck <= crate::call::qgain::UNITY / 2 {
+        if duck <= crate::wave::qgain::UNITY / 2 {
             SPEAKER_HALF.fetch_add(1, Ordering::Relaxed);
         }
         // THE RECEIVE LOSS PLAN (2026-09-14, the echo-ey waves at 40-70× makeup: k 0.2 in plan units = a fifth of the earpiece back on the wire, the far talker hearing themselves at −14 dB). POTS bounded echo with static loss per link; ours is `min(1, RX_ECHO_MARGIN / k)` — the speaker is held where k·gain ≤ margin, so echo returns at −26 dB at worst whatever the rocker does (rocker up raises k, which lowers this). Loudness becomes physics-bounded, which is honest.
         let k = DUCK_K_Q16.load(Ordering::Relaxed).max(1);
-        let loss = ((RX_ECHO_MARGIN_Q16 << 32) / k).min(crate::call::qgain::UNITY);
+        let loss = ((RX_ECHO_MARGIN_Q16 << 32) / k).min(crate::wave::qgain::UNITY);
         // THE DOWNWARD EXPANDER (Nick: "keep the ambient no talking level from screaming"): a continuous linear taper below a knee — the far room's floor and returning echo residue sink, speech above the knee passes at unity. Speaker-side, temporary, never recorded; no gate, no hold.
         let level = (frame.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame.len().max(1) as i64).max(0);
-        let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::call::qgain::UNITY);
-        let g = crate::call::qgain::compose(crate::call::qgain::compose(duck, loss), expand);
-        if g != crate::call::qgain::UNITY {
+        let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::wave::qgain::UNITY);
+        let g = crate::wave::qgain::compose(crate::wave::qgain::compose(duck, loss), expand);
+        if g != crate::wave::qgain::UNITY {
             // Inline kernel (single render thread owns the carry): acc = s·g + carry; out = acc >> 32; carry = the low mask, exactly the residue. No saturation arm — g ≤ unity here, the product can only shrink.
             let mut carry = SPEAKER_DUCK_CARRY.load(Ordering::Relaxed);
             for s in frame.iter_mut() {
@@ -451,7 +451,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             SPEAKER_DUCK_CARRY.store(carry, Ordering::Relaxed);
         }
     }
-    // THE EARPIECE TRIM (Nick 2026-09-16, the Kalispell↔Southworth wave: a Pixel 3a at max rocker heard the plan level as quiet while a Pixel 8 Pro at its lowest step heard it loud — the earpieces differ by more than Android's narrow voice-call rocker can span, and no vendor number tells us an earpiece's loudness). A per-device static gain in STOPS (one stop = ×2), remembered in `audio.rx.trim`, the pot under the rocker: a power of two, so it is an exact shift with no carry; upward it saturates at the rail. Never on the wire, never in the archive — this device's ear only. Local sources (ringback, previews) skip it: they were built for the rung the wave plays at.
+    // THE EARPIECE TRIM (Nick 2026-09-16, the Kalispell↔Southworth wave: a Pixel 3a at max rocker heard the plan level as quiet while a Pixel 8 Pro at its lowest step heard it loud — the earpieces differ by more than Android's narrow STREAM_VOICE_CALL rocker can span, and no vendor number tells us an earpiece's loudness). A per-device static gain in STOPS (one stop = ×2), remembered in `audio.rx.trim`, the pot under the rocker: a power of two, so it is an exact shift with no carry; upward it saturates at the rail. Never on the wire, never in the archive — this device's ear only. Local sources (ringback, previews) skip it: they were built for the rung the wave plays at.
     if !LOCAL_SOURCE.load(Ordering::Relaxed) {
         let stops = RX_TRIM_STOPS.load(Ordering::Relaxed);
         if stops > 0 {
@@ -511,13 +511,13 @@ pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
     (out, total)
 }
 
-/// Reset all queues — session start/stop hygiene so a new call never hears the last call's tail.
+/// Reset all queues — session start/stop hygiene so a new wave never hears the last wave's tail.
 /// Logs the session's jitter diagnostics FIRST (this runs at both start and stop; the stop edge is the one whose numbers matter, and a start against zeroed stats logs nothing).
 fn clear_queues() {
     let (target, depth, underruns, peak, trims, dropped, duped) = jitter_stats();
     if underruns > 0 || peak > 0 || trims > 0 || dropped > 0 || duped > 0 {
         crate::logf!(
-            "CALL: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 5ms each); splice -{}/+{} samples",
+            "WAVE: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 5ms each); splice -{}/+{} samples",
             target,
             depth,
             peak,
@@ -532,7 +532,7 @@ fn clear_queues() {
     RENDER_REF.lock().unwrap().clear();
     // RENDER_ENV clears but its TOTAL cursor base does NOT reset — a learner holding a cursor across the hygiene edge just sees a gap, never a phantom replay.
     RENDER_ENV.lock().unwrap().clear();
-    // Each call starts fresh at the jitter floor, re-priming — never inheriting the last call's grown depth or window size.
+    // Each wave starts fresh at the jitter floor, re-priming — never inheriting the last wave's grown depth or window size.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
     LOCAL_SOURCE.store(false, Ordering::Relaxed);
     JITTER_PRIMING.store(true, Ordering::Relaxed);
@@ -543,7 +543,7 @@ fn clear_queues() {
     SPLICE_DROPPED.store(0, Ordering::Relaxed);
     SPLICE_DUPED.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
-    SPEAKER_DUCK_GAIN.store(crate::call::qgain::UNITY, Ordering::Relaxed);
+    SPEAKER_DUCK_GAIN.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     EMITTED_LEVEL.store(0, Ordering::Relaxed);
@@ -630,14 +630,14 @@ mod desktop {
         *ROUTE.lock().unwrap()
     }
 
-    /// Start the audio session: spawns the thread that owns both cpal streams for the life of the call. Returns false when no devices exist (the call proceeds one-way rather than failing — a mic-less desktop can still listen).
+    /// Start the audio session: spawns the thread that owns both cpal streams for the life of the wave. Returns false when no devices exist (the wave proceeds one-way rather than failing — a mic-less desktop can still listen).
     pub fn start() -> bool {
         if ACTIVE.swap(true, Ordering::SeqCst) {
             return true; // already live
         }
         clear_queues();
         std::thread::Builder::new()
-            .name("call-audio".into())
+            .name("wave-audio".into())
             .spawn(audio_thread)
             .is_ok()
     }
@@ -763,7 +763,7 @@ mod desktop {
             }
         });
         if in_stream.is_none() {
-            crate::log("AUDIO: no capture device — call is listen-only on this end");
+            crate::log("AUDIO: no capture device — the wave is listen-only on this end");
         }
 
         // ---- output (speaker) ----
@@ -800,7 +800,7 @@ mod desktop {
             }
         });
         if out_stream.is_none() {
-            crate::log("AUDIO: no render device — call is talk-only on this end");
+            crate::log("AUDIO: no render device — the wave is talk-only on this end");
         }
 
         // Park until the session ends; streams die with this scope.
@@ -827,7 +827,7 @@ mod android {
 
     /// Start: flip the flag, clear the queues, and ask the service to spin up AudioRecord/AudioTrack (VOICE_COMMUNICATION). Returns false when the service ref isn't up or the call fails — mic permission handling is Kotlin's side of the line.
     /// Start: flip the flag, clear the queues, let Kotlin do the Android-only chores (proximity lock, foreground microphone type, lock-screen flags, the RECORD_AUDIO prompt), then open the AAudio streams from Rust (audio_aaudio). False when the output stream cannot open.
-    /// THE HANDOVER LOCK (field 2026-09-15 16:54, Emma's Note 10: "doesn't turn her screen off"): start and stop each run as ONE unit — streams AND the Kotlin chores. The session-ownership fix serialized the AAudio streams thru their own lock, but the ringback's stop reached Kotlin's stopCallAudio AFTER the engine's startCallAudio had already returned early on the still-true running flag, so the chores went down under the live wave and never came back: no proximity lock (the screen stayed lit at the ear), no mic foreground type, the earpiece route cleared. Held across the whole sequence, a stop finishes tearing down before a start begins building up, and the start then sees a stopped service and runs its full body.
+    /// THE HANDOVER LOCK (field 2026-09-15 16:54, Emma's Note 10: "doesn't turn her screen off"): start and stop each run as ONE unit — streams AND the Kotlin chores. The session-ownership fix serialized the AAudio streams thru their own lock, but the ringback's stop reached Kotlin's stopWaveAudio AFTER the engine's startWaveAudio had already returned early on the still-true running flag, so the chores went down under the live wave and never came back: no proximity lock (the screen stayed lit at the ear), no mic foreground type, the earpiece route cleared. Held across the whole sequence, a stop finishes tearing down before a start begins building up, and the start then sees a stopped service and runs its full body.
     static HANDOVER: Mutex<()> = Mutex::new(());
 
     pub fn start() -> bool {
@@ -836,11 +836,11 @@ mod android {
             return true;
         }
         clear_queues();
-        let _ = crate::platform::jni_android::call_service_void("startCallAudio");
+        let _ = crate::platform::jni_android::wave_service_void("startWaveAudio");
         if crate::platform::audio_aaudio::start() {
             true
         } else {
-            let _ = crate::platform::jni_android::call_service_void("stopCallAudio");
+            let _ = crate::platform::jni_android::wave_service_void("stopWaveAudio");
             ACTIVE.store(false, Ordering::SeqCst);
             false
         }
@@ -850,12 +850,12 @@ mod android {
         let _h = HANDOVER.lock().unwrap();
         if ACTIVE.swap(false, Ordering::SeqCst) {
             crate::platform::audio_aaudio::stop();
-            let _ = crate::platform::jni_android::call_service_void("stopCallAudio");
+            let _ = crate::platform::jni_android::wave_service_void("stopWaveAudio");
             clear_queues();
         }
     }
 
-    /// JNI ingress (PhotonConnectionService.nativeMicGranted): the RECORD_AUDIO grant landed mid-call — open the input leg.
+    /// JNI ingress (PhotonConnectionService.nativeMicGranted): the RECORD_AUDIO grant landed mid-wave — open the input leg.
     pub(crate) fn on_mic_granted() {
         if ACTIVE.load(Ordering::Relaxed) {
             crate::platform::audio_aaudio::ensure_input();
@@ -882,7 +882,7 @@ mod android {
         super::set_route_identity(id);
     }
 
-    /// JNI ingress: voice-call stream volume in dB (getStreamVolumeDb), mirrored at service start + on every volume change.
+    /// JNI ingress: STREAM_VOICE_CALL volume in dB (getStreamVolumeDb), mirrored at service start + on every volume change.
     pub(crate) fn on_volume_mirror(db: f32) {
         super::set_volume_db(Some(db));
     }
@@ -900,7 +900,7 @@ pub use android::{route, start, stop};
 #[cfg(target_os = "android")]
 pub(crate) use android::{on_mic_granted, on_mic_mirror, on_route_mirror, on_volume_mirror};
 
-// Redox: no audio backend yet — calls are signaling-only there.
+// Redox: no audio backend yet — waves are signaling-only there.
 #[cfg(target_os = "redox")]
 pub fn start() -> bool {
     false

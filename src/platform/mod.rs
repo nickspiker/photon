@@ -23,7 +23,7 @@ pub mod lifeline;
 /// Hold off IDLE sleep while a ceremony or transfer is genuinely in flight — scoped to the work by a guard, never to the app (macOS; a no-op elsewhere).
 pub mod stay_awake;
 
-/// Call audio I/O — capture/playback queues for voice calls (docs/calls.md). Desktop: cpal on a dedicated thread; Android: AAudio streams owned by Rust (audio_aaudio) feeding the same queues with HAL-stamped frames.
+/// Wave audio I/O — capture/playback queues for waves (docs/waves.md). Desktop: cpal on a dedicated thread; Android: AAudio streams owned by Rust (audio_aaudio) feeding the same queues with HAL-stamped frames.
 pub mod audio;
 #[cfg(target_os = "android")]
 pub mod audio_aaudio;

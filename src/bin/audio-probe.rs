@@ -1,4 +1,4 @@
-//! Loopback probe for the call-audio substrate (docs/calls.md step 1): mic → 200ms delay → speaker, ten seconds, then stats. Proves capture, playback, the resampler pair, and the AEC reference ring on THIS machine before any call code exists. Run with speakers low or a headset — you will hear yourself.
+//! Loopback probe for the wave-audio substrate (docs/waves.md step 1): mic → 200ms delay → speaker, ten seconds, then stats. Proves capture, playback, the resampler pair, and the AEC reference ring on THIS machine before any wave code exists. Run with speakers low or a headset — you will hear yourself.
 
 #[cfg(not(any(target_os = "android", target_os = "redox")))]
 fn main() {

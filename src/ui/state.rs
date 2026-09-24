@@ -72,7 +72,7 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every call start, so there is no ritual for a page to hold.
+    /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every wave start, so there is no ritual for a page to hold.
     pub const ALL: [SettingsPage; 13] = [
         SettingsPage::You,
         SettingsPage::Fleet,

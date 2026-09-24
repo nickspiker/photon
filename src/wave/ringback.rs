@@ -1,17 +1,17 @@
-//! Ringback (Nick 2026-09-03): while WE wave someone, THEIR ring plays in OUR earpiece — the callee's identity cadence, so the caller hears who they're waving and has an unmistakable "the wave is going out" signal that no spinner can give.
+//! Ringback (Nick 2026-09-03): while WE wave someone, THEIR ring plays in OUR earpiece — the answering side's identity cadence, so the origin hears who they're waving and has an unmistakable "the wave is going out" signal that no spinner can give.
 //!
-//! It rides the CALL output path (not the notification stream), padded by the same [`crate::call::OUTPUT_PAD_STOPS`] the live wave uses, so the ringback and the conversation that follows land at one consistent loudness in the ear.
+//! It rides the WAVE output path (not the notification stream), padded by the same [`crate::wave::OUTPUT_PAD_STOPS`] the live wave uses, so the ringback and the conversation that follows land at one consistent loudness in the ear.
 //!
-//! **The calibration bonus.** The ringback is a KNOWN signal played into the room while the near human is almost certainly NOT talking (nobody talks to a phone that hasn't connected yet) — which is exactly the far-talks-alone condition the in-call learner needs and usually has to wait a whole conversation to get. Opening the audio session for the ringback means the mic is capturing while it plays, so the same [`crate::call::learn::Learner`] that runs in-call runs here on the ring instead of the peer's voice. By the time the callee answers we can already hand the engine a measured (g, delay) for this route instead of a stale ritual seed — the exact failure convicted in field waves 1-2 (docs: the learner never armed inside a 41 s call, so both sides ducked on wrong seeds).
+//! **The calibration bonus.** The ringback is a KNOWN signal played into the room while the near human is almost certainly NOT talking (nobody talks to a phone that hasn't connected yet) — which is exactly the far-talks-alone condition the in-wave learner needs and usually has to wait a whole conversation to get. Opening the audio session for the ringback means the mic is capturing while it plays, so the same [`crate::wave::learn::Learner`] that runs in-wave runs here on the ring instead of the peer's voice. By the time the answering side answers we can already hand the engine a measured (g, delay) for this route instead of a stale ritual seed — the exact failure convicted in field waves 1-2 (docs: the learner never armed inside a 41 s wave, so both sides ducked on wrong seeds).
 //!
-//! Session ownership: [`start`] opens the audio session and the guard closes it on drop UNLESS the engine has taken over (answered — the engine's own `audio::start()` is a no-op against a live session, so the ringback→call transition never tears the device down and never clicks).
+//! Session ownership: [`start`] opens the audio session and the guard closes it on drop UNLESS the engine has taken over (answered — the engine's own `audio::start()` is a no-op against a live session, so the ringback→wave transition never tears the device down and never clicks).
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use super::learn::{Confidence, Learner};
 
-/// What the ringback measured before the callee picked up — handed to the engine as its calibration seed.
+/// What the ringback measured before the answering side picked up — handed to the engine as its calibration seed.
 #[derive(Debug, Clone, Copy)]
 pub struct RingbackProbe {
     /// Coupling gain, volume-normalized, as the live learner reports it.
@@ -26,7 +26,7 @@ pub struct RingbackProbe {
 /// The probe the most recent ringback produced, if it reached any pooled estimate. Read once at answer.
 static PROBE: Mutex<Option<RingbackProbe>> = Mutex::new(None);
 
-/// Take the last ringback's measurement (clears it — one call, one seed).
+/// Take the last ringback's measurement (clears it — one wave, one seed).
 pub fn take_probe() -> Option<RingbackProbe> {
     PROBE.lock().unwrap().take()
 }
@@ -40,8 +40,8 @@ impl Drop for RingbackGuard {
     }
 }
 
-/// 44.1kHz chirp → 48kHz call path, linear. The cadence is a fixed buffer built once per wave, so this runs off the audio thread and correctness beats sophistication (same trade as the platform layer's device resampler).
-fn to_call_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
+/// 44.1kHz chirp → 48kHz wave path, linear. The cadence is a fixed buffer built once per wave, so this runs off the audio thread and correctness beats sophistication (same trade as the platform layer's device resampler).
+fn to_wave_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
     let dst_rate = crate::platform::audio::SAMPLE_RATE;
     if src_rate == dst_rate || src.is_empty() {
         return src.to_vec();
@@ -60,22 +60,22 @@ fn to_call_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
     out
 }
 
-/// Start the ringback for a wave we are placing. `digest` is the relationship digest — the SAME seed as the callee's own ring, so what we hear is genuinely their cadence.
+/// Start the ringback for a wave we are placing. `digest` is the relationship digest — the SAME seed as the answering side's own ring, so what we hear is genuinely their cadence.
 /// Returns `None` when the audio session won't open (a mic-less/speaker-less box still waves, just silently).
 pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
     let Some(gen) = crate::platform::audio::start_owned() else {
-        crate::log("CALL: ringback — audio session refused, waving silently");
+        crate::log("WAVE: ringback — audio session refused, waving silently");
         return None;
     };
     *PROBE.lock().unwrap() = None;
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let spawned = std::thread::Builder::new()
-        .name("call-ringback".into())
+        .name("wave-ringback".into())
         .spawn(move || run(digest, flag, gen))
         .is_ok();
     if !spawned {
-        crate::log("CALL: ringback thread spawn failed");
+        crate::log("WAVE: ringback thread spawn failed");
         crate::platform::audio::stop_owned(gen);
         return None;
     }
@@ -85,9 +85,9 @@ pub fn start(digest: [u8; 32]) -> Option<RingbackGuard> {
 fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
     use crate::platform::audio;
 
-    // One cadence, resampled to the call rate and padded to the headset level — the ring is a full-scale clip and the wave that follows is 4 stops down; landing them at the same loudness is the whole point of routing it thru the call path.
+    // One cadence, resampled to the wave rate and padded to the headset level — the ring is a full-scale clip and the wave that follows is 4 stops down; landing them at the same loudness is the whole point of routing it thru the wave path.
     let ring = chirp::Chirp::ring_from_hash(digest);
-    let cadence = to_call_rate(ring.samples(), chirp::SAMPLE_RATE_HZ);
+    let cadence = to_wave_rate(ring.samples(), chirp::SAMPLE_RATE_HZ);
     let pad = 1.0 / (1u32 << super::OUTPUT_PAD_STOPS) as f32;
     // Synthesis is float; the CAST is the boundary and it carries its remainder (floor + fraction to the next sample, zero-mean) like every other quantize in the path.
     let mut cast_carry: f64 = 0.0;
@@ -112,7 +112,7 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
 
     // Local source: the ringback cadence must reach the DAC verbatim (the network-jitter splice/trims warped it and polluted the probe, field 2026-09-08).
     crate::platform::audio::set_local_source(true);
-    // The probe: the same learner the engine runs, fed the ring as its far reference. bt_route widens its scan exactly as in-call; no stored seed — this measurement IS the seed.
+    // The probe: the same learner the engine runs, fed the ring as its far reference. bt_route widens its scan exactly as in-wave; no stored seed — this measurement IS the seed.
     let route = audio::route_id();
     let mut learner = Learner::new(route.starts_with("bt:"), None, None);
     let mut env_cursor = 0usize;
@@ -166,7 +166,7 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
     let est = learner.estimate();
     if let (Some(g), Some(d)) = (est.g_norm, est.delay_bins) {
         crate::logf!(
-            "CALL: ringback probe — g {:.4} delay {}ms conf {:?} over {} window(s); floor {:.0}; {} cadence frame(s) played",
+            "WAVE: ringback probe — g {:.4} delay {}ms conf {:?} over {} window(s); floor {:.0}; {} cadence frame(s) played",
             g,
             d * 10,
             format!("{:?}", est.confidence),
@@ -183,7 +183,7 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
         });
     } else {
         crate::logf!(
-            "CALL: ringback probe — no estimate (rejects {:?}, floor {:.0}); the wave was too short to pool a window",
+            "WAVE: ringback probe — no estimate (rejects {:?}, floor {:.0}); the wave was too short to pool a window",
             format!("{:?}", est.rejects),
             est.floor
         );

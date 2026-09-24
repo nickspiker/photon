@@ -372,40 +372,40 @@ impl PhotonApp {
         // Same hoist for the Fleet page's locked set (treat-as-stolen rows): the row loop can't re-borrow self.
         let fleet_locked_set = self.locked_devices();
         let fleet_schemes = self.fleet_schemes.clone();
-        // Hoisted for the call overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a call is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
-        let call_pill_show = self
+        // Hoisted for the wave overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a wave is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
+        let wave_pill_show = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
-        // No calibration gate on placing a call (the doctrine retired 2026-09-07): every call opens with the v-chirp probe, so the route is measured before any voice connects.
+        // No calibration gate on placing a wave (the doctrine retired 2026-09-07): every wave opens with the v-chirp probe, so the route is measured before any voice connects.
         // A WAVE NEEDS A DIRECT PATH (Nick 2026-09-17, the Jon waves: three connected, none carried a packet — relay media does not exist yet): online over the relay alone shows the pill dimmed and labelled "no direct path" instead of placing a wave that connects into silence. The punch pulse keeps trying behind it; the label flips back to Wave the moment a path validates.
-        let call_pill_no_path = self
+        let wave_pill_no_path = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some()) && !c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR)
             });
-        let call_pill_enabled = self
+        let wave_pill_enabled = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
             })
-            && !call_pill_no_path;
-        // Live call-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
-        let call_overlay: Option<(crate::call::CallPhase, String, bool, Option<usize>, i64)> =
-            self.active_call.as_ref().map(|c| {
+            && !wave_pill_no_path;
+        // Live wave-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
+        let wave_overlay: Option<(crate::wave::WavePhase, String, bool, Option<usize>, i64)> =
+            self.active_wave.as_ref().map(|c| {
                 let pi = self
                     .contacts
                     .iter()
                     .position(|k| k.handle_hash == c.peer_handle_hash);
                 let peer = pi.map(|i| &self.contacts[i]);
                 let name = peer.map(|k| k.display_name()).unwrap_or_else(|| "?".into());
-                // LIVE direct-path check, recomputed every frame: relay-only media does not exist yet, so a call with no validated direct path may sit Active-and-silent — the bar says so, and the warning self-clears the instant a punch validates (the engine bootstraps from the peer's first authenticated packet). No stored flag to go stale.
+                // LIVE direct-path check, recomputed every frame: relay-only media does not exist yet, so a wave with no validated direct path may sit Active-and-silent — the bar says so, and the warning self-clears the instant a punch validates (the engine bootstraps from the peer's first authenticated packet). No stored flag to go stale.
                 let direct = peer.map_or(false, |k| k.validated_path.is_some());
                 let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
                 let dur = match c.phase {
-                    crate::call::CallPhase::Active => {
+                    crate::wave::WavePhase::Active => {
                         (vsf::eagle_time_oscillations() - c.phase_osc).max(0) / ops
                     }
                     _ => 0,
@@ -413,26 +413,26 @@ impl PhotonApp {
                 (c.phase, name, direct, pi, dur)
             });
         // Ringing shows a SECOND action (Decline) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
-        let call_two_actions = call_overlay.as_ref().map_or(false, |(p, _, _, _, _)| {
-            matches!(p, crate::call::CallPhase::Ringing)
+        let wave_two_actions = wave_overlay.as_ref().map_or(false, |(p, _, _, _, _)| {
+            matches!(p, crate::wave::WavePhase::Ringing)
         });
-        // Full-screen call panel: Ringing (redesign 2026-08-30 — the compact bar squeezed Answer/Decline under the title band where Android's heads-up notification drops) and Active UNLESS minimized. Ended no longer exists — waves record by default and land straight in the conversation (2026-09-08). Minimized Active yields to the screen underneath (Phase 3 strip / the compact bar), so messaging + navigation stay live.
-        let call_minimized = self.call_minimized;
-        let call_fullscreen = match call_overlay.as_ref().map(|(p, _, _, _, _)| *p) {
-            Some(crate::call::CallPhase::Ringing) => true,
-            Some(crate::call::CallPhase::Active) => !call_minimized,
+        // Full-screen wave panel: Ringing (redesign 2026-08-30 — the compact bar squeezed Answer/Decline under the title band where Android's heads-up notification drops) and Active UNLESS minimized. Ended no longer exists — waves record by default and land straight in the conversation (2026-09-08). Minimized Active yields to the screen underneath (Phase 3 strip / the compact bar), so messaging + navigation stay live.
+        let wave_minimized = self.wave_minimized;
+        let wave_fullscreen = match wave_overlay.as_ref().map(|(p, _, _, _, _)| *p) {
+            Some(crate::wave::WavePhase::Ringing) => true,
+            Some(crate::wave::WavePhase::Active) => !wave_minimized,
             _ => false,
         };
         // Duration string hoisted BEFORE the chrome borrow (`fmt_duration` reads `&self`; the `&mut self.chrome` borrow below would otherwise block it). Used by the full-screen timer + the Ended summary.
-        let call_dur_str = call_overlay
+        let wave_dur_str = wave_overlay
             .as_ref()
             .map(|t| self.fmt_duration(t.4))
             .unwrap_or_default();
-        // Receive-drought state for the Active status line (call_drought_tick owns the flag).
-        let call_reconnecting = self.active_call.as_ref().is_some_and(|c| c.reconnecting);
-        // Fleet call-presence chip text, hoisted like the duration (machine_name reads &self): shown only in the chip's own conversation, only while THIS device has no call UI of its own.
-        let fleet_chip_text: Option<String> = self.fleet_call_elsewhere.and_then(|(_, dev, chip_peer)| {
-            if self.active_call.is_some() || !matches!(self.state, AppState::Conversation) {
+        // Receive-drought state for the Active status line (wave_drought_tick owns the flag).
+        let wave_reconnecting = self.active_wave.as_ref().is_some_and(|c| c.reconnecting);
+        // Fleet wave-presence chip text, hoisted like the duration (machine_name reads &self): shown only in the chip's own conversation, only while THIS device has no wave UI of its own.
+        let fleet_chip_text: Option<String> = self.fleet_wave_elsewhere.and_then(|(_, dev, chip_peer)| {
+            if self.active_wave.is_some() || !matches!(self.state, AppState::Conversation) {
                 return None;
             }
             let viewing = self
@@ -446,13 +446,13 @@ impl PhotonApp {
                 Some(pk) => {
                     let seed = self.session.as_ref()?.identity_seed;
                     let name = super::machine_name(&pk, &seed, self.fleet_settings.as_ref());
-                    Some(tr(Msg::CallChipElsewhere(&name)).into_owned())
+                    Some(tr(Msg::WaveChipElsewhere(&name)).into_owned())
                 }
-                None => Some(tr(Msg::CallChipElsewhereUnknown).into_owned()),
+                None => Some(tr(Msg::WaveChipElsewhereUnknown).into_owned()),
             }
         });
-        // Ring-panel avatar: pre-scale the caller's avatar (or the identity gradient) to the panel diameter — done HERE (before the canvas borrows) because it needs &mut self. Cache keyed by diameter; dropped when nothing rings.
-        if call_fullscreen {
+        // Ring-panel avatar: pre-scale the origin's avatar (or the identity gradient) to the panel diameter — done HERE (before the canvas borrows) because it needs &mut self. Cache keyed by diameter; dropped when nothing rings.
+        if wave_fullscreen {
             let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             let diameter = ((unit_now * 7.0) as usize).max(2);
             let stale = self
@@ -460,7 +460,7 @@ impl PhotonApp {
                 .as_ref()
                 .map_or(true, |(d, _)| *d != diameter);
             if stale {
-                if let Some((_, _, _, Some(pi), _)) = &call_overlay {
+                if let Some((_, _, _, Some(pi), _)) = &wave_overlay {
                     let c = &self.contacts[*pi];
                     let px = match c.avatar_pixels.as_ref() {
                         Some(base) => crate::ui::avatar_render::update_avatar_scaled(
@@ -660,7 +660,7 @@ impl PhotonApp {
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
         }
 
-        // CALL OVERLAY (docs/calls.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live call shows the status chip + action bar; an open callable conversation with no call shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
+        // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             // The ONE zoom-aware line unit the rest of the UI sizes off (back arrow, contact rows, avatar) — harmonic-mean of span·ru and the height budget, so it tracks Ctrl+/− and pinch; every dimension below is a multiple of it: NO fixed pixels, NO clamps (AGENT.md).
@@ -668,14 +668,14 @@ impl PhotonApp {
             let y0 = unit; // top margin, one line down — scales with the rest of the top bar
             let pill_h = unit * 2.; // a comfortable tap target, two lines tall
             let cy = y0 + pill_h * 0.5; // Buttons take a CENTRE; the row is one pill tall
-            let call_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
+            let wave_font = unit * 0.55; // button-text scale, proportional to the pill so it tracks zoom
             _rt.mark("bg+chrome");
-            if call_fullscreen {
-                // ── FULL-SCREEN CALL PANEL ── Ringing / Active / Ended, painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
-                let (phase, name, direct, pi) = match &call_overlay {
+            if wave_fullscreen {
+                // ── FULL-SCREEN WAVE PANEL ── Ringing / Active / Ended, painted over whatever screen was up; every element scales off `unit` (zoom-honest, no fixed pixels).
+                let (phase, name, direct, pi) = match &wave_overlay {
                     Some((ph, n, d, p, _)) => (*ph, n.clone(), *d, *p),
                     None => (
-                        crate::call::CallPhase::Ringing,
+                        crate::wave::WavePhase::Ringing,
                         String::from("?"),
                         false,
                         None,
@@ -701,9 +701,9 @@ impl PhotonApp {
                         &mut canvas, acx, acy, avatar_r, px, *diam, None,
                     );
                 }
-                // THE PRESENCE RING ON THE CALL SCREEN (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings.
+                // THE PRESENCE RING ON THE WAVE SCREEN (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings.
                 {
-                    let ring = match crate::call::call_tx_addr() {
+                    let ring = match crate::wave::wave_tx_addr() {
                         Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip().to_canonical() {
                             std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
                             std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
@@ -717,7 +717,7 @@ impl PhotonApp {
                     paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), ring, None);
                 }
                 // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
-                if matches!(phase, crate::call::CallPhase::Ringing) {
+                if matches!(phase, crate::wave::WavePhase::Ringing) {
                     if let Some(digest) = pi.and_then(|i| {
                         let c = &self.contacts[i];
                         self.session.as_ref().map(|s| {
@@ -754,26 +754,26 @@ impl PhotonApp {
                     None,
                     None,
                 );
-                // Status / timer line beneath the name. Active shows the LIVE call timer (per-frame recompute from phase_osc); Ended a frozen call summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
+                // Status / timer line beneath the name. Active shows the LIVE wave timer (per-frame recompute from phase_osc); Ended a frozen wave summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
                 let status_line = match phase {
-                    crate::call::CallPhase::Ringing => {
+                    crate::wave::WavePhase::Ringing => {
                         if direct {
-                            tr(Msg::IncomingCall).into_owned()
+                            tr(Msg::IncomingWave).into_owned()
                         } else {
-                            tr(Msg::IncomingCallNoPath).into_owned()
+                            tr(Msg::IncomingWaveNoPath).into_owned()
                         }
                     }
-                    crate::call::CallPhase::Active => {
-                        if call_reconnecting {
-                            tr(Msg::CallReconnecting).into_owned()
+                    crate::wave::WavePhase::Active => {
+                        if wave_reconnecting {
+                            tr(Msg::WaveReconnecting).into_owned()
                         } else if direct {
                             // Glyph + duration only (no words) — nothing to translate, stays a raw format.
-                            format!("\u{260E} {}", call_dur_str)
+                            format!("\u{260E} {}", wave_dur_str)
                         } else {
-                            tr(Msg::CallActiveNoPath(&call_dur_str)).into_owned()
+                            tr(Msg::WaveActiveNoPath(&wave_dur_str)).into_owned()
                         }
                     }
-                    crate::call::CallPhase::Outgoing => tr(Msg::CallingName(&name)).into_owned(),
+                    crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(&name)).into_owned(),
                 };
                 ctx.text.draw_text_center(
                     &mut canvas,
@@ -785,14 +785,14 @@ impl PhotonApp {
                     None,
                 );
                 // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs.
-                if matches!(phase, crate::call::CallPhase::Active) {
-                    let rtt = crate::call::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+                if matches!(phase, crate::wave::WavePhase::Active) {
+                    let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
                     if rtt > 0 {
-                        let rung = crate::call::engine::tier_name(crate::call::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed) as usize);
+                        let rung = crate::wave::engine::tier_name(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed) as usize);
                         let freq = crate::link_freq_label(rtt);
-                        let loss = crate::fmt_num(crate::call::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
-                        let buf = crate::fmt_num(crate::call::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
-                        let line = tr(Msg::CallLiveStats { rung, freq: &freq, loss: &loss, buf: &buf });
+                        let loss = crate::fmt_num(crate::wave::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
+                        let buf = crate::fmt_num(crate::wave::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
+                        let line = tr(Msg::WaveLiveStats { rung, freq: &freq, loss: &loss, buf: &buf });
                         ctx.text.draw_text_center(
                             &mut canvas,
                             &line,
@@ -810,10 +810,10 @@ impl PhotonApp {
                 let by = h - bh * 0.5 - unit * 1.5;
                 let bfont = unit * 0.75;
                 match phase {
-                    crate::call::CallPhase::Ringing => {
+                    crate::wave::WavePhase::Ringing => {
                         // Reject LEFT (silent: no signal leaves the fleet), Decline MIDDLE (tells them), Wave back RIGHT — three across, thumb-reach.
                         let bw = w * 0.27;
-                        if let Some(b) = self.call_reject_btn.as_mut() {
+                        if let Some(b) = self.wave_reject_btn.as_mut() {
                             b.set_rect(w * 0.5 - bw - unit * 0.6, by, bw, bh);
                             b.set_font_size(bfont * 0.9);
                             b.set_label(tr(Msg::Reject));
@@ -821,30 +821,30 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        if let Some(b) = self.call_decline_btn.as_mut() {
+                        if let Some(b) = self.wave_decline_btn.as_mut() {
                             b.set_rect(w * 0.5, by, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Decline));
-                            b.set_fill(Some(*theme::CALL_DANGER_FILL));
-                            b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
-                            b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
+                            b.set_fill(Some(*theme::WAVE_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        if let Some(b) = self.call_action_btn.as_mut() {
+                        if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(w * 0.5 + bw + unit * 0.6, by, bw, bh);
                             b.set_font_size(bfont);
-                            // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO — the beam answer sits above as its own choice, so the callee picks audio-only even when the caller beams.
+                            // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO — the beam answer sits above as its own choice, so the answering side picks audio-only even when the origin beams.
                             b.set_label(tr(Msg::WaveBack));
                             b.set_enabled(true);
-                            b.set_fill(Some(*theme::CALL_ACCEPT_FILL));
-                            b.set_hover_fill(Some(*theme::CALL_ACCEPT_HOVER));
-                            b.set_held_fill(Some(*theme::CALL_ACCEPT_HOVER));
+                            b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
+                            b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
+                            b.set_held_fill(Some(*theme::WAVE_ACCEPT_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         // Beam back — the video answer, a STUB greyed out until video lands; centred above the decline/answer pair.
-                        if let Some(b) = self.call_beam_back_btn.as_mut() {
+                        if let Some(b) = self.beam_back_btn.as_mut() {
                             b.set_rect(w * 0.5, by - bh - unit * 0.6, bw, bh * 0.85);
                             b.set_font_size(bfont * 0.9);
                             b.set_label(tr(Msg::BeamBack));
@@ -854,14 +854,14 @@ impl PhotonApp {
                         }
                     }
                     _ => {
-                        // Active in-call screen: a secondary row (+Handle / ‹ Contact) above the primary End call. Add-handle is a stub; ‹ Contact minimizes.
+                        // Active in-wave screen: a secondary row (+Handle / ‹ Contact) above the primary End wave. Add-handle is a stub; ‹ Contact minimizes.
                         let sw = w * 0.29;
                         let sh = unit * 2.0;
                         let sfont = unit * 0.58;
                         let sy = by - bh - unit * 0.6;
                         // The route pill (Android, field 2026-09-14 "it wasn't using the bluetooth headset at all — how do we control that?"): labelled with the device the wave is playing on (the Kotlin route mirror), a tap cycles to the next available output. Left seat of the beam-toggle row.
                         #[cfg(target_os = "android")]
-                        if let Some(b) = self.call_speaker_btn.as_mut() {
+                        if let Some(b) = self.wave_speaker_btn.as_mut() {
                             b.set_rect(w * 0.5 - sw - unit * 0.2, sy - sh - unit * 0.4, sw, sh);
                             b.set_font_size(sfont);
                             let route = crate::platform::audio::route_id();
@@ -875,7 +875,7 @@ impl PhotonApp {
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         // Beam toggle — switch this side to video mid-wave; a STUB greyed out until video lands, one row above the secondary pair.
-                        if let Some(b) = self.call_beam_back_btn.as_mut() {
+                        if let Some(b) = self.beam_back_btn.as_mut() {
                             b.set_rect(w * 0.5, sy - sh - unit * 0.4, sw, sh);
                             b.set_font_size(sfont);
                             b.set_label(tr(Msg::BeamToggle));
@@ -883,28 +883,28 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        if let Some(b) = self.call_addhandle_btn.as_mut() {
+                        if let Some(b) = self.wave_addhandle_btn.as_mut() {
                             b.set_rect(w * 0.5 - sw - unit * 0.2, sy, sw, sh);
                             b.set_font_size(sfont);
                             b.set_label(tr(Msg::AddHandle));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        if let Some(b) = self.call_back_btn.as_mut() {
+                        if let Some(b) = self.wave_back_btn.as_mut() {
                             b.set_rect(w * 0.5 + unit * 0.2, sy, sw, sh);
                             b.set_font_size(sfont);
                             b.set_label(tr(Msg::BackToContact));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        if let Some(b) = self.call_action_btn.as_mut() {
+                        if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(w * 0.5, by, w * 0.5, bh);
                             b.set_font_size(bfont);
-                            b.set_label(tr(Msg::EndCall));
+                            b.set_label(tr(Msg::EndWave));
                             b.set_enabled(true);
-                            b.set_fill(Some(*theme::CALL_DANGER_FILL));
-                            b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
-                            b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
+                            b.set_fill(Some(*theme::WAVE_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
@@ -921,104 +921,104 @@ impl PhotonApp {
                     None,
                     None,
                 );
-            } else if let Some((phase, name, direct, _pi, _dur)) = &call_overlay {
+            } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
                 let gap = unit * 0.5;
                 let mut status = match phase {
-                    crate::call::CallPhase::Outgoing => tr(Msg::CallingName(name)).into_owned(),
-                    crate::call::CallPhase::Ringing => tr(Msg::CallBarCalling(name)).into_owned(),
-                    crate::call::CallPhase::Active => tr(Msg::CallBarInCall(name)).into_owned(),
+                    crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(name)).into_owned(),
+                    crate::wave::WavePhase::Ringing => tr(Msg::WaveBarWaving(name)).into_owned(),
+                    crate::wave::WavePhase::Active => tr(Msg::WaveBarInWave(name)).into_owned(),
                 };
                 // No validated direct path in a live phase → say so on the bar (media may be silent until a punch lands; the warning disappears live when it does). The ⚠ is safe everywhere: fonts are fully bundled + deterministic (fluor's explicit-db TextRenderer, zero system-font pulls — verified 2026-08-20), and Noto Sans Symbols 2 covers U+26A0 in the same 2600 block as the field-proven ☎.
                 if !direct {
                     status.push_str(&tr(Msg::NoDirectPathSuffix));
                 }
-                let status_w = if call_two_actions {
+                let status_w = if wave_two_actions {
                     bar_w * 0.44
                 } else {
                     bar_w * 0.62
                 };
-                let action_w = if call_two_actions {
+                let action_w = if wave_two_actions {
                     (bar_w - status_w - gap * 2.) * 0.5
                 } else {
                     bar_w - status_w - gap
                 };
                 // Status chip — a non-interactive label (full brightness, not in the widget walk, never stamped).
-                if let Some(b) = self.call_status_btn.as_mut() {
+                if let Some(b) = self.wave_status_btn.as_mut() {
                     b.set_rect(x0 + status_w * 0.5, cy, status_w, pill_h);
-                    b.set_font_size(call_font);
+                    b.set_font_size(wave_font);
                     b.set_label(status);
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, HIT_NONE);
                 }
                 let ax = x0 + status_w + gap;
                 let a_label = tr(match phase {
-                    crate::call::CallPhase::Ringing => Msg::Answer,
+                    crate::wave::WavePhase::Ringing => Msg::Answer,
                     _ => Msg::HangUp,
                 });
-                if let Some(b) = self.call_action_btn.as_mut() {
+                if let Some(b) = self.wave_action_btn.as_mut() {
                     b.set_rect(ax + action_w * 0.5, cy, action_w, pill_h);
-                    b.set_font_size(call_font);
+                    b.set_font_size(wave_font);
                     b.set_label(a_label);
                     b.set_enabled(true);
                     // Traffic light by semantics: Answer/Keep green, HangUp red — same law as the full panel.
-                    let accept = matches!(phase, crate::call::CallPhase::Ringing);
-                    b.set_fill(Some(if accept { *theme::CALL_ACCEPT_FILL } else { *theme::CALL_DANGER_FILL }));
-                    b.set_hover_fill(Some(if accept { *theme::CALL_ACCEPT_HOVER } else { *theme::CALL_DANGER_HOVER }));
-                    b.set_held_fill(Some(if accept { *theme::CALL_ACCEPT_HOVER } else { *theme::CALL_DANGER_HOVER }));
+                    let accept = matches!(phase, crate::wave::WavePhase::Ringing);
+                    b.set_fill(Some(if accept { *theme::WAVE_ACCEPT_FILL } else { *theme::WAVE_DANGER_FILL }));
+                    b.set_hover_fill(Some(if accept { *theme::WAVE_ACCEPT_HOVER } else { *theme::WAVE_DANGER_HOVER }));
+                    b.set_held_fill(Some(if accept { *theme::WAVE_ACCEPT_HOVER } else { *theme::WAVE_DANGER_HOVER }));
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
-                if call_two_actions {
+                if wave_two_actions {
                     let dx = x0 + status_w + gap * 2. + action_w;
                     let d_label = tr(Msg::Decline);
-                    if let Some(b) = self.call_decline_btn.as_mut() {
+                    if let Some(b) = self.wave_decline_btn.as_mut() {
                         b.set_rect(dx + action_w * 0.5, cy, action_w, pill_h);
-                        b.set_font_size(call_font);
+                        b.set_font_size(wave_font);
                         b.set_label(d_label);
-                        b.set_fill(Some(*theme::CALL_DANGER_FILL));
-                        b.set_hover_fill(Some(*theme::CALL_DANGER_HOVER));
-                        b.set_held_fill(Some(*theme::CALL_DANGER_HOVER));
+                        b.set_fill(Some(*theme::WAVE_DANGER_FILL));
+                        b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
+                        b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                         let id = b.hit_id();
                         b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                     }
                 }
-            } else if matches!(self.state, AppState::Conversation) && call_pill_show {
+            } else if matches!(self.state, AppState::Conversation) && wave_pill_show {
                 // The Wave / Beam pills — top-right of the conversation, HALF the old size (Nick 2026-09-15: "2x too big"), and one pill height ABOVE the "‹ Contacts" line so the two never overlap on a narrow screen; on desktop the chrome strip is the floor. They slide up-under with the message scroll (`conv_topbar_off`) like the back arrow.
                 let pill_h = unit;
-                let pill_font = call_font * 0.5;
+                let pill_font = wave_font * 0.5;
                 let pill_w = unit * 2.5;
                 let px = buf_w as f32 - pill_w - unit * 0.5; // top-right, half a unit of margin from the edge
                 let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
                 let bar_h = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit + pill_h;
                 let bar_off = self.conv_topbar_off.min(bar_h);
-                let call_cy = ((buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32)).max(strip_floor + pill_h * 0.6) - bar_off;
-                if let Some(b) = self.call_start_btn.as_mut() {
-                    let pw = pill_w * if call_pill_no_path { 1.8 } else { 1.0 };
-                    b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, call_cy, pw, pill_h);
+                let wave_cy = ((buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32)).max(strip_floor + pill_h * 0.6) - bar_off;
+                if let Some(b) = self.wave_start_btn.as_mut() {
+                    let pw = pill_w * if wave_pill_no_path { 1.8 } else { 1.0 };
+                    b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h);
                     b.set_font_size(pill_font);
-                    b.set_label(tr(if call_pill_no_path { Msg::CallStartNoPath } else { Msg::CallStart }));
-                    b.set_enabled(call_pill_enabled);
+                    b.set_label(tr(if wave_pill_no_path { Msg::WaveStartNoPath } else { Msg::WaveStart }));
+                    b.set_enabled(wave_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
                 // Beam (video) stub — sits left of Wave, permanently disabled until video lands.
-                if let Some(b) = self.call_beam_btn.as_mut() {
-                    b.set_rect(px - pill_w * 0.5 - unit * 0.2, call_cy, pill_w, pill_h);
+                if let Some(b) = self.beam_btn.as_mut() {
+                    b.set_rect(px - pill_w * 0.5 - unit * 0.2, wave_cy, pill_w, pill_h);
                     b.set_font_size(pill_font);
                     b.set_enabled(false);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
-                // Fleet call-presence chip: a wave is live on another of our devices — informational v1, the join/switch affordance lands with handoff.
+                // Fleet wave-presence chip: a wave is live on another of our devices — informational v1, the join/switch affordance lands with handoff.
                 if let Some(txt) = &fleet_chip_text {
                     ctx.text.draw_text_center(
                         &mut canvas,
                         txt,
                         buf_w as f32 * 0.5,
-                        call_cy,
-                        &TextStyle::new(call_font * 0.8, *theme::SEARCH_FOUND_COLOUR).font("Oxanium"),
+                        wave_cy,
+                        &TextStyle::new(wave_font * 0.8, *theme::SEARCH_FOUND_COLOUR).font("Oxanium"),
                         None,
                         None,
                     );
@@ -1027,7 +1027,7 @@ impl PhotonApp {
         }
 
         // DISTINCT SCREEN while ringing (2026-08-31): the full-screen ring panel is opaque and modal, so painting the underlying screen is pure waste — at full frame rate (the pulse animation), during the one moment the radio + speaker are also busy. Every per-screen body below is skipped; the panel, chrome flatten, joiner flood and the endgame hit re-stamp (which wipes the map modal anyway) still run. Screen-side frame bookkeeping (scroll extents, textbox geometry, hit stamps) goes stale for the ring's duration by design — the drain repaints fully on every ring edge, so the first non-ringing frame rebuilds it all.
-        if !call_fullscreen {
+        if !wave_fullscreen {
 
         // Launch-screen widgets paint UNDER the chord hint (so the hint always wins over the textbox) and OVER chrome (so the pill sits on top of the spectrum strip / wordmark). Same target buffer as the chord hint; widgets stamp their hit IDs into chrome's shared `hit_test_map`. Only paint when the launch screen is the active state — Ready/Searching/Conversation get their own widgets later.
         if let AppState::Launch(launch_state) = &self.state {
@@ -3225,7 +3225,7 @@ impl PhotonApp {
                         }
                         // Current reaction per target per direction — the shared builder (the scroll walk counts with the same map).
                         let react_over = build_react_over(raw_msgs);
-                        // The line a reacted bubble grows underneath — PER PARTY, because each glyph paints in its reactor's colour (the field call, 2026-08-09: "make sure the colour matches the party"): (theirs, ours), retracts dropped, None when neither.
+                        // The line a reacted bubble grows underneath — PER PARTY, because each glyph paints in its reactor's colour (the field ruling, 2026-08-09: "make sure the colour matches the party"): (theirs, ours), retracts dropped, None when neither.
                         let react_line = |ts: i64| -> Option<(Option<String>, Option<String>)> {
                             let slots = react_over.get(&ts)?;
                             let pick = |s: &Option<(i64, String)>| {
@@ -3241,8 +3241,8 @@ impl PhotonApp {
                         };
                         // Bubble DISPLAY body: attachments keep their pill line; an edited row shows its newest edit body; reply/edit markers strip to their text.
                         // The kept recording currently playing (hash, percent) — its bubble shows ■ progress instead of ▶ size.
-                        let playing_rec: Option<([u8; 32], u32)> = self.call_playback_hash.and_then(|h| {
-                            self.call_playback.as_ref().map(|p| {
+                        let playing_rec: Option<([u8; 32], u32)> = self.wave_playback_hash.and_then(|h| {
+                            self.wave_playback.as_ref().map(|p| {
                                 (h, ((p.position() as f32 / p.total.max(1) as f32) * 100.0).min(100.0) as u32)
                             })
                         });
@@ -3258,7 +3258,7 @@ impl PhotonApp {
                             if let (Some((ph, pct)), Some((h, name, _))) =
                                 (playing_rec, crate::types::parse_attachment_content(&m.content))
                             {
-                                if name == "call.audio" && h == ph {
+                                if name == "wave.audio" && h == ph {
                                     return tr(Msg::RecordingPlaying { pct }).into_owned();
                                 }
                             }
@@ -3270,13 +3270,13 @@ impl PhotonApp {
                             .filter(|m| chat_row_visible(raw_msgs, m, conv_filter))
                             .collect();
                         let n = visible.len();
-                        // The recording that folds into each wave row's card: wave row ts → the live call.audio row referencing it (RefKind::Wave). TWO recordings for one wave (field 2026-09-17: the phone minted a second keep of the same wave 75 s after the first) fold to the one HELD here, then the larger — never "the last row the walk met", which read "fetch" on the very device that made the wave.
+                        // The recording that folds into each wave row's card: wave row ts → the live wave.audio row referencing it (RefKind::Wave). TWO recordings for one wave (field 2026-09-17: the phone minted a second keep of the same wave 75 s after the first) fold to the one HELD here, then the larger — never "the last row the walk met", which read "fetch" on the very device that made the wave.
                         let rec_over: std::collections::HashMap<i64, &crate::types::ChatMessage> = {
                             let mut m: std::collections::HashMap<i64, &crate::types::ChatMessage> = std::collections::HashMap::new();
                             let rank = |r: &crate::types::ChatMessage| -> (bool, u64) {
                                 crate::types::parse_attachment_content(&r.content).map_or((false, 0), |(h, _, size)| (crate::storage::blob_present(&h), size))
                             };
-                            for r in raw_msgs.iter().filter(|r| !r.deleted && crate::types::is_call_recording(&r.content)) {
+                            for r in raw_msgs.iter().filter(|r| !r.deleted && crate::types::is_wave_recording(&r.content)) {
                                 if let Some((crate::types::RefKind::Wave, t)) = r.reference {
                                     match m.get(&t) {
                                         Some(cur) if rank(cur) >= rank(r) => {}
@@ -3288,12 +3288,12 @@ impl PhotonApp {
                             }
                             m
                         };
-                        // The wave.env rows that fold into each card: wave ts → (our env blob hash, their env blob hash) — each party's own shared 3-channel tensor (call/wave_env.rs).
+                        // The wave.env rows that fold into each card: wave ts → (our env blob hash, their env blob hash) — each party's own shared 3-channel tensor (wave/wave_env.rs).
                         let env_over: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = {
                             let mut m: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = std::collections::HashMap::new();
                             for e in raw_msgs.iter().filter(|m| !m.deleted) {
                                 if let (Some((crate::types::RefKind::Wave, t)), Some((h, name, _))) = (e.reference, crate::types::parse_attachment_content(&e.content)) {
-                                    if name == crate::call::wave_env::WAVE_ENV_NAME {
+                                    if name == crate::wave::wave_env::WAVE_ENV_NAME {
                                         let slot = m.entry(t).or_default();
                                         if e.is_outgoing {
                                             slot.0 = Some(h);
@@ -3352,8 +3352,8 @@ impl PhotonApp {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
                             for m in &visible {
-                                // call.audio rows draw in Oxanium (so the dozenal size + ▶ resolve) — measure with the SAME font or the wrapped line count disagrees with the draw.
-                                let row_wrap = if crate::types::is_call_recording(&m.content) {
+                                // wave.audio rows draw in Oxanium (so the dozenal size + ▶ resolve) — measure with the SAME font or the wrapped line count disagrees with the draw.
+                                let row_wrap = if crate::types::is_wave_recording(&m.content) {
                                     TextStyle::new(msg_size, 0).weight(500).font("Oxanium")
                                 } else {
                                     wrap_style.clone()
@@ -3365,9 +3365,9 @@ impl PhotonApp {
                                         let selected = sel_key.is_some_and(|(ts, out)| m.timestamp == ts && m.is_outgoing == out);
                                         if w.outcome.was_live() {
                                             total += 2;
-                                            if selected { vec![super::call_ui::wave_header(w)] } else { Vec::new() }
+                                            if selected { vec![super::wave_ui::wave_header(w)] } else { Vec::new() }
                                         } else {
-                                            vec![super::call_ui::wave_header(w)]
+                                            vec![super::wave_ui::wave_header(w)]
                                         }
                                     }
                                     None => {
@@ -3510,7 +3510,7 @@ impl PhotonApp {
                             // The image preview band above an image attachment's pill (typed attachments 2026-09-10).
                             let img_lines = super::viewer::img_band_lines_of(&self.img_cache, msg);
                             let img_band_h = img_lines as f32 * intra;
-                            // A music pigeon's waveform band (audio rows that aren't call recordings).
+                            // A music pigeon's waveform band (audio rows that aren't wave recordings).
                             let audio_lines = super::viewer::audio_band_lines_of(msg);
                             let audio_band_h = audio_lines as f32 * intra;
                             // The decoded preview blob outranks the micro thumb; either way the band's picture is (w, h, pixels).
@@ -3780,7 +3780,7 @@ impl PhotonApp {
                                     // PLAY IS A BUTTON ON THIS ROW (Nick 2026-09-12: "to play requires two steps and no scrolling"): select the row, then press play — the band itself never starts playback. Then wave back, beam back, export, and discard sits with delete below.
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
-                                        let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present_or_pending(&h), self.call_playback.is_some() && self.call_playback_hash == Some(h))).unwrap_or((false, false));
+                                        let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present_or_pending(&h), self.wave_playback.is_some() && self.wave_playback_hash == Some(h))).unwrap_or((false, false));
                                         v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, self.msg_action_base.wrapping_add(11)));
                                     }
                                     // Wave back needs a direct path too (Nick 2026-09-17): over the relay alone the pill is dimmed and says so.
@@ -3832,12 +3832,12 @@ impl PhotonApp {
                                         self.msg_action_base.wrapping_add(2),
                                     ));
                                 }
-                                // Attachment rows: a call recording PLAYS (blob held) or fetches; a file SAVES (blob held) or fetches. Same slot 4 — the click handler branches on call.audio.
+                                // Attachment rows: a wave recording PLAYS (blob held) or fetches; a file SAVES (blob held) or fetches. Same slot 4 — the click handler branches on wave.audio.
                                 if let Some((hash, _, _)) =
                                     crate::types::parse_attachment_content(&msg.content)
                                 {
                                     let held = crate::storage::blob_present_or_pending(&hash);
-                                    let is_rec = crate::types::is_call_recording(&msg.content);
+                                    let is_rec = crate::types::is_wave_recording(&msg.content);
                                     // Opening is a tap on the visual itself (2026-09-12); the strip's pill is the file verb: fetch it, play a standalone recording, or save it.
                                     // A held music pigeon gets PLAY/STOP in the action row itself, beside save and delete (Nick 2026-09-12: "same line as reply/save/delete") — the same glyphs the wave card's play wears.
                                     let is_music = msg.attach.is_some_and(|a| a.kind == crate::types::AttachKind::Audio) && !is_rec;
@@ -3854,7 +3854,7 @@ impl PhotonApp {
                                         (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
                                     pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
-                                    // LOFT (Nick 2026-09-14, "keep it, but not here"): drop THIS device's copy of an incoming pigeon's bytes — the row, preview and fetch stay, and the sender's fleet holds the original. Incoming only in v1 (no custody proof exists yet for our own uploads — the device-sync phase), and never a call recording (each fleet's archive is its own memory of the wave).
+                                    // LOFT (Nick 2026-09-14, "keep it, but not here"): drop THIS device's copy of an incoming pigeon's bytes — the row, preview and fetch stay, and the sender's fleet holds the original. Incoming only in v1 (no custody proof exists yet for our own uploads — the device-sync phase), and never a wave recording (each fleet's archive is its own memory of the wave).
                                     if held && !msg.is_outgoing && !is_rec {
                                         pills.push((tr(Msg::LoftPill), *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(12)));
                                     }
@@ -4003,13 +4003,13 @@ impl PhotonApp {
                             } else {
                                 author_colour(msg)
                             };
-                            // call.audio rows render in Oxanium — matches the wrap-loop font so the dozenal size + ▶ glyph resolve (the default bubble font tofus both).
-                            let msg_style = if crate::types::is_call_recording(&msg.content) {
+                            // wave.audio rows render in Oxanium — matches the wrap-loop font so the dozenal size + ▶ glyph resolve (the default bubble font tofus both).
+                            let msg_style = if crate::types::is_wave_recording(&msg.content) {
                                 TextStyle::new(msg_size, colour).weight(500).font("Oxanium")
                             } else {
                                 TextStyle::new(msg_size, colour).weight(500)
                             };
-                            // The referenced message, resolved LIVE (so its own edits show) at HALF alpha in the REPLIER'S colour — the whole reply block is one party's utterance, so its reference line tints like its body (field call, 2026-08-09: the target-colour scheme made a friend's reply-to-us carry a grey reference, since our own colour is the neutral grey). Half vs full separates context from content; quarter stays the not-yet-ACKed signal. Missing target (not synced yet) renders as a bare ellipsis.
+                            // The referenced message, resolved LIVE (so its own edits show) at HALF alpha in the REPLIER'S colour — the whole reply block is one party's utterance, so its reference line tints like its body (field ruling, 2026-08-09: the target-colour scheme made a friend's reply-to-us carry a grey reference, since our own colour is the neutral grey). Half vs full separates context from content; quarter stays the not-yet-ACKed signal. Missing target (not synced yet) renders as a bare ellipsis.
                             if let Some(t) = reply_target {
                                 let ref_text = raw_msgs
                                     .iter()
@@ -4113,13 +4113,13 @@ impl PhotonApp {
                                         Some(rec) => {
                                             let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                             let held = crate::storage::blob_present(&hash);
-                                            let playing = self.call_playback.is_some() && self.call_playback_hash == Some(hash);
+                                            let playing = self.wave_playback.is_some() && self.wave_playback_hash == Some(hash);
                                             // ENVELOPE SOURCES (the wave.env exchange, 2026-09-12): each half of the card comes from that party's OWN shared 3-channel tensor — ours from our blob, theirs from theirs — and a side whose blob hasn't landed (or was never minted: short waves) derives from the held audio, one decode, off-thread. Nothing reads the container's header any more.
                                             let (env_ours_h, env_theirs_h) = env_over.get(&msg.timestamp).copied().unwrap_or((None, None));
-                                            let total_slots = if playing { self.call_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
+                                            let total_slots = if playing { self.wave_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
                                             let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
                                             let frac: Option<f32> = scrub.or_else(|| {
-                                                playing.then(|| self.call_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
+                                                playing.then(|| self.wave_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
                                             });
                                             let wx0 = glyph_x1;
                                             let cols = ((bx1 - wx0).max(1.0)) as usize;
@@ -4143,7 +4143,7 @@ impl PhotonApp {
                                                         self.wave_env_pending.insert(eh);
                                                         let (tx, wake) = (tx0.clone(), wake0.clone());
                                                         let _ = std::thread::Builder::new().name("wave-env".into()).spawn(move || {
-                                                            let res = crate::storage::blob_load(&seed, &eh).and_then(|b| crate::call::wave_env::read(&b)).map(|e| vec![e]);
+                                                            let res = crate::storage::blob_load(&seed, &eh).and_then(|b| crate::wave::wave_env::read(&b)).map(|e| vec![e]);
                                                             let _ = tx.send((eh, res));
                                                             #[cfg(not(target_os = "android"))]
                                                             if let Some(wk) = wake.as_ref() {
@@ -4161,7 +4161,7 @@ impl PhotonApp {
                                                     self.wave_env_pending.insert(hash);
                                                     let (tx, wake) = (tx0.clone(), wake0.clone());
                                                     let _ = std::thread::Builder::new().name("wave-env-derive".into()).spawn(move || {
-                                                        let res = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::call::record::envelopes_from_blob(&b));
+                                                        let res = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::wave::record::envelopes_from_blob(&b));
                                                         let _ = tx.send((hash, res));
                                                         #[cfg(not(target_os = "android"))]
                                                         if let Some(wk) = wake.as_ref() {
@@ -4173,7 +4173,7 @@ impl PhotonApp {
                                                 }
                                             }
                                             // Resolve each party: their own blob first, the audio-derived channel second (0 = us/mic, 1 = them/wire).
-                                            let resolve = |blob_h: Option<[u8; 32]>, chn: usize| -> Option<([u8; 32], usize, std::sync::Arc<crate::call::wave_env::WaveEnv>)> {
+                                            let resolve = |blob_h: Option<[u8; 32]>, chn: usize| -> Option<([u8; 32], usize, std::sync::Arc<crate::wave::wave_env::WaveEnv>)> {
                                                 if let Some(h) = blob_h {
                                                     if let Some(Some(v)) = self.wave_env.get(&h) {
                                                         if let Some(e) = v.first() {
@@ -4235,8 +4235,8 @@ impl PhotonApp {
                                                 }
                                                 // Elapsed / total beside the header, on the side the header left free.
                                                 let pos_secs = (f * total_slots as f32 / 100.0) as i64;
-                                                let pos_s = super::call_ui::fmt_duration_secs(pos_secs);
-                                                let tot_s = super::call_ui::fmt_duration_secs((total_slots / 100) as i64);
+                                                let pos_s = super::wave_ui::fmt_duration_secs(pos_secs);
+                                                let tot_s = super::wave_ui::fmt_duration_secs((total_slots / 100) as i64);
                                                 let pos_label = tr(Msg::WavePos { pos: &pos_s, total: &tot_s });
                                                 if right_aligned {
                                                     ctx.text.draw_text_left(&mut canvas, &pos_label, pad_x, hy, &small, Some(list_clip), None);
@@ -4310,7 +4310,7 @@ impl PhotonApp {
                                             let tx = self.wave_env_tx.as_ref().unwrap().clone();
                                             let wake = self.event_proxy.clone();
                                             let _ = std::thread::Builder::new().name("music-env".into()).spawn(move || {
-                                                let res = crate::storage::blob_load(&seed, &ahash).and_then(|b| crate::call::music::envelopes_from_music(&b));
+                                                let res = crate::storage::blob_load(&seed, &ahash).and_then(|b| crate::wave::music::envelopes_from_music(&b));
                                                 let _ = tx.send((ahash, res));
                                                 #[cfg(not(target_os = "android"))]
                                                 if let Some(wk) = wake.as_ref() {
@@ -6326,7 +6326,7 @@ impl PhotonApp {
                             };
                             flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                         }
-                        let idle = self.active_call.is_none();
+                        let idle = self.active_wave.is_none();
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                             (&tr(Msg::WaveMeasureNow), btn_base.wrapping_add(2), idle, None),
                         ], "Open Sans");
@@ -6334,15 +6334,15 @@ impl PhotonApp {
                     // ── The last wave.
                     flow.gap(hspan2 * 0.6);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
-                    match crate::call::last_wave() {
+                    match crate::wave::last_wave() {
                         Some(w) => {
-                            let dur = super::call_ui::fmt_duration_secs(w.seconds as i64);
+                            let dur = super::wave_ui::fmt_duration_secs(w.seconds as i64);
                             let path = tr(if w.lan_path { Msg::WavePathLan } else { Msg::WavePathWan });
                             let (fl, em, mx) = (crate::fmt_num(w.rtt_floor_ms), crate::fmt_num(w.rtt_ema_ms), crate::fmt_num(w.rtt_max_ms));
                             flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLink { dur: &dur, path: &path, floor: &fl, ema: &em, max: &mx }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                             let (lost, of, filled, holes) = (crate::fmt_num64(w.windows_lost), crate::fmt_num64(w.windows_in), crate::fmt_num64(w.fills_got), crate::fmt_num64(w.holes));
                             flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLoss { lost: &lost, of: &of, filled: &filled, holes: &holes }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
-                            let rate = if w.tier_end + 1 == crate::call::engine::TIER_RATES.len() { "plaid".to_string() } else { format!("{} kbps", crate::fmt_num((crate::call::engine::TIER_RATES[w.tier_end] / 1000) as u32)) };
+                            let rate = if w.tier_end + 1 == crate::wave::engine::TIER_RATES.len() { "plaid".to_string() } else { format!("{} kbps", crate::fmt_num((crate::wave::engine::TIER_RATES[w.tier_end] / 1000) as u32)) };
                             let (ups, downs, peer) = (crate::fmt_num(w.tier_ups), crate::fmt_num(w.tier_downs), crate::fmt_num(w.peer_lost_max));
                             flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLadder { rate: &rate, ups: &ups, downs: &downs, peer: &peer }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                             let x10 = |v: u32| format!("{}.{}", crate::fmt_num(v / 10), crate::fmt_num(v % 10));
@@ -6362,13 +6362,13 @@ impl PhotonApp {
                     // ── Preferences.
                     flow.gap(hspan2 * 0.6);
                     flow.line(&mut canvas, ctx.text, &tr(Msg::WavePrefsHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
-                    let ring_call = tr(Msg::RingIncomingCall);
-                    let vib_call = tr(Msg::VibrateIncomingCall);
+                    let ring_wave = tr(Msg::RingIncomingWave);
+                    let vib_wave = tr(Msg::VibrateIncomingWave);
                     let wave_hold = tr(Msg::HoldWavesOnDevice);
                     let plaid_wan = tr(Msg::PlaidOffLan);
                     let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 4] = [
-                        (self.settings_ring_call_check.as_mut(), &*ring_call),
-                        (self.settings_vibrate_call_check.as_mut(), &*vib_call),
+                        (self.settings_ring_wave_check.as_mut(), &*ring_wave),
+                        (self.settings_vibrate_wave_check.as_mut(), &*vib_wave),
                         (self.settings_wave_hold_check.as_mut(), &*wave_hold),
                         (self.settings_plaid_wan_check.as_mut(), &*plaid_wan),
                     ];
@@ -6480,12 +6480,12 @@ impl PhotonApp {
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::DiagInfo { used: &human_bytes(used), cap: &human_bytes(cap), pct: pct as u64 }), hspan2, *theme::LABEL_COLOUR, 400);
                     // The last wave's link (Nick 2026-09-10): the round trip as a dozenal-metric FREQUENCY (Zila = 1 Hz, Zilor = 2 Hz, Ter = 4 Hz, each digit a doubling), the loss ring, the buffer target.
                     {
-                        let rtt = crate::call::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
+                        let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
                         let line = if rtt == 0 {
                             tr(Msg::NoWaveYet).into_owned()
                         } else {
-                            let loss = crate::fmt_num(crate::call::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
-                            let buffer = crate::fmt_num(crate::call::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
+                            let loss = crate::fmt_num(crate::wave::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
+                            let buffer = crate::fmt_num(crate::wave::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
                             tr(Msg::LastWave { link: &crate::link_freq_label(rtt), loss: &loss, buffer: &buffer }).into_owned()
                         };
                         flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
@@ -7016,7 +7016,7 @@ impl PhotonApp {
             }
         }
 
-        } // end !call_fullscreen — per-screen bodies skipped while the ring panel owns the surface
+        } // end !wave_fullscreen — per-screen bodies skipped while the ring panel owns the surface
         _rt.mark("body");
 
         // Apply the frame's MEASURED extent (Flow pages) — next frame's clamp reads it.
@@ -7063,10 +7063,10 @@ impl PhotonApp {
             );
         }
 
-        // Re-stamp the call overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen call bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped. Each Button stamps its OWN rect (set in the early paint), so the two passes can never disagree. Visibility mirrors `visit_app_widgets` exactly: action always when a call is live, decline in ringing/ended, start only when a callable convo enables it (a dimmed pill must not dispatch a dead tap). The status chip is a label — never stamped.
-        if call_overlay.is_some() {
-            // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped thru the wash — then the two call buttons are the only live targets.
-            if call_fullscreen {
+        // Re-stamp the wave overlay's hit rects LAST: screens re-stamp their own regions of the shared hit_test_map every frame, which would otherwise wipe the top-of-screen wave bar's clickable area. Pixels were painted early (under-blend keeps them on top); only the hit rects need re-asserting after every screen has stamped. Each Button stamps its OWN rect (set in the early paint), so the two passes can never disagree. Visibility mirrors `visit_app_widgets` exactly: action always when a wave is live, decline in ringing/ended, start only when a callable convo enables it (a dimmed pill must not dispatch a dead tap). The status chip is a label — never stamped.
+        if wave_overlay.is_some() {
+            // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped thru the wash — then the two wave buttons are the only live targets.
+            if wave_fullscreen {
                 restamp_hit_rect(
                     &mut chrome.hit_test_map,
                     buf_w,
@@ -7078,26 +7078,26 @@ impl PhotonApp {
                     HIT_NONE,
                 );
             }
-            if let Some(b) = self.call_action_btn.as_ref() {
+            if let Some(b) = self.wave_action_btn.as_ref() {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
             }
-            if call_two_actions {
-                if let Some(b) = self.call_decline_btn.as_ref() {
+            if wave_two_actions {
+                if let Some(b) = self.wave_decline_btn.as_ref() {
                     b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                 }
             }
-            // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): Active in-call = speaker / +handle / ‹ contact; Ended = play preview.
-            if call_fullscreen {
-                match call_overlay.as_ref().map(|t| t.0) {
-                    Some(crate::call::CallPhase::Active) => {
+            // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): Active in-wave = speaker / +handle / ‹ contact; Ended = play preview.
+            if wave_fullscreen {
+                match wave_overlay.as_ref().map(|t| t.0) {
+                    Some(crate::wave::WavePhase::Active) => {
                         // The route pill stamps only where it renders (Android).
                         #[cfg(target_os = "android")]
-                        if let Some(b) = self.call_speaker_btn.as_ref() {
+                        if let Some(b) = self.wave_speaker_btn.as_ref() {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                         }
                         for b in [
-                            self.call_addhandle_btn.as_ref(),
-                            self.call_back_btn.as_ref(),
+                            self.wave_addhandle_btn.as_ref(),
+                            self.wave_back_btn.as_ref(),
                         ]
                         .into_iter()
                         .flatten()
@@ -7109,10 +7109,10 @@ impl PhotonApp {
                 }
             }
         } else if matches!(self.state, AppState::Conversation)
-            && call_pill_show
-            && call_pill_enabled
+            && wave_pill_show
+            && wave_pill_enabled
         {
-            if let Some(b) = self.call_start_btn.as_ref() {
+            if let Some(b) = self.wave_start_btn.as_ref() {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
             }
         }
@@ -7320,7 +7320,7 @@ fn draw_standing_bands(bands: &[(String, u32)], canvas: &mut Canvas, text: &mut 
 }
 
 /// DOWNSCALE WITH OPACITY CONTRIBUTIONS (Nick 2026-09-12, "are we downscaling and tracking opacity contributions?"): fold one envelope channel to per-column VERTICAL COVERAGE — every bin lands in exactly one column with its OWN bar height, and a row's value is the fraction of that column's bins whose bar reaches it. Coverage is monotone non-increasing upward, solid where the bins agree and graded where they don't, so the contour anti-aliases from the true within-column distribution with no oversampling.
-pub(super) fn wave_fold_coverage(e: &crate::call::wave_env::WaveEnv, cols: usize, rows: usize, ref_amp: f32) -> Vec<f32> {
+pub(super) fn wave_fold_coverage(e: &crate::wave::wave_env::WaveEnv, cols: usize, rows: usize, ref_amp: f32) -> Vec<f32> {
     let lsb0 = e.lsb(0);
     let mut h_lut = [0f32; 256];
     for (b, h) in h_lut.iter_mut().enumerate() {
@@ -7354,7 +7354,7 @@ pub(super) fn wave_fold_coverage(e: &crate::call::wave_env::WaveEnv, cols: usize
 }
 
 /// Per-column colours from the three band tracks, THE AGB WAY (Nick: each band's power over the geometric mean of the three, the top ratio pinned at full — hue from the ratios, brightness constant): the same integer bin→column stack as the coverage fold, means per band, colour thru the VSF path once per fold.
-pub(super) fn wave_fold_colours(e: &crate::call::wave_env::WaveEnv, cols: usize) -> Vec<u32> {
+pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize) -> Vec<u32> {
     let bins = e.bins.max(1);
     let mut acc = vec![[0u64; 3]; cols];
     let mut n = vec![0u32; cols];

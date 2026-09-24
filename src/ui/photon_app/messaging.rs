@@ -210,7 +210,7 @@ impl PhotonApp {
         let ci = contact_idx;
         let text = text.to_string();
 
-        // BRIDGE rides the REGULAR chain path now (Nick's call 2026-08-21): a `$ ` command typed in a sibling conversation is an ordinary message to that one device — a per-sibling conversation is exactly [our_sibling_pid, that_device_pid], so the general path below already targets the single device with full chain durability (retransmit + ACK + re-serve). The old is_sibling branch fire-and-forgot a term frame with NONE of that, which is why commands to a momentarily-unreachable device evaporated. The host detects the `$ ` prefix on RECEIVE (conversation.rs) and replies with another ordinary message; faint-until-ACKed rendering comes free.
+        // BRIDGE rides the REGULAR chain path now (Nick's ruling 2026-08-21): a `$ ` command typed in a sibling conversation is an ordinary message to that one device — a per-sibling conversation is exactly [our_sibling_pid, that_device_pid], so the general path below already targets the single device with full chain durability (retransmit + ACK + re-serve). The old is_sibling branch fire-and-forgot a term frame with NONE of that, which is why commands to a momentarily-unreachable device evaporated. The host detects the `$ ` prefix on RECEIVE (conversation.rs) and replies with another ordinary message; faint-until-ACKed rendering comes free.
 
         // How many people does this message have to reach? For our own notes the answer is zero, so there is nothing to encrypt, nothing to dispatch, and nothing left to wait for — the row is delivered because delivery to an empty set is already complete. That is not a special case for self; it is what the general rule evaluates to when the participant set has one member (docs: the conversation model). A conversation with one remote takes the chain path below, and so does one with fifty.
         let remotes = match self.contacts.get(ci) {
@@ -701,26 +701,26 @@ impl PhotonApp {
             if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, c)| *id == done.friendship_id && c.molecule) {
                 chains.set_pending_targets(done.eagle_time, targets);
             }
-            // CALL basket capture (docs/calls.md): the offer's send COMMIT is where the CALLER sees the lane key its offer sealed under — the basket's doomed egg (the callee captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
+            // WAVE basket capture (docs/waves.md): the offer's send COMMIT is where the ORIGIN sees the lane key its offer sealed under — the basket's doomed egg (the answering side captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
             if let Ok(text) = std::str::from_utf8(&done.salt_text) {
-                if let Some(sig @ crate::call::signal::CallSignal::Offer { call_id, .. }) =
-                    crate::call::signal::CallSignal::parse(text)
+                if let Some(sig @ crate::wave::signal::WaveSignal::Offer { wave_id, .. }) =
+                    crate::wave::signal::WaveSignal::parse(text)
                 {
                     let mut captured = false;
-                    if let Some(call) = self.active_call.as_mut() {
-                        if call.call_id == call_id && call.offer_lane_key.is_none() {
-                            call.offer_lane_key = Some(wire.expected_key);
+                    if let Some(wave) = self.active_wave.as_mut() {
+                        if wave.wave_id == wave_id && wave.offer_lane_key.is_none() {
+                            wave.offer_lane_key = Some(wire.expected_key);
                             captured = true;
                             crate::log(
-                                "CALL: offer lane key captured at commit — basket egg secured",
+                                "WAVE: offer lane key captured at commit — basket egg secured",
                             );
                         }
                     }
                     // Only a call THIS device dialed can be missing its capture — a re-served history row that happens to be an old offer commits here too (Esme's phone, 2026-09-10) and is not that.
-                    if !captured && self.dialed_call_ids.contains(&call_id) {
-                        crate::logf!("CALL: offer {} committed with no matching outgoing call — lane key NOT captured, the express offer will never fire", hex::encode(&call_id[..4]));
+                    if !captured && self.dialed_wave_ids.contains(&wave_id) {
+                        crate::logf!("WAVE: offer {} committed with no matching outgoing wave — lane key NOT captured, the express offer will never fire", hex::encode(&wave_id[..4]));
                     }
-                    // The offer's EXPRESS copy fires HERE, not at send: only the commit knows the lane key, and the express payload carries it as the callee's basket egg (signal.rs). ts = the row's own eagle stamp, so offer_osc and the stale-offer gate agree on both ends whichever copy lands first.
+                    // The offer's EXPRESS copy fires HERE, not at send: only the commit knows the lane key, and the express payload carries it as the answering side's basket egg (signal.rs). ts = the row's own eagle stamp, so offer_osc and the stale-offer gate agree on both ends whichever copy lands first.
                     if captured {
                         if let Some(ci) = contact_idx {
                             self.send_express_signal(
@@ -1047,7 +1047,7 @@ impl PhotonApp {
                 preview: m.preview.clone(),
             }));
         // IN-FLIGHT WINDOW: advance-on-send gives each message its own position, so pipelining is safe — but keep a bounded window so a burst can't outrun the receiver's gap buffer (and stays well under the count that tripped older receivers' fork detector). While the lane already holds the window's worth of un-ACKed sends, the row stays held and the ACK-advance flush sends the next as a slot frees.
-        // CONTROL FRAMES BYPASS THE WINDOW. Call signals (offer/answer/decline/hangup), chain probes, and delete markers are rare, never bursty, and TIME-CRITICAL — pacing them behind bulk chat wedged a live call's answer the moment the lane hit its cap: "answer send failed" was every time preceded by "lane at the in-flight window", so a congested conversation made an incoming call literally unanswerable (decline worked only because it ignores the send result; field 2026-08-19, Emma↔Nick). The window is UI-level flow control for data, not a crypto invariant — a couple of extra control pendings stay far under the fork threshold and still ride advance-on-send + retransmit + relay like any frame.
+        // CONTROL FRAMES BYPASS THE WINDOW. Wave signals (offer/answer/decline/hangup), chain probes, and delete markers are rare, never bursty, and TIME-CRITICAL — pacing them behind bulk chat wedged a live wave's answer the moment the lane hit its cap: "answer send failed" was every time preceded by "lane at the in-flight window", so a congested conversation made an incoming wave literally unanswerable (decline worked only because it ignores the send result; field 2026-08-19, Emma↔Nick). The window is UI-level flow control for data, not a crypto invariant — a couple of extra control pendings stay far under the fork threshold and still ride advance-on-send + retransmit + relay like any frame.
         let is_control = crate::types::is_control_content(text);
         if !is_control
             && self

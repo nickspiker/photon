@@ -54,12 +54,12 @@ pub(super) fn img_band_lines_of(cache: &ImgCache, m: &crate::types::ChatMessage)
     0
 }
 
-/// Lines an AUDIO row's waveform band reserves — a pigeon carrying a wave (Nick 2026-09-12): the band derives from the audio itself, so it exists once the blob is held. Call recordings fold into their wave card instead.
+/// Lines an AUDIO row's waveform band reserves — a pigeon carrying a wave (Nick 2026-09-12): the band derives from the audio itself, so it exists once the blob is held. Wave recordings fold into their wave card instead.
 pub(super) fn audio_band_lines_of(m: &crate::types::ChatMessage) -> usize {
     let Some(a) = m.attach else {
         return 0;
     };
-    if a.kind != crate::types::AttachKind::Audio || crate::types::is_call_recording(&m.content) {
+    if a.kind != crate::types::AttachKind::Audio || crate::types::is_wave_recording(&m.content) {
         return 0;
     }
     let Some((h, _, _)) = crate::types::parse_attachment_content(&m.content) else {

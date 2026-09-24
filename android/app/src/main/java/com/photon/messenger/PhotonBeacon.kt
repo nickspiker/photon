@@ -28,7 +28,7 @@ import java.util.UUID
  * its publisher refuses service UUIDs). The scanner ingests both. Bytes map big-endian: byte 0 is the
  * UUID's most-significant byte, matching Rust's uuid::from_bytes / as_bytes, so the 16 bytes round-trip
  * identically across the wire. BLUETOOTH_SCAN/ADVERTISE are runtime permissions on Android 12+: a start
- * call without the grant stashes itself as pending, fires the Activity's request dialog, and re-runs on grant.
+ * request without the grant stashes itself as pending, fires the Activity's request dialog, and re-runs on grant.
  */
 object PhotonBeacon {
     private var appContext: Context? = null
@@ -50,7 +50,7 @@ object PhotonBeacon {
         nativeInit()
     }
 
-    /** Permission dialog came back positive: re-run whatever start call was waiting on it. */
+    /** Permission dialog came back positive: re-run whatever start request was waiting on it. */
     fun onPermissionsGranted() {
         pendingAdvertise?.let { startAdvertise(it) }
         if (pendingScan) startScan()

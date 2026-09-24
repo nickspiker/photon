@@ -15,7 +15,7 @@ metadata:
 
 **Bounds:** 8 rows/burst oldest-first (the oldest hole holds the in-order gate shut; later holes fill on subsequent tips), 2 bursts per stuck tip value (`lane_reserve_bursts` map — sibling-lane rows above OUR lane's tip would re-serve forever otherwise: peer dedups them and dedup never advances our tip), cap resets when the tip moves. Re-serve = chain_transmit at ORIGINAL eagle_times (lane-rotation-flush semantics; in-flight guard idempotent, window paces).
 
-**STALE-OFFER GATE (hazard the re-serve creates):** a re-served call OFFER decrypts fresh hours later and would RING for a dead call — offers older than 60s at decrypt are recorded, never rung (call_ui.rs on_call_signal; an age check on STARTING a ring, not a ring timer — edges still end rings).
+**STALE-OFFER GATE (hazard the re-serve creates):** a re-served call OFFER decrypts fresh hours later and would RING for a dead call — offers older than 60s at decrypt are recorded, never rung (wave_ui.rs on_call_signal; an age check on STARTING a ring, not a ring timer — edges still end rings).
 
 Related: [[project-voice-calls]] (answers ride the lane), the receiver-side half = chain gaps arm the urgent friend history walk (@3e1cdfc — recovers CONTENT but never advances the braid position; the re-serve is what fixes the chain). Field signal: "peer N row(s) behind … re-serving" then "gap filled" within one ping cycle.
 

@@ -5,14 +5,14 @@
 //! STRIPPED to the bone (Nick, 2026-08-19 — the first cut carried 42 fixed bytes + an MTU-padded symbol, ~13× the audio rate at the ladder floor): every field an endpoint can DERIVE is derived, every field the tag already proves is deleted.
 //! - `step` — gone: it is `seq / PACKETS_PER_STEP` by construction; the old header field was checked-redundant.
 //! - `dir` — gone: each direction seals under its own StepChain key, so a wrong-direction packet simply fails the tag.
-//! - `call_id` — gone: the key is basket-derived per call (one live call per handle), so a stale call's straggler fails under the live key.
+//! - `wave_id` — gone: the key is basket-derived per wave (one live wave per handle), so a stale wave's straggler fails under the live key.
 //! - `window_id` — gone: one datagram per window, so seq IS the window id; the repair symbol for window N−1 PIGGYBACKS behind window N's source (half the packet rate, copies a window apart for burst immunity). One sealed ctrl byte names the two symbols' rungs (a mid-bundle rung switch makes length alone ambiguous).
 //!
-//! The single magic byte lives in the HIGH half of ASCII, which no other frame on the wire touches: VSF opens 'R' (0x52), PT DATA a lowercase stream id (0x61-0x7A) — every legitimate first byte is ≤ 0x7F. The recv worker checks this one byte FIRST and routes matches raw to the call engine — no PT ack, no StatusUpdate, no parse ladder — or silently drops them when no call is active.
+//! The single magic byte lives in the HIGH half of ASCII, which no other frame on the wire touches: VSF opens 'R' (0x52), PT DATA a lowercase stream id (0x61-0x7A) — every legitimate first byte is ≤ 0x7F. The recv worker checks this one byte FIRST and routes matches raw to the wave engine — no PT ack, no StatusUpdate, no parse ladder — or silently drops them when no wave is active.
 //!
-//! **Truncated tag (Nick's call, 2026-08-19): 4 bytes of the RFC 8439 Poly1305 tag** — the SRTP-32 profile. Why that's sound HERE: truncation touches integrity only (confidentiality is XChaCha20's and never changes); forgery is a purely ONLINE per-packet game at 2⁻³² against a key that exists only while the call lives (teardown zeroizes, so the attack budget is call-duration × injection rate, and a rate that matters is a visible flood); a landed forgery yields ONE garbled 10ms window, not keys or plaintext. The RustCrypto AEAD API can't verify truncated tags, so the composition is hand-assembled from `chacha20` + `poly1305` per RFC 8439 and PINNED bit-exact against the house `chacha20poly1305` library by the `composition_matches_the_house_aead` KAT.
+//! **Truncated tag (Nick's ruling, 2026-08-19): 4 bytes of the RFC 8439 Poly1305 tag** — the SRTP-32 profile. Why that's sound HERE: truncation touches integrity only (confidentiality is XChaCha20's and never changes); forgery is a purely ONLINE per-packet game at 2⁻³² against a key that exists only while the wave lives (teardown zeroizes, so the attack budget is wave-duration × injection rate, and a rate that matters is a visible flood); a landed forgery yields ONE garbled 10ms window, not keys or plaintext. The RustCrypto AEAD API can't verify truncated tags, so the composition is hand-assembled from `chacha20` + `poly1305` per RFC 8439 and PINNED bit-exact against the house `chacha20poly1305` library by the `composition_matches_the_house_aead` KAT.
 //!
-//! Nonce = the global sequence number in a 24-byte field (unique per key by construction — a step spans exactly [`keys::PACKETS_PER_STEP`] seqs, and seq never repeats within a call).
+//! Nonce = the global sequence number in a 24-byte field (unique per key by construction — a step spans exactly [`keys::PACKETS_PER_STEP`] seqs, and seq never repeats within a wave).
 
 use super::keys::StepChain;
 use chacha20::cipher::{KeyIvInit, StreamCipher};
@@ -109,7 +109,7 @@ pub fn parse_header(bytes: &[u8]) -> Option<(MediaHeader, &[u8])> {
     Some((MediaHeader { seq, fill: bytes[0] == FILL_MAGIC }, &bytes[HEADER_LEN..]))
 }
 
-/// Open a sealed payload with the direction's chain, advancing it to the seq's step first (forward-only: a packet from a destroyed step returns None — silence, never a rewind). The truncated tag is the whole gate: it proves call membership AND direction, since both live in the key. Constant-time compare, then decrypt.
+/// Open a sealed payload with the direction's chain, advancing it to the seq's step first (forward-only: a packet from a destroyed step returns None — silence, never a rewind). The truncated tag is the whole gate: it proves wave membership AND direction, since both live in the key. Constant-time compare, then decrypt.
 pub fn open(chain: &mut StepChain, header: &MediaHeader, sealed: &[u8]) -> Option<Vec<u8>> {
     if sealed.len() <= TAG_LEN {
         return None;
@@ -132,11 +132,11 @@ pub fn open(chain: &mut StepChain, header: &MediaHeader, sealed: &[u8]) -> Optio
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::call::keys::{derive_call_secret, Direction, PACKETS_PER_STEP};
+    use crate::wave::keys::{derive_wave_secret, Direction, PACKETS_PER_STEP};
     use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305};
 
     fn secret() -> [u8; 32] {
-        derive_call_secret(&[3; 32], &[4; 16], &[5; 32], &[6; 32])
+        derive_wave_secret(&[3; 32], &[4; 16], &[5; 32], &[6; 32])
     }
 
     /// The hand-assembled RFC 8439 composition must be BIT-IDENTICAL to the house AEAD library (ciphertext and the full 16-byte tag) — the wire merely truncates the tag. This KAT is what makes the hand-rolling safe to trust.
@@ -160,8 +160,8 @@ mod tests {
     #[test]
     fn media_round_trips_across_steps() {
         let s = secret();
-        let mut tx = StepChain::new(&s, Direction::CallerToCallee);
-        let mut rx = StepChain::new(&s, Direction::CallerToCallee);
+        let mut tx = StepChain::new(&s, Direction::OriginToAnswer);
+        let mut rx = StepChain::new(&s, Direction::OriginToAnswer);
 
         // First packet of step 0 and first of step 1 — the receiver walks forward mid-stream.
         for seq in [0u32, 7, PACKETS_PER_STEP, PACKETS_PER_STEP + 3] {
@@ -180,8 +180,8 @@ mod tests {
     fn direction_lives_in_the_key_not_the_wire() {
         // The dir byte is deleted from the header — key separation must be what rejects a cross-direction packet.
         let s = secret();
-        let tx = StepChain::new(&s, Direction::CallerToCallee);
-        let mut wrong_rx = StepChain::new(&s, Direction::CalleeToCaller);
+        let tx = StepChain::new(&s, Direction::OriginToAnswer);
+        let mut wrong_rx = StepChain::new(&s, Direction::AnswerToOrigin);
         let wire = seal(&tx, 0, b"hello-hello").unwrap();
         let (h, sealed) = parse_header(&wire).unwrap();
         assert!(
@@ -193,8 +193,8 @@ mod tests {
     #[test]
     fn dead_steps_stay_dead_and_tampering_fails() {
         let s = secret();
-        let mut tx = StepChain::new(&s, Direction::CalleeToCaller);
-        let mut rx = StepChain::new(&s, Direction::CalleeToCaller);
+        let mut tx = StepChain::new(&s, Direction::AnswerToOrigin);
+        let mut rx = StepChain::new(&s, Direction::AnswerToOrigin);
 
         let early = seal(&tx, 5, b"early-early").unwrap();
         // Receiver ratchets past step 0 (as if the stream ran on)…

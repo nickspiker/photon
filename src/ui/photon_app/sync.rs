@@ -1672,11 +1672,11 @@ impl PhotonApp {
         const HIST_TRICKLE_OSC: i64 = 2 * crate::OSC_PER_SEC; // one page per ~2s in background
         const HIST_INFLIGHT_TIMEOUT_OSC: i64 = 45 * crate::OSC_PER_SEC; // lost request/page — longer than PT's ~31s ladder-then-relay so the fallback can actually fire before the request is abandoned (15s starved it forever)
 
-        // CALL-ACTIVE QUIESCENCE (Emma's log 2026-09-01: a full-resync walk paged 50-row chunks thru the ENTIRE call — each page a decrypt+merge on the recv path the media shares, arrival jitter straight into the playout queue): while a call is ACTIVE, history waits. Edges, not timers — the walk resumes on the very next drive after engine-down. Ringing/Outgoing don't pause (setup still wants gap heals; express signals cover the doorbell regardless), and nothing in-flight is cancelled — this only stops NEW page requests.
+        // WAVE-ACTIVE QUIESCENCE (Emma's log 2026-09-01: a full-resync walk paged 50-row chunks thru the ENTIRE wave — each page a decrypt+merge on the recv path the media shares, arrival jitter straight into the playout queue): while a wave is ACTIVE, history waits. Edges, not timers — the walk resumes on the very next drive after engine-down. Ringing/Outgoing don't pause (setup still wants gap heals; express signals cover the doorbell regardless), and nothing in-flight is cancelled — this only stops NEW page requests.
         if self
-            .active_call
+            .active_wave
             .as_ref()
-            .is_some_and(|c| c.phase == crate::call::CallPhase::Active)
+            .is_some_and(|c| c.phase == crate::wave::WavePhase::Active)
         {
             return;
         }
@@ -2082,7 +2082,7 @@ impl PhotonApp {
             // A presence ping tracks the pinged DEVICE — keyless contacts aren't presence-pingable (the "00000000" class).
             if let Some(dev) = contact.public_identity.clone() {
                 checker.ping(ip, dev.clone(), punch, relay_to.clone(), false);
-                // OWNERLESS FAN-OUT (2026-09-01, the last boss of the head-gap arc): ping EVERY other known device of this contact too, each at its own best address with its own relay leg. One pinned target meant sync-record testimony only flowed between the pinned pair — Emma's phone never SAW the MacBook's behind-tip record, so its per-device re-serve never fired and the MacBook's lane wedged thru a ringing, answered, silent call (field 2026-09-01). Pings are tiny + idempotent; each pong now feeds the per-device (fid, device) re-serve slot for ITS sender, so every live device on each side serves every wedged device on the other. The offline edge still rotates the PRIMARY; the fan just stops testimony from depending on that choice.
+                // OWNERLESS FAN-OUT (2026-09-01, the last boss of the head-gap arc): ping EVERY other known device of this contact too, each at its own best address with its own relay leg. One pinned target meant sync-record testimony only flowed between the pinned pair — Emma's phone never SAW the MacBook's behind-tip record, so its per-device re-serve never fired and the MacBook's lane wedged thru a ringing, answered, silent wave (field 2026-09-01). Pings are tiny + idempotent; each pong now feeds the per-device (fid, device) re-serve slot for ITS sender, so every live device on each side serves every wedged device on the other. The offline edge still rotates the PRIMARY; the fan just stops testimony from depending on that choice.
                 let primary = *dev.as_bytes();
                 for ep in &contact.device_endpoints {
                     if ep.pubkey == primary || contact.refused_devices.contains(&ep.pubkey) {
@@ -2123,7 +2123,7 @@ impl PhotonApp {
     }
 
     pub(super) fn drive_wfd_stranded(&self) {
-        // UNIVERSAL-TOKEN mode (user call 2026-09-01): the bearer no longer needs per-pair provisioned credentials — a stranded/metered device arms the SAME open house the deliberate add uses (universal token + cleartext group creds in the TXT record), and further auth is the chain layer once frames flow. The per-pair seed/cred layer is retired: its distribution dependency kept the whole bearer dark in the field (nothing ever minted the pairwise seed — Emma's disconnected-wifi test, zero WFD lines fleet-wide).
+        // UNIVERSAL-TOKEN mode (user ruling 2026-09-01): the bearer no longer needs per-pair provisioned credentials — a stranded/metered device arms the SAME open house the deliberate add uses (universal token + cleartext group creds in the TXT record), and further auth is the chain layer once frames flow. The per-pair seed/cred layer is retired: its distribution dependency kept the whole bearer dark in the field (nothing ever minted the pairwise seed — Emma's disconnected-wifi test, zero WFD lines fleet-wide).
         let mut any_stranded = false;
         let mut any_metered = false;
         let mut any_p2p = false;
@@ -2135,7 +2135,7 @@ impl PhotonApp {
             if c.validated_path.is_none() && !c.is_online {
                 any_stranded = true;
             }
-            // METERED WIDENING: the friend may be reachable, but every path we have rides the tower — no LAN path (a validated LAN path means the AP hop is free and WFD buys nothing but battery). Co-located peers should hear each other over the direct radio: zero data cost, ~2-5ms instead of ~50-100ms RTT, and ~8× the throughput of a congested cellular uplink for a live call. The arming only runs on this edge (metered + no LAN), so the battery cost is bounded to exactly the situations where WFD wins; the relay working over cellular is irrelevant — it is just the expensive way to reach someone at arm's length.
+            // METERED WIDENING: the friend may be reachable, but every path we have rides the tower — no LAN path (a validated LAN path means the AP hop is free and WFD buys nothing but battery). Co-located peers should hear each other over the direct radio: zero data cost, ~2-5ms instead of ~50-100ms RTT, and ~8× the throughput of a congested cellular uplink for a live wave. The arming only runs on this edge (metered + no LAN), so the battery cost is bounded to exactly the situations where WFD wins; the relay working over cellular is irrelevant — it is just the expensive way to reach someone at arm's length.
             if crate::network::wfd::net_metered()
                 && !(c.validated_path.is_some() && c.validated_path_lan)
             {

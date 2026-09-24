@@ -1,13 +1,13 @@
-//! Kept-recording playback (docs/calls.md) — decode a kept call, sum its channels to MONO, play thru the speaker.
+//! Kept-recording playback (docs/waves.md) — decode a kept wave, sum its channels to MONO, play thru the speaker.
 //!
 //! Mirrors the media engine's shape: a stop flag + a worker thread that OWNS the audio session for the life of the playback (`platform::audio::start()` on spawn, `stop()` on exit). Playback never touches the cpal streams directly (they are `!Send` and live on the audio thread) — it only pushes decoded mono frames to the global `PLAYBACK_Q` via `queue_playback`, exactly as the live engine's receive path does.
 //!
-//! **One owner.** A live call owns the audio session; playback REFUSES to start while `platform::audio::is_active()`. Symmetrically, the call-answer / offer paths stop any running playback before they start the engine (`self.playback.take().map(|p| p.stop())`). Only the owner that flipped `ACTIVE false→true` calls `stop()`.
+//! **One owner.** A live wave owns the audio session; playback REFUSES to start while `platform::audio::is_active()`. Symmetrically, the wave-answer / offer paths stop any running playback before they start the engine (`self.playback.take().map(|p| p.stop())`). Only the owner that flipped `ACTIVE false→true` calls `stop()`.
 //!
-//! **No wall-clock timer.** The pacing clock is the DAC draining `PLAYBACK_Q` — one frame per 10 ms of real hardware time. The worker decodes the next frame only once the queue has drained below a small target, polling that depth on a 1 ms granularity (the same poll cadence the engine and ring loop use — a worker-thread poll, not a call-state timer).
+//! **No wall-clock timer.** The pacing clock is the DAC draining `PLAYBACK_Q` — one frame per 10 ms of real hardware time. The worker decodes the next frame only once the queue has drained below a small target, polling that depth on a 1 ms granularity (the same poll cadence the engine and ring loop use — a worker-thread poll, not a wave-state timer).
 
-use crate::call::record::KeptStream;
-use crate::call::spool::SpoolTicket;
+use crate::wave::record::KeptStream;
+use crate::wave::spool::SpoolTicket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
@@ -57,7 +57,7 @@ impl Drop for PlaybackHandle {
     }
 }
 
-/// Play a KEPT recording blob thru the speaker (downmixed to mono). `None` if a call is active, the blob is missing/unreadable, or there's no audio device.
+/// Play a KEPT recording blob thru the speaker (downmixed to mono). `None` if a wave is active, the blob is missing/unreadable, or there's no audio device.
 pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<PlaybackHandle> {
     play_blob_from(identity_seed, content_hash, 0)
 }
@@ -65,11 +65,11 @@ pub fn play_blob(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Pl
 /// Play a kept recording from archive slot `slot` (10 ms units) — the wave card's tap-to-seek. The stream seeks by walking packet lengths, so a far target costs a byte scan plus a few priming decodes.
 pub fn play_blob_from(identity_seed: &[u8; 32], content_hash: &[u8; 32], slot: usize) -> Option<PlaybackHandle> {
     if crate::platform::audio::is_active() {
-        crate::log("CALL playback: audio busy (call active) — refused");
+        crate::log("WAVE playback: audio busy (wave active) — refused");
         return None;
     }
     let bytes = crate::storage::blob_load(identity_seed, content_hash)?;
-    let stream = crate::call::record::open_blob(&bytes)?;
+    let stream = crate::wave::record::open_blob(&bytes)?;
     spawn(stream, slot)
 }
 
@@ -94,7 +94,7 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
     // Local source: preview frames must reach the DAC verbatim — the network-jitter splice/trims were the field's "choppy and distorted" playback (2026-09-08).
     crate::platform::audio::set_local_source(true);
     let spawned = std::thread::Builder::new()
-        .name("call-playback".into())
+        .name("wave-playback".into())
         .spawn(move || {
             run(stream, &flag, skip, &pos_w, &seek_w);
             done_flag.store(true, Ordering::SeqCst);
@@ -136,7 +136,7 @@ fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::
         crate::platform::audio::queue_playback(mono);
         pos.fetch_add(1, Ordering::Relaxed);
     }
-    // Let the DAC finish rendering the tail before the caller's stop() releases the session.
+    // Let the DAC finish rendering the tail before the origin's stop() releases the session.
     while !stop.load(Ordering::Relaxed) && crate::platform::audio::playback_depth() > 0 {
         std::thread::sleep(Duration::from_millis(1));
     }

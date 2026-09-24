@@ -26,7 +26,7 @@ import androidx.core.content.ContextCompat
  *    which skips the WPS consent dialog on both sides.
  *  - The TXT record carries only rotating keyed tokens (opaque 16-byte chunks) — no identity.
  *  - NEARBY_WIFI_DEVICES (API 33+) / ACCESS_FINE_LOCATION (older) are runtime permissions:
- *    a start call without the grant stashes itself pending and re-runs on grant, like the BLE beacon.
+ *    a start request without the grant stashes itself pending and re-runs on grant, like the BLE beacon.
  */
 object PhotonWifiDirect {
     private var appContext: Context? = null
@@ -137,7 +137,7 @@ object PhotonWifiDirect {
         } catch (_: Exception) { null }
     }
 
-    /** Advertise our rotating friend tokens as a `_photon._udp` DNS-SD local service. The blob is base64-chunked across TXT keys (a single TXT value caps at 255 bytes). Instance name is random per call — never an identifier. */
+    /** Advertise our rotating friend tokens as a `_photon._udp` DNS-SD local service. The blob is base64-chunked across TXT keys (a single TXT value caps at 255 bytes). Instance name is random per wave — never an identifier. */
     fun startAdvertise(txtTokens: ByteArray) {
         if (!hasPerm()) {
             pendingAdvertise = txtTokens

@@ -10,7 +10,7 @@
 
     <!-- Notifications (Android 13+ requires runtime permission) -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
-    <!-- Incoming-call notification: fullScreenIntent launches the in-app ring panel on a locked phone (docs/calls.md redesign 2026-08-30) -->
+    <!-- Incoming-wave notification: fullScreenIntent launches the in-app ring panel on a locked phone (docs/waves.md redesign 2026-08-30) -->
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.VIBRATE" />
 
@@ -38,8 +38,8 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-    <!-- Voice calls (docs/calls.md): mic capture via VOICE_COMMUNICATION (the source that engages the
-         vendor echo canceller). RECORD_AUDIO is a runtime prompt at first call; the microphone
+    <!-- Waves (docs/waves.md): mic capture via VOICE_COMMUNICATION (the source that engages the
+         vendor echo canceller). RECORD_AUDIO is a runtime prompt at the first wave; the microphone
          foreground-service type is required to capture while backgrounded (Android 14+). -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS" />
@@ -94,8 +94,8 @@
             </intent-filter>
         </service>
 
-        <!-- Foreground service for persistent P2P connection; microphone type joins dataSync so call
-             capture keeps running when the Activity backgrounds mid-call. -->
+        <!-- Foreground service for persistent P2P connection; microphone type joins dataSync so wave
+             capture keeps running when the Activity backgrounds mid-wave. -->
         <service
             android:name=".PhotonConnectionService"
             android:foregroundServiceType="dataSync|microphone"

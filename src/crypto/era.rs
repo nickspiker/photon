@@ -2,7 +2,7 @@
 //!
 //! The next era's secrets are `KDF(old lane_root ‖ old history_key ‖ FRESH ‖ transcript)`. The old root buys continuity and splice-resistance (nobody without it computes the next era, whatever fresh material they hold); confidentiality of the new era comes ENTIRELY from the fresh secret, a hybrid of ML-KEM-1024, X25519 and HQC-256 — two post-quantum families plus classical, ≈9 KB of public keys on the Init row and ≈16 KB of ciphertexts on the Resp row, no PT transfer, no McEliece. A departed device that captured the whole old era lacks the initiator's ephemeral decapsulation keys (RAM only, zeroized at derive) and the responder's encapsulation randomness, so it cannot follow.
 //!
-//! Wire grammar (`EraSignal`) follows the call-signal STX convention: a hidden control row whose content is `ERA_PREFIX kind ‖ fields`, with the KEM material riding the message package's typed `ekn`/`ekx`/`ekh` fields beside it — never inside the text.
+//! Wire grammar (`EraSignal`) follows the wave-signal STX convention: a hidden control row whose content is `ERA_PREFIX kind ‖ fields`, with the KEM material riding the message package's typed `ekn`/`ekx`/`ekh` fields beside it — never inside the text.
 
 use blake3::Hasher;
 use ihi::spaghettify;

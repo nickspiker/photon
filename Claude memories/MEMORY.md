@@ -17,6 +17,7 @@
 - [Edges, not timers](edges-not-timers.md) — react on event edges, never timers/debounces; UI too: [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md)
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is direct pixel access only; no GPU shaders/float pipeline
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho; colour British; rest US
+- [Wave, never call](project_wave_beam_transition.md) — HARD: wave = audio (sound wave), beam = video (beam of light); the word "call" only in the docs/waves.md + lexicon passage that retires it
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — STOPS not dB: 1 stop = ×2 amplitude
 - [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD: self and bob are both people
 - [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD: handles BYTE-PRECISE full-Unicode (whitespace-only valid)
@@ -96,8 +97,8 @@
 
 ## Shipped arcs (hooks)
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP phases 1-6 shipped 2026-08-20
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 PHCALL7: clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons; PHCALL8 2026-09-17 = verbatim keep (no transcode, holes stay holes)
-- [project_voice_calls.md](project_voice_calls.md) — calls FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/calls.md
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (container then PHCALL7, now PHWAVE9): clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons; PHCALL8 2026-09-17 = verbatim keep (no transcode, holes stay holes)
+- [project_waves.md](project_waves.md) — waves FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/waves.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes
 - [project_pigeon_fetch_fanout.md](project_pigeon_fetch_fanout.md) — 2026-09-17 pigeon re-uploads convicted: fetch fan-out + unconditional relay copies; one device per ask, relay only when unproven

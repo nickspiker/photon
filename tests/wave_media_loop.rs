@@ -1,23 +1,23 @@
-//! End-to-end call MEDIA loop (docs/calls.md) — proves the crypto/codec/FEC pieces compose
-//! thru one full call without a live network: both sides derive the basket from shared friendship
-//! material, a caller sends sealed bundles under datagram loss, the callee reassembles and
-//! Opus-decodes them. This is the offline half of the self-call harness (the live two-instance
+//! End-to-end wave MEDIA loop (docs/waves.md) — proves the crypto/codec/FEC pieces compose
+//! thru one full wave without a live network: both sides derive the basket from shared friendship
+//! material, an origin sends sealed bundles under datagram loss, the answering side reassembles and
+//! Opus-decodes them. This is the offline half of the self-wave harness (the live two-instance
 //! test is a field step). Mirrors the engine's PIGGYBACK wire (2026-08-20): ONE datagram per
 //! window, sealed payload = [ctrl:1][source(N)][repair(N−1)], seq = window id, ctrl names both
 //! symbols' rungs — a lost datagram's window recovers from the repair riding the NEXT datagram.
 
-use photon_messenger::call::keys::{derive_call_secret, Direction, StepChain};
-use photon_messenger::call::packet;
+use photon_messenger::wave::keys::{derive_wave_secret, Direction, StepChain};
+use photon_messenger::wave::packet;
 use std::collections::BTreeMap;
 
-/// The shared call material both fleets hold (the offer's doomed lane key + the id and nonces).
-/// v2 signature (2026-09-10): the friendship's current lane_root/history_key are no longer ingredients — era skew between two fleets must not fork the call secret.
+/// The shared wave material both fleets hold (the offer's doomed lane key + the id and nonces).
+/// v2 signature (2026-09-10): the friendship's current lane_root/history_key are no longer ingredients — era skew between two fleets must not fork the wave secret.
 fn basket() -> [u8; 32] {
-    derive_call_secret(
+    derive_wave_secret(
         &[0xC3; 32], // offer_lane_key (doomed egg)
-        &[0x11; 16], // call_id
-        &[0x44; 32], // caller_nonce
-        &[0x55; 32], // callee_nonce
+        &[0x11; 16], // wave_id
+        &[0x44; 32], // origin_nonce
+        &[0x55; 32], // answer_nonce
     )
 }
 
@@ -45,12 +45,12 @@ fn oti(t: usize) -> raptorq::ObjectTransmissionInformation {
 /// Both sides derive the identical secret from the same basket — the receive-anywhere property.
 #[test]
 fn both_ends_agree_on_the_secret() {
-    let caller = basket();
-    let callee = basket();
-    assert_eq!(caller, callee);
+    let origin = basket();
+    let answerer = basket();
+    assert_eq!(origin, answerer);
     // And each direction's step-0 keys match across the two independently-built chains.
-    let a_tx = StepChain::new(&caller, Direction::CallerToCallee);
-    let b_rx = StepChain::new(&callee, Direction::CallerToCallee);
+    let a_tx = StepChain::new(&origin, Direction::OriginToAnswer);
+    let b_rx = StepChain::new(&answerer, Direction::OriginToAnswer);
     assert_eq!(a_tx.key(), b_rx.key());
 }
 
@@ -62,8 +62,8 @@ fn both_ends_agree_on_the_secret() {
 #[test]
 fn media_survives_datagram_loss_via_piggybacked_repair() {
     let secret = basket();
-    let mut tx_chain = StepChain::new(&secret, Direction::CallerToCallee);
-    let mut rx_chain = StepChain::new(&secret, Direction::CallerToCallee);
+    let mut tx_chain = StepChain::new(&secret, Direction::OriginToAnswer);
+    let mut rx_chain = StepChain::new(&secret, Direction::OriginToAnswer);
 
     let mut encoder =
         opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay).unwrap();
@@ -93,7 +93,7 @@ fn media_survives_datagram_loss_via_piggybacked_repair() {
     for tier in 0..TIER_RATES.len() {
         encoder.set_bitrate(opus::Bitrate::Bits(TIER_RATES[tier])).unwrap();
         for _ in 0..windows_per_tier {
-            // --- caller: encode this rung's frame count into its window ---
+            // --- origin: encode this rung's frame count into its window ---
             let mut window_buf = vec![0u8; tier_window_bytes(tier)];
             for f in 0..TIER_FRAMES[tier] {
                 let pcm = make_frame(frame_i);
@@ -130,7 +130,7 @@ fn media_survives_datagram_loss_via_piggybacked_repair() {
                 continue;
             }
 
-            // --- callee: parse, open, ctrl split, feed BOTH symbols exactly as the engine does ---
+            // --- answerer: parse, open, ctrl split, feed BOTH symbols exactly as the engine does ---
             let (header, sealed) = packet::parse_header(&wire).unwrap();
             let opened = packet::open(&mut rx_chain, &header, sealed).unwrap();
             let ctrl = opened[0];
@@ -193,15 +193,15 @@ fn media_survives_datagram_loss_via_piggybacked_repair() {
     );
 }
 
-/// A foreign basket's packet must not open under ours — call identity lives in the key, not a header field. (A mis-SIZED symbol is the engine's shape-drop's job: raptorq PANICS on wrong-size symbols rather than returning None, so the exact-length check in the RX loop is load-bearing — never feed the decoder unchecked sizes.)
+/// A foreign basket's packet must not open under ours — wave identity lives in the key, not a header field. (A mis-SIZED symbol is the engine's shape-drop's job: raptorq PANICS on wrong-size symbols rather than returning None, so the exact-length check in the RX loop is load-bearing — never feed the decoder unchecked sizes.)
 #[test]
 fn foreign_baskets_stay_sealed() {
     let secret = basket();
-    let foreign = derive_call_secret(&[9; 32], &[9; 16], &[9; 32], &[9; 32]);
-    let foreign_tx = StepChain::new(&foreign, Direction::CalleeToCaller);
+    let foreign = derive_wave_secret(&[9; 32], &[9; 16], &[9; 32], &[9; 32]);
+    let foreign_tx = StepChain::new(&foreign, Direction::AnswerToOrigin);
     let wire = packet::seal(&foreign_tx, 0, b"not ours, plenty long enough").unwrap();
     let (h, sealed) = packet::parse_header(&wire).unwrap();
-    let mut our_rx = StepChain::new(&secret, Direction::CalleeToCaller);
+    let mut our_rx = StepChain::new(&secret, Direction::AnswerToOrigin);
     assert!(
         packet::open(&mut our_rx, &h, sealed).is_none(),
         "a foreign basket's packet must be silence here"

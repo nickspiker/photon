@@ -1,4 +1,4 @@
-//! Desktop playback for MUSIC PIGEONS: a rodio sink over the blob's bytes. Android is a stub for now — its audio belongs to the call engine's AAudio path and music will route thru it later.
+//! Desktop playback for MUSIC PIGEONS: a rodio sink over the blob's bytes. Android is a stub for now — its audio belongs to the wave engine's AAudio path and music will route thru it later.
 
 #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
 mod real {

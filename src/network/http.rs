@@ -1,6 +1,6 @@
 //! One process-wide HTTP stack for all FGTW traffic.
 //!
-//! reqwest's contract is to build a `Client` ONCE and reuse it: the client owns the connection pool, so reusing it keeps TLS sessions warm — handshake once per host, then HTTP/2-multiplex — instead of re-handshaking on every `Client::new()`. Tokio is the same story: a connection pool only stays warm as long as the reactor that owns it lives, so one persistent runtime beats a throwaway `block_on` runtime per call.
+//! reqwest's contract is to build a `Client` ONCE and reuse it: the client owns the connection pool, so reusing it keeps TLS sessions warm — handshake once per host, then HTTP/2-multiplex — instead of re-handshaking on every `Client::new()`. Tokio is the same story: a connection pool only stays warm as long as the reactor that owns it lives, so one persistent runtime beats a throwaway `block_on` runtime per wave.
 //!
 //! - Async network code runs on [`runtime`] (one persistent multi-thread runtime) and uses [`async_client`]; their pool survives across calls.
 //! - Genuinely blocking call sites — each on its own OS thread, never inside [`runtime`] — use [`blocking`], whose own internal runtime + pool persist for the process.

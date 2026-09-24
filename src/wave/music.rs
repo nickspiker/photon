@@ -1,5 +1,5 @@
 //! Music decode for PIGEONS CARRYING WAVES (Nick 2026-09-12): a dropped song's row renders the same three-pyramid waveform a wave card does.
-//! Symphonia decodes the pigeon's bytes in RAM (no temp file — it reads straight off the blob) and the PCM runs thru the wave pipeline's own accumulator, so the band in the row IS the wave visual, fed by mp3/flac/ogg/m4a/wav instead of a call.
+//! Symphonia decodes the pigeon's bytes in RAM (no temp file — it reads straight off the blob) and the PCM runs thru the wave pipeline's own accumulator, so the band in the row IS the wave visual, fed by mp3/flac/ogg/m4a/wav instead of a wave.
 
 use symphonia::core::io::MediaSource;
 
@@ -70,8 +70,8 @@ fn decode(bytes: &[u8]) -> Option<(Vec<i16>, usize, u32)> {
 }
 
 /// A music pigeon's per-channel envelopes — the exact tensors a wave exchanges, off the UI thread.
-pub fn envelopes_from_music(bytes: &[u8]) -> Option<Vec<crate::call::wave_env::WaveEnv>> {
+pub fn envelopes_from_music(bytes: &[u8]) -> Option<Vec<crate::wave::wave_env::WaveEnv>> {
     let (pcm, nchan, rate) = decode(bytes)?;
-    let envs = crate::call::record::envelopes_from_pcm(&pcm, nchan, rate);
+    let envs = crate::wave::record::envelopes_from_pcm(&pcm, nchan, rate);
     (!envs.is_empty()).then_some(envs)
 }

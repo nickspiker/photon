@@ -41,6 +41,6 @@ Ranking policy note: first-wins dies. The ledger aims at the best CURRENTLY-PROV
 
 1. **Salvage liveness is stamp-bounded** (±10 min on the pong's own eagle stamp): a captured pong can no longer paint a device online days later. Matched pongs need no stamp — the nonce is the freshness.
 2. **Adoption steers at the AIMED address, not the arrival source**: `PendingPing` records where the ping was aimed; a fresh nonce-match proves THAT address delivered (provenance is per-send, so the match identifies exactly one aim). The arrival source — which an on-path replayer chooses and asymmetric NATs rewrite — no longer steers PT retargeting or the app-layer adopter.
-3. **Media re-point requires forward progress**: only a strictly-newer authenticated seq may re-aim call TX. The step ratchet already killed cross-step replays; this closes same-step replay redirect. An off-path attacker never holds a newer authentic packet.
+3. **Media re-point requires forward progress**: only a strictly-newer authenticated seq may re-aim wave TX. The step ratchet already killed cross-step replays; this closes same-step replay redirect. An off-path attacker never holds a newer authentic packet.
 
 Also in this family, already landed separately: the two-tier ping window (strike at 5s, nonce-matchable to 90s — presence follows the crypto wherever it arrives, address trust stays fresh-only).

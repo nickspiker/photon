@@ -21,7 +21,7 @@ pub use fgtw::traverse::gather::{
 /// Flatten a contact into the crate's endpoint shape: the active device first (its `ip` plus its `local_ip`/`local_port` pair), then every learned per-device endpoint.
 ///
 /// Scanning all of them, not just the active `ip`, is what surfaces a peer's global IPv6 when the active address happens to be v4 — so the v6 host, priority-first, gets tried before a v4 LAN address that may be on a foreign network.
-/// The candidates for ONE device of a contact — a call is with a device, not with a roster. Aiming media at a peer's OTHER device is dead by construction: it is not in the call and holds none of its keys (field 2026-09-11, a wave over WAN aimed its recovery probe at the peer's desktop). Empty when we know no endpoint for that device.
+/// The candidates for ONE device of a contact — a wave is with a device, not with a roster. Aiming media at a peer's OTHER device is dead by construction: it is not in the wave and holds none of its keys (field 2026-09-11, a wave over WAN aimed its recovery probe at the peer's desktop). Empty when we know no endpoint for that device.
 pub fn gather_device_candidates(contact: &Contact, device: &[u8; 32]) -> CandidateSet {
     gather_device_candidates_from(contact, device, crate::network::udp::get_local_ip())
 }

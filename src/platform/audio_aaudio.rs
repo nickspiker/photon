@@ -1,4 +1,4 @@
-//! Android call audio on AAudio, owned by Rust (2026-09-09, the OboeTester baseline): the Java AudioRecord/AudioTrack path could not reach the MMAP exclusive fast path at all — a 60 ms record buffer, a 20 ms track and the shared mixer put our speaker→mic loop north of 100 ms on a phone that measures 20.6 ms round trip in exclusive mode. Two AAudio streams in EXCLUSIVE + LOW_LATENCY (shared as the fallback), 48 kHz mono I16, callback-driven at the HAL's own burst (2 ms on that phone), and every frame stamped with the HAL's presentation/capture timestamp instead of our enqueue/arrival moment — so the chirp, the learner, the duck and the canceller all live on one physical timeline.
+//! Android wave audio on AAudio, owned by Rust (2026-09-09, the OboeTester baseline): the Java AudioRecord/AudioTrack path could not reach the MMAP exclusive fast path at all — a 60 ms record buffer, a 20 ms track and the shared mixer put our speaker→mic loop north of 100 ms on a phone that measures 20.6 ms round trip in exclusive mode. Two AAudio streams in EXCLUSIVE + LOW_LATENCY (shared as the fallback), 48 kHz mono I16, callback-driven at the HAL's own burst (2 ms on that phone), and every frame stamped with the HAL's presentation/capture timestamp instead of our enqueue/arrival moment — so the chirp, the learner, the duck and the canceller all live on one physical timeline.
 //!
 //! Kotlin keeps only what Android makes Kotlin's: the proximity lock, the foreground-service microphone type, the lock-screen flags, the RECORD_AUDIO prompt (whose grant calls `nativeMicGranted` → [`ensure_input`]), and the route/volume mirrors.
 
@@ -192,7 +192,7 @@ fn start_output() -> Result<AudioStream, String> {
     s.request_start().map_err(|e| format!("start: {e:?}"))?;
     describe(&s, "out");
     // Tell the service which USAGE the render actually opened with, so the volume mirror reads the stream that truly governs it (field 2026-09-15: Nick's mirror said −32 dB while he heard fine — the mirror guessed the stream instead of knowing it).
-    let _ = crate::platform::jni_android::call_service_void(if VOICE_USAGE_OK.load(Ordering::Relaxed) { "renderUsageVoice" } else { "renderUsageMedia" });
+    let _ = crate::platform::jni_android::wave_service_void(if VOICE_USAGE_OK.load(Ordering::Relaxed) { "renderUsageVoice" } else { "renderUsageMedia" });
     Ok(s)
 }
 
@@ -204,7 +204,7 @@ fn start_input() -> Result<AudioStream, String> {
     Ok(s)
 }
 
-/// Open and start both streams. The input needs RECORD_AUDIO: without it the open fails, Kotlin has already prompted, and the grant lands thru [`ensure_input`]. Returns false only when the OUTPUT cannot open — a call without a speaker is no call.
+/// Open and start both streams. The input needs RECORD_AUDIO: without it the open fails, Kotlin has already prompted, and the grant lands thru [`ensure_input`]. Returns false only when the OUTPUT cannot open — a wave without a speaker is no wave.
 pub fn start() -> bool {
     let mut g = SESSION.lock().unwrap();
     if g.is_some() {
@@ -239,7 +239,7 @@ pub fn start() -> bool {
     true
 }
 
-/// The mic grant landed mid-call (Kotlin → nativeMicGranted): open the input leg the missing permission skipped.
+/// The mic grant landed mid-wave (Kotlin → nativeMicGranted): open the input leg the missing permission skipped.
 pub fn ensure_input() {
     let mut g = SESSION.lock().unwrap();
     let Some(s) = g.as_mut() else { return };
@@ -268,7 +268,7 @@ pub fn stop() {
     drop(g);
 }
 
-/// A stream faulted (a headset plugged in, the device went away): the HAL disconnects exclusive streams on a route change. Rebuild off the callback thread — never close a stream from its own callback — once per fault, only while a call is live.
+/// A stream faulted (a headset plugged in, the device went away): the HAL disconnects exclusive streams on a route change. Rebuild off the callback thread — never close a stream from its own callback — once per fault, only while a wave is live.
 fn on_stream_error(direction: AudioDirection, e: ndk::audio::AudioError) {
     crate::logf!("AUDIO: AAudio {} stream error {} — rebuilding both streams", format!("{direction:?}"), format!("{e:?}"));
     if REOPENING.swap(true, Ordering::SeqCst) {

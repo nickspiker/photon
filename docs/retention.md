@@ -25,7 +25,7 @@ A strict ladder; the winnow moves things DOWN one rung within its budgets, the u
 | lofted | **loft** (en loft / es al palomar / mi whata) | fleet only: local bytes dropped, row + preview + re-fetch stay | v1: incoming pigeons only (sender's fleet holds the original); slot 12 |
 | discarded | **discard** | nowhere of yours: fleet-wide tombstone, space at compaction | shipped long since |
 
-Graduated eviction beats deletion: full res → big preview → thumbnail → bare row; the timeline never loses its face ("the row IS its waveform" holds at a few KB forever). Loft v1 excludes call recordings and our own uploads — no custody proof yet; the `replicated` flag (row-level) is NOT blob custody.
+Graduated eviction beats deletion: full res → big preview → thumbnail → bare row; the timeline never loses its face ("the row IS its waveform" holds at a few KB forever). Loft v1 excludes wave recordings and our own uploads — no custody proof yet; the `replicated` flag (row-level) is NOT blob custody.
 
 ## 4. The sync law: authorship propagates, experience doesn't
 

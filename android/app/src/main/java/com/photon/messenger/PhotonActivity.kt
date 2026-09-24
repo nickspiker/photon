@@ -57,7 +57,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         @Volatile
         var inForeground = false
 
-        /** The live Activity, for the Service to reach back into UI-only work (the call-start mic prompt). Set in onCreate, cleared in onDestroy. Single-Activity app, so this is the one instance. @Volatile: the Service reads it from the JNI call-start upcall thread. */
+        /** The live Activity, for the Service to reach back into UI-only work (the wave-start mic prompt). Set in onCreate, cleared in onDestroy. Single-Activity app, so this is the one instance. @Volatile: the Service reads it from the JNI wave-start upcall thread. */
         @Volatile
         var live: PhotonActivity? = null
     }
@@ -69,7 +69,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var connectionService: PhotonConnectionService? = null
     private var serviceBound = false
     // An Answer tapped on the notification before the Service binding exists — applied the moment it does.
-    private var pendingCallAnswer = false
+    private var pendingWaveAnswer = false
 
     // Surface for rendering (custom class with InputConnection)
     private lateinit var surfaceView: PhotonSurfaceView
@@ -157,10 +157,10 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             connectionService = localBinder.getService()
             serviceBound = true
             PhotonLog.d(TAG, "Bound to PhotonConnectionService")
-            if (pendingCallAnswer) {
-                pendingCallAnswer = false
-                connectionService?.callAction(true)
-                PhotonLog.i(TAG, "call: deferred notification Answer delivered on bind")
+            if (pendingWaveAnswer) {
+                pendingWaveAnswer = false
+                connectionService?.waveAction(true)
+                PhotonLog.i(TAG, "wave: deferred notification Answer delivered on bind")
             }
             // Try to initialize UI now that service is ready
             initializeNativeIfReady()
@@ -217,7 +217,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeSendAttachment(contextPtr: Long, name: String, data: ByteArray)  // Picked file → the active conversation (name + raw bytes; Rust caps size + forks images to the resample overlay)
     private external fun nativePollSessionBroadcast(contextPtr: Long): Int  // 1=send sticky broadcast, -1=clear, 0=no change
     private external fun nativeNetworkChanged()  // the default network moved (wifi off, cellular on, another wifi): Rust forgets its addresses and relearns
-    // NETWORK EDGE (2026-09-11, a wave dropped when wifi went off mid-call): the phone knows the instant its network changes; Rust learned it only from a receive drought. The first callback after registration reports the current network and is not a change.
+    // NETWORK EDGE (2026-09-11, a wave dropped when wifi went off mid-wave): the phone knows the instant its network changes; Rust learned it only from a receive drought. The first callback after registration reports the current network and is not a change.
     private var lastNetwork: android.net.Network? = null
     private var networkCallbackRegistered = false
     private val networkCallback = object : android.net.ConnectivityManager.NetworkCallback() {
@@ -251,27 +251,27 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
-    // RECORD_AUDIO for voice calls (docs/calls.md). The manifest DECLARES it, and startCallAudio
+    // RECORD_AUDIO for waves (docs/waves.md). The manifest DECLARES it, and startWaveAudio
     // checks it — but nothing ever REQUESTED it, so checkSelfPermission was always denied and every
-    // Android call ran "listen-only" (the far side heard silence; field 2026-08-19 Emma↔Nick). A
-    // dangerous permission must be requested at runtime, and CONTEXTUALLY — at the first call, NOT at
-    // launch (a messenger asking for the mic on startup reads as spyware). The trigger is the call
-    // going active (startCallAudio, for BOTH an outgoing call's answer and an incoming answer); when
+    // an Android wave ran "listen-only" (the far side heard silence; field 2026-08-19 Emma↔Nick). A
+    // dangerous permission must be requested at runtime, and CONTEXTUALLY — at the first wave, NOT at
+    // launch (a messenger asking for the mic on startup reads as spyware). The trigger is the wave
+    // going active (startWaveAudio, for BOTH an outgoing wave's answer and an incoming answer); when
     // the mic is missing the Service calls requestMicPermission here, and on grant we re-run capture
-    // so the very call that prompted goes hot rather than staying mute till the next one.
+    // so the very wave that prompted goes hot rather than staying mute till the next one.
     private val micPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            // Grant landed mid-call — start the capture leg the missing permission skipped.
+            // Grant landed mid-wave — start the capture leg the missing permission skipped.
             connectionService?.startCapture()
         } else {
-            PhotonLog.w(TAG, "RECORD_AUDIO denied — this call stays listen-only")
+            PhotonLog.w(TAG, "RECORD_AUDIO denied — this wave stays listen-only")
         }
     }
 
-    // Called from the Service (off the main thread, via the JNI call-start upcall) when a going-active
-    // call finds the mic ungranted. The launcher must fire on the main thread.
+    // Called from the Service (off the main thread, via the JNI wave-start upcall) when a going-active
+    // wave finds the mic ungranted. The launcher must fire on the main thread.
     fun requestMicPermission() {
         runOnUiThread {
             if (ContextCompat.checkSelfPermission(
@@ -284,7 +284,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
-    // BLE beacon permissions (Android 12+): requested lazily by PhotonBeacon when a start call
+    // BLE beacon permissions (Android 12+): requested lazily by PhotonBeacon when a start request
     // finds them missing; on grant the pending advertise/scan re-runs so the pairing screen
     // doesn't need re-entering.
     private val blePermissionLauncher = registerForActivityResult(
@@ -306,7 +306,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
-    // Wi-Fi Direct permissions (docs/offgrid.md): NEARBY_WIFI_DEVICES on 33+, fine location before. Requested lazily by PhotonWifiDirect when a start call finds them missing; on grant the pending advertise/discovery re-runs.
+    // Wi-Fi Direct permissions (docs/offgrid.md): NEARBY_WIFI_DEVICES on 33+, fine location before. Requested lazily by PhotonWifiDirect when a start request finds them missing; on grant the pending advertise/discovery re-runs.
     private val wfdPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { grants ->
@@ -377,8 +377,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         PhotonLog.installCrashLogger()
-        live = this // the Service reaches here for the call-start mic prompt
-        applyCallIntent(intent)
+        live = this // the Service reaches here for the wave-start mic prompt
+        applyWaveIntent(intent)
 
         // Pairing v2 beacon bridge: cache contexts + register the JNI upcall path before any
         // screen can ask the radio for anything (docs/pairing-v2.md).
@@ -569,7 +569,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         FirebaseMessaging.getInstance().subscribeToTopic("peer_updates")
 
         // Request notification permission (Android 13+) and create channel. The MICROPHONE is NOT
-        // requested here — it's prompted contextually at the first call (see micPermissionLauncher).
+        // requested here — it's prompted contextually at the first wave (see micPermissionLauncher).
         requestNotificationPermission()
     }
 
@@ -877,30 +877,30 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     override fun onNewIntent(intent: Intent?) {
         super.onNewIntent(intent)
         setIntent(intent)
-        applyCallIntent(intent)
+        applyWaveIntent(intent)
     }
 
-    /** The call surface's two intent extras (see PhotonConnectionService.postCallNotification): INCOMING_CALL = show over the keyguard + light the screen; CALL_ACTION=answer = the notification's Answer, forwarded to the Service (or parked until it binds). */
-    private fun applyCallIntent(intent: Intent?) {
+    /** The wave surface's two intent extras (see PhotonConnectionService.postWaveNotification): INCOMING_WAVE = show over the keyguard + light the screen; WAVE_ACTION=answer = the notification's Answer, forwarded to the Service (or parked until it binds). */
+    private fun applyWaveIntent(intent: Intent?) {
         if (intent == null) return
-        if (intent.getBooleanExtra(PhotonConnectionService.EXTRA_INCOMING_CALL, false)) {
-            setCallLockScreenFlags(true)
+        if (intent.getBooleanExtra(PhotonConnectionService.EXTRA_INCOMING_WAVE, false)) {
+            setWaveLockScreenFlags(true)
         }
-        if (intent.getStringExtra(PhotonConnectionService.EXTRA_CALL_ACTION) == "answer") {
-            intent.removeExtra(PhotonConnectionService.EXTRA_CALL_ACTION) // once — a re-delivered intent must not re-answer
+        if (intent.getStringExtra(PhotonConnectionService.EXTRA_WAVE_ACTION) == "answer") {
+            intent.removeExtra(PhotonConnectionService.EXTRA_WAVE_ACTION) // once — a re-delivered intent must not re-answer
             val svc = connectionService
             if (svc != null) {
-                svc.callAction(true)
-                PhotonLog.i(TAG, "call: notification Answer forwarded to the Service")
+                svc.waveAction(true)
+                PhotonLog.i(TAG, "wave: notification Answer forwarded to the Service")
             } else {
-                pendingCallAnswer = true
-                PhotonLog.i(TAG, "call: notification Answer parked until the Service binds")
+                pendingWaveAnswer = true
+                PhotonLog.i(TAG, "wave: notification Answer parked until the Service binds")
             }
         }
     }
 
-    /** Show over the lock screen and turn the screen on while a call rings or runs; back to normal when it ends (the Service clears it from stopCallAudio). API 27+; older devices keep the window-flag path unset and simply ring behind the lock. */
-    fun setCallLockScreenFlags(on: Boolean) {
+    /** Show over the lock screen and turn the screen on while a wave rings or runs; back to normal when it ends (the Service clears it from stopWaveAudio). API 27+; older devices keep the window-flag path unset and simply ring behind the lock. */
+    fun setWaveLockScreenFlags(on: Boolean) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O_MR1) {
             setShowWhenLocked(on)
             setTurnScreenOn(on)

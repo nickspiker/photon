@@ -42,7 +42,7 @@ pub struct Conversation {
     pub scroll_offset: f32,
     /// Friend-assisted history recovery state machine (newest-first cursor pagination from a participant's copy). `None` = no recovery running/known. Runtime struct; the durable cursor + complete flag persist in conversation state.
     pub history_recovery: Option<HistoryRecovery>,
-    /// Cached anti-entropy digest `(count, digest)` — invalidated (set `None`) on any message-set mutation and recomputed lazily by `anti_entropy_digest`. Runtime-only: it is recomputed on load. Stops the digest being re-folded over EVERY row on every sync-record build (it was an O(rows) blake3 pass per call, on the render thread).
+    /// Cached anti-entropy digest `(count, digest)` — invalidated (set `None`) on any message-set mutation and recomputed lazily by `anti_entropy_digest`. Runtime-only: it is recomputed on load. Stops the digest being re-folded over EVERY row on every sync-record build (it was an O(rows) blake3 pass per wave, on the render thread).
     digest_cache: Option<(u32, [u8; 32])>,
     /// TRUE only after `load_messages` successfully read this conversation's durable table into `messages` (an empty table counts — success means "RAM now reflects disk"). Runtime-only, default FALSE: a conversation materialized empty (lazy conv_mut_of, a load that errored) holds rows the vault may still have, and a persist from that state is how the 2026-08-21 relaunch erasure happened — so the persist path REFUSES until this is set.
     pub hydrated: bool,
