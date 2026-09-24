@@ -548,6 +548,12 @@ impl PhotonApp {
                                     {
                                         // SAME digest the producer publishes — the cached, order-dependent rolling hash (Conversation::anti_entropy_digest). Both sides MUST compute it identically or every comparison false-mismatches.
                                         let (n_rows, digest) = conv.anti_entropy_digest();
+                                        // DIVERGENCE EVIDENCE (field 2026-09-24): remember that SOME peer — sibling or friend, whoever pongs — advertises more rows for this conversation than we hold.
+                                        // The head-page early-stop in the page merge cannot see a hole older than the newest page: the phone asked for page one five times over six hours, found it identical every time, declared itself complete, and sat 44 rows short of the friend until the v103 restart happened to arm a walk that ran deeper.
+                                        // Sticky until a walk reaches a page the peer calls last, so the deficit cannot be forgotten between pongs.
+                                        if record.row_count > n_rows {
+                                            conv.peer_ahead = true;
+                                        }
                                         // REPLICATED edge (delivery ladder): a SIBLING pong whose (count, digest) EXACTLY matches ours is testimony that device holds every syncable row of this conversation — flip the fleet-replication tick on our outgoing rows. Runtime state; delivered outranks it, and a friend's matching pong proves nothing about our fleet so it's sibling-gated.
                                         if n_rows == record.row_count
                                             && digest == record.row_digest
@@ -593,6 +599,7 @@ impl PhotonApp {
                                                     was_complete_before: false,
                                                     decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                                                     parked_key_fp: None,
                                                 });
                                         }
@@ -1404,6 +1411,7 @@ impl PhotonApp {
                                         was_complete_before: false,
                                         decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                                         parked_key_fp: None,
                                     });
                                 }

@@ -1445,6 +1445,7 @@ impl PhotonApp {
                         was_complete_before: false,
                         decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                         parked_key_fp: None,
                     });
                 }
@@ -2541,6 +2542,10 @@ impl PhotonApp {
 
                 // Cursor + completion — only for a page we ASKED for; a live push must not fast-forward a walk that never ran. Early-stop: if history was already complete before this (re-)kickoff and the page brought nothing new, we're still complete — a routine re-key on an intact pair stops after one page instead of re-walking years.
                 if rid_matches {
+                    // A page the peer calls LAST is the only proof the hole is closed, so it is what clears the sticky divergence evidence and lets sweeps early-stop again.
+                    if !page.more {
+                        conv.peer_ahead = false;
+                    }
                     if let Some(rec) = conv.history_recovery.as_mut() {
                         rec.in_flight = None;
                         // A page that OPENS clears the divergence evidence — the failing key era is behind us. The transport streak clears too: the route answered.
@@ -2572,7 +2577,45 @@ impl PhotonApp {
                     })
                     .map(|m| m.timestamp)
                     .collect();
-                self.summary_chirp_and_flag(idx, conv_pos, &undischarged);
+                // ONE ALERT PER CATCH-UP, NOT PER PAGE (field 2026-09-24): a backfill arrives as many pages, and alerting per page turned 288 backfilled rows into 36 chirps in three minutes — fifteen of them for a single contact.
+                // While the walk is still running the rows ride here UNFLAGGED, so a walk that dies mid-way re-collects them next time instead of losing the duty; the summary fires on the page that finishes the walk.
+                // A live sibling push carries no walk, so it falls through to the immediate alert exactly as before.
+                let mid_walk = self.conversations[conv_pos]
+                    .history_recovery
+                    .as_ref()
+                    .is_some_and(|r| !r.complete);
+                if mid_walk {
+                    if let Some(rec) = self.conversations[conv_pos].history_recovery.as_mut() {
+                        rec.pending_alert.extend(undischarged);
+                    }
+                } else {
+                    let mut batch = self.conversations[conv_pos]
+                        .history_recovery
+                        .as_mut()
+                        .map(|r| std::mem::take(&mut r.pending_alert))
+                        .unwrap_or_default();
+                    batch.extend(undischarged);
+                    batch.sort_unstable();
+                    batch.dedup();
+                    self.summary_chirp_and_flag(idx, conv_pos, &batch);
+                }
+            }
+            // SAFETY FLUSH: the page that FINISHES a walk may be a friend's, and the sibling block above only runs on sibling pages — without this the collected batch would sit in the recovery state until the next sibling page happened along.
+            if !self.contacts[idx].is_sibling {
+                let done = self.conversations[conv_pos]
+                    .history_recovery
+                    .as_ref()
+                    .map_or(true, |r| r.complete);
+                if done {
+                    let batch = self.conversations[conv_pos]
+                        .history_recovery
+                        .as_mut()
+                        .map(|r| std::mem::take(&mut r.pending_alert))
+                        .unwrap_or_default();
+                    if !batch.is_empty() {
+                        self.summary_chirp_and_flag(idx, conv_pos, &batch);
+                    }
+                }
             }
             // WAVE signals via sibling merge are STOP edges ONLY (docs/waves.md): our sibling's answer/decline row stops this device's ring; replayed catch-up signals correctly ring nothing (a ring requires the DIRECT offer decrypt — which is also what kills the stale-offer-rings-days-later class).
             if from_sibling {

@@ -1311,6 +1311,7 @@ impl PhotonApp {
                     was_complete_before,
                     decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                     parked_key_fp: None,
                 });
                 crate::log("HISTORY: recovery kicked off (head page next tick)");

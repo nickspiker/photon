@@ -1640,11 +1640,14 @@ impl PhotonApp {
             if conv.history_recovery.as_ref().is_some_and(|r| !r.complete) {
                 continue; // mid-walk — the driver is already on it
             }
+            // EARLY-STOP IS EVIDENCE-GATED (field 2026-09-24): a sweep may short-circuit on the head page only when NO peer has advertised rows we lack.
+            // `was_complete_before` alone made every sweep on a once-complete conversation stop at page one — 845 of the day's 1010 page requests were "before HEAD", and the hole underneath was never reached until a process restart.
             let was_complete_before = conv
                 .history_recovery
                 .as_ref()
                 .map(|r| r.complete)
-                .unwrap_or(false);
+                .unwrap_or(false)
+                && !conv.peer_ahead;
             conv.history_recovery = Some(crate::types::HistoryRecovery {
                 oldest_recovered_osc: i64::MAX,
                 complete: false,
@@ -1654,6 +1657,7 @@ impl PhotonApp {
                 was_complete_before,
                 decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                 parked_key_fp: None,
             });
             kicked += 1;

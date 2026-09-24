@@ -368,6 +368,10 @@ pub struct HistoryRecovery {
     pub decrypt_fail_streak: u32,
     /// Divergence park: fp of the history key that kept failing. While the CURRENT key still fingerprints the same, the walk stays parked — re-requesting just re-downloads 17KB of undecryptable page per cycle forever (field 2026-08-21: 161 pages in 35 min, both fleets). The moment the key CHANGES (re-key completed, era adopted) the fingerprint differs and the walk resumes — an edge expressed as state, no timer.
     pub parked_key_fp: Option<[u8; 4]>,
+    /// Undischarged rows collected DURING this walk, flushed as ONE summary alert when the walk finishes.
+    /// A catch-up arrives as many pages, and a per-page alert turns one backlog into a chirp storm (field 2026-09-24: 288 backfilled rows rang 36 times in three minutes, 15 of them for one contact).
+    /// Rows stay unflagged while they sit here, so a walk that dies mid-way re-collects them rather than losing the duty.
+    pub pending_alert: Vec<i64>,
     /// Consecutive in-flight requests that EXPIRED unanswered (transport black hole, not decrypt). Each one doubles the trickle wait (capped) — a dead route degrades to a slow heartbeat instead of a re-request storm (field 2026-08-31: 7,316 expiry re-requests in one log). Cleared by any page arriving.
     pub expire_streak: u32,
 }

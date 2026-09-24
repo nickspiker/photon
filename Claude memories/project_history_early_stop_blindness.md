@@ -1,0 +1,21 @@
+---
+name: project_history_early_stop_blindness
+description: "2026-09-24 CONVICTED: the head-page early-stop made the fleet sweep blind to any divergence older than page one — the phone sat 44 rows short for six hours and only a restart healed it; the 36-chirp storm was that backlog landing one page at a time"
+metadata:
+  node_type: memory
+  type: project
+---
+
+FIELD 2026-09-24 (Nick's phone, device cacbc223, the v103 self-update at 22:30): 36 notification chirps in 3m12s — 140 rows across 5 contacts, Esme alone ringing 15 times. Nick's read was "things converting over" from the wave rename; it was not. No wave/beam line appears anywhere in the window.
+
+**What actually happened.** `HISTORY: digest mismatch … full resync walk` fired at 16:29, 18:51, 19:02, 20:47 and 21:42 with byte-identical counts every time (5fb63507 ours 157/theirs 201; 8d2d1b2b 560/654; aefd768a 158/177; 633219a1 302/311; f2103dc8 38/44). Five detections over six hours, and the counts never moved: 1 new row merged in fifteen hours, then **288 new rows in the three minutes after the update relaunched the process**. 845 of the day's 1010 page requests were `before HEAD` — the walk almost never reached page two.
+
+**CONVICTION — the early-stop rule.** `if !page.more || (rec.was_complete_before && fresh.is_empty()) { rec.complete = true }` in `merge_history_page`. `kick_fleet_history_sweep` armed `was_complete_before` from the conversation's own `complete` flag, so on any conversation that had EVER finished a walk, every later sweep stopped on the head page the moment it brought nothing new — `merged page (0 new of 36 rows, more=1, complete=1)`, 34 of those in one day. A hole older than the newest page is unreachable by construction. The digest kick disables early-stop (`was_complete_before: false`) which is why it is called a full resync, but the sweep re-armed with early-stop on and won the race to the conversation.
+
+**FIX (this commit).** Divergence evidence is now carried: `Conversation::peer_ahead` is set at the pong site whenever ANY peer — sibling or friend — advertises more rows than we hold, and cleared only by a page the peer calls last. `kick_fleet_history_sweep` arms early-stop only when `!peer_ahead`. Early-stop keeps its original purpose (a re-key on an intact pair stops after one page) and loses its blindness.
+
+**The chirps were a second, separate bug.** The catch-up summary fired per merged PAGE, so one backlog rang once per page — the design's own "never a per-row storm" comment, defeated by pagination. Undischarged rows now accumulate UNFLAGGED in `HistoryRecovery::pending_alert` while a walk runs and fire as ONE summary when it finishes (a safety flush covers a friend's page finishing the walk). Rows stay unflagged while parked on purpose: a walk that dies re-collects them rather than swallowing the duty.
+
+**Do not misread the chirps as spurious.** Every one of those 140 rows was genuinely missing from the phone and genuinely never discharged anywhere in the fleet — `will_ding` leaves `notified` false when a sibling holds a live focus claim, so a row the claimer never actually received stays undischarged forever. The storm was the correct alarm for a real hole; the hole is what needed fixing.
+
+Collateral seen in the same window: 52 SLOW vault commits (60.1s blocked, worst 2288ms) as 225 four-op group commits ran back-to-back — a consequence of the burst, so it should shrink once devices stay current. See [[project_fleet_braid_plane]], [[project_history_recovery]], [[project_notifications_pinned]].

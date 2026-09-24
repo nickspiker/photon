@@ -1258,6 +1258,7 @@ pub fn load_conversation_state(
                     was_complete_before: complete,
                     decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                     parked_key_fp: None,
                 });
             }
@@ -1296,6 +1297,7 @@ fn load_legacy_conv_state(
                 was_complete_before: complete,
                 decrypt_fail_streak: 0,
                     expire_streak: 0,
+                    pending_alert: Vec::new(),
                 parked_key_fp: None,
             }
         });

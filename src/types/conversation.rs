@@ -46,6 +46,10 @@ pub struct Conversation {
     digest_cache: Option<(u32, [u8; 32])>,
     /// TRUE only after `load_messages` successfully read this conversation's durable table into `messages` (an empty table counts — success means "RAM now reflects disk"). Runtime-only, default FALSE: a conversation materialized empty (lazy conv_mut_of, a load that errored) holds rows the vault may still have, and a persist from that state is how the 2026-08-21 relaunch erasure happened — so the persist path REFUSES until this is set.
     pub hydrated: bool,
+    /// TRUE while some peer has ADVERTISED more rows for this conversation than we hold (any pong's anti-entropy count, sibling or friend).
+    /// Sticky evidence of divergence: it disables the head-page early-stop so a sweep walks to the real end, and it clears only when a walk reaches a page the peer says is last.
+    /// Runtime-only — the next pong re-establishes it.
+    pub peer_ahead: bool,
 }
 
 impl Conversation {
@@ -65,6 +69,7 @@ impl Conversation {
             history_recovery: None,
             digest_cache: None,
             hydrated: false,
+            peer_ahead: false,
         }
     }
 
@@ -83,6 +88,7 @@ impl Conversation {
             history_recovery: None,
             digest_cache: None,
             hydrated: false,
+            peer_ahead: false,
         }
     }
 

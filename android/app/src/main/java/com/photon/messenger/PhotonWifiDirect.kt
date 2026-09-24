@@ -94,7 +94,11 @@ object PhotonWifiDirect {
             manager = ctx.getSystemService(Context.WIFI_P2P_SERVICE) as? WifiP2pManager
             channel = manager?.initialize(ctx, ctx.mainLooper, null)
             if (manager != null && channel != null && !receiverRegistered) {
+                // BUSY RE-ARM (field 2026-09-24): the framework answers BUSY when an operation is already in flight, and every open-house call at boot died that way with nothing parked — the phone advertised nothing all session.
+                // These two actions are the framework telling us it finished something, which is the edge a parked request replays on; no timer, no poll.
                 val filter = IntentFilter(WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION)
+                filter.addAction(WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION)
+                filter.addAction(WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION)
                 ctx.registerReceiver(connectionReceiver, filter)
                 receiverRegistered = true
             }
@@ -105,6 +109,15 @@ object PhotonWifiDirect {
     /** Group formation edges → Rust. Our own address on the p2p interface comes from the interface itself (the group's iface name), the GO's from connection info. */
     private val connectionReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
+            // A settle edge: replay whatever BUSY parked, but only when permission is already held — a receiver has no foreground to prompt from.
+            if (intent.action == WifiP2pManager.WIFI_P2P_STATE_CHANGED_ACTION ||
+                intent.action == WifiP2pManager.WIFI_P2P_DISCOVERY_CHANGED_ACTION) {
+                if ((pendingAdvertise != null || pendingDiscovery || pendingOpenHouse != null) && hasPerm()) {
+                    PhotonLog.i("WFD", "framework settled — replaying parked request(s)")
+                    onPermissionsGranted()
+                }
+                return
+            }
             if (intent.action != WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION) return
             val m = manager ?: return
             val ch = channel ?: return
@@ -163,7 +176,10 @@ object PhotonWifiDirect {
             m.clearLocalServices(ch, null)
             m.addLocalService(ch, info, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { PhotonLog.i("WFD", "advertising ${txtTokens.size}B of tokens"); pendingAdvertise = null }
-                override fun onFailure(code: Int) { PhotonLog.e("WFD", "addLocalService failed, code $code") }
+                override fun onFailure(code: Int) {
+                    PhotonLog.e("WFD", "addLocalService failed, code $code")
+                    if (code == WifiP2pManager.BUSY) pendingAdvertise = txtTokens
+                }
             })
         } catch (e: SecurityException) {
             PhotonLog.e("WFD", "advertise SecurityException: ${e.message}")
@@ -207,7 +223,10 @@ object PhotonWifiDirect {
                         override fun onFailure(code: Int) { PhotonLog.e("WFD", "discoverServices failed, code $code") }
                     })
                 }
-                override fun onFailure(code: Int) { PhotonLog.e("WFD", "addServiceRequest failed, code $code") }
+                override fun onFailure(code: Int) {
+                    PhotonLog.e("WFD", "addServiceRequest failed, code $code")
+                    if (code == WifiP2pManager.BUSY) pendingDiscovery = true
+                }
             })
         } catch (e: SecurityException) {
             PhotonLog.e("WFD", "discovery SecurityException: ${e.message}")
@@ -255,7 +274,10 @@ object PhotonWifiDirect {
         try {
             m.createGroup(ch, cfg, object : WifiP2pManager.ActionListener {
                 override fun onSuccess() { PhotonLog.i("WFD", "group created ($ssid)") }
-                override fun onFailure(code: Int) { PhotonLog.e("WFD", "createGroup failed, code $code") }
+                override fun onFailure(code: Int) {
+                    PhotonLog.e("WFD", "createGroup failed, code $code")
+                    if (code == WifiP2pManager.BUSY) pendingOpenHouse = Pair(ssid, psk)
+                }
             })
         } catch (e: SecurityException) {
             PhotonLog.e("WFD", "createGroup SecurityException: ${e.message}")
@@ -295,8 +317,11 @@ object PhotonWifiDirect {
         try {
             m.clearLocalServices(ch, null)
             m.addLocalService(ch, info, object : WifiP2pManager.ActionListener {
-                override fun onSuccess() { PhotonLog.i("WFD", "open house advertising ($ssid)") }
-                override fun onFailure(code: Int) { PhotonLog.e("WFD", "open house advertise failed, code $code") }
+                override fun onSuccess() { PhotonLog.i("WFD", "open house advertising ($ssid)"); pendingOpenHouse = null }
+                override fun onFailure(code: Int) {
+                    PhotonLog.e("WFD", "open house advertise failed, code $code")
+                    if (code == WifiP2pManager.BUSY) pendingOpenHouse = Pair(ssid, psk)
+                }
             })
         } catch (e: SecurityException) {
             PhotonLog.e("WFD", "open house SecurityException: ${e.message}")
