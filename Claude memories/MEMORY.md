@@ -51,6 +51,7 @@
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
 - [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — sentinel purge shipped; RELAY_ADDR/RosterEntry/ACK-API remain, convert when touched
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — rekey threat model (docs/rekey-threat-model.md); first-met device un-revocable, revocation unwired
+- [Canonical wave container](project_wave_canonical_container.md) — LOCK decided 2026-09-24: wave = frame set by grid index, rows are SPANS, order = index then handle proof, ONE sig per party at truing-up, no mix at rest; spec unbuilt
 - [project_recording_fills.md](project_recording_fills.md) — fills verified; spool RAW mic+verdict; next = offline AEC at keep
 - [Fleet epoch arc design](fleet-epoch-arc-design.md) — B1-B3 shipped; closed at [project_fleet_epoch_arc_closed.md](project_fleet_epoch_arc_closed.md) (hist_page+pong re-seal, row-cadence mint)
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A+B4 done; next B1→B3 fleet chain+eggs arc
