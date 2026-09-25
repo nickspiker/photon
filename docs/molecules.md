@@ -71,7 +71,7 @@ My devices see a molecule as one more conversation: chains blob (lanes, eras, KE
 - `types/molecule.rs`: `MoleculeId`, roster records + merge, the `MoleculeSignal` control-row kinds (typed as `RowControl::Molecule`; payloads ride the package's `g*` fields).
 - `Conversation`: stable-id form with a mutable participant set; `ChatMessage.author`.
 - Frame: `from` party id; weave refs `(author, eagle_time)`; `strand_pull`/`strand_serve` on the history-page codec.
-- Chains blob schema v9 (additive): molecule flag, per-device KEM decapsulation keys, lanes off the molecule root.
+- Chains blob (v10 since 2026-09-25, one section per record): molecule flag, per-device KEM decapsulation keys as `kem` sections, lanes off the molecule root.
 - `MoleculePeer` trust source consulted for molecule-token frames only.
 - Storage: `vault_key("molecule", molecule_id)`; rārangi table = `molecule_id`.
 

@@ -5,7 +5,9 @@ pub mod drafts;
 pub mod fanout_pairs;
 pub mod fleet_settings;
 pub mod friendship;
+mod legacy_columns;
 pub mod molecule;
+pub mod record;
 pub mod spool;
 
 // The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.

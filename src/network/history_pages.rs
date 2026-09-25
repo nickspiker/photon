@@ -1,8 +1,7 @@
 //! History-recovery page codec — the KEY-AGNOSTIC seal/open layer for conversation backfill.
 //!
-//! A page is a batch of plaintext conversation rows (newest-first cursor pagination) encoded as a schema-validated VSF section and sealed with kete ChaCha20-Poly1305 under a bare 32-byte key. Phase 1 (friend recovery) seals under the friendship history key (`FriendshipChains::history_key`, spaghettify-derived at ceremony birth); phase 2 (fleet sync) reuses this codec verbatim under the fleet key — nothing in this module knows which. Page metadata (`oldest_osc`, `more`) lives INSIDE the seal so the wire leaks nothing beyond conversation token + blob size.
+//! A page is a batch of plaintext conversation rows (newest-first cursor pagination) encoded as a complete VSF document (one section per row) and sealed with kete ChaCha20-Poly1305 under a bare 32-byte key. Phase 1 (friend recovery) seals under the friendship history key (`FriendshipChains::history_key`, spaghettify-derived at ceremony birth); phase 2 (fleet sync) reuses this codec verbatim under the fleet key — nothing in this module knows which. Page metadata (`oldest_osc`, `more`) lives INSIDE the seal so the wire leaks nothing beyond conversation token + blob size.
 
-use vsf::schema::{SectionBuilder, SectionSchema, TypeConstraint};
 use vsf::VsfType;
 
 /// Max rows per served page. ~50 keeps a typical page at a few KB sealed (PT shards anything bigger).
@@ -78,537 +77,186 @@ pub struct HistoryPagePlain {
     pub more: bool,
 }
 
-/// The section name, shared by the document builder and the TOC lookup in `open_history_page` — `parse_document` finds the section by matching this against the header, so the two must never drift.
-const PAGE_SECTION: &str = "hist_rows";
-
-/// Schema for the sealed page plaintext. Rows are four parallel multi-value arrays zipped on decode (the `pending_*` idiom from friendship storage).
-fn page_schema() -> SectionSchema {
-    SectionSchema::new(PAGE_SECTION)
-        .field("oldest", TypeConstraint::Any) // e6 eagle-time
-        .field("more", TypeConstraint::AnyUnsigned) // bool
-        .field("m_time", TypeConstraint::Any) // e6, one per row
-        .field("m_text", TypeConstraint::Utf8Text) // x, one per row
-        .field("m_out", TypeConstraint::AnyUnsigned) // bool, one per row (sender's is_outgoing)
-        .field("m_del", TypeConstraint::AnyUnsigned) // bool, one per row
-        .field("m_str", TypeConstraint::Any) // e6 star stamp, one per row: 0 = never starred
-        .field("m_aun", TypeConstraint::AnyUnsigned) // author presence, one per row (0 = pairwise row)
-        .field("m_auv", TypeConstraint::Any) // hb author party id, one per row that has one
-        .field("m_tomb", TypeConstraint::AnyUnsigned) // bool, one per row: the deleted-for-everyone tombstone (absent on pre-feature pages → all false)
-        .field("m_ntf", TypeConstraint::AnyUnsigned) // notified flag, one per row (absent column on pre-feature pages = all true)
-        .field("m_refk", TypeConstraint::AnyUnsigned) // reference kind, one per row: 0 = none, else RefKind wire value (absent on pre-feature pages → all none)
-        .field("m_reft", TypeConstraint::Any) // e6 reference target, one per row: 0 when kind is none
-        .field("m_mn", TypeConstraint::AnyUnsigned) // mark COUNT, one per row (absent on pre-feature pages → all zero)
-        .field("m_mk", TypeConstraint::AnyUnsigned) // flat mark kinds, m_mn entries consumed per row in order
-        .field("m_ms", TypeConstraint::AnyUnsigned) // flat mark byte starts
-        .field("m_ml", TypeConstraint::AnyUnsigned) // flat mark byte lens
-        .field("m_md", TypeConstraint::Utf8Text) // flat mark dests
-        // Wave card columns (2026-09-09). MISSING from this schema at v88: the builder refused every page (validation), so sibling pushes and history pages silently failed until the four lines below landed.
-        .field("m_wvo", TypeConstraint::AnyUnsigned) // wave outcome, one per row: 0 = not a wave row
-        .field("m_wvs", TypeConstraint::AnyUnsigned) // wave live seconds, one per row
-        .field("m_wvn", TypeConstraint::AnyUnsigned) // envelope byte COUNT, one per row (0 = none)
-        .field("m_wve", TypeConstraint::AnyUnsigned) // envelope bytes as one multi-value field per row that has one, consumed in row order
-        // Typed attachment columns (2026-09-10): kind/dims one per row (0 = not typed), a preview-blob hash and the micro preview each as one field per row that carries one, with per-row presence/count columns keeping the rows aligned.
-        .field("m_ak", TypeConstraint::AnyUnsigned) // attachment kind, one per row: 0 = none
-        .field("m_aw", TypeConstraint::AnyUnsigned) // pixel width, one per row (0 = unknown)
-        .field("m_ah", TypeConstraint::AnyUnsigned) // pixel height, one per row
-        .field("m_ahn", TypeConstraint::AnyUnsigned) // preview-hash presence, one per row (0/1)
-        .field("m_aph", TypeConstraint::Any) // hb preview-blob hash, one per row that has one
-        .field("m_apn", TypeConstraint::AnyUnsigned) // micro preview byte COUNT, one per row (0 = none)
-        .field("m_apv", TypeConstraint::AnyUnsigned) // micro preview bytes as one multi-value field per row that has one
-        // Control rows (flag day 2026-09-24): kind and sub-kind one per row (0 = not control), a slot-presence mask one per row, and each present slot as one field per row that carries it, consumed in row order.
-        .field("m_ck", TypeConstraint::AnyUnsigned)
-        .field("m_cs", TypeConstraint::AnyUnsigned)
-        .field("m_cm", TypeConstraint::AnyUnsigned) // bit 0 ts, 1 id, 2 nonce, 3 dev, 4 num, 5 tag, 6 set
-        .field("m_cts", TypeConstraint::Any) // e6 delete target
-        .field("m_cid", TypeConstraint::Any) // hR wave id
-        .field("m_cn", TypeConstraint::Any) // hR nonce
-        .field("m_cd", TypeConstraint::AnyKey) // ke device
-        .field("m_cnum", TypeConstraint::AnyUnsigned) // era_next
-        .field("m_ctag", TypeConstraint::AnyUnsigned) // era prior_tag
-        .field("m_cset", TypeConstraint::AnyUnsigned) // era kem_set
-        // Attachment identity: role one per row (0 = not an attachment), hash/name/size one field each per row that has one.
-        .field("m_fr", TypeConstraint::AnyUnsigned)
-        .field("m_fh", TypeConstraint::AnyHash)
-        .field("m_fnm", TypeConstraint::Utf8Text)
-        .field("m_fz", TypeConstraint::AnyUnsigned)
-}
+/// The page document's section names, shared by the sealer and the opener — the two must never drift.
+/// One `hist_page` section carries the cursor; every row is its OWN `row` section and every link mark its own `mark` section naming its row by index (the 2026-09-25 flag day — the parallel columns and their count/mask bookkeeping are gone). An optional part of a row is simply a field that is present or absent.
+const PAGE_SECTION: &str = "hist_page";
+const ROW_SECTION: &str = "row";
+const MARK_SECTION: &str = "mark";
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
 pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<u8>, String> {
-    let mut builder = page_schema()
-        .build()
-        .set(
-            "oldest",
-            VsfType::e(vsf::types::EtType::e6(page.oldest_osc)),
-        )
-        .map_err(|e| e.to_string())?
-        .set("more", page.more)
-        .map_err(|e| e.to_string())?;
-    for row in &page.rows {
-        builder = builder
-            .append_multi(
-                "m_time",
-                vec![VsfType::e(vsf::types::EtType::e6(row.timestamp))],
-            )
-            .map_err(|e| e.to_string())?
-            .append_multi("m_text", vec![VsfType::x(row.content.clone())])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_out", vec![VsfType::u(row.sender_outgoing as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_del", vec![VsfType::u(row.delivered as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_tomb", vec![VsfType::u(row.deleted as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_str", vec![VsfType::e(vsf::types::EtType::e6(row.star_osc))])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_aun", vec![VsfType::u(row.author.is_some() as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_ntf", vec![VsfType::u(row.notified as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi(
-                "m_refk",
-                vec![VsfType::u(row.reference.map(|(k, _)| k).unwrap_or(0) as usize, false)],
-            )
-            .map_err(|e| e.to_string())?
-            .append_multi(
-                "m_reft",
-                vec![VsfType::e(vsf::types::EtType::e6(
-                    row.reference.map(|(_, t)| t).unwrap_or(0),
-                ))],
-            )
-            .map_err(|e| e.to_string())?
-            .append_multi("m_mn", vec![VsfType::u(row.marks.len(), false)])
-            .map_err(|e| e.to_string())?
-            // Wave card columns (2026-09-09): outcome 0 = not a wave row; the envelope rides as ONE native multi-value field per row that has one (count column keeps the rows aligned, the marks idiom).
-            .append_multi("m_wvo", vec![VsfType::u(row.wave.map(|(o, _)| o).unwrap_or(0) as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_wvs", vec![VsfType::u(row.wave.map(|(_, s)| s).unwrap_or(0) as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_wvn", vec![VsfType::u(row.envelope.len(), false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_ak", vec![VsfType::u(row.attach.map(|(k, _, _, _)| k).unwrap_or(0) as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_aw", vec![VsfType::u(row.attach.map(|(_, w, _, _)| w).unwrap_or(0) as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_ah", vec![VsfType::u(row.attach.map(|(_, _, h, _)| h).unwrap_or(0) as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_ahn", vec![VsfType::u(row.attach.and_then(|(_, _, _, ph)| ph).is_some() as usize, false)])
-            .map_err(|e| e.to_string())?
-            .append_multi("m_apn", vec![VsfType::u(row.preview.len(), false)])
-            .map_err(|e| e.to_string())?;
-        if !row.envelope.is_empty() {
-            builder = builder
-                .append_multi("m_wve", row.envelope.iter().map(|&b| VsfType::u(b as usize, false)).collect())
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(a) = row.author {
-            builder = builder
-                .append_multi("m_auv", vec![VsfType::hb(a.to_vec())])
-                .map_err(|e| e.to_string())?;
-        }
-        if let Some(ph) = row.attach.and_then(|(_, _, _, ph)| ph) {
-            builder = builder
-                .append_multi("m_aph", vec![VsfType::hb(ph.to_vec())])
-                .map_err(|e| e.to_string())?;
-        }
-        if !row.preview.is_empty() {
-            builder = builder
-                .append_multi("m_apv", row.preview.iter().map(|&b| VsfType::u(b as usize, false)).collect())
-                .map_err(|e| e.to_string())?;
-        }
-        {
-            let slots = row.control.as_ref().map(|c| c.slots()).unwrap_or_default();
-            let mask = slots.ts.is_some() as usize
-                | (slots.id.is_some() as usize) << 1
-                | (slots.nonce.is_some() as usize) << 2
-                | (slots.dev.is_some() as usize) << 3
-                | (slots.num.is_some() as usize) << 4
-                | (slots.tag.is_some() as usize) << 5
-                | (slots.set.is_some() as usize) << 6;
-            builder = builder
-                .append_multi("m_ck", vec![VsfType::u(slots.kind as usize, false)])
-                .map_err(|e| e.to_string())?
-                .append_multi("m_cs", vec![VsfType::u(slots.sub as usize, false)])
-                .map_err(|e| e.to_string())?
-                .append_multi("m_cm", vec![VsfType::u(mask, false)])
-                .map_err(|e| e.to_string())?
-                .append_multi("m_fr", vec![VsfType::u(row.file.as_ref().map_or(0, |f| f.role.code()) as usize, false)])
-                .map_err(|e| e.to_string())?;
-            let put = |b: SectionBuilder, name: &str, v: VsfType| b.append_multi(name, vec![v]).map_err(|e| e.to_string());
-            if let Some(t) = slots.ts {
-                builder = put(builder, "m_cts", VsfType::e(vsf::types::EtType::e6(t)))?;
-            }
-            if let Some(id) = slots.id {
-                builder = put(builder, "m_cid", VsfType::hR(id))?;
-            }
-            if let Some(n) = slots.nonce {
-                builder = put(builder, "m_cn", VsfType::hR(n.to_vec()))?;
-            }
-            if let Some(d) = slots.dev {
-                builder = put(builder, "m_cd", VsfType::ke(d.to_vec()))?;
-            }
-            if let Some(n) = slots.num {
-                builder = put(builder, "m_cnum", VsfType::u(n as usize, false))?;
-            }
-            if let Some(t) = slots.tag {
-                builder = put(builder, "m_ctag", VsfType::u(t as usize, false))?;
-            }
-            if let Some(v) = slots.set {
-                builder = put(builder, "m_cset", VsfType::u(v as usize, false))?;
-            }
-            if let Some(f) = row.file.as_ref() {
-                builder = put(builder, "m_fh", VsfType::hb(f.hash.to_vec()))?;
-                builder = put(builder, "m_fnm", VsfType::x(f.name.clone()))?;
-                builder = put(builder, "m_fz", VsfType::u(f.size as usize, false))?;
-            }
-        }
-        for m in &row.marks {
-            builder = builder
-                .append_multi("m_mk", vec![VsfType::u(m.kind as usize, false)])
-                .map_err(|e| e.to_string())?
-                .append_multi("m_ms", vec![VsfType::u(m.start, false)])
-                .map_err(|e| e.to_string())?
-                .append_multi("m_ml", vec![VsfType::u(m.len, false)])
-                .map_err(|e| e.to_string())?
-                .append_multi("m_md", vec![VsfType::x(m.dest.clone())])
-                .map_err(|e| e.to_string())?;
-        }
-    }
-    let section_bytes = builder.encode().map_err(|e| e.to_string())?;
-
-    // A COMPLETE VSF FILE inside the seal, not a bare section (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). `.encode()` alone emits the section body — no header, no creation time, no TOC, no BLAKE3 provenance hash — so the open side had nothing to verify and fell back to a raw schema parse.
-    // The AEAD is not a substitute here. These pages ride the FLEET key to every sibling device, so "it decrypted" proves only that SOMEONE IN THE FLEET wrote it — exactly what the signed outer frame already proved. The provenance hash is what makes the payload itself self-consistent, and it costs one builder call.
-    let doc = vsf::VsfBuilder::new()
+    let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
+    let uint = |v: u64| VsfType::u(v as usize, false); // WHY/PROOF: every photon target is 64-bit, so usize holds a u64 whole
+    let f = |name: &str, v: VsfType| (name.to_string(), v);
+    let mut doc = vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
         .provenance_only()
-        .add_unboxed(PAGE_SECTION, section_bytes)
-        .build()
-        .map_err(|e| e.to_string())?;
-
+        .add_section(PAGE_SECTION, vec![f("oldest", e6(page.oldest_osc)), f("more", uint(page.more as u64))]);
+    for (i, row) in page.rows.iter().enumerate() {
+        let mut r = vec![
+            f("time", e6(row.timestamp)),
+            f("text", VsfType::x(row.content.clone())),
+            f("out", uint(row.sender_outgoing as u64)),
+            f("delivered", uint(row.delivered as u64)),
+            f("deleted", uint(row.deleted as u64)),
+            f("notified", uint(row.notified as u64)),
+        ];
+        if row.star_osc != 0 {
+            r.push(f("star", e6(row.star_osc)));
+        }
+        if let Some(a) = row.author {
+            r.push(f("author", VsfType::hb(a.to_vec())));
+        }
+        if let Some((k, t)) = row.reference {
+            r.push(f("ref_kind", uint(k as u64)));
+            r.push(f("ref_target", e6(t)));
+        }
+        if let Some((o, secs)) = row.wave {
+            r.push(f("wave_outcome", uint(o as u64)));
+            r.push(f("wave_secs", uint(secs as u64)));
+        }
+        // Thumbnails are opaque bytes — one value, never a number per byte.
+        if !row.envelope.is_empty() {
+            r.push(f("envelope", VsfType::hR(row.envelope.clone())));
+        }
+        if let Some((k, w, h, ph)) = row.attach {
+            r.push(f("attach_kind", uint(k as u64)));
+            r.push(f("attach_w", uint(w as u64)));
+            r.push(f("attach_h", uint(h as u64)));
+            if let Some(ph) = ph {
+                r.push(f("attach_preview_hash", VsfType::hb(ph.to_vec())));
+            }
+        }
+        if !row.preview.is_empty() {
+            r.push(f("preview", VsfType::hR(row.preview.clone())));
+        }
+        if let Some(c) = row.control.as_ref() {
+            let s = c.slots();
+            r.push(f("ctl_kind", uint(s.kind as u64)));
+            r.push(f("ctl_sub", uint(s.sub as u64)));
+            if let Some(t) = s.ts {
+                r.push(f("ctl_ts", e6(t)));
+            }
+            if let Some(id) = s.id {
+                r.push(f("ctl_id", VsfType::hR(id)));
+            }
+            if let Some(n) = s.nonce {
+                r.push(f("ctl_nonce", VsfType::hR(n.to_vec())));
+            }
+            if let Some(d) = s.dev {
+                r.push(f("ctl_dev", VsfType::ke(d.to_vec())));
+            }
+            if let Some(n) = s.num {
+                r.push(f("ctl_num", uint(n)));
+            }
+            if let Some(t) = s.tag {
+                r.push(f("ctl_tag", uint(t as u64)));
+            }
+            if let Some(v) = s.set {
+                r.push(f("ctl_set", uint(v as u64)));
+            }
+        }
+        if let Some(fr) = row.file.as_ref() {
+            r.push(f("file_role", uint(fr.role.code() as u64)));
+            r.push(f("file_hash", VsfType::hb(fr.hash.to_vec())));
+            r.push(f("file_name", VsfType::x(fr.name.clone())));
+            r.push(f("file_size", uint(fr.size)));
+        }
+        doc = doc.add_section(ROW_SECTION, r);
+        for m in &row.marks {
+            doc = doc.add_section(
+                MARK_SECTION,
+                vec![f("row", uint(i as u64)), f("kind", uint(m.kind as u64)), f("start", uint(m.start as u64)), f("len", uint(m.len as u64)), f("dest", VsfType::x(m.dest.clone()))],
+            );
+        }
+    }
+    // A COMPLETE VSF FILE inside the seal (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These pages ride the FLEET key to every sibling device, so "it decrypted" proves only that SOMEONE IN THE FLEET wrote it — the provenance hash is what makes the payload itself self-consistent.
+    let doc = doc.build()?;
     kete::encrypt_bytes(&doc, key)
 }
 
 /// AEAD-open + decode a page. Fails on wrong key, tamper, or malformed plaintext.
+/// Verified read before a single field is trusted; the retired column shape fails here, which is correct: pages are a resyncable cache, so the requester re-fetches once both sides run the record shape. No compat branch.
 pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePlain, String> {
+    use crate::storage::record::Rec;
     let plain = kete::decrypt_bytes(sealed, key)?;
-    // Verified read — `parse_document` runs `read_verified` (header decode + provenance self-consistency) before a single field is trusted. A pre-document page is a bare section with no TOC and fails here, which is correct: pages are a resyncable cache, so the requester simply re-fetches and the server re-seals in document form. No compat branch (AGENT.md: atomic updates, no protocol forks).
-    let section = SectionBuilder::parse_document(page_schema(), &plain, None)
-        .map_err(|e| format!("page failed verified read: {e}"))?;
+    let sections = crate::storage::record::verified_sections(&plain, None).map_err(|e| format!("page failed verified read: {e}"))?;
+    let head = sections.iter().find(|s| s.name == PAGE_SECTION).map(Rec).ok_or("page has no hist_page section")?;
+    let oldest_osc = head.osc("oldest").ok_or("page missing oldest")?;
+    let more = head.uint("more").is_some_and(|v| v != 0);
+    let flag = |r: &Rec, name: &str| r.uint(name).is_some_and(|v| v != 0);
 
-    let oldest_osc = section
-        .get_fields("oldest")
-        .first()
-        .and_then(|f| f.values.first())
-        .and_then(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
-            _ => None,
-        })
-        .ok_or("page missing oldest")?;
-    let more = section.get_value::<bool>("more").unwrap_or(false);
-
-    let times: Vec<i64> = section
-        .get_fields("m_time")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
-            _ => None,
-        })
-        .collect();
-    let texts: Vec<String> = section
-        .get_fields("m_text")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::x(s) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
-    let outs: Vec<bool> = section
-        .get_fields("m_out")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(vsf_bool)
-        .collect();
-    let dels: Vec<bool> = section
-        .get_fields("m_del")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(vsf_bool)
-        .collect();
-
-    // Tombstones (optional field — absent on pre-feature pages ⇒ all false).
-    let tombs: Vec<bool> = section
-        .get_fields("m_tomb")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(vsf_bool)
-        .collect();
-    // Notified flags (optional — absent on pre-feature pages ⇒ all TRUE: history never re-dings).
-    let ntfs: Vec<bool> = section
-        .get_fields("m_ntf")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(vsf_bool)
-        .collect();
-    // Typed references (optional parallel columns — absent on pre-feature pages ⇒ all none).
-    let ref_kinds: Vec<u8> = section
-        .get_fields("m_refk")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
-        .collect();
-    let ref_targets: Vec<i64> = section
-        .get_fields("m_reft")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
-            _ => None,
-        })
-        .collect();
-
-    // Marks: per-row counts + four flat columns consumed in row order. A count/flat mismatch drops every mark on the page (fail-safe to plain text); each row's marks re-validate against its own content.
-    let mark_counts: Vec<usize> = section
-        .get_fields("m_mn")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| v.as_u64().map(|n| n as usize))
-        .collect();
-    let flat_u = |name: &str| -> Vec<u64> {
-        section
-            .get_fields(name)
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| v.as_u64())
-            .collect()
-    };
-    let mk = flat_u("m_mk");
-    let ms = flat_u("m_ms");
-    let ml = flat_u("m_ml");
-    let md: Vec<String> = section
-        .get_fields("m_md")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::x(s) => Some(s.clone()),
-            _ => None,
-        })
-        .collect();
-    // Wave columns: per-row outcome/seconds, and the envelope thumbnails — a per-row byte count plus one multi-value field per row that carries one, consumed in row order.
-    let stars: Vec<i64> = section
-        .get_fields("m_str")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
-            _ => None,
-        })
-        .collect();
-    let wave_outs = flat_u("m_wvo");
-    let wave_secs = flat_u("m_wvs");
-    let env_counts = flat_u("m_wvn");
-    let env_fields: Vec<Vec<u8>> = section
-        .get_fields("m_wve")
-        .iter()
-        .map(|f| f.values.iter().filter_map(|v| v.as_u64()).map(|n| n.min(255) as u8).collect())
-        .collect();
-    // Attachment columns (2026-09-10): kind/dims per row; the preview hash and the micro preview each one field per row that carries one, consumed in row order like the envelope.
-    let att_kinds = flat_u("m_ak");
-    let att_ws = flat_u("m_aw");
-    let att_hs = flat_u("m_ah");
-    let att_hn = flat_u("m_ahn");
-    let att_hashes: Vec<Option<[u8; 32]>> = section
-        .get_fields("m_aph")
-        .iter()
-        .map(|f| match f.values.first() {
-            Some(VsfType::hb(h)) => <[u8; 32]>::try_from(h.as_slice()).ok(),
-            _ => None,
-        })
-        .collect();
-    let au_present = flat_u("m_aun");
-    let au_vals: Vec<Option<[u8; 32]>> = section
-        .get_fields("m_auv")
-        .iter()
-        .map(|f| match f.values.first() {
-            Some(VsfType::hb(h)) => <[u8; 32]>::try_from(h.as_slice()).ok(),
-            _ => None,
-        })
-        .collect();
-    let pv_counts = flat_u("m_apn");
-    let pv_fields: Vec<Vec<u8>> = section
-        .get_fields("m_apv")
-        .iter()
-        .map(|f| f.values.iter().filter_map(|v| v.as_u64()).map(|n| n.min(255) as u8).collect())
-        .collect();
-    // Control and file columns (flag day 2026-09-24).
-    let ctl_kinds = flat_u("m_ck");
-    let ctl_subs = flat_u("m_cs");
-    let ctl_masks = flat_u("m_cm");
-    let firsts = |name: &str| -> Vec<VsfType> { section.get_fields(name).iter().filter_map(|f| f.values.first().cloned()).collect() };
-    let (c_ts, c_id, c_n, c_d, c_num, c_tag, c_set) = (firsts("m_cts"), firsts("m_cid"), firsts("m_cn"), firsts("m_cd"), firsts("m_cnum"), firsts("m_ctag"), firsts("m_cset"));
-    let file_roles = flat_u("m_fr");
-    let (f_h, f_n, f_z) = (firsts("m_fh"), firsts("m_fnm"), firsts("m_fz"));
-    let raw = |v: Option<&VsfType>| -> Option<Vec<u8>> {
-        match v? {
-            VsfType::hR(b) | VsfType::hb(b) | VsfType::ke(b) => Some(b.clone()),
-            _ => None,
-        }
-    };
-    let flat_total: usize = mark_counts.iter().sum();
-    let marks_ok = flat_total == mk.len() && flat_total == ms.len() && flat_total == ml.len() && flat_total == md.len();
-
-    // Zip the parallel arrays; a malformed page (mismatched lengths) yields the common prefix.
-    // RULE 0 — WHY the per-row columns below are read with `.get(i)` and a default: OPTIONAL columns (tombstones, notified, references, marks, wave, attachments, control, file) are absent on pages built before each column existed, and a peer's malformed page can carry any of them short. PROOF: an absent or short column reads as its documented default for that row, where `[i]` would panic on a page the peer controls.
-    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-    let n = times.len().min(texts.len()).min(outs.len()).min(dels.len());
-    let mut rows = Vec::with_capacity(n);
-    let mut mcur = 0usize;
-    let mut ecur = 0usize;
-    let mut hcur = 0usize;
-    let mut pcur = 0usize;
-    let mut aucur = 0usize;
-    let mut cur = [0usize; 7];
-    let mut fcur = 0usize;
-    for i in 0..n {
-        let row_control = match ctl_kinds.get(i).copied().unwrap_or(0) {
-            0 => None,
-            k => {
-                let mask = ctl_masks.get(i).copied().unwrap_or(0);
-                let mut take = |bit: usize, col: &Vec<VsfType>| -> Option<VsfType> {
-                    if mask & (1 << bit) == 0 {
-                        return None;
-                    }
-                    let v = col.get(cur[bit]).cloned();
-                    cur[bit] += 1;
-                    v
-                };
-                let (ts, id, nonce, dev, num, tag, set) = (take(0, &c_ts), take(1, &c_id), take(2, &c_n), take(3, &c_d), take(4, &c_num), take(5, &c_tag), take(6, &c_set));
-                crate::types::RowControl::from_slots(&crate::types::ControlSlots {
-                    kind: u8::try_from(k).unwrap_or(0),
-                    sub: ctl_subs.get(i).copied().and_then(|v| u8::try_from(v).ok()).unwrap_or(0),
-                    ts: ts.and_then(|v| match v {
-                        VsfType::e(vsf::types::EtType::e6(t)) => Some(t),
-                        _ => None,
-                    }),
-                    id: raw(id.as_ref()),
-                    nonce: raw(nonce.as_ref()).and_then(|b| b.try_into().ok()),
-                    dev: raw(dev.as_ref()).and_then(|b| b.try_into().ok()),
-                    num: num.and_then(|v| v.as_u64()),
-                    tag: tag.and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()),
-                    set: set.and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()),
-                })
-            }
+    let mut rows: Vec<HistoryRow> = Vec::new();
+    for r in sections.iter().filter(|s| s.name == ROW_SECTION).map(Rec) {
+        // A row without its time or text is torn — dropped alone, never shifting another row's fields onto it.
+        let (Some(timestamp), Some(content)) = (r.osc("time"), r.text("text")) else {
+            continue;
         };
-        let row_file = match file_roles.get(i).copied().unwrap_or(0) {
-            0 => None,
-            r => {
-                let j = fcur;
-                fcur += 1;
-                (|| {
-                    Some(crate::types::AttachRef {
-                        role: crate::types::AttachRole::from_code(u8::try_from(r).ok()?)?,
-                        hash: raw(f_h.get(j))?.try_into().ok()?,
-                        name: match f_n.get(j)? {
-                            VsfType::x(s) => s.clone(),
-                            _ => return None,
-                        },
-                        size: f_z.get(j)?.as_u64()?,
-                    })
-                })()
-            }
-        };
-        let row_author = if au_present.get(i).copied().unwrap_or(0) != 0 {
-            let a = au_vals.get(aucur).copied().flatten();
-            aucur += 1;
-            a
-        } else {
-            None
-        };
-        let row_attach = match att_kinds.get(i).copied().unwrap_or(0) {
-            0 => None,
-            k => {
-                let ph = if att_hn.get(i).copied().unwrap_or(0) != 0 {
-                    let h = att_hashes.get(hcur).copied().flatten();
-                    hcur += 1;
-                    h
-                } else {
-                    None
-                };
-                Some((k as u8, att_ws.get(i).copied().unwrap_or(0) as u32, att_hs.get(i).copied().unwrap_or(0) as u32, ph))
-            }
-        };
-        let row_preview = match pv_counts.get(i).copied().unwrap_or(0) {
-            0 => Vec::new(),
-            cnt => {
-                let p = pv_fields.get(pcur).cloned().unwrap_or_default();
-                pcur += 1;
-                if p.len() == cnt as usize && p.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { p } else { Vec::new() }
-            }
-        };
-        let row_env = match env_counts.get(i).copied().unwrap_or(0) {
-            0 => Vec::new(),
-            cnt => {
-                let e = env_fields.get(ecur).cloned().unwrap_or_default();
-                ecur += 1;
-                if e.len() == cnt as usize { e } else { Vec::new() }
-            }
-        };
-        let row_marks = if marks_ok {
-            let cnt = mark_counts.get(i).copied().unwrap_or(0);
-            let out: Vec<crate::types::MessageMark> = (mcur..mcur + cnt)
-                .filter_map(|j| {
-                    Some(crate::types::MessageMark {
-                        kind: u8::try_from(*mk.get(j)?).ok()?,
-                        start: *ms.get(j)? as usize,
-                        len: *ml.get(j)? as usize,
-                        dest: md.get(j)?.clone(),
-                    })
-                })
-                .collect();
-            mcur += cnt;
-            crate::types::valid_marks(&texts[i], &out)
-        } else {
-            Vec::new()
-        };
+        let control = r.uint("ctl_kind").and_then(|k| {
+            crate::types::RowControl::from_slots(&crate::types::ControlSlots {
+                kind: u8::try_from(k).ok()?,
+                sub: r.uint("ctl_sub").and_then(|v| u8::try_from(v).ok()).unwrap_or(0),
+                ts: r.osc("ctl_ts"),
+                id: r.bytes("ctl_id"),
+                nonce: r.bytes("ctl_nonce").and_then(|b| b.try_into().ok()),
+                dev: r.key32("ctl_dev"),
+                num: r.uint("ctl_num"),
+                tag: r.uint("ctl_tag").and_then(|v| u32::try_from(v).ok()),
+                set: r.uint("ctl_set").and_then(|v| u8::try_from(v).ok()),
+            })
+        });
+        let file = (|| {
+            Some(crate::types::AttachRef {
+                role: crate::types::AttachRole::from_code(u8::try_from(r.uint("file_role")?).ok()?)?,
+                hash: r.h32("file_hash")?,
+                name: r.text("file_name")?,
+                size: r.uint("file_size")?,
+            })
+        })();
+        let attach = (|| {
+            let k = u8::try_from(r.uint("attach_kind")?).ok()?;
+            // WHY/PROOF: pixel dimensions are u32 on write — a wider value from a peer's page reads as unknown (0), never wrapped into a small size.
+            let dim = |name: &str| r.uint(name).and_then(|v| u32::try_from(v).ok()).unwrap_or(0);
+            Some((k, dim("attach_w"), dim("attach_h"), r.h32("attach_preview_hash")))
+        })();
         rows.push(HistoryRow {
-            author: row_author,
-            star_osc: stars.get(i).copied().unwrap_or(0),
-            timestamp: times[i],
-            content: texts[i].clone(),
-            sender_outgoing: outs[i],
-            delivered: dels[i],
-            deleted: tombs.get(i).copied().unwrap_or(false),
-            notified: ntfs.get(i).copied().unwrap_or(true),
-            reference: match ref_kinds.get(i).copied().unwrap_or(0) {
-                0 => None,
-                k => Some((k, ref_targets.get(i).copied().unwrap_or(0))),
-            },
-            marks: row_marks,
-            wave: match wave_outs.get(i).copied().unwrap_or(0) {
-                0 => None,
-                o => Some((o as u8, wave_secs.get(i).copied().unwrap_or(0) as u32)),
-            },
-            envelope: row_env,
-            attach: row_attach,
-            preview: row_preview,
-            control: row_control,
-            file: row_file,
+            timestamp,
+            content,
+            sender_outgoing: flag(&r, "out"),
+            delivered: flag(&r, "delivered"),
+            deleted: flag(&r, "deleted"),
+            // History never re-dings: a row that does not say otherwise is notified.
+            notified: r.uint("notified").is_none_or(|v| v != 0),
+            star_osc: r.osc("star").unwrap_or(0),
+            author: r.h32("author"),
+            reference: r.uint("ref_kind").and_then(|k| Some((u8::try_from(k).ok()?, r.osc("ref_target")?))),
+            marks: Vec::new(),
+            wave: r.uint("wave_outcome").and_then(|o| Some((u8::try_from(o).ok()?, u32::try_from(r.uint("wave_secs")?).ok()?))),
+            envelope: r.bytes("envelope").unwrap_or_default(),
+            attach,
+            preview: r.bytes("preview").filter(|p| p.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES).unwrap_or_default(),
+            control,
+            file,
         });
     }
-    Ok(HistoryPagePlain {
-        rows,
-        oldest_osc,
-        more,
-    })
-}
-
-/// Width-agnostic VSF unsigned → bool: the key names the semantics, the encoder picks the width — the reader must not care (u0 bool form included).
-fn vsf_bool(v: &VsfType) -> Option<bool> {
-    match v {
-        VsfType::u0(b) => Some(*b),
-        _ => v.as_u64().map(|n| n != 0),
+    // Marks name their row by index; each row's marks re-validate against its own content.
+    let mut marks: Vec<Vec<crate::types::MessageMark>> = vec![Vec::new(); rows.len()];
+    for m in sections.iter().filter(|s| s.name == MARK_SECTION).map(Rec) {
+        let (Some(row), Some(kind), Some(start), Some(len), Some(dest)) = (m.uint("row"), m.uint("kind"), m.uint("start"), m.uint("len"), m.text("dest")) else {
+            continue;
+        };
+        let (Ok(row), Ok(kind), Ok(start), Ok(len)) = (usize::try_from(row), u8::try_from(kind), usize::try_from(start), usize::try_from(len)) else {
+            continue;
+        };
+        // WHY/PROOF: a peer's page names the row — an index past the page's rows is a malformed mark, dropped.
+        if let Some(v) = marks.get_mut(row) {
+            v.push(crate::types::MessageMark { kind, start, len, dest });
+        }
     }
+    for (row, m) in rows.iter_mut().zip(marks) {
+        row.marks = crate::types::valid_marks(&row.content, &m);
+    }
+    Ok(HistoryPagePlain { rows, oldest_osc, more })
 }
 
 #[cfg(test)]
@@ -781,14 +429,11 @@ mod tests {
     #[test]
     fn pre_document_page_is_rejected() {
         let key = [6u8; 32];
-        let bare = page_schema()
-            .build()
-            .set("oldest", VsfType::e(vsf::types::EtType::e6(0)))
-            .expect("oldest")
-            .set("more", VsfType::u(0, false))
-            .expect("more")
-            .encode()
-            .expect("bare section");
+        // The head section's bytes alone, cut out of a real page by its TOC entry — a headerless blob.
+        let plain = kete::decrypt_bytes(&seal_history_page(&sample_page(), &key).expect("seal"), &key).expect("open");
+        let (header, _) = vsf::verification::read_verified(&plain, None).expect("verifies");
+        let f = header.fields.iter().find(|f| f.name == PAGE_SECTION).expect("head in the TOC");
+        let bare = plain[f.offset_bytes..f.offset_bytes + f.size_bytes].to_vec();
         let sealed = kete::encrypt_bytes(&bare, &key).expect("seal");
         assert!(
             open_history_page(&sealed, &key).is_err(),

@@ -32,7 +32,7 @@ Method: targeted greps for each pattern, then every hit read in context; hash tr
 
 **M3. Marks at rest are a private codec.** The durable record stores `encode_marks` (`types/contact.rs:160`: `[kind u8][start u32][len u32][dlen u16][dest]…`) inside one Bytes field — while the live package and the history page already carry marks as typed multi-value fields. Fix: the same four typed fields in the record.
 
-**M4. Page byte-columns are one `u` per byte.** `network/history_pages.rs:201` and `:216` write the envelope thumbnail and micro preview as a multi-value of single-byte unsigned values — a 1728-byte preview becomes 1728 typed values. The value is opaque bytes, not a list of numbers. Fix: one opaque-bytes value per row.
+**M4. FIXED for history pages (2026-09-25; the live package is unchanged). Page byte-columns are one `u` per byte.** `network/history_pages.rs:201` and `:216` write the envelope thumbnail and micro preview as a multi-value of single-byte unsigned values — a 1728-byte preview becomes 1728 typed values. The value is opaque bytes, not a list of numbers. Fix: one opaque-bytes value per row.
 
 **M5. Socket addresses packed by hand** (`network/fgtw/protocol.rs:212`): raw octets plus a big-endian port, with the IP version inferred from the length on read (`:236`, `:243`). VSF has network types (`ns` socket). Fix: use them.
 

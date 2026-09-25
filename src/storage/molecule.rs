@@ -10,368 +10,178 @@ use vsf::VsfType;
 use crate::storage::{FlatStorage, StorageError};
 use crate::types::molecule::{BundleRecord, GenesisRecord, MoleculeId, LeaveRecord, MemberRecord, Roster, TitleRecord, VouchRecord};
 
-/// The section name, shared by the builder and the TOC lookup — the two must never drift.
+/// The roster's section names, shared by the writer and the reader — the two must never drift.
+/// One `molecule_roster` section names the group; every signed record is its OWN section beside it (one per member, leave, bundle, vouch; at most one genesis and one title), so a record's fields travel together and a torn record is dropped alone.
 const ROSTER_SECTION: &str = "molecule_roster";
+const GENESIS_SECTION: &str = "genesis";
+const MEMBER_SECTION: &str = "member";
+const LEAVE_SECTION: &str = "leave";
+const TITLE_SECTION: &str = "title";
+const BUNDLE_SECTION: &str = "bundle";
+const VOUCH_SECTION: &str = "vouch";
 
-fn roster_schema() -> SectionSchema {
-    SectionSchema::new(ROSTER_SECTION)
-        .field("version", TypeConstraint::AnyUnsigned)
-        .field("molecule_id", TypeConstraint::AnyHash)
-        // Genesis (optional until the record arrives — an invitee's roster snapshot always carries it)
-        .field("gen_founder", TypeConstraint::AnyHash)
-        .field("gen_osc", TypeConstraint::Any)
-        .field("gen_from_genesis", TypeConstraint::AnyUnsigned) // D5: 1 = history served from genesis, 0 = from join (a join mints an era)
-        .field("gen_title", TypeConstraint::Utf8Text)
-        .field("gen_sig", TypeConstraint::AnyHash) // hb 64: Ed25519 over GenesisRecord::signing_bytes
-        .field("gen_signer", TypeConstraint::AnyHash)
-        // Member rows, index-aligned multis (§4 Member) — subject-signed, newest-wins per party in the merge
-        .field("m_party", TypeConstraint::AnyHash)
-        .field("m_proof", TypeConstraint::AnyHash)
-        .field("m_name", TypeConstraint::Utf8Text)
-        .field("m_avatar", TypeConstraint::AnyHash)
-        .field("m_osc", TypeConstraint::Any)
-        .field("m_sponsor", TypeConstraint::AnyHash)
-        .field("m_sig", TypeConstraint::AnyHash) // hb 64
-        .field("m_signer", TypeConstraint::AnyHash)
-        // Leave rows (§4 Leave) — testimony, never deleted
-        .field("l_party", TypeConstraint::AnyHash)
-        .field("l_osc", TypeConstraint::Any)
-        .field("l_sig", TypeConstraint::AnyHash) // hb 64
-        .field("l_signer", TypeConstraint::AnyHash)
-        // v2 (2026-09-15): the shared title (single), per-device KEM bundles and vouches (index-aligned multis). A v1 blob simply lacks them.
-        .field("t_party", TypeConstraint::AnyHash)
-        .field("t_title", TypeConstraint::Utf8Text)
-        .field("t_osc", TypeConstraint::Any)
-        .field("t_sig", TypeConstraint::AnyHash) // hb 64
-        .field("t_signer", TypeConstraint::AnyHash)
-        .field("b_party", TypeConstraint::AnyHash)
-        .field("b_device", TypeConstraint::AnyHash)
-        .field("b_era", TypeConstraint::AnyUnsigned)
-        .field("b_set", TypeConstraint::AnyUnsigned)
-        .field("b_mlkem", TypeConstraint::Any) // hR public key
-        .field("b_x", TypeConstraint::Any) // hR public key
-        .field("b_hqc", TypeConstraint::Any) // hR public key
-        .field("b_osc", TypeConstraint::Any)
-        .field("b_sig", TypeConstraint::AnyHash) // hb 64
-        .field("v_voucher", TypeConstraint::AnyHash)
-        .field("v_subject", TypeConstraint::AnyHash)
-        .field("v_osc", TypeConstraint::Any)
-        .field("v_withdrawn", TypeConstraint::AnyUnsigned)
-        .field("v_sig", TypeConstraint::AnyHash) // hb 64
-        .field("v_signer", TypeConstraint::AnyHash)
-}
+/// The roster codec's version: 3 = one section per record (2026-09-25 flag day — the parallel-column v2 is refused, never read).
+const ROSTER_VERSION: u8 = 3;
 
 /// Vault address for a group's roster — beside its chains blob, same scope bytes.
 fn roster_key(molecule_id: &MoleculeId) -> [u8; 32] {
     crate::storage::vault_key("molecule", &molecule_id.0)
 }
 
-/// Encode a roster to its canonical VSF bytes — vault entry, invite snapshot, and (later) re-serve payload alike.
+/// Encode a roster to its canonical VSF bytes — vault entry, invite snapshot, and re-serve payload alike.
+/// Records are written in a deterministic order (sorted by their keys) so both sides of a replication compare equal bytes for equal rosters.
 pub fn roster_to_vsf_bytes(molecule_id: &MoleculeId, roster: &Roster) -> Result<Vec<u8>, StorageError> {
     let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
-    let mut builder = roster_schema()
-        .build()
-        .set("version", 2u8)
-        .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("molecule_id", VsfType::hb(molecule_id.0.to_vec()))
-        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    let hb = |b: &[u8]| VsfType::hb(b.to_vec());
+    let f = |name: &str, v: VsfType| (name.to_string(), v);
+    let mut doc = vsf::VsfBuilder::new().creation_time_oscillations(vsf::eagle_time_oscillations()).provenance_only().add_section(
+        ROSTER_SECTION,
+        vec![f("version", VsfType::u(ROSTER_VERSION as usize, false)), f("molecule_id", hb(&molecule_id.0))],
+    );
     if let Some(g) = roster.genesis.as_ref() {
-        builder = builder
-            .set("gen_founder", VsfType::hb(g.founder.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("gen_osc", e6(g.genesis_osc))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("gen_from_genesis", VsfType::u(g.history_from_genesis as usize, false))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("gen_title", VsfType::x(g.title.clone()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("gen_sig", VsfType::hb(g.signature.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("gen_signer", VsfType::hb(g.signer_device.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        doc = doc.add_section(
+            GENESIS_SECTION,
+            vec![
+                f("founder", hb(&g.founder)),
+                f("osc", e6(g.genesis_osc)),
+                f("from_genesis", VsfType::u(g.history_from_genesis as usize, false)),
+                f("title", VsfType::x(g.title.clone())),
+                f("sig", hb(&g.signature)),
+                f("signer", hb(&g.signer_device)),
+            ],
+        );
     }
-    // Deterministic row order (sorted by party) so both sides of a replication compare equal bytes for equal rosters.
     let mut members: Vec<&MemberRecord> = roster.members.values().collect();
     members.sort_unstable_by_key(|m| m.party);
     for m in members {
-        builder = builder
-            .append_multi("m_party", vec![VsfType::hb(m.party.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_proof", vec![VsfType::hb(m.handle_proof.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_name", vec![VsfType::x(m.name.clone())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_avatar", vec![VsfType::hb(m.avatar_pin.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_osc", vec![e6(m.signed_osc)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_sponsor", vec![VsfType::hb(m.sponsor.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_sig", vec![VsfType::hb(m.signature.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("m_signer", vec![VsfType::hb(m.signer_device.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        doc = doc.add_section(
+            MEMBER_SECTION,
+            vec![
+                f("party", hb(&m.party)),
+                f("proof", hb(&m.handle_proof)),
+                f("name", VsfType::x(m.name.clone())),
+                f("avatar", hb(&m.avatar_pin)),
+                f("osc", e6(m.signed_osc)),
+                f("sponsor", hb(&m.sponsor)),
+                f("sig", hb(&m.signature)),
+                f("signer", hb(&m.signer_device)),
+            ],
+        );
     }
     let mut leaves: Vec<&LeaveRecord> = roster.leaves.values().collect();
     leaves.sort_unstable_by_key(|l| l.party);
     for l in leaves {
-        builder = builder
-            .append_multi("l_party", vec![VsfType::hb(l.party.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("l_osc", vec![e6(l.signed_osc)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("l_sig", vec![VsfType::hb(l.signature.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("l_signer", vec![VsfType::hb(l.signer_device.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        doc = doc.add_section(LEAVE_SECTION, vec![f("party", hb(&l.party)), f("osc", e6(l.signed_osc)), f("sig", hb(&l.signature)), f("signer", hb(&l.signer_device))]);
     }
     if let Some(t) = roster.title.as_ref() {
-        builder = builder
-            .set("t_party", VsfType::hb(t.party.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("t_title", VsfType::x(t.title.clone()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("t_osc", e6(t.signed_osc))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("t_sig", VsfType::hb(t.signature.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("t_signer", VsfType::hb(t.signer_device.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        doc = doc.add_section(
+            TITLE_SECTION,
+            vec![f("party", hb(&t.party)), f("title", VsfType::x(t.title.clone())), f("osc", e6(t.signed_osc)), f("sig", hb(&t.signature)), f("signer", hb(&t.signer_device))],
+        );
     }
     let mut bundles: Vec<&BundleRecord> = roster.bundles.values().collect();
     bundles.sort_unstable_by_key(|b| (b.party, b.device));
     for b in bundles {
-        builder = builder
-            .append_multi("b_party", vec![VsfType::hb(b.party.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_device", vec![VsfType::hb(b.device.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_era", vec![VsfType::u(b.published_era as usize, false)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_set", vec![VsfType::u(b.kem_set as usize, false)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_mlkem", vec![VsfType::hR(b.mlkem_pk.clone())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_x", vec![VsfType::hR(b.x_pk.clone())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_hqc", vec![VsfType::hR(b.hqc_pk.clone())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_osc", vec![e6(b.signed_osc)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("b_sig", vec![VsfType::hb(b.signature.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        doc = doc.add_section(
+            BUNDLE_SECTION,
+            vec![
+                f("party", hb(&b.party)),
+                f("device", hb(&b.device)),
+                f("era", VsfType::u(b.published_era as usize, false)),
+                f("set", VsfType::u(b.kem_set as usize, false)),
+                f("mlkem", VsfType::hR(b.mlkem_pk.clone())),
+                f("x", VsfType::hR(b.x_pk.clone())),
+                f("hqc", VsfType::hR(b.hqc_pk.clone())),
+                f("osc", e6(b.signed_osc)),
+                f("sig", hb(&b.signature)),
+            ],
+        );
     }
     let mut vouches: Vec<&VouchRecord> = roster.vouches.values().flatten().collect();
     vouches.sort_unstable_by_key(|v| (v.voucher, v.subject, v.signed_osc));
     for v in vouches {
-        builder = builder
-            .append_multi("v_voucher", vec![VsfType::hb(v.voucher.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("v_subject", vec![VsfType::hb(v.subject.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("v_osc", vec![e6(v.signed_osc)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("v_withdrawn", vec![VsfType::u(v.withdrawn as usize, false)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("v_sig", vec![VsfType::hb(v.signature.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("v_signer", vec![VsfType::hb(v.signer_device.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        doc = doc.add_section(
+            VOUCH_SECTION,
+            vec![
+                f("voucher", hb(&v.voucher)),
+                f("subject", hb(&v.subject)),
+                f("osc", e6(v.signed_osc)),
+                f("withdrawn", VsfType::u(v.withdrawn as usize, false)),
+                f("sig", hb(&v.signature)),
+                f("signer", hb(&v.signer_device)),
+            ],
+        );
     }
-    let section_bytes = builder.encode().map_err(|e| StorageError::Parse(e.to_string()))?;
-    vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_unboxed(ROSTER_SECTION, section_bytes)
-        .build()
-        .map_err(|e| StorageError::Parse(e.to_string()))
+    doc.build().map_err(StorageError::Parse)
 }
 
 /// Decode a roster from its canonical bytes — STRICT verified read, shared by the vault loader and every wire arrival (invite snapshot, replication), so a headerless blob never becomes membership state.
+/// A record missing any field is skipped whole (it could not verify anyway); records merge under the same newest-wins law as the wire.
 pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), StorageError> {
-    let section = vsf::schema::SectionBuilder::parse_document(roster_schema(), vsf_bytes, None)
-        .map_err(|e| StorageError::Parse(format!("roster failed verified read: {e}")))?;
-
-    let gid_bytes: [u8; 32] = section
-        .get_value::<[u8; 32]>("molecule_id")
-        .map_err(|e| StorageError::Parse(format!("molecule_id: {e}")))?;
-    let molecule_id = MoleculeId(gid_bytes);
-
-    // Width-agnostic numeral reads (the writer stamps e6; never variant-match a parsed integer).
-    let e6_of = |v: &VsfType| -> Option<i64> {
-        match v {
-            VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
-            other => other.as_i64(),
-        }
-    };
-    let hb32 = |v: &VsfType| -> Option<[u8; 32]> {
-        match v {
-            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
-            _ => None,
-        }
-    };
-    let hb64 = |v: &VsfType| -> Option<[u8; 64]> {
-        match v {
-            VsfType::hb(b) => <[u8; 64]>::try_from(b.as_slice()).ok(),
-            _ => None,
-        }
-    };
-    let col32 = |name: &str| -> Vec<[u8; 32]> {
-        section.get_fields(name).iter().filter_map(|f| f.values.first()).filter_map(hb32).collect()
-    };
-    let col64 = |name: &str| -> Vec<[u8; 64]> {
-        section.get_fields(name).iter().filter_map(|f| f.values.first()).filter_map(hb64).collect()
-    };
-    let col_osc = |name: &str| -> Vec<i64> {
-        section.get_fields(name).iter().filter_map(|f| f.values.first()).filter_map(e6_of).collect()
-    };
-    let col_text = |name: &str| -> Vec<String> {
-        section
-            .get_fields(name)
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| match v {
-                VsfType::x(s) => Some(s.clone()),
-                _ => None,
-            })
-            .collect()
-    };
-    let col_bytes = |name: &str| -> Vec<Vec<u8>> {
-        section
-            .get_fields(name)
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| match v {
-                VsfType::hR(b) => Some(b.clone()),
-                _ => None,
-            })
-            .collect()
-    };
-    let col_u = |name: &str| -> Vec<u64> {
-        section.get_fields(name).iter().filter_map(|f| f.values.first()).filter_map(|v| v.as_u64()).collect()
-    };
-
+    use crate::storage::record::Rec;
+    let sections = crate::storage::record::verified_sections(vsf_bytes, None).map_err(|e| StorageError::Parse(format!("roster failed verified read: {e}")))?;
+    let head = sections.iter().find(|s| s.name == ROSTER_SECTION).map(Rec).ok_or_else(|| StorageError::Parse("roster: no molecule_roster section".to_string()))?;
+    if head.uint("version") != Some(ROSTER_VERSION as u64) {
+        return Err(StorageError::Parse(format!("roster: codec version {:?} refused (this build reads {})", head.uint("version"), ROSTER_VERSION)));
+    }
+    let molecule_id = MoleculeId(head.h32("molecule_id").ok_or_else(|| StorageError::Parse("roster: molecule_id".to_string()))?);
+    let of = |name: &'static str| sections.iter().filter(move |s| s.name == name).map(Rec);
     let mut roster = Roster::default();
 
-    if let Ok(founder) = section.get_value::<[u8; 32]>("gen_founder") {
-        let sig = section
-            .get_fields("gen_sig")
-            .first()
-            .and_then(|f| f.values.first())
-            .and_then(hb64)
-            .ok_or_else(|| StorageError::Parse("genesis without a signature".to_string()))?;
+    if let Some(g) = of(GENESIS_SECTION).next() {
+        let (Some(founder), Some(signature), Some(signer_device)) = (g.h32("founder"), g.h64("sig"), g.h32("signer")) else {
+            return Err(StorageError::Parse("genesis without its founder, signature or signer".to_string()));
+        };
         roster.genesis = Some(GenesisRecord {
             molecule_id,
             founder,
-            genesis_osc: section.get_fields("gen_osc").first().and_then(|f| f.values.first()).and_then(e6_of).unwrap_or(0),
-            history_from_genesis: section
-                .get_fields("gen_from_genesis")
-                .first()
-                .and_then(|f| f.values.first())
-                .and_then(|v| v.as_u64())
-                .unwrap_or(0)
-                != 0,
-            title: section.get_fields("gen_title").first().and_then(|f| f.values.first()).and_then(|v| match v {
-                VsfType::x(s) => Some(s.clone()),
-                _ => None,
-            }).unwrap_or_default(),
-            signature: sig,
-            signer_device: section.get_value::<[u8; 32]>("gen_signer").unwrap_or([0u8; 32]),
+            genesis_osc: g.osc("osc").ok_or_else(|| StorageError::Parse("genesis without its stamp".to_string()))?,
+            history_from_genesis: g.uint("from_genesis").is_some_and(|v| v != 0),
+            title: g.text("title").unwrap_or_default(),
+            signature,
+            signer_device,
         });
     }
-
-    // Member rows — a short or torn multi truncates to the complete rows; merge (not insert) so the loaded set obeys the same newest-wins law as the wire.
-    let (mp, mh, mn, ma, mo, ms, msig, msd) = (
-        col32("m_party"),
-        col32("m_proof"),
-        col_text("m_name"),
-        col32("m_avatar"),
-        col_osc("m_osc"),
-        col32("m_sponsor"),
-        col64("m_sig"),
-        col32("m_signer"),
-    );
-    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-    let n = mp
-        .len()
-        .min(mh.len())
-        .min(mn.len())
-        .min(ma.len())
-        .min(mo.len())
-        .min(ms.len())
-        .min(msig.len())
-        .min(msd.len());
-    for i in 0..n {
-        roster.merge_member(MemberRecord {
-            party: mp[i],
-            handle_proof: mh[i],
-            name: mn[i].clone(),
-            avatar_pin: ma[i],
-            signed_osc: mo[i],
-            sponsor: ms[i],
-            signature: msig[i],
-            signer_device: msd[i],
-        });
+    for m in of(MEMBER_SECTION) {
+        let (Some(party), Some(handle_proof), Some(name), Some(avatar_pin), Some(signed_osc), Some(sponsor), Some(signature), Some(signer_device)) =
+            (m.h32("party"), m.h32("proof"), m.text("name"), m.h32("avatar"), m.osc("osc"), m.h32("sponsor"), m.h64("sig"), m.h32("signer"))
+        else {
+            continue;
+        };
+        roster.merge_member(MemberRecord { party, handle_proof, name, avatar_pin, signed_osc, sponsor, signature, signer_device });
     }
-
     // Vouches BEFORE leaves: merge_vouch needs genesis (present above); standing is derived, so order among the rest is immaterial.
-    let (vv, vs, vo, vw, vsig, vsd) = (col32("v_voucher"), col32("v_subject"), col_osc("v_osc"), col_u("v_withdrawn"), col64("v_sig"), col32("v_signer"));
-    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-    let n = vv.len().min(vs.len()).min(vo.len()).min(vw.len()).min(vsig.len()).min(vsd.len());
-    for i in 0..n {
-        roster.merge_vouch(VouchRecord { voucher: vv[i], subject: vs[i], signed_osc: vo[i], withdrawn: vw[i] != 0, signature: vsig[i], signer_device: vsd[i] });
+    for v in of(VOUCH_SECTION) {
+        let (Some(voucher), Some(subject), Some(signed_osc), Some(withdrawn), Some(signature), Some(signer_device)) =
+            (v.h32("voucher"), v.h32("subject"), v.osc("osc"), v.uint("withdrawn"), v.h64("sig"), v.h32("signer"))
+        else {
+            continue;
+        };
+        roster.merge_vouch(VouchRecord { voucher, subject, signed_osc, withdrawn: withdrawn != 0, signature, signer_device });
     }
-
-    let (bp, bd, be, bs, bm, bx, bh, bo, bsig) = (
-        col32("b_party"),
-        col32("b_device"),
-        col_u("b_era"),
-        col_u("b_set"),
-        col_bytes("b_mlkem"),
-        col_bytes("b_x"),
-        col_bytes("b_hqc"),
-        col_osc("b_osc"),
-        col64("b_sig"),
-    );
-    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-    let n = bp.len().min(bd.len()).min(be.len()).min(bs.len()).min(bm.len()).min(bx.len()).min(bh.len()).min(bo.len()).min(bsig.len());
-    for i in 0..n {
-        roster.merge_bundle(BundleRecord {
-            party: bp[i],
-            device: bd[i],
-            published_era: be[i],
-            kem_set: bs[i] as u8,
-            mlkem_pk: bm[i].clone(),
-            x_pk: bx[i].clone(),
-            hqc_pk: bh[i].clone(),
-            signed_osc: bo[i],
-            signature: bsig[i],
-        });
+    for b in of(BUNDLE_SECTION) {
+        let (Some(party), Some(device), Some(era), Some(set), Some(mlkem_pk), Some(x_pk), Some(hqc_pk), Some(signed_osc), Some(signature)) =
+            (b.h32("party"), b.h32("device"), b.uint("era"), b.uint("set"), b.bytes("mlkem"), b.bytes("x"), b.bytes("hqc"), b.osc("osc"), b.h64("sig"))
+        else {
+            continue;
+        };
+        // A kem-set that does not fit its byte is a malformed record — skipped like a missing field, never truncated into a different set.
+        let Ok(kem_set) = u8::try_from(set) else {
+            continue;
+        };
+        roster.merge_bundle(BundleRecord { party, device, published_era: era, kem_set, mlkem_pk, x_pk, hqc_pk, signed_osc, signature });
     }
-
-    if let Ok(party) = section.get_value::<[u8; 32]>("t_party") {
-        if let (Some(title), Some(osc), Some(sig), Ok(signer)) = (
-            col_text("t_title").into_iter().next(),
-            section.get_fields("t_osc").first().and_then(|f| f.values.first()).and_then(e6_of),
-            section.get_fields("t_sig").first().and_then(|f| f.values.first()).and_then(hb64),
-            section.get_value::<[u8; 32]>("t_signer"),
-        ) {
-            roster.merge_title(TitleRecord { party, title, signed_osc: osc, signature: sig, signer_device: signer });
+    if let Some(t) = of(TITLE_SECTION).next() {
+        if let (Some(party), Some(title), Some(signed_osc), Some(signature), Some(signer_device)) = (t.h32("party"), t.text("title"), t.osc("osc"), t.h64("sig"), t.h32("signer")) {
+            roster.merge_title(TitleRecord { party, title, signed_osc, signature, signer_device });
         }
     }
-
-    let (lp, lo, lsig, lsd) = (col32("l_party"), col_osc("l_osc"), col64("l_sig"), col32("l_signer"));
-    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-    let n = lp.len().min(lo.len()).min(lsig.len()).min(lsd.len());
-    for i in 0..n {
-        roster.merge_leave(LeaveRecord {
-            party: lp[i],
-            signed_osc: lo[i],
-            signature: lsig[i],
-            signer_device: lsd[i],
-        });
+    for l in of(LEAVE_SECTION) {
+        let (Some(party), Some(signed_osc), Some(signature), Some(signer_device)) = (l.h32("party"), l.osc("osc"), l.h64("sig"), l.h32("signer")) else {
+            continue;
+        };
+        roster.merge_leave(LeaveRecord { party, signed_osc, signature, signer_device });
     }
-
     Ok((molecule_id, roster))
 }
 
@@ -441,7 +251,18 @@ pub fn load_roster(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<Op
     let Some(bytes) = storage.read_addr(&roster_key(molecule_id))? else {
         return Ok(None);
     };
-    let (loaded_id, roster) = roster_from_vsf_bytes(&bytes)?;
+    let (loaded_id, roster) = match roster_from_vsf_bytes(&bytes) {
+        Ok(r) => r,
+        // DISK-ONLY MIGRATION (legacy_columns.rs): this device's own v2 roster, read once and rewritten in the record shape — refusing it would drop the group on upgrade.
+        Err(strict) => match crate::storage::legacy_columns::roster_from_v2_bytes(&bytes) {
+            Ok((gid, old)) if gid == *molecule_id => {
+                save_roster(molecule_id, &old, storage)?;
+                crate::logf!("MIGRATION: parallel-column roster for {} rewritten as record sections", hex::encode(&gid.0[..4]));
+                (gid, old)
+            }
+            _ => return Err(strict),
+        },
+    };
     if loaded_id != *molecule_id {
         return Err(StorageError::Parse("roster id mismatch at its own address".to_string()));
     }
@@ -785,6 +606,54 @@ mod tests {
         assert!(verify_record(&g.signing_bytes(), &g.signature, &g.signer_device));
         assert!(verify_record(&m.signing_bytes(), &m.signature, &m.signer_device));
         assert_eq!(g.signer_device, device_pubkey(&seed));
+    }
+
+    /// One section per record: a torn record (a field missing) is dropped ALONE — the other records of its kind still load, where parallel columns would have shifted every later row onto the wrong fields.
+    #[test]
+    fn a_torn_record_drops_alone() {
+        let seed = [0xA5u8; 32];
+        let birth = found_atom([0x01; 32], [0x02; 32], "Nick", [0x03; 32], "purple turtles", false, &seed);
+        let m = &birth.founder_member;
+        let hb = |b: &[u8]| VsfType::hb(b.to_vec());
+        let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
+        let member = |with_sig: bool| {
+            let mut fields = vec![
+                ("party".to_string(), hb(&m.party)),
+                ("proof".to_string(), hb(&m.handle_proof)),
+                ("name".to_string(), VsfType::x(m.name.clone())),
+                ("avatar".to_string(), hb(&m.avatar_pin)),
+                ("osc".to_string(), e6(m.signed_osc)),
+                ("sponsor".to_string(), hb(&m.sponsor)),
+                ("signer".to_string(), hb(&m.signer_device)),
+            ];
+            if with_sig {
+                fields.push(("sig".to_string(), hb(&m.signature)));
+            }
+            fields
+        };
+        let bytes = vsf::VsfBuilder::new()
+            .creation_time_oscillations(1)
+            .provenance_only()
+            .add_section(ROSTER_SECTION, vec![("version".to_string(), VsfType::u(ROSTER_VERSION as usize, false)), ("molecule_id".to_string(), hb(&birth.molecule_id.0))])
+            .add_section(MEMBER_SECTION, member(false))
+            .add_section(MEMBER_SECTION, member(true))
+            .build()
+            .expect("encode");
+        let (_, back) = roster_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(back.members.get(&m.party), Some(m), "the whole record loads; the torn one before it is skipped");
+        assert_eq!(back.members.len(), 1);
+    }
+
+    /// The parallel-column codec (v2) is refused, never read — a flag day, no compatibility reader.
+    #[test]
+    fn an_old_codec_version_is_refused() {
+        let bytes = vsf::VsfBuilder::new()
+            .creation_time_oscillations(1)
+            .provenance_only()
+            .add_section(ROSTER_SECTION, vec![("version".to_string(), VsfType::u(2, false)), ("molecule_id".to_string(), VsfType::hb(vec![7; 32]))])
+            .build()
+            .expect("encode");
+        assert!(roster_from_vsf_bytes(&bytes).is_err());
     }
 
     /// Load-time records flow thru the MERGE, so a stored older record never clobbers a newer one already held — and leaves round-trip as standing changes, not deletions.

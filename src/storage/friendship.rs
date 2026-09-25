@@ -4,85 +4,20 @@
 //!
 //! All encryption, addressing, and atomicity is handled by FlatStorage.
 
-use vsf::schema::{SectionSchema, TypeConstraint};
 use vsf::VsfType;
 
 use crate::storage::{FlatStorage, StorageError};
 use crate::types::{FriendshipChains, FriendshipId};
 
-/// Schema for friendship_chains section
-///
-/// Photon-specific VSF wrapped types (uppercase = application-specific):
-/// - vC = CLUTCH chain (512×32 = 16KB key chain per participant)
-/// - vX = Ciphertext (encrypted message bytes)
-///
-/// Standard VSF types:
-/// - x = UTF-8 text (Huffman compressed Unicode) for message plaintexts
-/// The section name, shared by the document builder in `chains_to_vsf_bytes` and the TOC lookup in `chains_from_vsf_bytes` — `parse_document` matches this against the header, so the two must never drift.
+/// The chains document's section names, shared by the writer and the reader — the two must never drift.
+/// One `friendship_chains` section holds the friendship's scalars; every lane, pending message and KEM bundle is its OWN section beside it (the 2026-09-25 flag day — index-aligned columns are gone), so a record's fields travel together.
 const CHAINS_SECTION: &str = "friendship_chains";
+const LANE_SECTION: &str = "lane";
+const PENDING_SECTION: &str = "pending";
+const KEM_SECTION: &str = "kem";
 
-fn chains_schema() -> SectionSchema {
-    SectionSchema::new(CHAINS_SECTION)
-        .field("version", TypeConstraint::AnyUnsigned)
-        .field("friendship_id", TypeConstraint::AnyHash)
-        .field("participant", TypeConstraint::AnyHash) // One per participant (handle_hash as hb)
-        .field("chain", TypeConstraint::Wrapped(b'C')) // vC: CLUTCH chain (512×32) per participant
-        // Hash chain state (v2)
-        .field("last_sent_hash", TypeConstraint::AnyHash) // hp type: last msg_hp we sent
-        .field("last_received_hash", TypeConstraint::AnyHash) // One per participant (hp or empty hb)
-        // Pending messages (v2) - each message has 6 fields
-        .field("pending_eagle_time", TypeConstraint::Any)
-        .field("pending_plaintext", TypeConstraint::Utf8Text) // x: the message x-text (salt/weave ingredient) — text-only, so valid UTF-8
-        .field("pending_plaintext_hash", TypeConstraint::AnyHash) // hp
-        .field("pending_prev_msg_hp", TypeConstraint::AnyHash) // hp
-        .field("pending_msg_hp", TypeConstraint::AnyHash) // hp
-        .field("pending_ciphertext", TypeConstraint::Wrapped(b'X')) // vX: ciphertext bytes
-        .field("pending_attempts", TypeConstraint::AnyUnsigned) // send attempts SURVIVE restarts: exhaustion is cumulative evidence about the LANE (the anchor-wedge detector's arming gate), and short sessions resetting it to zero meant a dead lane could never be diagnosed (round-7 field, 2026-08-17)
-        // Bidirectional entropy state (v3)
-        .field("last_received_weave", TypeConstraint::AnyHash) // hp: derived weave hash (32 bytes)
-        .field("last_sent_weave", TypeConstraint::AnyHash) // hp: what we sent (what they received)
-        .field("last_incorporated_hp", TypeConstraint::AnyHash) // hp: which of theirs we mixed in
-        // Last plaintexts (v4) - needed for salt derivation after restart
-        .field("last_plaintext", TypeConstraint::Utf8Text) // x: the message x-text (salt source), one per participant — text-only, valid UTF-8
-        // Last received times (v5) - for duplicate detection after restart
-        .field("last_received_time", TypeConstraint::Any) // i64 oscillations, one per participant
-        // Friend-history bulk key (v6) — spaghettify-derived at ceremony birth, seals history-recovery pages outside the ratchet. Optional: absent = pre-feature chains (recovery unavailable until re-key).
-        .field("history_key", TypeConstraint::AnyHash)
-        // Mutation stamp (v7) — fleet chain-replication ordering key (adopt iff newer). Optional: absent = pre-feature file, treated as 0.
-        .field("mutated_osc", TypeConstraint::Any)
-        // Lane root (v8, docs/lanes.md) — the secret every per-device lane derives from. The lanes themselves will ride ADDITIVE fields under this same version (absent = no lanes materialized yet), so v8 is the LAST flag-day this schema takes for the lane work.
-        .field("lane_root", TypeConstraint::AnyHash)
-        .field("genesis_osc", TypeConstraint::Any)
-        // Lanes (v8, additive): one label+position per lane; the chain / last_plaintext / last_received_hash / last_received_time multis are INDEX-ALIGNED with lane_label (they carried per-participant state before the flag-day retired it — same tags, new meaning, and a legacy blob's copies are simply ignored because it has no lane_label rows).
-        .field("lane_label", TypeConstraint::AnyHash)
-        .field("lane_position", TypeConstraint::Any)
-        .field("our_label", TypeConstraint::AnyHash)
-        // Era state (2026-09-08, additive): a blob without these is era 0 of the lineage derived from its own root, every lane in that era.
-        .field("era_index", TypeConstraint::Any)
-        .field("era_lineage", TypeConstraint::AnyHash)
-        .field("lane_era", TypeConstraint::Any) // one per lane, INDEX-ALIGNED with lane_label: the tag of the root the lane derives from (was the era index before 2026-09-08; the loader maps those)
-        .field("rows_since_ratchet", TypeConstraint::Any)
-        .field("retired_index", TypeConstraint::Any)
-        .field("retired_root", TypeConstraint::AnyHash)
-        .field("retired_history_key", TypeConstraint::AnyHash)
-        .field("retired_grace", TypeConstraint::Any)
-        .field("pending_index", TypeConstraint::Any)
-        .field("pending_root", TypeConstraint::AnyHash)
-        .field("pending_history_key", TypeConstraint::AnyHash)
-        .field("pending_resp_osc", TypeConstraint::Any)
-        // GROUP state (v9, docs/molecules.md, additive: a friendship blob never writes these, so its bytes stay v8-identical and an old sibling adopts it unchanged). The flag marks the blob as a GROUP's chain state: id = group id, token = group token, participant set mutable behind the id.
-        .field("group", TypeConstraint::AnyUnsigned)
-        // OUR device's published KEM decapsulation bundles (§3), index-aligned rows: the wrap that carries a new era's fresh secret targets the bundle we published in our member record, possibly minted while we slept — so the secrets persist here, the same custody class as the lane links beside them.
-        .field("pending_targets", TypeConstraint::Any) // hR: N×32 party ids this pending has to reach (group blobs only)
-        .field("pending_acked", TypeConstraint::Any) // hR: N×32 party ids whose ACK arrived (group blobs only)
-        .field("molecule_roster", TypeConstraint::Any) // hR: the roster-codec bytes (group blobs only) — membership rides replication with the keys
-        .field("kem_published_era", TypeConstraint::Any)
-        .field("kem_bundle_id", TypeConstraint::AnyHash) // hb 32: the public bundle's fingerprint (what a wrap names)
-        .field("kem_set", TypeConstraint::AnyUnsigned)
-        .field("kem_mlkem_sk", TypeConstraint::Wrapped(b'K')) // vK: ML-KEM-1024 decapsulation key (empty when the set excludes it)
-        .field("kem_x_sk", TypeConstraint::AnyHash) // hb 32: X25519 secret scalar
-        .field("kem_hqc_sk", TypeConstraint::Wrapped(b'K')) // vK: HQC-256 decapsulation key (empty when the set excludes it)
-}
+/// The chains codec's version: 10 = one section per record. The strict decoder refuses anything else; the v8/v9 column shape is read only by the disk migration (legacy_columns.rs).
+const CHAINS_VERSION: u8 = 10;
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
 fn chains_key(friendship_id: &FriendshipId) -> [u8; 32] {
@@ -112,266 +47,124 @@ pub fn save_friendship_chains(
 }
 
 /// Encode FriendshipChains to their canonical VSF bytes — the SAME encoding save_friendship_chains persists, reused verbatim by the fleet chain-replication push (the bytes are sealed under the fleet key and shipped to siblings, whose decoder is chains_from_vsf_bytes).
+/// A COMPLETE VSF FILE (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"): the adopt path on the far side parses these bytes back into live RATCHET STATE, and the header's BLAKE3 provenance hash is what makes the payload self-consistent.
 pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, StorageError> {
-    let friendship_id = chains.id();
-
-    // Build VSF section
-    let schema = chains_schema();
-    // v8: lanes flag-day — lane_root joins; v≤7 blobs are REJECTED at read (re-clutch re-mints everything). v9: GROUP state, additive — ONLY a group blob writes it (with the group/kem fields), so every friendship blob stays byte-identical v8 and an old sibling's schema never meets a field name it doesn't know.
-    let version: u8 = if chains.molecule { 9 } else { 8 };
-    let mut builder = schema
-        .build()
-        .set("version", version)
-        .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set(
-            "friendship_id",
-            VsfType::hb(friendship_id.as_bytes().to_vec()),
-        )
-        .map_err(|e| StorageError::Parse(e.to_string()))?;
-
-    // Identity participants — conversation membership, no chain zipped to them since the lanes flag-day.
+    let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
+    let uint = |v: u64| VsfType::u(v as usize, false); // WHY/PROOF: every photon target is 64-bit, so usize holds a u64 whole
+    let f = |name: &str, v: VsfType| (name.to_string(), v);
+    let mut main: Vec<(String, VsfType)> = vec![f("version", uint(CHAINS_VERSION as u64)), f("friendship_id", VsfType::hb(chains.id().as_bytes().to_vec()))];
+    // Identity participants — a LIST of one kind (conversation membership), not a column zipped against another.
     for participant in chains.participants() {
-        builder = builder
-            .append_multi("participant", vec![VsfType::hb(participant.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-
-    // Lanes: label + position + chain per lane; the per-lane vec fields further down (last_received_hash / last_plaintext / last_received_time) are index-aligned with these rows.
-    for (label, position) in chains.lane_summary() {
-        let chain = chains
-            .chain(&label)
-            .ok_or_else(|| StorageError::Parse("Missing lane chain".to_string()))?;
-        builder = builder
-            .append_multi("lane_label", vec![VsfType::hb(label.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi(
-                "lane_position",
-                vec![VsfType::e(vsf::types::EtType::e6(position as i64))],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("chain", vec![VsfType::v(b'C', chain.to_bytes())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi(
-                "lane_era",
-                vec![VsfType::e(vsf::types::EtType::e6(chains.lane_era(&label).or_else(|| chains.era_tag().map(u64::from)).unwrap_or(0) as i64))],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("participant", VsfType::hb(participant.to_vec())));
     }
     if let Some(l) = chains.our_label() {
-        builder = builder
-            .set("our_label", VsfType::hb(l.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("our_label", VsfType::hb(l.to_vec())));
     }
-
-    // === Hash chain state (v2) ===
-
-    // last_sent_hash - use hp (hash provenance) for immutable content ID
-    if let Some(hash) = chains.last_sent_hash() {
-        builder = builder
-            .set("last_sent_hash", VsfType::hp(hash.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    if let Some(h) = chains.last_sent_hash() {
+        main.push(f("last_sent_hash", VsfType::hp(h.to_vec())));
     }
-
-    // last_received_hashes - one per participant (None serialized as empty hb)
-    for hash_opt in chains.last_received_hashes() {
-        let vsf_val = match hash_opt {
-            Some(hash) => VsfType::hp(hash.to_vec()),
-            None => VsfType::hb(Vec::new()), // Empty = no messages received yet (expect anchor)
-        };
-        builder = builder
-            .append_multi("last_received_hash", vec![vsf_val])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    if let Some(w) = chains.last_received_weave() {
+        main.push(f("last_received_weave", VsfType::hp(w.to_vec())));
     }
-
-    // === Pending messages (v2) ===
-    for pending in chains.pending_messages() {
-        // pending.plaintext is the message x-text only (the salt/weave ingredient), NOT the full flattened payload — so it's valid UTF-8 and stores losslessly as x. (It used to be the whole binary payload incl. the random pad, which forced a lossy conversion that mangled non-UTF-8 bytes to U+FFFD and desynced the chain.)
-        let plaintext_str = String::from_utf8_lossy(&pending.plaintext).into_owned();
-        builder = builder
-            .append_multi(
-                "pending_eagle_time",
-                vec![VsfType::e(vsf::types::EtType::e6(pending.eagle_time))],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("pending_plaintext", vec![VsfType::x(plaintext_str)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi(
-                "pending_plaintext_hash",
-                vec![VsfType::hp(pending.plaintext_hash.to_vec())],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi(
-                "pending_prev_msg_hp",
-                vec![VsfType::hp(pending.prev_msg_hp.to_vec())],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi("pending_msg_hp", vec![VsfType::hp(pending.msg_hp.to_vec())])
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi(
-                "pending_ciphertext",
-                vec![VsfType::v(b'X', pending.ciphertext.clone())],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .append_multi(
-                "pending_attempts",
-                vec![VsfType::u(pending.attempts as usize, false)],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    if let Some(w) = chains.last_sent_weave() {
+        main.push(f("last_sent_weave", VsfType::hp(w.to_vec())));
     }
-
-    // === Bidirectional entropy state (v3) ===
-
-    // last_received_weave - derived weave hash for mixing (32 bytes)
-    if let Some(weave) = chains.last_received_weave() {
-        builder = builder
-            .set("last_received_weave", VsfType::hp(weave.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-
-    // last_sent_weave - what we sent (what they received) for their chain advancement
-    if let Some(weave) = chains.last_sent_weave() {
-        builder = builder
-            .set("last_sent_weave", VsfType::hp(weave.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-
-    // last_incorporated_hp - which of their messages we mixed in
     if let Some(hp) = chains.last_incorporated_hp() {
-        builder = builder
-            .set("last_incorporated_hp", VsfType::hp(hp.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("last_incorporated_hp", VsfType::hp(hp.to_vec())));
     }
-
-    // === Last plaintexts (v4) - one per participant ===
-    for plaintext in chains.last_plaintexts() {
-        // x-text only (salt source) — valid UTF-8, lossless as x. See pending_plaintext above.
-        let plaintext_str = String::from_utf8_lossy(plaintext).into_owned();
-        builder = builder
-            .append_multi("last_plaintext", vec![VsfType::x(plaintext_str)])
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+    if let Some(k) = chains.history_key() {
+        main.push(f("history_key", VsfType::hb(k.to_vec())));
     }
-
-    // === Last received times (v5) - one per participant, for duplicate detection ===
-    for time_opt in chains.last_received_times() {
-        let time_val = time_opt.unwrap_or(0); // 0 means no messages received yet
-        builder = builder
-            .append_multi(
-                "last_received_time",
-                vec![VsfType::e(vsf::types::EtType::e6(time_val))],
-            )
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-
-    // === History key (v6) — optional; absent = pre-feature chains ===
-    if let Some(key) = chains.history_key() {
-        builder = builder
-            .set("history_key", VsfType::hb(key.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
-    }
-
-    // === Lane root (v8, docs/lanes.md) ===
     if let Some(root) = chains.lane_root() {
-        builder = builder
-            .set("lane_root", VsfType::hb(root.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("lane_root", VsfType::hb(root.to_vec())));
     }
-
-    // Mutation stamp (v7) — the replication ordering key.
-    builder = builder
-        .set(
-            "mutated_osc",
-            VsfType::e(vsf::types::EtType::e6(chains.mutated_osc)),
-        )
-        .map_err(|e| StorageError::Parse(e.to_string()))?;
-    // Era stamp — decides which lane_root supersedes across a re-key (merge_lanes_from).
-    builder = builder
-        .set(
-            "genesis_osc",
-            VsfType::e(vsf::types::EtType::e6(chains.genesis_osc)),
-        )
-        .map_err(|e| StorageError::Parse(e.to_string()))?;
-    let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));
-    builder = builder
-        .set("era_index", e6(chains.era_index as i64))
-        .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("era_lineage", VsfType::hb(chains.era_lineage.to_vec()))
-        .map_err(|e| StorageError::Parse(e.to_string()))?
-        .set("rows_since_ratchet", e6(chains.rows_since_ratchet as i64))
-        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    // The replication ordering key, and the era stamp that decides which lane_root supersedes across a re-key.
+    main.push(f("mutated_osc", e6(chains.mutated_osc)));
+    main.push(f("genesis_osc", e6(chains.genesis_osc)));
+    main.push(f("era_index", uint(chains.era_index)));
+    main.push(f("era_lineage", VsfType::hb(chains.era_lineage.to_vec())));
+    main.push(f("rows_since_ratchet", uint(chains.rows_since_ratchet as u64)));
     if let Some(r) = chains.retired_era() {
-        builder = builder
-            .set("retired_index", e6(r.era_index as i64))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("retired_root", VsfType::hb(r.lane_root.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("retired_grace", e6(r.grace_left as i64))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("retired_index", uint(r.era_index)));
+        main.push(f("retired_root", VsfType::hb(r.lane_root.to_vec())));
+        main.push(f("retired_grace", uint(r.grace_left as u64)));
         if let Some(hk) = r.history_key {
-            builder = builder
-                .set("retired_history_key", VsfType::hb(hk.to_vec()))
-                .map_err(|e| StorageError::Parse(e.to_string()))?;
+            main.push(f("retired_history_key", VsfType::hb(hk.to_vec())));
         }
     }
     if let Some(pe) = chains.pending_era() {
-        builder = builder
-            .set("pending_index", e6(pe.era_index as i64))
-            .map_err(|e| StorageError::Parse(e.to_string()))?
-            .set("pending_root", VsfType::hb(pe.lane_root.to_vec()))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("pending_index", uint(pe.era_index)));
+        main.push(f("pending_root", VsfType::hb(pe.lane_root.to_vec())));
         if let Some(hk) = pe.history_key {
-            builder = builder
-                .set("pending_history_key", VsfType::hb(hk.to_vec()))
-                .map_err(|e| StorageError::Parse(e.to_string()))?;
+            main.push(f("pending_history_key", VsfType::hb(hk.to_vec())));
         }
         if let Some(o) = pe.resp_osc {
-            builder = builder
-                .set("pending_resp_osc", e6(o))
-                .map_err(|e| StorageError::Parse(e.to_string()))?;
+            main.push(f("pending_resp_osc", e6(o)));
         }
     }
-    // === GROUP state (v9, docs/molecules.md) — a friendship blob writes NONE of this ===
+    // GROUP state (docs/molecules.md): the flag marks a group's chain state; id = group id, token = group token.
     if chains.molecule {
-        builder = builder
-            .set("group", VsfType::u(1, false))
-            .map_err(|e| StorageError::Parse(e.to_string()))?;
+        main.push(f("group", uint(1)));
         if !chains.molecule_roster().is_empty() {
-            builder = builder.set("molecule_roster", VsfType::hR(chains.molecule_roster().to_vec())).map_err(|e| StorageError::Parse(e.to_string()))?;
-        }
-        for pending in chains.pending_messages() {
-            builder = builder
-                .append_multi("pending_targets", vec![VsfType::hR(pending.targets.iter().flat_map(|p: &[u8; 32]| p.iter().copied()).collect::<Vec<u8>>())])
-                .map_err(|e| StorageError::Parse(e.to_string()))?
-                .append_multi("pending_acked", vec![VsfType::hR(pending.acked_by.iter().flat_map(|p: &[u8; 32]| p.iter().copied()).collect::<Vec<u8>>())])
-                .map_err(|e| StorageError::Parse(e.to_string()))?;
-        }
-        for kem in chains.molecule_kems() {
-            builder = builder
-                .append_multi("kem_published_era", vec![e6(kem.published_era as i64)])
-                .map_err(|e| StorageError::Parse(e.to_string()))?
-                .append_multi("kem_bundle_id", vec![VsfType::hb(kem.bundle_id.to_vec())])
-                .map_err(|e| StorageError::Parse(e.to_string()))?
-                .append_multi("kem_set", vec![VsfType::u(kem.kem_set as usize, false)])
-                .map_err(|e| StorageError::Parse(e.to_string()))?
-                .append_multi("kem_mlkem_sk", vec![VsfType::v(b'K', kem.mlkem_sk.clone())])
-                .map_err(|e| StorageError::Parse(e.to_string()))?
-                .append_multi("kem_x_sk", vec![VsfType::hb(kem.x_sk.to_vec())])
-                .map_err(|e| StorageError::Parse(e.to_string()))?
-                .append_multi("kem_hqc_sk", vec![VsfType::v(b'K', kem.hqc_sk.clone())])
-                .map_err(|e| StorageError::Parse(e.to_string()))?;
+            main.push(f("molecule_roster", VsfType::hR(chains.molecule_roster().to_vec())));
         }
     }
+    let mut doc = vsf::VsfBuilder::new().creation_time_oscillations(vsf::eagle_time_oscillations()).provenance_only().add_section(CHAINS_SECTION, main);
 
-    // A COMPLETE VSF FILE, not a bare section (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These bytes are not disk-only: `chains_to_vsf_bytes` also feeds fleet chain replication (photon_app.rs `push_chains_to_siblings`), sealed under the fleet key and pushed to every sibling, and the adopt path on the far side parses them back into live RATCHET STATE — chain keys, last plaintexts, mutation stamps. A bare section gave that path nothing to verify: the AEAD proves only "someone in the fleet wrote this", which the signed outer frame already proved. The header's BLAKE3 provenance hash is what makes the payload self-consistent.
-    let section_bytes = builder
-        .encode()
-        .map_err(|e| StorageError::Parse(e.to_string()))?;
+    // One section per LANE. The in-memory per-lane vectors are kept length-equal by install_lanes, so `.get(i)` finds each lane's own entry; an absent receipt stays absent (no zero sentinel).
+    for (i, (label, position)) in chains.lane_summary().into_iter().enumerate() {
+        let chain = chains.chain(&label).ok_or_else(|| StorageError::Parse("Missing lane chain".to_string()))?;
+        let era = chains.lane_era(&label).or_else(|| chains.era_tag().map(u64::from)).unwrap_or(0);
+        let mut lane = vec![f("label", VsfType::hb(label.to_vec())), f("position", uint(position)), f("chain", VsfType::v(b'C', chain.to_bytes())), f("era", uint(era))];
+        if let Some(Some(h)) = chains.last_received_hashes().get(i) {
+            lane.push(f("last_received_hash", VsfType::hp(h.to_vec())));
+        }
+        // x-text only (the salt source) — valid UTF-8, lossless as x.
+        if let Some(pt) = chains.last_plaintexts().get(i) {
+            lane.push(f("last_plaintext", VsfType::x(String::from_utf8_lossy(pt).into_owned())));
+        }
+        if let Some(Some(t)) = chains.last_received_times().get(i) {
+            lane.push(f("last_received_time", e6(*t)));
+        }
+        doc = doc.add_section(LANE_SECTION, lane);
+    }
 
-    vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_unboxed(CHAINS_SECTION, section_bytes)
-        .build()
-        .map_err(|e| StorageError::Parse(e.to_string()))
+    // One section per PENDING message. pending.plaintext is the message x-text only (the salt/weave ingredient), valid UTF-8, lossless as x.
+    for p in chains.pending_messages() {
+        let mut rec = vec![
+            f("eagle_time", e6(p.eagle_time)),
+            f("plaintext", VsfType::x(String::from_utf8_lossy(&p.plaintext).into_owned())),
+            f("plaintext_hash", VsfType::hp(p.plaintext_hash.to_vec())),
+            f("prev_msg_hp", VsfType::hp(p.prev_msg_hp.to_vec())),
+            f("msg_hp", VsfType::hp(p.msg_hp.to_vec())),
+            f("ciphertext", VsfType::v(b'X', p.ciphertext.clone())),
+            // Attempts SURVIVE restarts: exhaustion is cumulative evidence about the LANE (the anchor-wedge detector's arming gate).
+            f("attempts", uint(p.attempts as u64)),
+        ];
+        if chains.molecule {
+            rec.push(f("targets", VsfType::hR(p.targets.iter().flatten().copied().collect())));
+            rec.push(f("acked", VsfType::hR(p.acked_by.iter().flatten().copied().collect())));
+        }
+        doc = doc.add_section(PENDING_SECTION, rec);
+    }
+
+    // One section per KEM bundle OUR device published (§3): the wrap carrying a new era's secret targets the bundle in our member record, possibly minted while we slept — so the secrets persist here, the same custody class as the lane links.
+    if chains.molecule {
+        for k in chains.molecule_kems() {
+            doc = doc.add_section(
+                KEM_SECTION,
+                vec![
+                    f("published_era", uint(k.published_era)),
+                    f("bundle_id", VsfType::hb(k.bundle_id.to_vec())),
+                    f("set", uint(k.kem_set as u64)),
+                    f("mlkem_sk", VsfType::v(b'K', k.mlkem_sk.clone())),
+                    f("x_sk", VsfType::hb(k.x_sk.to_vec())),
+                    f("hqc_sk", VsfType::v(b'K', k.hqc_sk.clone())),
+                ],
+            );
+        }
+    }
+    doc.build().map_err(StorageError::Parse)
 }
 
 /// Load FriendshipChains from disk
@@ -391,7 +184,19 @@ pub fn load_friendship_chains(
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
 
-    let mut chains = chains_from_vsf_bytes(&vsf_bytes)?;
+    let mut chains = match chains_from_vsf_bytes(&vsf_bytes) {
+        Ok(c) => c,
+        // DISK-ONLY MIGRATION (legacy_columns.rs): this device's own v8/v9 blob, read once and rewritten in the record shape — refusing it would re-clutch every friendship on upgrade.
+        Err(strict) => match crate::storage::legacy_columns::chains_from_v9_bytes(&vsf_bytes) {
+            Ok(mut old) => {
+                crate::storage::legacy_columns::migrate_embedded_roster(&mut old);
+                save_friendship_chains(&old, storage)?;
+                crate::logf!("MIGRATION: parallel-column chains for {} rewritten as record sections", hex::encode(&friendship_id.as_bytes()[..4]));
+                old
+            }
+            Err(_) => return Err(strict),
+        },
+    };
     // LOAD-TIME SELF-HEAL for graveyard blobs minted before rotation learned to sweep (the 8.1MB / 490-lane Emma specimen, 2026-08-28): receipt-less non-active lanes are losslessly re-derivable from the root, so a poisoned blob trims here and the next persist shrinks it for good. Healthy blobs pay one cheap scan.
     let pruned = chains.prune_retired_lanes(8);
     if pruned > 0 {
@@ -405,453 +210,150 @@ pub fn load_friendship_chains(
     Ok(chains)
 }
 
-// MIGRATION COMPLETE (v52→v56, deleted 2026-08-18 at v0.56.1): the pre-document chains fallback is gone — zero "MIGRATION: rewrote" lines across the fleet's recent submitted logs, exactly the evidence bar the block set for itself.
-
 /// Decode FriendshipChains from their canonical VSF bytes — the inverse of chains_to_vsf_bytes, shared by the vault loader and the fleet chain-replication adopt path.
+/// STRICT verified read, no fallback: this is the decoder that parses ratchet state arriving from another device, so it never accepts a headerless blob or the retired column shape. A record missing a required field fails the whole blob loudly — a verified document cannot be torn, so a gap is a writer bug, never something to paper over.
 pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, StorageError> {
+    use crate::crypto::chain::{Chain, CHAIN_SIZE};
+    use crate::storage::record::Rec;
     use crate::types::friendship::PendingMessage;
 
-    // STRICT verified read, no fallback. `parse_document` runs `read_verified` (header decode + provenance self-consistency) before a single field is trusted.
-    // This decoder is shared by the DISK loader and the fleet chain-replication ADOPT path, so it is the one that parses ratchet state arriving from another device — it must never accept a headerless blob. Pre-document VAULT files are handled by `migrate_pre_document_chains` at load time instead, which is disk-only and rewrites them on sight.
-    let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), vsf_bytes, None)
-        .map_err(|e| StorageError::Parse(format!("chains failed verified read: {e}")))?;
-
-    // Extract participants (handle hashes as hb)
-    let mut participants: Vec<[u8; 32]> = Vec::new();
-    for field in section.get_fields("participant") {
-        if let Some(VsfType::hb(b)) = field.values.first() {
-            if b.len() == 32 {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(b);
-                participants.push(arr);
-            }
-        }
+    let sections = crate::storage::record::verified_sections(vsf_bytes, None).map_err(|e| StorageError::Parse(format!("chains failed verified read: {e}")))?;
+    let main = sections.iter().find(|s| s.name == CHAINS_SECTION).map(Rec).ok_or_else(|| StorageError::Parse("chains: no friendship_chains section".to_string()))?;
+    if main.uint("version") != Some(CHAINS_VERSION as u64) {
+        return Err(StorageError::Parse(format!("chains codec v{:?} refused (this build reads v{})", main.uint("version"), CHAINS_VERSION)));
     }
+    let of = |name: &'static str| sections.iter().filter(move |s| s.name == name).map(Rec);
+    let torn = |what: &str| StorageError::Parse(format!("chains: a {what} record is missing a field"));
 
+    // The id rides IN the bytes, so the decoder is self-contained — required by the replication path, where the bytes arrive off the wire with no vault address.
+    let fid_bytes = main.h32("friendship_id").ok_or_else(|| torn("friendship_chains"))?;
+    let friendship_id = FriendshipId::from_bytes(fid_bytes);
+    let participants: Vec<[u8; 32]> = main
+        .all("participant")
+        .into_iter()
+        .filter_map(|v| match v {
+            VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+            _ => None,
+        })
+        .collect();
     if participants.is_empty() {
         return Err(StorageError::Parse("No participants found".to_string()));
     }
 
-    // Lane labels (v8 additive) — their PRESENCE decides everything below: with labels, the chain / last_* multis are per-lane; without, this is a pre-lane blob whose per-participant copies are dead (the flag-day) and only its scalars survive.
-    let mut lane_labels: Vec<[u8; 32]> = Vec::new();
-    for field in section.get_fields("lane_label") {
-        if let Some(VsfType::hb(b)) = field.values.first() {
-            if let Ok(arr) = <[u8; 32]>::try_from(b.as_slice()) {
-                lane_labels.push(arr);
-            }
+    let (mut labels, mut positions, mut lane_chains, mut lane_eras) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+    let (mut last_plaintexts, mut last_received_hashes, mut last_received_times) = (Vec::new(), Vec::new(), Vec::new());
+    for l in of(LANE_SECTION) {
+        let (Some(label), Some(position), Some(chain), Some(era)) = (l.h32("label"), l.uint("position"), l.wrapped("chain", b'C'), l.uint("era")) else {
+            return Err(torn("lane"));
+        };
+        if chain.len() != CHAIN_SIZE {
+            return Err(StorageError::Parse(format!("lane chain is {} bytes, not {}", chain.len(), CHAIN_SIZE)));
         }
-    }
-    let lane_positions: Vec<u64> = section
-        .get_fields("lane_position")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64, // WHY/PROOF: a stamp read back from disk — i64 on the page; the u64 cast would wrap a negative
-            _ => 0,
-        })
-        .collect();
-    let our_label: Option<[u8; 32]> = section.get_value::<[u8; 32]>("our_label").ok();
-    let lane_eras: Vec<u64> = section
-        .get_fields("lane_era")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64, // WHY/PROOF: as above
-            _ => 0,
-        })
-        .collect();
-
-    // Chain bytes — per LANE when labels exist, ignored otherwise.
-    let mut chain_bytes = Vec::new();
-    for field in section.get_fields("chain") {
-        if let Some(VsfType::v(b'C', data)) = field.values.first() {
-            chain_bytes.extend(data);
-        }
+        labels.push(label);
+        positions.push(position);
+        lane_chains.push(Chain::from_full_bytes(&chain).ok_or_else(|| StorageError::Parse("lane chain malformed".to_string()))?);
+        lane_eras.push(era);
+        last_plaintexts.push(l.text("last_plaintext").map(String::into_bytes).unwrap_or_default());
+        last_received_hashes.push(l.hp32("last_received_hash"));
+        last_received_times.push(l.osc("last_received_time"));
     }
 
-    // === Hash chain state (v2) ===
-
-    // last_sent_hash - optional (None if not present or never sent)
-    let last_sent_hash: Option<[u8; 32]> = section.get_value::<[u8; 32]>("last_sent_hash").ok();
-
-    // last_received_hashes - one per participant (empty hb = None/anchor expected)
-    let mut last_received_hashes: Vec<Option<[u8; 32]>> = Vec::new();
-    for field in section.get_fields("last_received_hash") {
-        if let Some(v) = field.values.first() {
-            let hash_opt = match v {
-                VsfType::hp(bytes) if bytes.len() == 32 => {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(bytes);
-                    Some(arr)
-                }
-                VsfType::hb(bytes) if bytes.is_empty() => None,
-                _ => None,
-            };
-            last_received_hashes.push(hash_opt);
-        }
-    }
-
-    // === Pending messages (v2) ===
-    let eagle_times: Vec<i64> = section
-        .get_fields("pending_eagle_time")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
-            _ => None,
-        })
-        .collect();
-
-    let plaintexts: Vec<Vec<u8>> = section
-        .get_fields("pending_plaintext")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::x(s) => Some(s.as_bytes().to_vec()),
-            _ => None,
-        })
-        .collect();
-
-    let plaintext_hashes: Vec<[u8; 32]> = section
-        .get_fields("pending_plaintext_hash")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::hp(b) if b.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(b);
-                Some(arr)
-            }
-            _ => None,
-        })
-        .collect();
-
-    let prev_msg_hps: Vec<[u8; 32]> = section
-        .get_fields("pending_prev_msg_hp")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::hp(b) if b.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(b);
-                Some(arr)
-            }
-            _ => None,
-        })
-        .collect();
-
-    let msg_hps: Vec<[u8; 32]> = section
-        .get_fields("pending_msg_hp")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::hp(b) if b.len() == 32 => {
-                let mut arr = [0u8; 32];
-                arr.copy_from_slice(b);
-                Some(arr)
-            }
-            _ => None,
-        })
-        .collect();
-
-    let ciphertexts: Vec<Vec<u8>> = section
-        .get_fields("pending_ciphertext")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::v(b'X', data) => Some(data.clone()),
-            _ => None,
-        })
-        .collect();
-
-    // Persisted attempt counts — width-agnostic read (never variant-match a parsed integer). Absent (pre-field vaults) = the old restart behavior via the .get() fallback below; NOT folded into pending_count, or an old vault would zero the whole pending set.
-    let attempts_persisted: Vec<u8> = section
-        .get_fields("pending_attempts")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
-        .collect();
-
-    // Reconstruct pending messages (all arrays must have same length)
-    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-    let pending_count = eagle_times
-        .len()
-        .min(plaintexts.len())
-        .min(plaintext_hashes.len())
-        .min(prev_msg_hps.len())
-        .min(msg_hps.len())
-        .min(ciphertexts.len());
-
-    let split32 = |name: &str| -> Vec<Vec<[u8; 32]>> {
-        section
-            .get_fields(name)
-            .iter()
-            .filter_map(|f| f.values.first())
-            .map(|v| match v {
-                VsfType::hR(b) => b.chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).collect(),
-                _ => Vec::new(),
-            })
-            .collect()
-    };
-    let (pending_targets, pending_acked) = (split32("pending_targets"), split32("pending_acked"));
-    let pending_messages: Vec<PendingMessage> = (0..pending_count)
-        .map(|i| PendingMessage {
-            eagle_time: eagle_times[i],
-            plaintext: plaintexts[i].clone(),
-            plaintext_hash: plaintext_hashes[i],
-            prev_msg_hp: prev_msg_hps[i],
-            msg_hp: msg_hps[i],
-            ciphertext: ciphertexts[i].clone(),
-            // Not persisted (runtime-only braid-strand snapshot). A pending message reloaded after restart weaves no strands; in practice pending messages are short-lived (cleared on ACK) so this edge only matters if the app restarts mid-flight with an unacked message AND its braid strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
+    let split32 = |b: Vec<u8>| -> Vec<[u8; 32]> { b.chunks_exact(32).filter_map(|c| <[u8; 32]>::try_from(c).ok()).collect() };
+    let mut pending_messages: Vec<PendingMessage> = Vec::new();
+    for p in of(PENDING_SECTION) {
+        let (Some(eagle_time), Some(plaintext), Some(plaintext_hash), Some(prev_msg_hp), Some(msg_hp), Some(ciphertext), Some(attempts)) =
+            (p.osc("eagle_time"), p.text("plaintext"), p.hp32("plaintext_hash"), p.hp32("prev_msg_hp"), p.hp32("msg_hp"), p.wrapped("ciphertext", b'X'), p.uint("attempts"))
+        else {
+            return Err(torn("pending"));
+        };
+        pending_messages.push(PendingMessage {
+            eagle_time,
+            plaintext: plaintext.into_bytes(),
+            plaintext_hash,
+            prev_msg_hp,
+            msg_hp,
+            ciphertext,
+            // Not persisted (runtime-only braid-strand snapshot): pending messages are short-lived (cleared on ACK), so a reload mid-flight weaves no strands — a known minor gap.
             woven_strands: Vec::new(),
-            // Attempts SURVIVE the restart (floor 1): exhaustion is cumulative lane evidence — resetting it every launch meant the anchor-wedge detector could never arm inside a short session and a dead lane stayed undiagnosed forever. The deadline is still immediate: a reloaded pending resends right away (or, if already exhausted, sits as the standing evidence the next sync record reads).
-            attempts: attempts_persisted.get(i).copied().unwrap_or(1).max(1), // WHY/PROOF: read back from disk — a 0 would claim a sent message was never tried, and the floor-1 rule above says every pending has
-            next_retry_osc: eagle_times[i],
-            targets: pending_targets.get(i).cloned().unwrap_or_default(), // WHY/PROOF: optional persisted columns — absent on chains saved before they existed
-            acked_by: pending_acked.get(i).cloned().unwrap_or_default(), // (optional persisted column — see above)
-        })
-        .collect();
-
-    // === Bidirectional entropy state (v3) ===
-
-    // last_received_weave - derived weave hash for mixing (32 bytes)
-    let last_received_weave: Option<[u8; 32]> =
-        section.get_value::<[u8; 32]>("last_received_weave").ok();
-
-    // last_sent_weave - what we sent (what they received)
-    let last_sent_weave: Option<[u8; 32]> = section.get_value::<[u8; 32]>("last_sent_weave").ok();
-
-    // last_incorporated_hp - which of their messages we mixed in
-    let last_incorporated_hp: Option<[u8; 32]> =
-        section.get_value::<[u8; 32]>("last_incorporated_hp").ok();
-
-    // === Last plaintexts (v4) - one per participant ===
-    let last_plaintexts: Vec<Vec<u8>> = section
-        .get_fields("last_plaintext")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .filter_map(|v| match v {
-            VsfType::x(s) => Some(s.as_bytes().to_vec()),
-            _ => None,
-        })
-        .collect();
-
-    // === Last received times (v5) - one per participant ===
-    let last_received_times: Vec<Option<i64>> = section
-        .get_fields("last_received_time")
-        .iter()
-        .filter_map(|f| f.values.first())
-        .map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) if *osc == 0 => None,
-            VsfType::e(vsf::types::EtType::e6(osc)) => Some(*osc),
-            _ => None,
-        })
-        .collect();
-
-    // === Lanes flag-day gate (v8, docs/lanes.md): a pre-lanes blob is REJECTED, not adapted. Everything in it re-mints at the re-clutch the caller's chainless sweep triggers, and the same gate drops a stale sibling's replicated v7 bytes on the adopt path.
-    let version: u8 = section.get_value::<u8>("version").unwrap_or(0);
-    if version < 8 {
-        return Err(StorageError::Parse(format!(
-            "pre-lanes chains (v{version}) — flag-day: re-clutch re-mints"
-        )));
+            // WHY/PROOF: a stored count — a u8 on write, so anything wider is a foreign blob and reads as exhausted; 0 would claim a sent message was never tried, and every pending has been (floor 1).
+            attempts: u8::try_from(attempts).unwrap_or(u8::MAX).max(1),
+            next_retry_osc: eagle_time,
+            targets: p.bytes("targets").map(split32).unwrap_or_default(),
+            acked_by: p.bytes("acked").map(split32).unwrap_or_default(),
+        });
     }
-
-    // === History key (v6) — optional; absent (pre-v6 file) leaves None ===
-    let history_key: Option<[u8; 32]> = section.get_value::<[u8; 32]>("history_key").ok();
-
-    // The writer stamps every eagle-time and era numeral as `e6`; `get_value::<i64>` does not read that type back (it returned 0 for every one of them — genesis_osc lost on every load, so two fresh eras compared 0 vs 0 and refused each other forever, field 2026-09-09). Read the typed value explicitly, widening any plain integer a future writer might use.
-    let e6_i64 = |name: &str| -> Result<i64, ()> {
-        section
-            .get_fields(name)
-            .first()
-            .and_then(|f| f.values.first())
-            .and_then(|v| match v {
-                VsfType::e(vsf::types::EtType::e6(o)) => Some(*o),
-                other => other.as_i64(),
-            })
-            .ok_or(())
-    };
-    // === Mutation stamp (v7) — optional; absent (pre-v7 file) = 0, so any stamped replica beats it ===
-    let mutated_osc: i64 = e6_i64("mutated_osc").unwrap_or(0);
-    let genesis_osc: i64 = e6_i64("genesis_osc").unwrap_or(0);
-
-    // The id rides IN the bytes (the encoder always writes it), so the decoder is self-contained — required by the replication path, where the bytes arrive off the wire with no vault address.
-    let fid_bytes: [u8; 32] = section
-        .get_value::<[u8; 32]>("friendship_id")
-        .map_err(|e| StorageError::Parse(format!("friendship_id: {}", e)))?;
-    let friendship_id = crate::types::friendship::FriendshipId::from_bytes(fid_bytes);
-
-    // Reconstruct chains with full v5 state, then install the optional v6 key
-    // A pre-lane blob's pendings were built for the retired per-participant wire — carrying them forward would retransmit frames nobody can decrypt. Undelivered rows re-send thru the held-messages path instead.
-    let has_lanes = !lane_labels.is_empty();
-    let pending_messages = if has_lanes {
-        pending_messages
-    } else {
-        Vec::new()
-    };
+    // A chains blob with no lanes has nothing its pendings could retransmit on — undelivered rows re-send thru the held-messages path instead.
+    let has_lanes = !labels.is_empty();
+    if !has_lanes {
+        pending_messages.clear();
+    }
 
     let mut chains = FriendshipChains::from_storage_v5(
         friendship_id,
         participants,
         &[],
-        last_sent_hash,
+        main.hp32("last_sent_hash"),
         Vec::new(),
         pending_messages,
-        last_received_weave,
-        last_sent_weave,
-        last_incorporated_hp,
+        main.hp32("last_received_weave"),
+        main.hp32("last_sent_weave"),
+        main.hp32("last_incorporated_hp"),
         Vec::new(),
         Vec::new(),
     )
     .ok_or_else(|| StorageError::Parse("Failed to reconstruct chains".to_string()))?;
-    chains.set_history_key(history_key);
-    let lane_root = section.get_value::<[u8; 32]>("lane_root").ok();
+    chains.set_history_key(main.h32("history_key"));
+    let lane_root = main.h32("lane_root");
     chains.set_lane_root(lane_root);
-    chains.genesis_osc = genesis_osc;
-    // Era state: absent = a pre-era blob — era 0 of the lineage its own root names, every lane in it.
-    chains.era_index = e6_i64("era_index").map(|v| v.max(0) as u64).unwrap_or(0); // WHY/PROOF: stored i64 counters (era index, rows, grace) decode through a u64/u32 cast that would wrap a negative
-    chains.era_lineage = section
-        .get_value::<[u8; 32]>("era_lineage")
-        .ok()
+    chains.genesis_osc = main.osc("genesis_osc").ok_or_else(|| torn("friendship_chains"))?;
+    chains.era_index = main.uint("era_index").ok_or_else(|| torn("friendship_chains"))?;
+    chains.era_lineage = main
+        .h32("era_lineage")
         .or_else(|| lane_root.as_ref().map(crate::crypto::clutch::era_lineage))
-        .unwrap_or([0u8; 32]);
-    chains.rows_since_ratchet = e6_i64("rows_since_ratchet").map(|v| v.max(0) as u32).unwrap_or(0); // (stored counter — see above)
-    if let (Ok(idx), Ok(root)) = (e6_i64("retired_index"), section.get_value::<[u8; 32]>("retired_root")) {
+        .ok_or_else(|| torn("friendship_chains"))?;
+    // WHY/PROOF: a u32 on write — a wider stored value is a foreign blob, and saturating reads it as "due to ratchet now" rather than wrapping to a small count.
+    chains.rows_since_ratchet = main.uint("rows_since_ratchet").map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX));
+    if let (Some(idx), Some(root)) = (main.uint("retired_index"), main.h32("retired_root")) {
         chains.set_retired_era(crate::types::friendship::RetiredEra {
-            era_index: idx.max(0) as u64, // (stored counter — see above)
+            era_index: idx,
             lane_root: root,
-            history_key: section.get_value::<[u8; 32]>("retired_history_key").ok(),
+            history_key: main.h32("retired_history_key"),
             tag: crate::crypto::clutch::era_tag(&root),
-            grace_left: e6_i64("retired_grace").map(|v| v.max(0) as u32).unwrap_or(0), // (stored counter — see above)
+            // WHY/PROOF: a u32 on write — as above, a wider value saturates to the longest grace instead of wrapping to none.
+            grace_left: main.uint("retired_grace").map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX)),
         });
     }
-    if let (Ok(idx), Ok(root)) = (e6_i64("pending_index"), section.get_value::<[u8; 32]>("pending_root")) {
+    if let (Some(idx), Some(root)) = (main.uint("pending_index"), main.h32("pending_root")) {
         chains.install_pending(crate::types::friendship::PendingEra {
-            era_index: idx.max(0) as u64, // (stored counter — see above)
+            era_index: idx,
             lane_root: root,
-            history_key: section.get_value::<[u8; 32]>("pending_history_key").ok(),
+            history_key: main.h32("pending_history_key"),
             tag: crate::crypto::clutch::era_tag(&root),
-            resp_osc: e6_i64("pending_resp_osc").ok(),
+            resp_osc: main.osc("pending_resp_osc"),
         });
     }
     if has_lanes {
-        use crate::crypto::chain::{Chain, CHAIN_SIZE};
-        if chain_bytes.len() != lane_labels.len() * CHAIN_SIZE {
-            return Err(StorageError::Parse(format!(
-                "lane chain bytes mismatch: {} lanes, {} bytes",
-                lane_labels.len(),
-                chain_bytes.len()
-            )));
-        }
-        let mut lane_chains = Vec::with_capacity(lane_labels.len());
-        for i in 0..lane_labels.len() {
-            let start = i * CHAIN_SIZE;
-            let chain = Chain::from_full_bytes(&chain_bytes[start..start + CHAIN_SIZE])
-                .ok_or_else(|| StorageError::Parse("lane chain malformed".to_string()))?;
-            lane_chains.push(chain);
-        }
-        // Positions default to 0 when the field is short (never expected; harmless — a checkpoint merge treats it as furthest-behind).
-        let mut positions = lane_positions;
-        positions.resize(lane_labels.len(), 0);
-        let n = lane_labels.len();
-        let mut lrh = last_received_hashes;
-        lrh.resize(n, None);
-        let mut lpt = last_plaintexts;
-        lpt.resize(n, Vec::new());
-        let mut lrt = last_received_times;
-        lrt.resize(n, None);
-        chains.install_lanes(
-            lane_labels,
-            positions,
-            lane_chains,
-            lpt,
-            lrh,
-            lrt,
-            our_label,
-            lane_eras,
-        );
+        chains.install_lanes(labels, positions, lane_chains, last_plaintexts, last_received_hashes, last_received_times, main.h32("our_label"), lane_eras);
     }
-    chains.mutated_osc = mutated_osc;
-    // === GROUP state (v9, docs/molecules.md) — absent on every friendship blob ===
-    // Width-agnostic flag read (never variant-match a parsed integer).
-    let is_molecule = section
-        .get_fields("group")
-        .first()
-        .and_then(|f| f.values.first())
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0)
-        != 0;
-    if is_molecule {
+    chains.mutated_osc = main.osc("mutated_osc").ok_or_else(|| torn("friendship_chains"))?;
+
+    if main.uint("group").is_some_and(|v| v != 0) {
         chains.molecule = true;
         // The token a friendship derives from its participants is WRONG for a group (membership moves; the token must not): recompute the group token from the id, which IS the group id.
         chains.conversation_token = crate::types::molecule::MoleculeId(fid_bytes).token();
-        // KEM bundle rows, index-aligned; a short or torn multi truncates to the complete rows.
-        let eras: Vec<u64> = section
-            .get_fields("kem_published_era")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .map(|v| match v {
-                VsfType::e(vsf::types::EtType::e6(o)) => (*o).max(0) as u64, // WHY/PROOF: a stamp read back from disk, as above
-                other => other.as_u64().unwrap_or(0),
-            })
-            .collect();
-        let sets: Vec<u8> = section
-            .get_fields("kem_set")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| v.as_u64().and_then(|n| u8::try_from(n).ok()))
-            .collect();
-        let mlkems: Vec<Vec<u8>> = section
-            .get_fields("kem_mlkem_sk")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| match v {
-                VsfType::v(b'K', d) => Some(d.clone()),
-                _ => None,
-            })
-            .collect();
-        let xs: Vec<[u8; 32]> = section
-            .get_fields("kem_x_sk")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| match v {
-                VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
-                _ => None,
-            })
-            .collect();
-        let hqcs: Vec<Vec<u8>> = section
-            .get_fields("kem_hqc_sk")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| match v {
-                VsfType::v(b'K', d) => Some(d.clone()),
-                _ => None,
-            })
-            .collect();
-        let bids: Vec<[u8; 32]> = section
-            .get_fields("kem_bundle_id")
-            .iter()
-            .filter_map(|f| f.values.first())
-            .filter_map(|v| match v {
-                VsfType::hb(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
-                _ => None,
-            })
-            .collect();
-        // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
-        let n = eras.len().min(sets.len()).min(mlkems.len()).min(xs.len()).min(hqcs.len()).min(bids.len());
-        let kems: Vec<crate::crypto::era::EraDecapKeys> = (0..n)
-            .map(|i| crate::crypto::era::EraDecapKeys {
-                published_era: eras[i],
-                bundle_id: bids[i],
-                kem_set: sets[i],
-                mlkem_sk: mlkems[i].clone(),
-                x_sk: xs[i],
-                hqc_sk: hqcs[i].clone(),
-            })
-            .collect();
+        let mut kems: Vec<crate::crypto::era::EraDecapKeys> = Vec::new();
+        for k in of(KEM_SECTION) {
+            let (Some(published_era), Some(bundle_id), Some(set), Some(mlkem_sk), Some(x_sk), Some(hqc_sk)) =
+                (k.uint("published_era"), k.h32("bundle_id"), k.uint("set"), k.wrapped("mlkem_sk", b'K'), k.h32("x_sk"), k.wrapped("hqc_sk", b'K'))
+            else {
+                return Err(torn("kem"));
+            };
+            let kem_set = u8::try_from(set).map_err(|_| StorageError::Parse(format!("kem set {set} does not fit its byte")))?;
+            kems.push(crate::crypto::era::EraDecapKeys { published_era, bundle_id, kem_set, mlkem_sk, x_sk, hqc_sk });
+        }
         chains.set_molecule_kems(kems);
-        if let Some(VsfType::hR(b)) = section.get_fields("molecule_roster").first().and_then(|f| f.values.first()) {
-            chains.set_molecule_roster(b.clone());
+        if let Some(b) = main.bytes("molecule_roster") {
+            chains.set_molecule_roster(b);
         }
     }
     Ok(chains)
@@ -970,6 +472,13 @@ mod tests {
         );
     }
 
+    /// The main section's bytes alone, cut out of a document by its TOC entry — a headerless blob, the shape the strict decoders must refuse.
+    fn bare_main_section(doc: &[u8]) -> Vec<u8> {
+        let (header, _) = vsf::verification::read_verified(doc, None).expect("our own document verifies");
+        let f = header.fields.iter().find(|f| f.name == CHAINS_SECTION).expect("main section in the TOC");
+        doc[f.offset_bytes..f.offset_bytes + f.size_bytes].to_vec()
+    }
+
     /// The SHARED decoder — the one the fleet chain-replication adopt path uses — must be strict. A headerless blob arriving from another device must never be parsed into live ratchet state; that is what the document wrapper exists to prevent.
     #[test]
     fn shared_decoder_rejects_a_headerless_blob() {
@@ -979,9 +488,7 @@ mod tests {
         let chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
 
         let doc = chains_to_vsf_bytes(&chains).expect("encode");
-        let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &doc, None)
-            .expect("parse our own document");
-        let bare = section.encode().expect("bare section");
+        let bare = bare_main_section(&doc);
 
         assert!(
             chains_from_vsf_bytes(&bare).is_err(),
@@ -1005,9 +512,7 @@ mod tests {
 
         // Plant a PRE-DOCUMENT blob at the chains address, exactly as a v51-era build left it.
         let doc = chains_to_vsf_bytes(&chains).expect("encode");
-        let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &doc, None)
-            .expect("parse");
-        let bare = section.encode().expect("bare section");
+        let bare = bare_main_section(&doc);
         storage
             .write_addr(&chains_key(&fid), &bare)
             .expect("plant legacy blob");
@@ -1064,16 +569,18 @@ mod tests {
         assert_eq!(subset.molecule_roster(), &[0xAB; 40][..], "replication carries membership with the keys");
     }
 
-    /// A FRIENDSHIP blob must not change by a byte for the group work: it stays version 8 and writes none of the v9 fields, so a fielded sibling running an older schema adopts it exactly as before.
+    /// A FRIENDSHIP blob carries no group state: no group flag, no KEM custody sections — and every lane is its own record section.
     #[test]
     fn a_friendship_blob_writes_no_group_fields() {
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
         let chains = FriendshipChains::from_clutch(&[[1u8; 32], [2u8; 32]], &eggs);
         let bytes = chains_to_vsf_bytes(&chains).expect("encode");
-        let section = vsf::schema::SectionBuilder::parse_document(chains_schema(), &bytes, None).expect("parse");
-        assert_eq!(section.get_value::<u8>("version").expect("version"), 8, "friendships stay v8");
-        assert!(section.get_fields("group").is_empty(), "no group flag on a friendship");
-        assert!(section.get_fields("kem_published_era").is_empty(), "no KEM custody rows either");
+        let sections = crate::storage::record::verified_sections(&bytes, None).expect("verified");
+        let main = sections.iter().find(|s| s.name == CHAINS_SECTION).map(crate::storage::record::Rec).expect("main");
+        assert_eq!(main.uint("version"), Some(CHAINS_VERSION as u64));
+        assert!(main.uint("group").is_none(), "no group flag on a friendship");
+        assert!(!sections.iter().any(|s| s.name == KEM_SECTION), "no KEM custody records either");
+        assert_eq!(sections.iter().filter(|s| s.name == LANE_SECTION).count(), chains.lane_summary().len(), "one section per lane");
         let back = chains_from_vsf_bytes(&bytes).expect("decode");
         assert!(!back.molecule);
         assert!(back.molecule_kems().is_empty());
