@@ -2850,6 +2850,7 @@ impl PhotonApp {
                     local_osc,
                     sources_used,
                     sources_queried,
+                    exchanges,
                 } => {
                     let ms = |o: i64| o * 1000 / crate::OSC_PER_SEC;
                     crate::logf!(
@@ -2860,7 +2861,12 @@ impl PhotonApp {
                         sources_queried
                     );
                     // THE load-bearing use (Nick's mandate, 2026-09-03): the verdict becomes photon's time base, so message stamps are comparable across devices whatever each OS clock believes. Never corrects the system clock — that belongs to the human.
-                    crate::network::time_base::adopt(offset_osc, confidence_osc, local_osc);
+                    // The precise exchanges feed TrueClock's fit (offset AND rate); a draw with none (HTTPS only) falls back to the consensus as one wide exchange. A live wave never sees a step — the fit slews (docs/lock.md §4.3).
+                    if exchanges.is_empty() {
+                        crate::network::time_base::adopt(offset_osc, confidence_osc, local_osc);
+                    } else {
+                        crate::network::time_base::feed(&exchanges, self.active_wave.is_some());
+                    }
                     self.clock_consensus = Some((offset_osc, confidence_osc));
                     self.clock_off = if offset_osc.abs() > CLOCK_OFF_THRESHOLD_OSC {
                         crate::logf!("Clock: system clock off by {} ms — raising banner (warn only, not corrected)", ms(offset_osc));

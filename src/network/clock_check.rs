@@ -32,9 +32,29 @@ pub enum ClockCheckResult {
         local_osc: i64,
         sources_used: usize,
         sources_queried: usize,
+        /// The precise sources' individual exchanges, on the boot clock — what TrueClock fits (docs/lock.md §4). Empty when only HTTPS answered; the consensus above is then the only input.
+        exchanges: Vec<crate::network::true_clock::Exchange>,
     },
     /// The consensus query failed (offline, every source unreachable, etc). Not an anomaly — we simply couldn't verify, so the UI leaves the banner in its prior state.
     Unavailable(String),
+}
+
+/// Each precise observation as a TrueClock exchange on the boot clock. Only the sub-millisecond protocols count (NTP, NTS, Roughtime — HTTPS's Date header is whole-second), and only sources the consensus did not reject.
+/// The offset follows nunc's own convention (the server's mid-trip time against the local receipt less half the trip), and each receipt, read on the WALL clock, moves onto the boot clock by how long before the query returned it landed — both clocks read once, here, so a wall-clock step elsewhere cannot tear the batch.
+#[cfg(not(target_os = "redox"))]
+fn exchanges_of(t: &nunc::NuncTime) -> Vec<crate::network::true_clock::Exchange> {
+    let (boot_now, wall_now) = (crate::network::time_base::boot_now(), vsf::eagle_time_oscillations());
+    t.raw
+        .iter()
+        .filter(|o| matches!(o.protocol, nunc::Protocol::Ntp | nunc::Protocol::Nts | nunc::Protocol::Roughtime))
+        .filter(|o| !t.outliers.iter().any(|r| r.source == o.source))
+        .map(|o| {
+            let rtt = nunc::eagle::from_millis(o.rtt_ms as i64);
+            let boot = boot_now - (wall_now - o.local_et);
+            let true_at_receipt = o.timestamp_et + rtt / 2;
+            crate::network::true_clock::Exchange { boot, offset: true_at_receipt - boot, delay: rtt }
+        })
+        .collect()
 }
 
 /// Spawn the background clock check. Mirrors the avatar / clutch worker shape: own thread, own current-thread tokio runtime (nunc is async), result back over an `mpsc` channel, then wake the event loop so the next frame drains it. Never blocks the UI thread.
@@ -63,6 +83,7 @@ pub fn spawn_clock_check(
             match nunc::query(nunc::Mode::Fast).await {
                 // nunc reports the offset AND the local instant it is anchored to, so there is nothing to sample here and no window to be wrong about.
                 Ok(t) => ClockCheckResult::Ok {
+                    exchanges: exchanges_of(&t),
                     offset_osc: t.offset_et,
                     confidence_osc: t.confidence_et,
                     local_osc: t.local_et,

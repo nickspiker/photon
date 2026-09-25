@@ -49,69 +49,58 @@ fn boot_osc() -> i64 {
     }
 }
 
-/// One measurement, anchored where it can't be invalidated: `true_osc` was true at the moment `boot` read (the suspend-counting monotonic clock, in oscillations), and that clock is the only thing we extrapolate from.
-struct Anchor {
-    boot: i64,
-    true_osc: i64,
-    confidence_osc: i64,
-}
-
-static ANCHOR: Mutex<Option<Anchor>> = Mutex::new(None);
+/// The disciplined clock (docs/lock.md §4): exchanges against the reference, fitted to offset + rate over the suspend-counting boot clock. Replaces the single anchor, which carried an offset but no rate — every hour of drift since the last consensus was error it could not see.
+static CLOCK: Mutex<crate::network::true_clock::TrueClock> = Mutex::new(crate::network::true_clock::TrueClock::new());
 
 /// The newest oscillation count [`stamp_osc`] has handed out. A refresh that corrects us BACKWARD must never let the next stamp land behind one already in a row — that would invert our own conversation against itself.
 static LAST_ISSUED: AtomicI64 = AtomicI64::new(i64::MIN);
 
-/// Adopt a nunc verdict. `offset_osc` = true − local, `local_osc` = the local clock reading it is anchored to, both straight from `NuncTime` (no sampling here — the caller cannot know when the consensus was true, which is the entire reason nunc reports its own anchor).
-///
-/// A worse measurement never replaces a better fresh one: an unlucky source draw (HTTPS-only, ±500 ms) must not degrade an anchor that a good draw set at ±5 ms. It IS adopted once the standing anchor goes stale, because a wide fresh reading beats a narrow ancient one.
-pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
-    /// Past this age the standing anchor has drifted (quartz runs ±20-50 ppm ⇒ ~180 ms per hour), so any fresh reading outranks it.
-    const STALE_OSC: i64 = 2 * 3600 * crate::OSC_PER_SEC;
-
-    let now_boot = boot_osc();
-    let mut slot = ANCHOR.lock().unwrap();
-    let replace = match slot.as_ref() {
-        None => true,
-        Some(cur) => {
-            let age = now_boot - cur.boot;
-            confidence_osc <= cur.confidence_osc || age > STALE_OSC
-        }
-    };
-    if !replace {
-        crate::logf!(
-            "Clock: keeping the standing anchor — new reading is looser (±{} ms vs ±{} ms)",
-            confidence_osc * 1000 / crate::OSC_PER_SEC,
-            slot.as_ref().map(|c| c.confidence_osc).unwrap_or(0) * 1000 / crate::OSC_PER_SEC
-        );
-        return;
-    }
-    // The consensus was true at `local_osc` by the LOCAL clock; that instant has already passed by however long the verdict took to reach us, so carry it forward on the monotonic clock rather than pretending it is now.
-    let elapsed_since_local = vsf::eagle_time_oscillations() - local_osc;
-    *slot = Some(Anchor {
-        boot: now_boot,
-        true_osc: local_osc + offset_osc + elapsed_since_local,
-        confidence_osc,
-    });
-    crate::logf!(
-        "Clock: anchor set — offset {} ms (±{} ms); photon time is now independent of the system clock",
-        offset_osc * 1000 / crate::OSC_PER_SEC,
-        confidence_osc * 1000 / crate::OSC_PER_SEC
-    );
+/// The boot clock, public for the clock-check worker, which converts each observation's local instant onto it at the moment the query returns.
+pub fn boot_now() -> i64 {
+    boot_osc()
 }
 
-/// Adopt the SERVER'S verdict (2026-09-17, Theresa's phone: "Timestamp outside valid window" on every log submit, and nothing to say whether photon's clock was ahead or behind): FGTW refused a frame we stamped and answered with its own clock in the refusal. That server is NTP-disciplined and is the one judging the window, so its reading outranks whatever anchor we hold — this REPLACES the standing anchor unconditionally (the standing one just proved itself wrong by over a minute), at the width the round trip allows: the server read its clock somewhere inside the trip, so the midpoint is the estimate and half the trip the honest width, floored at a quarter second. A later nunc consensus (±ms) refines it thru [`adopt`]'s ordinary rule.
+/// Feed reference exchanges (the clock-check worker's, already on the boot clock) and refit. `no_step` = a wave is live, so the new fit slews in at 50 µs/s instead of jumping (spec §4.3). Every fit is logged (spec §4.3).
+pub fn feed(exchanges: &[crate::network::true_clock::Exchange], no_step: bool) {
+    let now = boot_osc();
+    let report = CLOCK.lock().unwrap().feed(exchanges, crate::network::true_clock::LockSource::Ntp, now, no_step);
+    if let Some(r) = report {
+        let st = now_stamp();
+        crate::logf!(
+            "Clock: fit — window = {}, kept = {}, min delay = {} µs, residual = {} µs, rate = {} ppb, uncertainty = {} µs, lock = {}{}",
+            r.window,
+            r.kept,
+            r.min_delay_ns / 1000,
+            r.residual_ns / 1000,
+            r.rate_ppb,
+            st.uncertainty_ns / 1000,
+            st.source.name(),
+            if no_step { " (slewing: a wave is live)" } else { "" }
+        );
+    }
+}
+
+/// Adopt a nunc CONSENSUS when it brought no precise exchange of its own (HTTPS-only draws): one exchange at its anchor, whose delay is twice the consensus width so the fit reports that width as its uncertainty. `offset_osc` = true − system wall clock, `local_osc` = the wall clock reading it is anchored to, straight from `NuncTime`.
+pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
+    let (boot, wall) = (boot_osc(), vsf::eagle_time_oscillations());
+    // The consensus was true at `local_osc` by the WALL clock; carry that instant onto the boot clock by how long ago it was.
+    let at = boot - (wall - local_osc);
+    feed(&[crate::network::true_clock::Exchange { boot: at, offset: local_osc + offset_osc - at, delay: 2 * confidence_osc }], false);
+}
+
+/// Adopt the SERVER'S verdict (2026-09-17, Theresa's phone: "Timestamp outside valid window" on every log submit, and nothing to say whether photon's clock was ahead or behind): FGTW refused a frame we stamped and answered with its own clock in the refusal. That server is NTP-disciplined and is the one judging the window, so its reading outranks the whole fit — the window RESTARTS from it and the clock steps (a clock proven wrong by over a minute is not slewed thru). The server read its clock somewhere inside the trip, so the midpoint is the estimate and half the trip the honest width, floored at a quarter second. The next consensus refines it thru the ordinary fit.
 pub fn adopt_from_server(server_now_osc: i64, rtt_osc: i64) {
     let rtt = rtt_osc.max(0); // WHY/PROOF: the RTT is measured across a wall clock that can step backwards mid-flight — a negative round trip is 0
-    let confidence_osc = (rtt / 2).max(crate::OSC_PER_SEC / 4);
-    let true_now = server_now_osc + rtt / 2;
-    let system_now = vsf::eagle_time_oscillations();
+    let delay = rtt.max(crate::OSC_PER_SEC / 2);
+    let boot = boot_osc();
     let before = now_osc();
-    *ANCHOR.lock().unwrap() = Some(Anchor { boot: boot_osc(), true_osc: true_now, confidence_osc });
+    let true_now = server_now_osc + rtt / 2;
+    CLOCK.lock().unwrap().reset_to(crate::network::true_clock::Exchange { boot, offset: true_now - boot, delay }, crate::network::true_clock::LockSource::Ntp);
     crate::logf!(
         "Clock: FGTW refused our stamp — re-anchored on the server's clock: photon time moves {} ms, now {} ms off the system clock (±{} ms); a nunc consensus will refine it",
         (true_now - before) * 1000 / crate::OSC_PER_SEC,
-        (true_now - system_now) * 1000 / crate::OSC_PER_SEC,
-        confidence_osc * 1000 / crate::OSC_PER_SEC
+        (true_now - vsf::eagle_time_oscillations()) * 1000 / crate::OSC_PER_SEC,
+        delay / 2 * 1000 / crate::OSC_PER_SEC
     );
 }
 
@@ -122,13 +111,29 @@ pub fn server_now_from_detail(detail: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
-/// True time in oscillations, extrapolated from the anchor on the monotonic clock. Falls back to the raw system clock when nunc has never reached consensus — a device that has never been online still has to send.
-pub fn now_osc() -> i64 {
-    let slot = ANCHOR.lock().unwrap();
-    match slot.as_ref() {
-        Some(a) => a.true_osc + (boot_osc() - a.boot),
-        None => vsf::eagle_time_oscillations(),
+/// True time now, with its uncertainty and lock (spec §4.4 `now`). Before any fit this is the raw system clock marked `Free` — a device that has never been online still has to send, and its stamps say so.
+pub fn now_stamp() -> crate::network::true_clock::Stamp {
+    stamp_at(boot_osc())
+}
+
+/// True time at a past (or future) boot instant — capture and playout stamps (spec §4.4 `eagle_of`).
+pub fn stamp_at(boot: i64) -> crate::network::true_clock::Stamp {
+    let st = CLOCK.lock().unwrap().eagle_of(boot);
+    if st.source == crate::network::true_clock::LockSource::Free {
+        // WHY/PROOF: the boot clock's reading is not a date — never disciplined, the wall clock (whatever the OS says) is the only absolute we have, and `Free` tells every reader not to trust it.
+        return crate::network::true_clock::Stamp { eagle: vsf::eagle_time_oscillations() + (boot - boot_osc()), ..st };
     }
+    st
+}
+
+/// The boot instant at which true time will read `eagle` — for scheduling against true time (spec §4.4 `mono_of`).
+pub fn boot_of(eagle: i64) -> i64 {
+    CLOCK.lock().unwrap().boot_of(eagle)
+}
+
+/// True time in oscillations (see [`now_stamp`] for its uncertainty and lock).
+pub fn now_osc() -> i64 {
+    now_stamp().eagle
 }
 
 /// How far past our known time an INSIDER-signed stamp may run and still be believed (2026-09-25, Nick: "future dated peer records need to floor with known local time").
@@ -169,12 +174,14 @@ pub fn stamp_osc() -> i64 {
     }
 }
 
-/// The standing correction for display: `(offset_osc, confidence_osc)`, where offset is true − system clock RIGHT NOW (recomputed, so it stays honest if the human moves the system clock after the measurement). `None` until the first consensus.
+/// The standing correction for display: `(offset_osc, uncertainty_osc)`, where offset is true − system clock RIGHT NOW (recomputed, so it stays honest if the human moves the system clock after the measurement). `None` until the first fit.
 pub fn offset_now() -> Option<(i64, i64)> {
-    let slot = ANCHOR.lock().unwrap();
-    let a = slot.as_ref()?;
-    let true_now = a.true_osc + (boot_osc() - a.boot);
-    Some((true_now - vsf::eagle_time_oscillations(), a.confidence_osc))
+    let st = now_stamp();
+    if st.source == crate::network::true_clock::LockSource::Free {
+        return None;
+    }
+    let unc_osc = (st.uncertainty_ns as i128 * crate::OSC_PER_SEC as i128 / 1_000_000_000) as i64;
+    Some((st.eagle - vsf::eagle_time_oscillations(), unc_osc))
 }
 
 #[cfg(test)]
@@ -191,11 +198,11 @@ mod tests {
 
     use super::*;
 
-    /// ANCHOR and LAST_ISSUED are process globals and the harness runs tests on parallel threads — each test holds the gate and starts from a clean slate (the flake: floor_from_storage's ±1ms adopt landing mid-flight displaced a_worse_measurement's anchor).
+    /// CLOCK and LAST_ISSUED are process globals and the harness runs tests on parallel threads — each test holds the gate and starts from a clean slate (the flake: floor_from_storage's ±1ms adopt landing mid-flight displaced a_worse_measurement's anchor).
     static GATE: Mutex<()> = Mutex::new(());
     fn hold_clean() -> std::sync::MutexGuard<'static, ()> {
         let g = GATE.lock().unwrap_or_else(|p| p.into_inner());
-        *ANCHOR.lock().unwrap() = None;
+        *CLOCK.lock().unwrap() = crate::network::true_clock::TrueClock::new();
         LAST_ISSUED.store(i64::MIN, Ordering::Relaxed);
         g
     }
@@ -211,10 +218,10 @@ mod tests {
         adopt_from_server(system, crate::OSC_PER_SEC * 2 / 5);
         let off = now_osc() - vsf::eagle_time_oscillations();
         assert!(off.abs() < crate::OSC_PER_SEC, "re-anchored near true time, got {} ms", off * 1000 / crate::OSC_PER_SEC);
-        assert_eq!(offset_now().map(|(_, c)| c), Some(crate::OSC_PER_SEC / 4));
+        assert!(offset_now().is_some_and(|(_, c)| (c - crate::OSC_PER_SEC / 4).abs() <= crate::OSC_PER_SEC / 1000), "the quarter-second floor");
         // A nunc consensus at ±3 ms then outranks the server's width.
         adopt(0, crate::OSC_PER_SEC * 3 / 1000, vsf::eagle_time_oscillations());
-        assert_eq!(offset_now().map(|(_, c)| c), Some(crate::OSC_PER_SEC * 3 / 1000));
+        assert!(offset_now().is_some_and(|(_, c)| (c - crate::OSC_PER_SEC * 3 / 1000).abs() <= crate::OSC_PER_SEC / 10_000), "the ±3 ms consensus outranks it");
         // The refusal detail parses; anything else does not.
         assert_eq!(server_now_from_detail("Timestamp outside valid window: client is 1821s behind the server (server_now=123456789)"), Some(123456789));
         assert_eq!(server_now_from_detail("bad_signature: nope"), None);

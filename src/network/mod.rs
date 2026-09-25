@@ -22,6 +22,7 @@ pub mod updates;
 pub mod wfd;
 
 pub mod time_base;
+pub mod true_clock;
 pub use clock_check::spawn_clock_check;
 pub use clock_check::{ClockCheckResult, ClockJumpDetector, ClockWake};
 pub use clutch_jobs::{

@@ -234,6 +234,22 @@ impl PhotonApp {
     }
 
     /// Place a wave to the open (or named) contact. One live wave at a time — v1 is singular by design.
+    /// A wave names its frames by true time (docs/lock.md): one starting on a consensus older than ten minutes asks for a fresh one, so the fit it slews toward is current. The wave's own start is the edge — no timer.
+    pub(super) fn freshen_clock_for_wave(&mut self) {
+        const FRESH: std::time::Duration = std::time::Duration::from_secs(600);
+        if !self.online || self.clock_last_check.is_some_and(|t| t.elapsed() < FRESH) {
+            return;
+        }
+        self.clock_last_check = Some(std::time::Instant::now());
+        crate::log("Clock: a wave is starting on a stale fit — asking nunc for a fresh consensus");
+        #[cfg(not(target_os = "android"))]
+        if let Some(proxy) = self.event_proxy.clone() {
+            crate::network::spawn_clock_check(self.clock_check_tx.clone(), Some(proxy));
+        }
+        #[cfg(target_os = "android")]
+        crate::network::spawn_clock_check(self.clock_check_tx.clone(), None);
+    }
+
     pub(super) fn start_wave(&mut self, ci: usize) {
         if self.active_wave.is_some() {
             crate::log("WAVE: already in a wave");
@@ -280,6 +296,7 @@ impl PhotonApp {
         // THIS device placed this wave — the only license to loud-kill a strayed answer for it later (see the Answer arm's sibling law).
         self.dialed_wave_ids.insert(wave_id);
         // The Outgoing record exists BEFORE the offer goes out: the offer's lane key is captured at its send COMMIT (messaging.rs drain_braid_tx), and that commit can drain during the send itself when the chain is already at its window (2026-09-10 Esme/Nick: two dials in a row committed inside the send, found no active wave, captured nothing — the express offer never fired and the answering side's ring lease lapsed at 3 s).
+        self.freshen_clock_for_wave();
         self.active_wave = Some(ActiveWave {
             wave_id,
             peer_handle_hash: peer,
@@ -791,6 +808,7 @@ impl PhotonApp {
                             );
                             let peer_device = device
                                 .filter(|d| self.contacts.get(ci).is_some_and(|c| c.knows_device(d)));
+                            self.freshen_clock_for_wave();
                             self.active_wave = Some(ActiveWave {
                                 wave_id,
                                 peer_handle_hash: peer,
@@ -856,6 +874,7 @@ impl PhotonApp {
                         // The offer's claimed origin device, honoured only if the friend's fold vouches for it (routing info, not authentication).
                         let peer_device = device
                             .filter(|d| self.contacts.get(ci).is_some_and(|c| c.knows_device(d)));
+                        self.freshen_clock_for_wave();
                         self.active_wave = Some(ActiveWave {
                             wave_id,
                             peer_handle_hash: peer,
