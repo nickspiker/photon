@@ -168,6 +168,8 @@ A `String` holds words a human typed or reads. The moment code writes `format!("
 
 **If you find yourself building a delimiter-separated string to carry more than a human's words, STOP. Add a field.**
 
+**And never keep a compatibility reader for a text encoding.** (Nick, 2026-09-24.) Every string parser left alive is an attack surface — a hatch, a lever an attacker can pull: craft a message whose text matches the old grammar and the code does something the typed path would have refused. VSF validates what it reads — typed values, field names held to a strict ASCII convention, a provenance hash over the whole document — and a hand parser checks none of it. When a text encoding is replaced, its reader dies the same day: legacy rows are dropped, never parsed.
+
 ## VSF Type Markers Are Self-Describing
 
 **NEVER rely on position to determine what a value is. The type marker tells you.**
