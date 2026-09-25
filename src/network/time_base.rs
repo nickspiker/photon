@@ -11,11 +11,13 @@ use std::sync::Mutex;
 
 /// THE CLOCK THAT COUNTS THROUGH SLEEP (field 2026-09-17: Nick's phone slept and photon's time fell 30 minutes behind — "Timestamp outside valid window: diff=1821s", growing to 3175 s an hour later — because `std::time::Instant` is CLOCK_MONOTONIC on Linux/Android, which STOPS while the device is suspended; every minute the phone slept was a minute the anchor never saw). CLOCK_BOOTTIME is the monotonic clock that includes suspend; macOS has mach_continuous_time for the same; Windows' GetTickCount64 counts through sleep at millisecond grain. All immune to the wall clock, which is the property the anchor exists for.
 fn boot_osc() -> i64 {
+    // Nanoseconds → oscillations in i128 (LOCK: no float on anything that names an instant).
+    let ns_to_osc = |ns: i128| -> i64 { (ns * crate::OSC_PER_SEC as i128 / 1_000_000_000) as i64 };
     #[cfg(any(target_os = "linux", target_os = "android"))]
     {
         let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
         if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } == 0 {
-            return ((ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9) * crate::OSC_PER_SEC as f64) as i64;
+            return ns_to_osc(ts.tv_sec as i128 * 1_000_000_000 + ts.tv_nsec as i128);
         }
     }
     #[cfg(target_os = "macos")]
@@ -26,8 +28,8 @@ fn boot_osc() -> i64 {
         }
         let mut tb = [0u32; 2];
         if unsafe { mach_timebase_info(&mut tb) } == 0 && tb[1] != 0 {
-            let ns = unsafe { mach_continuous_time() } as f64 * tb[0] as f64 / tb[1] as f64;
-            return (ns * 1e-9 * crate::OSC_PER_SEC as f64) as i64;
+            let ns = unsafe { mach_continuous_time() } as i128 * tb[0] as i128 / tb[1] as i128;
+            return ns_to_osc(ns);
         }
     }
     #[cfg(target_os = "windows")]
@@ -36,14 +38,14 @@ fn boot_osc() -> i64 {
             fn GetTickCount64() -> u64;
         }
         let ms = unsafe { GetTickCount64() };
-        return (ms as f64 * 1e-3 * crate::OSC_PER_SEC as f64) as i64;
+        return ns_to_osc(ms as i128 * 1_000_000);
     }
     #[allow(unreachable_code)]
     {
         // Fallback (redox, an exotic host): the process-monotonic clock — correct while awake, blind to suspend.
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         let start = START.get_or_init(std::time::Instant::now);
-        (start.elapsed().as_secs_f64() * crate::OSC_PER_SEC as f64) as i64
+        ns_to_osc(start.elapsed().as_nanos() as i128)
     }
 }
 
@@ -165,6 +167,16 @@ pub fn offset_now() -> Option<(i64, i64)> {
 
 #[cfg(test)]
 mod tests {
+    /// ONE EPOCH (LOCK stage 1, 2026-09-24): nunc keeps its own small integer Eagle module (it carries no vsf dependency), so this pins the two together — the same epoch constant and the same round-half-up arithmetic, to the oscillation, across the instants the fleet actually stamps.
+    #[test]
+    fn nunc_and_vsf_agree_to_the_oscillation() {
+        assert_eq!(nunc::eagle::EAGLE_EPOCH_UNIX_SECS, vsf::types::EAGLE_EPOCH_UNIX_SECS);
+        assert_eq!(nunc::eagle::OPS as u64, vsf::OSCILLATIONS_PER_SECOND);
+        for (s, n) in [(0i64, 0u32), (1_790_000_000, 1), (1_790_000_000, 999_999_999), (-14_182_940, 500_000_000), (-100, 3)] {
+            assert_eq!(nunc::eagle::from_unix(s, n), vsf::types::from_unix_ns(s, n), "({s}, {n})");
+        }
+    }
+
     use super::*;
 
     /// ANCHOR and LAST_ISSUED are process globals and the harness runs tests on parallel threads — each test holds the gate and starts from a clean slate (the flake: floor_from_storage's ±1ms adopt landing mid-flight displaced a_worse_measurement's anchor).
