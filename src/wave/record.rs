@@ -307,7 +307,7 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
         };
         let slot = match (r.seq, seq_lat[c]) {
             (Some((seq, wslot)), Some((lseq, lslot0, ln))) if seq >= lseq => {
-                let by_seq = if seq == lseq { lslot0 + wslot as i64 } else { lslot0 + (seq - lseq) as i64 * ln.max(1) + wslot as i64 };
+                let by_seq = if seq == lseq { lslot0 + wslot as i64 } else { lslot0 + (seq - lseq) as i64 * ln + wslot as i64 }; // ln starts at 1 and only grows
                 if (by_seq - by_stamp).abs() < reanchor_slots.max(2) { by_seq } else { by_stamp }
             }
             _ => by_stamp,
@@ -341,11 +341,11 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
         };
         let prev = arrived[c].range(..seq).next_back().map(|(s, v)| (*s, *v));
         let next = arrived[c].range(seq + 1..).next().map(|(s, v)| (*s, *v));
-        let own = fill_frames.get(&(c, seq)).copied().unwrap_or(1).max(1);
+        let own = fill_frames.get(&(c, seq)).copied().unwrap_or(1).max(1); // WHY/PROOF: a fill's frame count as the spool recorded it — a 0 would place every frame of the window on one slot
         let slot = match (prev, next) {
-            (Some((ps, (pslot, pn))), n) if n.map_or(true, |(ns, _)| seq - ps <= ns - seq) => pslot as i64 + (seq - ps) as i64 * pn.max(1) as i64 + wslot as i64,
+            (Some((ps, (pslot, pn))), n) if n.map_or(true, |(ns, _)| seq - ps <= ns - seq) => pslot as i64 + (seq - ps) as i64 * pn as i64 + wslot as i64, // every `arrived` entry is counted up to ≥ 1 the moment it is inserted
             (_, Some((ns, (nslot, _)))) => nslot as i64 - (ns - seq) as i64 * own as i64 + wslot as i64,
-            (Some((ps, (pslot, pn))), None) => pslot as i64 + (seq - ps) as i64 * pn.max(1) as i64 + wslot as i64,
+            (Some((ps, (pslot, pn))), None) => pslot as i64 + (seq - ps) as i64 * pn as i64 + wslot as i64,
             (None, None) => continue,
         };
         if slot < 0 {
@@ -426,7 +426,7 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     if gr_nchan == 0 && !has_arch {
         return None;
     }
-    let nchan = gr_nchan.max(1);
+    let nchan = gr_nchan.max(1); // WHY/PROOF: the channel count comes from the recording's header — file data; 0 channels would stride every slot by nothing
     let slots = grid.first().map(|g| g.len()).unwrap_or(0);
     let base = records.iter().filter(|r| !r.is_fill()).map(|r| r.osc).min().unwrap_or(0);
     // Archive records land on the 10ms output lattice straight from their stamps.
@@ -441,7 +441,7 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
             }
         }
     }
-    let slots_out = slots.div_ceil(2).max(arch_by_slot.len()).max(1);
+    let slots_out = slots.div_ceil(2).max(arch_by_slot.len()).max(1); // WHY/PROOF: a wave kept before a single frame landed still writes the container's one-slot minimum, not a header over nothing
     // Packets per slot per channel: the archive channel is one 10 ms packet, a wire channel two 5 ms packets.
     let subs: Vec<u8> = (0..nchan).map(|ch| if ch == 0 && has_arch { 1 } else { 2 }).collect();
     // Envelope: every decoded sample streams into the EnvPyramid at its absolute archive index — fixed integer bins from birth, fold-by-2 on overflow, no total needed up front (see the struct doc). The band rigs carry across slots so the filters see one continuous signal per channel.
@@ -723,7 +723,7 @@ impl KeptStream {
 
 /// Interleaved PCM → one envelope per channel (≤2, the card's two halves) — the music-pigeon path: a dropped song runs the same three pyramids a wave does.
 pub fn envelopes_from_pcm(pcm: &[i16], nchan: usize, sample_rate: u32) -> Vec<crate::wave::wave_env::WaveEnv> {
-    let nchan = nchan.max(1);
+    let nchan = nchan.max(1); // WHY/PROOF: read from the container header — file data, as above
     let shown = nchan.min(2);
     let mut pyr = EnvPyramid::new(shown);
     for (i, frame) in pcm.chunks_exact(nchan).enumerate() {

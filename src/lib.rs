@@ -402,8 +402,8 @@ pub fn rep_grade_glyphs(evidence: u32) -> String {
 pub fn link_freq_label(rtt_ms: u32) -> String {
     match num_base() {
         NumBase::Dozenal => {
-            let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64;
-            dozenal_glyphs(dms_log(hz.max(1) as u64).unwrap_or(0))
+            let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64; // WHY/PROOF: a LAN round trip rounds to 0 ms, and 1000/0 is an infinite frequency
+            dozenal_glyphs(dms_log(hz.max(1) as u64).unwrap_or(0)) // WHY/PROOF: a round trip over a second floors to 0 Hz; it reads as the 1 Hz floor — slower than that is a failure, not a number
         }
         // Hex is linear in SECONDS, the fraction in hex too (Nick 2026-09-11: "0.0001A is a valid duration in seconds in hex"): no decimal prefix smuggled back in.
         NumBase::Hex => hex_seconds_ms(rtt_ms as u64),

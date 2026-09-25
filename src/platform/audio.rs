@@ -211,6 +211,24 @@ pub fn route_id() -> String {
     ROUTE_ID.lock().unwrap().clone()
 }
 
+/// The mean absolute level of one 16-bit frame — the one level every duck, envelope and stall guard reads.
+/// WHY the empty case: the sample splice and the stall guard reshape frames, and a frame that came out empty has no level.
+/// PROOF: zero is that level; a bare `sum / len` would divide by zero, so the one place that divides says so here instead of `.max(1)` at every caller.
+pub fn mean_abs(frame: &[i16]) -> u64 {
+    if frame.is_empty() {
+        return 0;
+    }
+    frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / frame.len() as u64
+}
+
+/// The same level for a 24-bit capture frame (held in i32), in 24-bit units. Empty reads as silence, as above.
+pub fn mean_abs_24(frame: &[i32]) -> i64 {
+    if frame.is_empty() {
+        return 0;
+    }
+    frame.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame.len() as i64
+}
+
 pub fn current_volume_db() -> Option<f32> {
     *VOLUME_DB.lock().unwrap()
 }
@@ -378,7 +396,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
                         while q.len() > target + STALL_SLACK && dropped < STALL_MAX_DROP_PER_RENDER && scanned < STALL_MAX_DROP_PER_RENDER * 2 {
                             scanned += 1;
                             let Some(head) = q.front() else { break };
-                            let lvl = head.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / head.len().max(1) as u64;
+                            let lvl = mean_abs(head);
                             let env = RENDER_LEVEL.load(Ordering::Relaxed);
                             let quiet = lvl * 6 < env;
                             if quiet {
@@ -395,7 +413,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
                     }
                     // The render envelope the stall guard reads pauses against: fast attack on the frame just popped, ~0.6 s decay.
                     {
-                        let lvl = f.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / f.len().max(1) as u64;
+                        let lvl = mean_abs(&f);
                         let env = RENDER_LEVEL.load(Ordering::Relaxed);
                         RENDER_LEVEL.store(lvl.max(env - (env >> 7)), Ordering::Relaxed);
                     }
@@ -438,10 +456,10 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             SPEAKER_HALF.fetch_add(1, Ordering::Relaxed);
         }
         // THE RECEIVE LOSS PLAN (2026-09-14, the echo-ey waves at 40-70× makeup: k 0.2 in plan units = a fifth of the earpiece back on the wire, the far talker hearing themselves at −14 dB). POTS bounded echo with static loss per link; ours is `min(1, RX_ECHO_MARGIN / k)` — the speaker is held where k·gain ≤ margin, so echo returns at −26 dB at worst whatever the rocker does (rocker up raises k, which lowers this). Loudness becomes physics-bounded, which is honest.
-        let k = DUCK_K_Q16.load(Ordering::Relaxed).max(1);
+        let k = DUCK_K_Q16.load(Ordering::Relaxed).max(1); // WHY/PROOF: k is a LEARNED coupling that divides below; a learner that has seen nothing reads 0
         let loss = ((RX_ECHO_MARGIN_Q16 << 32) / k).min(crate::wave::qgain::UNITY);
         // THE DOWNWARD EXPANDER (Nick: "keep the ambient no talking level from screaming"): a continuous linear taper below a knee — the far room's floor and returning echo residue sink, speech above the knee passes at unity. Speaker-side, temporary, never recorded; no gate, no hold.
-        let level = (frame.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame.len().max(1) as i64).max(0);
+        let level = mean_abs(&frame) as i64; // a mean of absolute values — never negative
         let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::wave::qgain::UNITY);
         let g = crate::wave::qgain::compose(crate::wave::qgain::compose(duck, loss), expand);
         if g != crate::wave::qgain::UNITY {
@@ -471,7 +489,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     }
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
     // frame.len(), not FRAME_SAMPLES: the sample splice can hand back 479/481-sample frames.
-    let lvl = (frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() / frame.len().max(1) as u64) as usize;
+    let lvl = mean_abs(&frame) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
     FAR_LEVEL.store(lvl.max(old - old / 8), Ordering::Relaxed);
     // The k estimator's denominator: this mean is POST-duck — what the room actually receives — so k = near/emitted stays consistent whatever the duck is doing (both sides of the ratio scale together).
@@ -714,7 +732,7 @@ mod desktop {
             .build_output_stream(
                 &cfg,
                 move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
-                    let ch = channels.max(1);
+                    let ch = channels.max(1); // WHY/PROOF: the device's reported channel count — the buffer is chunked by it, and a chunk size of 0 panics
                     let need_mono = data.len() / ch;
                     while staged.len() < need_mono {
                         let frame = next_render_frame();

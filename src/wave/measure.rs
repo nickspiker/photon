@@ -32,7 +32,7 @@ pub fn start(secs: u64) -> Option<Receiver<MeasureResult>> {
             while std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(50));
                 for (_, frame24) in crate::platform::audio::captured_frames() {
-                    let mean_q8 = frame24.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame24.len().max(1) as i64;
+                    let mean_q8 = crate::platform::audio::mean_abs_24(&frame24);
                     if mean_q8 > 0 && mean_q8 < raw_floor_q8 {
                         raw_floor_q8 = mean_q8;
                     }
@@ -40,7 +40,7 @@ pub fn start(secs: u64) -> Option<Receiver<MeasureResult>> {
                         if noise_est_q8 == 0 {
                             noise_est_q8 = mean_q8;
                         } else if mean_q8 > noise_est_q8 {
-                            noise_est_q8 += ((mean_q8 - noise_est_q8) >> 10).max(1);
+                            noise_est_q8 += ((mean_q8 - noise_est_q8) >> 10).max(1); // the algorithm, as in the engine: a floor that cannot creep up by one never rises
                         } else {
                             noise_est_q8 = mean_q8 + ((noise_est_q8 - mean_q8) >> 2);
                         }

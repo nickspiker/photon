@@ -4087,7 +4087,7 @@ impl Flow {
     ) {
         let region = fluor::region::Region::new(self.x, self.y, self.w, size * 1.6);
         let n = settings_prose(canvas, text, region, s, size, colour, weight);
-        self.y += (n.max(1) as Coord) * size * 1.25 + size * 0.35;
+        self.y += (n.max(1) as Coord) * size * 1.25 + size * 0.35; // design: an empty prose block still advances one line, so the next heading never overlaps it
     }
 
     /// A paragraph — same as [`line`] (everything wraps here); named for call-site intent.

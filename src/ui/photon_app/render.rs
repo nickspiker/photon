@@ -8,7 +8,7 @@ pub(super) const IMG_PREVIEW_LINES_FULL: usize = 8;
 
 /// THE settings-pane hairline (Nick 2026-09-10: "a unified style"): the conversation's divider — pure white at α=1/8, one ru thick — drawn edge to edge across the whole content pane, never inset. Every settings page that separates rows draws its dividers thru here.
 fn pane_hairline(canvas: &mut Canvas, layout: &SettingsLayout, y: f32, ru: f32, clip: Option<fluor::paint::Clip>) {
-    paint::fill_rect(canvas, layout.content.x as isize, y as isize, layout.content.w as isize, ru.max(1.0) as isize, theme::VERSION_COLOUR, clip, None);
+    paint::fill_rect(canvas, layout.content.x as isize, y as isize, layout.content.w as isize, hairline_px(ru) as isize, theme::VERSION_COLOUR, clip, None);
 }
 
 /// Greedy word wrap against a pixel width: one measure per candidate join. The attest band and stream entry #0's status line both need it — long ceremony steps and locked-device messages must fold, never run off the sides.
@@ -230,7 +230,7 @@ impl PhotonApp {
         let mut ready_block_version_y: Option<f32> = None;
         if matches!(self.state, AppState::Ready) {
             let rl = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru);
-            let row_h = rl.row_height.max(1) as isize;
+            let row_h = rl.row_height.max(1) as isize; // WHY/PROOF: a window shorter than one row computes a 0 row height, and the row walk steps by it — one pixel per row is the floor that keeps it a walk
             let filter: String = self
                 .contacts_textbox
                 .as_ref()
@@ -1549,7 +1549,7 @@ impl PhotonApp {
                 );
             } else {
                 // Default unset avatar: our deterministic per-identity gradient (public proof) instead of a flat grey disk.
-                let gd = (radius * 2.0).max(1.0) as usize;
+                let gd = disk_px(radius * 2.0);
                 let seed = self
                     .session
                     .as_ref()
@@ -1736,7 +1736,7 @@ impl PhotonApp {
             );
 
             let rows = ready_layout.rows;
-            let row_h = ready_layout.row_height.max(1) as isize;
+            let row_h = ready_layout.row_height.max(1) as isize; // WHY/PROOF: as above — a 0-height row would make the walk stand still
             let diam = ready_layout.contact_avatar_diameter;
             let avatar_r = diam as f32 * 0.5;
             // Rows now scroll up into (and past) where the user section sat, so the clip can no longer stop at `rows.y0`. Clip top = the top of the content area (0); the chrome title bar composites on top afterwards via `chrome.flatten_into`, exactly as it does for the unclipped avatar that already draws high. Keep the x extent at the rows' columns.
@@ -1860,7 +1860,7 @@ impl PhotonApp {
                     ReadyRow::Group(gi) => RowView::of_group(&rctx, gi, &our_handle_hash),
                 };
                 let name_lines: Vec<String> = view.name_lines.clone();
-                let rh = contact_row_height(row_h, name_lines.len().max(1));
+                let rh = contact_row_height(row_h, name_lines.len()); // contact_row_height already reads an empty name as one row
                 let row_top_at_zero = row_cursor;
                 row_cursor += rh;
                 // Use the SAME `scroll` snapshot the avatar / hint / search box / separator read (captured up top, before the down-scroll clamp below mutated `self.contacts_scroll`). Reading the live field here made the rows lag the rest of the block by the clamp delta: on an up-scroll past rest the avatar + textbox dragged with the rubber-band overshoot (they read the snapshot) but the names sat still (they read the post-clamp value). One block, one offset.
@@ -1910,12 +1910,12 @@ impl PhotonApp {
                     }
                     (_, Some((gid, members))) => {
                         // The group's avatar: a pie of its members' gradients at the row diameter.
-                        let gd = (avatar_r * 2.0).max(1.0) as usize;
+                        let gd = disk_px(avatar_r * 2.0);
                         crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &molecule_avatar_rgb(gid, members, gd), gd, Some(rows_clip));
                     }
                     _ => {
                         // Default unset avatar: the deterministic gradient (a contact's public proof; a group's id).
-                        let gd = (avatar_r * 2.0).max(1.0) as usize;
+                        let gd = disk_px(avatar_r * 2.0);
                         crate::ui::avatar_render::draw_avatar(
                             &mut canvas,
                             avatar_cx,
@@ -2074,7 +2074,7 @@ impl PhotonApp {
                     self.contacts[ci].avatar_scaled_diameter = diam;
                 }
                 // The Manage page's row budget (grows with the group picker) — a method call, so it is bound before the `contact` borrow.
-                let manage_rows = contact_page_rows(ContactPage::Manage) + if self.molecule_pick_open { 1 + self.molecule_rosters.len().max(1) } else { 0 };
+                let manage_rows = contact_page_rows(ContactPage::Manage) + if self.molecule_pick_open { 1 + self.molecule_rosters.len().max(1) } else { 0 }; // with no groups the picker still draws its one "no groups yet" row
                 let contact = &self.contacts[ci];
                 // Our pid feeds the relationship digest below — a keyed colour, not a self-check. "Is this me" is the participant count.
                 let our_hh = self
@@ -2276,7 +2276,7 @@ impl PhotonApp {
                                 Some(content_clip),
                             );
                         } else {
-                            let gd = diam.max(1);
+                            let gd = diam.max(1); // an avatar is at least one pixel across — see `disk_px`
                             let seed = proof_gradient_seed(&contact.handle_proof);
                             crate::ui::avatar_render::draw_avatar(
                                 &mut canvas,
@@ -2318,7 +2318,7 @@ impl PhotonApp {
                         } else if contact.identity_ended {
                             tr(Msg::IdentityEndedByOwner)
                         } else if contact.pinned_genesis != [0u8; 32] {
-                            tr(Msg::ContactFleetPinned(contact.fleet_members.len().max(1)))
+                            tr(Msg::ContactFleetPinned(contact.fleet_members.len().max(1))) // WHY/PROOF: a pinned genesis whose roster has not folded yet still names the one device it was pinned from
                         } else {
                             tr(Msg::IdentityNotFolded)
                         };
@@ -2794,6 +2794,7 @@ impl PhotonApp {
                                 let msgs: &[crate::types::ChatMessage] = dm_conversation(&self.conversations, &our_hh, &self.contacts[ci]).map(|c| c.messages.as_slice()).unwrap_or(&[]);
                                 if let Some((w, h, px)) = super::viewer::viewer_pixels_of(v, &self.img_cache, msgs) {
                                     let ah = buf_h as f32 - area_top;
+                                    // WHY/PROOF: w and h are an image's claimed dimensions (a peer's metadata or a decoder's header) — a 0 would divide into infinity and size the view to nothing.
                                     let fit = (buf_w as f32 / w.max(1) as f32).min(ah / h.max(1) as f32);
                                     let (dw, dh) = (w as f32 * fit, h as f32 * fit);
                                     paint::draw_image(&mut canvas, &px, w, h, buf_w as f32 * 0.5, area_top + ah * 0.5, dw, dh, None);
@@ -3024,7 +3025,7 @@ impl PhotonApp {
                                     clip,
                                 );
                             } else {
-                                let gd = (avatar_r * 2.0).max(1.0) as usize;
+                                let gd = disk_px(avatar_r * 2.0);
                                 let seed = proof_gradient_seed(&contact.handle_proof);
                                 crate::ui::avatar_render::draw_avatar(
                                     canvas,
@@ -3248,7 +3249,7 @@ impl PhotonApp {
                         // The kept recording currently playing (hash, percent) — its bubble shows ■ progress instead of ▶ size.
                         let playing_rec: Option<([u8; 32], u32)> = self.wave_playback_hash.and_then(|h| {
                             self.wave_playback.as_ref().map(|p| {
-                                (h, ((p.position() as f32 / p.total.max(1) as f32) * 100.0).min(100.0) as u32)
+                                (h, (frac_of(p.position() as u64, p.total as u64) * 100.0).min(100.0) as u32)
                             })
                         });
                         let body_of = |m: &crate::types::ChatMessage| -> String {
@@ -3437,7 +3438,7 @@ impl PhotonApp {
                             let panel_h = line_h * 1.4 + url_lines.len() as f32 * line_h + warn_h + pill_h + line_h * 0.8;
                             let py0 = (list_bottom - panel_h).max(list_top);
                             // Top hairline FIRST (topmost-first under-blend); the opaque backdrop paints LAST, after the text and pills below — painted first it swallowed the panel's own content (the same 2026-08-31 backdrop-order class as the viewer pane).
-                            paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, ctx.viewport.ru.max(1.0) as isize, theme::VERSION_COLOUR, None, None);
+                            paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, hairline_px(ctx.viewport.ru) as isize, theme::VERSION_COLOUR, None, None);
                             let mut ty = py0 + line_h;
                             ctx.text.draw_text_left(&mut canvas, &tr(Msg::LinkConsentTitle), pad_x, ty, &TextStyle::new(msg_size, *theme::CONTACT_NAME_COLOUR).weight(600), Some(list_clip), None);
                             ty += line_h * 1.1;
@@ -3541,7 +3542,7 @@ impl PhotonApp {
                             }
                             let author = author_line(msg);
                             let author_off = if author.is_some() { intra } else { 0.0 };
-                            let block_extra = (lines.len().max(1) as f32 - 1.0) * intra
+                            let block_extra = (lines.len().max(1) as f32 - 1.0) * intra // WHY/PROOF: an empty bubble wraps to no lines; its extra is 0, never −1 line
                                 + if reply_target.is_some() { intra } else { 0.0 }
                                 + author_off
                                 + react_off
@@ -3560,9 +3561,9 @@ impl PhotonApp {
                                     !crate::storage::blob_present_or_pending(&hash)
                                 };
                                 // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback. OUTBOUND chunked: (total − in flight) done, plus the in-flight transfers' own fractions, over the total we dispatched.
-                                let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| *have as f32 / (*total).max(1) as f32).or_else(|| {
+                                let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| frac_of(*have as u64, *total as u64)).or_else(|| {
                                     (want_outbound).then(|| self.attach_send_total.get(&hash).copied()).flatten().map(|total| {
-                                        let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| *d as f32 / (*t).max(1) as f32).collect();
+                                        let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| frac_of(*d as u64, *t as u64)).collect();
                                         // WHY: `attach_progress` is keyed by PEER ADDRESS, not by blob, so `inflight` counts every outbound attachment in flight, not just this one's.
                                         // PROOF: with two sends at once it can exceed this blob's `total`, and a plain subtraction would wrap to ~2^32 done — the per-blob keying is the real fix (docs/rule0-audit-2026-09-25.md).
                                         let done = total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>();
@@ -3574,7 +3575,7 @@ impl PhotonApp {
                                         self.attach_progress
                                             .iter()
                                             .find(|(_, _, _, ob)| *ob == want_outbound)
-                                            .map(|(_, done, total, _)| *done as f32 / (*total).max(1) as f32)
+                                            .map(|(_, done, total, _)| frac_of(*done as u64, *total as u64))
                                     });
                                 }
                             }
@@ -3586,7 +3587,7 @@ impl PhotonApp {
                                         .values()
                                         .filter(|pp| pp.device == dev && pp.name == msg.content && pp.got < pp.of)
                                         .max_by_key(|pp| pp.at)
-                                        .map(|pp| pp.got as f32 / pp.of.max(1) as f32);
+                                        .map(|pp| frac_of(pp.got as u64, pp.of as u64));
                                 }
                             }
                             if let Some(frac) = bar_frac {
@@ -3603,7 +3604,7 @@ impl PhotonApp {
                                     bx,
                                     (y + msg_size * 0.55) as isize,
                                     bw,
-                                    (ru.max(1.0) * 2.0) as isize,
+                                    (hairline_px(ru) * 2.0) as isize,
                                     *theme::PROGRESS_FILL,
                                     Some(list_clip),
                                     None,
@@ -3616,7 +3617,7 @@ impl PhotonApp {
                                 0,
                                 (y + msg_size * 0.8) as isize,
                                 buf_w as isize,
-                                (ru.max(1.0)) as isize,
+                                hairline_px(ru) as isize,
                                 theme::VERSION_COLOUR,
                                 Some(list_clip),
                                 None,
@@ -3749,7 +3750,7 @@ impl PhotonApp {
                                 }
                                 // SELECTED HIGHLIGHT, painted after the meta so the veil is uniform under topmost-first: the META section wears YELLOW on a development build (a layout debugging aid — the section boundary is visible) and the rail's white on release; the media + strip below always wear the rail's white.
                                 // The veil's OUTER edges snap to the hairline dividers that bound this block: the one the older row drew above, and this row's own below — the sections fill divider to divider, no offset weirdness (Nick 2026-09-12).
-                                let hl_meta_top = (y - detail_h - line_h - block_extra - sel_meta_extra + msg_size * 0.8 + ru.max(1.0)).max(list_top);
+                                let hl_meta_top = (y - detail_h - line_h - block_extra - sel_meta_extra + msg_size * 0.8 + hairline_px(ru)).max(list_top);
                                 // On a media row the yellow ends exactly where the band begins and the cyan begins exactly where it ends (Nick 2026-09-12: max power must touch both).
                                 let band_pad_v = msg_size * 0.1;
                                 let media_edges = if audio_band_h > 0.0 {
@@ -4107,13 +4108,13 @@ impl PhotonApp {
                                     let bx0 = pad_x;
                                     let bx1 = buf_w as f32 - pad_x;
                                     // The band spans its two lines from divider to divider: the row's top (the divider above) to the divider below, less a hair each side so the crests never touch the hairlines.
-                                    let by0 = if show_head { hy + msg_size * 0.7 } else { y - react_off - wave_band_h - msg_size * 0.5 + ctx.viewport.ru.max(1.0) * 2.0 };
-                                    let by1 = y - react_off + msg_size * 0.8 - ctx.viewport.ru.max(1.0) * 2.0;
+                                    let by0 = if show_head { hy + msg_size * 0.7 } else { y - react_off - wave_band_h - msg_size * 0.5 + hairline_px(ctx.viewport.ru) * 2.0 };
+                                    let by1 = y - react_off + msg_size * 0.8 - hairline_px(ctx.viewport.ru) * 2.0;
                                     // No play glyph on the band (2026-09-12: play is a button on the action row; a tap on the band selects the row and nothing more). The band's left edge is the waveform's start.
                                     let glyph_x1 = bx0;
                                     let bcy = (by0 + by1) * 0.5;
                                     let half = (by1 - by0) * 0.5;
-                                    let hair = ctx.viewport.ru.max(1.0);
+                                    let hair = hairline_px(ctx.viewport.ru);
                                     let dim = theme::dim_colour(colour);
                                     let small = TextStyle::new(msg_size * 0.8, dim).weight(500).font("Oxanium");
                                     match rec_over.get(&msg.timestamp).copied() {
@@ -4130,10 +4131,10 @@ impl PhotonApp {
                                             let total_slots = if playing { self.wave_playback.as_ref().map(|h| h.total).unwrap_or(0) } else { w.secs as usize * 100 };
                                             let scrub = self.wave_scrub.filter(|s| s.band.hash == hash).map(|s| s.frac);
                                             let frac: Option<f32> = scrub.or_else(|| {
-                                                playing.then(|| self.wave_playback.as_ref().map(|h| h.position() as f32 / h.total.max(1) as f32).unwrap_or(0.0))
+                                                playing.then(|| self.wave_playback.as_ref().map(|h| frac_of(h.position() as u64, h.total as u64)).unwrap_or(0.0))
                                             });
                                             let wx0 = glyph_x1;
-                                            let cols = ((bx1 - wx0).max(1.0)) as usize;
+                                            let cols = (bx1 - wx0).max(1.0) as usize; // WHY/PROOF: a bubble squeezed to nothing still gets one column of waveform, never a zero-width fold that divides by its columns
                                             let played_cols = frac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
                                             // Loads on the render edge, one per hash: an env blob parses in the worker (vec of one); the audio derive decodes once and yields every channel. A far blob not yet held is queued for one fetch.
                                             if let Some(seed) = self.session.as_ref().map(|se| se.identity_seed) {
@@ -4278,8 +4279,8 @@ impl PhotonApp {
                                     let pad_v = msg_size * 0.35;
                                     let band_bot = y - react_off - reply_off - pad_v;
                                     let band_top = y - react_off - reply_off - img_band_h + pad_v;
-                                    let bh = (band_bot - band_top).max(1.0);
-                                    let aspect = msg.attach.and_then(|a| a.dims).map_or(tw as f32 / th as f32, |(w, h): (u32, u32)| w as f32 / h.max(1) as f32);
+                                    let bh = (band_bot - band_top).max(1.0); // WHY/PROOF: the picture band divides the image's fit by its height, and a squeezed row can leave it none
+                                    let aspect = msg.attach.and_then(|a| a.dims).map_or(tw as f32 / th as f32, |(w, h): (u32, u32)| w as f32 / h.max(1) as f32); // WHY/PROOF: dims are the SENDER's claim — a 0 height would make an infinite aspect and a band of zero height
                                     let avail = buf_w as f32 - pad_x * 2.0;
                                     let bw = (bh * aspect).min(avail);
                                     let bh = if bw < bh * aspect { bw / aspect } else { bh };
@@ -4289,7 +4290,7 @@ impl PhotonApp {
                                     if cy + bh * 0.5 >= list_top && cy - bh * 0.5 <= list_bottom {
                                         // A PIGEON IN FLIGHT FILLS IN (Nick 2026-09-14): an outgoing picture still being sent shows only the slice that has gone — the preview wipes in from the left as the chunks land, the rest of the band stays bare until it does.
                                         let send_frac = if msg.is_outgoing && !self.attach_confirmed.contains(&hash_of_row) { self.attach_send_total.get(&hash_of_row).map(|total| {
-                                            let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| *d as f32 / (*t).max(1) as f32).collect();
+                                            let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| frac_of(*d as u64, *t as u64)).collect();
                                             // WHY/PROOF: the same peer-keyed `inflight` as the strip's progress above — it can outnumber this blob's total while another attachment sends.
                                             ((total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>()) / (*total).max(1) as f32).clamp(0.0, 1.0)
                                         }) } else { None };
@@ -4341,7 +4342,7 @@ impl PhotonApp {
                                         let (wx0, wx1) = (pad_x, buf_w as f32 - pad_x);
                                         let bcy = (band_top + band_bot) * 0.5;
                                         let half = (band_bot - band_top).max(2.0) * 0.5;
-                                        let cols = ((wx1 - wx0).max(1.0)) as usize;
+                                        let cols = (wx1 - wx0).max(1.0) as usize; // WHY/PROOF: as above, one column at least
                                         let rows = half as usize;
                                         const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
                                         let mfrac = self.music_play.as_ref().filter(|m| m.hash == ahash && m.playing()).map(|m| m.frac());
@@ -4364,7 +4365,7 @@ impl PhotonApp {
                                             }
                                             let key = (ahash, chn + 4, cols, rows);
                                             // A song's height reference is its OWN peak column (full power = full band); the absolute wave reference told us only that masters are loud.
-                                            let ref_amp = (e.peak_q48[0] as f32 * (1.0 / (1u64 << 48) as f32)).sqrt().max(1e-6);
+                                            let ref_amp = (e.peak_q48[0] as f32 * (1.0 / (1u64 << 48) as f32)).sqrt().max(1e-6); // WHY/PROOF: a silent song's peak is 0, and every column height divides by it
                                             let bars: std::rc::Rc<(Vec<f32>, Vec<u32>)> = {
                                                 let hit = self.wave_fold_cache.borrow().get(&key).cloned();
                                                 match hit {
@@ -4502,7 +4503,7 @@ impl PhotonApp {
                                                 x as isize,
                                                 uy as isize,
                                                 w as isize,
-                                                ctx.viewport.ru.max(1.0) as isize,
+                                                hairline_px(ctx.viewport.ru) as isize,
                                                 *theme::LINK_PURPLE,
                                                 None,
                                                 None,
@@ -5406,7 +5407,7 @@ impl PhotonApp {
                                 if let Some(cb) = pf.share_cb.as_mut() {
                                     cb.render_content_into(&mut canvas, ctx.text, Some(content_clip), Some(&mut chrome.hit_test_map));
                                 }
-                                let ru = ctx.viewport.ru.max(1.0);
+                                let ru = hairline_px(ctx.viewport.ru);
                                 pane_hairline(&mut canvas, &layout, r.bottom() - ru, ru, Some(glow_clip));
                             }
                             YouRow::AddHeader => {
@@ -5646,7 +5647,7 @@ impl PhotonApp {
                         // AIR between device cards — the whole point. Between cards (never after the last) the conversation's white hairline rides the midpoint (Nick 2026-09-03: "same white hairlines between messages"): pure white α=1/8 = VERSION_COLOUR, the between-messages divider treatment.
                         flow.gap(hspan2 * 0.6);
                         if i + 1 < devices.len() {
-                            let ru = ctx.viewport.ru.max(1.0);
+                            let ru = hairline_px(ctx.viewport.ru);
                             let hl = flow.band(ru as Coord);
                             pane_hairline(&mut canvas, &layout, hl.y, ru, None);
                             flow.gap(hspan2 * 0.6);
@@ -5744,7 +5745,7 @@ impl PhotonApp {
                         let (hc, hw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
                         let region = fluor::region::Region::new(flow.x, flow.y, flow.w, hspan2 * 1.6);
                         let n = settings_prose(canvas, text, region, hint, hspan2 * 0.85, hc, hw);
-                        flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9;
+                        flow.y += (n.max(1) as Coord) * hspan2 * 0.85 * 1.25 + hspan2 * 0.9; // design: an empty hint still advances one line
                     };
                     if unattested {
                         // Same slot, arm flag and dispatch as the post-attest Wipe (Shred) — one verb, one code path; the hint is the pre-attest contract (Shred, not Release: the fingerprint-derived device key survives, so the previous identity's fleet still lists this hardware until one of ITS devices removes it).
@@ -7218,7 +7219,7 @@ fn contact_line_step(row_h: isize) -> f32 {
 
 /// Split a region into `n` equal vertical bands (the runtime-count twin of `Region::split_v`); the last band absorbs rounding.
 fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
-    let n = n.max(1);
+    let n = n.max(1); // WHY/PROOF: the region is divided into n rows, and a page with no rows asks for zero
     let band_h = r.h / n as f32;
     (0..n).map(|i| fluor::region::Region::new(r.x, r.y + band_h * i as f32, r.w, if i + 1 == n { r.bottom() - (r.y + band_h * i as f32) } else { band_h })).collect()
 }
@@ -7331,7 +7332,7 @@ fn draw_standing_bands(bands: &[(String, u32)], canvas: &mut Canvas, text: &mut 
     let mut bottom = buf_h as f32;
     for (label, colour) in bands.iter() {
         let lines = wrap_text_lines(text, label, &style_of(*colour), max_w);
-        let n = lines.len().max(1);
+        let n = lines.len().max(1); // WHY/PROOF: an empty label wraps to no lines but still occupies one
         // Lines stack top-down within the band; the band's bottom sits on the previous band's top.
         for (k, line) in lines.iter().enumerate() {
             let cy = bottom - band_h * (n as f32 - k as f32 - 0.5);
@@ -7349,8 +7350,8 @@ pub(super) fn wave_fold_coverage(e: &crate::wave::wave_env::WaveEnv, cols: usize
         // WHY/PROOF: a bin louder than the reference amplitude fills its column and no more — the bar's height is capped by the rows it has.
         *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32;
     }
-    let bins = e.bins.max(1);
-    let mut cov = vec![0f32; cols * rows.max(1)];
+    let bins = e.bins.max(1); // WHY/PROOF: the envelope's bin count is the blob's header — file data; the column walk divides by it
+    let mut cov = vec![0f32; cols * rows.max(1)]; // WHY/PROOF: a band too short for one row still needs one row of coverage to index
     let mut n = vec![0u32; cols];
     for b in 0..e.bins {
         let px = (b * cols / bins).min(cols - 1);
@@ -7378,7 +7379,7 @@ pub(super) fn wave_fold_coverage(e: &crate::wave::wave_env::WaveEnv, cols: usize
 
 /// Per-column colours from the three band tracks, THE AGB WAY (Nick: each band's power over the geometric mean of the three, the top ratio pinned at full — hue from the ratios, brightness constant): the same integer bin→column stack as the coverage fold, means per band, colour thru the VSF path once per fold.
 pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize) -> Vec<u32> {
-    let bins = e.bins.max(1);
+    let bins = e.bins.max(1); // WHY/PROOF: the envelope's bin count is the blob's header — file data; the column walk divides by it
     let mut acc = vec![[0u64; 3]; cols];
     let mut n = vec![0u32; cols];
     for b in 0..e.bins {
@@ -7394,10 +7395,10 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
             if n[px] == 0 {
                 return theme::rgb_colour(0, 0, 0);
             }
-            let p = |c: usize| (acc[px][c] as f32 / n[px] as f32 * lsb[c]).max(1e-12);
+            let p = |c: usize| (acc[px][c] as f32 / n[px] as f32 * lsb[c]).max(1e-12); // WHY/PROOF: a silent column has zero energy in every band, and the colour divides by the loudest
             let g = (p(0) * p(1) * p(2)).cbrt();
             let r = [p(0) / g, p(1) / g, p(2) / g];
-            let top = r[0].max(r[1]).max(r[2]).max(1e-12);
+            let top = r[0].max(r[1]).max(r[2]).max(1e-12); // WHY/PROOF: as above — the divisor is the loudest band, which silence leaves at zero
             let ch = |v: f32| ((v / top) * 255.0).round() as u8; // `top` is the max of these three energies, so v/top ∈ [0, 1] — and the u8 cast saturates regardless
             theme::rgb_colour(ch(r[0]), ch(r[1]), ch(r[2]))
         })
@@ -7435,4 +7436,28 @@ pub(super) fn wave_draw_coverage(canvas: &mut Canvas, cov: &[f32], cols: usize, 
             }
         }
     }
+}
+
+/// A stroke measured in render units, never thinner than one device pixel.
+/// WHY: the render unit shrinks below a pixel on a small window, and a hairline scaled by it would round to zero rows and vanish.
+/// PROOF: the design's thinnest line is one pixel — this floor is that rule, stated once for every hairline instead of at each stroke.
+fn hairline_px(ru: f32) -> f32 {
+    ru.max(1.0)
+}
+
+/// An avatar disk's diameter in whole pixels, at least one.
+/// WHY: a row's avatar radius scales with the window and drops below half a pixel on the smallest layouts.
+/// PROOF: the gradient raster and its cache are sized by this diameter, and a 0-pixel disk would be a zero-length buffer that the painter still indexes — one pixel is the smallest disk there is.
+fn disk_px(diameter: f32) -> usize {
+    diameter.max(1.0) as usize
+}
+
+/// How far `done` is thru `total`, as a fraction for a bar or a playhead.
+/// WHY: the counters are transfer and playback totals, and a zero total is real — an empty file, a recording with no frames yet.
+/// PROOF: nothing of nothing is done: 0 rather than the NaN `0 / 0` would give, which would poison every coordinate derived from it. One place divides, and it says so.
+fn frac_of(done: u64, total: u64) -> f32 {
+    if total == 0 {
+        return 0.0;
+    }
+    done as f32 / total as f32
 }

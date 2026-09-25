@@ -604,7 +604,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             // Not persisted (runtime-only braid-strand snapshot). A pending message reloaded after restart weaves no strands; in practice pending messages are short-lived (cleared on ACK) so this edge only matters if the app restarts mid-flight with an unacked message AND its braid strands were non-empty — a known minor gap, not the steady-state desync this fix addresses.
             woven_strands: Vec::new(),
             // Attempts SURVIVE the restart (floor 1): exhaustion is cumulative lane evidence — resetting it every launch meant the anchor-wedge detector could never arm inside a short session and a dead lane stayed undiagnosed forever. The deadline is still immediate: a reloaded pending resends right away (or, if already exhausted, sits as the standing evidence the next sync record reads).
-            attempts: attempts_persisted.get(i).copied().unwrap_or(1).max(1),
+            attempts: attempts_persisted.get(i).copied().unwrap_or(1).max(1), // WHY/PROOF: read back from disk — a 0 would claim a sent message was never tried, and the floor-1 rule above says every pending has
             next_retry_osc: eagle_times[i],
             targets: pending_targets.get(i).cloned().unwrap_or_default(),
             acked_by: pending_acked.get(i).cloned().unwrap_or_default(),

@@ -374,7 +374,7 @@ mod tests {
             pre += p;
             post += q;
         }
-        let erle = 10.0 * (pre / post.max(1e-9)).log10();
+        let erle = 10.0 * (pre / post.max(1e-9)).log10(); // WHY/PROOF: a perfectly cancelled (or silent) residual has zero energy — the log of an infinite ratio
         assert!(erle > 25.0, "volume-stepped ERLE {erle:.1}dB");
     }
 

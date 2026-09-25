@@ -189,7 +189,7 @@ fn decode_raw(path: &std::path::Path, max_edge: usize) -> Option<Folded> {
         return None;
     }
     let black = info.black;
-    let scale = 1.0 / (info.white - black).max(1.0);
+    let scale = 1.0 / (info.white - black).max(1.0); // WHY/PROOF: black and white levels are the RAW file's metadata — a white at or below black is a broken file, not a divide by zero
     let sub = |v: u16| (v as f32 - black) * scale;
     // Half-res camera-space RGB.
     let (hw, hh, cam): (usize, usize, Vec<f32>) = if info.rgb {
@@ -263,7 +263,7 @@ fn decode_raw(path: &std::path::Path, max_edge: usize) -> Option<Folded> {
 /// Aspect-preserving dims with the long edge at `max_edge` (never below 1×1, never upscaled).
 pub fn fit_dims(w: usize, h: usize, max_edge: usize) -> (usize, usize) {
     if w <= max_edge && h <= max_edge {
-        return (w.max(1), h.max(1));
+        return (w.max(1), h.max(1)); // WHY/PROOF: dimensions from the file — a 0-pixel side is a malformed image, answered with the smallest real one
     }
     thumb_dims(w, h, max_edge)
 }
@@ -271,9 +271,9 @@ pub fn fit_dims(w: usize, h: usize, max_edge: usize) -> (usize, usize) {
 /// Aspect-preserving thumb dims with the long edge at exactly `max_edge` (never below 1×1).
 pub fn thumb_dims(w: usize, h: usize, max_edge: usize) -> (usize, usize) {
     if w >= h {
-        (max_edge, ((h * max_edge + w / 2) / w).max(1))
+        (max_edge, ((h * max_edge + w / 2) / w).max(1)) // WHY/PROOF: a panorama thinner than max_edge:1 rounds its short side to 0 pixels
     } else {
-        (((w * max_edge + h / 2) / h).max(1), max_edge)
+        (((w * max_edge + h / 2) / h).max(1), max_edge) // WHY/PROOF: as above, for a very tall image
     }
 }
 
@@ -317,7 +317,7 @@ fn fold_linear(src: &[f32], sw: usize, sh: usize, tw: usize, th: usize) -> Vec<f
             }
             let o = (ty * tw + tx) * 3;
             for c in 0..3 {
-                out[o + c] = acc[c] / n.max(1.0);
+                out[o + c] = acc[c] / n.max(1.0); // WHY/PROOF: an upscaling fold can map a target pixel onto no source pixel — it reads black, not NaN
             }
         }
     }

@@ -517,7 +517,7 @@ fn run(
             // THE LEVEL PLAN'S ONE MAP (see TX_MAKEUP_Q32): fixed makeup (Q32, remainder carried, i32 headroom kept thru the shaper) then the cubic rail — a shout tapers into the rail instead of squaring off. Wire and archive carry the SAME shaped calibrated signal: the wire copy is the good copy of every party.
             {
                 // The calibration statistics stay in 16-bit units (the stored profiles, TX_CAL_VOICED and the plan constants all are): the 24-bit sum shifts down 8.
-                let mean_q8 = frame24.iter().map(|s| s.unsigned_abs() as i64).sum::<i64>() / frame24.len().max(1) as i64;
+                let mean_q8 = crate::platform::audio::mean_abs_24(&frame24);
                 if mean_q8 > 0 && mean_q8 < raw_floor_q8 {
                     raw_floor_q8 = mean_q8;
                 }
@@ -526,7 +526,7 @@ fn run(
                     if noise_est_q8 == 0 {
                         noise_est_q8 = mean_q8;
                     } else if mean_q8 > noise_est_q8 {
-                        noise_est_q8 += ((mean_q8 - noise_est_q8) >> 10).max(1);
+                        noise_est_q8 += ((mean_q8 - noise_est_q8) >> 10).max(1); // the algorithm: a rise under 1024 shifts to 0, and a floor that could not creep up by one would never rise at all
                     } else {
                         noise_est_q8 = mean_q8 + ((noise_est_q8 - mean_q8) >> 2);
                     }
@@ -562,7 +562,7 @@ fn run(
             let frame_sum = frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
             tx_energy += frame_sum;
             tx_frames += 1;
-            crate::platform::audio::note_near_level((frame_sum / frame.len().max(1) as u64) as u32);
+            crate::platform::audio::note_near_level(crate::platform::audio::mean_abs(&frame) as u32);
             let (enc, n) = if tier == RAW_TIER {
                 // Plaid: the frame IS the payload — little-endian i16, no codec in the path.
                 let mut raw = Vec::with_capacity(RAW_FRAME_BYTES);
@@ -1008,7 +1008,7 @@ fn run(
                     // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero; the matching up-ramp rides the first REAL frame after the hole. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
                     if draining.is_none() {
                         if let Some(prev) = last_played.take() {
-                            let len = prev.len().max(1) as i32;
+                            let len = prev.len().max(1) as i32; // WHY/PROOF: the fade divides by the frame's length, and a spliced-to-empty frame has none
                             let fade: Vec<i16> = prev.iter().enumerate().map(|(i, s)| ((*s as i32) * (len - i as i32) / len) as i16).collect();
                             crate::platform::audio::queue_playback(fade);
                             holes_faded += 1;
@@ -1144,7 +1144,7 @@ fn run(
         if last_live_stats.elapsed() >= std::time::Duration::from_secs(1) {
             last_live_stats = std::time::Instant::now();
             if rtt_n > 0 {
-                super::LAST_LINK_RTT_MS.store(rtt_ema.round().max(1.0) as u32, Ordering::Relaxed);
+                super::LAST_LINK_RTT_MS.store(rtt_ema.round().max(1.0) as u32, Ordering::Relaxed); // WHY/PROOF: 0 is the published "no measurement yet"; a sub-millisecond LAN round trip publishes as 1
             }
             super::LAST_LINK_LOSS.store(loss_bits.iter().map(|w| w.count_ones()).sum::<u32>(), Ordering::Relaxed);
             super::LAST_LINK_TARGET.store(jitter_target as u32, Ordering::Relaxed);
@@ -1158,7 +1158,7 @@ fn run(
                 let losses = loss_bits.iter().map(|w| w.count_ones()).sum::<u32>();
                 let js = crate::platform::audio::jitter_stats();
                 if rtt_n > 0 {
-                    super::LAST_LINK_RTT_MS.store(rtt_ema.round().max(1.0) as u32, Ordering::Relaxed);
+                    super::LAST_LINK_RTT_MS.store(rtt_ema.round().max(1.0) as u32, Ordering::Relaxed); // WHY/PROOF: 0 is the published "no measurement yet"; a sub-millisecond LAN round trip publishes as 1
                 }
                 super::LAST_LINK_LOSS.store(losses, Ordering::Relaxed);
                 super::LAST_LINK_TARGET.store(jitter_target as u32, Ordering::Relaxed);
@@ -1188,7 +1188,7 @@ fn run(
                 spk_half,
                 format!("{:.4}", crate::platform::audio::duck_k_q16() as f64 / 65536.0),
                 format!("{vol_lin_now:.3}"),
-                tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64)
+                tx_energy / (tx_frames.max(1) * FRAME_SAMPLES as u64) // WHY/PROOF: a wave that ended before its first frame sent reads silent, not a divide by zero
             );
         }
         // 1 s control cadence: the volume mirror refresh and live route tracking.
@@ -1236,7 +1236,7 @@ fn run(
                             if reaim_steps == 0 { "(first)" } else { "(correction, final)" },
                             measured_q8 >> 8,
                             reaim_ring.len(),
-                            measured_q8 / noise_est_q8.max(1),
+                            measured_q8 / noise_est_q8.max(1), // WHY/PROOF: the noise estimate is 0 until the first frame seeds it
                             p90 >> 8,
                             p50 >> 8,
                             format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
@@ -1401,7 +1401,7 @@ fn run(
         );
     }
     // CAPTURE/RENDER CADENCE (field 2026-09-08: Brittany's phone TX ran 15808 frames over a ~40s wave = 2x realtime, the phone trimmed half at playout = the scratchy; a device whose fast-path delivers double must NAME itself). Frames-per-second each way against the wave's wall-clock; a healthy 5ms path reads ~200.
-    let wave_secs = start_instant.elapsed().as_secs_f64().max(0.001);
+    let wave_secs = start_instant.elapsed().as_secs_f64().max(0.001); // WHY/PROOF: rates below divide by the wave's length, and a wave torn down in the same instant has none
     crate::logf!(
         "WAVE: cadence — tx {} fps, rx {} fps over {}s (nominal 200)",
         format!("{:.0}", tx_frames as f64 / wave_secs),

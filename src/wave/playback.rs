@@ -109,7 +109,7 @@ fn spawn(stream: KeptStream, skip: usize) -> Option<PlaybackHandle> {
 }
 
 fn run(mut stream: KeptStream, stop: &AtomicBool, skip: usize, pos: &std::sync::atomic::AtomicUsize, seek: &std::sync::atomic::AtomicUsize) {
-    let nchan = stream.nchan.max(1);
+    let nchan = stream.nchan.max(1); // WHY/PROOF: the stream's channel count is the container header's — file data; the frame stride divides by it
     // Seek = a length-prefix walk to just before the mark plus a few priming decodes (KeptStream::seek) — never a decode of everything before it.
     if skip > 0 {
         stream.seek(skip);

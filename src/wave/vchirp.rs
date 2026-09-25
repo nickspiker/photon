@@ -49,7 +49,7 @@ fn built() -> &'static (Vec<i16>, f64) {
         for i in 0..n {
             sum[i] = up[i] + up[n - 1 - i];
         }
-        let peak = sum.iter().fold(0f64, |a, &v| a.max(v.abs())).max(1e-9);
+        let peak = sum.iter().fold(0f64, |a, &v| a.max(v.abs())).max(1e-9); // WHY/PROOF: an all-zero sum (a silent capture) has no peak to normalise by
         let leg_scale = PEAK_TARGET / peak;
         (sum.iter().map(|&v| (v * leg_scale) as i16).collect(), leg_scale)
     })
@@ -88,7 +88,7 @@ pub fn frames() -> Vec<Vec<i16>> {
 
 /// The sweep's per-band coupling from the per-bin envelope ratios (bin j of the log sweep sits at 200·100^(j/N) Hz): the median ratio inside each SPECTRAL_BAND_EDGES_HZ band, NaN-free (an empty band reads 0).
 pub fn spectral_bands(ratios_by_bin: &[(usize, f32)]) -> [f32; 5] {
-    let n_bins = (CHIRP_SAMPLES / BIN).max(1) as f64;
+    let n_bins = (CHIRP_SAMPLES / BIN) as f64; // constants: 24000 / 240 = 100 bins
     let mut bands = [0f32; 5];
     for b in 0..5 {
         let (lo, hi) = (SPECTRAL_BAND_EDGES_HZ[b], SPECTRAL_BAND_EDGES_HZ[b + 1]);
@@ -151,7 +151,7 @@ fn leg_corr(cap: &[i16], leg: &[i16], max_lag: usize) -> (usize, f32, f64) {
         }
     }
     mags.sort_by(|a, b| a.partial_cmp(b).unwrap());
-    let median = mags[mags.len() / 2].max(1e-9);
+    let median = mags[mags.len() / 2].max(1e-9); // WHY/PROOF: a silent capture's median magnitude is 0, and the peak ratio divides by it
     (best.0, (best.1 / energy) as f32, best.1 / median)
 }
 
@@ -162,7 +162,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     }
     // Envelope bins + floor first — needed by both verdicts.
     let cap_env: Vec<f32> = cap.chunks(BIN).filter(|c| c.len() == BIN).map(|c| env_i16(c)).collect();
-    let floor = crate::wave::calibrate::quietest_run(&cap_env, 20.min(cap_env.len().max(1)));
+    let floor = crate::wave::calibrate::quietest_run(&cap_env, 20.min(cap_env.len().max(1))); // WHY/PROOF: a capture shorter than one bin has no envelope, and a run of 0 bins has no quietest
     // Reference legs at the EMITTED amplitude, i16-quantized (error ≪ any acoustic term).
     let leg_scale = built().1;
     let up = up_leg();
@@ -191,7 +191,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
         );
         return None;
     }
-    let (lo, hi) = (g_up.min(g_down).max(1e-6), g_up.max(g_down));
+    let (lo, hi) = (g_up.min(g_down).max(1e-6), g_up.max(g_down)); // WHY/PROOF: a leg that found no chirp measures 0 gain, and the symmetry test divides by the smaller
     if hi / lo > LEG_GAIN_RATIO_MAX {
         crate::logf!(
             "WAVE: v-chirp reject — leg gain ratio {} (up {} down {}, gate {}); lags {} / {}, psr {} / {}",
@@ -230,7 +230,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     let bands = spectral_bands(&by_bin);
     // IR export for the NLMS seed: cross-correlate the capture against the SUM template (what actually played) over the tap window around the matched delay. h[k] = <cap(lag), tpl>/|tpl|² — the least-squares IR at each lag, band-limited to the sweep (which is the whole audible path; fine, that's the band echo lives in).
     let tpl = template();
-    let tpl_energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9);
+    let tpl_energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>(); // the template is a fixed, non-silent chirp
     // WHY: the measured echo delay can be shorter than the filter's pre-roll on a tightly coupled speaker and mic.
     // PROOF: the impulse response then starts at sample 0 — the earliest there is — never at a wrapped index.
     let ir_start = delay.saturating_sub(crate::wave::nlms::PRE);
@@ -301,7 +301,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         }
         let delay_bins = delay_bins_raw;
         // Divide out the digital probe boost (the fit correlates against the unscaled template) and the stream volume — g publishes at unit volume, unit scale.
-        let scale = emit_scale.max(1e-6);
+        let scale = emit_scale.max(1e-6); // WHY/PROOF: a probe played at zero volume emits nothing to divide back out
         let g_norm = if vol_lin > 0.0 { f.g / scale / vol_lin } else { f.g / scale };
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         // THE SEED'S LAG IS THE PHYSICAL RENDER→CAPTURE DELAY, on the reference timeline (nlms.rs: `from = frame_pos − ir_start − n + 1`), NOT the chirp's position inside the capture buffer — the capture starts at probe start, the sweep sits a quarter-second pad later (2026-09-10 Azie/Nick: the position-as-lag seed sat 250 ms wrong; Nick's filter never found its reference window, Azie's adapted from a wrong seed and read −17 dB). lag_osc already holds the physical delay; convert it to samples and back off by the pre-roll.

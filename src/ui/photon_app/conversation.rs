@@ -880,7 +880,7 @@ impl PhotonApp {
         let mut dist_from_bottom = 0.0f32;
         let mut found: Option<f32> = None;
         for (vi, m) in visible.iter().enumerate().rev() {
-            let lines_n = wrap_lines.get(vi).map(|l| l.len()).unwrap_or(1).max(1);
+            let lines_n = wrap_lines.get(vi).map(|l| l.len()).unwrap_or(1).max(1); // WHY/PROOF: an empty bubble (a picture row, a retracted reaction) wraps to no lines but still occupies one
             let mut block = line_h + (lines_n as f32 - 1.0) * intra;
             if matches!(m.reference, Some((crate::types::RefKind::Reply, _))) {
                 block += intra;

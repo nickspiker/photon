@@ -1639,7 +1639,7 @@ impl FluorApp for PhotonApp {
                                 match self.music_play.as_ref().filter(|m| m.hash == hash) {
                                     Some(m) => m.toggle(),
                                     None => {
-                                        let dur = self.wave_env.get(&hash).and_then(|o| o.as_ref()).and_then(|envs| envs.first()).map(|e| e.bins as f32 * e.samples_per_bin as f32 / e.sample_rate.max(1) as f32).unwrap_or(0.0);
+                                        let dur = self.wave_env.get(&hash).and_then(|o| o.as_ref()).and_then(|envs| envs.first()).map(|e| e.bins as f32 * e.samples_per_bin as f32 / e.sample_rate.max(1) as f32).unwrap_or(0.0); // WHY/PROOF: the sample rate is the envelope blob's header — file data; the duration divides by it
                                         let bytes = self.session.as_ref().map(|se| se.identity_seed).and_then(|seed| crate::storage::blob_load(&seed, &hash));
                                         self.music_play = bytes.and_then(|b| super::music_play::MusicPlay::start(hash, b, dur));
                                     }
@@ -3783,7 +3783,7 @@ impl FluorApp for PhotonApp {
                 }
                 // TICK PROFILE every 30 s: the sections' average cost per tick, largest first, anything over a tenth of a millisecond.
                 if secs >= 30.0 {
-                    let n = self.tick_stat_n.max(1) as f32;
+                    let n = self.tick_stat_n.max(1) as f32; // WHY/PROOF: a stats window can close before its first tick
                     let mut prof: Vec<(&'static str, f32)> = self.tick_prof.iter().map(|(l, t)| (*l, *t / n)).filter(|(_, ms)| *ms >= 0.1).collect();
                     prof.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
                     let line: Vec<String> = prof.iter().take(10).map(|(l, ms)| format!("{l} {ms:.2}")).collect();

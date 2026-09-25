@@ -392,7 +392,7 @@ impl Learner {
         };
         let mut by_g: Vec<&WindowEstimate> = self.pool.iter().collect();
         by_g.sort_by(|a, b| a.g.partial_cmp(&b.g).unwrap());
-        let low = &by_g[..(by_g.len() / 2).max(1)];
+        let low = &by_g[..(by_g.len() / 2).max(1)]; // WHY/PROOF: the pool is non-empty (pool_delay answered) — a pool of one still has its one lowest, where len/2 would be an empty half
         let agree = low.iter().filter(|e| (e.lag as i64 - med as i64).abs() <= CLUSTER_TOL).count();
         agree as f32 >= low.len() as f32 * CLUSTER_FRAC
     }
@@ -404,7 +404,7 @@ impl Learner {
         }
         let mut by_g: Vec<&WindowEstimate> = self.pool.iter().collect();
         by_g.sort_by(|a, b| a.g.partial_cmp(&b.g).unwrap());
-        let low = &by_g[..(by_g.len() / 2).max(1)];
+        let low = &by_g[..(by_g.len() / 2).max(1)]; // WHY/PROOF: the pool is non-empty (pool_delay answered) — a pool of one still has its one lowest, where len/2 would be an empty half
         let mut ls: Vec<usize> = low.iter().map(|e| e.lag).collect();
         ls.sort_unstable();
         Some(ls[ls.len() / 2])
@@ -416,7 +416,7 @@ impl Learner {
         }
         let mut gs: Vec<f32> = self.pool.iter().map(|e| e.g).collect();
         gs.sort_by(|a, b| a.partial_cmp(b).unwrap());
-        let med = gs[gs.len() / 2].max(1e-6);
+        let med = gs[gs.len() / 2].max(1e-6); // WHY/PROOF: a median gain of 0 (a muted path) divides below
         let iqr = gs[gs.len() * 3 / 4] - gs[gs.len() / 4];
         iqr / med
     }

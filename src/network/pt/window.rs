@@ -136,7 +136,7 @@ impl WindowController {
     /// Get current window size (for compatibility with FlightTracker) In blast phase, return blast_remaining After blast, this is effectively unlimited (we use send_ratio instead)
     pub fn window(&self) -> u32 {
         if self.in_blast_phase {
-            self.blast_remaining.max(1)
+            self.blast_remaining.max(1) // WHY/PROOF: a blast that has spent its budget still reports one slot — a window of 0 would stall the sender until a timer it no longer has
         } else {
             // After blast, allow large in-flight count Real limit is send_ratio controlling new sends
             65536
