@@ -284,6 +284,10 @@ pub struct ChatMessage {
     pub bridge_seq: u64,
     /// BRIDGE runtime only: the exit code once this BridgeOut row's command completed — present = FINAL frame arrived, the in-flight predicate's other half.
     pub bridge_exit: Option<i64>,
+    /// CONTROL ROW (flag day 2026-09-24): `Some` = this is a hidden machinery row — probe, delete, wave signal, era, group control — and `content` is empty. A typed field on every carrier, never a content prefix.
+    pub control: Option<crate::types::RowControl>,
+    /// ATTACHMENT IDENTITY (flag day 2026-09-24): the blob's hash, the sender's name for it, its size and its role. `Some` = an attachment row and `content` is empty. Beside `attach` (kind, dims, preview), which describes the bytes rather than naming them.
+    pub file: Option<crate::types::AttachRef>,
 }
 
 impl ChatMessage {
@@ -308,6 +312,8 @@ impl ChatMessage {
             bridge_seq: 0,
             replicated: false,
             bridge_exit: None,
+            control: None,
+            file: None,
         }
     }
 
@@ -333,7 +339,47 @@ impl ChatMessage {
             attach: None,
             preview: Vec::new(),
             bridge_exit: None,
+            control: None,
+            file: None,
         }
+    }
+
+    /// A hidden control row: empty content, the kind and its fields typed.
+    pub fn control(control: crate::types::RowControl, is_outgoing: bool, timestamp: i64) -> Self {
+        let mut m = Self::new_with_timestamp(String::new(), is_outgoing, timestamp);
+        m.control = Some(control);
+        m
+    }
+
+    /// An attachment row: empty content, the blob's identity typed.
+    pub fn attachment(file: crate::types::AttachRef, is_outgoing: bool, timestamp: i64) -> Self {
+        let mut m = Self::new_with_timestamp(String::new(), is_outgoing, timestamp);
+        m.file = Some(file);
+        m
+    }
+
+    /// Hidden machinery — no UI, digest, weave window, or notification may surface it.
+    pub fn is_control(&self) -> bool {
+        self.control.is_some()
+    }
+
+    /// The ONE identity of this row's payload (row key, dedup, digest, braid ingredient) — `crate::types::row_control::ident_typed`.
+    pub fn ident_bytes(&self) -> Vec<u8> {
+        crate::types::row_control::ident_typed(&self.content, self.control.as_ref(), self.file.as_ref())
+    }
+
+    pub fn wave_signal(&self) -> Option<&crate::wave::signal::WaveSignal> {
+        self.control.as_ref().and_then(|c| c.wave())
+    }
+
+    /// The attachment's (hash, name, size) — the typed identity, the old content-string triple's shape.
+    pub fn file_parts(&self) -> Option<([u8; 32], String, u64)> {
+        self.file.as_ref().map(|f| (f.hash, f.name.clone(), f.size))
+    }
+
+    /// A kept WAVE RECORDING plays, never saves — the renderer gives it a ▶ pill and the tap routes to playback.
+    pub fn is_wave_recording(&self) -> bool {
+        self.file.as_ref().is_some_and(|f| f.role == crate::types::AttachRole::WaveAudio)
     }
 
     /// Builder: attach the typed reference (reply/edit/react target).
@@ -400,59 +446,6 @@ impl std::fmt::Display for HandleText {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.0)
     }
-}
-
-/// Reserved sentinel content for the hidden chain-weave probe message. After CLUTCH reaches Complete, each device sends exactly one message with this exact content to validate the ratchet end-to-end. The receive path recognises it, advances/ACKs the chain like any message, but suppresses the chat bubble. The control bytes (SOH/STX around the tag) make a collision with a real user message effectively impossible.
-pub const CHAIN_PROBE_MARKER: &str = "\u{1}\u{2}photon-chain-probe\u{2}\u{1}";
-
-/// Prefix for the hidden DELETE marker message: `{prefix}{timestamp}` — a normal chain message (ACKed, retransmitted, re-ACK-durable via its stored hidden row, exactly the probe pattern) instructing the peer to tombstone the row with that eagle timestamp. Control bytes make user-content collision effectively impossible.
-pub const DELETE_MARKER_PREFIX: &str = "\u{1}\u{2}photon-delete\u{2}\u{1}";
-
-/// Prefix for wave-signaling rows (docs/waves.md): offer/answer/decline/busy/hangup/taken ride the lanes as ordinary encrypted messages — a wave is indistinguishable from a text on the wire. Grammar + parsing live in `crate::wave::signal`; the type layer only owns the marker so `is_control_content` can hide them.
-/// The bytes moved from `photon-call` to `photon-wave` on the 2026-09-23 flag day: a build on either side of it reads the other's signal rows as ordinary text and shows nothing, which is the honest failure — the whole fleet crosses together.
-pub const WAVE_PREFIX: &str = "\u{1}\u{2}photon-wave\u{2}\u{1}";
-/// Era-ratchet control row (crypto/era.rs EraSignal): Init / Resp / Nudge ride the lane as hidden rows — window bypass and every hide-filter come free with is_control_content. The sender stores NO row (a dead Init must never re-serve on the new era); the receiver persists a hidden row with its ack_hash for re-ACK durability and never pushes it to siblings (the era itself replicates by chain-sync).
-pub const ERA_PREFIX: &str = "\u{1}\u{2}photon-era\u{2}\u{1}";
-
-
-/// True for any CONTROL message content (chain probe, delete marker, wave signaling) — machinery rows that no UI, digest, weave window, or history page may surface.
-pub fn is_control_content(content: &str) -> bool {
-    content == CHAIN_PROBE_MARKER
-        || content.starts_with(DELETE_MARKER_PREFIX)
-        || content.starts_with(WAVE_PREFIX)
-        || content.starts_with(ERA_PREFIX)
-        || content.starts_with(crate::types::molecule::MOLECULE_PREFIX)
-}
-
-/// Attachment row marker. NOT control content — attachment rows are VISIBLE messages (bubble = pill), they ACK, sync fleet-wide, tombstone, and weave like any row; only their DISPLAY differs. The content string is the whole record: `PREFIX + blake3_hex(64) + \u{2} + filename + \u{2} + size_bytes` — riding the ordinary content field means zero codec changes anywhere (vault, history pages, fleet sync all carry it as text). The blob itself travels separately over PT (attach_blob frames) and lives as a sealed file beside the vault, NEVER in a row.
-pub const ATTACHMENT_PREFIX: &str = "\u{1}\u{2}photon-attach\u{2}\u{1}";
-
-/// Build an attachment row's content string.
-pub fn attachment_content(content_hash: &[u8; 32], filename: &str, size: u64) -> String {
-    format!(
-        "{}{}\u{2}{}\u{2}{}",
-        ATTACHMENT_PREFIX,
-        hex::encode(content_hash),
-        filename.replace('\u{2}', " "),
-        size
-    )
-}
-
-/// Parse an attachment row's content → (content_hash, filename, size). None for non-attachment content or a malformed record.
-pub fn parse_attachment_content(content: &str) -> Option<([u8; 32], String, u64)> {
-    let rest = content.strip_prefix(ATTACHMENT_PREFIX)?;
-    let mut parts = rest.splitn(3, '\u{2}');
-    let hash_hex = parts.next()?;
-    let name = parts.next()?;
-    let size: u64 = parts.next()?.parse().ok()?;
-    let bytes = hex::decode(hash_hex).ok()?;
-    let hash: [u8; 32] = bytes.try_into().ok()?;
-    Some((hash, name.to_string(), size))
-}
-
-/// Is this attachment row a kept WAVE RECORDING (filename `wave.audio`)? Recordings play, not save — the renderer gives them a ▶ pill and the tap routes to playback (wave/playback.rs), unlike a file which saves/fetches.
-pub fn is_wave_recording(content: &str) -> bool {
-    parse_attachment_content(content).is_some_and(|(_, name, _)| name == "wave.audio")
 }
 
 /// Human-readable byte size for attachment pills — dozenal-doctrine exempt? NO: digits render at the edge; this returns arabic-free unit steps with the NUMBER left to the renderer. Kept simple: returns (whole_units, unit_label) so the caller renders the number in dozenal glyphs.

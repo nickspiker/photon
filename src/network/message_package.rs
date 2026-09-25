@@ -31,6 +31,10 @@ pub struct MessagePackage {
     pub attach: Option<AttachWire>,
     /// Typed group extras (docs/molecules.md §3/§4): attribution, weave authors, and the record payload. None on every friendship row.
     pub molecule: Option<MoleculeWire>,
+    /// The row's KIND when it is hidden machinery (probe, delete, wave, era, group control) — typed fields, never a body prefix. The body is empty on these.
+    pub control: Option<crate::types::RowControl>,
+    /// The attachment row's identity (hash, name, size, role) — typed fields; the body is empty on these.
+    pub file: Option<crate::types::AttachRef>,
 }
 
 /// The group frame's typed extras (docs/molecules.md §3 Frames): `from` is the sender's party id — implicit in a friendship, attribution in a group, verified against the roster's folded devices at ingress; `woven_authors` pairs with the package's `woven_times` to make each weave reference `(author, eagle_time)` (eagle times are unique per device, not per group); `blob` is the roster-codec record payload on a MOLECULE_PREFIX control row (offer snapshot, join records, record posting); `wrap` is the sealed era secret on a WRAP row — typed fields, consumed at ingress, never part of the row.
@@ -118,7 +122,7 @@ impl BridgeWire {
 
 /// Schema for the package section. `pad` is random bytes for traffic-analysis size jitter — schema'd sections serialize fields in schema order, so the old shuffled-field trick is gone; parsing is by NAME, which is the stronger version of what the shuffle enforced.
 fn msg_schema() -> SectionSchema {
-    SectionSchema::new(MSG_SECTION)
+    crate::types::row_control::declare_row_fields(SectionSchema::new(MSG_SECTION))
         .field("body", TypeConstraint::Utf8Text)
         .field("ihp", TypeConstraint::Any) // hp, 32 bytes
         .field("wt", TypeConstraint::Any) // e6, zero to two entries
@@ -168,7 +172,7 @@ pub fn build_message_package(
     marks: &[(u8, usize, usize, String)],
     pad: &[u8],
 ) -> Result<Vec<u8>, String> {
-    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None, None, None)
+    build_message_package_era(body, incorporated_hp, woven_times, reference, bridge, marks, pad, None, None, None, None, None)
 }
 
 /// The full builder: an era-ratchet row also carries its KEM material as typed fields.
@@ -184,6 +188,8 @@ pub fn build_message_package_era(
     era_kem: Option<&crate::crypto::era::EraKemWire>,
     attach: Option<&AttachWire>,
     molecule: Option<&MoleculeWire>,
+    control: Option<&crate::types::RowControl>,
+    file: Option<&crate::types::AttachRef>,
 ) -> Result<Vec<u8>, String> {
     let mut builder = msg_schema()
         .build()
@@ -302,6 +308,12 @@ pub fn build_message_package_era(
             builder = builder.set("gnonce", VsfType::hb(w.nonce.to_vec())).map_err(|e| e.to_string())?;
             builder = builder.set("gwrap", VsfType::hR(w.sealed.clone())).map_err(|e| e.to_string())?;
         }
+    }
+    if let Some(c) = control {
+        builder = crate::types::row_control::put_control(builder, c)?;
+    }
+    if let Some(f) = file {
+        builder = crate::types::row_control::put_file(builder, f)?;
     }
     let section_bytes = builder.encode().map_err(|e| e.to_string())?;
 
@@ -518,6 +530,8 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
                 wrap,
             }
         });
+    let control = crate::types::row_control::get_control(&section);
+    let file = crate::types::row_control::get_file(&section);
     Ok(MessagePackage {
         body,
         incorporated_hp,
@@ -531,6 +545,8 @@ pub fn parse_message_package(plain: &[u8]) -> Result<MessagePackage, String> {
         era_kem,
         attach,
         molecule,
+        control,
+        file,
     })
 }
 
@@ -542,7 +558,7 @@ mod tests {
     #[test]
     fn era_kem_fields_round_trip_and_are_absent_on_plain_rows() {
         let wire = crate::crypto::era::EraKemWire { mlkem: vec![1u8; 1568], x25519: vec![2u8; 32], hqc: Vec::new() };
-        let built = build_message_package_era("\u{1}\u{2}photon-era\u{2}\u{1}init\u{2}1\u{2}00\u{2}0000000a\u{2}3", &[0u8; 32], &[], None, None, &[], &[], Some(&wire), None, None).unwrap();
+        let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], Some(&wire), None, None, Some(&crate::types::RowControl::Era(crate::crypto::era::EraSignal::Init { era_next: 1, nonce: [0; 32], prior_tag: 10, kem_set: 3 })), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.era_kem, Some(wire));
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
@@ -553,7 +569,7 @@ mod tests {
     #[test]
     fn group_wire_rides_and_is_absent_on_plain_rows() {
         let g = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32], [0xB2; 32]], blob: Some(vec![7u8; 300]), wrap: None };
-        let built = build_message_package_era("\u{1}\u{2}photon-molecule\u{2}\u{1}records", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g)).unwrap();
+        let built = build_message_package_era("", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&g), Some(&crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.molecule, Some(g.clone()));
         assert_eq!(pkg.woven_times, vec![5, 9]);
@@ -561,7 +577,7 @@ mod tests {
         assert_eq!(parse_message_package(&plain).unwrap().molecule, None);
         // Mismatched pairing: one author for two times — authors drop, attribution and blob stay.
         let bad = MoleculeWire { from: [0xAA; 32], woven_authors: vec![[0xB1; 32]], blob: None, wrap: None };
-        let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad)).unwrap();
+        let built = build_message_package_era("x", &[0u8; 32], &[5, 9], None, None, &[], &[], None, None, Some(&bad), None, None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.molecule.as_ref().unwrap().from, [0xAA; 32]);
         assert!(pkg.molecule.as_ref().unwrap().woven_authors.is_empty());
@@ -574,15 +590,15 @@ mod tests {
         let w = BondWrapWire { recipient_device: [0x11; 32], bundle_id: [0x22; 32], era: 300, era_lineage: [0x33; 32], nonce: [0x44; 32], sealed: vec![0x55; 80] };
         let kem = crate::crypto::era::EraKemWire { mlkem: vec![1; 8], x25519: vec![2; 32], hqc: vec![3; 8] };
         let g = MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: Some(w.clone()) };
-        let text = crate::types::molecule::MoleculeSignal::Wrap.to_content();
-        let built = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], Some(&kem), None, Some(&g)).unwrap();
+        let ctl = crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Wrap);
+        let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], Some(&kem), None, Some(&g), Some(&ctl), None).unwrap();
         let pkg = parse_message_package(&built).unwrap();
         assert_eq!(pkg.molecule.as_ref().unwrap().wrap, Some(w));
         assert_eq!(pkg.era_kem, Some(kem));
-        assert_eq!(pkg.body, text);
-        assert!(!pkg.body.contains("5555"), "no secret material in the row text");
+        assert_eq!(pkg.body, "", "a control row carries no text");
+        assert_eq!(pkg.control, Some(ctl.clone()));
         // A partial set (attribution without the wrap fields) is no wrap at all.
-        let plain = build_message_package_era(&text, &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None })).unwrap();
+        let plain = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, Some(&MoleculeWire { from: [0xAA; 32], woven_authors: Vec::new(), blob: None, wrap: None }), Some(&ctl), None).unwrap();
         assert_eq!(parse_message_package(&plain).unwrap().molecule.as_ref().unwrap().wrap, None);
     }
 
@@ -623,10 +639,33 @@ mod tests {
     #[test]
     fn attach_fields_round_trip_typed() {
         let a = AttachWire { kind: 1, w: 4000, h: 3000, preview_hash: Some([7u8; 32]), preview: vec![2, 2, 9, 9, 9, 8, 8, 8, 7, 7, 7, 6, 6, 6] };
-        let built = build_message_package_era("\u{1}\u{2}photon-attach\u{2}\u{1}00", &[0u8; 32], &[], None, None, &[], &[], None, Some(&a), None).unwrap();
-        assert_eq!(parse_message_package(&built).unwrap().attach, Some(a));
+        let f = crate::types::AttachRef::file([9u8; 32], "photo.jpg", 123_456);
+        let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, Some(&a), None, None, Some(&f)).unwrap();
+        let pkg = parse_message_package(&built).unwrap();
+        assert_eq!(pkg.attach, Some(a));
+        assert_eq!(pkg.file, Some(f), "the attachment's identity rides typed, not in the body");
+        assert_eq!(pkg.body, "");
         let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
         assert!(parse_message_package(&plain).unwrap().attach.is_none());
+    }
+
+    /// Every control kind rides as typed fields and a plain package carries none.
+    #[test]
+    fn control_rows_ride_typed() {
+        let id = [0x31; 16];
+        for c in [
+            crate::types::RowControl::Probe,
+            crate::types::RowControl::Delete { target: 77 },
+            crate::types::RowControl::Wave(crate::wave::signal::WaveSignal::Offer { wave_id: id, nonce: [2; 32], device: Some([3; 32]) }),
+            crate::types::RowControl::Wave(crate::wave::signal::WaveSignal::Hangup { wave_id: id }),
+            crate::types::RowControl::Era(crate::crypto::era::EraSignal::Nudge { prior_tag: 9 }),
+        ] {
+            let built = build_message_package_era("", &[0u8; 32], &[], None, None, &[], &[], None, None, None, Some(&c), None).unwrap();
+            assert_eq!(parse_message_package(&built).unwrap().control, Some(c));
+        }
+        let plain = build_message_package("hi", &[0u8; 32], &[], None, None, &[], &[]).unwrap();
+        let pkg = parse_message_package(&plain).unwrap();
+        assert!(pkg.control.is_none() && pkg.file.is_none());
     }
 
     /// Marks ride as four correlated multi-fields and zip back losslessly; a plain package parses to zero marks.

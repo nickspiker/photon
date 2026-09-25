@@ -2,7 +2,7 @@
 //!
 //! The next era's secrets are `KDF(old lane_root ‖ old history_key ‖ FRESH ‖ transcript)`. The old root buys continuity and splice-resistance (nobody without it computes the next era, whatever fresh material they hold); confidentiality of the new era comes ENTIRELY from the fresh secret, a hybrid of ML-KEM-1024, X25519 and HQC-256 — two post-quantum families plus classical, ≈9 KB of public keys on the Init row and ≈16 KB of ciphertexts on the Resp row, no PT transfer, no McEliece. A departed device that captured the whole old era lacks the initiator's ephemeral decapsulation keys (RAM only, zeroized at derive) and the responder's encapsulation randomness, so it cannot follow.
 //!
-//! Wire grammar (`EraSignal`) follows the wave-signal STX convention: a hidden control row whose content is `ERA_PREFIX kind ‖ fields`, with the KEM material riding the message package's typed `ekn`/`ekx`/`ekh` fields beside it — never inside the text.
+//! Wire shape (`EraSignal`): a hidden control row whose kind and parameters are typed fields (`types::row_control`, `RowControl::Era`), with the KEM material riding the message package's typed `ekn`/`ekx`/`ekh` fields beside them — nothing in the text.
 
 use blake3::Hasher;
 use ihi::spaghettify;
@@ -11,7 +11,6 @@ use zeroize::Zeroize;
 use super::clutch::{
     generate_hqc256_keypair, generate_mlkem1024_keypair, generate_x25519_ephemeral, hqc256_decapsulate, hqc256_encapsulate, mlkem1024_decapsulate, mlkem1024_encapsulate, x25519_ecdh,
 };
-use crate::types::ERA_PREFIX;
 
 /// KEM set bitmask — the set can change without a flag day; a Resp must echo the Init's set.
 pub const KEM_MLKEM1024: u8 = 1;
@@ -329,39 +328,6 @@ impl EraSignal {
             EraSignal::Nudge { .. } => "nudge",
         }
     }
-
-    pub fn to_content(&self) -> String {
-        match self {
-            EraSignal::Init { era_next, nonce, prior_tag, kem_set } => format!("{}init\u{2}{}\u{2}{}\u{2}{:08x}\u{2}{}", ERA_PREFIX, era_next, hex::encode(nonce), prior_tag, kem_set),
-            EraSignal::Resp { era_next, nonce, prior_tag } => format!("{}resp\u{2}{}\u{2}{}\u{2}{:08x}", ERA_PREFIX, era_next, hex::encode(nonce), prior_tag),
-            EraSignal::Nudge { prior_tag } => format!("{}nudge\u{2}{:08x}", ERA_PREFIX, prior_tag),
-        }
-    }
-
-    /// None for non-era content or a malformed record (malformed = dropped, never guessed).
-    pub fn parse(content: &str) -> Option<EraSignal> {
-        let rest = content.strip_prefix(ERA_PREFIX)?;
-        let mut parts = rest.split('\u{2}');
-        let kind = parts.next()?;
-        let tag = |s: &str| u32::from_str_radix(s, 16).ok();
-        match kind {
-            "init" => {
-                let era_next: u64 = parts.next()?.parse().ok()?;
-                let nonce: [u8; 32] = hex::decode(parts.next()?).ok()?.try_into().ok()?;
-                let prior_tag = tag(parts.next()?)?;
-                let kem_set: u8 = parts.next()?.parse().ok()?;
-                Some(EraSignal::Init { era_next, nonce, prior_tag, kem_set })
-            }
-            "resp" => {
-                let era_next: u64 = parts.next()?.parse().ok()?;
-                let nonce: [u8; 32] = hex::decode(parts.next()?).ok()?.try_into().ok()?;
-                let prior_tag = tag(parts.next()?)?;
-                Some(EraSignal::Resp { era_next, nonce, prior_tag })
-            }
-            "nudge" => Some(EraSignal::Nudge { prior_tag: tag(parts.next()?)? }),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -469,19 +435,4 @@ mod tests {
         assert_eq!(a, derive_era_fresh(&[("x", vec![1, 2, 3]), ("y", vec![4])]));
     }
 
-    #[test]
-    fn signals_round_trip_and_are_control() {
-        let sigs = [
-            EraSignal::Init { era_next: 5, nonce: [0xAB; 32], prior_tag: 0x0000_00FF, kem_set: 7 },
-            EraSignal::Resp { era_next: 5, nonce: [0xCD; 32], prior_tag: 0xDEAD_BEEF },
-            EraSignal::Nudge { prior_tag: 1 },
-        ];
-        for s in sigs {
-            let c = s.to_content();
-            assert!(crate::types::is_control_content(&c), "era rows are hidden control rows");
-            assert_eq!(EraSignal::parse(&c), Some(s));
-        }
-        assert_eq!(EraSignal::parse("hello"), None);
-        assert_eq!(EraSignal::parse(&format!("{}init\u{2}x", ERA_PREFIX)), None, "malformed is dropped, never guessed");
-    }
 }

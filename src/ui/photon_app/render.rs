@@ -1785,7 +1785,7 @@ impl PhotonApp {
                     .map(|v| v.messages.as_slice())
                     .unwrap_or(&[])
                     .iter()
-                    .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+                    .filter(|m| !m.is_control() && !m.deleted)
                     .map(|m| m.timestamp)
                     .max()
                     .unwrap_or(i64::MIN);
@@ -2387,7 +2387,7 @@ impl PhotonApp {
                             .map(|v| v.messages.as_slice())
                             .unwrap_or(&[])
                             .iter()
-                            .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+                            .filter(|m| !m.is_control() && !m.deleted)
                             .collect();
                         let sent = human.iter().filter(|m| m.is_outgoing).count();
                         let recv = human.len() - sent;
@@ -3250,15 +3250,16 @@ impl PhotonApp {
                             if is_bond_offer_row(m) {
                                 return bond_cards.iter().find(|(ts, out, _, _)| *ts == m.timestamp && *out == m.is_outgoing).map(|(_, _, l, _)| l.clone()).unwrap_or_else(|| tr(Msg::BondExpired).into_owned());
                             }
-                            if crate::types::parse_attachment_content(&m.content).is_none() {
+                            if m.file_parts().is_none() {
                                 if let Some((_, b)) = edit_over.get(&(m.timestamp, m.is_outgoing)) {
                                     return b.clone();
                                 }
                             }
                             if let (Some((ph, pct)), Some((h, name, _))) =
-                                (playing_rec, crate::types::parse_attachment_content(&m.content))
+                                (playing_rec, m.file_parts())
                             {
-                                if name == "wave.audio" && h == ph {
+                                let _ = name;
+                                if m.is_wave_recording() && h == ph {
                                     return tr(Msg::RecordingPlaying { pct }).into_owned();
                                 }
                             }
@@ -3274,9 +3275,9 @@ impl PhotonApp {
                         let rec_over: std::collections::HashMap<i64, &crate::types::ChatMessage> = {
                             let mut m: std::collections::HashMap<i64, &crate::types::ChatMessage> = std::collections::HashMap::new();
                             let rank = |r: &crate::types::ChatMessage| -> (bool, u64) {
-                                crate::types::parse_attachment_content(&r.content).map_or((false, 0), |(h, _, size)| (crate::storage::blob_present(&h), size))
+                                r.file_parts().map_or((false, 0), |(h, _, size)| (crate::storage::blob_present(&h), size))
                             };
-                            for r in raw_msgs.iter().filter(|r| !r.deleted && crate::types::is_wave_recording(&r.content)) {
+                            for r in raw_msgs.iter().filter(|r| !r.deleted && r.is_wave_recording()) {
                                 if let Some((crate::types::RefKind::Wave, t)) = r.reference {
                                     match m.get(&t) {
                                         Some(cur) if rank(cur) >= rank(r) => {}
@@ -3292,8 +3293,9 @@ impl PhotonApp {
                         let env_over: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = {
                             let mut m: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = std::collections::HashMap::new();
                             for e in raw_msgs.iter().filter(|m| !m.deleted) {
-                                if let (Some((crate::types::RefKind::Wave, t)), Some((h, name, _))) = (e.reference, crate::types::parse_attachment_content(&e.content)) {
-                                    if name == crate::wave::wave_env::WAVE_ENV_NAME {
+                                if let (Some((crate::types::RefKind::Wave, t)), Some(f)) = (e.reference, e.file.as_ref()) {
+                                    let h = f.hash;
+                                    if f.role == crate::types::AttachRole::WaveEnv {
                                         let slot = m.entry(t).or_default();
                                         if e.is_outgoing {
                                             slot.0 = Some(h);
@@ -3353,7 +3355,7 @@ impl PhotonApp {
                             let mut total = 0usize;
                             for m in &visible {
                                 // wave.audio rows draw in Oxanium (so the dozenal size + ▶ resolve) — measure with the SAME font or the wrapped line count disagrees with the draw.
-                                let row_wrap = if crate::types::is_wave_recording(&m.content) {
+                                let row_wrap = if m.is_wave_recording() {
                                     TextStyle::new(msg_size, 0).weight(500).font("Oxanium")
                                 } else {
                                     wrap_style.clone()
@@ -3543,7 +3545,7 @@ impl PhotonApp {
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             let mut bar_frac: Option<f32> = None;
                             if let Some((hash, _, _)) =
-                                crate::types::parse_attachment_content(&msg.content)
+                                msg.file_parts()
                             {
                                 let want_outbound = msg.is_outgoing;
                                 let relevant = if want_outbound {
@@ -3654,7 +3656,7 @@ impl PhotonApp {
                                 if msg.star_osc > 0 {
                                     detail.push_str(" \u{00B7} \u{2605}");
                                 }
-                                if crate::types::parse_attachment_content(&msg.content).is_none()
+                                if msg.file_parts().is_none()
                                     && edit_over.contains_key(&(msg.timestamp, msg.is_outgoing))
                                 {
                                     detail.push_str(&tr(Msg::EditedSuffix));
@@ -3684,7 +3686,7 @@ impl PhotonApp {
                                 }
                                 // Attachment blob state joins the meta line: held/confirmed vs still travelling.
                                 if let Some((hash, _, _)) =
-                                    crate::types::parse_attachment_content(&msg.content)
+                                    msg.file_parts()
                                 {
                                     if msg.is_outgoing {
                                         detail.push_str(&tr(
@@ -3699,7 +3701,7 @@ impl PhotonApp {
                                     }
                                 }
                                 // STATS UP TOP (Nick 2026-09-12): an attachment row's meta line leads with name, type, size and dims; the age and delivery state follow.
-                                if let (Some(a), Some((_, name, size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+                                if let (Some(a), Some((_, name, size))) = (msg.attach, msg.file_parts()) {
                                     let size_s = crate::types::size_label(size);
                                     let dims_s = a.dims.map(|(w, h): (u32, u32)| format!("{}\u{00D7}{}", crate::fmt_mag(w as u64), crate::fmt_mag(h as u64))).unwrap_or_default();
                                     let kind_s = tr(Msg::AttachKindName(a.kind));
@@ -3780,7 +3782,7 @@ impl PhotonApp {
                                     // PLAY IS A BUTTON ON THIS ROW (Nick 2026-09-12: "to play requires two steps and no scrolling"): select the row, then press play — the band itself never starts playback. Then wave back, beam back, export, and discard sits with delete below.
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
-                                        let (held, playing_this) = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| (crate::storage::blob_present_or_pending(&h), self.wave_playback.is_some() && self.wave_playback_hash == Some(h))).unwrap_or((false, false));
+                                        let (held, playing_this) = rec.file_parts().map(|(h, _, _)| (crate::storage::blob_present_or_pending(&h), self.wave_playback.is_some() && self.wave_playback_hash == Some(h))).unwrap_or((false, false));
                                         v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, self.msg_action_base.wrapping_add(11)));
                                     }
                                     // Wave back needs a direct path too (Nick 2026-09-17): over the relay alone the pill is dimmed and says so.
@@ -3792,7 +3794,7 @@ impl PhotonApp {
                                     }
                                     v.push((tr(Msg::BeamBack), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE));
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
-                                        let held = crate::types::parse_attachment_content(&rec.content).is_some_and(|(h, _, _)| crate::storage::blob_present_or_pending(&h));
+                                        let held = rec.file_parts().is_some_and(|(h, _, _)| crate::storage::blob_present_or_pending(&h));
                                         if held {
                                             v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
                                         }
@@ -3812,7 +3814,7 @@ impl PhotonApp {
                                 };
                                 if !is_wave_row
                                     && msg.is_outgoing
-                                    && crate::types::parse_attachment_content(&msg.content)
+                                    && msg.file_parts()
                                         .is_none()
                                 {
                                     pills.push((
@@ -3822,7 +3824,7 @@ impl PhotonApp {
                                     ));
                                 }
                                 // Copy is for text: an attachment row's body is its visual, nothing to copy.
-                                if !is_wave_row && crate::types::parse_attachment_content(&msg.content).is_none() {
+                                if !is_wave_row && msg.file_parts().is_none() {
                                     pills.push((copy_label, copy_colour, self.msg_copy_id));
                                 }
                                 if msg.is_outgoing && !msg.delivered {
@@ -3834,10 +3836,10 @@ impl PhotonApp {
                                 }
                                 // Attachment rows: a wave recording PLAYS (blob held) or fetches; a file SAVES (blob held) or fetches. Same slot 4 — the click handler branches on wave.audio.
                                 if let Some((hash, _, _)) =
-                                    crate::types::parse_attachment_content(&msg.content)
+                                    msg.file_parts()
                                 {
                                     let held = crate::storage::blob_present_or_pending(&hash);
-                                    let is_rec = crate::types::is_wave_recording(&msg.content);
+                                    let is_rec = msg.is_wave_recording();
                                     // Opening is a tap on the visual itself (2026-09-12); the strip's pill is the file verb: fetch it, play a standalone recording, or save it.
                                     // A held music pigeon gets PLAY/STOP in the action row itself, beside save and delete (Nick 2026-09-12: "same line as reply/save/delete") — the same glyphs the wave card's play wears.
                                     let is_music = msg.attach.is_some_and(|a| a.kind == crate::types::AttachKind::Audio) && !is_rec;
@@ -4004,7 +4006,7 @@ impl PhotonApp {
                                 author_colour(msg)
                             };
                             // wave.audio rows render in Oxanium — matches the wrap-loop font so the dozenal size + ▶ glyph resolve (the default bubble font tofus both).
-                            let msg_style = if crate::types::is_wave_recording(&msg.content) {
+                            let msg_style = if msg.is_wave_recording() {
                                 TextStyle::new(msg_size, colour).weight(500).font("Oxanium")
                             } else {
                                 TextStyle::new(msg_size, colour).weight(500)
@@ -4016,7 +4018,7 @@ impl PhotonApp {
                                     .find(|x| {
                                         x.timestamp == t
                                             && !x.deleted
-                                            && !crate::types::is_control_content(&x.content)
+                                            && !x.is_control()
                                             && !matches!(
                                                 x.reference,
                                                 Some((crate::types::RefKind::Edit, _))
@@ -4111,7 +4113,7 @@ impl PhotonApp {
                                             ctx.text.draw_text_left(&mut canvas, &tr(Msg::WaveKeeping), glyph_x1, bcy + msg_size * 0.35, &small, Some(list_clip), None);
                                         }
                                         Some(rec) => {
-                                            let hash = crate::types::parse_attachment_content(&rec.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
+                                            let hash = rec.file_parts().map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                             let held = crate::storage::blob_present(&hash);
                                             let playing = self.wave_playback.is_some() && self.wave_playback_hash == Some(hash);
                                             // ENVELOPE SOURCES (the wave.env exchange, 2026-09-12): each half of the card comes from that party's OWN shared 3-channel tensor — ours from our blob, theirs from theirs — and a side whose blob hasn't landed (or was never minted: short waves) derives from the held audio, one decode, off-thread. Nothing reads the container's header any more.
@@ -4260,7 +4262,7 @@ impl PhotonApp {
                                     (None, Some((w, h, px))) => Some((w, h, std::borrow::Cow::Owned(px))),
                                     _ => None,
                                 };
-                                let hash_of_row: [u8; 32] = crate::types::parse_attachment_content(&msg.content).map(|(h, _, _)| h).unwrap_or([0u8; 32]);
+                                let hash_of_row: [u8; 32] = msg.file_parts().map(|(h, _, _)| h).unwrap_or([0u8; 32]);
                                 if let Some((tw, th, pixels)) = picture {
                                     // A picture row has no body text (the picture IS the row), so the band anchors straight off the baseline with symmetric insets — the text-row offset left dead padding under every image (Nick 2026-09-12, same fix as the audio band).
                                     let reply_off = if reply_target.is_some() { intra } else { 0.0 };
@@ -4288,7 +4290,7 @@ impl PhotonApp {
                                         paint::draw_image(&mut canvas, &pixels, tw, th, cx, cy, bw, bh, Some(clip));
                                     }
                                     // The picture is its own tap target: inside opens the viewer, the rest of the row opens the actions.
-                                    if let (Some(a), Some((hash, _, _))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+                                    if let (Some(a), Some((hash, _, _))) = (msg.attach, msg.file_parts()) {
                                         let slot = vi % super::MSG_HIT_SPAN as usize;
                                         if slot < self.msg_attach_visuals.len() {
                                             self.msg_attach_visuals[slot] = Some(super::AttachVisual { hash, held: crate::storage::blob_present_or_pending(&hash), kind: a.kind, x0: cx - bw * 0.5, x1: cx + bw * 0.5, y0: (cy - bh * 0.5).max(list_top), y1: (cy + bh * 0.5).min(list_bottom) });
@@ -4298,7 +4300,7 @@ impl PhotonApp {
                             }
                             // PIGEONS CARRYING WAVES (Nick 2026-09-12): a dropped song's row IS its waveform — the same three-pyramid tensor and cumulative stack a wave card runs, derived off-thread from the held audio thru symphonia; L up, R down, the row's colour.
                             if audio_lines > 0 {
-                                if let Some((ahash, _, _)) = crate::types::parse_attachment_content(&msg.content) {
+                                if let Some((ahash, _, _)) = msg.file_parts() {
                                     if !self.wave_env.contains_key(&ahash) && !self.wave_env_pending.contains(&ahash) {
                                         if let Some(seed) = self.session.as_ref().map(|se| se.identity_seed) {
                                             if self.wave_env_tx.is_none() {
@@ -4391,7 +4393,7 @@ impl PhotonApp {
                                 }
                             }
                             // A code or text row's preview lines are its visual: the body rect opens the reader, the margins open the actions.
-                            if let (Some(a), Some((hash, _, _))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
+                            if let (Some(a), Some((hash, _, _))) = (msg.attach, msg.file_parts()) {
                                 if a.kind.is_text() && !lines.is_empty() {
                                     let slot = vi % super::MSG_HIT_SPAN as usize;
                                     let top = y - react_off - (lines.len() - 1) as f32 * intra - msg_size * 0.6;
@@ -4673,7 +4675,7 @@ impl PhotonApp {
                             let target = raw_msgs.iter().find(|x| {
                                 x.timestamp == t
                                     && !x.deleted
-                                    && !crate::types::is_control_content(&x.content)
+                                    && !x.is_control()
                                     && !matches!(
                                         x.reference,
                                         Some((crate::types::RefKind::Edit, _))

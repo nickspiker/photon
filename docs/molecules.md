@@ -45,7 +45,7 @@ No molecule state ever touches infrastructure: the molecule holds its own histor
 
 ## 4. Membership — the roster as sovereign records
 
-The roster is a set of signed records, merged by union with subject-signed newest-wins per party. It rides inside the molecule as hidden control rows (`MOLECULE_PREFIX`, the `ERA_PREFIX` pattern), so it is history, re-servable, and fleet-replicated with no new plane.
+The roster is a set of signed records, merged by union with subject-signed newest-wins per party. It rides inside the molecule as hidden control rows (`RowControl::Molecule`, typed like the era rows), so it is history, re-servable, and fleet-replicated with no new plane.
 
 - **Genesis** — founder-signed: `molecule_id`, lineage, founder party id, genesis eagle time, and the newcomer-history policy (§8 D5).
 - **Member** — signed by one of the member's own devices: party id, `handle_proof`, molecule name grant, avatar pin, per-device KEM bundles, `joined_osc`, sponsor party id. Everyone folds the member's devices from the public membership chain under the proof; no device list is trusted from the record itself.
@@ -68,7 +68,7 @@ My devices see a molecule as one more conversation: chains blob (lanes, eras, KE
 
 ## 7. Concrete additions
 
-- `types/molecule.rs`: `MoleculeId`, roster records + merge, `MOLECULE_PREFIX` control-row grammar (genesis, member, invite, leave, era).
+- `types/molecule.rs`: `MoleculeId`, roster records + merge, the `MoleculeSignal` control-row kinds (typed as `RowControl::Molecule`; payloads ride the package's `g*` fields).
 - `Conversation`: stable-id form with a mutable participant set; `ChatMessage.author`.
 - Frame: `from` party id; weave refs `(author, eagle_time)`; `strand_pull`/`strand_serve` on the history-page codec.
 - Chains blob schema v9 (additive): molecule flag, per-device KEM decapsulation keys, lanes off the molecule root.

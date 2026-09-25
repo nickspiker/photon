@@ -111,7 +111,7 @@ impl Conversation {
         true
     }
 
-    /// The anti-entropy digest `(count, digest)` over the syncable rows, ORDER-DEPENDENT and sorted by eagle_time. `digest = rolling H(prev ‖ H(timestamp ‖ H(content)))` walking rows oldest-first (the order `insert_message_sorted` maintains). Order matters ON PURPOSE: two sides holding the same messages in the same sequence hash identically; a mismatch means one side is MISSING or has REORDERED a message — which an order-free XOR fold would have hidden (its whole point was to reveal exactly that). Probe/control rows and tombstones are excluded (they never sync / carry no content to compare). Cached; recomputed only after a mutation invalidates it.
+    /// The anti-entropy digest `(count, digest)` over the syncable rows, ORDER-DEPENDENT and sorted by eagle_time. `digest = rolling H(prev ‖ H(timestamp ‖ H(identity)))` walking rows oldest-first (the order `insert_message_sorted` maintains). Order matters ON PURPOSE: two sides holding the same messages in the same sequence hash identically; a mismatch means one side is MISSING or has REORDERED a message — which an order-free XOR fold would have hidden (its whole point was to reveal exactly that). Probe/control rows and tombstones are excluded (they never sync / carry no content to compare). Cached; recomputed only after a mutation invalidates it.
     pub fn anti_entropy_digest(&mut self) -> (u32, [u8; 32]) {
         if let Some(cached) = self.digest_cache {
             return cached;
@@ -121,11 +121,11 @@ impl Conversation {
         for m in self
             .messages
             .iter()
-            .filter(|m| !crate::types::is_control_content(&m.content) && !m.deleted)
+            .filter(|m| !m.is_control() && !m.deleted)
         {
             let row = blake3::Hasher::new()
                 .update(&m.timestamp.to_le_bytes())
-                .update(blake3::hash(m.content.as_bytes()).as_bytes())
+                .update(blake3::hash(&m.ident_bytes()).as_bytes())
                 .finalize();
             rolling = *blake3::Hasher::new()
                 .update(&rolling)
@@ -201,11 +201,11 @@ impl Conversation {
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
         // Any insert or in-place upgrade can change the syncable set (a new row, or a deleted-flag flip below), so drop the cached anti-entropy digest — recomputed lazily on the next request.
         self.digest_cache = None;
-        // IDENTITY = (timestamp, content): the eagle_time and the bare text, never the metadata. One message reaches a device by several routes — the live wire frame, a sibling fleet-forward, a history-recovery page — and those copies differ ONLY in metadata (delivered / recovered / ack_hash; the live frame carries a real ack_hash a forward lacks). Keying dedup on anything else let two copies of one message coexist: the mac's duplicated message (2026-08-08) was a sibling fleet-forward (stored recovered=false) plus the live frame, which the old recovered-only collapse never merged. On a match, upgrade the surviving row's metadata monotonically and drop the duplicate.
+        // IDENTITY = (timestamp, ident_bytes): the eagle_time and the row's payload identity (its text, or a typed row's canonical fields), never the metadata. One message reaches a device by several routes — the live wire frame, a sibling fleet-forward, a history-recovery page — and those copies differ ONLY in metadata (delivered / recovered / ack_hash; the live frame carries a real ack_hash a forward lacks). Keying dedup on anything else let two copies of one message coexist: the mac's duplicated message (2026-08-08) was a sibling fleet-forward (stored recovered=false) plus the live frame, which the old recovered-only collapse never merged. On a match, upgrade the surviving row's metadata monotonically and drop the duplicate.
         if let Some(existing) = self
             .messages
             .iter_mut()
-            .find(|m| m.timestamp == msg.timestamp && m.content == msg.content)
+            .find(|m| m.timestamp == msg.timestamp && m.content == msg.content && m.control == msg.control && m.file == msg.file)
         {
             existing.delivered |= msg.delivered;
             existing.deleted |= msg.deleted;
@@ -243,14 +243,15 @@ impl Conversation {
                 return;
             }
         }
-        // TOTAL order = (timestamp, blake3(content)) — the row-identity fields and nothing else, THE SAME order the storage key encodes (message_row_key: BE time ‖ hash[..8]). Timestamp alone left same-tick rows in ARRIVAL order, which differs per device — two devices holding identical rows rendered different orders AND computed different anti-entropy digests (the rolling hash is order-dependent), re-firing the history walk forever between converged copies. The hash tiebreak runs only on equal timestamps (cross-sender same-tick — within one sender's 704ps stream ties are impossible); equal (timestamp, content) is the dedup branch above and never reaches here.
+        // TOTAL order = (timestamp, blake3(ident_bytes)) — the row-identity fields and nothing else, THE SAME order the storage key encodes (message_row_key: BE time ‖ hash[..8]). Timestamp alone left same-tick rows in ARRIVAL order, which differs per device — two devices holding identical rows rendered different orders AND computed different anti-entropy digests (the rolling hash is order-dependent), re-firing the history walk forever between converged copies. The hash tiebreak runs only on equal timestamps (cross-sender same-tick — within one sender's 704ps stream ties are impossible); equal (timestamp, content) is the dedup branch above and never reaches here.
+        let msg_ident = msg.ident_bytes();
         let pos = self
             .messages
             .binary_search_by(|m| {
                 m.timestamp.cmp(&msg.timestamp).then_with(|| {
-                    blake3::hash(m.content.as_bytes())
+                    blake3::hash(&m.ident_bytes())
                         .as_bytes()
-                        .cmp(blake3::hash(msg.content.as_bytes()).as_bytes())
+                        .cmp(blake3::hash(&msg_ident).as_bytes())
                 })
             })
             .unwrap_or_else(|pos| pos);

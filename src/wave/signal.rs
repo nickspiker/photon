@@ -1,13 +1,11 @@
 //! Wave signaling — encrypted control rows ON THE LANES, never a bare wire frame.
 //!
-//! An offer/answer/hangup is ordinary lane-sealed message content carrying the [`crate::types::WAVE_PREFIX`] marker: to every relay, queue, and wire observer a wave is indistinguishable from a text message. What that buys, for free: fold trust, receive-anywhere (every answering device decrypts the offer → every device can ring and any can answer), dedup, retransmit, and the offer's lane key falling out of the decrypt as the basket's doomed egg.
+//! An offer/answer/hangup is an ordinary lane-sealed message whose typed control field is `RowControl::Wave`: to every relay, queue, and wire observer a wave is indistinguishable from a text message. What that buys, for free: fold trust, receive-anywhere (every answering device decrypts the offer → every device can ring and any can answer), dedup, retransmit, and the offer's lane key falling out of the decrypt as the basket's doomed egg.
 //!
-//! Record grammar (STX-separated fields after the prefix, the attachment-row convention):
-//! `PREFIX kind \u{2} wave_id_hex32 [\u{2} nonce_hex64]` — nonce present on offer/answer only.
+//! Every field is typed (`types::row_control`): the kind, the 16-byte wave id, and on offer/answer the nonce and the device key. Nothing is ever encoded into the row's text (flag day 2026-09-24).
 //!
 //! These rows are CONTROL content: hidden from every surface, never dinged by the normal path (the RING is its own edge at offer receipt, bypassing claim/attention suppression — a wave is the one always-ring event). The visible record of a wave (missed/completed/duration) is a separate summary row minted at the end.
 
-use crate::types::WAVE_PREFIX;
 
 // ---------------------------------------------------------------------------
 // EXPRESS SIGNALS — the out-of-band copy that beats the lane (2026-09-01 Emma/Nick field logs).
@@ -21,7 +19,7 @@ use crate::types::WAVE_PREFIX;
 pub const EXPRESS_MAGIC: u8 = 0xC9;
 const EXPRESS_NONCE_LEN: usize = 24;
 
-/// Wire shape: [EXPRESS_MAGIC][nonce:24][AEAD(payload)]. Payload: [ts:8 LE][has_lane_key:1][lane_key:32?][content utf8].
+/// Wire shape: [EXPRESS_MAGIC][nonce:24][AEAD(payload)]. Payload: a complete VSF document — the stamp, the optional lane key, and the signal's typed control fields.
 pub fn is_express_frame(bytes: &[u8]) -> bool {
     bytes.len() > 1 + EXPRESS_NONCE_LEN + 16 && bytes[0] == EXPRESS_MAGIC
 }
@@ -42,16 +40,7 @@ pub fn seal_express(
     sig: &WaveSignal,
 ) -> Option<Vec<u8>> {
     use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
-    let mut payload = Vec::with_capacity(9 + 32 + 64);
-    payload.extend_from_slice(&ts.to_le_bytes());
-    match lane_key {
-        Some(k) => {
-            payload.push(1);
-            payload.extend_from_slice(k);
-        }
-        None => payload.push(0),
-    }
-    payload.extend_from_slice(sig.to_content().as_bytes());
+    let payload = express_payload(ts, lane_key, sig)?;
     let nonce_bytes: [u8; EXPRESS_NONCE_LEN] = rand::random();
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
     let sealed = cipher.encrypt(XNonce::from_slice(&nonce_bytes), payload.as_slice()).ok()?;
@@ -79,20 +68,46 @@ pub fn open_express(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32
     let nonce = &bytes[1..1 + EXPRESS_NONCE_LEN];
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
     let payload = cipher.decrypt(XNonce::from_slice(nonce), &bytes[1 + EXPRESS_NONCE_LEN..]).ok()?;
-    if payload.len() < 9 {
-        return None;
+    read_express_payload(&payload)
+}
+
+const EXPRESS_SECTION: &str = "wexp";
+
+fn express_schema() -> vsf::schema::SectionSchema {
+    crate::types::row_control::declare_row_fields(
+        vsf::schema::SectionSchema::new(EXPRESS_SECTION)
+            .field("ts", vsf::schema::TypeConstraint::Any) // e6 the signal's stamp
+            .field("lk", vsf::schema::TypeConstraint::Any), // hR the offer's lane key (the doomed egg), offers only
+    )
+}
+
+/// The sealed plaintext: a complete VSF document, the signal as typed fields.
+fn express_payload(ts: i64, lane_key: Option<&[u8; 32]>, sig: &WaveSignal) -> Option<Vec<u8>> {
+    use vsf::VsfType;
+    let mut b = express_schema().build().set("ts", VsfType::e(vsf::types::EtType::e6(ts))).ok()?;
+    if let Some(k) = lane_key {
+        b = b.set("lk", VsfType::hR(k.to_vec())).ok()?;
     }
-    let ts = i64::from_le_bytes(payload[..8].try_into().ok()?);
-    let (lane_key, content_at) = match payload[8] {
-        1 if payload.len() >= 41 => {
-            let k: [u8; 32] = payload[9..41].try_into().ok()?;
-            (Some(k), 41)
-        }
-        0 => (None, 9),
+    b = crate::types::row_control::put_control(b, &crate::types::RowControl::Wave(*sig)).ok()?;
+    let section = b.encode().ok()?;
+    vsf::VsfBuilder::new().creation_time_oscillations(ts).provenance_only().add_unboxed(EXPRESS_SECTION, section).build().ok()
+}
+
+fn read_express_payload(payload: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSignal)> {
+    use vsf::VsfType;
+    let section = vsf::schema::SectionBuilder::parse_document(express_schema(), payload, None).ok()?;
+    let ts = match section.get_fields("ts").first().and_then(|f| f.values.first())? {
+        VsfType::e(vsf::types::EtType::e6(t)) => *t,
         _ => return None,
     };
-    let content = std::str::from_utf8(&payload[content_at..]).ok()?;
-    Some((ts, lane_key, WaveSignal::parse(content)?))
+    let lane_key = section.get_fields("lk").first().and_then(|f| f.values.first()).and_then(|v| match v {
+        VsfType::hR(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
+        _ => None,
+    });
+    match crate::types::row_control::get_control(&section)? {
+        crate::types::RowControl::Wave(w) => Some((ts, lane_key, w)),
+        _ => None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,101 +152,11 @@ impl WaveSignal {
             WaveSignal::Anchor { .. } => "anchor",
         }
     }
-
-    /// The row content string this signal rides as. The device pubkey is the OPTIONAL 4th field on offer/answer — appended only when present, so a device-id build emits rows an old build parses fine (old parse reads the fields it knows and ignores the rest).
-    pub fn to_content(&self) -> String {
-        let base = format!("{}{}\u{2}{}", WAVE_PREFIX, self.kind(), hex::encode(self.wave_id()));
-        match self {
-            WaveSignal::Offer { nonce, device, .. } | WaveSignal::Answer { nonce, device, .. } => {
-                let with_nonce = format!("{}\u{2}{}", base, hex::encode(nonce));
-                match device {
-                    Some(d) => format!("{}\u{2}{}", with_nonce, hex::encode(d)),
-                    None => with_nonce,
-                }
-            }
-            _ => base,
-        }
-    }
-
-    /// Parse a row's content. None for non-wave content or a malformed record (malformed = dropped, never guessed). A missing/malformed device field is `None`, never a parse failure — it's advisory routing info, not authentication (the express AEAD / lane chain authenticate the IDENTITY; the receiver gates the claimed device with `knows_device` before trusting it for routing).
-    pub fn parse(content: &str) -> Option<WaveSignal> {
-        let rest = content.strip_prefix(WAVE_PREFIX)?;
-        let mut parts = rest.split('\u{2}');
-        let kind = parts.next()?;
-        let wave_id: [u8; 16] = hex::decode(parts.next()?).ok()?.try_into().ok()?;
-        let nonce: Option<[u8; 32]> = parts
-            .next()
-            .and_then(|h| hex::decode(h).ok())
-            .and_then(|b| b.try_into().ok());
-        let device: Option<[u8; 32]> = parts
-            .next()
-            .and_then(|h| hex::decode(h).ok())
-            .and_then(|b| b.try_into().ok());
-        match (kind, nonce) {
-            ("offer", Some(nonce)) => Some(WaveSignal::Offer { wave_id, nonce, device }),
-            ("answer", Some(nonce)) => Some(WaveSignal::Answer { wave_id, nonce, device }),
-            ("decline", None) => Some(WaveSignal::Decline { wave_id }),
-            ("busy", None) => Some(WaveSignal::Busy { wave_id }),
-            ("hangup", None) => Some(WaveSignal::Hangup { wave_id }),
-            ("taken", None) => Some(WaveSignal::Taken { wave_id }),
-            ("anchor", None) => Some(WaveSignal::Anchor { wave_id }),
-            _ => None,
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn signals_round_trip_and_are_control() {
-        let id = [0xAB; 16];
-        let n = [0xCD; 32];
-        for sig in [
-            WaveSignal::Offer { wave_id: id, nonce: n, device: Some([0xEE; 32]) },
-            WaveSignal::Offer { wave_id: id, nonce: n, device: None },
-            WaveSignal::Answer { wave_id: id, nonce: n, device: Some([0xEF; 32]) },
-            WaveSignal::Answer { wave_id: id, nonce: n, device: None },
-            WaveSignal::Decline { wave_id: id },
-            WaveSignal::Busy { wave_id: id },
-            WaveSignal::Hangup { wave_id: id },
-            WaveSignal::Taken { wave_id: id },
-            WaveSignal::Anchor { wave_id: id },
-        ] {
-            let content = sig.to_content();
-            assert_eq!(WaveSignal::parse(&content), Some(sig));
-            assert!(
-                crate::types::is_control_content(&content),
-                "wave signals must be hidden machinery rows"
-            );
-        }
-        assert_eq!(WaveSignal::parse("hello"), None);
-        // A truncated offer (missing nonce) is malformed, not a lesser signal.
-        let bad = format!("{}offer\u{2}{}", WAVE_PREFIX, hex::encode([1u8; 16]));
-        assert_eq!(WaveSignal::parse(&bad), None);
-    }
-
-    #[test]
-    fn device_field_is_wire_compatible_both_ways() {
-        // OLD-BUILD row (3 fields, no device) parses on a NEW build with device None — history replays and mixed-version fleets keep working.
-        let legacy = format!(
-            "{}answer\u{2}{}\u{2}{}",
-            WAVE_PREFIX,
-            hex::encode([5u8; 16]),
-            hex::encode([6u8; 32])
-        );
-        assert_eq!(
-            WaveSignal::parse(&legacy),
-            Some(WaveSignal::Answer { wave_id: [5; 16], nonce: [6; 32], device: None })
-        );
-        // A garbled device field degrades to None (advisory routing info), never a dropped signal — the answer itself must still land.
-        let garbled = format!("{legacy}\u{2}nothex");
-        assert_eq!(
-            WaveSignal::parse(&garbled),
-            Some(WaveSignal::Answer { wave_id: [5; 16], nonce: [6; 32], device: None })
-        );
-    }
 
     #[test]
     fn the_replay_guard_can_read_a_nonce_and_two_frames_never_share_one() {

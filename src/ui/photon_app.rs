@@ -672,6 +672,8 @@ struct BraidTxEncrypted {
     /// Where the ONE ciphertext goes: exactly one route for a friendship, one per standing member for a group (docs/molecules.md step 4 — encrypt once on our lane, fan the same bytes out).
     routes: Vec<Route>,
     text_len: usize,
+    /// The frame's typed control kind, when it is one — the commit edge reads this (the wave offer's lane-key capture), never the salt text.
+    control: Option<crate::types::RowControl>,
     result: Option<BraidTxWire>,
 }
 
@@ -757,12 +759,12 @@ const DEFAULT_REACTIONS: [&str; 5] = [
 /// The bubble text for a ROW. THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it"): a picture row has no text at all (the band above is the row), a code or text row shows its first lines, anything without a visual shows its bare filename. No kind glyph, no size, no hint — the size and the actions live in the details strip a tap on the row opens.
 /// The group offer row (docs/molecules.md §10.1): the bare Offer kind marker, in either direction.
 fn is_bond_offer_row(m: &crate::types::ChatMessage) -> bool {
-    m.content == crate::types::molecule::MoleculeSignal::Offer.to_content()
+    m.control == Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Offer))
 }
 
 fn display_row(msg: &crate::types::ChatMessage) -> String {
-    if let (Some(a), Some((hash, name, _size))) = (msg.attach, crate::types::parse_attachment_content(&msg.content)) {
-        if name.as_str() != "wave.audio" {
+    if let (Some(a), Some((hash, name, _size))) = (msg.attach, msg.file_parts()) {
+        if !msg.is_wave_recording() {
             if a.kind.is_image() {
                 let has_visual = crate::types::parse_micro_image(&msg.preview).is_some() || a.preview_hash.is_some() || crate::storage::blob_present_or_pending(&hash);
                 return if has_visual { String::new() } else { "\u{2026}".to_string() };
@@ -781,14 +783,14 @@ fn display_row(msg: &crate::types::ChatMessage) -> String {
             return if name.is_empty() { a.kind.glyph().to_string() } else { name };
         }
     }
-    display_content(&msg.content)
+    display_content(msg)
 }
 
-fn display_content(content: &str) -> String {
-    if let Some((hash, name, size)) = crate::types::parse_attachment_content(content) {
+fn display_content(msg: &crate::types::ChatMessage) -> String {
+    if let Some((hash, name, size)) = msg.file_parts() {
         let size_str = crate::types::size_label(size);
         let held = crate::storage::blob_present_or_pending(&hash);
-        if name == "wave.audio" {
+        if msg.is_wave_recording() {
             // A kept wave recording — a PLAY affordance, not a file. Two fixes ride here (Nick's field report):
             //  - ▶ (U+25B6) replaces the paperclip: 📎 (U+1F4CE) has no glyph in the bubble font and rendered as a tofu rectangle; ▶ IS covered (the Ended panel's Play button uses it).
             //  - the size renders in DOZENAL (fmt_num honours the fleet toggle) now that the toggle exists — the row is drawn in Oxanium (see the wave.audio font switch in render.rs) so the dozenal control-byte glyphs resolve instead of tofu-ing.
@@ -799,7 +801,7 @@ fn display_content(content: &str) -> String {
         }
     } else {
         // Reference rows (reply/edit/react) need no stripping: their content IS the bare body/glyph — the reference is a typed FIELD, never a string encoding.
-        content.to_string()
+        msg.content.clone()
     }
 }
 
@@ -809,11 +811,11 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     if is_bond_offer_row(m) {
         return !m.deleted && filter != ChatFilter::Waves;
     }
-    if crate::types::is_control_content(&m.content) || m.deleted {
+    if m.is_control() || m.deleted {
         return false;
     }
     // A kept recording FOLDS into its wave row's card (RefKind::Wave → offer_osc+1); it draws standalone only when the wave row never reached this device.
-    let is_recording = crate::types::is_wave_recording(&m.content);
+    let is_recording = m.is_wave_recording();
     if let Some((crate::types::RefKind::Wave, t)) = m.reference {
         if raw.iter().any(|x| x.timestamp == t && x.wave.is_some() && !x.deleted) {
             return false;
@@ -844,7 +846,7 @@ fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMes
     if let Some((crate::types::RefKind::Edit, t)) = m.reference {
         return !raw.iter().any(|x| {
             x.timestamp == t
-                && !crate::types::is_control_content(&x.content)
+                && !x.is_control()
                 && !matches!(x.reference, Some((crate::types::RefKind::Edit, _)))
         });
     }
@@ -1438,7 +1440,7 @@ pub struct PhotonApp {
     attach_prepared_tx: std::sync::mpsc::Sender<AttachPrepared>,
     attach_prepared_rx: std::sync::mpsc::Receiver<AttachPrepared>,
     /// The typed extras of the attachment row about to be minted by send_chain_message (set by attach_send_now, consumed at row creation) — so the row carries its kind + preview before the transmit reads it.
-    attach_stage: Option<(crate::types::AttachMeta, Vec<u8>)>,
+    attach_stage: Option<(crate::types::AttachMeta, Vec<u8>, crate::types::AttachRef)>,
     /// Decoded attachment pictures by hash (preview blobs and Original decodes): (w, h, packed display pixels); None = decode failed, don't ask again this session.
     img_cache: std::collections::HashMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>,
     img_pending: std::collections::HashSet<[u8; 32]>,

@@ -5,7 +5,7 @@ The doctrine every part obeys: an original is never rewritten — the bytes that
 
 ## The row
 
-An attachment row keeps its identity in the content string (`ATTACHMENT_PREFIX ‖ blake3 ‖ name ‖ size`, types/contact.rs) and carries TYPED extras beside it (types/attach_kind.rs):
+An attachment row's identity is TYPED (`AttachRef` in types/row_control.rs: the blob's blake3, the sender's name, the size, and its role — file, wave recording or wave envelope) and its content is empty; it carries TYPED extras beside that (types/attach_kind.rs):
 
 - `attach: Option<AttachMeta { kind, dims, preview_hash }>` — the kind is SNIFFED from magic bytes at send (`sniff`), never trusted from a name or the wire; the receiver re-sniffs the installed bytes and keeps the stricter verdict (`AttachKind::reconcile`: a program dressed as a picture reads as a program).
 - `preview: Vec<u8>` — the MICRO tier: a ≤24-px gamma-2 VSF RGB thumb (`[w][h][rgb…]`, ≤ 1730 bytes) for images, the first 240 bytes for text/code. It rides the row itself, so every device draws it before any blob exists.

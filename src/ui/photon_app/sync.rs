@@ -1321,25 +1321,11 @@ impl PhotonApp {
             return;
         };
         let page_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
+        // Control rows cross to our own devices only when they are fleet business — a wave signal stops the other devices' rings; probes, deletes, era and group rows stay put (the era replicates by chain-sync, the others are device-pair or roster-rebuilt).
         let hist_rows: Vec<HistoryRow> = rows
             .iter()
-            .filter(|m| !crate::types::is_control_content(&m.content))
-            .map(|m| HistoryRow {
-                author: m.author,
-                star_osc: m.star_osc,
-                timestamp: m.timestamp,
-                content: m.content.clone(),
-                sender_outgoing: m.is_outgoing,
-                delivered: m.delivered,
-                deleted: m.deleted,
-                reference: m.reference.map(|(k, t)| (k as u8, t)),
-                notified: m.notified,
-                marks: m.marks.clone(),
-                wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
-                envelope: m.envelope.clone(),
-                attach: m.attach.map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
-                preview: m.preview.clone(),
-            })
+            .filter(|m| m.control.as_ref().is_none_or(|c| c.wave().is_some()))
+            .map(HistoryRow::from_message)
             .collect();
         if hist_rows.is_empty() {
             return;
@@ -1610,7 +1596,7 @@ impl PhotonApp {
                     m.is_outgoing
                         && !m.delivered
                         && !m.deleted
-                        && (!m.content.is_empty() || m.reference.is_some())
+                        && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some())
                 })
                 .cloned()
                 .collect();

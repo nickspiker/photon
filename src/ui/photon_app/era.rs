@@ -285,19 +285,19 @@ impl PhotonApp {
         let initiator = chains.participants().first() == Some(&our_pid);
         let ts = vsf::eagle_time_oscillations();
         if !initiator {
-            let content = EraSignal::Nudge { prior_tag: tag }.to_content();
-            let sent = self.chain_transmit_with(ci, &content, ts, None, None, None, None);
+            let ctl = crate::types::RowControl::Era(EraSignal::Nudge { prior_tag: tag });
+            let sent = self.chain_transmit_with(ci, "", ts, None, None, None, None, Some(&ctl));
             crate::logf!("ERA: {} is the initiating identity — Nudge {} from era#{} ({:08x})", fp, if sent { "sent" } else { "NOT sent" }, era_next - 1, tag);
             return sent;
         }
         // Keygen inline: ML-KEM-1024 + X25519 + HQC-256 keypairs cost a few milliseconds — sub-frame, once per 256 rows. (McEliece was the slow one; it is not in this set.)
         let eph = era_keygen(era_next, tag, KEM_SET_DEFAULT);
         let wire = eph.init_wire.clone();
-        let content = EraSignal::Init { era_next, nonce: eph.nonce, prior_tag: tag, kem_set: eph.kem_set }.to_content();
+        let ctl = crate::types::RowControl::Era(EraSignal::Init { era_next, nonce: eph.nonce, prior_tag: tag, kem_set: eph.kem_set });
         let bytes = wire.mlkem.len() + wire.x25519.len() + wire.hqc.len();
         let nonce_s = hex::encode(&eph.nonce[..4]);
         self.contacts[ci].era_ephemeral = Some(eph);
-        let sent = self.chain_transmit_with(ci, &content, ts, None, None, Some(&wire), None);
+        let sent = self.chain_transmit_with(ci, "", ts, None, None, Some(&wire), None, Some(&ctl));
         if sent {
             crate::logf!("ERA: {} era#{} → era#{} Init sent on {:08x} (nonce {}…, {} B of public keys) — chatting on the current era until the Resp lands", fp, era_next - 1, era_next, tag, nonce_s, bytes);
         } else {
@@ -322,9 +322,9 @@ impl PhotonApp {
                 // Duplicate Init (retransmit, or our Resp was lost and they re-asked): the SAME ciphertexts go back — a fresh encapsulation would derive a second era for one nonce.
                 if let Some((n, cached)) = self.contacts[ci].era_resp_cache.clone() {
                     if n == nonce {
-                        let content = EraSignal::Resp { era_next, nonce, prior_tag }.to_content();
+                        let ctl = crate::types::RowControl::Era(EraSignal::Resp { era_next, nonce, prior_tag });
                         let resp_ts = self.friendship_chains[pos].1.pending_era().and_then(|p| p.resp_osc).unwrap_or_else(vsf::eagle_time_oscillations);
-                        let sent = self.chain_transmit_with(ci, &content, resp_ts, None, None, Some(&cached), None);
+                        let sent = self.chain_transmit_with(ci, "", resp_ts, None, None, Some(&cached), None, Some(&ctl));
                         crate::logf!("ERA: {} duplicate Init (nonce {}…) — cached Resp {}", fp, hex::encode(&nonce[..4]), if sent { "re-sent" } else { "not re-sent (in flight or window full)" });
                         return;
                     }
@@ -361,8 +361,8 @@ impl PhotonApp {
                 };
                 self.persist_chains_async(&fid);
                 self.contacts[ci].era_resp_cache = Some((nonce, resp.clone()));
-                let content = EraSignal::Resp { era_next, nonce, prior_tag }.to_content();
-                let sent = self.chain_transmit_with(ci, &content, resp_ts, None, None, Some(&resp), None);
+                let ctl = crate::types::RowControl::Era(EraSignal::Resp { era_next, nonce, prior_tag });
+                let sent = self.chain_transmit_with(ci, "", resp_ts, None, None, Some(&resp), None, Some(&ctl));
                 crate::logf!(
                     "ERA: {} era#{} → era#{} Resp {} — {:08x} installed PENDING{}; cut over on its ACK or the peer's first tagged frame",
                     fp,

@@ -1516,9 +1516,9 @@ impl FluorApp for PhotonApp {
                         v.messages
                             .iter()
                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                            .map(|m| m.content.clone())
+                            .map(display_content)
                     });
-                    if let Some(text) = text_opt.map(|t| display_content(&t)) {
+                    if let Some(text) = text_opt {
                         if self.copy_to_clipboard(&text) {
                             crate::log("msg-details: message text copied");
                             // Pill flips green + "copied" — event-cleared when the selection moves/closes.
@@ -1610,7 +1610,7 @@ impl FluorApp for PhotonApp {
                             let hash = self
                                 .conv_of(sci)
                                 .and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.is_outgoing && !m.deleted))
-                                .and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h));
+                                .and_then(|m| m.file_parts().map(|(h, _, _)| h));
                             if let Some(h) = hash {
                                 queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
                                 crate::log("msg-details: pigeon lofted — local bytes dropped, the row and re-fetch stay");
@@ -1622,7 +1622,7 @@ impl FluorApp for PhotonApp {
                         11 => {
                             // The RECORDING row specifically ("wave.audio") — three rows reference a wave (the recording, our wave.env, the PEER's wave.env off the friend chain), and the first-match finder used to grab an env row in the minute before the transcode landed, toasting "fetching from your devices" at a wave whose recording was right here (Nick, 2026-09-13).
                             let rec_hash = self.conv_of(sci).and_then(|v| {
-                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts) && crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "wave.audio")).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                                v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts) && m.is_wave_recording()).and_then(|m| m.file_parts().map(|(h, _, _)| h))
                             });
                             if let Some(hash) = rec_hash {
                                 if crate::storage::blob_present(&hash) {
@@ -1635,7 +1635,7 @@ impl FluorApp for PhotonApp {
                             self.scene_dirty = true;
                         }
                         9 => {
-                            if let Some(hash) = self.conv_of(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| crate::types::parse_attachment_content(&m.content)).map(|(h, _, _)| h) {
+                            if let Some(hash) = self.conv_of(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| m.file_parts()).map(|(h, _, _)| h) {
                                 match self.music_play.as_ref().filter(|m| m.hash == hash) {
                                     Some(m) => m.toggle(),
                                     None => {
@@ -1680,7 +1680,7 @@ impl FluorApp for PhotonApp {
                                     v.messages
                                         .iter()
                                         .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                                        .map(|m| display_content(&m.content))
+                                        .map(display_content)
                                 })
                             });
                             if let (Some(b), Some(tb)) = (body, self.message_textbox.as_mut()) {
@@ -1753,11 +1753,15 @@ impl FluorApp for PhotonApp {
                                         .iter()
                                         .find(|m| m.timestamp == ts && m.is_outgoing == out)
                                 })
-                                .and_then(|m| crate::types::parse_attachment_content(&m.content));
+                                .and_then(|m| m.file_parts());
                             let kind = self
                                 .conv_of(sci)
                                 .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
                                 .and_then(|m| m.attach.map(|a| a.kind));
+                            let is_rec = self
+                                .conv_of(sci)
+                                .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
+                                .is_some_and(|m| m.is_wave_recording());
                             if let Some((hash, name, _)) = att {
                                 let held = crate::storage::blob_present(&hash);
                                 let _ = kind;
@@ -1765,7 +1769,7 @@ impl FluorApp for PhotonApp {
                                 if !held {
                                     self.attach_fetch(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
-                                } else if name == "wave.audio" {
+                                } else if is_rec {
                                     // A kept wave recording — tap toggles play/stop on this very bubble (wave/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
                                     self.toggle_recording_playback(hash);
                                 } else {
@@ -1791,7 +1795,7 @@ impl FluorApp for PhotonApp {
                             let att = self
                                 .conv_of(sci)
                                 .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
-                                .and_then(|m| crate::types::parse_attachment_content(&m.content));
+                                .and_then(|m| m.file_parts());
                             if let Some((hash, name, _)) = att {
                                 if crate::storage::blob_present(&hash) {
                                     match self.attach_save(&name, &hash) {
@@ -1821,8 +1825,8 @@ impl FluorApp for PhotonApp {
                                 v.messages
                                     .iter()
                                     .filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
-                                    .find(|m| crate::types::parse_attachment_content(&m.content).is_some_and(|(_, n, _)| n == "wave.audio"))
-                                    .and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, n, _)| (m.timestamp, h, n)))
+                                    .find(|m| m.is_wave_recording())
+                                    .and_then(|m| m.file_parts().map(|(h, n, _)| (m.timestamp, h, n)))
                             });
                             if let Some((rec_ts, hash, name)) = rec {
                                 if slot == 7 {
@@ -1934,7 +1938,7 @@ impl FluorApp for PhotonApp {
                         // MUSIC PIGEON (Nick 2026-09-12): first tap opens the options (the strip below, stats above, the play twelfth on the band); the twelfth toggles play; while playing the rest of the band seeks; idle elsewhere closes the options.
                         if v.kind == crate::types::AttachKind::Audio {
                             let row = self.active_contact().and_then(|ci| {
-                                self.conv_of(ci).and_then(|c| c.messages.iter().find(|m| crate::types::parse_attachment_content(&m.content).is_some_and(|(h, _, _)| h == v.hash)).map(|m| (ci, m.timestamp, m.is_outgoing)))
+                                self.conv_of(ci).and_then(|c| c.messages.iter().find(|m| m.file_parts().is_some_and(|(h, _, _)| h == v.hash)).map(|m| (ci, m.timestamp, m.is_outgoing)))
                             });
                             if let Some((ci, ts, out)) = row {
                                 if self.selected_msg != Some((ci, ts, out)) {
@@ -1958,7 +1962,7 @@ impl FluorApp for PhotonApp {
                             }
                         }
                         if let Some(ci) = self.active_contact() {
-                            let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
+                            let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| m.file_parts().filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
                             if v.kind.is_image() {
                                 // The in-app viewer IS opsin's view now — no separate window, on any platform.
                                 let _ = &name;
@@ -3254,7 +3258,7 @@ impl FluorApp for PhotonApp {
             // Blob shredding runs OFF-THREAD (field 2026-09-12: deleting a wave froze photon for minutes — a kept recording is a CHUNKED blob, one vault commit per chunk, and the vault was committing at seconds per op; the UI thread owes nobody those commits). Deletes are idempotent and nothing here awaits them.
             let mut shred: Vec<[u8; 32]> = Vec::new();
             for row in &cascade {
-                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
+                if let Some((hash, _, _)) = row.file_parts() {
                     shred.push(hash);
                 }
             }
@@ -3267,7 +3271,7 @@ impl FluorApp for PhotonApp {
             }
             if let Some(row) = &tombstoned {
                 // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted (off-thread, below) here and on every device that applies this tombstone.
-                if let Some((hash, _, _)) = crate::types::parse_attachment_content(&row.content) {
+                if let Some((hash, _, _)) = row.file_parts() {
                     shred.push(hash);
                 }
             }
@@ -3293,8 +3297,7 @@ impl FluorApp for PhotonApp {
                 if has_remote && !is_sib && !row.is_outgoing {
                     crate::log("msg-details: their row (or a shared record) — fleet tombstone only, the friend keeps their copy");
                 } else if has_remote && !is_sib && row.wave.is_none() {
-                    let marker = format!("{}{}", crate::types::DELETE_MARKER_PREFIX, ts);
-                    if self.send_chain_message(sci, &marker, true, None, None) {
+                    if self.send_control(sci, crate::types::RowControl::Delete { target: ts }, crate::network::time_base::stamp_osc()) {
                         crate::log(
                             "msg-details: delete marker sent to the friend (delete-for-everyone)",
                         );
@@ -4582,8 +4585,8 @@ impl PhotonApp {
                 return None;
             }
             raw.iter()
-                .find(|r| !r.deleted && crate::types::is_wave_recording(&r.content) && matches!(r.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
-                .and_then(|r| crate::types::parse_attachment_content(&r.content).map(|(h, _, _)| h))
+                .find(|r| !r.deleted && r.is_wave_recording() && matches!(r.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                .and_then(|r| r.file_parts().map(|(h, _, _)| h))
         }) else { return };
         if self.wave_playback.is_some() && self.wave_playback_hash == Some(hash) {
             self.wave_playback = None;

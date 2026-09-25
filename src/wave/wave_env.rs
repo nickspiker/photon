@@ -1,12 +1,9 @@
 //! wave.env — the shared waveform envelope (Nick 2026-09-12: "3 channel u8 normalized tensor VSF").
 //!
 //! One per party per wave: the pyramid reduces our CLEAN archive channel to four power tracks — total `x²` plus the three tuned voice bands (red ≤240 Hz, green bell ~2.4 kHz, blue shelf ≥7.7 kHz; see record.rs ENV_COMPONENTS) — each normalized to its own peak and STOCHASTICALLY quantized to u8 (the dither carries sub-LSB signal into the render's per-pixel averages). The file is a plain VSF section holding the metadata and an 8-bit `[4, bins]` tensor, stored as a content-addressed blob and pushed at wave end — a few hundred KB, so the far card colours in long before the multi-MB audio replicates. A wave shorter than [`crate::wave::record::ENV_MIN_SHARE_SAMPLES`] ships none: the receiver derives the envelope from the audio it fetches anyway (the same fallback covers the far channel before its blob lands, and every pre-exchange recording).
-//! The row that carries it is an ordinary attachment row named [`WAVE_ENV_NAME`] referencing the wave row (`RefKind::Wave`), so replication, fetch, tombstones and the fold-into-the-card all ride the existing machinery.
+//! The row that carries it is an ordinary attachment row whose typed role is `AttachRole::WaveEnv`, referencing the wave row (`RefKind::Wave`), so replication, fetch, tombstones and the fold-into-the-card all ride the existing machinery.
 
 use std::sync::Arc;
-
-/// The attachment-row filename that marks an envelope blob (never rendered as a bubble — it folds into the wave card like the recording row does).
-pub const WAVE_ENV_NAME: &str = "wave.env";
 
 /// A parsed envelope: three planar u8 tracks and the scales to make them absolute again.
 pub struct WaveEnv {

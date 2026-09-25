@@ -236,9 +236,10 @@ impl PhotonApp {
                 ChatMessage::new_with_timestamp(text, true, crate::network::time_base::stamp_osc());
             msg.marks = self.marks_for_send(&msg.content);
             msg.reference = reference;
-            if let Some((a, p)) = self.attach_stage.take() {
+            if let Some((a, p, f)) = self.attach_stage.take() {
                 msg.attach = Some(a);
                 msg.preview = p;
+                msg.file = Some(f);
             }
             let ts = msg.timestamp;
             let Some(conv) = self.conv_mut_of(ci) else {
@@ -263,9 +264,10 @@ impl PhotonApp {
         msg.marks = self.marks_for_send(&text);
         msg.reference = reference;
         // A staged attachment's typed extras land on the row BEFORE the transmit reads it (attach_send_now stages them).
-        if let Some((a, p)) = self.attach_stage.take() {
+        if let Some((a, p, f)) = self.attach_stage.take() {
             msg.attach = Some(a);
             msg.preview = p;
+            msg.file = Some(f);
         }
         // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on ("output row: present, exit: -" — the prompt held forever). Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
         if let Some(bw) = bridge.as_ref() {
@@ -284,6 +286,11 @@ impl PhotonApp {
         self.pending_chain_sends
             .push((ci, text, eagle_time, reference, bridge, self.tick_serial));
         return true;
+    }
+
+    /// Send a hidden CONTROL row (probe, delete, wave, era): no bubble, no row on this side — the wire half only, the control typed on the package. `eagle_time` is the frame's stamp (a wave signal's is its offer_osc).
+    pub(super) fn send_control(&mut self, ci: usize, control: crate::types::RowControl, eagle_time: i64) -> bool {
+        self.chain_transmit_with(ci, "", eagle_time, None, None, None, None, Some(&control))
     }
 
     /// Persist a conversation's message table WITHOUT blocking the UI thread — the no-signal wrapper for saves nothing waits on.
@@ -701,10 +708,10 @@ impl PhotonApp {
             if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, c)| *id == done.friendship_id && c.molecule) {
                 chains.set_pending_targets(done.eagle_time, targets);
             }
-            // WAVE basket capture (docs/waves.md): the offer's send COMMIT is where the ORIGIN sees the lane key its offer sealed under — the basket's doomed egg (the answering side captures the same value at decrypt, pre-advance). Matched by content: salt_text IS the row text.
-            if let Ok(text) = std::str::from_utf8(&done.salt_text) {
+            // WAVE basket capture (docs/waves.md): the offer's send COMMIT is where the ORIGIN sees the lane key its offer sealed under — the basket's doomed egg (the answering side captures the same value at decrypt, pre-advance). Matched by the frame's typed control kind.
+            {
                 if let Some(sig @ crate::wave::signal::WaveSignal::Offer { wave_id, .. }) =
-                    crate::wave::signal::WaveSignal::parse(text)
+                    done.control.as_ref().and_then(|c| c.wave()).copied()
                 {
                     let mut captured = false;
                     if let Some(wave) = self.active_wave.as_mut() {
@@ -852,7 +859,7 @@ impl PhotonApp {
 
     /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
     pub(super) fn resend_held_messages(&mut self, ci: usize) {
-        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = match self.conv_of(ci)
+        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>, Option<crate::types::RowControl>)> = match self.conv_of(ci)
         {
             Some(v) => v
                 .messages
@@ -861,13 +868,12 @@ impl PhotonApp {
                 .filter(|m| {
                     m.is_outgoing
                         && !m.delivered
-                        && (!m.content.is_empty() || m.reference.is_some())
+                        && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some() || m.control.is_some())
                         // An era-ratchet row is never re-served: its KEM material lived only in the original package, and a dead Init on the NEW era would be nonsense (the sender stores none anyway; belt and braces).
-                        && !m.content.starts_with(crate::types::ERA_PREFIX)
-                        // A group control row (offer / join / wrap) is never re-served bare: its roster blob or sealed secret rode the original package only — the sponsor re-offers on the next roster edge, a joiner taps Join again (docs/molecules.md step 4).
-                        && !m.content.starts_with(crate::types::molecule::MOLECULE_PREFIX)
+                        // A group control row (offer / join / wrap) is never re-served bare either: its roster blob or sealed secret rode the original package only — the sponsor re-offers on the next roster edge, a joiner taps Join again.
+                        && !matches!(m.control, Some(crate::types::RowControl::Era(_)) | Some(crate::types::RowControl::Molecule(_)))
                 })
-                .map(|m| (m.content.clone(), m.timestamp, m.reference))
+                .map(|m| (m.content.clone(), m.timestamp, m.reference, m.control.clone()))
                 .collect(),
             None => return,
         };
@@ -875,9 +881,9 @@ impl PhotonApp {
             return;
         }
         let mut sent = 0usize;
-        for (text, eagle_time, reference) in &held {
+        for (text, eagle_time, reference, control) in &held {
             let bw = self.bridge_wire_for_row(ci, *eagle_time);
-            if self.chain_transmit(ci, text, *eagle_time, *reference, bw.as_ref()) {
+            if self.chain_transmit_with(ci, text, *eagle_time, *reference, bw.as_ref(), None, None, control.as_ref()) {
                 sent += 1;
             }
         }
@@ -897,7 +903,7 @@ impl PhotonApp {
         reference: Option<(crate::types::RefKind, i64)>,
         bridge: Option<&crate::network::message_package::BridgeWire>,
     ) -> bool {
-        self.chain_transmit_with(ci, text, eagle_time, reference, bridge, None, None)
+        self.chain_transmit_with(ci, text, eagle_time, reference, bridge, None, None, None)
     }
 
     /// The full transmit: an era-ratchet row (crypto/era.rs) also carries its KEM material as typed package fields, and a GROUP frame (types/group.rs) its attribution + weave authors + roster-codec blob — the pending ledger persists the built ciphertext, so retransmits keep all of it without row custody.
@@ -910,6 +916,7 @@ impl PhotonApp {
         bridge: Option<&crate::network::message_package::BridgeWire>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
         molecule: Option<&crate::network::message_package::MoleculeWire>,
+        control: Option<&crate::types::RowControl>,
     ) -> bool {
         let (friendship_id, route, conv_id) = match self.route_for_contact(ci) {
             Ok(v) => v,
@@ -920,7 +927,7 @@ impl PhotonApp {
             }
         };
         let anchor_only = self.contacts.get(ci).map_or(false, |c| c.is_sibling);
-        self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, molecule)
+        self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, molecule, control)
     }
 
     /// The recipient half of a friendship send, split from the crypto (docs/molecules.md step 4): the one route a contact resolves to, plus the ids the core needs. Every refusal names its reason.
@@ -995,6 +1002,7 @@ impl PhotonApp {
         reference: Option<(crate::types::RefKind, i64)>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
         molecule: Option<&crate::network::message_package::MoleculeWire>,
+        control: Option<&crate::types::RowControl>,
     ) -> bool {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
         let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
@@ -1012,7 +1020,7 @@ impl PhotonApp {
             return false;
         }
         // Groups weave like friendships once the strand pull is live (step 7); until then anchor-only, so a member missing a strand never parks a frame it cannot open.
-        self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, None, era_kem, molecule)
+        self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, None, era_kem, molecule, control)
     }
 
     /// The crypto half every send shares (docs/molecules.md step 4): the row's marks/attach, the in-flight and idempotency gates, the weave, the package, the off-thread braid encrypt — keyed on the conversation id, source-blind.
@@ -1029,6 +1037,7 @@ impl PhotonApp {
         bridge: Option<&crate::network::message_package::BridgeWire>,
         era_kem: Option<&crate::crypto::era::EraKemWire>,
         molecule: Option<&crate::network::message_package::MoleculeWire>,
+        control: Option<&crate::types::RowControl>,
     ) -> bool {
         let conv = self.conversations.iter().find(|v| v.id() == conv_id);
         // Read before any chains borrow: the row's own marks (a tagged phrase carries a destination the text cannot rebuild — a re-serve reads the row, 2026-09-09).
@@ -1046,9 +1055,19 @@ impl PhotonApp {
                 preview_hash: a.preview_hash,
                 preview: m.preview.clone(),
             }));
+        // The attachment's identity (hash, name, size, role) rides typed from the row, like its extras.
+        let row_file: Option<crate::types::AttachRef> = conv
+            .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
+            .and_then(|m| m.file.clone());
+        // A re-serve rebuilds a stored control row's frame from the row itself (every re-serve path passes text only), so the typed kind can never be lost on a retransmit.
+        let control_owned: Option<crate::types::RowControl> = control.cloned().or_else(|| {
+            conv.and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
+                .and_then(|m| m.control.clone())
+        });
+        let control = control_owned.as_ref();
         // IN-FLIGHT WINDOW: advance-on-send gives each message its own position, so pipelining is safe — but keep a bounded window so a burst can't outrun the receiver's gap buffer (and stays well under the count that tripped older receivers' fork detector). While the lane already holds the window's worth of un-ACKed sends, the row stays held and the ACK-advance flush sends the next as a slot frees.
         // CONTROL FRAMES BYPASS THE WINDOW. Wave signals (offer/answer/decline/hangup), chain probes, and delete markers are rare, never bursty, and TIME-CRITICAL — pacing them behind bulk chat wedged a live wave's answer the moment the lane hit its cap: "answer send failed" was every time preceded by "lane at the in-flight window", so a congested conversation made an incoming wave literally unanswerable (decline worked only because it ignores the send result; field 2026-08-19, Emma↔Nick). The window is UI-level flow control for data, not a crypto invariant — a couple of extra control pendings stay far under the fork threshold and still ride advance-on-send + retransmit + relay like any frame.
-        let is_control = crate::types::is_control_content(text);
+        let is_control = control.is_some();
         if !is_control
             && self
                 .friendship_chains
@@ -1090,14 +1109,14 @@ impl PhotonApp {
                     .iter()
                     .rev()
                     // Probe rows are excluded from weave eligibility: they persist locally for re-ACK durability, but the PEER stores no outgoing row for its probe, so a woven probe ref would be unresolvable on their side — a guaranteed strand miss and chain fork.
-                    .filter(|m| !m.is_outgoing && !crate::types::is_control_content(&m.content))
+                    .filter(|m| !m.is_outgoing && !m.is_control())
                     .take(256)
                     .collect();
                 use rand::Rng;
                 let mut rng = rand::thread_rng();
                 if window.len() == 1 {
                     let m = window[0];
-                    chosen.push((m.timestamp, m.content.as_bytes().to_vec()));
+                    chosen.push((m.timestamp, m.ident_bytes()));
                 } else if window.len() >= 2 {
                     let i = rng.gen_range(0..window.len());
                     let mut j = rng.gen_range(0..window.len() - 1);
@@ -1106,7 +1125,7 @@ impl PhotonApp {
                     }
                     for &idx in &[i, j] {
                         let m = window[idx];
-                        chosen.push((m.timestamp, m.content.as_bytes().to_vec()));
+                        chosen.push((m.timestamp, m.ident_bytes()));
                     }
                 }
             }
@@ -1164,6 +1183,8 @@ impl PhotonApp {
                 era_kem,
                 row_attach.as_ref(),
                 molecule,
+                control,
+                row_file.as_ref(),
             ) {
                 Ok(p) => p,
                 Err(e) => {
@@ -1172,7 +1193,8 @@ impl PhotonApp {
                 }
             };
             // Chain ingredient = the bare x-text only (the hp/hR pad are siblings of x in the field, not part of it, and are never chain-key material). The full `payload` is what's encrypted onto the wire; `text` is what salts/advances the chain.
-            let salt_text = text.to_string().into_bytes();
+            // A typed row's ingredient is its canonical field identity (`ident_typed`) — the receiver rebuilds the same bytes from the fields it parses, so both sides salt alike; a text row's is its text, exactly as before.
+            let salt_text = crate::types::row_control::ident_typed(text, control, row_file.as_ref());
             let token = chains.conversation_token;
             (chains.clone(), payload, salt_text, token)
         };
@@ -1180,6 +1202,7 @@ impl PhotonApp {
         let tx = self.braid_tx_tx.clone();
         let wake = self.event_proxy.clone();
         let text_len = text.len();
+        let control_owned = control.cloned();
         queue_job(&self.braid_job_tx, move || {
             let era = snapshot.era_tag();
             let result = snapshot.prepare_send_encrypt(&payload, eagle_time).map(
@@ -1203,6 +1226,7 @@ impl PhotonApp {
                 woven_strands,
                 routes,
                 text_len,
+                control: control_owned,
                 result,
             });
             if let Some(w) = wake.as_ref() {
@@ -1213,7 +1237,7 @@ impl PhotonApp {
         true
     }
 
-    /// Just after a contact's CLUTCH reaches `Complete`, fire the one hidden chain-weave probe: a normal chat message with the reserved [`CHAIN_PROBE_MARKER`] content, sent once (guarded by `probe_sent`) with its UI bubble suppressed. When it lands the peer advances+ACKs the chain like any message, which is what proves the ratchet works end-to-end without the user seeing a decoy message. No-op if the contact isn't Complete, has no friendship chain yet, or already probed. Skips self-contacts (no peer to answer). Consolidates the transition-site logic so every `= ClutchState::Complete` path only needs one call.
+    /// Just after a contact's CLUTCH reaches `Complete`, fire the one hidden chain-weave probe: a `RowControl::Probe` frame, sent once (guarded by `probe_sent`) with its UI bubble suppressed. When it lands the peer advances+ACKs the chain like any message, which is what proves the ratchet works end-to-end without the user seeing a decoy message. No-op if the contact isn't Complete, has no friendship chain yet, or already probed. Skips self-contacts (no peer to answer). Consolidates the transition-site logic so every `= ClutchState::Complete` path only needs one call.
     pub(super) fn maybe_send_chain_probe(&mut self, contact_idx: usize) {
         let should_send = match self.contacts.get(contact_idx) {
             Some(c) => {
@@ -1240,7 +1264,7 @@ impl PhotonApp {
         }
         crate::log("CHAIN-PROBE: sending hidden chain-weave probe");
         // Latch `probe_sent` only on an actual dispatch — if the contact had no address yet the send is a no-op and we retry on the next Complete transition / re-arm cycle rather than stalling.
-        if self.send_chain_message(contact_idx, crate::types::CHAIN_PROBE_MARKER, true, None, None) {
+        if self.send_control(contact_idx, crate::types::RowControl::Probe, crate::network::time_base::stamp_osc()) {
             if let Some(c) = self.contacts.get_mut(contact_idx) {
                 c.probe_sent = true;
             }

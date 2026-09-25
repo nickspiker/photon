@@ -37,6 +37,34 @@ pub struct HistoryRow {
     pub star_osc: i64,
     /// The author's party id (groups, docs/molecules.md §5) — absent on pairwise/pre-feature pages ⇒ None (derive from direction).
     pub author: Option<[u8; 32]>,
+    /// A hidden control row's kind and fields, as page COLUMNS (flag day 2026-09-24) — the content is empty on these.
+    pub control: Option<crate::types::RowControl>,
+    /// An attachment row's identity (hash, name, size, role), as page COLUMNS — the content is empty on these.
+    pub file: Option<crate::types::AttachRef>,
+}
+
+impl HistoryRow {
+    /// The page view of a stored row — the ONE conversion both the served history page and the fleet push use, so the two can never drift in which fields ride.
+    pub fn from_message(m: &crate::types::ChatMessage) -> Self {
+        HistoryRow {
+            author: m.author,
+            star_osc: m.star_osc,
+            timestamp: m.timestamp,
+            content: m.content.clone(),
+            sender_outgoing: m.is_outgoing,
+            delivered: m.delivered,
+            deleted: m.deleted,
+            reference: m.reference.map(|(k, t)| (k as u8, t)),
+            notified: m.notified,
+            marks: m.marks.clone(),
+            wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
+            envelope: m.envelope.clone(),
+            attach: m.attach.map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
+            preview: m.preview.clone(),
+            control: m.control.clone(),
+            file: m.file.clone(),
+        }
+    }
 }
 
 /// A decoded (pre-seal / post-open) history page.
@@ -87,6 +115,22 @@ fn page_schema() -> SectionSchema {
         .field("m_aph", TypeConstraint::Any) // hb preview-blob hash, one per row that has one
         .field("m_apn", TypeConstraint::AnyUnsigned) // micro preview byte COUNT, one per row (0 = none)
         .field("m_apv", TypeConstraint::AnyUnsigned) // micro preview bytes as one multi-value field per row that has one
+        // Control rows (flag day 2026-09-24): kind and sub-kind one per row (0 = not control), a slot-presence mask one per row, and each present slot as one field per row that carries it, consumed in row order.
+        .field("m_ck", TypeConstraint::AnyUnsigned)
+        .field("m_cs", TypeConstraint::AnyUnsigned)
+        .field("m_cm", TypeConstraint::AnyUnsigned) // bit 0 ts, 1 id, 2 nonce, 3 dev, 4 num, 5 tag, 6 set
+        .field("m_cts", TypeConstraint::Any) // e6 delete target
+        .field("m_cid", TypeConstraint::Any) // hR wave id
+        .field("m_cn", TypeConstraint::Any) // hR nonce
+        .field("m_cd", TypeConstraint::AnyKey) // ke device
+        .field("m_cnum", TypeConstraint::AnyUnsigned) // era_next
+        .field("m_ctag", TypeConstraint::AnyUnsigned) // era prior_tag
+        .field("m_cset", TypeConstraint::AnyUnsigned) // era kem_set
+        // Attachment identity: role one per row (0 = not an attachment), hash/name/size one field each per row that has one.
+        .field("m_fr", TypeConstraint::AnyUnsigned)
+        .field("m_fh", TypeConstraint::AnyHash)
+        .field("m_fnm", TypeConstraint::Utf8Text)
+        .field("m_fz", TypeConstraint::AnyUnsigned)
 }
 
 /// Encode + AEAD-seal a page under `key`. Key-agnostic: friendship history key today, fleet key later.
@@ -171,6 +215,52 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             builder = builder
                 .append_multi("m_apv", row.preview.iter().map(|&b| VsfType::u(b as usize, false)).collect())
                 .map_err(|e| e.to_string())?;
+        }
+        {
+            let slots = row.control.as_ref().map(|c| c.slots()).unwrap_or_default();
+            let mask = slots.ts.is_some() as usize
+                | (slots.id.is_some() as usize) << 1
+                | (slots.nonce.is_some() as usize) << 2
+                | (slots.dev.is_some() as usize) << 3
+                | (slots.num.is_some() as usize) << 4
+                | (slots.tag.is_some() as usize) << 5
+                | (slots.set.is_some() as usize) << 6;
+            builder = builder
+                .append_multi("m_ck", vec![VsfType::u(slots.kind as usize, false)])
+                .map_err(|e| e.to_string())?
+                .append_multi("m_cs", vec![VsfType::u(slots.sub as usize, false)])
+                .map_err(|e| e.to_string())?
+                .append_multi("m_cm", vec![VsfType::u(mask, false)])
+                .map_err(|e| e.to_string())?
+                .append_multi("m_fr", vec![VsfType::u(row.file.as_ref().map_or(0, |f| f.role.code()) as usize, false)])
+                .map_err(|e| e.to_string())?;
+            let put = |b: SectionBuilder, name: &str, v: VsfType| b.append_multi(name, vec![v]).map_err(|e| e.to_string());
+            if let Some(t) = slots.ts {
+                builder = put(builder, "m_cts", VsfType::e(vsf::types::EtType::e6(t)))?;
+            }
+            if let Some(id) = slots.id {
+                builder = put(builder, "m_cid", VsfType::hR(id))?;
+            }
+            if let Some(n) = slots.nonce {
+                builder = put(builder, "m_cn", VsfType::hR(n.to_vec()))?;
+            }
+            if let Some(d) = slots.dev {
+                builder = put(builder, "m_cd", VsfType::ke(d.to_vec()))?;
+            }
+            if let Some(n) = slots.num {
+                builder = put(builder, "m_cnum", VsfType::u(n as usize, false))?;
+            }
+            if let Some(t) = slots.tag {
+                builder = put(builder, "m_ctag", VsfType::u(t as usize, false))?;
+            }
+            if let Some(v) = slots.set {
+                builder = put(builder, "m_cset", VsfType::u(v as usize, false))?;
+            }
+            if let Some(f) = row.file.as_ref() {
+                builder = put(builder, "m_fh", VsfType::hb(f.hash.to_vec()))?;
+                builder = put(builder, "m_fnm", VsfType::x(f.name.clone()))?;
+                builder = put(builder, "m_fz", VsfType::u(f.size as usize, false))?;
+            }
         }
         for m in &row.marks {
             builder = builder
@@ -351,6 +441,20 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
         .iter()
         .map(|f| f.values.iter().filter_map(|v| v.as_u64()).map(|n| n.min(255) as u8).collect())
         .collect();
+    // Control and file columns (flag day 2026-09-24).
+    let ctl_kinds = flat_u("m_ck");
+    let ctl_subs = flat_u("m_cs");
+    let ctl_masks = flat_u("m_cm");
+    let firsts = |name: &str| -> Vec<VsfType> { section.get_fields(name).iter().filter_map(|f| f.values.first().cloned()).collect() };
+    let (c_ts, c_id, c_n, c_d, c_num, c_tag, c_set) = (firsts("m_cts"), firsts("m_cid"), firsts("m_cn"), firsts("m_cd"), firsts("m_cnum"), firsts("m_ctag"), firsts("m_cset"));
+    let file_roles = flat_u("m_fr");
+    let (f_h, f_n, f_z) = (firsts("m_fh"), firsts("m_fnm"), firsts("m_fz"));
+    let raw = |v: Option<&VsfType>| -> Option<Vec<u8>> {
+        match v? {
+            VsfType::hR(b) | VsfType::hb(b) | VsfType::ke(b) => Some(b.clone()),
+            _ => None,
+        }
+    };
     let flat_total: usize = mark_counts.iter().sum();
     let marks_ok = flat_total == mk.len() && flat_total == ms.len() && flat_total == ml.len() && flat_total == md.len();
 
@@ -362,7 +466,56 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
     let mut hcur = 0usize;
     let mut pcur = 0usize;
     let mut aucur = 0usize;
+    let mut cur = [0usize; 7];
+    let mut fcur = 0usize;
     for i in 0..n {
+        let row_control = match ctl_kinds.get(i).copied().unwrap_or(0) {
+            0 => None,
+            k => {
+                let mask = ctl_masks.get(i).copied().unwrap_or(0);
+                let mut take = |bit: usize, col: &Vec<VsfType>| -> Option<VsfType> {
+                    if mask & (1 << bit) == 0 {
+                        return None;
+                    }
+                    let v = col.get(cur[bit]).cloned();
+                    cur[bit] += 1;
+                    v
+                };
+                let (ts, id, nonce, dev, num, tag, set) = (take(0, &c_ts), take(1, &c_id), take(2, &c_n), take(3, &c_d), take(4, &c_num), take(5, &c_tag), take(6, &c_set));
+                crate::types::RowControl::from_slots(&crate::types::ControlSlots {
+                    kind: u8::try_from(k).unwrap_or(0),
+                    sub: ctl_subs.get(i).copied().and_then(|v| u8::try_from(v).ok()).unwrap_or(0),
+                    ts: ts.and_then(|v| match v {
+                        VsfType::e(vsf::types::EtType::e6(t)) => Some(t),
+                        _ => None,
+                    }),
+                    id: raw(id.as_ref()),
+                    nonce: raw(nonce.as_ref()).and_then(|b| b.try_into().ok()),
+                    dev: raw(dev.as_ref()).and_then(|b| b.try_into().ok()),
+                    num: num.and_then(|v| v.as_u64()),
+                    tag: tag.and_then(|v| v.as_u64()).and_then(|v| u32::try_from(v).ok()),
+                    set: set.and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()),
+                })
+            }
+        };
+        let row_file = match file_roles.get(i).copied().unwrap_or(0) {
+            0 => None,
+            r => {
+                let j = fcur;
+                fcur += 1;
+                (|| {
+                    Some(crate::types::AttachRef {
+                        role: crate::types::AttachRole::from_code(u8::try_from(r).ok()?)?,
+                        hash: raw(f_h.get(j))?.try_into().ok()?,
+                        name: match f_n.get(j)? {
+                            VsfType::x(s) => s.clone(),
+                            _ => return None,
+                        },
+                        size: f_z.get(j)?.as_u64()?,
+                    })
+                })()
+            }
+        };
         let row_author = if au_present.get(i).copied().unwrap_or(0) != 0 {
             let a = au_vals.get(aucur).copied().flatten();
             aucur += 1;
@@ -437,6 +590,8 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             envelope: row_env,
             attach: row_attach,
             preview: row_preview,
+            control: row_control,
+            file: row_file,
         });
     }
     Ok(HistoryPagePlain {
@@ -462,6 +617,8 @@ mod tests {
         HistoryPagePlain {
             rows: vec![
                 HistoryRow {
+                    control: None,
+                    file: None,
                     author: Some([0xAB; 32]),
                     star_osc: 777,
                     timestamp: 1_000,
@@ -480,6 +637,8 @@ mod tests {
                     notified: true,
                 },
                 HistoryRow {
+                    control: None,
+                    file: None,
                     author: None,
                     star_osc: 0,
                     timestamp: 2_000,
@@ -496,6 +655,8 @@ mod tests {
                     notified: true,
                 },
                 HistoryRow {
+                    control: None,
+                    file: None,
                     author: None,
                     star_osc: 0,
                     timestamp: 3_000,
@@ -526,6 +687,33 @@ mod tests {
         assert_eq!(opened, page);
     }
 
+    /// Control and attachment rows ride as typed columns: a page mixing every control kind, attachment roles and plain text round-trips exactly, and each row's slots stay attached to that row (the per-column cursors never drift).
+    #[test]
+    fn control_and_file_rows_ride_typed_columns() {
+        use crate::types::{AttachRef, AttachRole, RowControl};
+        use crate::wave::signal::WaveSignal;
+        let plain = |t: i64, text: &str| HistoryRow::from_message(&crate::types::ChatMessage::new_with_timestamp(text.to_string(), true, t));
+        let ctl = |t: i64, c: RowControl| HistoryRow::from_message(&crate::types::ChatMessage::control(c, false, t));
+        let file = |t: i64, f: AttachRef| HistoryRow::from_message(&crate::types::ChatMessage::attachment(f, true, t));
+        let rows = vec![
+            plain(1, "before"),
+            ctl(2, RowControl::Wave(WaveSignal::Offer { wave_id: [1; 16], nonce: [2; 32], device: Some([3; 32]) })),
+            file(3, AttachRef::file([4; 32], "notes.txt", 12)),
+            ctl(4, RowControl::Delete { target: 3 }),
+            ctl(5, RowControl::Wave(WaveSignal::Hangup { wave_id: [1; 16] })),
+            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio }),
+            ctl(7, RowControl::Era(crate::crypto::era::EraSignal::Init { era_next: 2, nonce: [6; 32], prior_tag: 7, kem_set: 3 })),
+            ctl(8, RowControl::Probe),
+            ctl(9, RowControl::Wave(WaveSignal::Answer { wave_id: [8; 16], nonce: [9; 32], device: None })),
+            plain(10, "after"),
+        ];
+        let page = HistoryPagePlain { rows, oldest_osc: 1, more: false };
+        let key = [0x11u8; 32];
+        let opened = open_history_page(&seal_history_page(&page, &key).unwrap(), &key).unwrap();
+        assert_eq!(opened, page);
+        assert!(opened.rows.iter().filter(|r| r.control.is_some() || r.file.is_some()).all(|r| r.content.is_empty()), "typed rows carry no text");
+    }
+
     #[test]
     fn empty_page_round_trip() {
         let key = [0x42u8; 32];
@@ -552,6 +740,8 @@ mod tests {
         let key = [4u8; 32];
         let page = HistoryPagePlain {
             rows: vec![HistoryRow {
+                control: None,
+                file: None,
                 author: None,
                 star_osc: 0,
                 timestamp: 7,

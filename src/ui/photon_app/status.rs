@@ -3278,27 +3278,11 @@ impl PhotonApp {
                                         // Cursor progresses over ALL returned rows (probe rows included) so a probe-heavy stretch can't stall the walk; the probe rows themselves are filtered out of what we ship.
                                         let oldest_osc =
                                             rows.first().map(|m| m.timestamp).unwrap_or(before_osc);
+                                        // A friend's page never carries control rows — they are machinery, not the conversation.
                                         let hist_rows: Vec<HistoryRow> = rows
                                             .iter()
-                                            .filter(|m| {
-                                                !crate::types::is_control_content(&m.content)
-                                            })
-                                            .map(|m| HistoryRow {
-                                                timestamp: m.timestamp,
-                                                content: m.content.clone(),
-                                                sender_outgoing: m.is_outgoing,
-                                                delivered: m.delivered,
-                                                deleted: m.deleted,
-                                                star_osc: m.star_osc,
-                                                author: m.author,
-                                                                                                reference: m.reference.map(|(k, t)| (k as u8, t)),
-                                                notified: m.notified,
-                                                marks: m.marks.clone(),
-                                                wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
-                                                envelope: m.envelope.clone(),
-                                                attach: m.attach.map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
-                                                preview: m.preview.clone(),
-                                            })
+                                            .filter(|m| !m.is_control())
+                                            .map(HistoryRow::from_message)
                                             .collect();
                                         let page = HistoryPagePlain {
                                             rows: hist_rows,
@@ -3418,7 +3402,7 @@ impl PhotonApp {
                             .conversations
                             .iter()
                             .flat_map(|c| c.messages.iter())
-                            .find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == content_hash).map(|(_, n, _)| n))
+                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash).map(|f| f.name.clone()))
                             .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key) {
@@ -3518,7 +3502,7 @@ impl PhotonApp {
                             .conversations
                             .iter()
                             .flat_map(|c| c.messages.iter())
-                            .find_map(|m| crate::types::parse_attachment_content(&m.content).filter(|(h, _, _)| *h == content_hash).map(|(_, n, _)| n))
+                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash).map(|f| f.name.clone()))
                             .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             let Some(m) = crate::storage::blob_manifest(&content_hash) else {

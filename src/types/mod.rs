@@ -8,6 +8,7 @@ pub mod friendship;
 pub mod handle;
 pub mod message_body;
 pub mod peer;
+pub mod row_control;
 pub mod seed;
 pub mod shard;
 
@@ -19,4 +20,5 @@ pub use friendship::*;
 pub use handle::*;
 // pub use peer::*;
 pub use seed::*;
+pub use row_control::{AttachRef, AttachRole, ControlSlots, RowControl};
 // pub use shard::*;

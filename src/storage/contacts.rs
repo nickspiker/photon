@@ -922,11 +922,149 @@ fn our_party_id(storage: &FlatStorage) -> [u8; 32] {
 
 /// Save a conversation's messages as rows in its table — keyed by the conversation's own participant-set id, the same value the wire and the UI derive. Idempotent: each message is written at its sequence index, so re-saving the same history overwrites row-for-row identically.
 /// The message row key: 8 BE bytes of eagle_time ‖ the first 8 of blake3(content). Byte order IS the canonical (time, content-hash) row order, and same-tick rows from DIFFERENT senders get distinct keys — the bare-Int eagle_time key made them ONE row, so the second sender's message silently overwrote the first at persistence (RAM held both, every reboot held one). Within one sender's stream eagle_time is unique (704ps ticks), so collisions are strictly the cross-sender case.
-fn message_row_key(timestamp: i64, content: &str) -> [u8; 16] {
+/// Typed rows (control, attachment) key on their canonical identity bytes (`ChatMessage::ident_bytes`), which for a text row ARE its content — so text rows keep the keys they always had.
+fn message_row_key(timestamp: i64, ident: &[u8]) -> [u8; 16] {
     let mut key = [0u8; 16];
     key[..8].copy_from_slice(&(timestamp as u64).to_be_bytes());
-    key[8..].copy_from_slice(&blake3::hash(content.as_bytes()).as_bytes()[..8]);
+    key[8..].copy_from_slice(&blake3::hash(ident).as_bytes()[..8]);
     key
+}
+
+/// THE durable record of one row — the single builder both writers use, so a page persist can never again drop fields a conversation persist keeps (it silently dropped marks, attachment kind/dims/preview, star, author and the unnotified flag until 2026-09-24).
+fn message_record(msg: &ChatMessage) -> Record {
+    let ident = msg.ident_bytes();
+    let mut rec = Record::new()
+        .set("content", msg.content.clone())
+        .set("timestamp", Value::Time(msg.timestamp))
+        .set("is_outgoing", msg.is_outgoing as u64)
+        .set("delivered", msg.delivered as u64)
+        .set("content_hash", blake3::hash(&ident).as_bytes().to_vec());
+    // ack_hash: the plaintext_hash we ACK a RECEIVED message with — persisted so a duplicate retransmit can be re-ACKed after restart (the sender's chain stalls without a matching ACK).
+    if let Some(ah) = msg.ack_hash {
+        rec = rec.set("ack_hash", ah.to_vec());
+    }
+    // notified: stored INVERTED (written only when false, absent = true): steady-state rows are notified, so the field is usually absent.
+    if !msg.notified {
+        rec = rec.set("unnotified", 1u64);
+    }
+    if msg.recovered {
+        rec = rec.set("recovered", 1u64);
+    }
+    if msg.deleted {
+        rec = rec.set("deleted", 1u64);
+    }
+    if let Some((kind, target)) = msg.reference {
+        rec = rec.set("ref_kind", kind as u64).set("ref_ts", Value::Time(target));
+    }
+    if !msg.marks.is_empty() {
+        rec = rec.set("marks", Value::Bytes(crate::types::encode_marks(&msg.marks)));
+    }
+    rec = set_wave_fields(rec, msg);
+    rec = set_attach_fields(rec, msg);
+    rec = set_star_field(rec, msg);
+    rec = set_author_field(rec, msg);
+    rec = set_control_fields(rec, msg);
+    set_file_fields(rec, msg)
+}
+
+/// A control row's kind and slots as typed record fields (flag day 2026-09-24), written only when present.
+fn set_control_fields(mut rec: Record, msg: &ChatMessage) -> Record {
+    let Some(c) = msg.control.as_ref() else {
+        return rec;
+    };
+    let s = c.slots();
+    rec = rec.set("ctl_kind", s.kind as u64).set("ctl_sub", s.sub as u64);
+    if let Some(t) = s.ts {
+        rec = rec.set("ctl_ts", Value::Time(t));
+    }
+    if let Some(id) = s.id {
+        rec = rec.set("ctl_id", Value::Bytes(id));
+    }
+    if let Some(n) = s.nonce {
+        rec = rec.set("ctl_nonce", Value::Bytes(n.to_vec()));
+    }
+    if let Some(d) = s.dev {
+        rec = rec.set("ctl_dev", Value::Bytes(d.to_vec()));
+    }
+    if let Some(n) = s.num {
+        rec = rec.set("ctl_num", n);
+    }
+    if let Some(t) = s.tag {
+        rec = rec.set("ctl_tag", t as u64);
+    }
+    if let Some(v) = s.set {
+        rec = rec.set("ctl_set", v as u64);
+    }
+    rec
+}
+
+fn record_control(rec: &Record) -> Option<crate::types::RowControl> {
+    let kind = u8::try_from(rec.uint("ctl_kind")?).ok()?;
+    let arr = |name: &str| rec.bytes(name).and_then(|b| <[u8; 32]>::try_from(b).ok());
+    crate::types::RowControl::from_slots(&crate::types::ControlSlots {
+        kind,
+        sub: rec.uint("ctl_sub").and_then(|v| u8::try_from(v).ok()).unwrap_or(0),
+        ts: rec.time("ctl_ts"),
+        id: rec.bytes("ctl_id").map(|b| b.to_vec()),
+        nonce: arr("ctl_nonce"),
+        dev: arr("ctl_dev"),
+        num: rec.uint("ctl_num"),
+        tag: rec.uint("ctl_tag").and_then(|v| u32::try_from(v).ok()),
+        set: rec.uint("ctl_set").and_then(|v| u8::try_from(v).ok()),
+    })
+}
+
+/// An attachment row's identity as typed record fields, written only when present.
+fn set_file_fields(rec: Record, msg: &ChatMessage) -> Record {
+    let Some(f) = msg.file.as_ref() else {
+        return rec;
+    };
+    rec.set("file_role", f.role.code() as u64)
+        .set("file_hash", Value::Bytes(f.hash.to_vec()))
+        .set("file_name", f.name.clone())
+        .set("file_size", f.size)
+}
+
+fn record_file(rec: &Record) -> Option<crate::types::AttachRef> {
+    Some(crate::types::AttachRef {
+        role: crate::types::AttachRole::from_code(u8::try_from(rec.uint("file_role")?).ok()?)?,
+        hash: <[u8; 32]>::try_from(rec.bytes("file_hash")?).ok()?,
+        name: rec.text("file_name")?.to_string(),
+        size: rec.uint("file_size")?,
+    })
+}
+
+use crate::types::row_control::is_legacy_prefixed;
+
+/// Decode one durable record into a row. None for a record with no content field or a legacy prefixed row.
+fn record_message(rec: &Record, fallback_ts: i64) -> Option<ChatMessage> {
+    let content = rec.text("content")?;
+    if is_legacy_prefixed(content) {
+        return None;
+    }
+    Some(ChatMessage {
+        content: content.to_string(),
+        timestamp: rec.time("timestamp").unwrap_or(fallback_ts),
+        is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
+        delivered: rec.uint("delivered").unwrap_or(0) != 0,
+        ack_hash: rec.bytes("ack_hash").and_then(|b| <[u8; 32]>::try_from(b).ok()),
+        recovered: rec.uint("recovered").unwrap_or(0) != 0,
+        deleted: rec.uint("deleted").unwrap_or(0) != 0,
+        star_osc: rec.time("star").unwrap_or(0),
+        author: record_author(rec),
+        reference: record_reference(rec),
+        notified: rec.uint("unnotified").unwrap_or(0) == 0,
+        marks: record_marks(rec, content),
+        wave: record_wave(rec),
+        envelope: record_envelope(rec),
+        attach: record_attach(rec),
+        preview: record_preview(rec),
+        bridge_seq: 0,
+        replicated: false,
+        bridge_exit: None,
+        control: record_control(rec),
+        file: record_file(rec),
+    })
 }
 
 /// Returns (written, skipped): rows that took a durable transaction vs rows the delta gate proved already on disk verbatim. Callers mostly ignore it; tests pin it (a gate that never skips silently re-inflates every save back to ~300 commits, a gate that wrongly skips eats an edit).
@@ -958,45 +1096,9 @@ pub fn save_messages(
     // Rows the delta gate proved stale, held until the loop ends so the whole persist rides ONE transaction.
     let mut dirty: Vec<(Pk, Record)> = Vec::new();
     for msg in conv.messages.iter() {
-        // Key each row by the message's eagle_time, NOT a local enumerate index. eagle_time is monotonic (a clock) so it's stable + shared across both devices (the renumber-on-insert hazard of an index key is gone), it's the braid's weave reference, and Pk::Int encodes big-endian so key order == chronological. eagle_time is i64 but always positive (oscillations since Apollo 11), so `as u64` is safe and order-preserving. `content_hash` = blake3 of the message text, stored so the braid's eagle_time->text weave lookup has an integrity/tiebreak check (the adversarial multi-device-same-tick case).
-        let content_hash = blake3::hash(msg.content.as_bytes());
-        let mut rec = Record::new()
-            .set("content", msg.content.clone())
-            .set("timestamp", Value::Time(msg.timestamp))
-            .set("is_outgoing", msg.is_outgoing as u64)
-            .set("delivered", msg.delivered as u64)
-            .set("content_hash", content_hash.as_bytes().to_vec());
-        // ack_hash: the plaintext_hash we ACK a RECEIVED message with — persisted so a duplicate retransmit can be re-ACKed after restart (the sender's chain stalls without a matching ACK).
-        if let Some(ah) = msg.ack_hash {
-            rec = rec.set("ack_hash", ah.to_vec());
-        }
-        // notified: the fleet's alert duty discharged — stored INVERTED (written only when false, absent = true) on purpose: pre-feature rows must read as notified (history never re-dings), and steady-state rows are notified so the field is usually absent.
-        if !msg.notified {
-            rec = rec.set("unnotified", 1u64);
-        }
-        // recovered: friend-attested provenance flag — written only when true (absent = false), matching the contact-state optional-field idiom.
-        if msg.recovered {
-            rec = rec.set("recovered", 1u64);
-        }
-        // deleted: tombstone flag — written only when true (absent = false), same optional-field idiom.
-        if msg.deleted {
-            rec = rec.set("deleted", 1u64);
-        }
-        // reference: typed reply/edit/react target — two fields, written only when present (absent = plain row).
-        if let Some((kind, target)) = msg.reference {
-            rec = rec
-                .set("ref_kind", kind as u64)
-                .set("ref_ts", Value::Time(target));
-        }
-        // marks: typed content elements (links), compact-encoded — written only when present.
-        if !msg.marks.is_empty() {
-            rec = rec.set("marks", Value::Bytes(crate::types::encode_marks(&msg.marks)));
-        }
-        rec = set_wave_fields(rec, msg);
-        rec = set_attach_fields(rec, msg);
-        rec = set_star_field(rec, msg);
-        rec = set_author_field(rec, msg);
-        let row_key = message_row_key(msg.timestamp, &msg.content);
+        // Key each row by (eagle_time, identity hash) — see `message_row_key`.
+        let rec = message_record(msg);
+        let row_key = message_row_key(msg.timestamp, &msg.ident_bytes());
         // The delta gate proper: a read error falls thru to the put (never let a flaky read suppress a durable write).
         if db
             .get_row_in(&table, Pk::bytes(&row_key))
@@ -1086,48 +1188,34 @@ pub fn load_messages(
     keys.sort_unstable_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)));
 
     conv.messages.clear();
+    let mut legacy: Vec<Pk> = Vec::new();
     for (ts, _, pk) in keys {
         let Some(rec) = db
-            .get_row_in(&table, pk)
+            .get_row_in(&table, pk.clone())
             .map_err(|e| StorageError::Vault(e.to_string()))?
         else {
             continue;
         };
-        let _ = ts;
-        let Some(content) = rec.text("content") else {
+        if rec.text("content").is_some_and(is_legacy_prefixed) {
+            legacy.push(pk);
+            continue;
+        }
+        let Some(msg) = record_message(&rec, ts as i64) else {
             continue;
         };
-        let ack_hash: Option<[u8; 32]> = rec
-            .bytes("ack_hash")
-            .filter(|b| b.len() == 32)
-            .map(|b| b.try_into().unwrap());
-        let msg_ts = rec.time("timestamp").unwrap_or(0);
-        let outgoing = rec.uint("is_outgoing").unwrap_or(0) != 0;
         // Stamp floor: LAST_ISSUED is runtime-only, so every load re-teaches it our newest stored stamp — a post-restart nunc correction must never stamp behind a row already written (time_base::raise_floor; outgoing only — inbound stamps are the sender's clock).
-        if outgoing {
-            crate::network::time_base::raise_floor(msg_ts);
+        if msg.is_outgoing {
+            crate::network::time_base::raise_floor(msg.timestamp);
         }
-        conv.messages.push(ChatMessage {
-            content: content.to_string(),
-            timestamp: msg_ts,
-            is_outgoing: outgoing,
-            delivered: rec.uint("delivered").unwrap_or(0) != 0,
-            ack_hash,
-            recovered: rec.uint("recovered").unwrap_or(0) != 0,
-            deleted: rec.uint("deleted").unwrap_or(0) != 0,
-            star_osc: rec.time("star").unwrap_or(0),
-            author: record_author(&rec),
-            reference: record_reference(&rec),
-            notified: rec.uint("unnotified").unwrap_or(0) == 0,
-            marks: record_marks(&rec, content),
-            wave: record_wave(&rec),
-            envelope: record_envelope(&rec),
-            attach: record_attach(&rec),
-            preview: record_preview(&rec),
-            bridge_seq: 0,
-            replicated: false,
-            bridge_exit: None,
-        });
+        conv.messages.push(msg);
+    }
+
+    // FLAG DAY PURGE (2026-09-24, Nick: no backwards compatibility): pre-typed rows carried their kind in a content prefix. They never load; delete them in one transaction so they never sync, serve or count again. Self-terminating — a table with none left does nothing.
+    if !legacy.is_empty() {
+        drop(db);
+        let mut wdb = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
+        wdb.delete_rows_in(&table, &legacy).map_err(|e| StorageError::Vault(e.to_string()))?;
+        crate::logf!("STORAGE: flag day — dropped {} pre-typed prefixed row(s) from conversation {}", legacy.len(), hex::encode(&table[..4]));
     }
 
     // RAM now reflects disk (an empty table included) — this is what licenses a later persist. Every failure path above returned Err, so a load that couldn't read leaves the conversation un-hydrated and the persist gate refuses it.
@@ -1331,31 +1419,8 @@ pub fn save_messages_page(
     // Rows that survive the delta gate, held until the page is fully built so the whole page lands in ONE transaction — see the note on the flush below.
     let mut dirty: Vec<(Pk, Record)> = Vec::new();
     for msg in msgs {
-        let content_hash = blake3::hash(msg.content.as_bytes());
-        let mut rec = Record::new()
-            .set("content", msg.content.clone())
-            .set("timestamp", Value::Time(msg.timestamp))
-            .set("is_outgoing", msg.is_outgoing as u64)
-            .set("delivered", msg.delivered as u64)
-            .set("content_hash", content_hash.as_bytes().to_vec());
-        if let Some(ah) = msg.ack_hash {
-            rec = rec.set("ack_hash", ah.to_vec());
-        }
-        if msg.recovered {
-            rec = rec.set("recovered", 1u64);
-        }
-        // deleted: tombstone flag — written only when true (absent = false), same optional-field idiom.
-        if msg.deleted {
-            rec = rec.set("deleted", 1u64);
-        }
-        // reference: typed reply/edit/react target — two fields, written only when present (absent = plain row).
-        if let Some((kind, target)) = msg.reference {
-            rec = rec
-                .set("ref_kind", kind as u64)
-                .set("ref_ts", Value::Time(target));
-        }
-        rec = set_wave_fields(rec, msg);
-        let row_key = message_row_key(msg.timestamp, &msg.content);
+        let rec = message_record(msg);
+        let row_key = message_row_key(msg.timestamp, &msg.ident_bytes());
         // Same delta gate as save_messages: history pages routinely re-deliver rows the vault already holds verbatim — skip the durable transaction for identical rows (a read error falls thru to the put).
         if db
             .get_row_in(&table, Pk::bytes(&row_key))
@@ -1434,32 +1499,14 @@ pub fn load_message_page_before(
             taken += 1; // a missing row still consumes cursor progress
             continue;
         };
-        let Some(content) = rec.text("content") else {
+        let Some(mut msg) = record_message(&rec, ts as i64) else {
             taken += 1;
             continue;
         };
-        bytes += content.len();
-        page.push(ChatMessage {
-            content: content.to_string(),
-            timestamp: rec.time("timestamp").unwrap_or(ts as i64),
-            is_outgoing: rec.uint("is_outgoing").unwrap_or(0) != 0,
-            delivered: rec.uint("delivered").unwrap_or(0) != 0,
-            ack_hash: None, // never leaves this device; not part of a served page
-            recovered: rec.uint("recovered").unwrap_or(0) != 0,
-            deleted: rec.uint("deleted").unwrap_or(0) != 0,
-            star_osc: rec.time("star").unwrap_or(0),
-            author: record_author(&rec),
-            reference: record_reference(&rec),
-            notified: rec.uint("unnotified").unwrap_or(0) == 0,
-            marks: record_marks(&rec, content),
-            wave: record_wave(&rec),
-            envelope: record_envelope(&rec),
-            attach: record_attach(&rec),
-            preview: record_preview(&rec),
-            bridge_seq: 0,
-            replicated: false,
-            bridge_exit: None,
-        });
+        msg.ack_hash = None; // never leaves this device; not part of a served page
+        // The byte budget counts what the page will carry: the text, plus a typed row's identity fields.
+        bytes += msg.content.len().max(msg.ident_bytes().len());
+        page.push(msg);
         taken += 1;
     }
     page.reverse(); // collected newest→oldest; return ascending
@@ -1587,6 +1634,54 @@ mod tests {
         assert_eq!(identity.party_id(), [2u8; 32]);
     }
 
+    /// The flag-day storage contract (2026-09-24): typed control and attachment rows round-trip through BOTH writers with every field intact (the page writer used to drop marks, attach, star and author), and a pre-flag-day prefixed row is dropped on load AND deleted from the table.
+    #[test]
+    fn typed_rows_round_trip_and_legacy_rows_are_purged() {
+        use crate::types::{AttachRef, AttachRole, RowControl};
+        let device_secret = [31u8; 32];
+        let vault_seed = *ihi::handle_to_hash("me-typed-rows-test").as_bytes();
+        crate::storage::isolate_test_storage();
+        let app = crate::storage::APP;
+        let their_seed = [9u8; 32];
+        let our_pid = crate::crypto::clutch::identity_party_id(&vault_seed);
+
+        let wave = RowControl::Wave(crate::wave::signal::WaveSignal::Offer { wave_id: [1; 16], nonce: [2; 32], device: Some([3; 32]) });
+        let mut att = ChatMessage::attachment(AttachRef::file([4; 32], "a.txt", 12), true, 20);
+        att.star_osc = 77;
+        att.author = Some([5; 32]);
+        att.attach = Some(crate::types::AttachMeta { kind: crate::types::AttachKind::Unknown, dims: Some((3, 4)), preview_hash: Some([6; 32]) });
+        att.marks = Vec::new();
+        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio }, true, 30);
+        let ctl = ChatMessage::control(wave.clone(), false, 10);
+
+        {
+            let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+            // The page writer — the path that used to drop fields.
+            save_messages_page(&their_seed, &[ctl.clone(), att.clone(), rec.clone()], &storage).unwrap();
+            // A pre-flag-day row written the old way: kind smuggled through the content.
+            let table = conversation_table(&[our_pid, their_seed]);
+            let mut db = Db::open(&storage).unwrap();
+            let legacy = ChatMessage::new_with_timestamp("\u{1}\u{2}photon-callhangup00".to_string(), false, 40);
+            db.put_row_in(&table, Pk::bytes(&message_row_key(40, legacy.content.as_bytes())), &message_record(&legacy)).unwrap();
+        }
+
+        let storage = FlatStorage::new(app, vault_seed, device_secret).unwrap();
+        let mut conv = crate::types::Conversation::new([our_pid, their_seed]);
+        load_messages(&mut conv, &storage).unwrap();
+        assert_eq!(conv.messages.len(), 3, "the legacy row never loads");
+        assert_eq!(conv.messages[0].control, Some(wave));
+        assert!(conv.messages[0].content.is_empty());
+        let got = &conv.messages[1];
+        assert_eq!(got.file, att.file);
+        assert_eq!((got.star_osc, got.author, got.attach), (77, Some([5; 32]), att.attach), "the page writer keeps every field");
+        assert!(conv.messages[2].is_wave_recording());
+        // Purged from the table itself, not just skipped: a second load finds no legacy key at all.
+        let table = conversation_table(&[our_pid, their_seed]);
+        assert_eq!(Db::open(&storage).unwrap().list_in(&table).unwrap().len(), 3);
+        // Two typed rows can never share a key with each other or with any text.
+        assert_ne!(message_row_key(1, &ctl.ident_bytes()), message_row_key(1, &rec.ident_bytes()));
+    }
+
     /// Messages round-trip thru `save_messages`/`load_messages` on a REAL encrypted vault: write three, close the vault, reopen from disk, read them back in order. Proves the rārangi conversation-row path end to end, not just in RAM.
     #[test]
     fn messages_round_trip_on_real_vault() {
@@ -1602,6 +1697,8 @@ mod tests {
         let mut conv = crate::types::Conversation::new([our_pid, [3u8; 32]]);
         conv.messages = vec![
             ChatMessage {
+                control: None,
+                file: None,
                 content: "hi".to_string(),
                 timestamp: 100,
                 is_outgoing: true,
@@ -1623,6 +1720,8 @@ mod tests {
                 marks: Vec::new(),
                 },
             ChatMessage {
+                control: None,
+                file: None,
                 content: "hey".to_string(),
                 timestamp: 200,
                 is_outgoing: false,
@@ -1644,6 +1743,8 @@ mod tests {
                 marks: Vec::new(),
                 },
             ChatMessage {
+                control: None,
+                file: None,
                 content: "👋 unicode".to_string(),
                 timestamp: 300,
                 is_outgoing: true,
@@ -1935,6 +2036,8 @@ mod tests {
 
         // Write 120 rows OUT OF CHRONOLOGICAL ORDER (newest batch first — the recovery insertion pattern), timestamps 1..=120.
         let make = |t: i64| ChatMessage {
+            control: None,
+            file: None,
             content: format!("msg {t}"),
             marks: Vec::new(),
             timestamp: t,

@@ -142,10 +142,10 @@ impl PhotonApp {
         };
         // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
         let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
-        let content = crate::types::attachment_content(&hash, wire_name, bytes.len() as u64);
+        let file = crate::types::AttachRef::file(hash, wire_name, bytes.len() as u64);
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
-        self.attach_stage = Some((meta, preview));
-        if !self.send_chain_message(ci, &content, false, None, None) {
+        self.attach_stage = Some((meta, preview, file));
+        if !self.send_chain_message(ci, "", false, None, None) {
             self.attach_stage = None;
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
@@ -492,7 +492,7 @@ impl PhotonApp {
             if let Some(local) = r.sniffed {
                 for conv in self.conversations.iter_mut() {
                     for m in conv.messages.iter_mut() {
-                        let is_row = crate::types::parse_attachment_content(&m.content).is_some_and(|(h, _, _)| h == r.content_hash);
+                        let is_row = m.file.as_ref().is_some_and(|f| f.hash == r.content_hash);
                         if !is_row {
                             continue;
                         }

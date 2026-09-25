@@ -59,10 +59,10 @@ pub(super) fn audio_band_lines_of(m: &crate::types::ChatMessage) -> usize {
     let Some(a) = m.attach else {
         return 0;
     };
-    if a.kind != crate::types::AttachKind::Audio || crate::types::is_wave_recording(&m.content) {
+    if a.kind != crate::types::AttachKind::Audio || m.is_wave_recording() {
         return 0;
     }
-    let Some((h, _, _)) = crate::types::parse_attachment_content(&m.content) else {
+    let Some((h, _, _)) = m.file_parts() else {
         return 0;
     };
     if crate::storage::blob_present_or_pending(&h) { super::render::IMG_PREVIEW_LINES } else { 0 }
@@ -74,7 +74,7 @@ pub(super) fn viewer_pixels_of<'a>(v: &Viewer, cache: &'a ImgCache, msgs: &[crat
         return Some((*w, *h, std::borrow::Cow::Borrowed(px)));
     }
     let micro = msgs.iter().find_map(|m| {
-        let (h, _, _) = crate::types::parse_attachment_content(&m.content)?;
+        let (h, _, _) = m.file_parts()?;
         (h == v.hash).then(|| crate::types::parse_micro_image(&m.preview).map(|(w, h, px)| (w, h, crate::ui::attach_preview::micro_to_display(px))))
     })??;
     Some((micro.0, micro.1, std::borrow::Cow::Owned(micro.2)))
@@ -85,7 +85,7 @@ impl PhotonApp {
     pub(super) fn open_viewer(&mut self, ci: usize, hash: [u8; 32]) {
         let Some((meta, name)) = self.conv_of(ci).and_then(|v| {
             v.messages.iter().find_map(|m| {
-                let (h, n, _) = crate::types::parse_attachment_content(&m.content)?;
+                let (h, n, _) = m.file_parts()?;
                 (h == hash).then_some((m.attach?, n))
             })
         }) else {
@@ -199,7 +199,7 @@ impl PhotonApp {
                 c.messages
                     .iter()
                     .filter(|m| !m.deleted && m.attach.is_some_and(|a| a.kind.is_image()))
-                    .filter_map(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                    .filter_map(|m| m.file_parts().map(|(h, _, _)| h))
                     .filter(|h| crate::storage::blob_present(h) || self.img_cache.contains_key(h))
                     .collect()
             })
@@ -240,7 +240,7 @@ impl PhotonApp {
     pub(super) fn img_wants_any_picture(&self, ci: usize, hash: &[u8; 32]) -> bool {
         self.conv_of(ci).is_some_and(|c| {
             c.messages.iter().any(|m| {
-                crate::types::parse_attachment_content(&m.content).is_some_and(|(h, _, _)| h == *hash)
+                m.file_parts().is_some_and(|(h, _, _)| h == *hash)
                     && (crate::types::parse_micro_image(&m.preview).is_some()
                         || m.attach.and_then(|a| a.preview_hash).is_some_and(|ph| matches!(self.img_cache.get(&ph), Some(Some(_)))))
             })

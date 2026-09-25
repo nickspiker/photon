@@ -155,6 +155,19 @@ for slot in &party_slots {
 
 **If you find yourself doing string formatting with decimal indices, STOP. You're doing it wrong. Use VSF's native array/section nesting.**
 
+## Text Carries Only Human Words — No Smuggling Through Strings
+
+**A row's KIND is a field, never a content prefix. Structured data is never encoded into a string.**
+
+A `String` holds words a human typed or reads. The moment code writes `format!("{MARKER}{kind}\u{2}{}", hex::encode(id))` into a text field, or parses a number back out of one with `.parse()`, it has invented a private wire format no schema validates, no type marker describes, and one rename silently breaks. That is exactly what happened on 2026-09-24: renaming a content marker (`photon-call` → `photon-wave`) turned every stored wave signal into a visible chat bubble and let those rows ring the notifier.
+
+- **Kind** → a typed unsigned field (`RowControl` in types/row_control.rs), not a magic prefix.
+- **Binary** (hashes, ids, nonces, keys) → its honest VSF type (`hb`, `hR`, `ke`…), never hex in a string.
+- **Numbers** → unsigned/signed/eagle-time fields, never decimal text.
+- **Identity** that must hash alike on every device → one canonical function over the typed fields (`ident_typed`), never "the content string".
+
+**If you find yourself building a delimiter-separated string to carry more than a human's words, STOP. Add a field.**
+
 ## VSF Type Markers Are Self-Describing
 
 **NEVER rely on position to determine what a value is. The type marker tells you.**

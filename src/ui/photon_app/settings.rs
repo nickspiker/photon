@@ -645,11 +645,12 @@ impl PhotonApp {
             let mut bytes = 0u64;
             let mut count = 0u64;
             for m in &conv.messages {
-                if m.deleted || crate::types::is_control_content(&m.content) {
+                if m.deleted || m.is_control() {
                     continue;
                 }
-                let (sz, cat) = if let Some((_, name, size)) = crate::types::parse_attachment_content(&m.content) {
-                    if name == "wave.audio" {
+                let (sz, cat) = if let Some(f) = m.file.as_ref() {
+                    let size = f.size;
+                    if f.role == crate::types::AttachRole::WaveAudio {
                         (size, VaultFilter::Waves)
                     } else {
                         match m.attach.map(|a| a.kind) {

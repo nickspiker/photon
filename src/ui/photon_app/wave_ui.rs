@@ -1062,10 +1062,10 @@ impl PhotonApp {
     /// Send one signal on the lane (hidden wire content, probe-pattern) AND store it as a hidden OUTGOING row pushed to our siblings — the fleet's ring/stop fan-out (a sibling seeing our Answer row stops its own ring).
     /// `ts` is the row's stamp, passed in rather than read here: the OFFER must be stamped with the origin's `offer_osc` — every device that lives the wave mints its wave row at offer_osc+1, and the fold-by-shared-stamp dedup only works when the dialing device's local offer_osc IS the row's stamp. A second clock read here gave the dialer a private stamp and every wave showed twice on a multi-device fleet.
     fn send_wave_signal(&mut self, ci: usize, sig: WaveSignal, ts: i64) -> bool {
-        let content = sig.to_content();
-        let sent = self.chain_transmit(ci, &content, ts, None, None);
+        let ctl = crate::types::RowControl::Wave(sig);
+        let sent = self.send_control(ci, ctl.clone(), ts);
         if sent {
-            let mut row = ChatMessage::new_with_timestamp(content, true, ts);
+            let mut row = ChatMessage::control(ctl, true, ts);
             row.notified = true;
             if let Some(conv) = self.conv_mut_of(ci) {
                 conv.insert_message_sorted(row.clone());
@@ -1605,8 +1605,8 @@ impl PhotonApp {
                     crate::wave::spool::drop_register(&r.wave_id8);
                     if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
                         // "wave.audio" (a beam will mint "beam.video") — no POTS in Photon, so nothing here is a "phone call": see docs/waves.md on why that word is retired. The row REFERENCES the wave row (offer_osc+1) and carries the envelope thumbnail, so every sibling folds it into the card and draws the shape before it holds the blob.
-                        let content = crate::types::attachment_content(&kept.hash, "wave.audio", kept.size);
-                        let mut row = ChatMessage::new_with_timestamp(content, true, r.offer_osc + 2)
+                        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio };
+                        let mut row = ChatMessage::attachment(file, true, r.offer_osc + 2)
                             .with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
                         row.notified = true;
                         row.delivered = true;
@@ -1614,10 +1614,15 @@ impl PhotonApp {
                         let mut pushed = vec![row.clone()];
                         // OUR wave.env (the 3-channel u8 tensor, docs in wave/wave_env.rs): its own row at +3 referencing the wave row, sent on the FRIEND chain (this is the exchange — their card colours from our clean mic, ours from theirs), blob pushed ahead of the audio. A short wave minted none.
                         if let Some((eh, ebytes)) = kept.env.clone() {
-                            let econtent = crate::types::attachment_content(&eh, crate::wave::wave_env::WAVE_ENV_NAME, ebytes.len() as u64);
+                            let efile = crate::types::AttachRef { hash: eh, name: String::new(), size: ebytes.len() as u64, role: crate::types::AttachRole::WaveEnv };
                             let ets = r.offer_osc + 3;
-                            if self.chain_transmit(ci, &econtent, ets, Some((crate::types::RefKind::Wave, r.offer_osc + 1)), None) {
-                                let mut erow = ChatMessage::new_with_timestamp(econtent, true, ets).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
+                            // The env row lands locally FIRST so the transmit reads its typed file identity off the row (the attachment pattern).
+                            let erow_pre = ChatMessage::attachment(efile.clone(), true, ets).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
+                            if let Some(conv) = self.conv_mut_of(ci) {
+                                conv.insert_message_sorted(erow_pre);
+                            }
+                            if self.chain_transmit(ci, "", ets, Some((crate::types::RefKind::Wave, r.offer_osc + 1)), None) {
+                                let mut erow = ChatMessage::attachment(efile, true, ets).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
                                 erow.notified = true;
                                 erow.delivered = true;
                                 pushed.push(erow.clone());

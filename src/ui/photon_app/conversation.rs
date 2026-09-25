@@ -912,15 +912,15 @@ impl PhotonApp {
     }
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
-    /// Merge a sibling page's rows into a GROUP conversation (docs/molecules.md step 6): identity = (timestamp, content); flags upgrade monotonically (delivered, deleted, notified true-wins; reference/marks/author fill in once); new rows insert with their flags verbatim. Returns the rows that changed or landed (for persist + onward gossip).
+    /// Merge a sibling page's rows into a GROUP conversation (docs/molecules.md step 6): identity = (timestamp, content, file); flags upgrade monotonically (delivered, deleted, notified true-wins; reference/marks/author fill in once); new rows insert with their flags verbatim. Returns the rows that changed or landed (for persist + onward gossip).
     pub(super) fn merge_molecule_page_rows(&mut self, conv_pos: usize, rows: &[crate::network::history_pages::HistoryRow]) -> Vec<crate::types::ChatMessage> {
         let conv = &mut self.conversations[conv_pos];
         let mut fresh = Vec::new();
         for row in rows {
-            if crate::types::is_control_content(&row.content) {
+            if row.control.is_some() || crate::types::row_control::is_legacy_prefixed(&row.content) {
                 continue;
             }
-            if let Some(existing) = conv.messages.iter_mut().find(|m| m.timestamp == row.timestamp && m.content == row.content) {
+            if let Some(existing) = conv.messages.iter_mut().find(|m| m.timestamp == row.timestamp && m.content == row.content && m.file == row.file) {
                 let mut upgraded = false;
                 if row.delivered && !existing.delivered && existing.is_outgoing == row.sender_outgoing {
                     existing.delivered = true;
@@ -968,6 +968,7 @@ impl PhotonApp {
             m.reference = row.reference.and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
             m.marks = crate::types::valid_marks(&m.content, &row.marks);
             m.preview = row.preview.clone();
+            m.file = row.file.clone();
             if let Some((k, w, h, ph)) = row.attach {
                 m.attach = crate::types::AttachKind::from_wire(k).map(|kind| crate::types::AttachMeta { kind, dims: (w > 0 && h > 0).then_some((w, h)), preview_hash: ph });
             }
@@ -1353,6 +1354,10 @@ impl PhotonApp {
             }
             // An EMPTY body is legal now (a reaction retract) — the package parse itself is the validity gate.
             let message_text = pkg.body;
+            // The frame's typed kind and attachment identity (flag day 2026-09-24) — and the ONE identity both sides salt and advance with: the text for a text row, the canonical fields for a typed row (`ident_typed`, the sender computed the same).
+            let wire_control = pkg.control.clone();
+            let wire_file = pkg.file.clone();
+            let message_ident = crate::types::row_control::ident_typed(&message_text, wire_control.as_ref(), wire_file.as_ref());
             let incorporated_hp = pkg.incorporated_hp;
             let woven_times = pkg.woven_times;
             let wire_reference: Option<(crate::types::RefKind, i64)> = pkg
@@ -1377,7 +1382,7 @@ impl PhotonApp {
             }
 
             // Hidden chain-weave probe: a reserved-marker message that proves the ratchet works but must show NO chat bubble. Everything else on the receive path (chain advance, set_last_plaintext, mark_received, ACK send) still runs so the sender's chain advances and dedup works — only the UI is suppressed.
-            let is_chain_probe = message_text == crate::types::CHAIN_PROBE_MARKER;
+            let is_chain_probe = matches!(wire_control, Some(crate::types::RowControl::Probe));
             // An EDIT or REACTION row lands as an ordinary message (row, ACK, sync) but must not ALERT — the target bubble repaints; a chime/unread/scroll-jump for it would read as a new message that isn't there. (Whether a reaction should ding is a one-gate flip if the field wants it.)
             let is_edit_row = matches!(
                 wire_reference,
@@ -1419,7 +1424,7 @@ impl PhotonApp {
                         .iter()
                         .find(|m| m.is_outgoing && m.timestamp == t)
                     {
-                        strands.push(m.content.as_bytes().to_vec());
+                        strands.push(m.ident_bytes());
                     } else {
                         strand_miss = Some(t);
                         break;
@@ -1455,7 +1460,7 @@ impl PhotonApp {
 
             // Update the lane's last_plaintext for the next message's salt — the x-text ONLY (must match what the sender stored: salt source is text, never the full payload/pad).
             // Keyed by LANE LABEL: the pre-lane call here passed the party id, which no lane label ever equals, so the write no-opped and the salt stayed empty while the sender's moved — every second message on a lane garbage-decrypted (field, 2026-08-07).
-            chains.set_last_plaintext(&lane, message_text.clone().into_bytes());
+            chains.set_last_plaintext(&lane, message_ident.clone());
 
             // Update bidirectional entropy state (derive weave hash from full message context)
             chains.update_received_for_mixing(timestamp, msg_hp, &plaintext);
@@ -1464,7 +1469,7 @@ impl PhotonApp {
             let rx_lane_key_pre_advance = chains.current_key(&lane).copied();
 
             // Advance their chain with the braid strands. our_plaintext = the decrypted x-text ONLY (must match the sender's process_ack, which advances with the stored salt-text — never the full payload/pad).
-            let message_text_bytes = message_text.clone().into_bytes();
+            let message_text_bytes = message_ident.clone();
             let eagle_time_for_advance = vsf::EagleTime::from_oscillations(timestamp);
             chains.advance(
                 &lane,
@@ -1562,25 +1567,23 @@ impl PhotonApp {
             // Add message to contact's message list and persist — UNLESS this is the hidden chain-weave probe, which advances/ACKs the chain but must never surface a bubble or chime. For the probe we flip `their_probe_seen` (their TX / our RX proven), PERSIST a hidden row, and try to seal the chain.
             // WAVE SIGNALING (docs/waves.md): an offer/answer/hangup rides the lane as a hidden control row — persist it (re-ACK durable, the probe pattern), push it to our siblings (ring/stop fan-out), and hand it to the state machine WITH the pre-advance lane key (the basket's doomed egg, meaningful for offers).
             // ERA RATCHET ROW (crypto/era.rs, plan §3): Init / Resp / Nudge — persist a HIDDEN row with its ack_hash (re-ACK durability, the probe pattern), NEVER push it to siblings (the era itself replicates by chain-sync), and hand it to on_era_signal after the borrow ends with the package's typed KEM material.
-            if let Some(sig) = crate::crypto::era::EraSignal::parse(&message_text) {
-                let era_row =
-                    ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
-                        .with_ack_hash(plaintext_hash);
+            if let Some(crate::types::RowControl::Era(sig)) = wire_control.clone() {
+                let era_row = ChatMessage::control(crate::types::RowControl::Era(sig.clone()), false, timestamp)
+                    .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(era_row);
                 persist_ci = Some(contact_idx);
                 era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
-            } else if let Some(sig) = crate::types::molecule::MoleculeSignal::parse(&message_text) {
+            } else if let Some(crate::types::RowControl::Molecule(sig)) = wire_control.clone() {
                 // Group control row (docs/molecules.md §4): an INVITE rides a friendship conversation, RECORDS ride the group's own — both land as hidden rows (ACK durability, the probe pattern) and dispatch after the borrow.
-                let row = ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
+                let row = ChatMessage::control(crate::types::RowControl::Molecule(sig), false, timestamp)
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(row);
                 persist_ci = Some(contact_idx);
                 // The whole typed group wire goes to the handler (the invite's secrets live ONLY there — the row inserted above is the bare kind marker).
                 molecule_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.clone(), pkg_era_kem.take(), timestamp));
-            } else if let Some(sig) = crate::wave::signal::WaveSignal::parse(&message_text) {
-                let sig_row =
-                    ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
-                        .with_ack_hash(plaintext_hash);
+            } else if let Some(crate::types::RowControl::Wave(sig)) = wire_control.clone() {
+                let sig_row = ChatMessage::control(crate::types::RowControl::Wave(sig), false, timestamp)
+                    .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(sig_row.clone());
                 persist_ci = Some(contact_idx);
                 sibling_push = Some((contact_idx, sig_row));
@@ -1589,8 +1592,7 @@ impl PhotonApp {
             } else
             // Hidden DELETE marker: the friend tombstoned a message — apply it here, persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
             // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): a friend's marker may tombstone ONLY rows THEY authored (incoming here) and never a wave — their delete can't reach into our words or our archive of a shared wave.
-            if let Some(ts_str) = message_text.strip_prefix(crate::types::DELETE_MARKER_PREFIX) {
-                let target_ts: i64 = ts_str.trim().parse().unwrap_or(0);
+            if let Some(crate::types::RowControl::Delete { target: target_ts }) = wire_control.clone() {
                 {
                     let conv = &mut self.conversations[conv_pos];
                     let mut tombstoned: Option<ChatMessage> = None;
@@ -1598,7 +1600,7 @@ impl PhotonApp {
                         m.timestamp == target_ts
                             && !m.is_outgoing
                             && m.wave.is_none()
-                            && !crate::types::is_control_content(&m.content)
+                            && !m.is_control()
                     }) {
                         if !m.deleted {
                             m.deleted = true;
@@ -1606,15 +1608,12 @@ impl PhotonApp {
                         }
                     }
                     // The marker row itself (hidden, ack_hash-bearing) — a lost ACK re-ACKs from it.
-                    let marker_row =
-                        ChatMessage::new_with_timestamp(message_text.clone(), false, timestamp)
-                            .with_ack_hash(plaintext_hash);
+                    let marker_row = ChatMessage::control(crate::types::RowControl::Delete { target: target_ts }, false, timestamp)
+                        .with_ack_hash(plaintext_hash);
                     conv.insert_message_sorted(marker_row);
                     persist_ci = Some(contact_idx);
                     if let Some(row) = tombstoned {
-                        if let Some((hash, _, _)) =
-                            crate::types::parse_attachment_content(&row.content)
-                        {
+                        if let Some(hash) = row.file.as_ref().map(|f| f.hash) {
                             {
                                 // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
                                 let h = hash;
@@ -1632,19 +1631,17 @@ impl PhotonApp {
                     self.scene_dirty = true;
                 }
                 recv_seal_idx = Some(contact_idx);
+            } else if wire_control.is_none() && crate::types::row_control::is_legacy_prefixed(&message_text) {
+                // A PRE-FLAG-DAY PEER (2026-09-24): its control and attachment rows still hide their kind in the text. The chain advanced and the frame ACKs like any other (the braid ingredient is the same bytes both sides), but nothing is shown, stored or rung — no backwards compatibility.
+                crate::logf!("CHAT: pre-flag-day row from {} (kind hidden in its text) — ACKed, not shown; that device needs this build", crate::fp(&from_handle_hash));
             } else if is_chain_probe {
                 if let Some(contact) = self.contacts.get_mut(contact_idx) {
                     contact.their_probe_seen = true;
                     // Attribute the probe to the ceremony whose chain just decrypted it, so a completion landing microseconds later can tell "the peer's probe for THIS ceremony" from "a stale seal for the chain we just replaced".
                     contact.their_probe_ceremony = contact.ceremony_id;
                 }
-                // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path already filters CHAIN_PROBE_MARKER, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
-                let probe_row = ChatMessage::new_with_timestamp(
-                    crate::types::CHAIN_PROBE_MARKER.to_string(),
-                    false,
-                    timestamp,
-                )
-                .with_ack_hash(plaintext_hash);
+                // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path filters control rows, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
+                let probe_row = ChatMessage::control(crate::types::RowControl::Probe, false, timestamp).with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(probe_row);
                 persist_ci = Some(contact_idx);
                 crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
@@ -1711,6 +1708,8 @@ impl PhotonApp {
                 )
                 // Persist the ACK hash so a later duplicate (our ACK was lost) can be re-ACKed from storage — keeps the sender's chain from stalling.
                 .with_ack_hash(plaintext_hash);
+                // The attachment's typed identity lands on the row (the body is empty on an attachment row).
+                msg.file = wire_file.clone();
                 // The wire's typed reference lands ON THE ROW — without this the sender saw its own reply hint (the send path stamps its row) while the receiver's copy arrived bare (field, 2026-08-09: "responses don't show the hinted message on the receive side").
                 msg.reference = wire_reference;
                 // GROUP attribution lands on the row (docs/molecules.md §5) — the verified sender party id (the agreement check above already refused a mismatch). Pairwise rows stay authorless.
@@ -1723,9 +1722,9 @@ impl PhotonApp {
                     .iter()
                     .map(|(k, st, ln, d)| crate::types::MessageMark { kind: *k, start: *st, len: *ln, dest: d.clone() })
                     .collect::<Vec<_>>());
-                // The wire's typed attachment fields land only on an attachment row (the content string is the identity; a stray field on a text row is ignored). The kind is the peer's claim until our own install re-sniffs the bytes (drain_attach_installed reconciles).
+                // The wire's typed attachment fields land only on an attachment row (the typed file identity; a stray field on a text row is ignored). The kind is the peer's claim until our own install re-sniffs the bytes (drain_attach_installed reconciles).
                 if let Some(a) = pkg.attach.as_ref() {
-                    if crate::types::parse_attachment_content(&msg.content).is_some() {
+                    if msg.file.is_some() {
                         msg.attach = Some(crate::types::AttachMeta {
                             kind: crate::types::AttachKind::from_wire(a.kind).unwrap_or(crate::types::AttachKind::Unknown),
                             dims: (a.w > 0 && a.h > 0).then_some((a.w, a.h)),
@@ -1773,7 +1772,7 @@ impl PhotonApp {
                     msg.notified = true;
                 }
                 // QUICK-REPLY AUTO-SELECT (Nick 2026-09-12, the fourth section's trigger): a fresh incoming message in the OPEN conversation selects itself, so the reactions and actions are one glance away; the next tap replaces the selection as ever. Plain and reply rows only — control/reaction/bridge rows never steal the strip.
-                if looking && !is_edit_row && !crate::types::is_control_content(&msg.content) && msg.reference.is_none_or(|(k, _)| matches!(k, crate::types::RefKind::Reply)) {
+                if looking && !is_edit_row && !msg.is_control() && msg.reference.is_none_or(|(k, _)| matches!(k, crate::types::RefKind::Reply)) {
                     self.selected_msg = Some((contact_idx, msg.timestamp, false));
                     self.selected_msg_copied = false;
                     self.strip_dismissed = None;
@@ -1920,6 +1919,8 @@ impl PhotonApp {
                 // System notification, POST-DECRYPT: real sender display name + message text BY DESIGN — hiding content on the lock screen is the OS's job, and the pre-decrypt RX worker no longer notifies at all (it over-dinged on probes and sibling fleet-sync frames it couldn't tell apart). RUST is the one suppression decision now: `will_ding` (not looking, no live sibling clearer, real friend row) gates the wave — the fleet-wide half of the 2026-07-23 design on top of the local `looking` gate. Desktop's notify keeps its own visual gate (no toast while attended) + both dedup on msg_hp.
                 if will_ding && is_new_row {
                     // The notification chirp seeds from the RELATIONSHIP DIGEST — the same value the desktop in-app chirp and the contact's colours use — so one sender sounds the same on EVERY device. It seeded from the pinned device key before, which differs per device (each pins its own first-met device) and per platform: "messages from one sender sound different on each device".
+                    // The notification body is what the bubble says — an attachment row's text is its typed identity rendered, never raw row bytes.
+                    let notify_body = super::display_content(&msg);
                     #[cfg(target_os = "android")]
                     {
                         let chirp_seed =
@@ -1928,14 +1929,14 @@ impl PhotonApp {
                             &msg_hp,
                             &chirp_seed,
                             &sender_name,
-                            &msg.content,
+                            &notify_body,
                         );
                     }
                     #[cfg(not(target_os = "android"))]
                     crate::platform::desktop_notify::notify_new_message(
                         &msg_hp,
                         &sender_name,
-                        &msg.content,
+                        &notify_body,
                     );
                 }
 
@@ -2387,10 +2388,10 @@ impl PhotonApp {
             {
                 let conv = &mut self.conversations[conv_pos];
                 // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
-                // Index existing rows ONCE by (timestamp, content-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid thru the upgrade pass.
-                let row_hash = |c: &str| -> u64 {
+                // Index existing rows ONCE by (timestamp, identity-hash) — each row is an O(1) lookup; inserts are deferred so the indices stay valid thru the upgrade pass.
+                let row_hash = |ident: &[u8]| -> u64 {
                     u64::from_le_bytes(
-                        blake3::hash(c.as_bytes()).as_bytes()[..8]
+                        blake3::hash(ident).as_bytes()[..8]
                             .try_into()
                             .unwrap(),
                     )
@@ -2399,15 +2400,17 @@ impl PhotonApp {
                     std::collections::HashMap::with_capacity(conv.messages.len());
                 for (i, m) in conv.messages.iter().enumerate() {
                     existing_idx
-                        .entry((m.timestamp, row_hash(&m.content)))
+                        .entry((m.timestamp, row_hash(&m.ident_bytes())))
                         .or_insert(i);
                 }
                 let mut to_insert: Vec<crate::types::ChatMessage> = Vec::new();
                 let mut tombstoned_in_merge = false;
                 for row in &page.rows {
-                    if crate::types::is_control_content(&row.content) {
+                    // Control rows cross ONLY between our own devices, and only the kinds that are fleet business (a wave signal stops our other devices' rings); a friend's page never carries one.
+                    if row.control.as_ref().is_some_and(|c| !from_sibling || c.wave().is_none()) || crate::types::row_control::is_legacy_prefixed(&row.content) {
                         continue;
                     }
+                    let row_ident = crate::types::row_control::ident_typed(&row.content, row.control.as_ref(), row.file.as_ref());
                     let (is_outgoing, delivered, recovered) = if from_sibling {
                         (row.sender_outgoing, row.delivered, false)
                     } else {
@@ -2415,9 +2418,9 @@ impl PhotonApp {
                     };
                     // O(1) existence check; the exact content compare confirms the hit (guards the astronomically-rare 8-byte-hash + exact-timestamp collision).
                     let hit = existing_idx
-                        .get(&(row.timestamp, row_hash(&row.content)))
+                        .get(&(row.timestamp, row_hash(&row_ident)))
                         .copied()
-                        .filter(|&i| conv.messages[i].content == row.content);
+                        .filter(|&i| conv.messages[i].ident_bytes() == row_ident);
                     if let Some(i) = hit {
                         // Delivered AND deleted are monotonic (true wins): a copy that saw the ACK — or the tombstone — upgrades ours. Upgraded rows ride `fresh` (persist + gossip) but are NOT re-inserted.
                         let existing = &mut conv.messages[i];
@@ -2433,9 +2436,7 @@ impl PhotonApp {
                         if row.deleted && !existing.deleted {
                             existing.deleted = true;
                             tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
-                            if let Some((hash, _, _)) =
-                                crate::types::parse_attachment_content(&existing.content)
-                            {
+                            if let Some(hash) = existing.file.as_ref().map(|f| f.hash) {
                                 {
                                 // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
                                 let h = hash;
@@ -2528,6 +2529,8 @@ impl PhotonApp {
                         preview: if row.preview.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES { row.preview.clone() } else { Vec::new() },
                         bridge_seq: 0,
                         bridge_exit: None,
+                        control: row.control.clone(),
+                        file: row.file.clone(),
                     });
                 }
                 // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
@@ -2573,7 +2576,7 @@ impl PhotonApp {
                 let undischarged: Vec<i64> = fresh
                     .iter()
                     .filter(|m| {
-                        !m.notified && !m.is_outgoing && !crate::types::is_control_content(&m.content)
+                        !m.notified && !m.is_outgoing && !m.is_control()
                     })
                     .map(|m| m.timestamp)
                     .collect();
@@ -2628,8 +2631,8 @@ impl PhotonApp {
                 if self.wave_hold {
                     let recs: Vec<[u8; 32]> = fresh
                         .iter()
-                        .filter(|m| !m.deleted && crate::types::is_wave_recording(&m.content))
-                        .filter_map(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h))
+                        .filter(|m| !m.deleted && m.is_wave_recording())
+                        .filter_map(|m| m.file.as_ref().map(|f| f.hash))
                         .filter(|h| !crate::storage::blob_present_probe_now(h))
                         .collect();
                     for h in recs {
@@ -2639,7 +2642,7 @@ impl PhotonApp {
                 }
                 let hints: Vec<i64> = fresh.iter().filter_map(|m| match m.reference { Some((crate::types::RefKind::FetchHint, t)) => Some(t), _ => None }).collect();
                 for t in hints {
-                    let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| crate::types::parse_attachment_content(&m.content).map(|(h, _, _)| h)));
+                    let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| m.file.as_ref().map(|f| f.hash)));
                     if let Some(h) = hash {
                         if !crate::storage::blob_present_probe_now(&h) {
                             crate::logf!("WAVE: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));
@@ -2649,10 +2652,7 @@ impl PhotonApp {
                 }
                 let sigs: Vec<(crate::wave::signal::WaveSignal, i64, bool)> = fresh
                     .iter()
-                    .filter_map(|m| {
-                        crate::wave::signal::WaveSignal::parse(&m.content)
-                            .map(|s| (s, m.timestamp, m.is_outgoing))
-                    })
+                    .filter_map(|m| m.wave_signal().map(|s| (*s, m.timestamp, m.is_outgoing)))
                     .collect();
                 for (sig, ts, out) in sigs {
                     self.on_wave_signal(idx, sig, None, ts, true, out);
@@ -2752,7 +2752,7 @@ impl PhotonApp {
                 !m.notified
                     && !m.is_outgoing
                     && m.timestamp >= min_osc
-                    && !crate::types::is_control_content(&m.content)
+                    && !m.is_control()
             })
             .map(|m| m.timestamp)
             .collect();

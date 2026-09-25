@@ -7,6 +7,14 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The garbled bubbles that read like `photon-callhangup…` are gone, and so are the notifications they set off: behind-the-scenes rows (wave signals, delete requests, key updates, group invites) now carry what they are as labelled fields instead of hidden inside the message text, so they can never again show up as a message or ring you.
+- This build cannot exchange messages with an older one in either direction, and attachments and kept wave recordings from before it no longer appear in your history — the old rows are cleared from the device on first launch. Update every device together.
+- A new attachment's notification now says what arrived instead of showing scrambled text.
+- A device that fell behind now catches up on its own: it could miss messages for hours and only recover when the app restarted, because its catch-up stopped after checking just the newest page of history.
+- Catching up rings once per conversation instead of once per page of history, so a device coming back from a long sleep no longer sets off a burst of dozens of chirps.
+- Saving messages is much faster on phones: a page of history is written to storage in one go rather than one message at a time, which removes the pauses when a lot arrives at once.
+- Finding friends nearby over Wi-Fi Direct no longer silently fails at startup when the phone's Wi-Fi is busy: it waits for the Wi-Fi to settle and tries again.
+
 ## v103
 
 - Voice is now called a **wave**, and video a **beam**, everywhere in the app: the ring panel, the notification, the stream filter, the settings and all sixteen languages. The word "call" is gone on purpose, and the About page says why in one paragraph — a call hands your voice to a company to carry, and everyone agrees to pretend nobody kept a copy, which stopped being true when data itself became the storage medium; a wave has no carrier and keeps its own recording, which is yours.

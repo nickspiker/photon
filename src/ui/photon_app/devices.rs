@@ -259,8 +259,8 @@ impl PhotonApp {
             let mut leaves: Vec<(i64, [u8; 32])> = conv
                 .messages
                 .iter()
-                .filter(|m| !crate::types::is_control_content(&m.content))
-                .map(|m| (m.timestamp, ckpt_leaf(m.timestamp, &m.content)))
+                .filter(|m| !m.is_control())
+                .map(|m| (m.timestamp, ckpt_leaf(m.timestamp, &m.ident_bytes())))
                 .collect();
             leaves.sort();
             convs.push((

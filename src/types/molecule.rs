@@ -1,11 +1,8 @@
 //! Groups substrate (docs/molecules.md): the stable id, the token, the roster of sovereign records and their merge, and the control-row grammar. No wire, no chains, no UI in this module — it is the vocabulary the later steps speak.
 //!
-//! A group is a conversation with a mutable member set and its own root secret; membership is signed records merged by union with subject-signed newest-wins per party (§4). Records ride inside the group as hidden control rows (`MOLECULE_PREFIX`, the `ERA_PREFIX` pattern), so they are history, re-servable, and fleet-replicated with no new plane.
+//! A group is a conversation with a mutable member set and its own root secret; membership is signed records merged by union with subject-signed newest-wins per party (§4). Records ride inside the group as hidden control rows (`RowControl::Molecule`, typed like the era rows), so they are history, re-servable, and fleet-replicated with no new plane.
 
 use crate::types::PartyId;
-
-/// Hidden control-row prefix for every roster record (the `ERA_PREFIX` shape — `is_control_content` hides it from every UI and digest).
-pub const MOLECULE_PREFIX: &str = "\u{1}\u{2}photon-molecule\u{2}\u{1}";
 
 /// A group's stable identity: 32 random bytes minted by the founder — deliberately NOT participant-derived, because the member set moves and the conversation must not (§2 D2).
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -485,7 +482,7 @@ pub fn verify_record(signing_bytes: &[u8], signature: &[u8; 64], signer_device: 
     vk.verify(&blake3::hash(signing_bytes).as_bytes()[..], &sig).is_ok()
 }
 
-/// The group control-row grammar (§4, the `EraSignal` shape): a hidden text row `MOLECULE_PREFIX kind`, with EVERYTHING else typed on the message package beside it — roster records in `gpl` (a roster-codec blob), a wrap's KEM ciphertexts on `ekn`/`ekx`/`ekh` and its sealed secret on the typed wrap fields (`BondWrapWire`). Nothing binary is ever encoded into the text: the text is the row, and the row persists, replicates and re-serves — a secret in it would outlive its era (D10: secrets only ever move as wraps).
+/// The group control-row kinds (§4, the `EraSignal` shape): a hidden row whose kind is the typed `RowControl::Molecule`, with EVERYTHING else typed on the message package beside it — roster records in `gpl` (a roster-codec blob), a wrap's KEM ciphertexts on `ekn`/`ekx`/`ekh` and its sealed secret on the typed wrap fields (`BondWrapWire`). Nothing binary is ever encoded into the text: the text is the row, and the row persists, replicates and re-serves — a secret in it would outlive its era (D10: secrets only ever move as wraps).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum MoleculeSignal {
     /// The sponsor's OFFER, over the friendship braid: a roster snapshot in `gpl` so the invitee sees who is in it before consenting. Carries no secret. Refreshed by the sponsor on every roster change; the invitee's consent is the Join.
@@ -496,27 +493,6 @@ pub enum MoleculeSignal {
     Wrap,
     /// Records posted INSIDE the group — genesis, member, vouch, bundle, title, leave, in any mix — as a roster-codec blob in `gpl`. History re-serve REBUILDS the blob from the roster at serve time (records never delete, so the roster always holds them).
     Records,
-}
-
-impl MoleculeSignal {
-    pub fn to_content(&self) -> String {
-        match self {
-            MoleculeSignal::Offer => format!("{}offer", MOLECULE_PREFIX),
-            MoleculeSignal::Join => format!("{}join", MOLECULE_PREFIX),
-            MoleculeSignal::Wrap => format!("{}wrap", MOLECULE_PREFIX),
-            MoleculeSignal::Records => format!("{}records", MOLECULE_PREFIX),
-        }
-    }
-
-    pub fn parse(content: &str) -> Option<MoleculeSignal> {
-        match content.strip_prefix(MOLECULE_PREFIX)? {
-            "offer" => Some(MoleculeSignal::Offer),
-            "join" => Some(MoleculeSignal::Join),
-            "wrap" => Some(MoleculeSignal::Wrap),
-            "records" => Some(MoleculeSignal::Records),
-            _ => None,
-        }
-    }
 }
 
 /// Mint a member record for a JOIN (§4: consent IS this record, posted into the group as the joiner's first frame) or a re-grant (name/avatar change re-signs at a newer stamp — newest-wins in the merge).
@@ -788,18 +764,6 @@ mod tests {
         assert_eq!(a.current_key(&a_label), b.current_key(&a_label), "advance is a pure function of the row — writer and reader stay in lockstep");
         let b_label = b.mint_our_lane().expect("b mints its own");
         assert_ne!(a_label, b_label, "one writer per lane: b's sends never touch a's ratchet");
-    }
-
-    /// The control-row grammar round-trips and stays hidden; a bogus kind is None, never a panic.
-    #[test]
-    fn group_signals_round_trip_and_are_control() {
-        for sig in [MoleculeSignal::Offer, MoleculeSignal::Join, MoleculeSignal::Wrap, MoleculeSignal::Records] {
-            assert_eq!(MoleculeSignal::parse(&sig.to_content()), Some(sig));
-            assert!(crate::types::is_control_content(&sig.to_content()));
-            assert!(!sig.to_content().trim_start_matches(MOLECULE_PREFIX).contains('\u{2}'), "bare kind markers — nothing rides the text");
-        }
-        assert_eq!(MoleculeSignal::parse(&format!("{}bogus\u{2}1", MOLECULE_PREFIX)), None);
-        assert_eq!(MoleculeSignal::parse("plain text"), None);
     }
 
     /// The full join arc (§10.1, D10): founder mints; the OFFER carries only a snapshot; the joiner's JOIN carries its member record + bundle; the sponsor vouches and answers with a WRAP sealed to that bundle; the joiner installs the era and both sides hold the same token, lanes and standing set — and the joiner never held a secret before the wrap.

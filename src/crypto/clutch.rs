@@ -253,11 +253,11 @@ pub fn fleet_epoch_seal_key(epoch_key: &[u8; 32], purpose: &[u8]) -> [u8; 32] {
 }
 
 /// One settled-root leaf: the immutable identity of a message row, `(eagle_time, blake3(content))`. Mutable row state (delivered, deleted) deliberately stays out — the root must not shift when an ACK lands.
-pub fn ckpt_leaf(eagle_time: i64, content: &str) -> [u8; 32] {
+pub fn ckpt_leaf(eagle_time: i64, ident: &[u8]) -> [u8; 32] {
     let mut h = Hasher::new();
     h.update(CKPT_LEAF_DOMAIN);
     h.update(&eagle_time.to_le_bytes());
-    h.update(blake3::hash(content.as_bytes()).as_bytes());
+    h.update(blake3::hash(ident).as_bytes());
     *h.finalize().as_bytes()
 }
 
@@ -334,11 +334,11 @@ mod fleet_epoch_tests {
 
     #[test]
     fn settled_root_orders_and_binds() {
-        let l1 = ckpt_leaf(100, "first");
-        let l2 = ckpt_leaf(200, "second");
+        let l1 = ckpt_leaf(100, b"first");
+        let l2 = ckpt_leaf(200, b"second");
         assert_ne!(l1, l2);
         // Delivered/deleted state is not an input: the same (stamp, content) leaf is stable for life.
-        assert_eq!(l1, ckpt_leaf(100, "first"));
+        assert_eq!(l1, ckpt_leaf(100, b"first"));
         let r12 = ckpt_conv_root(vec![l1, l2]);
         assert_ne!(r12, ckpt_conv_root(vec![l2, l1]));
         assert_ne!(r12, ckpt_conv_root(vec![l1]));

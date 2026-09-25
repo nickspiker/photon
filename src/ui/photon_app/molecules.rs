@@ -35,7 +35,7 @@ impl PhotonApp {
             (MoleculeSignal::Records, true) => self.merge_molecule_records(ci, cp, blob),
             (other, _) => {
                 let sender = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
-                crate::logf!("MOLECULE: {} row from {} landed {} a group conversation — ignored", other.to_content().trim_start_matches(crate::types::molecule::MOLECULE_PREFIX), sender, if in_group { "inside" } else { "outside" });
+                crate::logf!("MOLECULE: {} row from {} landed {} a group conversation — ignored", format!("{other:?}"), sender, if in_group { "inside" } else { "outside" });
             }
         }
     }
@@ -136,7 +136,7 @@ impl PhotonApp {
         };
         let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None };
         let ts = vsf::eagle_time_oscillations();
-        let sent = self.chain_transmit_with(ci, &MoleculeSignal::Join.to_content(), ts, None, None, None, Some(&wire));
+        let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Join)));
         if sent {
             self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Joining);
             self.persist_chains_of(&fid);
@@ -247,7 +247,7 @@ impl PhotonApp {
         let wrap = crate::network::message_package::BondWrapWire { recipient_device: bundle.device, bundle_id: bundle.pubkeys().bundle_id(), era, era_lineage: lineage, nonce, sealed };
         let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: Some(wrap) };
         let ts = vsf::eagle_time_oscillations();
-        let sent = self.chain_transmit_with(ci, &MoleculeSignal::Wrap.to_content(), ts, None, None, Some(&cts), Some(&wire));
+        let sent = self.chain_transmit_with(ci, "", ts, None, None, Some(&cts), Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Wrap)));
         crate::logf!("MOLECULE: wrap (era {}) for device {} {} over the friendship", era, hex::encode(&bundle.device[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" });
         sent
     }
@@ -568,10 +568,10 @@ impl PhotonApp {
         // The offer row lands in the friendship conversation FIRST (the sponsor-side card: "you brought … into …"), then rides the wire.
         let invitee = self.contacts[ci].handle_hash;
         if let Some(conv) = self.conv_mut_of(ci) {
-            conv.insert_message_sorted(crate::types::ChatMessage::new_with_timestamp(MoleculeSignal::Offer.to_content(), true, ts));
+            conv.insert_message_sorted(crate::types::ChatMessage::control(crate::types::RowControl::Molecule(MoleculeSignal::Offer), true, ts));
         }
         self.persist_messages_async(ci);
-        let sent = self.chain_transmit_with(ci, &MoleculeSignal::Offer.to_content(), ts, None, None, None, Some(&wire));
+        let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Offer)));
         self.set_molecule_local(&gid, |l| {
             l.offered.retain(|(p, _)| *p != invitee);
             l.offered.push((invitee, ts));
@@ -679,7 +679,7 @@ impl PhotonApp {
             return false;
         };
         // THE MINTER'S CUTOVER EDGE (docs/molecules.md §10.4): the first ACK of any wrap row proves a member holds the new era — the pending era becomes current here.
-        let is_wrap_row = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)).map_or(false, |m| m.content == MoleculeSignal::Wrap.to_content());
+        let is_wrap_row = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)).map_or(false, |m| m.control == Some(crate::types::RowControl::Molecule(MoleculeSignal::Wrap)));
         let mut cut_over = false;
         if is_wrap_row && chains.pending_era().is_some() {
             if let Some((old_tag, new_tag, retired)) = chains.cut_over_to_pending() {
@@ -691,7 +691,7 @@ impl PhotonApp {
         let progress = chains.pending_progress(acked_eagle_time);
         // The leaver's edge (D9): once ANY member ACKs our leave row, a survivor holds the news — the root dies here.
         if self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Left) {
-            let is_leave_row = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)).map_or(false, |m| m.content == MoleculeSignal::Records.to_content());
+            let is_leave_row = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)).map_or(false, |m| m.control == Some(crate::types::RowControl::Molecule(MoleculeSignal::Records)));
             if is_leave_row {
                 crate::logf!("MOLECULE: leave of {} acknowledged by {} — root zeroized", hex::encode(&gid.0[..4]), crate::fp(&party));
                 self.zeroize_molecule_root(gid);
@@ -732,9 +732,10 @@ impl PhotonApp {
         msg.marks = self.marks_for_send(text);
         msg.reference = reference;
         msg.author = Some(our_pid);
-        if let Some((a, p)) = self.attach_stage.take() {
+        if let Some((a, p, f)) = self.attach_stage.take() {
             msg.attach = Some(a);
             msg.preview = p;
+            msg.file = Some(f);
         }
         let quiet = matches!(reference, Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _)));
         if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == fid) {
@@ -767,22 +768,22 @@ impl PhotonApp {
         for post in ready {
             let gid = post.gid;
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
-            let (text, ts, reference) = match post.text.as_ref() {
-                Some((t, ts, r)) => (t.clone(), *ts, *r),
+            let (text, ts, reference, control) = match post.text.as_ref() {
+                Some((t, ts, r)) => (t.clone(), *ts, *r, None),
                 None => {
                     // A control row: it lands in the group conversation as a hidden outgoing row FIRST (re-ACK durability, the era-row pattern), then rides the wire.
                     let ts = crate::network::time_base::stamp_osc();
-                    let content = post.signal.to_content();
-                    let mut row = crate::types::ChatMessage::new_with_timestamp(content.clone(), true, ts);
+                    let control = crate::types::RowControl::Molecule(post.signal);
+                    let mut row = crate::types::ChatMessage::control(control.clone(), true, ts);
                     row.author = Some(our_pid);
                     if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == fid) {
                         conv.insert_message_sorted(row);
                     }
-                    (content, ts, None)
+                    (String::new(), ts, None, Some(control))
                 }
             };
             let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: post.blob.clone(), wrap: post.wrap.clone() };
-            if self.molecule_transmit(gid, &text, ts, reference, post.kem.as_ref(), Some(&wire)) {
+            if self.molecule_transmit(gid, &text, ts, reference, post.kem.as_ref(), Some(&wire), control.as_ref()) {
                 sent_any = true;
                 if post.text.is_none() {
                     self.persist_conversation_async(fid);
@@ -919,7 +920,7 @@ impl PhotonApp {
             .conversations
             .iter()
             .find(|v| v.id() == fid)
-            .map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered && !crate::types::is_control_content(&m.content) && (!m.content.is_empty() || m.reference.is_some())).map(|m| (m.content.clone(), m.timestamp, m.reference)).collect())
+            .map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered && !m.is_control() && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some())).map(|m| (m.content.clone(), m.timestamp, m.reference)).collect())
             .unwrap_or_default();
         let already: Vec<i64> = self.pending_molecule_posts.iter().filter(|p| p.gid == gid).filter_map(|p| p.text.as_ref().map(|(_, ts, _)| *ts)).collect();
         let pending: Vec<i64> = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.pending_messages.iter().map(|m| m.eagle_time).collect()).unwrap_or_default();
