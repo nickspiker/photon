@@ -282,10 +282,7 @@ impl PhotonApp {
         }
         self.wave_playback = None;
         self.wave_playback_hash = None;
-        self.active_conversation = Some(id);
-        self.compose_reply_to = None;
-        self.compose_edit_of = None;
-        self.compose_react_to = None;
+        self.set_active_conversation(Some(id));
         self.conv_filter = ChatFilter::All;
         self.wave_scrub = None;
         // Focus claims are a friendship-token affair today (the token derives from the pair); a group claim rides the group token once the fleet notification design lands for groups.
@@ -313,14 +310,12 @@ impl PhotonApp {
         // Switching conversations stops a wave that was playing in the one we leave.
         self.wave_playback = None;
         self.wave_playback_hash = None;
-        self.active_conversation = self
+        let next = self
             .contacts
             .get(ci)
             .and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id()));
-        // An armed reply/edit/react targets a row of the conversation it was armed IN — switching conversations disarms it.
-        self.compose_reply_to = None;
-        self.compose_edit_of = None;
-        self.compose_react_to = None;
+        // The compose bar (and any armed reply/edit/react) travels with the conversation it was typed in — the funnel stashes it and restores the next one's.
+        self.set_active_conversation(next);
         // The stream filter and any waveform scrub belong to the conversation they were set in.
         self.conv_filter = ChatFilter::All;
         self.wave_scrub = None;

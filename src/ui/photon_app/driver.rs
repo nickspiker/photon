@@ -133,13 +133,12 @@ impl FluorApp for PhotonApp {
                     self.clear_unread(ci);
                 }
             }
-        } else if self.active_conversation.is_some()
-            && matches!(
-                self.state,
-                AppState::Conversation | AppState::ContactPanel(_)
-            )
-        {
-            self.broadcast_focus_claim(false);
+        } else {
+            // Blur is a write edge for the open draft: a backgrounded app may never come back to write it.
+            self.flush_draft();
+            if self.active_conversation.is_some() && matches!(self.state, AppState::Conversation | AppState::ContactPanel(_)) {
+                self.broadcast_focus_claim(false);
+            }
         }
     }
 
@@ -150,6 +149,7 @@ impl FluorApp for PhotonApp {
                 "EXIT: deliberate quit (shift+close / Shift+Escape) — bypassing resident hide",
             );
             // Quit is a flush edge for DATA first: block until the message/chains writers land their queues (the 2026-09-02 vanish — a queued self row died with the process), THEN flush the log batch (field 2026-08-21: freshly-recreated hang evidence evaporated on close because only panic/background/submit flushed).
+            self.flush_draft();
             self.drain_durable_writers();
             crate::flush_log_buffer();
             return false;
@@ -162,6 +162,7 @@ impl FluorApp for PhotonApp {
             true
         } else {
             // Same drain + flush edge as the deliberate-quit path above — non-resident close exits the process.
+            self.flush_draft();
             self.drain_durable_writers();
             crate::flush_log_buffer();
             false
@@ -806,7 +807,7 @@ impl FluorApp for PhotonApp {
             if matches!(self.state, AppState::Conversation) {
                 self.broadcast_focus_claim(false);
                 self.state = AppState::Ready;
-                self.active_conversation = None;
+                self.set_active_conversation(None);
                 // Leaving the conversation stops a playing wave (Nick 2026-09-10: "when you navigate back to contacts the playback needs to stop").
                 self.wave_playback = None;
                 self.wave_playback_hash = None;
@@ -1038,7 +1039,7 @@ impl FluorApp for PhotonApp {
                         let devices = self.fleet_device_rows();
                         if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
-                            tb.chars = name.chars().collect();
+                            tb.set_text(&name, ctx.text);
                             let id = tb.hit_id();
                             self.fleet_rename = Some((pk, tb));
                             self.change_focus(Some(id));
@@ -1065,7 +1066,6 @@ impl FluorApp for PhotonApp {
                                 if has_commit && self.depart_words_entry.is_none() {
                                     let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
                                     let id = tb.hit_id();
-                                    tb.chars.clear();
                                     self.depart_words_entry = Some((pk, tb));
                                     self.change_focus(Some(id));
                                 } else {
@@ -1424,7 +1424,7 @@ impl FluorApp for PhotonApp {
 
         // Orb tap (chrome app-icon) — a no-op widget, so intercept here. Destined for the settings/about/help panel; until that exists it carries the INTERIM add-device entry on Ready (AddDevice cancel is now the dedicated back button, not the orb). Routed by `on_orb_click`.
         let orb_id = self.chrome.as_ref().map(|c| c.app_icon_btn.id());
-        if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click() {
+        if Some(hit_id) == orb_id && hit_id != HIT_NONE && self.on_orb_click(ctx.text) {
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }
@@ -1445,8 +1445,7 @@ impl FluorApp for PhotonApp {
                     // NEW ATOM: the search box becomes the title box; the plus (or Enter) founds it. Tapping again cancels.
                     self.atom_naming = !self.atom_naming;
                     if let Some(tb) = self.contacts_textbox.as_mut() {
-                        tb.chars.clear();
-                        tb.cursor = 0;
+                        tb.clear();
                     }
                     if self.atom_naming {
                         let id = self.contacts_textbox.as_ref().map(|t| t.hit_id());
@@ -2823,7 +2822,7 @@ impl FluorApp for PhotonApp {
                             }
                             self.broadcast_focus_claim(false);
                             self.state = AppState::Ready;
-                            self.active_conversation = None;
+                            self.set_active_conversation(None);
                             self.wave_playback = None;
                             self.wave_playback_hash = None;
                             ctx.window.request_redraw();
@@ -3160,8 +3159,10 @@ impl FluorApp for PhotonApp {
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
         // The conversation-enter presence probe's verdict deadline (Nick 2026-09-15: "going into a contact should trigger a ping and 1s timeout for offline/no response") — one wake at the deadline, nothing while it isn't armed.
         let probe = self.presence_probe.map(|(_, at)| at + std::time::Duration::from_secs(1));
+        // An edited compose draft's write deadline (drafts.rs) — one wake at it, nothing while no edit is unwritten.
+        let draft = self.draft_deadline();
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold, wave_timer, probe]
+        [blink, anim, presence, pairing, fleet_refold, wave_timer, probe, draft]
             .into_iter()
             .flatten()
             .min()
@@ -3174,6 +3175,9 @@ impl FluorApp for PhotonApp {
             needs_redraw = true;
         }
         if self.presence_probe_tick(now) {
+            needs_redraw = true;
+        }
+        if self.drafts_tick(now, ctx.text) {
             needs_redraw = true;
         }
         if self.drain_voice_measure() {

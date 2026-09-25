@@ -531,7 +531,7 @@ impl PhotonApp {
         }
     }
 
-    pub(super) fn on_orb_click(&mut self) -> bool {
+    pub(super) fn on_orb_click(&mut self, text: &mut fluor::text::TextRenderer) -> bool {
         match self.state {
             AppState::Ready => {
                 self.change_focus(None);
@@ -557,8 +557,7 @@ impl PhotonApp {
                         self.settings_content_scroll = 0.0;
                         let title = self.molecule_rosters[gi].1.title();
                         if let Some(tb) = self.molecule_title_textbox.as_mut() {
-                            tb.chars = title.chars().collect();
-                            tb.cursor = tb.chars.len();
+                            tb.set_text(&title, text);
                         }
                         self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::About);
                         return true;
@@ -953,6 +952,7 @@ impl PhotonApp {
         self.probed_session = None;
         self.probed_handle = None;
         self.active_conversation = None;
+        self.forget_drafts();
         self.ready_toast = None;
         // THE RESURRECTION CLASS (field 2026-08-25, Android): the wipe deleted the vault and the FGTW backup, then the un-cleared RAM re-persisted everything — `conversations` still held every message row (a stuck un-ACK'd note came back with its attempt counter intact) and the next roster push re-uploaded the roster the wipe had just deleted. Android never re-execs, so this in-place list IS the wipe: every identity-flavoured slot below must die or the identity survives.
         self.conversations.clear();

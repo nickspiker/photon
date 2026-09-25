@@ -84,7 +84,7 @@ impl PhotonApp {
                 crate::logf!("BOOT: index rewrite failed: {}", e);
             }
         }
-        self.active_conversation = None;
+        self.set_active_conversation(None);
         self.reseed_contact_pubkeys();
         self.update_sync_records();
         self.state = AppState::Ready;

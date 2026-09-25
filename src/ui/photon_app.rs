@@ -46,6 +46,7 @@ mod wave_ui;
 mod ceremony;
 mod era;
 mod conversation;
+mod drafts;
 mod molecules;
 mod devices;
 mod driver;
@@ -1579,6 +1580,19 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
     message_textbox: Option<fluor::widgets::MultiTextbox>,
+    /// Compose drafts, one per conversation holding one (drafts.rs, storage/drafts.rs) — this device's unsent text, never synced. Linear search: one entry per conversation with unsent text.
+    drafts: Vec<(crate::types::ConversationId, crate::storage::drafts::Draft)>,
+    /// The vault's drafts have been read into `drafts` (writes wait for this, or they would clobber drafts not yet seen).
+    drafts_loaded: bool,
+    /// The drafts load is out on the job worker.
+    drafts_loading: bool,
+    drafts_rx: Option<std::sync::mpsc::Receiver<Result<Vec<(crate::types::ConversationId, crate::storage::drafts::Draft)>, crate::storage::StorageError>>>,
+    /// An edit to the open draft has gone unwritten since this instant — the write is due 60 s after it.
+    draft_dirty_since: Option<Instant>,
+    /// The compose bar as last seen by the drafts tick; a change is the edit edge.
+    draft_seen: Option<drafts::ComposeSeen>,
+    /// The open conversation's draft still has to be put back into the compose bar (the tick holds the text renderer it needs).
+    draft_restore_pending: bool,
     /// Compose-box FLING velocity in pixels per frame (Nick 2026-09-09): a finger drag on the box scrolls its text and each move overwrites this with the frame's delta; the release leaves it running and every tick applies it, then decays it — magnitude right-shifted by one and minus one, so it reaches exactly zero and zero means done. Wheel notches scroll but never fling. Runtime only.
     compose_fling: i32,
     /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
@@ -2557,6 +2571,13 @@ impl PhotonApp {
             orb_had_avatar: false,
             contacts_textbox: None,
             message_textbox: None,
+            drafts: Vec::new(),
+            drafts_loaded: false,
+            drafts_loading: false,
+            drafts_rx: None,
+            draft_dirty_since: None,
+            draft_seen: None,
+            draft_restore_pending: false,
             compose_fling: 0,
             contacts_plus_btn: None,
             message_send_btn: None,
