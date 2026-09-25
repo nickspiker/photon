@@ -66,8 +66,9 @@ impl PhotonApp {
             device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
             ip: addr,
             local_ip,
-            last_seen: vsf::eagle_time_oscillations(),
+            last_seen: crate::network::time_base::now_osc(), // the corrected clock — see PeerRecord::new
             signature: [0u8; 64],
+            local_seen: crate::network::time_base::now_osc(),
         };
         rec.sign(&kp.secret);
         debug_assert!(rec.verify(), "a record we just signed must verify");
@@ -158,8 +159,9 @@ impl PhotonApp {
             device_pubkey: crate::types::DevicePubkey::from_bytes(*kp.public.as_bytes()),
             ip: addr,
             local_ip,
-            last_seen: vsf::eagle_time_oscillations(),
+            last_seen: crate::network::time_base::now_osc(), // the corrected clock — see PeerRecord::new
             signature: [0u8; 64],
+            local_seen: crate::network::time_base::now_osc(),
         };
         rec.sign(&kp.secret);
         let provenance = *blake3::hash(&rec.device_pubkey.as_bytes()[..]).as_bytes();

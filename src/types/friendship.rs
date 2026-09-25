@@ -536,7 +536,7 @@ impl FriendshipChains {
             history_key: Some(history_key),
             era_lineage,
             lane_root: Some(lane_root),
-            genesis_osc: vsf::eagle_time_oscillations(),
+            genesis_osc: crate::network::time_base::now_osc(),
             mutated_osc: 0,
             era_index,
             lane_eras: Vec::new(),
@@ -573,7 +573,7 @@ impl FriendshipChains {
             gap_buffer: Vec::new(),
             history_key: Some(molecule_history_key),
             lane_root: Some(molecule_root),
-            genesis_osc: vsf::eagle_time_oscillations(),
+            genesis_osc: crate::network::time_base::now_osc(),
             mutated_osc: 0,
             era_index,
             era_lineage,
@@ -1096,7 +1096,7 @@ impl FriendshipChains {
         self.lane_root = Some(next.lane_root);
         self.history_key = next.history_key;
         self.era_index = next.era_index;
-        self.genesis_osc = vsf::eagle_time_oscillations();
+        self.genesis_osc = crate::network::time_base::now_osc();
         let retired = self.pending_messages.len();
         self.pending_messages.clear();
         self.our_label = None;
@@ -1326,10 +1326,6 @@ impl FriendshipChains {
             return other.era_index > self.era_index;
         }
         if self.genesis_osc != other.genesis_osc {
-            // A genesis dated past our known time never supersedes — it would otherwise win this comparison against every honest era for as long as the lie lasts.
-            if crate::network::time_base::from_the_future(other.genesis_osc) {
-                return false;
-            }
             return other.genesis_osc > self.genesis_osc;
         }
         other.lane_root > self.lane_root

@@ -131,14 +131,16 @@ pub fn now_osc() -> i64 {
     }
 }
 
-/// How far past our known time a REMOTE stamp may run and still be believed (2026-09-25, Nick: "future dated peer records need to floor with known local time").
-/// 30 s is the express frames' tolerance: wide enough for two nunc-corrected clocks and a slow path, too narrow to buy a lasting lever — a stamp can never again make a record immortal or win every newest-wins merge.
-pub const FUTURE_SKEW_OSC: i64 = 30 * crate::OSC_PER_SEC;
+/// How far past our known time an INSIDER-signed stamp may run and still be believed (2026-09-25, Nick: "future dated peer records need to floor with known local time").
+/// Insiders (siblings, molecule members, a friend's era genesis) mint from the nunc-corrected clock, so honest skew is small; but a device whose nunc anchor has not landed yet mints from its raw OS clock, and phones have been seen 30-53 min off.
+/// 5 minutes keeps a briefly-unanchored honest device from being refused while still denying any stamp a lasting lever: it can win at most five minutes of newest-wins, never immortality.
+/// Stranger records (the open peer store) are not refused at all — they are FLOORED to our clock on arrival (peer_store::floor_to_now).
+pub const FUTURE_SKEW_OSC: i64 = 5 * 60 * crate::OSC_PER_SEC;
 
-/// A remote stamp claiming a moment past our known time plus [`FUTURE_SKEW_OSC`]. Refused wherever a stamp orders, expires or wins something.
-/// Every stamp this guards sits inside a SIGNATURE (peer records, roster records) or names a chain era, so it cannot be floored in place without breaking what we re-gossip — the record is refused whole instead.
+/// An insider-signed stamp claiming a moment past our known time plus [`FUTURE_SKEW_OSC`]. Refused wherever such a stamp orders, expires or wins something.
+/// Every stamp this guards sits inside a SIGNATURE or names a chain era, so it cannot be floored in place without breaking what we re-gossip — the record is refused whole instead.
 pub fn from_the_future(stamp: i64) -> bool {
-    stamp > now_osc().saturating_add(FUTURE_SKEW_OSC) // WHY/PROOF: now + 30 s cannot overflow for any stamp this century, but `now_osc` falls back to the raw system clock, which is whatever the OS says
+    stamp > now_osc().saturating_add(FUTURE_SKEW_OSC) // WHY/PROOF: now + 5 min cannot overflow for any stamp this century, but `now_osc` falls back to the raw system clock, which is whatever the OS says
 }
 
 /// Raise the stamp floor to at least `osc` — called at vault load for every OUTGOING row, because [`LAST_ISSUED`] is runtime-only and starts over each boot. Without this, a nunc correction on an ahead-running clock (the phone's steady +1.87 s) pulls the FIRST post-restart stamp behind rows sent minutes earlier in the previous session — and rows never restamp, so the inversion is permanent (field 2026-09-07: Nick's out-of-order messages). The floor only ever rises; inbound rows are excluded on purpose (their stamps are the sender's clock — clamping ours to theirs would let one fast friend clock drag our whole timeline forward).

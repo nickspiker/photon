@@ -502,7 +502,7 @@ pub fn join_record(party: PartyId, handle_proof: [u8; 32], name_grant: &str, ava
         handle_proof,
         name: name_grant.to_string(),
         avatar_pin,
-        signed_osc: vsf::eagle_time_oscillations(),
+        signed_osc: crate::network::time_base::now_osc(),
         sponsor,
         signature: [0u8; 64],
         signer_device: device_pubkey(device_seed),
@@ -513,14 +513,14 @@ pub fn join_record(party: PartyId, handle_proof: [u8; 32], name_grant: &str, ava
 
 /// Mint a vouch (or a withdrawal of one) signed by this device on behalf of `voucher`.
 pub fn vouch_record(voucher: PartyId, subject: PartyId, withdrawn: bool, device_seed: &[u8; 32]) -> VouchRecord {
-    let mut rec = VouchRecord { voucher, subject, signed_osc: vsf::eagle_time_oscillations(), withdrawn, signature: [0u8; 64], signer_device: device_pubkey(device_seed) };
+    let mut rec = VouchRecord { voucher, subject, signed_osc: crate::network::time_base::now_osc(), withdrawn, signature: [0u8; 64], signer_device: device_pubkey(device_seed) };
     rec.signature = sign_record(&rec.signing_bytes(), device_seed);
     rec
 }
 
 /// Mint a title record signed by this device on behalf of `party`.
 pub fn title_record(party: PartyId, title: &str, device_seed: &[u8; 32]) -> TitleRecord {
-    let mut rec = TitleRecord { party, title: title.to_string(), signed_osc: vsf::eagle_time_oscillations(), signature: [0u8; 64], signer_device: device_pubkey(device_seed) };
+    let mut rec = TitleRecord { party, title: title.to_string(), signed_osc: crate::network::time_base::now_osc(), signature: [0u8; 64], signer_device: device_pubkey(device_seed) };
     rec.signature = sign_record(&rec.signing_bytes(), device_seed);
     rec
 }
@@ -535,7 +535,7 @@ pub fn bundle_record(party: PartyId, published_era: u64, eph: &crate::crypto::er
         mlkem_pk: eph.init_wire.mlkem.clone(),
         x_pk: eph.init_wire.x25519.clone(),
         hqc_pk: eph.init_wire.hqc.clone(),
-        signed_osc: vsf::eagle_time_oscillations(),
+        signed_osc: crate::network::time_base::now_osc(),
         signature: [0u8; 64],
     };
     rec.signature = sign_record(&rec.signing_bytes(), device_seed);
@@ -565,7 +565,7 @@ pub fn found_atom(founder: PartyId, founder_proof: [u8; 32], name_grant: &str, a
     rand::thread_rng().fill_bytes(&mut molecule_history_key);
     let molecule_id = MoleculeId::from_nonce(&nonce);
     let signer_device = device_pubkey(device_seed);
-    let now = vsf::eagle_time_oscillations();
+    let now = crate::network::time_base::now_osc();
     let mut genesis = GenesisRecord {
         molecule_id,
         founder,

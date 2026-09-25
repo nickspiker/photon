@@ -482,6 +482,7 @@ pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord,
         local_ip,
         last_seen,
         signature,
+        local_seen: last_seen, // floored to our clock when the store admits it
     })
 }
 

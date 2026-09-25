@@ -2123,7 +2123,8 @@ impl PhotonApp {
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
-                    if local.era_superseded_by(&incoming) {
+                    // A genesis dated past our known time never supersedes — it would otherwise win the era comparison against every honest era for as long as the lie lasts. Filtered here at ingest, not inside the pure comparison, so the type stays clock-free.
+                    if local.era_superseded_by(&incoming) && !crate::network::time_base::from_the_future(incoming.genesis_osc) {
                         incoming.sanitize_replicated();
                         *local = incoming;
                         era_moved = true;

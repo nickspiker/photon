@@ -10,11 +10,17 @@ pub struct PeerStore {
 }
 
 
-/// A peer record is fresh while its `last_seen` is inside the expiry window.
-/// WHY: `last_seen` is the stamp inside a record the PEER signed — any i64, including one far in the past.
-/// PROOF: `now − i64::MIN` overflows i64; saturating makes an absurd stamp read as the oldest possible (expired) instead of wrapping to a negative age that would read as fresh forever.
-fn is_fresh(now: i64, last_seen: i64) -> bool {
-    now.saturating_sub(last_seen) < PEER_EXPIRY_OSC
+/// A peer record is fresh while our local view of it (`local_seen`) is inside the expiry window.
+/// WHY: `local_seen` is floored to our clock from ABOVE at ingest, but the peer's signed stamp beneath it can be anything from below, including i64::MIN.
+/// PROOF: `now − i64::MIN` overflows i64; saturating makes an absurd stamp read as the oldest possible (expired) instead of wrapping to a negative age.
+fn is_fresh(now: i64, local_seen: i64) -> bool {
+    now.saturating_sub(local_seen) < PEER_EXPIRY_OSC
+}
+
+/// Admit a record at OUR clock: its local view is its signed stamp, floored to now — a claim from the future becomes "seen now", ages from here and can win nothing further.
+fn floor_to_now(mut peer: PeerRecord) -> PeerRecord {
+    peer.local_seen = peer.last_seen.min(crate::network::time_base::now_osc());
+    peer
 }
 impl PeerStore {
     pub fn new() -> Self {
@@ -98,11 +104,7 @@ impl PeerStore {
 
     /// Add or update a peer record If device already exists for this handle, update it Otherwise insert at sorted position
     pub fn add_peer(&mut self, peer: PeerRecord) {
-        // A record dated past our known time is refused: its `last_seen` is signed, so it cannot be floored in place, and admitted it would never expire and would win every merge.
-        if crate::network::time_base::from_the_future(peer.last_seen) {
-            crate::logf!("PEERS: refused a record from {} dated {} s in the future", crate::fp(&peer.handle_proof), (peer.last_seen - crate::network::time_base::now_osc()) / crate::OSC_PER_SEC);
-            return;
-        }
+        let peer = floor_to_now(peer);
         // Refuse a record whose address is unspecified, at EVERY ingest (gossip, fetch, load): the signing-point guard only protects records made by current builds, and a record signed before it existed — or by a retired device that will never republish — otherwise circulates its 0.0.0.0 claim forever.
         if crate::network::traverse::gather::is_bogus_addr(&peer.ip) {
             return;
@@ -162,17 +164,14 @@ impl PeerStore {
                 return false;
             }
         }
-        // Gossip is the other door a future-dated record could walk in thru — same refusal as `add_peer`.
-        if crate::network::time_base::from_the_future(peer.last_seen) {
-            return false;
-        }
+        let peer = floor_to_now(peer); // gossip is the other door — the same floor as add_peer
         let pos = self.find_position(&peer.handle_proof);
 
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == peer.handle_proof {
             if self.peers[i].device_pubkey.as_bytes() == peer.device_pubkey.as_bytes() {
                 // Same device already known — adopt the incoming copy ONLY if it's strictly newer.
-                if peer.last_seen > self.peers[i].last_seen {
+                if peer.local_seen > self.peers[i].local_seen {
                     self.peers[i] = peer;
                     return true;
                 }
@@ -194,13 +193,13 @@ impl PeerStore {
 
     /// Get all devices for a specific handle proof (binary search + scan)
     pub fn get_devices_for_handle(&self, handle_proof: &[u8; 32]) -> Vec<PeerRecord> {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         let pos = self.find_position(handle_proof);
 
         let mut result = Vec::new();
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == *handle_proof {
-            if is_fresh(now, self.peers[i].last_seen) {
+            if is_fresh(now, self.peers[i].local_seen) {
                 result.push(self.peers[i].clone());
             }
             i += 1;
@@ -210,31 +209,31 @@ impl PeerStore {
 
     /// Get all peer records (all handles, all devices)
     pub fn get_all_peers(&self) -> Vec<PeerRecord> {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         self.peers
             .iter()
-            .filter(|p| is_fresh(now, p.last_seen))
+            .filter(|p| is_fresh(now, p.local_seen))
             .cloned()
             .collect()
     }
 
     /// Get total count of active peer records
     pub fn peer_count(&self) -> usize {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         self.peers
             .iter()
-            .filter(|p| is_fresh(now, p.last_seen))
+            .filter(|p| is_fresh(now, p.local_seen))
             .count()
     }
 
     /// Get count of unique handles
     pub fn handle_count(&self) -> usize {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         let mut count = 0;
         let mut prev_handle: Option<[u8; 32]> = None;
 
         for p in &self.peers {
-            if is_fresh(now, p.last_seen) {
+            if is_fresh(now, p.local_seen) {
                 if prev_handle.map_or(true, |h| h != p.handle_proof) {
                     count += 1;
                     prev_handle = Some(p.handle_proof);
@@ -246,12 +245,12 @@ impl PeerStore {
 
     /// Distinct fresh identities EXCLUDING `own` — the peers-as-PEOPLE count for the title bar. Our own fleet siblings ride this same store (that's how they get addresses for direct routing), but we are not our own peer: without the exclusion, a 2-device fleet reads "1 peer" to itself.
     pub fn handle_count_excluding(&self, own: &[u8; 32]) -> usize {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         let mut count = 0;
         let mut prev_handle: Option<[u8; 32]> = None;
 
         for p in &self.peers {
-            if p.handle_proof != *own && is_fresh(now, p.last_seen) {
+            if p.handle_proof != *own && is_fresh(now, p.local_seen) {
                 if prev_handle.map_or(true, |h| h != p.handle_proof) {
                     count += 1;
                     prev_handle = Some(p.handle_proof);
@@ -267,7 +266,8 @@ impl PeerStore {
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == *handle_proof {
             if self.peers[i].device_pubkey.as_bytes() == device_pubkey.as_bytes() {
-                self.peers[i].last_seen = vsf::eagle_time_oscillations();
+                // OUR sighting raises our local view; the signed `last_seen` stays as the device signed it (overwriting it broke the record's signature for everyone we gossiped it to).
+                self.peers[i].local_seen = crate::network::time_base::now_osc();
                 return;
             }
             i += 1;
@@ -276,10 +276,10 @@ impl PeerStore {
 
     /// Remove stale peers (older than 7 days)
     pub fn cleanup_stale(&mut self) -> usize {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         let before = self.peers.len();
         self.peers
-            .retain(|p| is_fresh(now, p.last_seen));
+            .retain(|p| is_fresh(now, p.local_seen));
         before - self.peers.len()
     }
 }
@@ -321,7 +321,7 @@ mod tests {
             r.sign(&sk);
             r
         };
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         let mut store = PeerStore::new();
         for d in 1..=3u8 {
             store.add_peer(rec(9, d, now));
@@ -394,33 +394,29 @@ mod tests {
         );
     }
 
-    /// A record dated past our known time never enters — not by FGTW, not by gossip — so it can neither outlive its expiry nor outrank an honest record in a newest-wins merge. Inside the 30 s skew it is believed (two honest clocks differ).
+    /// A record dated in the future is FLOORED to our clock (Nick 2026-09-25): admitted, but it ages from the moment it reached us and can win nothing past it — while its signed stamp travels on untouched and still verifies. An honest record that arrives after it wins the merge.
     #[test]
-    fn future_dated_records_are_refused_at_every_door() {
-        let now = crate::network::time_base::now_osc();
-        let ahead = |secs: i64| now + secs * crate::OSC_PER_SEC;
-        // `rec` is loopback, which add_peer refuses on its own — the FGTW door is exercised on a routable address, so only the date can be what refuses it.
-        let routable = |last_seen: i64| {
-            use ed25519_dalek::SigningKey;
-            let sk = SigningKey::from_bytes(&[1; 32]);
+    fn future_dated_records_are_floored_to_our_clock() {
+        use ed25519_dalek::SigningKey;
+        let sk = SigningKey::from_bytes(&[1; 32]);
+        let signed = |last_seen: i64| {
             let mut r = PeerRecord::new([1; 32], DevicePubkey::from_bytes(sk.verifying_key().to_bytes()), "203.0.113.50:4383".parse().unwrap());
             r.last_seen = last_seen;
             r.sign(&sk);
             r
         };
+        let hour = 3600 * crate::OSC_PER_SEC;
         let mut store = PeerStore::new();
-        store.add_peer(routable(ahead(3600)));
-        assert!(store.get_all_peers().is_empty(), "an hour ahead is a lie, not skew");
-        store.add_peer(routable(ahead(5)));
-        assert_eq!(store.get_all_peers().len(), 1, "the same routable record inside the skew is admitted — so the date alone refused the first");
-        let mut store = PeerStore::new();
-        assert!(!store.merge_peer(rec(1, 1, ahead(3600))));
-        assert!(store.peers.is_empty());
-        // Honest skew is believed.
-        assert!(store.merge_peer(rec(1, 1, ahead(5))));
-        // And a later honest record still wins over it — the lever is bounded by the skew, not by the liar.
-        assert!(!store.merge_peer(rec(1, 1, ahead(3600))), "a future copy cannot displace the honest one");
-        assert_eq!(store.peers.len(), 1);
+        store.add_peer(signed(crate::network::time_base::now_osc() + hour));
+        let admitted = store.get_all_peers()[0].clone();
+        assert!(admitted.local_seen <= crate::network::time_base::now_osc(), "floored to our clock, not an hour ahead");
+        assert!(admitted.verify(), "the signed record is untouched — it still verifies for everyone we gossip it to");
+        // It ages from arrival: past the expiry window after its ARRIVAL it is stale, however far ahead it claimed to be.
+        assert!(!is_fresh(admitted.local_seen + PEER_EXPIRY_OSC + 1, admitted.local_seen));
+        // An honest record arriving after it wins the newest-wins merge — the lie bought nothing past its own arrival.
+        std::thread::sleep(std::time::Duration::from_millis(2));
+        assert!(store.merge_peer(signed(crate::network::time_base::now_osc())), "the later honest copy replaces the floored liar");
+        assert!(store.get_all_peers()[0].last_seen < admitted.last_seen);
     }
 
     #[test]
@@ -545,7 +541,7 @@ mod tests {
 
     #[test]
     fn handle_count_excluding_subtracts_self_and_dedups_devices() {
-        let now = vsf::eagle_time_oscillations();
+        let now = crate::network::time_base::now_osc();
         let mut store = PeerStore::new();
         // Our own fleet: two sibling devices under OUR handle (handle 1).
         store.add_peer(rec(1, 1, now));

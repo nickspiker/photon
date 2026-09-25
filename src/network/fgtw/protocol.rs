@@ -184,6 +184,9 @@ pub struct PeerRecord {
     pub local_ip: Option<std::net::IpAddr>, // LAN IP for hairpin NAT (peers behind same public IP)
     pub last_seen: i64,              // Eagle Time oscillations
     pub signature: [u8; 64], // Ed25519 sig by device_pubkey over signing_bytes(); [0;64] = unsigned
+    /// OUR view of when this record was current (2026-09-25, Nick: "future dated peer records need to floor with known local time"): the signed `last_seen` floored to our own clock at the moment it reached us, then raised whenever WE hear from the device.
+    /// LOCAL ONLY — never serialized, never signed, never gossiped. Freshness and newest-wins ordering read this, so a record dated in the future can neither outlive its expiry nor outrank an honest one, while the signed `last_seen` travels on untouched and still verifies.
+    pub local_seen: i64,
 }
 
 /// Sync record for pong - tells peer our last received message timestamp per conversation Used for efficient resync: peer retransmits pending messages with eagle_time > last_received_ef6
@@ -907,13 +910,16 @@ impl FgtwMessage {
 
 impl PeerRecord {
     pub fn new(handle_proof: [u8; 32], device_pubkey: DevicePubkey, ip: SocketAddr) -> Self {
+        // Minted from photon's corrected clock (nunc), not the raw system clock — honest records then agree to nunc's accuracy instead of each phone's clock error.
+        let now = crate::network::time_base::now_osc();
         Self {
             handle_proof,
             device_pubkey,
             ip,
             local_ip: None,
-            last_seen: vsf::eagle_time_oscillations(),
+            last_seen: now,
             signature: [0u8; 64],
+            local_seen: now,
         }
     }
 
