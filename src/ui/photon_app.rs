@@ -2078,7 +2078,7 @@ pub struct PhotonApp {
     /// Appearance-page zoom / text-size control — a real fluor `Slider`.
     settings_zoom_slider: Option<fluor::widgets::Slider>,
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
-    attach_progress: Vec<(std::net::SocketAddr, u32, u32, bool)>,
+    attach_progress: Vec<crate::network::pt::TransferProgress>,
     /// Chunked-blob arrival progress keyed by the WHOLE-FILE hash: (chunks held, chunks total) — the pill bar's first source (typed attachments Phase 1; the PT snapshot above stays the fallback for whole-value blobs).
     attach_chunk_progress: std::collections::HashMap<[u8; 32], (u32, u32)>,
     /// OUTBOUND chunked sends this device dispatched: hash → total chunks. The render derives overall send progress from it and the PT snapshot (chunks no longer in flight are done); cleared when the peer's attach_have lands. 2026-09-14 (Nick: "drag/drop for sending pigeons has no indication of progress") — the bar used to show one chunk's transfer at a time, 0→100 % over and over.

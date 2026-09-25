@@ -119,6 +119,18 @@ struct PendingOutbound {
     alt_addr: Option<SocketAddr>,
     data: Vec<u8>,
     recipient_pubkey: Option<[u8; 32]>,
+    tag: Option<[u8; 32]>,
+}
+
+/// One transfer's progress for the UI: which peer, how far, which way, and — when the sender named it — what it carries.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TransferProgress {
+    pub peer: SocketAddr,
+    pub done: u32,
+    pub total: u32,
+    pub outbound: bool,
+    /// The sender's tag (an attachment's content hash); None for untagged sends and for every inbound transfer, whose payload is unknown until it lands.
+    pub tag: Option<[u8; 32]>,
 }
 
 impl PTManager {
@@ -203,6 +215,18 @@ impl PTManager {
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
     ) -> Vec<u8> {
+        self.send_tagged(peer_addr, alt_addr, data, recipient_pubkey, None)
+    }
+
+    /// [`send_with_pubkey_and_alt`](Self::send_with_pubkey_and_alt) with a caller's `tag` naming what the payload carries — reported back by [`transfer_progress`](Self::transfer_progress) so the UI can attribute a sharded transfer to one blob.
+    pub fn send_tagged(
+        &mut self,
+        peer_addr: SocketAddr,
+        alt_addr: Option<SocketAddr>,
+        data: Vec<u8>,
+        recipient_pubkey: Option<[u8; 32]>,
+        tag: Option<[u8; 32]>,
+    ) -> Vec<u8> {
         // NEVER accept the unspecified sentinel (`0.0.0.0:0` / `[::]:0` — `status::RELAY_ADDR`). Callers hand it deliberately for a relay-only peer, meaning "there is no direct address; the relay_to fan-out delivers this".
         // A fire-and-forget path (presence ping) can shrug that off — one datagram to nowhere costs nothing. A RELIABLE queue cannot: the packet can never be ACKed (nothing listens at the zero address), so it burns the full 1→3→5→10→29s retry ladder and, because the queue is stop-and-wait PER PEER, it HEAD-OF-LINE-BLOCKS every real message queued behind it — the "messages stick" failure the give-up sweep in `tick()` was added to paper over.
         // Measured before this guard (submitted logs, 2026-07-21..27): 42,820 zero-address retransmits on one device, 2,830 on another — 86% of ALL its PT retransmits, every one undeliverable by construction.
@@ -237,10 +261,10 @@ impl PTManager {
             if self.window_parked.insert(key) {
                 crate::logf!("PT: window full toward {} ({} in flight) — queuing behind it", peer_addr, Self::STREAMS_IN_FLIGHT);
             }
-            self.pending_outbound.push_back(PendingOutbound { peer_addr, alt_addr, data, recipient_pubkey });
+            self.pending_outbound.push_back(PendingOutbound { peer_addr, alt_addr, data, recipient_pubkey, tag });
             return Vec::new();
         }
-        self.start_transfer(peer_addr, alt_addr, data, recipient_pubkey)
+        self.start_transfer(peer_addr, alt_addr, data, recipient_pubkey, tag)
     }
 
     /// Open a large transfer now (the window has room): allocate the peer's next stream id, build and mark the SPEC, track it. Returns the SPEC bytes.
@@ -250,6 +274,7 @@ impl PTManager {
         alt_addr: Option<SocketAddr>,
         data: Vec<u8>,
         recipient_pubkey: Option<[u8; 32]>,
+        tag: Option<[u8; 32]>,
     ) -> Vec<u8> {
         let stream_id = self.allocate_stream_id(peer_key(recipient_pubkey, peer_addr));
         let transfer_id = self.next_transfer_id;
@@ -258,6 +283,7 @@ impl PTManager {
         let mut transfer = OutboundTransfer::new(peer_addr, data, stream_id, transfer_id);
         // Don't race against the same address twice (caller may pass equal LAN/WAN).
         transfer.alt_addr = alt_addr.filter(|a| *a != peer_addr);
+        transfer.tag = tag;
 
         // Store pubkey for relay fallback
         if let Some(pubkey) = recipient_pubkey {
@@ -769,18 +795,24 @@ impl PTManager {
     /// - tcp_payload: if Some, also send this whole VSF over TCP (reliable fallback, once per transfer)
     /// - relay: if Some, UDP+TCP failed, relay via /conduit with this info
     /// Live progress of every ACTIVE sharded transfer: (peer, done, total, outbound). Small single-packet sends never appear (they have no SPEC). Drives the attachment progress bar; callers filter by size/peer.
-    pub fn transfer_progress(&self) -> Vec<(SocketAddr, u32, u32, bool)> {
+    pub fn transfer_progress(&self) -> Vec<TransferProgress> {
         let mut out = Vec::new();
         for t in &self.outbound {
             let (done, total) = t.send_buffer.progress();
             if done < total {
-                out.push((t.peer_addr, done, total, true));
+                out.push(TransferProgress { peer: t.peer_addr, done, total, outbound: true, tag: t.tag });
+            }
+        }
+        // A tagged transfer still waiting behind the window is part of its blob too — reported at zero, so a bar never counts it as already sent.
+        for p in &self.pending_outbound {
+            if p.tag.is_some() {
+                out.push(TransferProgress { peer: p.peer_addr, done: 0, total: 1, outbound: true, tag: p.tag });
             }
         }
         for t in &self.inbound {
             let (done, total) = t.receive_buffer.progress();
             if done < total {
-                out.push((t.peer_addr, done, total, false));
+                out.push(TransferProgress { peer: t.peer_addr, done, total, outbound: false, tag: None });
             }
         }
         out
@@ -986,7 +1018,7 @@ impl PTManager {
                 kept.push_back(p);
                 continue;
             }
-            let spec_bytes = self.start_transfer(p.peer_addr, p.alt_addr, p.data, p.recipient_pubkey);
+            let spec_bytes = self.start_transfer(p.peer_addr, p.alt_addr, p.data, p.recipient_pubkey, p.tag);
             if let Some(alt) = p.alt_addr.filter(|a| !same_addr(*a, p.peer_addr)) {
                 to_send.push(TickSend { peer_addr: alt, wire_bytes: spec_bytes.clone(), tcp_payload: None, relay: None });
             }

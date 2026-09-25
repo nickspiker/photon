@@ -50,6 +50,8 @@ pub enum PTError {
 /// Outbound transfer (we're sending)
 pub struct OutboundTransfer {
     pub peer_addr: SocketAddr,
+    /// The caller's name for what this transfer carries (an attachment's content hash) — opaque to PT, reported back with progress so a bar can be drawn for THIS blob and no other (2026-09-25: progress keyed by peer address mixed every concurrent send into every bar).
+    pub tag: Option<[u8; 32]>,
     /// Alternate address to race the SPEC against (e.g. LAN when `peer_addr` is WAN, or vice versa). FGTW reports both a public and a same-LAN address per device; we send the SPEC to both until one ACKs, then lock `peer_addr` to whichever path answered. `None` = single path.
     pub alt_addr: Option<SocketAddr>,
     pub stream_id: u8,      // 'a'-'z' for concurrent transfer routing
@@ -92,6 +94,7 @@ impl OutboundTransfer {
         let original_payload = Some(data.clone());
         Self {
             peer_addr,
+            tag: None,
             alt_addr: None,
             stream_id,
             transfer_id,

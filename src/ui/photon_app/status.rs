@@ -3320,6 +3320,7 @@ impl PhotonApp {
                                                         // The response ALWAYS carries its one-device relay copy: requests arrive fine while responses die on one-directional reverse paths (2322 re-requests in one field session) — one relayed page is cheaper than the re-request storm.
                                                         relay_to: vec![recipient],
                                                         vsf_bytes,
+                                                        tag: None,
                                                     },
                                                 );
                                             }
@@ -3576,7 +3577,7 @@ impl PhotonApp {
                                 match crate::network::fgtw::protocol::build_pigeon_ack_vsf(&tok, &content_hash, got, of, kp.public.as_bytes(), kp.secret.as_bytes()) {
                                     Ok(vsf_bytes) => {
                                         let (peer_addr, alt_addr) = addrs.unwrap_or((crate::network::status::RELAY_ADDR, None));
-                                        checker.send_history(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: signer, vsf_bytes, relay_to });
+                                        checker.send_history(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: signer, vsf_bytes, relay_to, tag: None });
                                     }
                                     Err(e) => crate::logf!("PIGEON: ack frame build failed: {}", e),
                                 }
@@ -3693,6 +3694,7 @@ impl PhotonApp {
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
                                             relay_to: vec![sender_pubkey.key],
+                                            tag: None,
                                         });
                                     }
                                 }
@@ -3712,6 +3714,7 @@ impl PhotonApp {
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
                                             relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
+                                            tag: None,
                                         });
                                         sent += 1;
                                     }
@@ -3741,7 +3744,8 @@ impl PhotonApp {
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
-                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() }, // the relay copy only where the direct leg is unproven (see relay_needed above)
+                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() }, // the relay copy only where the direct leg is unproven (see relay_needed above),
+                                            tag: None,
                                         });
                                     crate::log("ATTACH: served blob request");
                                 }
@@ -4112,6 +4116,7 @@ impl PhotonApp {
                                 recipient_pubkey: sender_pubkey.key,
                                 relay_to: vec![sender_pubkey.key],
                                 vsf_bytes: frame,
+                                tag: None,
                             },
                         );
                         crate::logf!(
@@ -4448,6 +4453,7 @@ impl PhotonApp {
                                                     relay_to: self.contacts[idx]
                                                         .relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                     vsf_bytes,
+                                                    tag: None,
                                                 },
                                             );
                                             crate::logf!(
@@ -4504,6 +4510,7 @@ impl PhotonApp {
                                                     relay_to: self.contacts[idx]
                                                         .relay_device_list(),
                                                     vsf_bytes,
+                                                    tag: None,
                                                 },
                                             );
                                         }
@@ -4580,6 +4587,7 @@ impl PhotonApp {
                                                     recipient_pubkey: sender_pubkey.key,
                                                     relay_to,
                                                     vsf_bytes,
+                                                    tag: None,
                                                 },
                                             );
                                             crate::logf!("BLIND: stored deposit from {} device {} — acked (disk-committed, off-thread)", crate::fp(&snapshot.handle_proof), hex::encode(&sender_pubkey.key[..4]));
@@ -4618,6 +4626,7 @@ impl PhotonApp {
                                                     relay_to: self.contacts[idx]
                                                         .relay_device_list(), // BLIND frames always ride the relay — a validated path can be one-directional, and a lost answer stalls S-recovery silently (see drive_blind_ops)
                                                     vsf_bytes,
+                                                    tag: None,
                                                 },
                                             );
                                             crate::logf!(

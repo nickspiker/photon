@@ -453,6 +453,7 @@ impl PhotonApp {
                 recipient_pubkey: sib_key,
                 relay_to,
                 vsf_bytes: frame.clone(),
+                tag: None,
             });
         }
     }

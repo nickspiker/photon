@@ -710,6 +710,7 @@ impl PhotonApp {
                         recipient_pubkey: recipient,
                         vsf_bytes: bytes,
                         relay_to: relay,
+                        tag: None,
                     });
                     if let Some(c) = self.contacts.get_mut(ci) {
                         c.knocked_session = true;
@@ -1280,6 +1281,7 @@ impl PhotonApp {
                         recipient_pubkey: *pk,
                         relay_to: relay_to.clone(),
                         vsf_bytes: frame.clone(),
+                        tag: None,
                     });
                 }
             }
@@ -1420,6 +1422,7 @@ impl PhotonApp {
                     recipient_pubkey: pk,
                     relay_to,
                     vsf_bytes: vsf_bytes.clone(),
+                    tag: None,
                 });
             }
         });
@@ -1516,6 +1519,7 @@ impl PhotonApp {
                                 Vec::new()
                             },
                             vsf_bytes,
+                            tag: None,
                         });
                     }
                 }
@@ -1893,6 +1897,7 @@ impl PhotonApp {
                         recipient_pubkey,
                         vsf_bytes,
                         relay_to: relay_to.clone(),
+                        tag: None,
                     });
                 }
                 Err(e) => crate::logf!("HISTORY: request build failed: {}", e),
@@ -1998,6 +2003,7 @@ impl PhotonApp {
                         recipient_pubkey: recipient_key,
                         relay_to: contact.relay_device_list(),
                         vsf_bytes,
+                        tag: None,
                     });
                 }
                 Err(e) => crate::logf!("BLIND: frame build failed: {}", e),

@@ -273,6 +273,8 @@ pub struct HistorySendRequest {
     pub vsf_bytes: Vec<u8>,
     /// Devices to ALSO send the whole frame to over the relay pipe (same rule as MessageRequest::relay_to: filled when no validated direct path, or when answering a request that itself arrived over the relay). PT's own relay fallback needs ~31s of failed retries to engage — longer than the requester's expiry — so a relay-only pair starved forever waiting on a ladder that never completed (live-pair history recovery, 2026-07-24).
     pub relay_to: Vec<[u8; 32]>,
+    /// What the payload carries, for the progress bar: an attachment's content hash on a blob or chunk send, None otherwise. Opaque to the transport.
+    pub tag: Option<[u8; 32]>,
 }
 
 /// Request to start a PT large transfer (e.g., full CLUTCH offer with all 8 pubkeys)
@@ -469,7 +471,7 @@ pub enum StatusUpdate {
         sender_addr: SocketAddr,
     },
     /// Live PT transfer progress (throttled ~500ms): (peer, done, total, outbound) per active sharded transfer. Drives the attachment progress bar.
-    AttachProgress(Vec<(SocketAddr, u32, u32, bool)>),
+    AttachProgress(Vec<crate::network::pt::TransferProgress>),
     /// A receiver confirmed an attachment blob arrived + verified + stored — flips the sender's pill to delivered.
     AttachHaveReceived {
         content_hash: [u8; 32],
@@ -3983,7 +3985,7 @@ async fn run_checker(
 
     // Attachment progress throttle state (see the PT tick block).
     let mut last_progress_push = std::time::Instant::now();
-    let mut last_progress_snap: Vec<(SocketAddr, u32, u32, bool)> = Vec::new();
+    let mut last_progress_snap: Vec<crate::network::pt::TransferProgress> = Vec::new();
 
     // Main event loop
     loop {
@@ -4312,10 +4314,12 @@ async fn run_checker(
             if !request.peer_addr.ip().is_unspecified() {
                 let pt_bytes = {
                     let mut pt_mgr = pt.lock().unwrap();
-                    pt_mgr.send_with_pubkey(
+                    pt_mgr.send_tagged(
                         request.peer_addr,
+                        None,
                         request.vsf_bytes.clone(),
                         Some(request.recipient_pubkey),
+                        request.tag,
                     )
                 };
                 if !pt_bytes.is_empty() {

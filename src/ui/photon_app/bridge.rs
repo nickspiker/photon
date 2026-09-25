@@ -883,7 +883,7 @@ impl PhotonApp {
         self.pigeon_progress.insert(hash, super::PigeonProgress { device, name: name.clone(), got: 0, of: chunks.len() as u32, at: std::time::Instant::now() });
         queue_job(&self.seal_job_tx, move || {
             let send = |vsf_bytes: Vec<u8>| {
-                let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: device, vsf_bytes, relay_to: relay_to.clone() });
+                let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: device, vsf_bytes, relay_to: relay_to.clone(), tag: None });
             };
             let mut sent = 0usize;
             for (i, h) in chunks.iter().enumerate() {

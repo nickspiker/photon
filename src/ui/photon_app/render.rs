@@ -3561,22 +3561,12 @@ impl PhotonApp {
                                     !crate::storage::blob_present_or_pending(&hash)
                                 };
                                 // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback. OUTBOUND chunked: (total − in flight) done, plus the in-flight transfers' own fractions, over the total we dispatched.
+                                // Progress of THIS blob only: its own chunk count by hash first, then — outbound — the PT transfers tagged with its hash. A transfer nobody tagged is never guessed onto a bar (2026-09-25: the old direction-matched guess drew any concurrent send's progress onto every bar).
                                 let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| frac_of(*have as u64, *total as u64)).or_else(|| {
-                                    (want_outbound).then(|| self.attach_send_total.get(&hash).copied()).flatten().map(|total| {
-                                        let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| frac_of(*d as u64, *t as u64)).collect();
-                                        // WHY: `attach_progress` is keyed by PEER ADDRESS, not by blob, so `inflight` counts every outbound attachment in flight, not just this one's.
-                                        // PROOF: with two sends at once it can exceed this blob's `total`, and a plain subtraction would wrap to ~2^32 done — the per-blob keying is the real fix (docs/rule0-audit-2026-09-25.md).
-                                        let done = total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>();
-                                        (done / total.max(1) as f32).clamp(0.0, 1.0)
-                                    })
+                                    want_outbound.then(|| blob_send_frac(&self.attach_progress, self.attach_send_total.get(&hash).copied(), &hash)).flatten()
                                 });
                                 if relevant {
-                                    bar_frac = chunk_frac.or_else(|| {
-                                        self.attach_progress
-                                            .iter()
-                                            .find(|(_, _, _, ob)| *ob == want_outbound)
-                                            .map(|(_, done, total, _)| frac_of(*done as u64, *total as u64))
-                                    });
+                                    bar_frac = chunk_frac;
                                 }
                             }
                             // A BRIDGE PIGEON'S BAR (Nick 2026-09-20: "we definitely need a progress bar when sending shit thru the bridge"): the row carries the file's name, the progress map carries the host's word (or, on the host, its own spool count) keyed by hash — matched by sibling device + name, the newest entry when a name was dropped twice. Drawn while chunks are still landing; a whole pigeon drops its bar and the host's "landed at …" row follows.
@@ -4289,11 +4279,11 @@ impl PhotonApp {
                                     let cy = band_bot - bh * 0.5;
                                     if cy + bh * 0.5 >= list_top && cy - bh * 0.5 <= list_bottom {
                                         // A PIGEON IN FLIGHT FILLS IN (Nick 2026-09-14): an outgoing picture still being sent shows only the slice that has gone — the preview wipes in from the left as the chunks land, the rest of the band stays bare until it does.
-                                        let send_frac = if msg.is_outgoing && !self.attach_confirmed.contains(&hash_of_row) { self.attach_send_total.get(&hash_of_row).map(|total| {
-                                            let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| frac_of(*d as u64, *t as u64)).collect();
-                                            // WHY/PROOF: the same peer-keyed `inflight` as the strip's progress above — it can outnumber this blob's total while another attachment sends.
-                                            ((total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>()) / (*total).max(1) as f32).clamp(0.0, 1.0)
-                                        }) } else { None };
+                                        let send_frac = if msg.is_outgoing && !self.attach_confirmed.contains(&hash_of_row) {
+                                            blob_send_frac(&self.attach_progress, self.attach_send_total.get(&hash_of_row).copied(), &hash_of_row)
+                                        } else {
+                                            None
+                                        };
                                         let clip = match send_frac {
                                             Some(f) if f < 1.0 => fluor::paint::Clip::new(list_clip.x_start, list_clip.y_start, ((cx - bw * 0.5 + bw * f) as usize).min(list_clip.x_end), list_clip.y_end),
                                             _ => list_clip,
@@ -7460,4 +7450,22 @@ fn frac_of(done: u64, total: u64) -> f32 {
         return 0.0;
     }
     done as f32 / total as f32
+}
+
+/// How far ONE outgoing blob has gone, from the PT transfers tagged with its content hash.
+/// Chunked (`chunks` = how many it set off with): the chunks no longer in flight or queued are done, plus each in-flight chunk's own fraction. Unchunked: its one tagged transfer's fraction.
+/// None when nothing tagged with this blob is moving — an unchunked send that finished, or one that never went through PT's sharded path.
+fn blob_send_frac(progress: &[crate::network::pt::TransferProgress], chunks: Option<u32>, hash: &[u8; 32]) -> Option<f32> {
+    let mine: Vec<&crate::network::pt::TransferProgress> = progress.iter().filter(|p| p.outbound && p.tag.as_ref() == Some(hash)).collect();
+    match chunks {
+        Some(total) => {
+            let moving = mine.len() as u32;
+            let partial: f32 = mine.iter().map(|p| frac_of(p.done as u64, p.total as u64)).sum();
+            // WHY: every tagged transfer is one of THIS blob's chunks — but a resume (the friend's attach_req naming chunks it still lacks) can re-send a chunk whose first copy is still in flight.
+            // PROOF: then `moving` can pass `total`; saturating reads that as nothing finished yet rather than wrapping to ~2^32 chunks done.
+            let finished = total.saturating_sub(moving);
+            Some((frac_of(finished as u64, total as u64) + partial / total.max(1) as f32).min(1.0)) // total.max(1): an empty file's manifest has zero chunks; `.min(1.0)`: the duplicate's partial can lift the sum past whole
+        }
+        None => mine.first().map(|p| frac_of(p.done as u64, p.total as u64)),
+    }
 }

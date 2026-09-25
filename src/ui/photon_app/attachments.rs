@@ -246,6 +246,7 @@ impl PhotonApp {
                     recipient_pubkey: device,
                     vsf_bytes,
                     relay_to,
+                    tag: Some(*content_hash), // the bar for THIS blob reads its transfer by this tag
                 });
                 crate::log("attach: blob dispatched over PT");
             }
@@ -292,19 +293,21 @@ impl PhotonApp {
         let content_hash = *content_hash;
         self.attach_send_total.insert(content_hash, m.chunks.len() as u32);
         queue_job(&self.seal_job_tx, move || {
-            let send = |vsf_bytes: Vec<u8>| {
+            // Only the CHUNKS carry the blob's tag: the bar counts them against the chunk total, and the manifest is not one of them.
+            let send = |vsf_bytes: Vec<u8>, tag: Option<[u8; 32]>| {
                 let _ = dispatch.send(crate::network::status::HistorySendRequest {
                     peer_addr,
                     alt_addr,
                     recipient_pubkey: device,
                     vsf_bytes,
                     relay_to: relay_to.clone(),
+                    tag,
                 });
             };
             match kete::encrypt_bytes(&m.to_bytes(), &wire_key).and_then(|sealed| {
                 crate::network::fgtw::protocol::build_attach_manifest_vsf(&token, &content_hash, sealed, &kp_pub, &kp_sec)
             }) {
-                Ok(v) => send(v),
+                Ok(v) => send(v, None),
                 Err(e) => {
                     crate::logf!("attach: manifest frame build failed: {}", e);
                     return;
@@ -320,7 +323,7 @@ impl PhotonApp {
                     crate::network::fgtw::protocol::build_attach_chunk_vsf(&token, &content_hash, i as u32, sealed, &kp_pub, &kp_sec)
                 }) {
                     Ok(v) => {
-                        send(v);
+                        send(v, Some(content_hash));
                         sent += 1;
                     }
                     Err(e) => crate::logf!("attach: chunk {} frame build failed: {}", i, e),
@@ -408,6 +411,7 @@ impl PhotonApp {
             recipient_pubkey,
             vsf_bytes: vsf_bytes.clone(),
             relay_to,
+            tag: None,
         });
         crate::logf!("attach: fetch request dispatched to device {} (rank {}, candidate {} of {})", crate::fp(&recipient_pubkey), rank, tries as usize % targets.len() + 1, targets.len());
         self.attach_fetch_inflight.insert(*content_hash, (sci, std::time::Instant::now(), tries.saturating_add(1))); // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
@@ -524,7 +528,8 @@ impl PhotonApp {
                         alt_addr: None,
                         recipient_pubkey: r.sender_pubkey.key,
                         vsf_bytes,
-                        relay_to: vec![r.sender_pubkey.key], // always the one-device relay copy — responses die on one-directional reverse paths
+                        relay_to: vec![r.sender_pubkey.key], // always the one-device relay copy — responses die on one-directional reverse paths,
+                        tag: None,
                     });
                 }
             }
