@@ -4,6 +4,7 @@
 //!
 //! No timers anywhere: ringing stops on answer/decline/hangup edges, the origin's patience is the timeout, and the intra-wave key ratchet steps on packet COUNT, not clocks.
 
+pub mod align;
 pub mod calibrate;
 pub mod qgain;
 pub mod learn;
