@@ -15,6 +15,12 @@ One sentence per line, however long; plain language for the person who installs 
 - Saving messages is much faster on phones: a page of history is written to storage in one go rather than one message at a time, which removes the pauses when a lot arrives at once.
 - Finding friends nearby over Wi-Fi Direct no longer silently fails at startup when the phone's Wi-Fi is busy: it waits for the Wi-Fi to settle and tries again.
 
+- Each conversation keeps its own draft: what you type stays with the conversation you typed it in instead of following you into the next one, comes back when you return, and survives a restart. Drafts live on this device only.
+- On the desktop you can move the window by dragging almost anywhere, not only the top bar; text boxes, sliders, the waveform and the image viewer still keep their own drags, and a plain click still clicks. How far the pointer must move before it counts as a drag follows your system's own setting.
+- After updating, every friendship quietly re-connects once (a fresh key exchange, done automatically); your messages and contacts are untouched, and anything unsent goes out when it finishes.
+- Photon keeps better time: its clock now learns how fast this device's clock drifts, not just how far off it is, and several time servers were being read up to a sixth of a second wrong, which is fixed.
+- Waves now line up each person's voice by the moment their microphone heard it, measured against true time, so a kept recording plays both sides in step with no guessing at delay. This build cannot wave with an older one; update both devices.
+
 ## v103
 
 - Voice is now called a **wave**, and video a **beam**, everywhere in the app: the ring panel, the notification, the stream filter, the settings and all sixteen languages. The word "call" is gone on purpose, and the About page says why in one paragraph — a call hands your voice to a company to carry, and everyone agrees to pretend nobody kept a copy, which stopped being true when data itself became the storage medium; a wave has no carrier and keeps its own recording, which is yours.

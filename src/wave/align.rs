@@ -100,11 +100,11 @@ pub enum Slip {
 const SLIP_EDGE: usize = 8;
 
 /// Apply one slip to `buf` in place at the flattest, quietest point: minimise |x[n] − x[n−1]| + ¼|x[n]| over the interior (spec §5.4), duplicating or removing that sample. `false` when the buffer is too short to hold a slip away from its edges — the caller carries the command to the next buffer.
-pub fn apply_slip(buf: &mut Vec<i16>, slip: Slip) -> bool {
+pub fn apply_slip(buf: &mut Vec<i32>, slip: Slip) -> bool {
     if buf.len() < 2 * SLIP_EDGE + 1 {
         return false;
     }
-    let cost = |n: usize| (buf[n] as i32 - buf[n - 1] as i32).abs() * 4 + (buf[n] as i32).abs();
+    let cost = |n: usize| (buf[n] as i64 - buf[n - 1] as i64).abs() * 4 + (buf[n] as i64).abs();
     let n = (SLIP_EDGE..buf.len() - SLIP_EDGE).min_by_key(|&n| cost(n)).expect("interior is non-empty (length checked above)");
     match slip {
         Slip::Insert => buf.insert(n, buf[n]),
@@ -143,7 +143,8 @@ pub struct Aligner {
     fit: RateFit,
     /// Grid name of `pending[0]`; `None` until the first named sample.
     next_k: Option<i64>,
-    pending: Vec<i16>,
+    /// Samples not yet cut into a frame, in the capture's 24-bit domain (i32).
+    pending: Vec<i32>,
     filt: f64,
     integ: f64,
     /// Correction ordered but not yet realized as whole slips (samples): the loop's output is a RATE, and slips deliver it one sample at a time (sigma-delta).
@@ -167,7 +168,7 @@ impl Aligner {
     }
 
     /// One captured buffer whose first sample is hardware frame `first_frame`. Completed frames are appended to `out` as `(k0, samples)`, `k0 % FRAME == 0`, contiguous from the first.
-    pub fn push(&mut self, input: &[i16], first_frame: i64, out: &mut Vec<(i64, Vec<i16>)>) {
+    pub fn push(&mut self, input: &[i32], first_frame: i64, out: &mut Vec<(i64, Vec<i32>)>) {
         let Some(measured) = self.fit.eagle_of(first_frame) else {
             self.stats.unnamed_dropped += 1;
             return;
@@ -247,11 +248,11 @@ mod tests {
             self.e0 + (f as f64 * (S as f64 / RATE as f64) / (1.0 + self.ppm * 1e-6)).round() as i64
         }
         /// Run `secs` seconds of 2 ms bursts of `sig` thru the aligner, a HAL pair every burst.
-        fn run(&mut self, a: &mut Aligner, secs: i64, sig: &dyn Fn(i64) -> i16, out: &mut Vec<(i64, Vec<i16>)>, mut each: impl FnMut(&Aligner)) {
+        fn run(&mut self, a: &mut Aligner, secs: i64, sig: &dyn Fn(i64) -> i32, out: &mut Vec<(i64, Vec<i32>)>, mut each: impl FnMut(&Aligner)) {
             let burst = 96;
             for _ in 0..(secs * RATE / burst) {
                 a.timestamp(self.frame, self.eagle_of(self.frame));
-                let buf: Vec<i16> = (self.frame..self.frame + burst).map(sig).collect();
+                let buf: Vec<i32> = (self.frame..self.frame + burst).map(sig).collect();
                 a.push(&buf, self.frame, out);
                 self.frame += burst;
                 each(a);
@@ -280,7 +281,7 @@ mod tests {
         let (mut a, mut out) = (Aligner::new(), Vec::new());
         let (mut worst_after_30, mut raw_peak) = (0.0f64, 0.0f64);
         let mut t = 0i64;
-        adc.run(&mut a, 120, &|f| ((f * 37) % 2000 - 1000) as i16, &mut out, |a| {
+        adc.run(&mut a, 120, &|f| ((f * 37) % 2000 - 1000) as i32, &mut out, |a| {
             t += 96;
             if t > 30 * RATE {
                 worst_after_30 = worst_after_30.max(a.stats.phase_filtered.abs());
@@ -309,7 +310,7 @@ mod tests {
             let jitter = ((seed >> 33) as i64 % 501 - 250) * S / 1_000_000;
             let truth = e0 + (f as f64 * (S as f64 / RATE as f64) / (1.0 + ppm * 1e-6)).round() as i64;
             a.timestamp(f, truth + jitter);
-            a.push(&[0i16; 96], f, &mut out);
+            a.push(&[0i32; 96], f, &mut out);
             f += 96;
             if i as i64 * 96 > 30 * RATE {
                 worst = worst.max(a.stats.phase_filtered.abs());
@@ -332,8 +333,8 @@ mod tests {
     /// THD+N of a slipped sine (spec §9.3): one best-fit sinusoid per 50 ms block, residual against signal, for 4 slips a second.
     fn thd_n_db(freq: f64) -> f64 {
         let amp = 16_000.0;
-        let x: Vec<i16> = (0..RATE * 2).map(|i| (amp * (2.0 * std::f64::consts::PI * freq * i as f64 / RATE as f64).sin()) as i16).collect();
-        let mut y: Vec<i16> = Vec::new();
+        let x: Vec<i32> = (0..RATE * 2).map(|i| (amp * (2.0 * std::f64::consts::PI * freq * i as f64 / RATE as f64).sin()) as i32).collect();
+        let mut y: Vec<i32> = Vec::new();
         for (i, chunk) in x.chunks(96).enumerate() {
             let mut b = chunk.to_vec();
             if i % 125 == 60 {

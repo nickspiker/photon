@@ -287,7 +287,10 @@ fn run(
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
     // Repair symbols waiting to ship: window n's datagram carries the repair of window n−2 (2026-09-09, the Emma/Nick and Brittany/Nick LAN waves: losses came in consecutive PAIRS, and with the repair one datagram behind its source a two-datagram burst killed the window every time — 65 and 121 lost windows on a 5ms LAN). Two back, a two-datagram burst can never take both symbols of one window; a lost source now waits one extra window for its repair, and only when it was lost.
-    let mut repair_queue: std::collections::VecDeque<(usize, Vec<u8>)> = std::collections::VecDeque::new();
+    let mut repair_queue: std::collections::VecDeque<(usize, u32, Vec<u8>)> = std::collections::VecDeque::new();
+    // LOCK (docs/lock.md §5, docs/waves.md "One spool per identity"): the mic stream is slipped onto true time and cut on the absolute 5 ms grid; every frame from here on is NAMED by its grid sample `k0`, and a window by its first frame's number (k0 / FRAME, carried as u32 — the receiver unwraps it against its own clock).
+    let mut aligner = super::align::Aligner::new();
+    let mut window_fno: u32 = 0;
     let mut window_buf: Vec<u8> = Vec::with_capacity(tier_window_bytes(TIER_RATES.len() - 1));
     let mut frames_in_window = 0usize;
 
@@ -367,7 +370,7 @@ fn run(
         .map_or(1.0, |db| 10f32.powf(db / 20.0));
 
     // RX reassembly: per-window (tier, fountain decoder) + decoded-PCM stash, played strictly in window order (a hole is skipped, not synthesized — the dry playback queue renders the silence).
-    let mut rx_decoders: std::collections::BTreeMap<u32, (usize, raptorq::Decoder)> =
+    let mut rx_decoders: std::collections::BTreeMap<u32, (usize, u32, raptorq::Decoder)> =
         Default::default();
     // Highest authenticated seq seen — the media re-point's forward-progress gate (see the RX loop).
     let mut rx_max_seq: Option<u32> = None;
@@ -494,7 +497,8 @@ fn run(
         }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
-        for (cap_osc, _cap_pos, frame) in crate::platform::audio::captured_frames() {
+        let mut aligned: Vec<(i64, Vec<i32>)> = Vec::new();
+        for (cap_osc, cap_pos, frame) in crate::platform::audio::captured_frames() {
             if draining.is_some() {
                 continue; // audio is over — the mic is closed, anything left in the queue is not part of the wave
             }
@@ -506,6 +510,11 @@ fn run(
             if frame.len() != FRAME_SAMPLES {
                 continue;
             }
+            // The capture stamp is a (stream position, true time) pair for the aligner's rate fit; the aligner slips the stream onto true time and hands back whole grid frames.
+            aligner.timestamp(cap_pos, cap_osc);
+            aligner.push(&frame, cap_pos, &mut aligned);
+        }
+        for (k0, frame) in aligned {
             // 24-BIT CAPTURE (2026-09-14): `frame` arrives as i32 in the 24-bit domain; the makeup below consumes the extra 8 bits straight into the i16 wire (acc >> 40) — a calibrated mic's quiet signal is lifted, its dither is not. The frame that leaves this block is the i16 wire frame.
             let frame24 = frame;
             // MUTE TRANSMITS ZEROS, NOT ABSENCE (2026-09-08, the drought tick's contract): the CBR cadence never breaks — a muted stretch is invisible to a traffic observer, NAT pinholes stay held open, and the peer's receive-drought measurement can't mistake a long mute for a dead path. Zeroed BEFORE the energy tally so tx(mic) honestly reads what was transmitted.
@@ -581,8 +590,12 @@ fn run(
                     }
                 }
             };
+            if frames_in_window == 0 {
+                window_fno = frame_no(k0);
+            }
             if let Some(w) = spool.as_mut() {
-                let osc = vsf::eagle_time_oscillations();
+                // The record's stamp is the frame's NAME in true time — the instant the microphone heard its first sample — never the moment it was spooled.
+                let osc = vsf::grid::sample_to_eagle(k0);
                 let gain_q8: u16 = 256;
                 // The archive stream: clean mic pairs encode once at the high rung, the ducking profile rides the record's proc fields (10ms resolution — the gain slews far slower than that).
                 if arch_buf.is_empty() {
@@ -629,15 +642,20 @@ fn run(
                 };
                 // An empty entry is a plaid window's placeholder: it keeps the two-back spacing honest and never flags a repair.
                 let rep = if repair_queue.len() >= 2 { repair_queue.pop_front() } else { None };
-                let rep = rep.filter(|(_, r)| !r.is_empty());
-                let mut payload = Vec::with_capacity(1 + tier_window_bytes(tier) * 2);
+                let rep = rep.filter(|(_, _, r)| !r.is_empty());
+                let mut payload = Vec::with_capacity(9 + tier_window_bytes(tier) * 2);
                 let ctrl = tier as u8
                     | rep
                         .as_ref()
-                        .map_or(0, |(rt, _)| 0b1000 | ((*rt as u8) << 4));
+                        .map_or(0, |(rt, _, _)| 0b1000 | ((*rt as u8) << 4));
                 payload.push(ctrl);
+                // The windows' NAMES: the source window's first frame number, then the repaired window's.
+                payload.extend_from_slice(&window_fno.to_le_bytes());
+                if let Some((_, rf, _)) = &rep {
+                    payload.extend_from_slice(&rf.to_le_bytes());
+                }
                 payload.extend_from_slice(&source);
-                if let Some((_, r)) = &rep {
+                if let Some((_, _, r)) = &rep {
                     payload.extend_from_slice(r);
                 }
                 // LINK TAIL: our stamp, the peer's newest stamp echoed, and how long we held it — the receiver subtracts the hold from its own round trip.
@@ -666,7 +684,7 @@ fn run(
                     pkts_out += 1;
                 }
                 // The repair symbol rides the NEXT window's datagram. The final window's repair never ships (the wave ended); its ~20-40ms tail is protected only by its source — accepted.
-                repair_queue.push_back((tier, own_repair));
+                repair_queue.push_back((tier, window_fno, own_repair));
                 window_id = window_id.wrapping_add(1);
                 window_buf.clear();
                 frames_in_window = 0;
@@ -701,7 +719,7 @@ fn run(
                         serve_queue.insert(r);
                     }
                 }
-                for (seq, tier_b, bytes) in msg.fills {
+                for (seq, tier_b, fno, bytes) in msg.fills {
                     if tier_b == FILL_NACK {
                         if wanted.remove(&seq) {
                             fills_nacked += 1;
@@ -713,8 +731,10 @@ fn run(
                         continue;
                     }
                     if let Some(w) = spool.as_mut() {
-                        let osc = vsf::eagle_time_oscillations();
+                        // A fill is named like the live window it replaces: the sender's frame number, so it slots at its microphone instant.
+                        let win_k0 = unwrap_frame_no(fno) * super::align::FRAME;
                         for slot in 0..TIER_FRAMES[t] {
+                            let osc = vsf::grid::sample_to_eagle(win_k0 + slot as i64 * super::align::FRAME);
                             let base = slot * tier_slot(t);
                             let n = u16::from_le_bytes(bytes[base..base + 2].try_into().unwrap()) as usize;
                             if n == 0 || n > TIER_MAX_ENC[t] || (t == RAW_TIER && n != RAW_FRAME_BYTES) {
@@ -781,7 +801,9 @@ fn run(
                 continue;
             }
             let src_len = tier_window_bytes(tier_src);
-            let expected = 1 + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
+            // [ctrl][fno src u32][fno rep u32 if flagged][source][repair if flagged][tail]
+            let names = if rep_present { 8 } else { 4 };
+            let expected = 1 + names + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
             if payload.len() != expected && payload.len() != expected + LINK_TAIL && payload.len() != expected + LINK_TAIL_V2 {
                 rx_drop_shape += 1;
                 continue;
@@ -832,41 +854,46 @@ fn run(
                     }
                 }
             }
-            let body = &payload[1..expected];
+            let fno_src = u32::from_le_bytes([payload[1], payload[2], payload[3], payload[4]]);
+            let fno_rep = if rep_present { u32::from_le_bytes([payload[5], payload[6], payload[7], payload[8]]) } else { 0 };
+            let body = &payload[1 + names..expected];
             // Feed the source symbol to window seq, and the piggybacked repair to window seq−2 (two back for burst diversity — see repair_queue) — same per-symbol pipeline for both (dedup → fountain → slot walk → Opus → climb evidence).
-            let mut inputs: [(u32, usize, u32, &[u8]); 2] =
-                [(header.seq, tier_src, 0, &body[..src_len]), (0, 0, 1, &[])];
+            let mut inputs: [(u32, usize, u32, u32, &[u8]); 2] =
+                [(header.seq, tier_src, 0, fno_src, &body[..src_len]), (0, 0, 1, 0, &[])];
             let n_inputs = if rep_present && header.seq > 1 {
-                inputs[1] = (header.seq - 2, tier_rep, 1, &body[src_len..]);
+                inputs[1] = (header.seq - 2, tier_rep, 1, fno_rep, &body[src_len..]);
                 2
             } else {
                 1
             };
-            for &(wid, wtier, esi, sym) in inputs.iter().take(n_inputs) {
+            for &(wid, wtier, esi, wfno, sym) in inputs.iter().take(n_inputs) {
                 let np = *next_play.get_or_insert(wid);
                 if wid < np || rx_done.contains_key(&wid) {
                     continue; // already played or already decoded
                 }
                 // Plaid windows arrive whole — the symbol IS the window, no fountain state to keep.
-                let decoded: Option<(usize, Vec<u8>)> = if wtier == RAW_TIER {
+                let decoded: Option<(usize, u32, Vec<u8>)> = if wtier == RAW_TIER {
                     if esi != 0 {
                         continue;
                     }
-                    Some((RAW_TIER, sym.to_vec()))
+                    Some((RAW_TIER, wfno, sym.to_vec()))
                 } else {
                     let ep = raptorq::EncodingPacket::new(raptorq::PayloadId::new(0, esi), sym.to_vec());
                     let entry = rx_decoders
                         .entry(wid)
-                        .or_insert_with(|| (wtier, raptorq::Decoder::new(oti(wtier))));
+                        .or_insert_with(|| (wtier, wfno, raptorq::Decoder::new(oti(wtier))));
                     let dtier = entry.0;
                     // A same-window symbol at a DIFFERENT rung can't happen from a healthy sender (rung switches land on window boundaries) — feeding it would panic the decoder, so it's a shape drop.
                     if dtier != wtier {
                         rx_drop_shape += 1;
                         continue;
                     }
-                    entry.1.decode(ep).map(|d| (dtier, d))
+                    let dfno = entry.1;
+                    entry.2.decode(ep).map(|d| (dtier, dfno, d))
                 };
-                if let Some((dtier, data)) = decoded {
+                if let Some((dtier, dfno, data)) = decoded {
+                    // The SENDER's name for this window's first frame, unwrapped against our clock — every frame below is spooled at the instant ITS microphone heard it, so both parties' channels line up at mic time.
+                    let win_k0 = unwrap_frame_no(dfno) * super::align::FRAME;
                     rx_decoders.remove(&wid);
                     let mut frames = Vec::with_capacity(TIER_FRAMES[dtier]);
                     for slot in 0..TIER_FRAMES[dtier] {
@@ -884,10 +911,10 @@ fn run(
                             // Received plaid compresses BEFORE it rests (the symmetric half of the ordering fix): high-end 5ms Opus into the spool instead of raw PCM — plaid now exists on the wire alone, and at N participants the receive side was N−1 plaid streams of disk.
                             if let Some(w) = spool.as_mut() {
                                 let done = rx_arch_enc.as_mut().and_then(|e| e.encode(&pcm, &mut rx_arch_pkt).ok()).map(|an| {
-                                    w.append_seq(1, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), &rx_arch_pkt[..an]);
+                                    w.append_seq(1, vsf::grid::sample_to_eagle(win_k0 + slot as i64 * super::align::FRAME), Some((wid, slot as u8)), &rx_arch_pkt[..an]);
                                 });
                                 if done.is_none() {
-                                    w.append_seq(1 | super::spool::RAW_FLAG, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), body);
+                                    w.append_seq(1 | super::spool::RAW_FLAG, vsf::grid::sample_to_eagle(win_k0 + slot as i64 * super::align::FRAME), Some((wid, slot as u8)), body);
                                 }
                             }
                             rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
@@ -897,7 +924,7 @@ fn run(
                             continue;
                         }
                         if let Some(w) = spool.as_mut() {
-                            w.append_seq(1, vsf::eagle_time_oscillations(), Some((wid, slot as u8)), body);
+                            w.append_seq(1, vsf::grid::sample_to_eagle(win_k0 + slot as i64 * super::align::FRAME), Some((wid, slot as u8)), body);
                         }
                         let mut pcm = vec![0i16; FRAME_SAMPLES];
                         match decoder.decode(body, &mut pcm, false) {
@@ -1086,11 +1113,11 @@ fn run(
                 last_req_tx = std::time::Instant::now();
                 fills_asked += reqs.len() as u64;
             }
-            let mut fills: Vec<(u32, u8, Vec<u8>)> = Vec::new();
+            let mut fills: Vec<(u32, u8, u32, Vec<u8>)> = Vec::new();
             let mut budget = FILL_PACKET_BUDGET;
             while let Some(seq) = serve_queue.iter().next().copied() {
                 let served = serve_window(&params, &mut spool_reader, &tx_index, seq).or_else(|| serve_window_from_archive(&params, &mut spool_reader, &arch_index, &mut arch_dec, seq));
-                let cost = 5 + served.as_ref().map_or(0, |(_, b)| b.len());
+                let cost = 9 + served.as_ref().map_or(0, |(_, _, b)| b.len());
                 if cost > budget && !fills.is_empty() {
                     break;
                 }
@@ -1099,14 +1126,14 @@ fn run(
                 // PROOF: that fill spends the budget to zero; a plain subtraction would wrap it to ~2^64 and let every queued fill through.
                 budget = budget.saturating_sub(cost);
                 match served {
-                    Some((t, b)) => {
-                        fills.push((seq, t, b));
+                    Some((t, fno, b)) => {
+                        fills.push((seq, t, fno, b));
                         fills_served += 1;
                         if draining.is_some() {
                             fills_served_drain += 1;
                         }
                     }
-                    None => fills.push((seq, FILL_NACK, Vec::new())),
+                    None => fills.push((seq, FILL_NACK, 0, Vec::new())),
                 }
             }
             let heartbeat = draining.is_some() && last_fill_tx.elapsed() >= FILL_HEARTBEAT;
@@ -1173,6 +1200,21 @@ fn run(
                     jitter_target,
                     js.1,
                     js.2
+                );
+                // LOCK telemetry (docs/lock.md §8, on this 10 s cadence): the crystal the fit sees, how well the timestamps fit, how far off true time the named stream stands, and the slips it took to hold it there.
+                let st = aligner.stats;
+                let clk = crate::network::time_base::now_stamp();
+                crate::logf!(
+                    "WAVE: lock — adc {} ppm (fit residual {} µs), phase {} samples held ({} raw), slips +{} −{}, clock {} ±{} µs{}",
+                    st.adc_ppm.map_or("?".to_string(), |p| format!("{p:+.1}")),
+                    st.residual_ns / 1000,
+                    format!("{:+.2}", st.phase_filtered),
+                    format!("{:+.2}", st.phase_samples),
+                    st.slips_inserted,
+                    st.slips_deleted,
+                    clk.source.name(),
+                    clk.uncertainty_ns / 1000,
+                    if clk.degraded() { " (DEGRADED — grid alignment not guaranteed)" } else { "" }
                 );
                 recent_rtt_floor = if win_rtt_n > 0 { win_rtt_min } else { u32::MAX };
                 win_rtt_min = u32::MAX;
@@ -1517,6 +1559,18 @@ fn teardown(sink_gen: u64) {
 }
 
 /// One frame this side SENT: where it sits in the spool, so the peer's request for its window can be served from disk.
+/// A frame's number on the wire: its grid sample over the frame length, mod 2^32 (a u32 turns over every ~248 days at 200 frames a second — the receiver unwraps it against its own true clock).
+fn frame_no(k0: i64) -> u32 {
+    k0.div_euclid(super::align::FRAME) as u32 // the algorithm: the wire keeps the low 32 bits
+}
+
+/// The full frame number nearest our own true time whose low 32 bits are `fno` — exact while sender and receiver agree on time to within ~124 days.
+fn unwrap_frame_no(fno: u32) -> i64 {
+    let now = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()).div_euclid(super::align::FRAME);
+    let d = (fno as i64 - now).rem_euclid(1 << 32);
+    now + if d >= 1 << 31 { d - (1 << 32) } else { d }
+}
+
 struct SentFrame {
     seq: u32,
     slot: u8,
@@ -1524,18 +1578,19 @@ struct SentFrame {
     at: super::spool::RecordAt,
 }
 
-/// The FILL datagram's plaintext: `[flags u8][windows u32 LE][nreq u8][seq u32 LE × nreq][nfill u8][(seq u32 LE, tier u8, window bytes) × nfill]` — a `tier` of FILL_NACK carries no bytes.
+/// The FILL datagram's plaintext: `[flags u8][windows u32 LE][nreq u8][seq u32 LE × nreq][nfill u8][(seq u32 LE, tier u8, fno u32 LE, window bytes) × nfill]` — a `tier` of FILL_NACK carries neither frame number nor bytes.
 struct FillMsg {
     draining: bool,
     satisfied: bool,
     /// Our source window count (the next seq we would send) — the peer's tail list runs up to it.
     windows: u32,
     reqs: Vec<u32>,
-    fills: Vec<(u32, u8, Vec<u8>)>,
+    /// (window seq, tier, the window's first frame number, window bytes).
+    fills: Vec<(u32, u8, u32, Vec<u8>)>,
 }
 
 fn fill_encode(m: &FillMsg) -> Vec<u8> {
-    let mut out = Vec::with_capacity(8 + m.reqs.len() * 4 + m.fills.iter().map(|(_, _, b)| 5 + b.len()).sum::<usize>());
+    let mut out = Vec::with_capacity(8 + m.reqs.len() * 4 + m.fills.iter().map(|(_, _, _, b)| 9 + b.len()).sum::<usize>());
     out.push((m.draining as u8) | ((m.satisfied as u8) << 1));
     out.extend_from_slice(&m.windows.to_le_bytes());
     out.push(m.reqs.len().min(255) as u8);
@@ -1543,10 +1598,11 @@ fn fill_encode(m: &FillMsg) -> Vec<u8> {
         out.extend_from_slice(&r.to_le_bytes());
     }
     out.push(m.fills.len().min(255) as u8);
-    for (seq, tier, bytes) in m.fills.iter().take(255) {
+    for (seq, tier, fno, bytes) in m.fills.iter().take(255) {
         out.extend_from_slice(&seq.to_le_bytes());
         out.push(*tier);
         if *tier != FILL_NACK {
+            out.extend_from_slice(&fno.to_le_bytes());
             out.extend_from_slice(bytes);
         }
     }
@@ -1573,14 +1629,15 @@ fn fill_decode(b: &[u8]) -> Option<FillMsg> {
         let seq = u32::from_le_bytes(take(&mut i, 4)?.try_into().ok()?);
         let tier = take(&mut i, 1)?[0];
         if tier == FILL_NACK {
-            fills.push((seq, tier, Vec::new()));
+            fills.push((seq, tier, 0, Vec::new()));
             continue;
         }
         if tier as usize >= TIER_RATES.len() {
             return None;
         }
+        let fno = u32::from_le_bytes(take(&mut i, 4)?.try_into().ok()?);
         let bytes = take(&mut i, tier_window_bytes(tier as usize))?.to_vec();
-        fills.push((seq, tier, bytes));
+        fills.push((seq, tier, fno, bytes));
     }
     if i != b.len() {
         return None;
@@ -1603,8 +1660,8 @@ fn have_set(bits: &mut Vec<u64>, w: u32) {
     bits[i] |= 1u64 << (w % 64);
 }
 
-/// Rebuild the window bundle for `seq` from the frames we spooled for it: `(tier, [len u16][frame] × TIER_FRAMES padded to the rung's slots)`. None = not held (older than the index, or never sent).
-fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, index: &std::collections::VecDeque<SentFrame>, seq: u32) -> Option<(u8, Vec<u8>)> {
+/// Rebuild the window bundle for `seq` from the frames we spooled for it: `(tier, first frame number, [len u16][frame] × TIER_FRAMES padded to the rung's slots)`. The frame number comes back off the spooled record's own stamp, which IS its grid name. None = not held (older than the index, or never sent).
+fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, index: &std::collections::VecDeque<SentFrame>, seq: u32) -> Option<(u8, u32, Vec<u8>)> {
     let first = index.partition_point(|f| f.seq < seq);
     if first >= index.len() || index[first].seq != seq {
         return None;
@@ -1620,6 +1677,7 @@ fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolRe
     }
     let mut window = vec![0u8; tier_window_bytes(tier)];
     let mut any = false;
+    let mut fno: Option<u32> = None;
     for f in index.range(first..).take_while(|f| f.seq == seq) {
         let slot = f.slot as usize;
         if slot >= TIER_FRAMES[tier] {
@@ -1628,6 +1686,7 @@ fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolRe
         let Some(rec) = r.read_at(f.at) else {
             continue;
         };
+        fno.get_or_insert(frame_no(vsf::grid::eagle_to_sample(rec.osc)).wrapping_sub(slot as u32)); // the algorithm: frame numbers live mod 2^32
         if rec.bytes.len() > TIER_MAX_ENC[tier] {
             continue;
         }
@@ -1636,11 +1695,11 @@ fn serve_window(params: &EngineParams, reader: &mut Option<super::spool::SpoolRe
         window[base + 2..base + 2 + rec.bytes.len()].copy_from_slice(&rec.bytes);
         any = true;
     }
-    any.then_some((tier as u8, window))
+    any.then_some((tier as u8, fno?, window))
 }
 
 /// Plaid fills reconstruct from the ARCHIVE (whose wire copies never spool): a plaid window is exactly 2 frames = one 10ms archive record — decode it, split the halves, bundle at the RAW tier. Serve-time decode, and only on the pristine-path rung where losses are rare anyway.
-fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, arch_index: &std::collections::VecDeque<(u32, u8, super::spool::RecordAt)>, dec: &mut Option<opus::Decoder>, seq: u32) -> Option<(u8, Vec<u8>)> {
+fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::spool::SpoolReader>, arch_index: &std::collections::VecDeque<(u32, u8, super::spool::RecordAt)>, dec: &mut Option<opus::Decoder>, seq: u32) -> Option<(u8, u32, Vec<u8>)> {
     let first = arch_index.partition_point(|(w, _, _)| *w < seq);
     if first >= arch_index.len() || arch_index[first].0 != seq {
         return None;
@@ -1657,10 +1716,12 @@ fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::s
     let tier = RAW_TIER;
     let mut window = vec![0u8; tier_window_bytes(tier)];
     let mut any = false;
+    let mut fno: Option<u32> = None;
     for (_, slot0, at) in arch_index.range(first..).take_while(|(w, _, _)| *w == seq) {
         let Some(rec) = r.read_at(*at) else {
             continue;
         };
+        fno.get_or_insert(frame_no(vsf::grid::eagle_to_sample(rec.osc)).wrapping_sub(*slot0 as u32)); // the algorithm: frame numbers live mod 2^32
         let mut pcm = vec![0i16; 480];
         let _ = d.reset_state();
         let Ok(got) = d.decode(&rec.bytes, &mut pcm, false) else {
@@ -1682,7 +1743,7 @@ fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::s
             any = true;
         }
     }
-    any.then_some((tier as u8, window))
+    any.then_some((tier as u8, fno?, window))
 }
 
 #[cfg(test)]
@@ -1696,7 +1757,7 @@ mod fill_tests {
             satisfied: false,
             windows: 90_001,
             reqs: vec![7, 9, 4_000_000_000],
-            fills: vec![(7, 0, vec![3u8; tier_window_bytes(0)]), (9, FILL_NACK, Vec::new()), (12, RAW_TIER as u8, vec![5u8; tier_window_bytes(RAW_TIER)])],
+            fills: vec![(7, 0, 4_000_000_123, vec![3u8; tier_window_bytes(0)]), (9, FILL_NACK, 0, Vec::new()), (12, RAW_TIER as u8, 77, vec![5u8; tier_window_bytes(RAW_TIER)])],
         };
         let bytes = fill_encode(&m);
         let back = fill_decode(&bytes).unwrap();
@@ -1709,6 +1770,16 @@ mod fill_tests {
         assert!(fill_decode(&bytes[..bytes.len() - 1]).is_none());
     }
 
+    /// A frame number survives the wire's 32 bits: unwrapped against our clock it names the same frame, just behind now (a live window) or minutes back (a drain fill).
+    #[test]
+    fn frame_numbers_unwrap_to_the_frame_they_named() {
+        let now_f = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()).div_euclid(super::super::align::FRAME);
+        for back in [0i64, 12, 200 * 60 * 5, 200 * 3600 * 24] {
+            let f = now_f - back;
+            assert_eq!(unwrap_frame_no(frame_no(f * super::super::align::FRAME)), f, "{back} frames back");
+        }
+    }
+
     #[test]
     fn have_bits_grow_on_demand() {
         let mut bits = Vec::new();
@@ -1718,35 +1789,39 @@ mod fill_tests {
     }
 
     #[test]
-    fn served_window_comes_back_off_the_spool_by_seq() {
+    fn served_window_comes_back_off_the_spool_by_seq_with_its_frame_number() {
         let dir = std::env::temp_dir();
         let path = dir.join(format!("photon-fill-serve-test-{}.tmp", std::process::id()));
         let key = [3u8; 32];
         let mut w = super::super::spool::SpoolWriter::create(&key, &path).unwrap();
         let mut index = std::collections::VecDeque::new();
-        // Two floor-rung windows (8 frames each), a remote frame in between, then a plaid window.
+        // Two floor-rung windows (8 frames each), a remote frame in between, then a plaid window — every record stamped with its frame's grid name, as the engine spools them.
+        let base_frame: i64 = 7_000_000_000;
+        let stamp = |f: i64| vsf::grid::sample_to_eagle(f * super::super::align::FRAME);
         for seq in 0u32..2 {
             for slot in 0..TIER_FRAMES[0] {
-                let at = w.append_seq(0, 1, Some((seq, slot as u8)), &[seq as u8 + 1; 12]).unwrap();
+                let at = w.append_seq(0, stamp(base_frame + seq as i64 * 8 + slot as i64), Some((seq, slot as u8)), &[seq as u8 + 1; 12]).unwrap();
                 index.push_back(SentFrame { seq, slot: slot as u8, tier: 0, at });
             }
             w.append(1, 2, &[9; 12]);
         }
-        let at = w.append_seq(super::super::spool::RAW_FLAG, 3, Some((2, 0)), &[8; RAW_FRAME_BYTES]).unwrap();
+        let at = w.append_seq(super::super::spool::RAW_FLAG, stamp(base_frame + 16), Some((2, 0)), &[8; RAW_FRAME_BYTES]).unwrap();
         index.push_back(SentFrame { seq: 2, slot: 0, tier: RAW_TIER as u8, at });
         drop(w);
         let params = EngineParams { secret: [0; 32], we_are_origin: true, peer_addr: "127.0.0.1:1".parse().unwrap(), spool: Some((key, path.clone())), cal: None, plaid_allowed: false };
         let mut reader = None;
-        let (t, win) = serve_window(&params, &mut reader, &index, 1).unwrap();
+        let (t, fno, win) = serve_window(&params, &mut reader, &index, 1).unwrap();
         assert_eq!(t, 0);
+        assert_eq!(fno, frame_no((base_frame + 8) * super::super::align::FRAME), "the window's first frame, read back off its record's stamp");
         assert_eq!(win.len(), tier_window_bytes(0));
         for slot in 0..TIER_FRAMES[0] {
             let base = slot * tier_slot(0);
             assert_eq!(u16::from_le_bytes([win[base], win[base + 1]]), 12);
             assert_eq!(&win[base + 2..base + 14], &[2u8; 12]);
         }
-        let (t, win) = serve_window(&params, &mut reader, &index, 2).unwrap();
+        let (t, fno, win) = serve_window(&params, &mut reader, &index, 2).unwrap();
         assert_eq!(t as usize, RAW_TIER);
+        assert_eq!(fno, frame_no((base_frame + 16) * super::super::align::FRAME));
         assert_eq!(u16::from_le_bytes([win[0], win[1]]) as usize, RAW_FRAME_BYTES);
         assert!(serve_window(&params, &mut reader, &index, 3).is_none());
         let _ = std::fs::remove_file(&path);
