@@ -113,6 +113,16 @@ Nick: *"treat it like a regular conversation and order it by eagle time proper, 
 
 **Rows are SPANS, not frames.** A ten-minute wave is 60,000 frames across two channels, and one rārangi row per frame would put 60,000 pks in a catalog that re-encodes whenever the key set grows (2026-09-24: that catalog cost is exactly what made vault commits chronically slow). Store a contiguous run of frames as ONE row keyed by the run's first grid index. The conversation model, the anti-entropy digest and the history walk all then apply to waves unchanged — a fill becomes a backfill, the held row keys ARE the coverage map, and fleet replication carries the recording to every device by the machinery that already exists.
 
+## One spool per identity, aligned at the microphone (2026-09-25)
+
+Nick: *"we need to extend or contract our signal and align our frames with true time, we also need to pad the first frame or always start on a 2 second mark … one spool per identity is easiest rather than doing interleaving. treat as distinct vault objects, but they are now time aligned at instant of microphone recording on all parties for easy stereo export and playback without delay."*
+
+- **The sender aligns, at the source.** Each device stamps its capture against true time (TrueClock, docs/lock.md §4–5) and runs a corrector that inserts or deletes single samples (the slip corrector; a fractional resampler later) so the sample captured nearest grid slot `k` is emitted AS sample `k`. Crystal drift never leaves the device; receivers correct only their own DAC.
+- **Frames are named on the absolute grid.** The engine's frame is 5 ms (240 samples), so a frame's name is `k0` with `k0 % 240 == 0`, 200 per second from the top of every Eagle second (the spec's 20 ms packet is four of them). Nothing about a wave is relative to its start.
+- **The first frame is padded, never waited for.** Capture begins mid-frame; the samples before the first captured one are zeros, so the first frame starts on its grid boundary and the wave starts the instant the human speaks. The 2-second sublight page needs no start rule of its own: pages sit on even Eagle seconds, and frames before the wave's first are simply not held (the 2026-09-24 page rule).
+- **One spool per identity.** Each party's channel is its OWN vault object — the wave id plus the capturing party names it — holding that party's frames by `k0`. No interleaving, no per-record channel tag. The far party's channel is written under the names the SENDER gave its frames on the wire, never under our arrival time, so every party's copy of every channel lines up at the instant each microphone heard it.
+- **Export and playback need no alignment step.** Stereo (or N-party) export places the channels side by side by `k0`; replay of a kept wave plays them together with no delay estimation. Mixing still happens only at playback.
+
 ## The rungs, by name (2026-09-11)
 
 `engine::TIER_NAMES`, bottom to top: **sublight** (16 kbps), **light speed** (32), **ridiculous speed** (64), **ludicrous speed** (128), **plaid** (raw 48 kHz PCM, LAN only). The wave panel prints the live rung beside the round trip as a frequency in the current base, the loss ring and the buffer depth — on every build, from `LAST_LINK_*` which the engine refreshes once a second (the 10 s log line is unchanged).
