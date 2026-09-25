@@ -221,7 +221,7 @@ impl PhotonApp {
                 tb.clear();
             }
             self.change_focus(None);
-            if let Some(gi) = self.molecule_rosters.len().checked_sub(1) {
+            if let Some(gi) = self.molecule_rosters.len().checked_sub(1) { // WHY/PROOF: there may be no group yet — then there is nothing to open, not a wrapped index
                 self.open_molecule_conversation(gi);
                 self.state = AppState::Conversation;
                 self.conv_topbar_off = 0.0;

@@ -163,7 +163,9 @@ pub const IN_FLIGHT_WINDOW: usize = 4;
 
 /// Backoff delay (in eagle-time oscillations) before the `attempts`-th send's resend: 1s, 2s, 4s, 8s, 16s, then capped at 30s. `attempts` is 1-based (1 = after the first transmit).
 fn retry_delay_osc(attempts: u8) -> i64 {
-    let shift = attempts.saturating_sub(1).min(6); // cap the shift so 1<<shift can't overflow
+    // WHY: `attempts` is 0 before the first send.
+    // PROOF: attempt 0 waits the base delay (shift 0) — a plain subtraction would wrap to 255 and the `min(6)` cap would hide it as the longest wait. The cap itself keeps `1 << shift` inside the i64 delay.
+    let shift = attempts.saturating_sub(1).min(6);
     let secs = (RETRY_BASE_SECS << shift).min(RETRY_CAP_SECS);
     (secs * vsf::OSCILLATIONS_PER_SECOND) as i64
 }
@@ -1173,8 +1175,10 @@ impl FriendshipChains {
 
     /// One current-era frame from the peer seen after a cutover: spend one unit of the retired era's grace; true when the window is spent and the caller should drop it.
     pub fn note_current_era_frame(&mut self) -> bool {
-        self.rows_since_ratchet = self.rows_since_ratchet.saturating_add(1);
+        self.rows_since_ratchet += 1; // u32 of rows since the last ratchet — the ratchet fires every 256
         let Some(r) = self.retired.as_mut() else { return false };
+        // WHY: the caller drops the retired era when this returns true, but frames keep arriving until that lands.
+        // PROOF: at 0 the grace stays 0 and keeps answering true; a plain subtraction would wrap to ~2^32 frames of grace and resurrect the retired era.
         r.grace_left = r.grace_left.saturating_sub(1);
         r.grace_left == 0
     }

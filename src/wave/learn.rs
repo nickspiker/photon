@@ -473,6 +473,8 @@ fn xcorr(play: &[f32], cap: &[f32], max_lag: usize) -> Option<(usize, f32)> {
     if play_energy <= 0.0 {
         return None;
     }
+    // WHY: at a wave's start the capture can hold fewer samples than the played reference.
+    // PROOF: no lag fits then — zero candidates — where a plain subtraction would wrap to a scan far past both buffers.
     let top = max_lag.min(cap.len().saturating_sub(play.len()));
     let mut best = (0usize, f64::MIN);
     for lag in 0..=top {

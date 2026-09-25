@@ -3189,6 +3189,7 @@ fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
         (unit(&mut seed) * 2.0 - 1.0).powi(3),
     );
     // Each channel is a sine plane wave: disk mapped to [-4pi, 4pi] per axis, z = a*x + b*y, then (sin(z)+1)/2 -> [0,1] (bounded, no clip); circle vignette over the top.
+    // WHY/PROOF: a 0- or 1-pixel disk has no span to map across; the denominator is 1 there, never a wrapped 2^64 or a divide by zero.
     let denom = diam.saturating_sub(1).max(1) as f64;
     let s = 4.0 * std::f64::consts::PI;
     let mut out = vec![0u8; diam * diam * 3];

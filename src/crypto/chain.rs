@@ -415,6 +415,8 @@ pub fn decrypt_layers(
 ///
 /// When decrypting with history, we need the scratch from that state.
 pub fn generate_scratch_at_offset(chain: &Chain, salt: &[u8; 32], offset: usize) -> Vec<u8> {
+    // WHY: `offset` is how far back the SENDER's frame sits — derived from a received position, so it can exceed our history.
+    // PROOF: an offset past the current index lands at 0, below HISTORY_LINKS, and returns the "too far back" pad just below — a plain subtraction would wrap to an index that passes that test.
     let key_index = CURRENT_KEY_INDEX.saturating_sub(offset);
     if key_index < HISTORY_LINKS {
         // Too far back in history

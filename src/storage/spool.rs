@@ -73,6 +73,8 @@ pub fn layout(base: u64, slot_lens: &[u64]) -> Option<SpoolLayout> {
     let mut off = base;
     for &l in slot_lens {
         offsets.push(off);
+        // WHY: `slot_lens` comes from the spool prelude read back from disk — file data, not our own arithmetic this run.
+        // PROOF: a corrupt prelude whose lengths overflow u64 yields None (no layout) instead of wrapping into overlapping slots.
         off = off.checked_add(l)?;
     }
     Some(SpoolLayout { base, offsets, lens: slot_lens.to_vec(), total: off })
@@ -253,7 +255,7 @@ fn slot_present(bytes: &[u8]) -> bool {
         i += SPOOL_WINDOW;
     }
     if n % SPOOL_WINDOW != 0 {
-        let s = n.saturating_sub(SPOOL_WINDOW);
+        let s = n.saturating_sub(SPOOL_WINDOW); // WHY/PROOF: a body shorter than one window checks from byte 0 — all of it — not from a wrapped index
         if bytes[s..].iter().all(|b| *b == 0) {
             return false;
         }

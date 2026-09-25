@@ -133,6 +133,7 @@ pub struct Fit {
 /// Matched-filter one leg over the capture: (best lag, least-squares gain at the peak, peak-to-median-|corr| ratio). Polarity-blind (|dot| — speaker/mic chains can invert), integer MACs so the 2 × ~24k-lag × 12k-sample scan stays a fraction of a second off-thread.
 fn leg_corr(cap: &[i16], leg: &[i16], max_lag: usize) -> (usize, f32, f64) {
     let n = leg.len();
+    // WHY/PROOF: as in learn.rs — a capture shorter than the leg has no lag to scan, zero rather than a wrapped scan past the buffer.
     let scan = max_lag.min(cap.len().saturating_sub(n));
     let energy: f64 = leg.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9);
     let mut mags: Vec<f64> = Vec::with_capacity(scan + 1);
@@ -230,6 +231,8 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
     // IR export for the NLMS seed: cross-correlate the capture against the SUM template (what actually played) over the tap window around the matched delay. h[k] = <cap(lag), tpl>/|tpl|² — the least-squares IR at each lag, band-limited to the sweep (which is the whole audible path; fine, that's the band echo lives in).
     let tpl = template();
     let tpl_energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9);
+    // WHY: the measured echo delay can be shorter than the filter's pre-roll on a tightly coupled speaker and mic.
+    // PROOF: the impulse response then starts at sample 0 — the earliest there is — never at a wrapped index.
     let ir_start = delay.saturating_sub(crate::wave::nlms::PRE);
     let mut taps: Vec<f32> = Vec::with_capacity(crate::wave::nlms::TAPS);
     for k in 0..crate::wave::nlms::TAPS {
@@ -303,7 +306,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         // THE SEED'S LAG IS THE PHYSICAL RENDER→CAPTURE DELAY, on the reference timeline (nlms.rs: `from = frame_pos − ir_start − n + 1`), NOT the chirp's position inside the capture buffer — the capture starts at probe start, the sweep sits a quarter-second pad later (2026-09-10 Azie/Nick: the position-as-lag seed sat 250 ms wrong; Nick's filter never found its reference window, Azie's adapted from a wrong seed and read −17 dB). lag_osc already holds the physical delay; convert it to samples and back off by the pre-roll.
         let lag_ref_samples = (lag_osc / ops * SAMPLE_RATE as f64).round().max(0.0) as usize;
-        let ir_start = lag_ref_samples.saturating_sub(crate::wave::nlms::PRE);
+        let ir_start = lag_ref_samples.saturating_sub(crate::wave::nlms::PRE); // WHY/PROOF: the same pre-roll floor as the chirp seed above
         crate::logf!(
             "WAVE: v-chirp — g {} delay {}ms (anchor {}ms + capture pos {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",
             format!("{g_norm:.4}"),

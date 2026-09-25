@@ -9,6 +9,13 @@ pub struct PeerStore {
     peers: Vec<PeerRecord>,
 }
 
+
+/// A peer record is fresh while its `last_seen` is inside the expiry window.
+/// WHY: `last_seen` is the stamp inside a record the PEER signed — any i64, including one far in the past.
+/// PROOF: `now − i64::MIN` overflows i64; saturating makes an absurd stamp read as the oldest possible (expired) instead of wrapping to a negative age that would read as fresh forever.
+fn is_fresh(now: i64, last_seen: i64) -> bool {
+    now.saturating_sub(last_seen) < PEER_EXPIRY_OSC
+}
 impl PeerStore {
     pub fn new() -> Self {
         Self { peers: Vec::new() }
@@ -184,7 +191,7 @@ impl PeerStore {
         let mut result = Vec::new();
         let mut i = pos;
         while i < self.peers.len() && self.peers[i].handle_proof == *handle_proof {
-            if now.saturating_sub(self.peers[i].last_seen) < PEER_EXPIRY_OSC {
+            if is_fresh(now, self.peers[i].last_seen) {
                 result.push(self.peers[i].clone());
             }
             i += 1;
@@ -197,7 +204,7 @@ impl PeerStore {
         let now = vsf::eagle_time_oscillations();
         self.peers
             .iter()
-            .filter(|p| now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC)
+            .filter(|p| is_fresh(now, p.last_seen))
             .cloned()
             .collect()
     }
@@ -207,7 +214,7 @@ impl PeerStore {
         let now = vsf::eagle_time_oscillations();
         self.peers
             .iter()
-            .filter(|p| now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC)
+            .filter(|p| is_fresh(now, p.last_seen))
             .count()
     }
 
@@ -218,7 +225,7 @@ impl PeerStore {
         let mut prev_handle: Option<[u8; 32]> = None;
 
         for p in &self.peers {
-            if now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC {
+            if is_fresh(now, p.last_seen) {
                 if prev_handle.map_or(true, |h| h != p.handle_proof) {
                     count += 1;
                     prev_handle = Some(p.handle_proof);
@@ -235,7 +242,7 @@ impl PeerStore {
         let mut prev_handle: Option<[u8; 32]> = None;
 
         for p in &self.peers {
-            if p.handle_proof != *own && now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC {
+            if p.handle_proof != *own && is_fresh(now, p.last_seen) {
                 if prev_handle.map_or(true, |h| h != p.handle_proof) {
                     count += 1;
                     prev_handle = Some(p.handle_proof);
@@ -263,7 +270,7 @@ impl PeerStore {
         let now = vsf::eagle_time_oscillations();
         let before = self.peers.len();
         self.peers
-            .retain(|p| now.saturating_sub(p.last_seen) < PEER_EXPIRY_OSC);
+            .retain(|p| is_fresh(now, p.last_seen));
         before - self.peers.len()
     }
 }

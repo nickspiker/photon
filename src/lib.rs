@@ -277,6 +277,8 @@ pub fn hex_seconds_ms(ms: u64) -> String {
 
 /// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — floor(log2) of the size in BITS, so one byte is Ter (3), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
 pub fn dms_size(bytes: u64) -> String {
+    // WHY: `bytes` is often a peer's claim (an attachment's typed size arrives over the wire), so it can be any u64.
+    // PROOF: bits = bytes × 8 overflows u64 above 2^61 bytes; saturating renders an absurd claim as the largest countable size instead of wrapping it to a small, plausible-looking one.
     let bits = bytes.saturating_mul(8);
     match num_base() {
         NumBase::Hex => hex_linear(bits),
@@ -333,18 +335,31 @@ pub fn fmt_share(part: u64, whole: u64) -> String {
     if whole == 0 {
         return crate::ui::lang::tr(crate::ui::lang::Msg::DmsEmpty).into_owned();
     }
+    // A share is part of its whole — a caller holding more is holding a bug, and it fails here, loud, rather than reading as a plausible fraction. (Values that arrive from outside, like the platform's volume, are bounded where they enter.)
+    assert!(part <= whole, "fmt_share: part {part} exceeds whole {whole}");
+    // The WHOLE is not a fraction: a full share used to scale to 12^5, whose first digit is twelve, and a `.min(11)` clamp turned it into eleven twelfths (the rocker at full volume read .Ɛ); hex likewise read 0.FFF for all of it.
+    if part == whole {
+        return match num_base() {
+            NumBase::Arabic => "100%".to_string(),
+            NumBase::Hex => "1.000".to_string(),
+            NumBase::Dozenal => format!("{}.", char::from(0x11)),
+        };
+    }
+    // Widened to u128, so no u64 part can overflow the scale — the math holds for every input, no saturation needed.
+    let (p, w) = (part as u128, whole as u128);
     match num_base() {
-        // Arabic keeps the ledger world's percent; hex keeps its linear fraction of the whole.
-        NumBase::Arabic => format!("{}%", (part.saturating_mul(100) / whole).min(100)),
-        NumBase::Hex => format!("0.{:03X}", (part.saturating_mul(4096) / whole).min(4095)),
+        // Arabic keeps the ledger world's percent; hex keeps its linear fraction of the whole. part < whole, so each lands strictly below its ceiling.
+        NumBase::Arabic => format!("{}%", p * 100 / w),
+        NumBase::Hex => format!("0.{:03X}", p * 4096 / w),
         NumBase::Dozenal => {
             // 12^5 of headroom, then digits off the top. Two SIGNIFICANT digits — leading zeros are placeholders, not precision.
-            let scaled = part.saturating_mul(248_832) / whole;
+            let scaled = (p * 248_832 / w) as u64;
             let mut out = String::from(".");
             let (mut rem, mut seen) = (scaled, 0u8);
             for place in (0..5).rev() {
                 let unit = 12u64.pow(place);
-                let digit = (rem / unit).min(11) as u8;
+                // scaled < 12^5 (part < whole), so every digit is a true dozenal digit, 0..=11.
+                let digit = (rem / unit) as u8;
                 rem %= unit;
                 out.push(char::from(0x10 + digit));
                 if digit != 0 {
@@ -372,7 +387,7 @@ pub fn rep_grade_glyphs(evidence: u32) -> String {
         return String::new();
     }
     // The grade over a gross: 1 − 1/E is (144 − 144/E)/144, and 144 is exactly what two dozenal fraction digits hold.
-    let n = 144u32.saturating_sub(144 / evidence);
+    let n = 144 - 144 / evidence; // evidence ≥ 1 here, so 144/evidence ≤ 144
     let (high, low) = (n / 12, n % 12);
     let mut s = String::from(".");
     s.push(char::from(0x10 + high as u8));
@@ -423,38 +438,13 @@ pub fn dozenal_bytes(n: i64) -> String {
     digits.iter().rev().collect()
 }
 
-/// Parse a [`dozenal_bytes`] number. None on empty input, any byte outside the digit block, or overflow — marker parsers treat that as "not a reference".
-pub fn parse_dozenal_bytes(s: &str) -> Option<i64> {
-    if s.is_empty() {
-        return None;
-    }
-    let mut n: i64 = 0;
-    for c in s.chars() {
-        let d = (c as u32).checked_sub(0x10)?;
-        if d > 11 {
-            return None;
-        }
-        n = n.checked_mul(12)?.checked_add(d as i64)?;
-    }
-    Some(n)
-}
-
 #[cfg(test)]
 mod dozenal_serialization_tests {
-    /// The marker-reference number codec: round-trips at eagle-time scale, zero included, and REJECTS arabic — a decimal string must read as "not a reference", never mis-parse.
+    /// The dozenal digit block: every digit is one glyph in 0x10..=0x1B, and a negative renders as zero.
     #[test]
-    fn dozenal_bytes_round_trip_and_arabic_rejected() {
-        for n in [0i64, 1, 11, 12, 143, 1_000_000, i64::MAX / 2] {
-            assert_eq!(
-                super::parse_dozenal_bytes(&super::dozenal_bytes(n)),
-                Some(n)
-            );
-        }
-        assert!(super::dozenal_bytes(7)
-            .chars()
-            .all(|c| (c as u32) >= 0x10 && (c as u32) <= 0x1B));
-        assert_eq!(super::parse_dozenal_bytes("1234"), None);
-        assert_eq!(super::parse_dozenal_bytes(""), None);
+    fn dozenal_bytes_stay_in_the_digit_block() {
+        assert!(super::dozenal_bytes(7).chars().all(|c| (c as u32) >= 0x10 && (c as u32) <= 0x1B));
+        assert!(super::dozenal_bytes(i64::MAX / 2).chars().all(|c| (c as u32) >= 0x10 && (c as u32) <= 0x1B));
         assert_eq!(super::dozenal_bytes(-5), super::dozenal_bytes(0));
     }
 }
@@ -557,6 +547,8 @@ pub(crate) mod base_kat {
         assert_eq!(fmt_share(2, 3), format!(".{}", g(&[8])), "two thirds is .Lunor");
         // The reputation ladder's own rungs, which the Base page prints beside this.
         assert_eq!(fmt_share(11, 12), format!(".{}", g(&[11])), "eleven twelfths is .Stelor");
+        // A whole is not eleven twelfths: the full share reads as the whole one.
+        assert_eq!(fmt_share(1000, 1000), format!("{}.", char::from(0x11)));
     }
 
     /// A small share keeps its resolution: leading zeros are placeholders, not significant digits, so a loss rate does not round away to nothing — the one reading where "almost none" and "none" must not look alike.
@@ -774,7 +766,7 @@ static LOG_HARD_UNTIL: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI
 #[cfg(feature = "logging")]
 pub fn set_hard_logs(armed_at: Option<i64>) {
     let deadline = armed_at
-        .map(|t| t.saturating_add(LOG_AGE_TRIGGER_BASE_OSC))
+        .map(|t| t + LOG_AGE_TRIGGER_BASE_OSC)
         .unwrap_or(0);
     let was = LOG_HARD_UNTIL.swap(deadline, std::sync::atomic::Ordering::Relaxed);
     if deadline > was {
@@ -908,7 +900,7 @@ fn trim_log_if_due(guard: &mut Option<std::fs::File>) {
     let now = vsf::eagle_time_oscillations();
     let oldest = LOG_OLDEST_OSC.load(std::sync::atomic::Ordering::Relaxed);
     let trigger = LOG_AGE_TRIGGER_OSC.load(std::sync::atomic::Ordering::Relaxed);
-    let aged = oldest != i64::MAX && now.saturating_sub(oldest) > trigger;
+    let aged = oldest != i64::MAX && now - oldest > trigger;
     if total > LOG_CAP_BYTES || aged {
         if let Some((trimmed, new_size, new_oldest)) = trim_log_file(now) {
             *guard = Some(trimmed);
@@ -1117,7 +1109,7 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     };
 
     let bytes = std::fs::read(&path).ok()?;
-    let age_cutoff = now_osc.saturating_sub(jitter(LOG_AGE_KEEP_BASE_OSC)); // keep a random 12–24h
+    let age_cutoff = now_osc - jitter(LOG_AGE_KEEP_BASE_OSC); // keep a random 12–24h
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
     let kept = &bytes[keep.min(bytes.len())..];
     let mut w = std::fs::OpenOptions::new()
@@ -1143,6 +1135,8 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
 #[cfg(feature = "logging")]
 fn log_keep_offset(bytes: &[u8], trim_to_size: u64, age_cutoff_osc: i64) -> (usize, i64) {
     let total = bytes.len();
+    // WHY: the log on disk may already be smaller than the trim target.
+    // PROOF: then there is nothing to drop by size — zero, where a plain subtraction would wrap to a near-2^64 drop and discard the whole log.
     let size_drop = (total as u64).saturating_sub(trim_to_size) as usize;
     let mut offset = 0usize;
     while offset < total {

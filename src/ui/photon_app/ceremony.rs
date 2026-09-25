@@ -522,6 +522,8 @@ impl PhotonApp {
                         let their_offer_waiting = contact
                             .get_slot(&contact.handle_hash)
                             .map_or(false, |s| s.offer.is_some());
+                        // WHY: `roster_updated` is the LWW clock the FRIEND's roster carried — a peer-supplied stamp.
+                        // PROOF: an absurdly old stamp must read as stale, not overflow `now − i64::MIN` into a fresh-looking negative.
                         let owner_stale = vsf::eagle_time_oscillations()
                             .saturating_sub(contact.roster_updated)
                             > CLUTCH_ROUND_TTL_OSC;

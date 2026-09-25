@@ -56,6 +56,8 @@ impl NodeId {
             }
             leading_zeros += 8;
         }
+        // WHY: a zero distance (a node compared with itself) has 256 leading zero bits.
+        // PROOF: it belongs in the closest bucket, 0 steps past 255 — saturating keeps it there instead of wrapping to bucket usize::MAX.
         255_usize.saturating_sub(leading_zeros) // Bucket 0 = farthest, bucket 255 = closest
     }
 
@@ -96,7 +98,7 @@ impl NodeContact {
 
     pub fn is_stale(&self, max_age_osc: i64) -> bool {
         let now = eagle_time();
-        now.saturating_sub(self.last_seen) > max_age_osc
+        now - self.last_seen > max_age_osc // last_seen is only ever our own clock (set at creation and on update)
     }
 }
 

@@ -29,6 +29,8 @@ pub fn chromatic_wave_clipped(
 ) {
     let buf_w = canvas.width;
     let buf_h = canvas.height;
+    // WHY: the layout hands this a region that collapses to nothing when the window is narrower than the wave's margins.
+    // PROOF: an inverted region is zero-wide — returned on just below — instead of wrapping to a region wider than any buffer.
     let region_w = x1.saturating_sub(x0);
     let region_h = logical_h;
     if region_w == 0 || x1 > buf_w {

@@ -278,6 +278,8 @@ impl PhotonApp {
                 }
             }
             if c.is_online && c.validated_path.is_none() {
+                // WHY: a u8 counting presence cycles — a friend online-but-unvalidated all afternoon passes 255 of them.
+                // PROOF: a wrap would return it to 0 and re-fire the `== PUNCH_UNREACHABLE_THRESHOLD` edge every 256 cycles; saturating holds it past the edge for good.
                 c.punch_unvalidated_cycles = c.punch_unvalidated_cycles.saturating_add(1);
                 if c.punch_unvalidated_cycles == PUNCH_UNREACHABLE_THRESHOLD {
                     crate::logf!("TRAVERSE: {} online but no direct path after {} cycles — pending relay (M2)", crate::fp(&c.handle_proof).as_str(), PUNCH_UNREACHABLE_THRESHOLD);
@@ -292,6 +294,7 @@ impl PhotonApp {
                     .map_or(true, |s| s.offer.is_none())
                 && !ceremony_parked_by(c, our_device, &siblings);
             if stalled {
+                // WHY/PROOF: a u8 counting stalled cycles, which a ceremony parked for hours exceeds — a wrap would drop it back under OFFER_STALL_CYCLES and hide the stall.
                 c.clutch_offer_stall_cycles = c.clutch_offer_stall_cycles.saturating_add(1);
                 if c.clutch_offer_stall_cycles >= OFFER_STALL_CYCLES {
                     c.clutch_offer_stall_cycles = 0;
@@ -353,7 +356,8 @@ impl PhotonApp {
             let mut announce = false;
             if let Some(c) = self.contacts.get_mut(i) {
                 c.last_pinged = Some(now);
-                c.ping_backoff = c.ping_backoff.saturating_add(1).min(PING_BACKOFF_MAX);
+                // The backoff is capped at PING_BACKOFF_MAX (6) by design — the cap is the schedule, and it keeps the +1 far from u8's ceiling.
+                c.ping_backoff = (c.ping_backoff + 1).min(PING_BACKOFF_MAX);
                 if c.is_sibling {
                     if let Some(dev) = c.public_identity.as_ref() {
                         announce = self.announced_devices.insert(*dev.as_bytes());
@@ -564,7 +568,7 @@ impl PhotonApp {
                     && contact.clutch_proof_resends_left == 0;
                 let stale = contact
                     .clutch_round_started
-                    .map_or(true, |t| now_osc.saturating_sub(t) > ZOMBIE_ROUND_STALE_OSC);
+                    .map_or(true, |t| now_osc - t > ZOMBIE_ROUND_STALE_OSC); // both local eagle stamps
                 if contact.clutch_proof_gave_up || (empty_handed && stale) {
                     expired.push(i);
                 }
@@ -1835,9 +1839,9 @@ impl PhotonApp {
             }
             // Expire a lost in-flight request so the walk resumes — with a DOUBLING wait per consecutive expiry (capped at 32x trickle): an unanswered route is a black hole, and re-requesting at full cadence into it was 7,316 log lines in one field night. Any page arriving clears the streak (see the page arm).
             if let Some((_, sent_osc, _)) = rec.in_flight {
-                if now_osc.saturating_sub(sent_osc) > HIST_INFLIGHT_TIMEOUT_OSC {
+                if now_osc - sent_osc > HIST_INFLIGHT_TIMEOUT_OSC { // our own request's stamp
                     rec.in_flight = None;
-                    rec.expire_streak = rec.expire_streak.saturating_add(1);
+                    rec.expire_streak += 1; // u32, one per expired request — the doubling it drives is capped at 1 << 5 below
                     let backoff_mult = 1i64 << rec.expire_streak.min(5);
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC * backoff_mult;
                     rec.urgent = false;
@@ -1871,7 +1875,7 @@ impl PhotonApp {
                     rec.urgent = false;
                     // Authoritative rid registry (see hist_rid_map): sweep stale entries, then register this request so its page merges even if another contact resolving the same peer re-arms this conversation's in_flight before the answer lands.
                     self.hist_rid_map.retain(|_, (_, sent)| {
-                        now_osc.saturating_sub(*sent) <= HIST_INFLIGHT_TIMEOUT_OSC
+                        now_osc - *sent <= HIST_INFLIGHT_TIMEOUT_OSC
                     });
                     self.hist_rid_map.insert(rid, (cid, now_osc));
                     crate::logf!(
@@ -1926,7 +1930,7 @@ impl PhotonApp {
             }
             // Expire a lost op so the machinery retries.
             if let Some((_, sent_osc, _)) = contact.blind_in_flight {
-                if now_osc.saturating_sub(sent_osc) > BLIND_INFLIGHT_TIMEOUT_OSC {
+                if now_osc - sent_osc > BLIND_INFLIGHT_TIMEOUT_OSC { // our own op's stamp
                     crate::log("BLIND: in-flight op expired — retrying");
                     contact.blind_in_flight = None;
                 } else {

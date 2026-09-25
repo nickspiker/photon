@@ -56,6 +56,7 @@ impl ReadyLayout {
         let content_w = buf_w - 2 * content_x;
 
         // The block starts under the status bar (see ui::safe_top_px); the unit budget is what remains.
+        // WHY/PROOF: a minimized window reports a zero-height surface; the block then starts at row 0 rather than at a wrapped row past every buffer.
         let block_y = crate::ui::safe_top_px().min(buf_h.saturating_sub(1));
         let block_h = buf_h - block_y;
 

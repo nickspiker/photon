@@ -19,6 +19,7 @@ fn main() {
         for (_, frame24) in audio::captured_frames() {
             captured += 1;
             let frame: Vec<i16> = frame24.iter().map(|s| (s >> 8) as i16).collect();
+            // WHY/PROOF: a full-scale negative sample is i16::MIN, whose absolute value does not fit i16 — saturating reads it as the loudest positive instead of wrapping to itself.
             peak = peak.max(frame.iter().map(|s| s.saturating_abs()).max().unwrap_or(0));
             delay.push_back(frame);
             // 20 frames × 10ms = the 200ms loopback delay.

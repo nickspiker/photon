@@ -232,6 +232,7 @@ pub fn valid_marks(content: &str, marks: &[MessageMark]) -> Vec<MessageMark> {
     let mut ok: Vec<MessageMark> = marks
         .iter()
         .filter(|m| m.kind == MARK_KIND_LINK)
+        // WHY/PROOF: marks arrive off the wire; a start + len that overflows usize is malformed and dropped, never wrapped into an in-bounds-looking range.
         .filter(|m| m.len > 0 && m.start.checked_add(m.len).is_some_and(|e| e <= content.len()))
         .filter(|m| content.is_char_boundary(m.start) && content.is_char_boundary(m.start + m.len))
         .filter(|m| m.dest.len() <= MARK_DEST_MAX)

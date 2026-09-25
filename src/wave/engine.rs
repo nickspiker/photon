@@ -648,7 +648,10 @@ fn run(
                     payload.extend_from_slice(&echo.to_le_bytes());
                     payload.extend_from_slice(&hold.to_le_bytes());
                     // The peer-loss byte: OUR windows lost over the last second (the 1 s cadence resets the baseline) — what the peer's tier should answer to.
-                    payload.push(windows_lost.saturating_sub(tail_lost_base).min(255) as u8);
+                    // `tail_lost_base` is a snapshot of this same monotone counter, so the difference is exact.
+                    // WHY `.min(255)`: the peer-loss field is ONE BYTE on the wire, and a stalled cadence can span more than a second's windows (200 at the 5 ms rung, more after a stall).
+                    // PROOF: the byte saturates at "at least 255 lost" rather than wrapping a heavy loss into a light one.
+                    payload.push((windows_lost - tail_lost_base).min(255) as u8);
                 }
                 let seq = window_id;
                 tx_chain.advance_to(StepChain::step_for_seq(seq));
@@ -689,7 +692,7 @@ fn run(
                 peer_windows = Some(msg.windows);
                 peer_draining = msg.draining;
                 peer_satisfied = msg.satisfied;
-                fill_asks_sec = fill_asks_sec.saturating_add(msg.reqs.len() as u32);
+                fill_asks_sec += msg.reqs.len() as u32; // reset every second; a datagram carries at most FILL_REQ_PER_PACKET asks
                 for r in msg.reqs {
                     if serve_queue.len() < FILL_WANTED_CAP {
                         serve_queue.insert(r);
@@ -924,7 +927,7 @@ fn run(
                         && recent_losses.iter().all(|t| now.duration_since(*t) >= PLAID_OFF_LAN_LOSS_QUIET)
                         && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
                     let ema_calm = rtt_n == 0 || rtt_min == u32::MAX || rtt_ema - rtt_min as f32 <= PLAID_RTT_EMA_BLOAT_MS;
-                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now.saturating_sub(rtt_min) <= PLAID_RTT_GROWTH_MS && loss_quiet && ema_calm && plaid_strikes < PLAID_PROBATION_STRIKES;
+                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now - rtt_min <= PLAID_RTT_GROWTH_MS && loss_quiet && ema_calm && plaid_strikes < PLAID_PROBATION_STRIKES;
                     // The Wave page's off-LAN plaid preference (default on): OFF confines the raw rung to a LAN-class path however much headroom the WAN shows.
                     let wan_ok = super::PLAID_WAN_ALLOWED.load(Ordering::Relaxed);
                     let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || (headroom && wan_ok)));
@@ -974,7 +977,7 @@ fn run(
                     let underruns = crate::platform::audio::jitter_stats().2;
                     let lost = underruns > last_underruns;
                     // PROBATION STARVATION DROP: plaid off-LAN with underruns piling up is the far uplink drowning under 768 kbps — nothing arrives, so no hole is ever declared and the loss drop never trips. Step back to the codec and mark the drop so the loss-quiet window holds plaid off for a while.
-                    if pending_tier == RAW_TIER && !plaid_allowed && underruns.saturating_sub(last_underruns) as u32 >= PLAID_PROBATION_UNDERRUNS {
+                    if pending_tier == RAW_TIER && !plaid_allowed && (underruns - last_underruns) as u32 >= PLAID_PROBATION_UNDERRUNS {
                         pending_tier = RAW_TIER - 1;
                         tier_downs += 1;
                         plaid_strikes += 1;
@@ -1025,6 +1028,7 @@ fn run(
                         if plaid_probation {
                             plaid_strikes += 1;
                         }
+                        // WHY/PROOF: the ladder's floor — a loss at the bottom rung stays at the bottom rung (0), never wraps to a rung that does not exist.
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
                         last_tier_change = now;
@@ -1088,6 +1092,8 @@ fn run(
                     break;
                 }
                 serve_queue.remove(&seq);
+                // WHY: the gate above lets the FIRST fill through even when it alone exceeds the budget — a window larger than the budget must still be servable.
+                // PROOF: that fill spends the budget to zero; a plain subtraction would wrap it to ~2^64 and let every queued fill through.
                 budget = budget.saturating_sub(cost);
                 match served {
                     Some((t, b)) => {
@@ -1160,7 +1166,7 @@ fn run(
                     win_rtt_max,
                     win_rtt_n,
                     losses,
-                    windows_lost.saturating_sub(win_losses_at as u64),
+                    windows_lost - win_losses_at as u64, // a snapshot of the same monotone counter
                     jitter_target,
                     js.1,
                     js.2
@@ -1259,6 +1265,7 @@ fn run(
                     if plaid_probation {
                         plaid_strikes += 1;
                     }
+                    // WHY/PROOF: the ladder's floor — a loss at the bottom rung stays at the bottom rung (0), never wraps to a rung that does not exist.
                     pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                     tier_downs += 1;
                     last_tier_change = now;

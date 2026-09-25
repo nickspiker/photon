@@ -518,7 +518,7 @@ impl PhotonApp {
                 Ok(CkptOutcome::SpinelessHold) => {
                     self.ckpt_busy = false;
                     self.ckpt_rx = None;
-                    self.ckpt_spineless_holds = self.ckpt_spineless_holds.saturating_add(1);
+                    self.ckpt_spineless_holds += 1; // u32, one per spineless hold
                     // Ask every sibling for its spine state — the intended jump path when SOMEONE holds it. The counter is what breaks the mutual-spineless case (all holders wiped/rotated-past): three dry sweeps arm the supersession in the next tick's spawn.
                     crate::logf!(
                         "CKPT: spineless hold #{} — requesting ckpt_state from siblings{}",

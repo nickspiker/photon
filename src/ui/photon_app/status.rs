@@ -162,7 +162,7 @@ impl PhotonApp {
                             self.spawn_avatar_request_p2p(peer_addr, recipient_pubkey, now);
                         }
                         // Asked, but the peer hasn't answered within the window — fall back to FGTW (dedup'd by avatar_dl_started, so this fires at most once per peer).
-                        Some(sent_at) if now.saturating_sub(sent_at) > AVATAR_P2P_FALLBACK_OSC => {
+                        Some(sent_at) if now - sent_at > AVATAR_P2P_FALLBACK_OSC => {
                             self.spawn_avatar_download(ci);
                         }
                         // Asked recently — still waiting on the peer; do nothing this tick.
@@ -517,6 +517,7 @@ impl PhotonApp {
                                 let ladders = {
                                     let e = self.lane_rearm_cycles.entry(*fid).or_insert((tip, 0));
                                     if e.0 == tip {
+                                        // WHY/PROOF: a u8 of re-arm cycles at an unmoved tip — a wedged lane passes 255 in an afternoon, and a wrap would restart the escalation it gates.
                                         e.1 = e.1.saturating_add(1);
                                     } else {
                                         *e = (tip, 1);
@@ -583,9 +584,7 @@ impl PhotonApp {
                                             .map_or(true, |r| r.complete);
                                         if mismatch
                                             && idle
-                                            && now_osc
-                                                .saturating_sub(self.contacts[ci].digest_kick_osc)
-                                                > DIGEST_KICK_COOLDOWN_OSC
+                                            && now_osc - self.contacts[ci].digest_kick_osc > DIGEST_KICK_COOLDOWN_OSC
                                         {
                                             self.contacts[ci].digest_kick_osc = now_osc;
                                             crate::logf!("HISTORY: digest mismatch with {} (ours {} rows, theirs {}) — full resync walk", crate::fp(&self.contacts[ci].handle_proof), n_rows, record.row_count);
@@ -1391,6 +1390,8 @@ impl PhotonApp {
                                 // The depth still rides the log-visible counter (cleared by a successful fill) so field logs show how far behind a lane is running.
                                 let key = u64::from_le_bytes(expected[..8].try_into().unwrap())
                                     ^ u64::from_le_bytes(prev_msg_hp[..8].try_into().unwrap());
+                                // WHY: the streak counts buffered frames the PEER sends — its rate is theirs, not ours.
+                                // PROOF: a u16 a flood can fill; saturating holds it at the top instead of wrapping to a quiet 0.
                                 c.gap_streak = (key, c.gap_streak.1.saturating_add(1));
                                 // A gap means the SENDER is missing our tip — and the tip travels in our ping's sync records, which an hour-deep presence backoff would sit on. A buffered frame is the loudest possible "this contact matters right now": collapse the backoff so the next sweep pings, the pong's tip re-arms their given-up retransmit, and the gap fills in seconds instead of an hour (the "some messages lag a very long time" of 2026-08-02).
                                 c.ping_backoff = 0;
@@ -3183,6 +3184,8 @@ impl PhotonApp {
                     let now = vsf::eagle_time_oscillations();
                     // Staleness cap: a hist_req older than ~10 min is a replay or a badly delayed duplicate — pages are useless to an attacker (sealed) but serving costs us I/O.
                     const HIST_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
+                    // WHY: `sent_osc` is the REQUESTER's stamp, any i64 the wire carries.
+                    // PROOF: `now − i64::MIN` overflows; saturating makes an absurdly old stamp read as stale (dropped) rather than wrapping to a fresh-looking negative.
                     let stale = sent_osc != 0 && now.saturating_sub(sent_osc) > HIST_STALE_OSC;
 
                     // Per-conversation dedup (rid) + cadence cap (≥500ms between served pages).
@@ -3191,7 +3194,7 @@ impl PhotonApp {
                         .entry(conversation_token)
                         .or_insert_with(|| (0, std::collections::VecDeque::new()));
                     let duplicate = entry.1.contains(&request_id);
-                    let too_fast = now.saturating_sub(entry.0) < crate::OSC_PER_SEC / 2;
+                    let too_fast = now - entry.0 < crate::OSC_PER_SEC / 2; // entry.0 is our own last-served stamp (0 before the first)
 
                     if !stale && !duplicate && !too_fast {
                         entry.0 = now;
@@ -4369,6 +4372,7 @@ impl PhotonApp {
                     // Staleness: an old frame is a replay/duplicate — drop before any state change.
                     let now = vsf::eagle_time_oscillations();
                     const BLIND_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
+                    // WHY/PROOF: `sent_osc` is the peer's stamp — as for hist_req above, an absurd stamp must read as stale, not wrap to fresh.
                     if sent_osc != 0 && now.saturating_sub(sent_osc) > BLIND_STALE_OSC {
                         continue;
                     }
@@ -5097,6 +5101,7 @@ impl PhotonApp {
             }
             // Charge the cap for what actually LEFT — attempts the serial-send gate swallowed cost nothing, so the deficit keeps draining across pongs instead of parking two rows in. A ZERO-served burst still charges 1: chain_transmit refusing every row (no chain / no address / stale-era token lane) repeated forever otherwise — the tip-0 're-serving 8' spam every ~45s, 2026-09-01 — and a lane that cannot transmit at all is exactly what the park exists for.
             if let Some(e) = self.lane_reserve_bursts.get_mut(&cap_key) {
+                // WHY/PROOF: a u8 burst charge that a long deficit can push past 255 — saturating keeps the cap engaged instead of wrapping it open.
                 e.3 = e.3.saturating_add((served as u8).max(1));
             }
             if served > 0 {

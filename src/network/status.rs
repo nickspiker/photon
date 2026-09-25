@@ -2299,7 +2299,7 @@ async fn run_checker(
                                             src_addr,
                                             if data.len() >= 4 && &data[..3] == "RÅ".as_bytes() && data[3] == b'<' { "ok" } else { "BAD" },
                                             hex::encode(&data[..data.len().min(64)]),
-                                            hex::encode(&data[data.len().saturating_sub(64)..])
+                                            hex::encode(&data[data.len().saturating_sub(64)..]) // WHY/PROOF: a packet shorter than 64 bytes shows whole — its tail starts at 0, not at a wrapped index
                                         );
                                         send_status_update(
                                             &status_tx_recv,
@@ -4184,6 +4184,7 @@ async fn run_checker(
                 // Find or insert entry with linear search
                 let count =
                     if let Some(entry) = failures.iter_mut().find(|(k, _)| *k == pubkey_bytes) {
+                        // WHY/PROOF: a u8 of failed pings to one peer — an unreachable device passes 255, and a wrap would reset its count below the threshold it gates.
                         entry.1 = entry.1.saturating_add(1);
                         entry.1
                     } else {

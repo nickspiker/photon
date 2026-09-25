@@ -469,7 +469,7 @@ impl PhotonApp {
                     // Quit-drain accounting: every consumed item's write has landed (or errored LOUDLY thru the verdict) — release the quit edge. Decrement AFTER the writes, never on dequeue: the whole point is that the process may not exit while a snapshot is queued OR mid-write (the 2026-09-02 vanish was exactly a quit racing this thread).
                     let (n, cv) = &*pending;
                     let mut n = n.lock().unwrap();
-                    *n = n.saturating_sub(consumed);
+                    *n -= consumed; // every consumed item was counted in when it was queued
                     cv.notify_all();
                 }
             });
@@ -615,7 +615,7 @@ impl PhotonApp {
                     // Quit-drain accounting — same law as the message writer: decrement after the writes land, then release the quit edge.
                     let (n, cv) = &*pending;
                     let mut n = n.lock().unwrap();
-                    *n = n.saturating_sub(consumed);
+                    *n -= consumed; // every consumed item was counted in when it was queued
                     cv.notify_all();
                 }
             });

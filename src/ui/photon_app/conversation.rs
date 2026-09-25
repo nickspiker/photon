@@ -1316,9 +1316,12 @@ impl PhotonApp {
                     // Siblings repair via the fleet-key chain_reset at 2; FRIENDS re-key at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). A re-key resets chain_woven, so the UI already surfaces it as "establishing the secure channel". Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
                     // Fresh-weave grace: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
                     let era_grace_active = chains.genesis_osc > 0
+                        // WHY/PROOF: `genesis_osc` can arrive with chains adopted over fleet chain-sync — another device's stamp — so an absurd value reads as long past the grace, not wrapped into it.
                         && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
                             < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
                     if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                        // WHY: a u8 counting garbage decrypts — frames the PEER (or anyone on the wire) sends.
+                        // PROOF: a flood passes 255; a wrap would drop the streak under the re-key threshold and the fork would go unanswered.
                         contact.chain_fail_streak = contact.chain_fail_streak.saturating_add(1);
                         // CONVERGE BEFORE RE-KEY: collapse the presence backoff on every garbage hit so the next sweep pings immediately — the pong carries heads and the fleet chain-sync rides the same edge, letting a stale-era holder adopt the peer's current era instead of destroying it with a re-key.
                         contact.ping_backoff = 0;
@@ -2329,7 +2332,7 @@ impl PhotonApp {
                 {
                     rec.in_flight = None;
                     rec.expire_streak = 0; // the page ARRIVED — transport is alive; only the decrypt failed
-                    rec.decrypt_fail_streak = rec.decrypt_fail_streak.saturating_add(1);
+                    rec.decrypt_fail_streak += 1; // u32, one per undecryptable page; parked at 4
                     if rec.decrypt_fail_streak >= 4 && rec.parked_key_fp.is_none() {
                         rec.parked_key_fp = Some(open_key_fp);
                         crate::logf!(

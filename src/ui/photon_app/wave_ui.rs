@@ -843,6 +843,7 @@ impl PhotonApp {
                             return;
                         }
                         // STALE-OFFER GATE (re-serve era, 2026-08-20): the durable-store re-serve can deliver an offer row the live retransmit ladder never landed — hours after the origin gave up. An offer that OLD is history, not a doorbell (the same physics the merge-path rule above encodes; a live origin's retransmits arrive within seconds). Not a ring TIMER — ringing still stops only on edges; this is an age check on STARTING one, made on the row's own stamp.
+                        // WHY/PROOF: `row_ts` is the offer row's stamp — the origin's clock, off the wire; an absurd stamp must read as ancient (stale, no ring), not wrap to a negative age.
                         let age = vsf::eagle_time_oscillations().saturating_sub(row_ts);
                         if age > 60 * vsf::OSCILLATIONS_PER_SECOND as i64 {
                             crate::logf!(
@@ -1306,7 +1307,7 @@ impl PhotonApp {
             if matches!(sig, WaveSignal::Offer { .. }) {
                 if let Some(wave) = self.active_wave.as_mut() {
                     if wave.wave_id == *sig.wave_id() && wave.phase == WavePhase::Ringing {
-                        wave.express_beats = wave.express_beats.saturating_add(1);
+                        wave.express_beats += 1; // u32 per express frame during one ring
                     }
                 }
             }

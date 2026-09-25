@@ -410,7 +410,7 @@ impl PhotonApp {
             relay_to,
         });
         crate::logf!("attach: fetch request dispatched to device {} (rank {}, candidate {} of {})", crate::fp(&recipient_pubkey), rank, tries as usize % targets.len() + 1, targets.len());
-        self.attach_fetch_inflight.insert(*content_hash, (sci, std::time::Instant::now(), tries.saturating_add(1)));
+        self.attach_fetch_inflight.insert(*content_hash, (sci, std::time::Instant::now(), tries.saturating_add(1))); // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
     }
 
     /// Re-ask for fetches nobody answered: every 20 s while nothing has landed (no blob, no manifest), up to eight times, then let go. Landed fetches leave the map at once.

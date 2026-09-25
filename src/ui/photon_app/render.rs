@@ -69,11 +69,11 @@ impl PhotonApp {
                 if ms > 1000 {
                     let mut prev = 0u128;
                     let stages: Vec<String> = self.2.iter().map(|(s, t)| {
-                        let d = t.saturating_sub(prev);
+                        let d = t - prev; // stages are pushed in order off one Instant, so each t ≥ the one before
                         prev = *t;
                         format!("{s} {d}ms")
                     }).collect();
-                    crate::logf!("PERF: render stages on {} — {}, tail {}ms", self.1, stages.join(", "), ms.saturating_sub(prev));
+                    crate::logf!("PERF: render stages on {} — {}, tail {}ms", self.1, stages.join(", "), ms - prev); // ms is read after every stage, off the same Instant
                 }
             }
         }
@@ -215,6 +215,8 @@ impl PhotonApp {
                 })
                 .unwrap_or(0);
             // The store only fills by gossip since the announce cutover, so on a fresh session it holds nothing but our own record and `n` is 0 even with the whole network up. The seed's identity count (off the signed ack, minus ourselves) is the floor: the store wins once gossip carries more than the seed remembers, and the max never shows a friend LESS than what either source can vouch for.
+            // WHY: the seed's identity count is 0 until the seed answers.
+            // PROOF: "everyone but us" of nobody is nobody — saturating keeps it 0 where a plain subtraction would wrap to 2^32 − 1 peers online.
             let n = n.max(self.seed_identity_count.saturating_sub(1) as usize);
             tr(Msg::PeersOnline(n)).into_owned()
         } else if matches!(self.state, AppState::Settings(_)) {
@@ -1980,6 +1982,8 @@ impl PhotonApp {
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
                     let band_top = row_top.max(0) as usize;
+                    // WHY: a scrolled row can lie wholly BELOW the buffer, so its clipped bottom is above its top.
+                    // PROOF: that row has no band — zero height, skipped by the `>= 2` gate — where a plain subtraction would wrap to a band taller than the screen.
                     let band_h =
                         ((row_top + rh).min(buf_h as isize) as usize).saturating_sub(band_top);
                     if band_h >= 2 {
@@ -2892,6 +2896,7 @@ impl PhotonApp {
                     }
                     if back_pressed {
                         let band_top = (back_y - back_size).max(0.) as usize;
+                        // WHY/PROOF: as for the row band above — the back pill can sit below the buffer, and its band is then empty, not a wrapped giant.
                         let band_h =
                             (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
                         if band_h >= 2 {
@@ -3311,7 +3316,7 @@ impl PhotonApp {
                         // The contact's chosen name may carry line returns — each extra line adds a pitch to entry #0 (the avatar above rides up by the same).
                         let header_name = super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
                         let header_name_lines: Vec<String> = header_name.split('\n').map(|s| s.to_string()).collect();
-                        let header_name_extra = unit * 0.9 * (header_name_lines.len().saturating_sub(1)) as f32;
+                        let header_name_extra = unit * 0.9 * (header_name_lines.len() - 1) as f32; // `split` always yields at least one piece
                         let header_block_h = avatar_r * 2.0
                             + unit * 3.0
                             + header_name_extra
@@ -3400,7 +3405,7 @@ impl PhotonApp {
                         }
                         let total_lines = self.msg_wrap.as_ref().map(|(_, _, t)| *t).unwrap_or(n);
                         let content_h = n as f32 * line_h
-                            + (total_lines.saturating_sub(n)) as f32 * intra
+                            + (total_lines - n) as f32 * intra // the wrap cache is keyed to these rows and every row wraps to ≥ 1 line, so total ≥ n
                             + header_block_h
                             + if sel_in_stream { detail_h + self.sel_meta_h } else { 0.0 };
                         let view_h = (list_bottom - list_top).max(0.0);
@@ -3557,6 +3562,8 @@ impl PhotonApp {
                                 let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| *have as f32 / (*total).max(1) as f32).or_else(|| {
                                     (want_outbound).then(|| self.attach_send_total.get(&hash).copied()).flatten().map(|total| {
                                         let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| *d as f32 / (*t).max(1) as f32).collect();
+                                        // WHY: `attach_progress` is keyed by PEER ADDRESS, not by blob, so `inflight` counts every outbound attachment in flight, not just this one's.
+                                        // PROOF: with two sends at once it can exceed this blob's `total`, and a plain subtraction would wrap to ~2^32 done — the per-blob keying is the real fix (docs/rule0-audit-2026-09-25.md).
                                         let done = total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>();
                                         (done / total.max(1) as f32).clamp(0.0, 1.0)
                                     })
@@ -4281,6 +4288,7 @@ impl PhotonApp {
                                         // A PIGEON IN FLIGHT FILLS IN (Nick 2026-09-14): an outgoing picture still being sent shows only the slice that has gone — the preview wipes in from the left as the chunks land, the rest of the band stays bare until it does.
                                         let send_frac = if msg.is_outgoing && !self.attach_confirmed.contains(&hash_of_row) { self.attach_send_total.get(&hash_of_row).map(|total| {
                                             let inflight: Vec<f32> = self.attach_progress.iter().filter(|(_, _, _, ob)| *ob).map(|(_, d, t, _)| *d as f32 / (*t).max(1) as f32).collect();
+                                            // WHY/PROOF: the same peer-keyed `inflight` as the strip's progress above — it can outnumber this blob's total while another attachment sends.
                                             ((total.saturating_sub(inflight.len() as u32) as f32 + inflight.iter().sum::<f32>()) / (*total).max(1) as f32).clamp(0.0, 1.0)
                                         }) } else { None };
                                         let clip = match send_frac {
@@ -4344,6 +4352,8 @@ impl PhotonApp {
                                             }
                                         }
                                         let played_cols = mfrac.map(|f| (f * cols as f32) as usize).unwrap_or(0);
+                                        // WHY: a pigeon whose blob has not landed has no envelopes yet.
+                                        // PROOF: the far channel's index is then 0, which `envs.get` answers with nothing — a plain subtraction would wrap to usize::MAX.
                                         let last = envs.len().saturating_sub(1);
                                         for (chn, up) in [(0usize, true), (last, false)] {
                                             let Some(e) = envs.get(chn) else { continue };
@@ -6258,7 +6268,9 @@ impl PhotonApp {
                         let stops = crate::platform::audio::rx_trim_stops();
                         let stops_s = if stops < 0 { format!("\u{2212}{}", crate::fmt_num((-stops) as u32)) } else if stops > 0 { format!("+{}", crate::fmt_num(stops as u32)) } else { crate::fmt_num(0) };
                         let route = crate::platform::audio::route_id();
-                        let rocker = crate::platform::audio::current_volume_db().map(|db| crate::fmt_share((10f32.powf(db / 20.0) * 1000.0).round() as u64, 1000)).unwrap_or_else(|| "?".into());
+                        // WHY: the volume is the PLATFORM's report, and some devices report a boost above unity (dB > 0).
+                        // PROOF: a share is part of its whole and `fmt_share` asserts it — the external value is bounded here, where it enters, so a boosting device reads as full rather than crashing the page.
+                        let rocker = crate::platform::audio::current_volume_db().map(|db| crate::fmt_share(((10f32.powf(db / 20.0) * 1000.0).round() as u64).min(1000), 1000)).unwrap_or_else(|| "?".into());
                         flow.line(&mut canvas, ctx.text, &tr(Msg::WaveHearingLine { stops: &stops_s, route: &route, rocker: &rocker }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                         // THE TRIM BAR (Nick 2026-09-16): a track with a tick per stop from quiet-min (−Lun) to loud-max (+Lun), the current stop a bright marker with its dozenal doubling count above it, the ends labelled — so the ear can see how much room it has left either way.
                         {
@@ -6308,7 +6320,9 @@ impl PhotonApp {
                     for (i, (mic, voiced, floor, n)) in profiles.iter().enumerate().take(6) {
                         let v = crate::fmt_num(voiced.round() as u32);
                         // The quiet floor is a fraction of a coarse unit on every phone we have met — shown as a share of one.
-                        let f = crate::fmt_share((*floor * 1000.0).round() as u64, 1000);
+                        // WHY: the floor is a LEARNED profile value synced from the fleet's settings, not our own arithmetic this frame.
+                        // PROOF: bounded at the edge, so a stored value above full scale reads as full instead of tripping `fmt_share`'s assert.
+                        let f = crate::fmt_share(((*floor * 1000.0).round() as u64).min(1000), 1000);
                         let ns = crate::fmt_num(*n);
                         flow.line(&mut canvas, ctx.text, &tr(Msg::WaveMicLine { mic, voiced: &v, floor: &f, n: &ns }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &[
@@ -6321,7 +6335,7 @@ impl PhotonApp {
                         if let Some(m) = self.wave_measured.as_ref() {
                             let line = if m.voiced_frames >= 600 {
                                 let v = crate::fmt_num(m.voiced);
-                                let f = crate::fmt_share((m.floor * 1000.0).round() as u64, 1000);
+                                let f = crate::fmt_share(((m.floor * 1000.0).round() as u64).min(1000), 1000); // learned floor, bounded at the edge as above
                                 tr(Msg::WaveMeasured { voiced: &v, floor: &f }).into_owned()
                             } else {
                                 tr(Msg::WaveMeasuredQuiet).into_owned()
@@ -6391,8 +6405,9 @@ impl PhotonApp {
                     match self.vault_stats.as_ref() {
                         Some(v) => {
                             let bb = v.engine.block_bytes;
-                            let occupied_blocks = v.engine.plow.saturating_sub(v.engine.reap);
-                            let dead_blocks = occupied_blocks.saturating_sub(v.engine.live_blocks);
+                            // manifestus invariants, read in one librarian call: the plow never trails the reap, and live blocks are a subset of the occupied ones.
+                            let occupied_blocks = v.engine.plow - v.engine.reap;
+                            let dead_blocks = occupied_blocks - v.engine.live_blocks;
                             let cap = crate::dms_size(v.engine.tract_blocks * bb);
                             let odo = crate::dms_size(v.engine.plow * bb);
                             let now = crate::dms_size(occupied_blocks * bb);
@@ -7299,6 +7314,8 @@ impl RowView {
 
 /// A contact row's height: the layout row for a one-line name, plus one line step per extra wrapped line. The extent clamp and the row walk share it.
 fn contact_row_height(row_h: isize, lines: usize) -> isize {
+    // WHY: an empty name wraps to zero lines, and one caller passes that count straight through.
+    // PROOF: a zero-line name still occupies one row — saturating gives no extra step where a plain subtraction would wrap to 2^64 extra lines.
     row_h + (lines.saturating_sub(1) as f32 * contact_line_step(row_h)).round() as isize
 }
 

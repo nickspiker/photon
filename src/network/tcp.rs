@@ -110,6 +110,8 @@ pub fn recv(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
     }
 
     // Now read the remaining bytes (we already have 64)
+    // WHY: `file_length` is the SENDER's header claim — only its upper bound was checked above.
+    // PROOF: a claim shorter than the 64 bytes already read needs nothing more; a plain subtraction would wrap and try to read ~2^64.
     let remaining = file_length.saturating_sub(header_buf.len());
     let mut data = header_buf;
     if remaining > 0 {

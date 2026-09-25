@@ -317,6 +317,8 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
                 Some((lseq, lslot0, ln)) if lseq == seq => Some((seq, lslot0, ln + 1)),
                 _ => Some((seq, slot - wslot as i64, 1)),
             };
+            // WHY: the stamp lattice can place a window's frame earlier than its in-window slot near the recording's start (slot is clamped at 0 just above).
+            // PROOF: the window's first slot is then 0, the recording's start — a plain subtraction would wrap it past the end of the recording.
             let e = arrived[c].entry(seq).or_insert((slot_u.saturating_sub(wslot as usize), 0));
             e.1 += 1;
         }
@@ -639,6 +641,7 @@ impl KeptStream {
     /// Position the stream at archive slot `slot` (clamped to the end): packets before the target are WALKED by their length prefix, never decoded — a two-hour seek is a byte scan, not a two-hour decode — then `SEEK_PRIME` frames prime the decoder. The tap-to-seek path.
     pub fn seek(&mut self, slot: usize) {
         let slot = slot.min(self.total);
+        // WHY/PROOF: a seek inside the first SEEK_PRIME slots primes from slot 0, the start — not from a wrapped slot past the end.
         let start = slot.saturating_sub(SEEK_PRIME);
         let nchan = self.nchan;
         match &mut self.inner {

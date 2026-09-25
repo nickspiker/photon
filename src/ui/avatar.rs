@@ -1559,7 +1559,8 @@ fn decode_va_wrapper(wrapped: &[u8]) -> Result<Vec<u8>, String> {
 
 /// Encode VSF length (len-1 with size class marker)
 fn encode_vsf_length(buf: &mut Vec<u8>, len: usize) {
-    let len_minus_1 = len.saturating_sub(1);
+    // WHY/PROOF: a VSF length is written as len − 1, so zero is unrepresentable — a zero here is a caller bug and fails loud, where the old saturating 0 silently encoded it as a length of ONE.
+    let len_minus_1 = len.checked_sub(1).expect("encode_vsf_length: a VSF length is never zero");
     if len_minus_1 <= 0xFF {
         buf.push(b'3'); // u8 size class
         buf.push(len_minus_1 as u8);

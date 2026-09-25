@@ -170,7 +170,7 @@ impl PhotonApp {
             // Every 15s while blocked: ask every reachable peer for its phonebook AND resolve the stalled devices from the seed registry — peers first, seed last. This used to also fire `query_resume`, which replays the ENTIRE attest (contacts load, cloud sync, roster pull, fleet key sync — 749 full replays in one logged session, and the roster-pull storm rode it via needs_initial_roster_pull). The resume's only job here was the announce echo that learned addresses, and the per-record registry resolve below does that properly now.
             if blocked && due {
                 self.last_stalled_refetch = Some(now);
-                self.stalled_refetch_streak = self.stalled_refetch_streak.saturating_add(1);
+                self.stalled_refetch_streak += 1; // u32, one per stalled-refetch cycle
                 crate::logf!("FGTW: a Pending contact has no address — gossiping reachable peers + resolving from the seed registry");
                 let reachable: Vec<std::net::SocketAddr> = self
                     .contacts
