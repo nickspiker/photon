@@ -1680,20 +1680,8 @@ impl PhotonApp {
                         Some((crate::types::RefKind::BridgeCmd, _)) => {
                             (!message_text.trim().is_empty()).then(|| message_text.clone())
                         }
-                        None => {
-                            // LEGACY transition arm: a pre-typed build's bare row (its `$ ` prefix stripped when present). Delete this arm once the fleet is past the 2026-08-23 line.
-                            let cmd = message_text
-                                .strip_prefix("$ ")
-                                .or_else(|| message_text.strip_prefix("$\t"))
-                                .unwrap_or(&message_text)
-                                .to_string();
-                            if cmd.trim().is_empty() {
-                                None
-                            } else {
-                                crate::log("BRIDGE: legacy UNTYPED command row (peer build predates RefKind::BridgeCmd) — running it; update the fleet");
-                                Some(cmd)
-                            }
-                        }
+                        // An UNTYPED row never runs, whatever its text says. The transition arm that ran any plain sibling row (stripping a `$ ` prefix when present) is gone (2026-09-25, AGENT.md "Text Carries Only Human Words"): execution keyed on text is a lever an attacker pulls with a crafted message, and only `RefKind::BridgeCmd` — a typed field the sender's build sets deliberately — names a command.
+                        None => None,
                         // Reply/edit/react rows in a sibling conversation are annotations, not commands — the old gate ran them, which was its own quiet bug.
                         Some(_) => None,
                     }

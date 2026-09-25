@@ -54,7 +54,7 @@ pub enum RefKind {
     BridgeOut = 4,
     /// BRIDGE session RESET — the client sends this when it OPENS the bridge, telling the host to kill its persistent shell for us and start fresh (Nick 2026-08-22: "opening the bridge nukes any terminal open, clears and spawns new"). A hidden control row: never displayed, never run as a command. No target; `i64` is 0.
     BridgeReset = 5,
-    /// BRIDGE COMMAND — the typed mark that says "run me" (2026-08-23). Execution used to key on being any plain sibling row (with a legacy `$ ` content prefix merely stripped) — content-as-trigger, the exact class the reply/edit/react rework exists to kill. The client stamps every bridge-conversation send with this kind; the host runs ONLY rows carrying it (a transition arm still accepts bare legacy rows, loudly). No target; `i64` is 0.
+    /// BRIDGE COMMAND — the typed mark that says "run me" (2026-08-23). Execution used to key on being any plain sibling row (with a legacy `$ ` content prefix merely stripped) — content-as-trigger, the exact class the reply/edit/react rework exists to kill. The client stamps every bridge-conversation send with this kind; the host runs ONLY rows carrying it — the transition arm that ran bare rows was deleted 2026-09-25. No target; `i64` is 0.
     BridgeCmd = 6,
     /// BRIDGE INTERRUPT — the operator's stop lever (Ctrl+K / the Stop pill), targeting the command row's eagle_time. The signal number rides the typed `bsig` wire field; the host signals the command's own process group, never bash. Hidden control row; late arrival after completion is a natural no-op.
     BridgeCtl = 7,
