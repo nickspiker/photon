@@ -31,7 +31,7 @@ pub fn start(secs: u64) -> Option<Receiver<MeasureResult>> {
             crate::platform::audio::captured_frames();
             while std::time::Instant::now() < deadline {
                 std::thread::sleep(std::time::Duration::from_millis(50));
-                for (_, frame24) in crate::platform::audio::captured_frames() {
+                for (_, _, frame24) in crate::platform::audio::captured_frames() {
                     let mean_q8 = crate::platform::audio::mean_abs_24(&frame24);
                     if mean_q8 > 0 && mean_q8 < raw_floor_q8 {
                         raw_floor_q8 = mean_q8;

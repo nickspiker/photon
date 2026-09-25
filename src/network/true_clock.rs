@@ -192,6 +192,29 @@ struct Slew {
     since: i64,
 }
 
+/// The boot → Eagle mapping without its uncertainty bookkeeping: `(ref_boot, ref_true, rate_ppb)` for the model and, while a slew is in flight, the model it slews from plus the boot instant it began.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Snapshot {
+    pub model: Option<(i64, i64, i64)>,
+    pub slew: Option<(i64, i64, i64, i64)>,
+}
+
+impl Snapshot {
+    /// True time at `boot`; `None` before any fit.
+    pub fn eagle_at(&self, boot: i64) -> Option<i64> {
+        let map = |(rb, rt, r): (i64, i64, i64)| {
+            let d = (boot - rb) as i128;
+            (rt as i128 + d + d * r as i128 / 1_000_000_000) as i64
+        };
+        let target = map(self.model?);
+        let Some((fb, ft, fr, since)) = self.slew else { return Some(target) };
+        let from = map((fb, ft, fr));
+        let allowed = (boot - since).max(0) as i128 * SLEW_NS_PER_SEC as i128 / 1_000_000_000; // WHY/PROOF: `since` is a past boot instant, but a caller converting a PAST instant can ask about a moment before the slew began — nothing has slewed yet there
+        let diff = (target - from) as i128;
+        Some(if diff.abs() <= allowed { target } else { (from as i128 + allowed * diff.signum()) as i64 })
+    }
+}
+
 /// The discipline state: the window, the current model, and a slew while a wave forbids steps.
 #[derive(Clone, Debug, Default)]
 pub struct TrueClock {
@@ -246,17 +269,12 @@ impl TrueClock {
     }
 
     fn eagle_raw(&self, boot: i64) -> i64 {
-        let Some(m) = self.model else { return boot };
-        let target = m.eagle_at(boot);
-        let Some(s) = self.slew else { return target };
-        let from = s.from.eagle_at(boot);
-        let allowed = (boot - s.since).max(0) as i128 * SLEW_NS_PER_SEC as i128 / 1_000_000_000; // WHY/PROOF: `since` is a past boot instant, but a caller converting a PAST instant (eagle_of) can ask about a moment before the slew began — nothing has slewed yet there
-        let diff = (target - from) as i128;
-        if diff.abs() <= allowed {
-            target
-        } else {
-            (from as i128 + allowed * diff.signum()) as i64
-        }
+        self.snapshot().eagle_at(boot).unwrap_or(boot)
+    }
+
+    /// The mapping alone — model plus any slew in flight — small and `Copy`, for publishing to readers that must not take a lock (the audio callbacks).
+    pub fn snapshot(&self) -> Snapshot {
+        Snapshot { model: self.model.map(|m| (m.ref_boot, m.ref_true, m.rate_ppb)), slew: self.slew.map(|s| (s.from.ref_boot, s.from.ref_true, s.from.rate_ppb, s.since)) }
     }
 
     /// True time at a boot instant, with its uncertainty and lock (spec §4.4 `eagle_of`). Before any fit the boot clock itself is returned, marked `Free`.

@@ -6,7 +6,7 @@
 //!
 //! Two hard rules: photon NEVER writes the system clock, and no stored row is ever restamped (timestamps are row identity, and the anti-entropy digest is order-dependent — restamping would re-walk history across the whole fleet forever).
 
-use std::sync::atomic::{AtomicI64, Ordering};
+use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
 use std::sync::Mutex;
 
 /// THE CLOCK THAT COUNTS THROUGH SLEEP (field 2026-09-17: Nick's phone slept and photon's time fell 30 minutes behind — "Timestamp outside valid window: diff=1821s", growing to 3175 s an hour later — because `std::time::Instant` is CLOCK_MONOTONIC on Linux/Android, which STOPS while the device is suspended; every minute the phone slept was a minute the anchor never saw). CLOCK_BOOTTIME is the monotonic clock that includes suspend; macOS has mach_continuous_time for the same; Windows' GetTickCount64 counts through sleep at millisecond grain. All immune to the wall clock, which is the property the anchor exists for.
@@ -52,6 +52,45 @@ fn boot_osc() -> i64 {
 /// The disciplined clock (docs/lock.md §4): exchanges against the reference, fitted to offset + rate over the suspend-counting boot clock. Replaces the single anchor, which carried an offset but no rate — every hour of drift since the last consensus was error it could not see.
 static CLOCK: Mutex<crate::network::true_clock::TrueClock> = Mutex::new(crate::network::true_clock::TrueClock::new());
 
+/// The clock's mapping for readers that must not block — the audio callbacks stamp every captured and rendered frame, and a real-time thread may not wait on [`CLOCK`]'s mutex. A seqlock: the writer (always under CLOCK, so writers never race) makes the sequence odd, stores, makes it even; a reader retries until it saw the same even sequence on both sides of its loads.
+static SNAP_SEQ: AtomicU64 = AtomicU64::new(0);
+/// [has model, ref_boot, ref_true, rate_ppb, has slew, from_boot, from_true, from_rate, since].
+static SNAP: [AtomicI64; 9] = [const { AtomicI64::new(0) }; 9];
+
+fn publish(clock: &crate::network::true_clock::TrueClock) {
+    let s = clock.snapshot();
+    let m = s.model.unwrap_or_default();
+    let w = s.slew.unwrap_or_default();
+    let vals = [s.model.is_some() as i64, m.0, m.1, m.2, s.slew.is_some() as i64, w.0, w.1, w.2, w.3];
+    SNAP_SEQ.fetch_add(1, Ordering::AcqRel);
+    for (slot, v) in SNAP.iter().zip(vals) {
+        slot.store(v, Ordering::Relaxed);
+    }
+    SNAP_SEQ.fetch_add(1, Ordering::AcqRel);
+}
+
+/// True time at a boot instant WITHOUT a lock — for the audio callbacks (spec §5.1: every captured sample stamped by the HAL's clock thru TrueClock). Before any fit, the wall clock carried to that instant, like [`stamp_at`].
+pub fn eagle_at_boot_rt(boot: i64) -> i64 {
+    let snap = loop {
+        let s1 = SNAP_SEQ.load(Ordering::Acquire);
+        if s1 & 1 == 1 {
+            std::hint::spin_loop();
+            continue;
+        }
+        let v: [i64; 9] = std::array::from_fn(|i| SNAP[i].load(Ordering::Relaxed));
+        std::sync::atomic::fence(Ordering::Acquire);
+        if SNAP_SEQ.load(Ordering::Relaxed) == s1 {
+            break crate::network::true_clock::Snapshot { model: (v[0] != 0).then_some((v[1], v[2], v[3])), slew: (v[4] != 0).then_some((v[5], v[6], v[7], v[8])) };
+        }
+    };
+    snap.eagle_at(boot).unwrap_or_else(|| vsf::eagle_time_oscillations() + (boot - boot_osc()))
+}
+
+/// Nanoseconds on the boot clock as oscillations — the unit every boot instant here is kept in.
+pub fn boot_ns_to_osc(ns: i64) -> i64 {
+    (ns as i128 * crate::OSC_PER_SEC as i128 / 1_000_000_000) as i64
+}
+
 /// The newest oscillation count [`stamp_osc`] has handed out. A refresh that corrects us BACKWARD must never let the next stamp land behind one already in a row — that would invert our own conversation against itself.
 static LAST_ISSUED: AtomicI64 = AtomicI64::new(i64::MIN);
 
@@ -63,7 +102,12 @@ pub fn boot_now() -> i64 {
 /// Feed reference exchanges (the clock-check worker's, already on the boot clock) and refit. `no_step` = a wave is live, so the new fit slews in at 50 µs/s instead of jumping (spec §4.3). Every fit is logged (spec §4.3).
 pub fn feed(exchanges: &[crate::network::true_clock::Exchange], no_step: bool) {
     let now = boot_osc();
-    let report = CLOCK.lock().unwrap().feed(exchanges, crate::network::true_clock::LockSource::Ntp, now, no_step);
+    let report = {
+        let mut c = CLOCK.lock().unwrap();
+        let r = c.feed(exchanges, crate::network::true_clock::LockSource::Ntp, now, no_step);
+        publish(&c);
+        r
+    };
     if let Some(r) = report {
         let st = now_stamp();
         crate::logf!(
@@ -95,7 +139,11 @@ pub fn adopt_from_server(server_now_osc: i64, rtt_osc: i64) {
     let boot = boot_osc();
     let before = now_osc();
     let true_now = server_now_osc + rtt / 2;
-    CLOCK.lock().unwrap().reset_to(crate::network::true_clock::Exchange { boot, offset: true_now - boot, delay }, crate::network::true_clock::LockSource::Ntp);
+    {
+        let mut c = CLOCK.lock().unwrap();
+        c.reset_to(crate::network::true_clock::Exchange { boot, offset: true_now - boot, delay }, crate::network::true_clock::LockSource::Ntp);
+        publish(&c);
+    }
     crate::logf!(
         "Clock: FGTW refused our stamp — re-anchored on the server's clock: photon time moves {} ms, now {} ms off the system clock (±{} ms); a nunc consensus will refine it",
         (true_now - before) * 1000 / crate::OSC_PER_SEC,
@@ -202,7 +250,11 @@ mod tests {
     static GATE: Mutex<()> = Mutex::new(());
     fn hold_clean() -> std::sync::MutexGuard<'static, ()> {
         let g = GATE.lock().unwrap_or_else(|p| p.into_inner());
-        *CLOCK.lock().unwrap() = crate::network::true_clock::TrueClock::new();
+        {
+            let mut c = CLOCK.lock().unwrap();
+            *c = crate::network::true_clock::TrueClock::new();
+            publish(&c);
+        }
         LAST_ISSUED.store(i64::MIN, Ordering::Relaxed);
         g
     }
@@ -225,6 +277,17 @@ mod tests {
         // The refusal detail parses; anything else does not.
         assert_eq!(server_now_from_detail("Timestamp outside valid window: client is 1821s behind the server (server_now=123456789)"), Some(123456789));
         assert_eq!(server_now_from_detail("bad_signature: nope"), None);
+    }
+
+    /// The lock-free reader the audio callbacks use agrees with the locked clock, before and after a fit.
+    #[test]
+    fn the_real_time_reader_matches_the_locked_clock() {
+        let _g = hold_clean();
+        let close = |a: i64, b: i64| (a - b).abs() < crate::OSC_PER_SEC / 1000;
+        assert!(close(eagle_at_boot_rt(boot_osc()), now_osc()), "unfitted: both carry the wall clock");
+        adopt(crate::OSC_PER_SEC * 7, crate::OSC_PER_SEC / 1000, vsf::eagle_time_oscillations());
+        assert!(close(eagle_at_boot_rt(boot_osc()), now_osc()), "fitted: the published snapshot is the model");
+        assert!(close(eagle_at_boot_rt(boot_osc()) - vsf::eagle_time_oscillations(), crate::OSC_PER_SEC * 7));
     }
 
     /// Stamps never repeat and never regress, even when the anchor is corrected backward mid-stream — the row-identity guarantee.

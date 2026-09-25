@@ -17,9 +17,9 @@ pub const SAMPLE_RATE: u32 = 48_000;
 /// 5ms @ 48kHz mono — the CELT frame the engine encodes (the 2026-09-08 flag day: halving the frame halves the fill wait, the window batch, AND the jitter quantum in one move).
 pub const FRAME_SAMPLES: usize = 240;
 
-/// Mic frames waiting for the engine (drop-oldest past ~500ms), each stamped with the eagle time its FIRST sample left the ADC — the HAL's clock on Android (audio_aaudio), the capture callback on desktop.
+/// Mic frames waiting for the engine (drop-oldest past ~500ms): (true time its FIRST sample was captured, that sample's position in the stream's 48 kHz sample count, samples). The time is the HAL's boot-clock timestamp on Android and the callback instant less the device's reported capture delay on desktop, both mapped thru TrueClock (docs/lock.md §5.1); the position is what the sender's rate regression fits against.
 /// Captured mic frames at 24-BIT depth (i32 holding −2^23..2^23−1; a 16-bit source is shifted up 8 — Nick 2026-09-14: "are we not doing 24 bit voice capture?"). The engine's fixed makeup consumes the extra bits directly (acc >> 40 into the i16 wire), so a calibrated Unprocessed mic at 40 LSB16 arrives as 10240 LSB24 and the makeup lifts SIGNAL, not dither.
-static CAPTURE_Q: Mutex<VecDeque<(i64, Vec<i32>)>> = Mutex::new(VecDeque::new());
+static CAPTURE_Q: Mutex<VecDeque<(i64, i64, Vec<i32>)>> = Mutex::new(VecDeque::new());
 /// Decoded far-end frames waiting for the device (drop-oldest past ~1s).
 static PLAYBACK_Q: Mutex<VecDeque<Vec<i16>>> = Mutex::new(VecDeque::new());
 /// The AEC far-end reference: (eagle osc at enqueue-to-device, samples) per frame, last ~500ms. The canceller/duck reads this; nothing else does.
@@ -243,7 +243,7 @@ pub(crate) fn set_volume_db(db: Option<f32>) {
 }
 
 /// Drain every captured frame since the last call (5ms 48kHz mono each). Engine-side, any thread.
-pub fn captured_frames() -> Vec<(i64, Vec<i32>)> {
+pub fn captured_frames() -> Vec<(i64, i64, Vec<i32>)> {
     let mut q = CAPTURE_Q.lock().unwrap();
     q.drain(..).collect()
 }
@@ -348,12 +348,12 @@ pub fn stop_owned(gen: u64) {
     }
 }
 
-pub(crate) fn push_captured(at_osc: i64, frame: Vec<i32>) {
+pub(crate) fn push_captured(at_osc: i64, pos: i64, frame: Vec<i32>) {
     let mut q = CAPTURE_Q.lock().unwrap();
     if q.len() >= CAPTURE_Q_MAX {
         q.pop_front();
     }
-    q.push_back((at_osc, frame));
+    q.push_back((at_osc, pos, frame));
 }
 
 /// LOCAL-SOURCE playback (v-chirp probe, ringback, ended-screen preview): the queue is fed by a paced LOCAL source, not the network, so the whole adaptive apparatus must stand down — no priming, no target growth on dry (the source ENDING is dry), no standing-depth trims, no clock splice (there is no second clock to null). Field 2026-09-08, the conviction that unified three bugs: the engine dumps the 200-frame chirp into the queue at once and the hard ceiling TRIMMED IT FROM THE FRONT down to ~9 frames — the up-leg's low-frequency head never left the speaker (both field rejects: down-leg strong at a plausible lag, up-leg weak and late); the same splice/trim path made the ended-screen preview choppy and pitch-warped, and rode the ringback too.
@@ -684,14 +684,22 @@ mod desktop {
         let mut pending: Vec<f32> = Vec::with_capacity(FRAME_SAMPLES * 2);
         // The float-cast carry (see the map below) — lives in the closure, one per stream.
         let mut cast_carry: f64 = 0.0;
+        // The 48 kHz position of `pending[0]`.
+        let mut framed_pos: i64 = 0;
         let stream = dev
             .build_input_stream(
                 &cfg,
-                move |data: &[T], _: &cpal::InputCallbackInfo| {
+                move |data: &[T], info: &cpal::InputCallbackInfo| {
+                    // When this buffer's first sample was CAPTURED: now, less the delay the device reports between capture and this callback — never "when the callback ran" (docs/lock.md §5.1).
+                    let ts = info.timestamp();
+                    let held = ts.callback.duration_since(&ts.capture).map_or(0, |d| crate::network::time_base::boot_ns_to_osc(d.as_nanos() as i64));
+                    let cap_boot = crate::network::time_base::boot_now() - held;
                     let as_f32: Vec<f32> = data.iter().map(|s| s.to_sample::<f32>()).collect();
                     let mono = fold_mono(&as_f32, channels);
                     let mut out = Vec::with_capacity(mono.len());
                     rs.run(&mono, &mut out);
+                    // (position, true time) of this callback's first sample — each frame's stamp extrapolates from it at the nominal rate (the engine's regression fits the real one).
+                    let anchor = (framed_pos + pending.len() as i64, crate::network::time_base::eagle_at_boot_rt(cap_boot));
                     pending.extend(out);
                     while pending.len() >= FRAME_SAMPLES {
                         let frame: Vec<i32> = pending
@@ -705,7 +713,9 @@ mod desktop {
                                 out as i32
                             })
                             .collect();
-                        push_captured(vsf::eagle_time_oscillations(), frame);
+                        let at = anchor.1 + ((framed_pos - anchor.0) as i128 * crate::OSC_PER_SEC as i128 / SAMPLE_RATE as i128) as i64;
+                        push_captured(at, framed_pos, frame);
+                        framed_pos += FRAME_SAMPLES as i64;
                     }
                 },
                 |e| crate::logf!("AUDIO: capture stream error: {}", e),
@@ -946,12 +956,13 @@ mod tests {
         // Bounded drop-oldest capture.
         clear_queues();
         for i in 0..(CAPTURE_Q_MAX + 10) {
-            push_captured(0, vec![i as i32; FRAME_SAMPLES]);
+            push_captured(0, i as i64 * FRAME_SAMPLES as i64, vec![i as i32; FRAME_SAMPLES]);
         }
         let drained = captured_frames();
         assert_eq!(drained.len(), CAPTURE_Q_MAX);
-        // Oldest were dropped: the first surviving frame is #10.
-        assert_eq!(drained[0].1[0], 10);
+        // Oldest were dropped: the first surviving frame is #10, and its stream position rides with it.
+        assert_eq!(drained[0].2[0], 10);
+        assert_eq!(drained[0].1, 10 * FRAME_SAMPLES as i64);
 
         // Adaptive jitter buffer: renders silence while PRIMING (queue below the floor), drains real frames once the floor is reached, and a dry queue underruns to silence (never PLC guesswork). Every rendered frame — silence or real — feeds the AEC reference.
         clear_queues(); // resets the jitter state: priming, target = JITTER_FLOOR

@@ -27,26 +27,16 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// A stream reported an error (route change, device gone): rebuilt off the callback thread, once per fault.
 static REOPENING: AtomicBool = AtomicBool::new(false);
 
-/// CLOCK_MONOTONIC now, in nanoseconds — the clock AAudio timestamps are on.
-fn monotonic_ns() -> i64 {
-    let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
-    ts.tv_sec as i64 * 1_000_000_000 + ts.tv_nsec as i64
-}
-
-/// Map a monotonic instant to eagle oscillations thru a fresh (now, now) pair — the two clocks are read back to back, so the mapping error is the read skew, microseconds.
-fn eagle_at_monotonic(target_ns: i64) -> i64 {
-    let eagle_now = vsf::eagle_time_oscillations();
-    let mono_now = monotonic_ns();
-    let delta_ns = target_ns - mono_now;
-    eagle_now + delta_ns * vsf::OSCILLATIONS_PER_SECOND as i64 / 1_000_000_000
-}
-
-/// The eagle time at which frame `pos` of this stream hits the DAC (output) or left the ADC (input), from the HAL's latest timestamp; None before the HAL has one (the first few bursts).
+/// The true time at which frame `pos` of this stream hits the DAC (output) or left the ADC (input): the HAL's latest timestamp, taken on the BOOT clock photon's TrueClock runs on, extrapolated to `pos` and mapped without a lock (docs/lock.md §5.1). None before the HAL has one (the first few bursts).
 fn frame_time(stream: &AudioStream, pos: i64) -> Option<i64> {
-    let ts = stream.timestamp(Clockid::Monotonic).ok()?;
+    let ts = stream.timestamp(Clockid::Boottime).ok()?;
     let ns = ts.time_nanoseconds + (pos - ts.frame_position) * 1_000_000_000 / SAMPLE_RATE as i64;
-    Some(eagle_at_monotonic(ns))
+    Some(crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_ns_to_osc(ns)))
+}
+
+/// True time now, lock-free — the stamp for a frame the HAL has not timed yet.
+fn now_true() -> i64 {
+    crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_now())
 }
 
 /// Build one stream. AAudio's DEFAULTS are the attributes we want — MEDIA usage rides the fast mixer (the vendor voice pipeline behind VOICE_COMMUNICATION was the 80 ms floor, 2026-08-19) and the VOICE_RECOGNITION preset is the mic without the vendor NS/AGC/AEC chain — and the explicit setters are API 28 while minSdk is 26, so nothing is set. The callback box is consumed by the builder, so a failed open needs a fresh one from the factory.
@@ -109,7 +99,7 @@ fn output_callback() -> ndk::audio::AudioStreamDataCallback {
         while written < n {
             if leftover_at >= leftover.len() {
                 // The frame about to start at `pos + written` hits the DAC at the HAL's time for that position — the stamp the reference ring, the learner and the chirp anchor read.
-                let at = frame_time(stream, pos + written as i64).unwrap_or_else(vsf::eagle_time_oscillations);
+                let at = frame_time(stream, pos + written as i64).unwrap_or_else(now_true);
                 leftover = next_render_frame_at(at);
                 leftover_at = 0;
                 if leftover.is_empty() {
@@ -156,8 +146,8 @@ fn input_callback() -> ndk::audio::AudioStreamDataCallback {
         while acc.len() >= FRAME_SAMPLES {
             let frame: Vec<i32> = acc.drain(..FRAME_SAMPLES).collect();
             // The stamp is when this frame's FIRST sample left the ADC — the HAL's clock, not our arrival.
-            let at = frame_time(stream, acc_start).unwrap_or_else(vsf::eagle_time_oscillations);
-            push_captured(at, frame);
+            let at = frame_time(stream, acc_start).unwrap_or_else(now_true);
+            push_captured(at, acc_start, frame);
             acc_start += FRAME_SAMPLES as i64;
         }
         AudioCallbackResult::Continue

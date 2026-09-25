@@ -494,7 +494,7 @@ fn run(
         }
         // ---- TX: mic → opus → window → fountain → sealed packets ----
         // Each captured frame carries the eagle time its first sample left the ADC (the HAL's clock on Android, the capture callback on desktop) — every mic stamp below reads THAT, never the drain moment.
-        for (cap_osc, frame) in crate::platform::audio::captured_frames() {
+        for (cap_osc, _cap_pos, frame) in crate::platform::audio::captured_frames() {
             if draining.is_some() {
                 continue; // audio is over — the mic is closed, anything left in the queue is not part of the wave
             }

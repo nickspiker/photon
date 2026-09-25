@@ -16,7 +16,7 @@ fn main() {
     let mut captured = 0usize;
     let mut peak: i16 = 0;
     while started.elapsed() < std::time::Duration::from_secs(10) {
-        for (_, frame24) in audio::captured_frames() {
+        for (_, _, frame24) in audio::captured_frames() {
             captured += 1;
             let frame: Vec<i16> = frame24.iter().map(|s| (s >> 8) as i16).collect();
             // WHY/PROOF: a full-scale negative sample is i16::MIN, whose absolute value does not fit i16 — saturating reads it as the loudest positive instead of wrapping to itself.
