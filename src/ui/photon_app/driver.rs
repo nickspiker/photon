@@ -263,64 +263,64 @@ impl FluorApp for PhotonApp {
             b.set_held_fill(Some(*theme::SEND_BUTTON_HOVER));
         }
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.avatar_hit_id = self.hit_counter;
         // KnownHandle fork pills (pick-another / it's-mine) — plain hit rects like the avatar circle, dispatched in the Pressed arm.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.known_pick_hit = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.known_mine_hit = self.hit_counter;
         // Reserve a block of 256 hit IDs for contact rows. Row i stamps `contact_hit_base + i`.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.contact_hit_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(255);
+        reserve_hits(&mut self.hit_counter, 255);
         // Back button on conversation screen.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.back_btn_hit_id = self.hit_counter;
 
         // "Start fresh (wipe this device)" tappable on the JOIN words screen — the only clean path for a device that was REMOVED from a fleet and so can't attest (can't reach the Security page). Two-tap confirm → clean_device_for_reuse.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.join_startfresh_hit_id = self.hit_counter;
 
         // "Copy words" tappable on the JOIN words screen.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.join_copywords_hit_id = self.hit_counter;
 
         // Green-confirm tappable on the AddDevice screen ("It's in — finish"): the two-phase press that releases the fleet-key rotation after the human sees the new device enrolled.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.add_confirm_hit_id = self.hit_counter;
 
         // Tappable candidate rows on the AddDevice screen (BLE/list select): 8-id block, row i stamps base + i.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.add_candidate_hit_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(7);
+        reserve_hits(&mut self.hit_counter, 7);
 
         // Settings panel (STUB) hit-id blocks + widgets. Reserve a contiguous 9-id block for the nav-rail rows and a 32-id block for the immediate-mode action pills, then construct the stateful fluor widgets (dropdown / slider / textbox) and the custom checkboxes. All get placeholder geometry; `update_widget_layout` repositions the ones on the active page each frame.
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.settings_nav_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(SettingsPage::ALL.len() as HitId); // one rail row per page
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, SettingsPage::ALL.len() as HitId); // one rail row per page
+        reserve_hits(&mut self.hit_counter, 1);
         self.settings_btn_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(39); // pills 0..=39 — the Fleet page's fourth band (32+ Lock-out) lives at the top of the block
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 39); // pills 0..=39 — the Fleet page's fourth band (32+ Lock-out) lives at the top of the block
+        reserve_hits(&mut self.hit_counter, 1);
         self.contact_panel_btn_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel pills 0..=3 (0 = Boot)
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 3); // contact-panel pills 0..=3 (0 = Boot)
+        reserve_hits(&mut self.hit_counter, 1);
         self.contact_nav_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(3); // contact-panel rail rows 0..=3
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 3); // contact-panel rail rows 0..=3
+        reserve_hits(&mut self.hit_counter, 1);
         self.msg_hit_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(super::MSG_HIT_SPAN); // message rows 0..MSG_HIT_SPAN
+        reserve_hits(&mut self.hit_counter, super::MSG_HIT_SPAN); // message rows 0..MSG_HIT_SPAN
         self.msg_copy_id = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.msg_action_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(14); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/molecules.md)
+        reserve_hits(&mut self.hit_counter, 14); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/molecules.md)
         self.react_strip_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
+        reserve_hits(&mut self.hit_counter, 10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(1); // the conversation stream filter pill
+        reserve_hits(&mut self.hit_counter, 1); // the conversation stream filter pill
         self.digit_strip_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(12); // the compose digit strip: the twelve dozenal glyphs, tap to insert
+        reserve_hits(&mut self.hit_counter, 12); // the compose digit strip: the twelve dozenal glyphs, tap to insert
         self.settings_theme_dropdown = Some(fluor::widgets::Dropdown::new(
             &mut self.hit_counter,
             0.,
@@ -339,29 +339,29 @@ impl FluorApp for PhotonApp {
             0.5,
         ));
         self.relabel_for_language();
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         self.link_consent_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(3);
+        reserve_hits(&mut self.hit_counter, 3);
         // Viewer / reader overlay: back, (unused), save, the pane itself (a swallow — taps on the picture select no row); then the block opsin's view builds its widgets on.
         self.viewer_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(8);
+        reserve_hits(&mut self.hit_counter, 8);
         self.viewer_view_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(super::viewer::VIEW_HIT_IDS);
+        reserve_hits(&mut self.hit_counter, super::viewer::VIEW_HIT_IDS);
         self.unattended_confirm_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(2); // confirm / cancel
+        reserve_hits(&mut self.hit_counter, 2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(1);
+        reserve_hits(&mut self.hit_counter, 1);
         // GROUPS (docs/molecules.md §10.5): Ready-list group rows (64) and the Manage-page group picker (16) — appended here, never mid-run (the contiguous-id contract).
         self.molecule_hit_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(64);
+        reserve_hits(&mut self.hit_counter, 64);
         self.molecule_pick_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(16);
+        reserve_hits(&mut self.hit_counter, 16);
         self.molecule_nav_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(3);
+        reserve_hits(&mut self.hit_counter, 3);
         self.molecule_panel_btn_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(40); // 8 pills + 32 Add-page contact rows
+        reserve_hits(&mut self.hit_counter, 40); // 8 pills + 32 Add-page contact rows
         self.ready_filter_base = self.hit_counter;
-        self.hit_counter = self.hit_counter.wrapping_add(5); // All / Friends / Atoms / Molecules / New atom
+        reserve_hits(&mut self.hit_counter, 5); // All / Friends / Atoms / Molecules / New atom
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.wave_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.wave_start_btn = Some(Button::new(
@@ -674,7 +674,7 @@ impl FluorApp for PhotonApp {
                 return EventResponse::Handled;
             }
             if self.unattended_confirm_base != HIT_NONE
-                && hit_id == self.unattended_confirm_base.wrapping_add(1)
+                && hit_id == (self.unattended_confirm_base + 1)
             {
                 self.unattended_confirm = None;
                 self.unattended_confirm_failed = false;
@@ -761,7 +761,7 @@ impl FluorApp for PhotonApp {
             && self.add_device_bound.is_none()
             && !self.add_device_checking
             && hit_id >= self.add_candidate_hit_base
-            && hit_id < self.add_candidate_hit_base.wrapping_add(7)
+            && hit_id < (self.add_candidate_hit_base + 7)
         {
             let idx = (hit_id - self.add_candidate_hit_base) as usize;
             // Filter identically to the render — only proximity-heard candidates are tap targets (a flooded registry never populates a tappable row).
@@ -840,7 +840,7 @@ impl FluorApp for PhotonApp {
                 self.molecule_leave_armed = false;
                 self.scene_dirty = true;
             }
-            if self.molecule_nav_base != HIT_NONE && hit_id >= self.molecule_nav_base && hit_id < self.molecule_nav_base.wrapping_add(3) {
+            if self.molecule_nav_base != HIT_NONE && hit_id >= self.molecule_nav_base && hit_id < (self.molecule_nav_base + 3) {
                 let idx = (hit_id - self.molecule_nav_base) as usize;
                 if let Some(p) = crate::ui::state::MoleculePage::ALL.get(idx).copied() {
                     self.change_focus(None);
@@ -850,7 +850,7 @@ impl FluorApp for PhotonApp {
                 }
                 return EventResponse::Handled;
             }
-            if self.molecule_panel_btn_base != HIT_NONE && hit_id >= self.molecule_panel_btn_base && hit_id < self.molecule_panel_btn_base.wrapping_add(40) {
+            if self.molecule_panel_btn_base != HIT_NONE && hit_id >= self.molecule_panel_btn_base && hit_id < (self.molecule_panel_btn_base + 40) {
                 let slot = hit_id - self.molecule_panel_btn_base;
                 if let Some(gi) = self.active_molecule() {
                     let gid = self.molecule_rosters[gi].0;
@@ -901,7 +901,7 @@ impl FluorApp for PhotonApp {
             }
             if self.contact_nav_base != HIT_NONE
                 && hit_id >= self.contact_nav_base
-                && hit_id < self.contact_nav_base.wrapping_add(4)
+                && hit_id < (self.contact_nav_base + 4)
             {
                 let idx = (hit_id - self.contact_nav_base) as usize;
                 if let Some(p) = ContactPage::ALL.get(idx).copied() {
@@ -915,7 +915,7 @@ impl FluorApp for PhotonApp {
             }
             if self.contact_panel_btn_base != HIT_NONE
                 && hit_id >= self.contact_panel_btn_base
-                && hit_id < self.contact_panel_btn_base.wrapping_add(4)
+                && hit_id < (self.contact_panel_btn_base + 4)
             {
                 let slot = hit_id - self.contact_panel_btn_base;
                 if slot == 0 {
@@ -941,7 +941,7 @@ impl FluorApp for PhotonApp {
             if self.molecule_pick_open
                 && self.molecule_pick_base != HIT_NONE
                 && hit_id >= self.molecule_pick_base
-                && hit_id < self.molecule_pick_base.wrapping_add(16)
+                && hit_id < (self.molecule_pick_base + 16)
             {
                 let pick = (hit_id - self.molecule_pick_base) as usize;
                 if let Some(ci) = self.active_contact() {
@@ -967,7 +967,7 @@ impl FluorApp for PhotonApp {
         if let AppState::Settings(page) = self.state {
             if self.settings_nav_base != HIT_NONE
                 && hit_id >= self.settings_nav_base
-                && hit_id < self.settings_nav_base.wrapping_add(SettingsPage::ALL.len() as HitId)
+                && hit_id < (self.settings_nav_base + SettingsPage::ALL.len() as HitId)
             {
                 let idx = (hit_id - self.settings_nav_base) as usize;
                 if let Some(p) = self.settings_pages().get(idx).copied() {
@@ -1025,7 +1025,7 @@ impl FluorApp for PhotonApp {
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
                 // 64: the Fleet page's slot map bands — 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 48+ Approve-sign-out, 56+ Rename (six rows each). A pill whose id falls outside this window paints its press but never dispatches — bump the cap with every new band.
-                && hit_id < self.settings_btn_base.wrapping_add(64)
+                && hit_id < (self.settings_btn_base + 64)
             {
                 let slot = hit_id - self.settings_btn_base;
                 if page == SettingsPage::Fleet {
@@ -1433,7 +1433,7 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Ready)
             && self.ready_filter_base != HIT_NONE
             && hit_id >= self.ready_filter_base
-            && hit_id < self.ready_filter_base.wrapping_add(5)
+            && hit_id < (self.ready_filter_base + 5)
         {
             let k = hit_id - self.ready_filter_base;
             match k {
@@ -1464,7 +1464,7 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Ready)
             && self.molecule_hit_base != HIT_NONE
             && hit_id >= self.molecule_hit_base
-            && hit_id < self.molecule_hit_base.wrapping_add(64)
+            && hit_id < (self.molecule_hit_base + 64)
         {
             let gi = (hit_id - self.molecule_hit_base) as usize;
             if gi < self.molecule_rosters.len() {
@@ -1483,7 +1483,7 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Ready)
             && self.contact_hit_base != HIT_NONE
             && hit_id >= self.contact_hit_base
-            && hit_id < self.contact_hit_base.wrapping_add(256)
+            && hit_id < (self.contact_hit_base + 256)
         {
             let ci = (hit_id - self.contact_hit_base) as usize;
             if ci < self.contacts.len() {
@@ -1533,7 +1533,7 @@ impl FluorApp for PhotonApp {
             // Details-strip reaction row: ranked glyph pills + the circled "+" on the selected message. Tap your current glyph = retract; another = replace; "+" arms the compose box as the picker.
             if self.react_strip_base != HIT_NONE
                 && hit_id >= self.react_strip_base
-                && hit_id < self.react_strip_base.wrapping_add(10)
+                && hit_id < (self.react_strip_base + 10)
             {
                 let slot = (hit_id - self.react_strip_base) as usize;
                 if let Some((sci, ts, _)) = self.strip_target() {
@@ -1579,7 +1579,7 @@ impl FluorApp for PhotonApp {
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
-                && hit_id < self.msg_action_base.wrapping_add(14)
+                && hit_id < (self.msg_action_base + 14)
             {
                 let slot = hit_id - self.msg_action_base;
                 // JOIN (slot 13, a group offer card — docs/molecules.md §10.1): the consent. The parked offer under the selected row names the group.
@@ -1866,7 +1866,7 @@ impl FluorApp for PhotonApp {
             if self.viewer_base != HIT_NONE
                 && (self.viewer.is_some() || self.reader.is_some())
                 && hit_id >= self.viewer_base
-                && hit_id < self.viewer_base.wrapping_add(8)
+                && hit_id < (self.viewer_base + 8)
             {
                 match hit_id - self.viewer_base {
                     0 => {
@@ -1882,7 +1882,7 @@ impl FluorApp for PhotonApp {
             if self.link_consent_base != HIT_NONE
                 && self.link_consent.is_some()
                 && hit_id >= self.link_consent_base
-                && hit_id < self.link_consent_base.wrapping_add(3)
+                && hit_id < (self.link_consent_base + 3)
             {
                 let dest = self.link_consent.take().unwrap_or_default();
                 let slot = hit_id - self.link_consent_base;
@@ -1897,7 +1897,7 @@ impl FluorApp for PhotonApp {
                 return EventResponse::Handled;
             }
             // A tap on a rendered link span opens the consent dialog INSTEAD of the row strip — checked before the row arm because the spans live inside row bands.
-            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
+            if hit_id >= self.msg_hit_base && hit_id < (self.msg_hit_base + super::MSG_HIT_SPAN) {
                 let (cx_f, cy_f) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
                 if let Some(dest) = self
                     .msg_link_hits
@@ -1912,7 +1912,7 @@ impl FluorApp for PhotonApp {
             }
             // The stream filter pill cycles all → waves → text. The wrap cache keys on the filter, so the list rebuilds itself.
             // THE DIGIT STRIP (Nick 2026-09-16, "use them in casual conversation"): a tap on a glyph key inserts that digit byte into the message box, focus untouched.
-            if self.digit_strip_base != HIT_NONE && hit_id >= self.digit_strip_base && hit_id < self.digit_strip_base.wrapping_add(12) {
+            if self.digit_strip_base != HIT_NONE && hit_id >= self.digit_strip_base && hit_id < (self.digit_strip_base + 12) {
                 let d = (hit_id - self.digit_strip_base) as u8;
                 let glyph = char::from(0x10 + d).to_string();
                 if let Some(tb) = self.message_textbox.as_mut() {
@@ -1929,7 +1929,7 @@ impl FluorApp for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
-            if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
+            if hit_id >= self.msg_hit_base && hit_id < (self.msg_hit_base + super::MSG_HIT_SPAN) {
                 let vis = (hit_id - self.msg_hit_base) as usize;
                 // A tap inside an attachment's VISUAL (the picture, the code lines) opens it straight away; anywhere else on the row is the actions strip (Nick 2026-09-12).
                 if let Some(v) = self.msg_attach_visuals.get(vis).copied().flatten() {
@@ -2096,7 +2096,7 @@ impl FluorApp for PhotonApp {
         // THE IMAGE VIEWER IS OPSIN'S VIEW: while it is open, pointer, wheel and key events go to it first with the hit id under the cursor. Photon keeps what is photon's — its own Back/Save pills (their ids are not the view's, and a press on them must not start a pan under them), the arrow keys (they step between the conversation's images), Shift+Escape (the real exit). `Close` is the view's Escape asking to leave; an export request from its Save pill is photon's save.
         if let Some(view) = self.viewer.as_mut().and_then(|v| v.view.as_mut()) {
             let forward = matches!(event, Event::CursorMoved { .. } | Event::MouseInput { .. } | Event::MouseWheel { .. } | Event::KeyboardInput { .. } | Event::Focused(_));
-            let own_pill = |hit: HitId| self.viewer_base != HIT_NONE && hit != HIT_NONE && hit >= self.viewer_base && hit < self.viewer_base.wrapping_add(3);
+            let own_pill = |hit: HitId| self.viewer_base != HIT_NONE && hit != HIT_NONE && hit >= self.viewer_base && hit < (self.viewer_base + 3);
             let photon_key = match event {
                 Event::KeyboardInput { event: k } => matches!(k.logical_key, Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::ArrowRight)) || (matches!(k.logical_key, Key::Named(NamedKey::Escape)) && ctx.modifiers.shift_key()),
                 _ => false,
@@ -2158,12 +2158,12 @@ impl FluorApp for PhotonApp {
                     let row_hover = |hit: HitId| {
                         (self.contact_hit_base != HIT_NONE
                             && hit >= self.contact_hit_base
-                            && hit < self.contact_hit_base.wrapping_add(256))
+                            && hit < (self.contact_hit_base + 256))
                             || (self.back_btn_hit_id != HIT_NONE && hit == self.back_btn_hit_id)
                             // Settings pill band: stub pills brighten and the About passless.org link BOLDS on hover — all CONTENT-pass paint (not overlay deltas), so entering/leaving needs the full frame (the link's bold didn't appear until something else forced a redraw, field 2026-09-02).
                             || (self.settings_btn_base != HIT_NONE
                                 && hit >= self.settings_btn_base
-                                && hit < self.settings_btn_base.wrapping_add(56))
+                                && hit < (self.settings_btn_base + 56))
                     };
                     if row_hover(new_hit) || row_hover(self.hover_hit) {
                         self.scene_dirty = true;
@@ -2474,7 +2474,7 @@ impl FluorApp for PhotonApp {
                     .unwrap_or(HIT_NONE);
 
                 // WAVEFORM SCRUB: a press on a held recording's waveform picks the playhead up; moves carry it (drawn live), the release seeks. The glyph zone is a plain tap (on_activate).
-                if hit_id >= self.msg_hit_base && hit_id < self.msg_hit_base.wrapping_add(super::MSG_HIT_SPAN) {
+                if hit_id >= self.msg_hit_base && hit_id < (self.msg_hit_base + super::MSG_HIT_SPAN) {
                     let vis = (hit_id - self.msg_hit_base) as usize;
                     if let Some(band) = self.msg_wave_bands.get(vis).copied().flatten() {
                         let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
@@ -3191,7 +3191,7 @@ impl FluorApp for PhotonApp {
             }
         }
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
-        self.tick_serial = self.tick_serial.wrapping_add(1);
+        self.tick_serial += 1; // u64 per tick — centuries at any frame rate
         // Storage-failure latch → the amber banner. Writer threads and open paths can only set a static (no &mut self there); this mirror is how a fence error or a dead vault open reaches the screen — 1,276 of them once ran for hours as log lines while the UI claimed all was well (2026-08-24).
         if crate::storage::vault_sick() && !self.vault_degraded {
             self.vault_degraded = true;
@@ -3888,7 +3888,7 @@ impl FluorApp for PhotonApp {
         // The About page's passless.org link — a real hyperlink cue: hand cursor (the render bolds it on the same hover).
         if matches!(self.state, AppState::Settings(SettingsPage::About))
             && self.settings_btn_base != HIT_NONE
-            && hit == self.settings_btn_base.wrapping_add(4)
+            && hit == (self.settings_btn_base + 4)
         {
             return CursorIcon::Pointer;
         }
@@ -3937,7 +3937,7 @@ impl FluorApp for PhotonApp {
         // Contact rows and conversation back button — pointer cursor.
         if self.contact_hit_base != HIT_NONE
             && hit >= self.contact_hit_base
-            && hit < self.contact_hit_base.wrapping_add(256)
+            && hit < (self.contact_hit_base + 256)
         {
             return CursorIcon::Pointer;
         }
@@ -4593,4 +4593,11 @@ impl PhotonApp {
             self.scene_dirty = true;
         }
     }
+}
+
+/// Reserve `n` consecutive hit ids — the SPAN twin of fluor's `next_id`, and like it, fail-loud.
+/// WHY: every `base + i` in the UI indexes inside a span handed out here, and a u16 that wrapped would collide with HIT_NONE (0) and with the first spans, sending one control's clicks to another.
+/// PROOF: `checked_add` catches the one way that can happen — an allocation pattern that leaks spans — and stops loud, so an in-span offset can never wrap and needs no wrapping arithmetic of its own.
+fn reserve_hits(counter: &mut HitId, n: HitId) {
+    *counter = counter.checked_add(n).expect("hit-id space exhausted: more than 65 535 ids reserved — a span is leaking, not a real need");
 }

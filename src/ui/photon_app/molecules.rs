@@ -755,7 +755,7 @@ impl PhotonApp {
             return false;
         }
         let serial = self.tick_serial;
-        let (ready, keep): (Vec<MoleculePost>, Vec<MoleculePost>) = std::mem::take(&mut self.pending_molecule_posts).into_iter().partition(|p| p.queued.wrapping_add(1) < serial);
+        let (ready, keep): (Vec<MoleculePost>, Vec<MoleculePost>) = std::mem::take(&mut self.pending_molecule_posts).into_iter().partition(|p| p.queued + 1 < serial); // u64 tick serials — they never reach the ceiling
         self.pending_molecule_posts = keep;
         if ready.is_empty() {
             return false;

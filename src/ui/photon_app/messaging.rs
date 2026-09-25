@@ -801,7 +801,7 @@ impl PhotonApp {
         let serial = self.tick_serial;
         let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends)
             .into_iter()
-            .partition(|(_, _, _, _, _, q)| q.wrapping_add(1) < serial);
+            .partition(|(_, _, _, _, _, q)| q + 1 < serial); // u64 tick serials — they never reach the ceiling
         self.pending_chain_sends = keep;
         if sends.is_empty() {
             return false;

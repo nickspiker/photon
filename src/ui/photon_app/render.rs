@@ -1831,7 +1831,7 @@ impl PhotonApp {
                     (4, _) if self.atom_naming => Some(*theme::PILL_GREEN),
                     _ => None,
                 };
-                let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_ref(), self.ready_filter_base.wrapping_add(i as HitId), true, chosen(i))).collect();
+                let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_ref(), (self.ready_filter_base + i as HitId), true, chosen(i))).collect();
                 let mut flow = Flow::new(fluor::region::Region::new(strip.x, strip.y + scroll as f32, strip.w, strip.h * 4.0), scroll as f32);
                 flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
                 // Measure: the wrapped strip's real height (plus the row's top/bottom margin) drives the next frame's row offset and extent.
@@ -2175,7 +2175,7 @@ impl PhotonApp {
                     }
                     let active = *p == cpage;
                     let held = ctx.pressed_hit != HIT_NONE
-                        && ctx.pressed_hit == self.contact_nav_base.wrapping_add(i as HitId);
+                        && ctx.pressed_hit == (self.contact_nav_base + i as HitId);
                     let colour = if active {
                         *theme::CONTACT_NAME_COLOUR
                     } else {
@@ -2225,7 +2225,7 @@ impl PhotonApp {
                         r.y.max(pages_top) as isize,
                         r.right() as isize,
                         r.bottom().min(layout.rail.bottom()) as isize,
-                        self.contact_nav_base.wrapping_add(i as HitId),
+                        self.contact_nav_base + i as HitId,
                     );
                 }
                 paint::fill_rect(
@@ -2592,9 +2592,9 @@ impl PhotonApp {
                             settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
                             // BRING INTO A GROUP (docs/molecules.md §10.5): pill slot 1. Opens the picker below: New group (title box, the history policy fixed at birth, Found) and every group we stand in.
                             let pill2 = fluor::region::Region::new(rows[5].x + rows[5].w * 0.1, rows[5].y, rows[5].w * 0.5, rows[5].h * 0.95);
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BindIntoMolecule), self.contact_panel_btn_base.wrapping_add(1), ctx.pressed_hit);
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BindIntoMolecule), self.contact_panel_btn_base + 1, ctx.pressed_hit);
                             if self.molecule_pick_open && all_rows.len() >= 7 {
-                                let pick = |i: u16| self.molecule_pick_base.wrapping_add(i as HitId);
+                                let pick = |i: u16| self.molecule_pick_base + i as HitId;
                                 settings_line(&mut canvas, ctx.text, all_rows[6], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
                                 // Rows 7..: every atom and molecule we stand in — one tap offers this contact a bond into it (already standing there = drawn disabled).
                                 let contact_pid = contact.handle_hash;
@@ -2654,7 +2654,7 @@ impl PhotonApp {
                         continue;
                     }
                     let active = *p == gpage;
-                    let hid = self.molecule_nav_base.wrapping_add(i as HitId);
+                    let hid = self.molecule_nav_base + i as HitId;
                     let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == hid;
                     let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
                     ctx.text.draw_text_left(&mut canvas, &tr(Msg::MoleculePageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
@@ -2690,10 +2690,10 @@ impl PhotonApp {
                             tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
                         }
                         let has_title = self.molecule_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::molecule::MoleculePhase::Left { self.molecule_panel_btn_base.wrapping_add(2) } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::molecule::MoleculePhase::Left { self.molecule_panel_btn_base + 2 } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
                         // Row 2: an ATOM offers its one becoming — "Create a molecule!" — which is the Add page; the line beneath says what binding does.
                         if standing.len() <= 1 && phase == crate::storage::molecule::MoleculePhase::Standing {
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[2], 0.6), &tr(Msg::CreateMoleculePill), self.molecule_panel_btn_base.wrapping_add(3), ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[2], 0.6), &tr(Msg::CreateMoleculePill), self.molecule_panel_btn_base + 3, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
                             settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::CreateMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                         let policy = if roster.genesis.as_ref().map_or(false, |g| g.history_from_genesis) { tr(Msg::HistoryFromGenesis) } else { tr(Msg::HistoryFromJoin) };
@@ -2729,13 +2729,13 @@ impl PhotonApp {
                             let name = super::contact_visible_name(&self.contacts[*ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
                             let already = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.offered.iter().any(|(p, _)| *p == self.contacts[*ci].handle_hash));
                             let label = if already { format!("{} \u{00b7} \u{2026}", name) } else { name };
-                            let hid = if phase == crate::storage::molecule::MoleculePhase::Standing { self.molecule_panel_btn_base.wrapping_add(8 + k as HitId) } else { HIT_NONE };
+                            let hid = if phase == crate::storage::molecule::MoleculePhase::Standing { self.molecule_panel_btn_base + 8 + k as HitId } else { HIT_NONE };
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(*r, 0.8), &label, hid, ctx.pressed_hit, hid != HIT_NONE, None, "Oxanium");
                         }
                     }
                     MoleculePage::Manage => {
                         // Mute (this device only), then Leave (two-tap) with its note.
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[1], 0.5), &tr(Msg::MutePill { muted }), self.molecule_panel_btn_base.wrapping_add(1), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[1], 0.5), &tr(Msg::MutePill { muted }), self.molecule_panel_btn_base + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         if phase == crate::storage::molecule::MoleculePhase::Left {
                             settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
                         } else {
@@ -2768,12 +2768,12 @@ impl PhotonApp {
                         fluor::region::Region::new(pad_x + pw + line_h * 0.5, py, pw, pill_h * 0.9),
                     ];
                     // Hit map FIRST: swallow the whole area (stale stamps from the skipped conversation body must not fire); the pills and the view's widgets then win their rects as they draw.
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, area_top as isize, buf_w as isize, buf_h as isize, self.viewer_base.wrapping_add(3));
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, area_top as isize, buf_w as isize, buf_h as isize, self.viewer_base + 3);
                     // Topmost first: pills paint before the picture, the picture before the backdrop — everything wins exactly its own pixels.
                     if let Some(v) = self.viewer.as_mut() {
                         let held = crate::storage::blob_present_or_pending(&v.hash);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, held, None, "Oxanium");
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base + 2, ctx.pressed_hit, held, None, "Oxanium");
                         match v.view.as_mut() {
                             Some(view) => {
                                 // OPSIN'S VIEWER, WHOLE (Nick 2026-09-17): image area + tool panel + HUD, its pills stamped into the shared hit map under the ids photon reserved for them.
@@ -2818,7 +2818,7 @@ impl PhotonApp {
                         let small = TextStyle::new(msg_size * 0.85, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
                         ctx.text.draw_text_left(&mut canvas, &r.name, pad_x, buf_h as f32 - line_h * 0.4, &small, None, None);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::ViewerBack), self.viewer_base, ctx.pressed_hit, true, None, "Oxanium");
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base.wrapping_add(2), ctx.pressed_hit, true, None, "Oxanium");
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::SavePill), self.viewer_base + 2, ctx.pressed_hit, true, None, "Oxanium");
                     }
                     // Backdrop LAST (under-blend: everything above already owns its pixels) — the whole buffer below the chrome strip; the view painted its own area opaque, so this lands on what it left (the status-bar strip on Android, the reader's page).
                     let bd_top = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
@@ -3458,8 +3458,8 @@ impl PhotonApp {
                             // Every platform with a browser opens (Android thru the Kotlin ACTION_VIEW bridge); Redox alone stays copy-only.
                             let can_open = !cfg!(target_os = "redox");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::OpenLinkPill), self.link_consent_base, ctx.pressed_hit, can_open, Some(*theme::PILL_GREEN), "Open Sans");
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::CopyPill), self.link_consent_base.wrapping_add(1), ctx.pressed_hit, true, None, "Open Sans");
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base.wrapping_add(2), ctx.pressed_hit, true, None, "Open Sans");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::CopyPill), self.link_consent_base + 1, ctx.pressed_hit, true, None, "Open Sans");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base + 2, ctx.pressed_hit, true, None, "Open Sans");
                             paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, (list_bottom - py0) as isize, *theme::CONSENT_BG_COLOUR, None, None);
                             consent_stamp = Some((prects, py0));
                         }
@@ -3792,12 +3792,12 @@ impl PhotonApp {
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
                                         let (held, playing_this) = rec.file_parts().map(|(h, _, _)| (crate::storage::blob_present_or_pending(&h), self.wave_playback.is_some() && self.wave_playback_hash == Some(h))).unwrap_or((false, false));
-                                        v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, self.msg_action_base.wrapping_add(11)));
+                                        v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, (self.msg_action_base + 11)));
                                     }
                                     // Wave back needs a direct path too (Nick 2026-09-17): over the relay alone the pill is dimmed and says so.
                                     let wave_back_ok = self.contacts.get(ci).is_some_and(|c| c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR));
                                     if wave_back_ok {
-                                        v.push((tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(6)));
+                                        v.push((tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 6)));
                                     } else {
                                         v.push((tr(Msg::WaveBackNoPath), theme::dim_colour(*theme::LABEL_COLOUR), HIT_NONE));
                                     }
@@ -3805,9 +3805,9 @@ impl PhotonApp {
                                     if let Some(rec) = rec_over.get(&msg.timestamp) {
                                         let held = rec.file_parts().is_some_and(|(h, _, _)| crate::storage::blob_present_or_pending(&h));
                                         if held {
-                                            v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(7)));
+                                            v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, (self.msg_action_base + 7)));
                                         }
-                                        v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(8)));
+                                        v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 8)));
                                     }
                                     v
                                 } else if is_bond_offer_row(msg) {
@@ -3815,7 +3815,7 @@ impl PhotonApp {
                                     let joinable = bond_cards.iter().find(|(ts, out, _, _)| *ts == msg.timestamp && *out == msg.is_outgoing).and_then(|(_, _, _, j)| *j);
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if joinable.is_some() {
-                                        v.push((tr(Msg::BindPill), *theme::SEARCH_FOUND_COLOUR, self.msg_action_base.wrapping_add(13)));
+                                        v.push((tr(Msg::BindPill), *theme::SEARCH_FOUND_COLOUR, (self.msg_action_base + 13)));
                                     }
                                     v
                                 } else {
@@ -3829,7 +3829,7 @@ impl PhotonApp {
                                     pills.push((
                                         tr(Msg::EditPill),
                                         *theme::COPY_PILL_COLOUR,
-                                        self.msg_action_base.wrapping_add(1),
+                                        (self.msg_action_base + 1),
                                     ));
                                 }
                                 // Copy is for text: an attachment row's body is its visual, nothing to copy.
@@ -3840,7 +3840,7 @@ impl PhotonApp {
                                     pills.push((
                                         tr(Msg::ResendPill),
                                         *theme::HOURGLASS_COLOUR,
-                                        self.msg_action_base.wrapping_add(2),
+                                        (self.msg_action_base + 2),
                                     ));
                                 }
                                 // Attachment rows: a wave recording PLAYS (blob held) or fetches; a file SAVES (blob held) or fetches. Same slot 4 — the click handler branches on wave.audio.
@@ -3855,7 +3855,7 @@ impl PhotonApp {
                                     if held && is_music {
                                         let playing_this = self.music_play.as_ref().is_some_and(|m| m.hash == hash && m.playing());
                                         let label = if playing_this { tr(Msg::StopPill) } else { tr(Msg::PlayPill) };
-                                        pills.push((label, *theme::COPY_PILL_COLOUR, self.msg_action_base.wrapping_add(9)));
+                                        pills.push((label, *theme::COPY_PILL_COLOUR, (self.msg_action_base + 9)));
                                     }
                                     let (label, colour) = if !held {
                                         (tr(Msg::FetchPill), *theme::HOURGLASS_COLOUR)
@@ -3864,10 +3864,10 @@ impl PhotonApp {
                                     } else {
                                         (tr(Msg::SavePill), *theme::SEARCH_FOUND_COLOUR)
                                     };
-                                    pills.push((label, colour, self.msg_action_base.wrapping_add(4)));
+                                    pills.push((label, colour, (self.msg_action_base + 4)));
                                     // LOFT (Nick 2026-09-14, "keep it, but not here"): drop THIS device's copy of an incoming pigeon's bytes — the row, preview and fetch stay, and the sender's fleet holds the original. Incoming only in v1 (no custody proof exists yet for our own uploads — the device-sync phase), and never a wave recording (each fleet's archive is its own memory of the wave).
                                     if held && !msg.is_outgoing && !is_rec {
-                                        pills.push((tr(Msg::LoftPill), *theme::HOURGLASS_COLOUR, self.msg_action_base.wrapping_add(12)));
+                                        pills.push((tr(Msg::LoftPill), *theme::HOURGLASS_COLOUR, (self.msg_action_base + 12)));
                                     }
                                 }
                                 // ★ — mark important, never prune (the retention design reads it; the glyph needs no translation).
@@ -3875,7 +3875,7 @@ impl PhotonApp {
                                     let starred = msg.star_osc > 0;
                                     let star_fill = starred.then_some((theme::near_black(*theme::SEARCH_RELAY_COLOUR, 0.35), *theme::SEARCH_RELAY_COLOUR));
                                     let _ = star_fill;
-                                    pills.push(("\u{2605}".into(), if starred { *theme::SEARCH_RELAY_COLOUR } else { *theme::LABEL_COLOUR }, self.msg_action_base.wrapping_add(10)));
+                                    pills.push(("\u{2605}".into(), if starred { *theme::SEARCH_RELAY_COLOUR } else { *theme::LABEL_COLOUR }, (self.msg_action_base + 10)));
                                 }
                                 let deleting =
                                     self.pending_delete.as_ref().is_some_and(|(k, _)| {
@@ -3890,7 +3890,7 @@ impl PhotonApp {
                                         Msg::DeletePill
                                     }),
                                     *theme::ERROR_TEXT_COLOUR,
-                                    self.msg_action_base.wrapping_add(3),
+                                    (self.msg_action_base + 3),
                                 ));
                                 if deleting {
                                     // The feedback frame is on screen — the tick may do the heavy lift now.
@@ -3963,7 +3963,7 @@ impl PhotonApp {
                                     let rect = fluor::region::Region::new(rx_cursor, y - react_pill_h * 0.5, w, react_pill_h);
                                     if rect.y + rect.h >= list_top && rect.y <= list_bottom {
                                         let fill = Some((theme::near_black(verb, 0.15), theme::near_black(verb, 0.3)));
-                                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base.wrapping_add(self.react_strip_glyphs.len() as HitId), ctx.pressed_hit, true, fill, "Oxanium");
+                                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, g, self.react_strip_base + self.react_strip_glyphs.len() as HitId, ctx.pressed_hit, true, fill, "Oxanium");
                                     }
                                     self.react_strip_glyphs.push(g.clone());
                                     rx_cursor += w + pad_hit;
@@ -4000,7 +4000,7 @@ impl PhotonApp {
                                     ((y - line_h * 0.5).max(list_top)) as isize,
                                     (plus_cx + plus_r + pad_hit * 0.4) as isize,
                                     ((y + line_h * 0.5).min(list_bottom)) as isize,
-                                    self.react_strip_base.wrapping_add(9),
+                                    self.react_strip_base + 9,
                                 );
                                 y -= detail_h;
                             }
@@ -4588,7 +4588,7 @@ impl PhotonApp {
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
                             if band_bot > band_top {
                                 let slot = vi % super::MSG_HIT_SPAN as usize;
-                                let row_hit = self.msg_hit_base.wrapping_add(slot as HitId);
+                                let row_hit = self.msg_hit_base + slot as HitId;
                                 restamp_hit_rect(
                                     &mut chrome.hit_test_map,
                                     buf_w,
@@ -4617,7 +4617,7 @@ impl PhotonApp {
                         if let Some((prects, py0)) = consent_stamp {
                             restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, py0 as isize, buf_w as isize, list_bottom as isize, HIT_NONE);
                             for (pi, r) in prects.iter().enumerate() {
-                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.link_consent_base.wrapping_add(pi as HitId));
+                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.link_consent_base + pi as HitId);
                             }
                         }
                         // STREAM ENTRY #0 — avatar, name, optional ceremony/lifecycle status: drawn ONLY when the walk reached message 1 (genesis on screen); `y` then sits just above it and the entry is the stream's literal first item. Ordinary stream content: same clip as every message, no pinning, no slide. Off-screen anywhere but genesis.
@@ -4678,7 +4678,7 @@ impl PhotonApp {
                                 let x = pad_x + d as f32 * (key_w + gap);
                                 let rect = fluor::region::Region::new(x, strip_top + (digit_band_h - key_h) * 0.5, key_w, key_h);
                                 let label = char::from(0x10 + d).to_string();
-                                let hid = self.digit_strip_base.wrapping_add(d as u16);
+                                let hid = self.digit_strip_base + d as u16;
                                 let fill = Some((theme::near_black(*theme::COPY_PILL_COLOUR, 0.15), theme::near_black(*theme::COPY_PILL_COLOUR, 0.3)));
                                 draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &label, hid, ctx.pressed_hit, true, fill, "Oxanium");
                             }
@@ -4766,7 +4766,7 @@ impl PhotonApp {
                                     buf_h,
                                     rect,
                                     &tr(Msg::StopPill),
-                                    self.msg_action_base.wrapping_add(5),
+                                    self.msg_action_base + 5,
                                     ctx.pressed_hit,
                                     true,
                                     Some(*theme::PILL_RED),
@@ -5012,7 +5012,7 @@ impl PhotonApp {
                         let label = tr(Msg::AddDeviceNearby(&cand.name));
                         let held = ctx.pressed_hit != HIT_NONE
                             && ctx.pressed_hit
-                                == self.add_candidate_hit_base.wrapping_add(i as HitId);
+                                == (self.add_candidate_hit_base + i as HitId);
                         ctx.text.draw_text_center(
                             &mut canvas,
                             &label,
@@ -5033,7 +5033,7 @@ impl PhotonApp {
                             y as isize,
                             (cx + half_w) as isize,
                             (y + row_h) as isize,
-                            self.add_candidate_hit_base.wrapping_add(i as HitId),
+                            self.add_candidate_hit_base + i as HitId,
                         );
                         y += row_h;
                     }
@@ -5223,7 +5223,7 @@ impl PhotonApp {
                 }
                 let active = *p == page;
                 let held = ctx.pressed_hit != HIT_NONE
-                    && ctx.pressed_hit == self.settings_nav_base.wrapping_add(i as HitId);
+                    && ctx.pressed_hit == (self.settings_nav_base + i as HitId);
                 let colour = if active {
                     *theme::CONTACT_NAME_COLOUR
                 } else {
@@ -5274,7 +5274,7 @@ impl PhotonApp {
                     r.y.max(pages_top) as isize,
                     r.right() as isize,
                     r.bottom().min(layout.rail.bottom()) as isize,
-                    self.settings_nav_base.wrapping_add(i as HitId),
+                    self.settings_nav_base + i as HitId,
                 );
             }
 
@@ -5447,7 +5447,7 @@ impl PhotonApp {
                                     buf_h,
                                     cols[0].center_h(0.72),
                                     &tr(Msg::Add),
-                                    btn_base.wrapping_add(2),
+                                    btn_base + 2,
                                     ctx.pressed_hit,
                                 );
                             }
@@ -5460,7 +5460,7 @@ impl PhotonApp {
                                     buf_h,
                                     r.center_h(pillf(0.5)),
                                     &tr(Msg::Update),
-                                    btn_base.wrapping_add(0),
+                                    btn_base + 0,
                                     ctx.pressed_hit,
                                 );
                             }
@@ -5474,7 +5474,7 @@ impl PhotonApp {
                                     buf_h,
                                     r.center_h(pillf(0.5)),
                                     &tr(Msg::ChangeAvatar),
-                                    btn_base.wrapping_add(1),
+                                    btn_base + 1,
                                     ctx.pressed_hit,
                                 );
                             }
@@ -5538,7 +5538,7 @@ impl PhotonApp {
                                 name_band.y as isize,
                                 name_band.right() as isize,
                                 name_band.bottom() as isize,
-                                btn_base.wrapping_add(16 + i as HitId),
+                                btn_base + 16 + i as HitId,
                             );
                         }
                         // The name is the card's headline — let it breathe before the status beneath it (Nick 2026-09-08).
@@ -5591,28 +5591,28 @@ impl PhotonApp {
                         if *retired {
                             let armed = self.fleet_release_armed.as_ref() == Some(pk);
                             flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                                (&tr(Msg::ReleasePill { armed }), btn_base.wrapping_add(24 + i as HitId), true, Some(*theme::PILL_RED)),
+                                (&tr(Msg::ReleasePill { armed }), (btn_base + 24 + i as HitId), true, Some(*theme::PILL_RED)),
                             ], "Oxanium");
                         } else if *is_self {
                             // The self card's one action: Rename — this machine's name is the one most worth setting.
                             flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                                (&tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), true, None),
+                                (&tr(Msg::RenamePill), (btn_base + 56 + i as HitId), true, None),
                             ], "Oxanium");
                         } else {
                             // Bridge + Rename + the row's state pill (Revoke / Reinstate / Approve departure). Revoke wears PILL_RED unarmed as well as armed — it is the hostile verb on this page and shouldn't have to be tapped once to look like it.
                             let mut pills: Vec<(std::borrow::Cow<'static, str>, HitId, bool, Option<(u32, u32)>)> = Vec::with_capacity(3);
                             let bridge_fill = if *online { Some(*theme::PILL_GREEN) } else { Some(*theme::PILL_GREY) };
-                            pills.push((tr(Msg::BridgePill), btn_base.wrapping_add(8 + i as HitId), true, bridge_fill));
-                            pills.push((tr(Msg::RenamePill), btn_base.wrapping_add(56 + i as HitId), true, None));
+                            pills.push((tr(Msg::BridgePill), (btn_base + 8 + i as HitId), true, bridge_fill));
+                            pills.push((tr(Msg::RenamePill), (btn_base + 56 + i as HitId), true, None));
                             if departing {
                                 let armed = self.fleet_approve_armed.as_ref() == Some(pk);
-                                pills.push((tr(Msg::ApproveSignOutPill { armed }), btn_base.wrapping_add(48 + i as HitId), true, Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW })));
+                                pills.push((tr(Msg::ApproveSignOutPill { armed }), (btn_base + 48 + i as HitId), true, Some(if armed { *theme::PILL_RED } else { *theme::PILL_YELLOW })));
                             } else if row_locked {
                                 let armed = self.fleet_unlock_armed.as_ref() == Some(pk);
-                                pills.push((tr(Msg::ReinstatePill { armed }), btn_base.wrapping_add(40 + i as HitId), true, if armed { Some(*theme::PILL_RED) } else { None }));
+                                pills.push((tr(Msg::ReinstatePill { armed }), (btn_base + 40 + i as HitId), true, if armed { Some(*theme::PILL_RED) } else { None }));
                             } else {
                                 let armed = self.fleet_lock_armed.as_ref() == Some(pk);
-                                pills.push((tr(Msg::RevokePill { armed }), btn_base.wrapping_add(32 + i as HitId), true, Some(*theme::PILL_RED)));
+                                pills.push((tr(Msg::RevokePill { armed }), (btn_base + 32 + i as HitId), true, Some(*theme::PILL_RED)));
                             }
                             let refs: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = pills.iter().map(|(l, h, e, f)| (l.as_ref(), *h, *e, *f)).collect();
                             flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &refs, "Oxanium");
@@ -5697,7 +5697,7 @@ impl PhotonApp {
                             buf_h,
                             fluor::region::Region::new(band.x + hspan2 * 0.3, band.y + band.h * 0.08, (band.w * 0.6).max(hspan2 * 10.0).min(band.w - hspan2 * 0.6), band.h * 0.84),
                             l.autonym(),
-                            btn_base.wrapping_add(i as HitId),
+                            btn_base + i as HitId,
                             ctx.pressed_hit,
                             true,
                             if selected { Some(*theme::PILL_GREEN) } else { None },
@@ -5740,7 +5740,7 @@ impl PhotonApp {
                             pill_h,
                         );
                         // A disabled pill stamps NO hit id (draw_stub_pill_filled's contract), so a fleet-of-one can't arm what it could never complete — the greying is the gate, not decoration.
-                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, btn_base.wrapping_add(slot), ctx.pressed_hit, enabled, Some(if enabled { fill } else { *theme::PILL_GREY }), "Open Sans");
+                        draw_stub_pill_filled(canvas, text, hit_map, buf_w, buf_h, rect, label, btn_base + slot, ctx.pressed_hit, enabled, Some(if enabled { fill } else { *theme::PILL_GREY }), "Open Sans");
                         let (hc, hw) = if armed { (*theme::ERROR_TEXT_COLOUR, 600) } else { (*theme::LABEL_COLOUR, 400) };
                         let region = fluor::region::Region::new(flow.x, flow.y, flow.w, hspan2 * 1.6);
                         let n = settings_prose(canvas, text, region, hint, hspan2 * 0.85, hc, hw);
@@ -5857,7 +5857,7 @@ impl PhotonApp {
                             }
                             flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
                                 (&tr(if target_on { Msg::Arm } else { Msg::Disarm }), self.unattended_confirm_base, true, Some(*theme::PILL_RED)),
-                                (&tr(Msg::Cancel), self.unattended_confirm_base.wrapping_add(1), true, None),
+                                (&tr(Msg::Cancel), (self.unattended_confirm_base + 1), true, None),
                             ], "Open Sans");
                         } else {
                             let armed = self
@@ -6056,7 +6056,7 @@ impl PhotonApp {
                     };
                     let (rl, rf, re) = pill_state("release", *theme::PILL_GREEN, &self.update_release, self.update_busy);
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                        (&rl, btn_base.wrapping_add(1), re, Some(rf)),
+                        (&rl, (btn_base + 1), re, Some(rf)),
                     ], "Oxanium");
                     if update_active_dev == Some(false) {
                         draw_update_status(&mut flow, &mut canvas, ctx.text);
@@ -6089,7 +6089,7 @@ impl PhotonApp {
                     flow.gap(hspan2 * 0.6);
                     let (dl, df, de) = pill_state("dev", *theme::PILL_AMBER, &self.update_dev, self.update_busy);
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                        (&dl, btn_base.wrapping_add(2), de, Some(df)),
+                        (&dl, (btn_base + 2), de, Some(df)),
                     ], "Oxanium");
                     if update_active_dev == Some(true) {
                         draw_update_status(&mut flow, &mut canvas, ctx.text);
@@ -6147,7 +6147,7 @@ impl PhotonApp {
                         buf_h,
                         hr[1].center_h(0.85),
                         &tr(Msg::DiagBack),
-                        btn_base.wrapping_add(3),
+                        btn_base + 3,
                         ctx.pressed_hit,
                     );
                     let meta = if let Some((idx, lines)) = &self.diag_log_inspect {
@@ -6308,8 +6308,8 @@ impl PhotonApp {
                         let can_down = stops > -crate::platform::audio::RX_TRIM_MAX_STOPS;
                         let can_up = stops < crate::platform::audio::RX_TRIM_MAX_STOPS;
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                            (&tr(Msg::WaveQuieter), btn_base.wrapping_add(0), can_down, None),
-                            (&tr(Msg::WaveLouder), btn_base.wrapping_add(1), can_up, None),
+                            (&tr(Msg::WaveQuieter), (btn_base + 0), can_down, None),
+                            (&tr(Msg::WaveLouder), (btn_base + 1), can_up, None),
                         ], "Open Sans");
                     }
                     // ── Voice: the profiles.
@@ -6329,7 +6329,7 @@ impl PhotonApp {
                         let ns = crate::fmt_num(*n);
                         flow.line(&mut canvas, ctx.text, &tr(Msg::WaveMicLine { mic, voiced: &v, floor: &f, n: &ns }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &[
-                            (&tr(Msg::WaveForget), btn_base.wrapping_add(8 + i as u16), true, None),
+                            (&tr(Msg::WaveForget), (btn_base + 8 + i as u16), true, None),
                         ], "Open Sans");
                     }
                     if self.wave_measure_rx.is_some() {
@@ -6347,7 +6347,7 @@ impl PhotonApp {
                         }
                         let idle = self.active_wave.is_none();
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                            (&tr(Msg::WaveMeasureNow), btn_base.wrapping_add(2), idle, None),
+                            (&tr(Msg::WaveMeasureNow), (btn_base + 2), idle, None),
                         ], "Open Sans");
                     }
                     // ── The last wave.
@@ -6466,7 +6466,7 @@ impl PhotonApp {
                         .iter()
                         .zip(labels.iter())
                         .enumerate()
-                        .map(|(i, (f, l))| (l.as_str(), btn_base.wrapping_add(1 + i as u16), true, (self.vault_filter == *f).then_some(active_fill)))
+                        .map(|(i, (f, l))| (l.as_str(), (btn_base + 1 + i as u16), true, (self.vault_filter == *f).then_some(active_fill)))
                         .collect();
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.8, &pills, "Open Sans");
                     match self.vault_breakdown.as_ref() {
@@ -6483,7 +6483,7 @@ impl PhotonApp {
                     }
                     flow.gap(hspan2 * 0.6);
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                        (&tr(Msg::VaultRefresh), btn_base.wrapping_add(0), true, None),
+                        (&tr(Msg::VaultRefresh), (btn_base + 0), true, None),
                     ], "Open Sans");
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));
@@ -6514,10 +6514,10 @@ impl PhotonApp {
                     // Submit greys while an upload is in flight or the log hasn't grown past the last successful submit — a resend then would be a byte-identical dup.
                     let submit_disabled = self.log_submit_inflight || self.log_submitted_len == Some(crate::log_size_bytes());
                     flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
-                        (&tr(Msg::DiagClear), btn_base.wrapping_add(0), true, None),
-                        (&tr(Msg::DiagSnapshot), btn_base.wrapping_add(1), true, None),
-                        (&tr(Msg::DiagSubmit), btn_base.wrapping_add(2), !submit_disabled, None),
-                        (&tr(Msg::DiagView), btn_base.wrapping_add(3), true, None),
+                        (&tr(Msg::DiagClear), (btn_base + 0), true, None),
+                        (&tr(Msg::DiagSnapshot), (btn_base + 1), true, None),
+                        (&tr(Msg::DiagSubmit), (btn_base + 2), !submit_disabled, None),
+                        (&tr(Msg::DiagView), (btn_base + 3), true, None),
                     ], "Open Sans");
                     flow.gap(hspan2 * 0.6);
                     flow.prose(&mut canvas, ctx.text, &tr(Msg::OptionalNote), hspan2, *theme::LABEL_COLOUR, 400);
@@ -6565,7 +6565,7 @@ impl PhotonApp {
                         let labels = [tr(Msg::HistoryFromJoin), tr(Msg::HistoryFromGenesis)];
                         let pills = [
                             (labels[0].as_ref(), btn_base, true, if from_gen { None } else { Some(*theme::PILL_GREEN) }),
-                            (labels[1].as_ref(), btn_base.wrapping_add(1), true, if from_gen { Some(*theme::PILL_GREEN) } else { None }),
+                            (labels[1].as_ref(), (btn_base + 1), true, if from_gen { Some(*theme::PILL_GREEN) } else { None }),
                         ];
                         let mut flow = Flow::new(fluor::region::Region::new(inset.x, y + settings_content_scroll, inset.w, inset.h), settings_content_scroll);
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &pills, "Oxanium");
@@ -6583,7 +6583,7 @@ impl PhotonApp {
                         let row = fluor::region::Region::new(inset.x, y, inset.w, line_h);
                         ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&molecule_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
                         let pill = fluor::region::Region::new(row.x + row.w * 0.62, row.y + row.h * 0.08, row.w * 0.34, row.h * 0.84);
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &tr(Msg::MutePill { muted }), btn_base.wrapping_add(2 + gi as HitId), ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &tr(Msg::MutePill { muted }), btn_base + 2 + gi as HitId, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         y += line_h * 1.1;
                     }
                 }
@@ -6620,8 +6620,8 @@ impl PhotonApp {
                         let labels = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
                         let pills = [
                             (labels[0].as_ref(), btn_base, true, fill_for(crate::NumBase::Dozenal)),
-                            (labels[1].as_ref(), btn_base.wrapping_add(1), true, fill_for(crate::NumBase::Hex)),
-                            (labels[2].as_ref(), btn_base.wrapping_add(2), true, fill_for(crate::NumBase::Arabic)),
+                            (labels[1].as_ref(), (btn_base + 1), true, fill_for(crate::NumBase::Hex)),
+                            (labels[2].as_ref(), (btn_base + 2), true, fill_for(crate::NumBase::Arabic)),
                         ];
                         // A local Flow anchored at the current cursor (its inset.y is pre-scrolled so the flow's y lands exactly at `y`).
                         let mut flow = Flow::new(fluor::region::Region::new(inset.x, y + settings_content_scroll, inset.w, inset.h), settings_content_scroll);
@@ -6717,14 +6717,14 @@ impl PhotonApp {
                         ctx.text.draw_text_center(&mut canvas, &n.to_string(), cols[2], y + line_h * 0.5, &cell_style, page_clip, None);
                         y += line_h * 0.9;
                     }
-                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base.wrapping_add(5));
+                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base + 5);
                     // COPY THE DIGITS (Nick 2026-09-16, "an easy spot to copy … so I can use them in casual conversation"): one pill puts the twelve glyph bytes on the clipboard; anywhere in photon they draw as digits (the +glyphs face is first in every fallback chain).
                     {
                         y += line_h * 0.3;
                         let pw = (inset.w * 0.6).min(hspan2 * 14.0);
                         let ph = hspan2 * 2.0;
                         let rect = fluor::region::Region::new(cx - pw * 0.5, y, pw, ph);
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::CopyDigits), btn_base.wrapping_add(6), ctx.pressed_hit, true, None, "Open Sans");
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::CopyDigits), btn_base + 6, ctx.pressed_hit, true, None, "Open Sans");
                         y += ph + line_h * 0.3;
                     }
                     if self.about_riddle_revealed && base == crate::NumBase::Dozenal {
@@ -6864,7 +6864,7 @@ impl PhotonApp {
                         .font("Oxanium");
                     y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::AboutPasslessLead), &lead_style, line_h * 0.8, about_clip);
                     // The link itself: primary VSF blue, bigger, BOLD + hand cursor on hover (cursor_for), the openey thing on click (slot 4). Hit rect fits the MEASURED text exactly — the old full-width band is why the hitmap didn't line up.
-                    let link_hovered = stub_hover() == btn_base.wrapping_add(4);
+                    let link_hovered = stub_hover() == (btn_base + 4);
                     let link_style = TextStyle::new(hspan2 * 1.15, *theme::LINK_COLOUR)
                         .weight(if link_hovered { 700 } else { 500 })
                         .font("Oxanium");
@@ -6886,7 +6886,7 @@ impl PhotonApp {
                         y.max(inset.y) as isize,
                         (cx + link_w * 0.5 + hspan2 * 0.4) as isize,
                         ((y + line_h * 1.2).min(inset.y + inset.h)) as isize,
-                        btn_base.wrapping_add(4),
+                        btn_base + 4,
                     );
                     y += line_h * 1.3;
                     y += line_h * 1.4;
@@ -6979,7 +6979,7 @@ impl PhotonApp {
                         y as isize,
                         (inset.x + inset.w) as isize,
                         (y + line_h) as isize,
-                        btn_base.wrapping_add(3),
+                        btn_base + 3,
                     );
                     y += line_h;
                     // The standing clock correction (Nick 2026-09-03): photon orders messages on consensus-corrected time, so the curious should be able to see how far their own clock sits from it. Purely informational — the system clock is never touched, and a deliberately-fast clock is a preference, not a fault.
@@ -7279,7 +7279,7 @@ impl RowView {
             colour,
             unread: dm_conversation(app.conversations, our_handle_hash, c).is_some_and(|v| v.unread_count > 0),
             ring: row_ring_tier_in(app.contacts, c, c.remote_count(our_handle_hash) > 0),
-            hit: if ci < 256 { app.contact_hit_base.wrapping_add(ci as HitId) } else { HIT_NONE },
+            hit: if ci < 256 { app.contact_hit_base + ci as HitId } else { HIT_NONE },
             pie: None,
             gradient_seed: proof_gradient_seed(&c.handle_proof),
         }
@@ -7308,7 +7308,7 @@ impl RowView {
             colour: party_colour(&molecule_digest(gid, our_handle_hash)),
             unread: conv.is_some_and(|v| v.unread_count > 0),
             ring,
-            hit: if gi < 64 { app.molecule_hit_base.wrapping_add(gi as HitId) } else { HIT_NONE },
+            hit: if gi < 64 { app.molecule_hit_base + gi as HitId } else { HIT_NONE },
             pie: Some((*gid, members)),
             gradient_seed: proof_gradient_seed(&gid.0),
         }
