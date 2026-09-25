@@ -507,3 +507,11 @@ pub fn row_center(stamp: i64, readout: i64, rows: u32, r: u32) -> i64 {
 ```
 
 Test: `index_of(d, eagle_of(d, n)) == n` for all `n`, all declarations.
+
+---
+
+## Decisions since the draft (maintained by the implementer)
+
+- §16 `EPOCH`: DECIDED — 1969-07-20T20:17:48 TAI, permanently (Nick 2026-09-25: "we're not changing the epoch"). Photon and vsf have written Eagle stamps on this epoch for years; it is not an open question.
+- §5.2 `sig`: optional and unused for now (Nick 2026-09-25: decryption is verification too; roll the chain — `root`/`prev` — but don't worry about per-second signatures yet).
+- Implementation: `vsf::tukutahi` (vsf/src/tukutahi.rs).
