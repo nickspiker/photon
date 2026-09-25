@@ -1789,28 +1789,6 @@ impl FluorApp for PhotonApp {
                         3 => {
                             self.pending_delete = self.cid(sci).map(|id| ((id, ts, out), false));
                         }
-                        // SAVE (slot 10): the held original of any attachment row → Downloads, independent of what the row's primary tap does (open/play).
-                        10 => {
-                            let att = self
-                                .conv_of(sci)
-                                .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
-                                .and_then(|m| m.file_parts());
-                            if let Some((hash, name, _)) = att {
-                                if crate::storage::blob_present(&hash) {
-                                    match self.attach_save(&name, &hash) {
-                                        Some(dest) => {
-                                            self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned());
-                                            crate::logf!("attach: saved to {}", dest);
-                                        }
-                                        None => self.ready_toast = Some(tr(Msg::SaveFailed).into_owned()),
-                                    }
-                                } else {
-                                    self.attach_fetch(sci, &hash);
-                                    self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
-                                }
-                                self.ready_toast_screen = None;
-                            }
-                        }
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {
                             self.selected_msg = None;

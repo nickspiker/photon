@@ -1938,8 +1938,6 @@ pub struct PhotonApp {
     molecule_row_lines: Vec<Vec<String>>,
     /// The Manage page's group picker is open for the panel's contact.
     molecule_pick_open: bool,
-    /// New-group form state on the picker: history policy from genesis (true) or from join (false, the default).
-    molecule_pick_from_genesis: bool,
     /// The New-group title box — registered in visit_app_widgets + textboxes_mut only. Doubles as the group panel's rename box.
     molecule_title_textbox: Option<Textbox>,
     /// Group panel rail rows [molecule_nav_base, +3) and pills [molecule_panel_btn_base, +8): 0 = Leave (two-tap), 1 = Mute, 2 = Rename; the Add page's contact rows use [molecule_panel_btn_base + 8, +32).
@@ -2707,7 +2705,6 @@ impl PhotonApp {
             molecule_pick_base: HIT_NONE,
             molecule_row_lines: Vec::new(),
             molecule_pick_open: false,
-            molecule_pick_from_genesis: false,
             molecule_title_textbox: None,
             molecule_nav_base: HIT_NONE,
             molecule_panel_btn_base: HIT_NONE,
@@ -3991,10 +3988,6 @@ pub(crate) fn tier_label(t: ShownTier) -> Option<std::borrow::Cow<'static, str>>
     }
 }
 
-fn path_tier_colour(c: &crate::types::Contact, has_remote: bool) -> Option<u32> {
-    shown_tier_colour(path_tier_shown(c, has_remote))
-}
-
 pub(crate) fn shown_tier_colour(t: ShownTier) -> Option<u32> {
     match t {
         ShownTier::Lan => Some(*theme::PATH_LAN_COLOUR),
@@ -4263,32 +4256,6 @@ fn draw_stub_pill(
         hit_id,
         pressed_hit,
         true,
-    );
-}
-
-/// Greyed, inert variant of [`draw_stub_pill`]: dim label, NO hit stamp — the settings restamp pass has already cleared the region to HIT_NONE, so a click on the pill dispatches nowhere. (Guard the action's handler too: the hit map is one frame stale across an enable→disable transition.)
-fn draw_stub_pill_disabled(
-    canvas: &mut Canvas,
-    text: &mut fluor::text::TextRenderer,
-    hit_map: &mut [HitId],
-    buf_w: usize,
-    buf_h: usize,
-    rect: fluor::region::Region,
-    label: &str,
-    hit_id: HitId,
-    pressed_hit: HitId,
-) {
-    draw_stub_pill_styled(
-        canvas,
-        text,
-        hit_map,
-        buf_w,
-        buf_h,
-        rect,
-        label,
-        hit_id,
-        pressed_hit,
-        false,
     );
 }
 

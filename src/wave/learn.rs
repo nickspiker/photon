@@ -36,7 +36,6 @@ const SOLID_N: usize = 20;
 const SOLID_SPREAD: f32 = 0.5;
 /// Delay lock: ≥5 pooled lags within ±1 bin of the median → lock and narrow the scan to ±3 bins (full rescan on route change or 3 consecutive edge pins).
 const LOCK_AGREE: usize = 5;
-const LOCK_SCAN: usize = 3;
 /// Floor/voice guard: mic bins count as far-quiet only after the delayed far env has been quiet this long (echo tail can't contaminate the floor or the voice pool).
 const FAR_QUIET_GUARD: usize = 30; // 300ms
 /// Voice: voiced bins needed before talk publishes (5s), and the voiced threshold above floor (matches the ritual's).

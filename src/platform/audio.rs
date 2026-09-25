@@ -300,6 +300,7 @@ pub(crate) fn set_route_identity(id: String) {
     *ROUTE_ID.lock().unwrap() = id;
 }
 
+#[cfg(target_os = "android")]
 pub(crate) fn set_volume_db(db: Option<f32>) {
     *VOLUME_DB.lock().unwrap() = db;
 }
@@ -424,7 +425,8 @@ pub fn set_local_source(on: bool) {
     LOCAL_SOURCE.store(on, Ordering::Relaxed);
 }
 
-/// Render the next frame at NOW — the fallback stamp where no device timestamp exists.
+/// Render the next frame at NOW — the tests' render call (every device path stamps its own DAC instant).
+#[cfg(test)]
 fn next_render_frame() -> Vec<i16> {
     next_render_frame_at(crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_now()))
 }

@@ -72,8 +72,8 @@ fn open_with_fallback(direction: AudioDirection, make_cb: &dyn Fn() -> ndk::audi
         match build(direction, AudioSharingMode::Exclusive, f, make_cb()) {
             Ok(s) => return Ok(s),
             Err(e) => {
+                // Logged here and not kept: the shared attempt right below either succeeds or leaves the error that matters.
                 crate::logf!("AUDIO: AAudio {} exclusive open failed at format {} ({}) — trying shared", format!("{direction:?}"), f, e);
-                last = e;
             }
         }
         match build(direction, AudioSharingMode::Shared, f, make_cb()) {

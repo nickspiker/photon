@@ -546,6 +546,7 @@ impl PhotonApp {
 
     /// Media-liveness measurement (edges-not-timers: packet arrival IS the event stream; this is a measurement cadence on it, like the learner tick or PT's RTO — never UI timing). Receive drought past the reconnect line → panel shows reconnecting + anchors fire at the peer's freshest paths; past the drop line → honest teardown with a dropped summary, because a silently-dead Active wave the human must notice and kill is the worse experience. The engine's mute-transmits-zeros contract keeps a muted peer from ever reading as a drought.
     /// THE INTERFACE CHANGED UNDER US (Android's ConnectivityManager, 2026-09-11): everything we knew about our own addresses describes a network we have left. Forget the LAN address and the reflexive (the receive loop forgets its copy too), re-arm the reflect bootstrap, sweep presence now so the first pong from any outside peer relearns the public address — that edge pushes it to whoever cannot find us — and if a wave is live, push to its peer on the next tick.
+    #[cfg(target_os = "android")]
     pub(super) fn on_network_changed(&mut self) {
         crate::log("NET: interface changed — forgetting our LAN and public addresses, relearning from the next pong");
         self.our_lan_ip = None;

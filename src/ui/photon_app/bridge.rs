@@ -60,19 +60,6 @@ fn bridge_child_tree(root: i32) -> Vec<i32> {
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 const BRIDGE_BUF_MAX: usize = 65536;
 
-/// Keep the LAST `cap` bytes of `s` (char-boundary-safe), prefixed with an elision note naming what stayed behind.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-fn bridge_cap_tail(s: &str, cap: usize) -> String {
-    if s.len() <= cap {
-        return s.to_string();
-    }
-    let mut start = s.len() - cap;
-    while !s.is_char_boundary(start) {
-        start += 1;
-    }
-    tr(Msg::BridgeElided { bytes: start, output: &s[start..] }).into_owned()
-}
-
 /// Wake the event loop from a worker thread. Platform-agnostic (a plain event send) — the pigeon landing on any host uses it, so it carries no shell cfg gate.
 pub(super) fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>) {
     if let Some(w) = w {

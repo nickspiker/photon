@@ -807,7 +807,6 @@ impl PhotonApp {
                     }
                 }
                 // Actions: bottom third, thumb-reach, decline LEFT answer RIGHT with a generous gap — and bottom-anchored so an Android heads-up banner (which owns the top) can never cover them.
-                let bw = w * 0.34;
                 let bh = unit * 2.4;
                 let by = h - bh * 0.5 - unit * 1.5;
                 let bfont = unit * 0.75;
@@ -3484,7 +3483,6 @@ impl PhotonApp {
                             let f_w = unit * 3.2;
                             let f_x = buf_w as f32 - pad_x - f_w + bar_off;
                             let f_y = list_bottom - f_h - unit * 0.25;
-                            filter_stamp = None;
                             if f_x < buf_w as f32 {
                                 filter_stamp = Some((fluor::region::Region::new(f_x, f_y, f_w, f_h), if topbar_visible { self.conv_filter_hit } else { HIT_NONE }));
                                 super::draw_stub_pill(
@@ -4336,7 +4334,6 @@ impl PhotonApp {
                                         let half = (band_bot - band_top).max(2.0) * 0.5;
                                         let cols = (wx1 - wx0).max(1.0) as usize; // WHY/PROOF: as above, one column at least
                                         let rows = half as usize;
-                                        const WAVE_FULL_HEIGHT_AMP: f32 = 0.25;
                                         let mfrac = self.music_play.as_ref().filter(|m| m.hash == ahash && m.playing()).map(|m| m.frac());
                                         // Playhead while playing.
                                         if let Some(f) = mfrac {

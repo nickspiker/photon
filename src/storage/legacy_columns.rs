@@ -256,7 +256,7 @@ mod tests {
     #[test]
     fn a_v2_column_roster_on_disk_migrates_and_the_wire_refuses_it() {
         crate::storage::isolate_test_storage();
-        let storage = crate::storage::FlatStorage::new(crate::storage::APP, [0xD3; 32], [0xD4; 32]).expect("storage");
+        let storage = crate::storage::FlatStorage::new(crate::storage::APP, [0xB7; 32], [0xB8; 32]).expect("storage");
         let birth = found_atom([0x01; 32], [0x02; 32], "Nick", [0x03; 32], "purple turtles", false, &[0xA5; 32]);
         let (g, m) = (&birth.genesis, &birth.founder_member);
         let e6 = |v: i64| VsfType::e(vsf::types::EtType::e6(v));

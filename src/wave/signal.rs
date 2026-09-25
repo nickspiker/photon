@@ -43,7 +43,7 @@ pub fn seal_express(
     let payload = express_payload(ts, lane_key, sig)?;
     let nonce_bytes: [u8; EXPRESS_NONCE_LEN] = rand::random();
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
-    let sealed = cipher.encrypt(XNonce::from_slice(&nonce_bytes), payload.as_slice()).ok()?;
+    let sealed = cipher.encrypt(&XNonce::from(nonce_bytes), payload.as_slice()).ok()?;
     let mut out = Vec::with_capacity(1 + EXPRESS_NONCE_LEN + sealed.len());
     out.push(EXPRESS_MAGIC);
     out.extend_from_slice(&nonce_bytes);
@@ -67,7 +67,7 @@ pub fn open_express(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32
     }
     let nonce = &bytes[1..1 + EXPRESS_NONCE_LEN];
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
-    let payload = cipher.decrypt(XNonce::from_slice(nonce), &bytes[1 + EXPRESS_NONCE_LEN..]).ok()?;
+    let payload = cipher.decrypt(&XNonce::try_from(nonce).ok()?, &bytes[1 + EXPRESS_NONCE_LEN..]).ok()?;
     read_express_payload(&payload)
 }
 

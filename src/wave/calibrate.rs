@@ -66,14 +66,6 @@ pub fn take_learned() -> Vec<LearnedResult> {
     std::mem::take(&mut *LEARNED.lock().unwrap())
 }
 
-/// Mean |sample| of a frame — the envelope unit every measurement runs in (matches the engine's level math).
-pub(crate) fn env(frame: &[i16]) -> f32 {
-    if frame.is_empty() {
-        return 0.0;
-    }
-    frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>() as f32 / frame.len() as f32
-}
-
 fn mean(v: &[f32]) -> f32 {
     if v.is_empty() {
         return 0.0;

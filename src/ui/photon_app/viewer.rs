@@ -241,17 +241,6 @@ impl PhotonApp {
         crate::log("attach: reader opened");
     }
 
-    /// Does any picture exist for this attachment row (decoded preview, or a micro thumb on the row) — the viewer can open without the original.
-    pub(super) fn img_wants_any_picture(&self, ci: usize, hash: &[u8; 32]) -> bool {
-        self.conv_of(ci).is_some_and(|c| {
-            c.messages.iter().any(|m| {
-                m.file_parts().is_some_and(|(h, _, _)| h == *hash)
-                    && (crate::types::parse_micro_image(&m.preview).is_some()
-                        || m.attach.and_then(|a| a.preview_hash).is_some_and(|ph| matches!(self.img_cache.get(&ph), Some(Some(_)))))
-            })
-        })
-    }
-
     /// Close whichever overlay is open (the view and its decode go with it — up to 50 MB on a phone). Returns true when one was.
     pub(super) fn close_viewers(&mut self) -> bool {
         let was = self.viewer.is_some() || self.reader.is_some();

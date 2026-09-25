@@ -7,7 +7,6 @@
 //! **No wall-clock timer.** The pacing clock is the DAC draining `PLAYBACK_Q` — one frame per 10 ms of real hardware time. The worker decodes the next frame only once the queue has drained below a small target, polling that depth on a 1 ms granularity (the same poll cadence the engine and ring loop use — a worker-thread poll, not a wave-state timer).
 
 use crate::wave::record::KeptStream;
-use crate::wave::spool::SpoolTicket;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Duration;

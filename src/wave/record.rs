@@ -645,7 +645,6 @@ impl KeptStream {
         let slot = slot.min(self.total);
         // WHY/PROOF: a seek inside the first SEEK_PRIME slots primes from slot 0, the start — not from a wrapped slot past the end.
         let start = slot.saturating_sub(SEEK_PRIME);
-        let nchan = self.nchan;
         match &mut self.inner {
             Inner::Multi { bytes, cur, decs, subs } => {
                 *cur = 0;

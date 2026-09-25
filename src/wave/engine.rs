@@ -264,6 +264,12 @@ fn run(
             return;
         }
     };
+    // THE CODEC'S DELAY IS NEVER IN A NAME (docs/waves.md "Named playout"): the low-delay encoder looks ahead, so a decoded frame carries the input from `lookahead` samples BEFORE the grid name it rode under. Both ends build this encoder identically, so our own encoder's figure is the peer's (2.5 ms at 48 kHz). Plaid carries raw PCM and has none.
+    let codec_delay: i64 = match encoder.get_lookahead() {
+        Ok(n) if n >= 0 => n as i64,
+        _ => (48_000 / 400) as i64, // the documented CELT low-delay lookahead, 2.5 ms, if the library will not say
+    };
+    crate::logf!("WAVE: codec delay {} samples — decoded frames play under the names of the input they carry", codec_delay);
     let mut decoder = match opus::Decoder::new(48_000, opus::Channels::Mono) {
         Ok(d) => d,
         Err(e) => {
@@ -376,7 +382,8 @@ fn run(
         Default::default();
     // Highest authenticated seq seen — the media re-point's forward-progress gate (see the RX loop).
     let mut rx_max_seq: Option<u32> = None;
-    let mut rx_done: std::collections::BTreeMap<u32, Vec<Vec<i16>>> = Default::default();
+    // Windows decoded and not yet walked by the in-order loss bookkeeping (their frames went to named playout the moment they decoded).
+    let mut rx_done: std::collections::BTreeMap<u32, ()> = Default::default();
     let mut next_play: Option<u32> = None;
 
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
@@ -911,7 +918,6 @@ fn run(
                     let floor = age_minima.iter().copied().chain(std::iter::once(age_sec_min)).min().unwrap_or(age); // the algorithm: the current second's running minimum is always in the chain
                     crate::platform::audio::set_play_floor(floor);
                     rx_decoders.remove(&wid);
-                    let mut frames = Vec::with_capacity(TIER_FRAMES[dtier]);
                     for slot in 0..TIER_FRAMES[dtier] {
                         let base = slot * tier_slot(dtier);
                         let n = u16::from_le_bytes(data[base..base + 2].try_into().unwrap()) as usize;
@@ -937,9 +943,8 @@ fn run(
                             rx_frames += 1;
                             raw_in += 1;
                             if draining.is_none() {
-                                crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm.clone());
+                                crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm);
                             }
-                            frames.push(pcm);
                             continue;
                         }
                         if let Some(w) = spool.as_mut() {
@@ -950,18 +955,17 @@ fn run(
                             Ok(s) if s == FRAME_SAMPLES => {
                                 rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
                                 rx_frames += 1;
-                                // Into named playout the moment it decodes: whether it is still in time is the speaker's question, answered by its name.
+                                // Into named playout the moment it decodes: whether it is still in time is the speaker's question, answered by its name — the name of the INPUT it carries, the codec's lookahead behind the wire name.
                                 if draining.is_none() {
-                                    crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm.clone());
+                                    crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME - codec_delay, pcm);
                                 }
-                                frames.push(pcm);
                             }
                             Ok(_) | Err(_) => {}
                         }
                     }
                     // (The jitter target is the loss loop's, set in the play loop below; the arrival granularity is its floor.)
                     // Tell the jitter buffer the arrival granularity: a target below the window size structurally underruns between datagrams (the wave-start latency ratchet, field 2026-09-08).
-                    rx_done.insert(wid, frames);
+                    rx_done.insert(wid, ());
                     have_set(&mut rx_have, wid);
                     wanted.remove(&wid);
                     // Receive-side cleanliness is the climb evidence (channel proxy — see the ladder comment): a full streak of completed windows earns one rung up.
@@ -1009,9 +1013,8 @@ fn run(
         if let Some(np) = next_play {
             let mut np = np;
             loop {
-                if let Some(frames) = rx_done.remove(&np) {
+                if rx_done.remove(&np).is_some() {
                     // The frames already went to named playout at decode; this walk is the loss bookkeeping (the loop, fills, the ladder) in window order. THE LEVEL PLAN: nothing adaptive on RX — the wire arrived at plan level, the speaker duck and the rocker are the only hands on it.
-                    drop(frames);
                     // Loss loop: a played window slot (an underrun since the last slot counts as lost — silence reached the ear either way).
                     let underruns = crate::platform::audio::jitter_stats().2;
                     let lost = underruns > last_underruns;
@@ -1772,6 +1775,29 @@ mod fill_tests {
             let f = now_f - back;
             assert_eq!(unwrap_frame_no(frame_no(f * super::super::align::FRAME)), f, "{back} frames back");
         }
+    }
+
+    /// The codec delay the playout subtracts is the real one: a click encoded at input sample N of the wire encoder's configuration decodes at output sample N + lookahead — so naming a decoded frame `k0 − lookahead` puts every sample back under the name of the input it carries.
+    #[test]
+    fn decoded_audio_trails_its_input_by_exactly_the_lookahead() {
+        let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::LowDelay).unwrap();
+        let _ = enc.set_vbr(false);
+        let _ = enc.set_bitrate(opus::Bitrate::Bits(TIER_RATES[3]));
+        let look = enc.get_lookahead().unwrap() as usize;
+        let mut dec = opus::Decoder::new(48_000, opus::Channels::Mono).unwrap();
+        let click_at = 3 * FRAME_SAMPLES + 57;
+        let input: Vec<i16> = (0..FRAME_SAMPLES * 12).map(|i| if i == click_at { 24_000 } else { 0 }).collect();
+        let mut out = Vec::new();
+        for f in input.chunks_exact(FRAME_SAMPLES) {
+            let mut pkt = vec![0u8; TIER_MAX_ENC[3]];
+            let n = enc.encode(f, &mut pkt).unwrap();
+            let mut pcm = vec![0i16; FRAME_SAMPLES];
+            dec.decode(&pkt[..n], &mut pcm, false).unwrap();
+            out.extend_from_slice(&pcm);
+        }
+        let peak = (0..out.len()).max_by_key(|&i| (out[i] as i32).abs()).unwrap();
+        assert_eq!(look, FRAME_SAMPLES / 2, "CELT low delay looks ahead 2.5 ms");
+        assert!((peak as i64 - (click_at + look) as i64).abs() <= 2, "click in at {click_at}, out at {peak}, lookahead {look}");
     }
 
     #[test]
