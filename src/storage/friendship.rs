@@ -607,8 +607,8 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             // Attempts SURVIVE the restart (floor 1): exhaustion is cumulative lane evidence — resetting it every launch meant the anchor-wedge detector could never arm inside a short session and a dead lane stayed undiagnosed forever. The deadline is still immediate: a reloaded pending resends right away (or, if already exhausted, sits as the standing evidence the next sync record reads).
             attempts: attempts_persisted.get(i).copied().unwrap_or(1).max(1), // WHY/PROOF: read back from disk — a 0 would claim a sent message was never tried, and the floor-1 rule above says every pending has
             next_retry_osc: eagle_times[i],
-            targets: pending_targets.get(i).cloned().unwrap_or_default(),
-            acked_by: pending_acked.get(i).cloned().unwrap_or_default(),
+            targets: pending_targets.get(i).cloned().unwrap_or_default(), // WHY/PROOF: optional persisted columns — absent on chains saved before they existed
+            acked_by: pending_acked.get(i).cloned().unwrap_or_default(), // (optional persisted column — see above)
         })
         .collect();
 

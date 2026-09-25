@@ -842,7 +842,7 @@ impl FluorApp for PhotonApp {
             }
             if self.molecule_nav_base != HIT_NONE && hit_id >= self.molecule_nav_base && hit_id < (self.molecule_nav_base + 3) {
                 let idx = (hit_id - self.molecule_nav_base) as usize;
-                if let Some(p) = crate::ui::state::MoleculePage::ALL.get(idx).copied() {
+                if let Some(p) = crate::ui::state::MoleculePage::ALL.get(idx).copied() { // WHY/PROOF: the hit span is sized for the longest page list; a hit past this list's end names no page
                     self.change_focus(None);
                     self.settings_content_scroll = 0.0;
                     self.state = AppState::MoleculePanel(p);
@@ -904,7 +904,7 @@ impl FluorApp for PhotonApp {
                 && hit_id < (self.contact_nav_base + 4)
             {
                 let idx = (hit_id - self.contact_nav_base) as usize;
-                if let Some(p) = ContactPage::ALL.get(idx).copied() {
+                if let Some(p) = ContactPage::ALL.get(idx).copied() { // (hit past the list — see above)
                     self.change_focus(None);
                     // Fresh page starts at the top, same rule as settings.
                     self.settings_content_scroll = 0.0;
@@ -970,7 +970,7 @@ impl FluorApp for PhotonApp {
                 && hit_id < (self.settings_nav_base + SettingsPage::ALL.len() as HitId)
             {
                 let idx = (hit_id - self.settings_nav_base) as usize;
-                if let Some(p) = self.settings_pages().get(idx).copied() {
+                if let Some(p) = self.settings_pages().get(idx).copied() { // (hit past the list — see above)
                     let p = &p;
                     self.change_focus(None);
                     // Leaving a page clears its selection/destructive-action arms (interaction-cleared).
@@ -1036,7 +1036,7 @@ impl FluorApp for PhotonApp {
                         // "Rename" on a device card → the card's name band becomes a textbox prefilled with the current name (Enter commits fleet-linked, Esc cancels).
                         let idx = (slot - 56) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, _, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
                             tb.chars = name.chars().collect();
                             let id = tb.hit_id();
@@ -1047,7 +1047,7 @@ impl FluorApp for PhotonApp {
                         // "Approve sign-out" (two-tap): the CONSENT half of the bilateral removal — countersign the leaver's departure request and publish the consented Remove. The leaver completes its side when it observes itself de-folded.
                         let idx = (slot - 48) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             let matches_pending = self
                                 .pending_depart_req
                                 .as_ref()
@@ -1081,7 +1081,7 @@ impl FluorApp for PhotonApp {
                         // Locked sibling row's "Unlock" pill (two-tap): the owner's deliberate reversal. Same handle-confirmation shape as the lock — the confirm de-attests, the unlock fires only inside the next successful attest (pending_unlock), so it is proof-of-owner, and the handle is typed only on the standard attest screen.
                         let idx = (slot - 40) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             if self.fleet_unlock_armed == Some(pk) {
                                 self.fleet_unlock_armed = None;
                                 if let Some(hp) = self.session.as_ref().map(|s| s.handle_proof) {
@@ -1104,7 +1104,7 @@ impl FluorApp for PhotonApp {
                         // Live sibling row's "Lock out" pill (two-tap): treat-as-stolen. The chain is untouched — the fleet-synced locked set + key rotation do all the work.
                         let idx = (slot - 32) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, false, _, false, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             if self.fleet_lock_armed == Some(pk) {
                                 self.fleet_lock_armed = None;
                                 // The confirm DE-ATTESTS this device; the lock executes only inside the next successful attest (see pending_lock). Owner knows the handle and sails thru; a thief just signed themselves out of the one device they held. Same session teardown as Security's "Lock".
@@ -1138,7 +1138,7 @@ impl FluorApp for PhotonApp {
                         // Retired row's "Release" pill (two-tap): the OWNER frees the departed device's hardware brand — the second signature of the two-signature retire (the first was that device signing itself out). On success the pubkey joins the fleet-synced `fleet.released` setting so the row drops off every device; the chain rows themselves are permanent testimony, untouched.
                         let idx = (slot - 24) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, true, name, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, true, name, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             if self.fleet_release_armed == Some(pk) {
                                 self.fleet_release_armed = None;
                                 let hp = self.our_handle_proof();
@@ -1184,7 +1184,7 @@ impl FluorApp for PhotonApp {
                         // Bridge pill on an online sibling row → open a command conversation with THAT device (chat-as-shell: type `$ cmd`).
                         let idx = (slot - 8) as usize;
                         let devices = self.fleet_device_rows();
-                        if let Some((pk, _, _, _, _, _, _, _)) = devices.get(idx).cloned() {
+                        if let Some((pk, _, _, _, _, _, _, _)) = devices.get(idx).cloned() { // WHY/PROOF: the device rows are rebuilt each frame; a hit from the frame the human saw can outlive a device leaving the list
                             self.open_bridge_conversation(pk);
                         }
                     }

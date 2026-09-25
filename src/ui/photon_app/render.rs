@@ -1803,8 +1803,8 @@ impl PhotonApp {
                 + matching
                     .iter()
                     .map(|row| match *row {
-                        ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())),
-                        ReadyRow::Group(gi) => contact_row_height(row_h, self.molecule_row_lines.get(gi).map_or(1, |l| l.len())),
+                        ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())), // WHY/PROOF: the name-wrap cache is from the last layout — a contact added since has no entry yet
+                        ReadyRow::Group(gi) => contact_row_height(row_h, self.molecule_row_lines.get(gi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
                     })
                     .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
@@ -3507,7 +3507,7 @@ impl PhotonApp {
                             }
                             // Cached wrapped lines — scroll frames do zero shaping. `y` is the LAST line's baseline, earlier lines stack upward at `intra` spacing.
                             static EMPTY_LINES: Vec<String> = Vec::new();
-                            let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES);
+                            let lines: &Vec<String> = wrap_cache.get(vi).unwrap_or(&EMPTY_LINES); // WHY/PROOF: the bubble wrap cache is rebuilt on a key change; until then a newly arrived row has no entry
                             // A reply row's reference snippet occupies one extra line ABOVE the body; a reacted row grows one BELOW (both counted into the wrap total). The reaction line sits at the block's bottom baseline, so the body shifts up by react_off.
                             let reply_target = msg.reference.and_then(|(k, t)| {
                                 (k == crate::types::RefKind::Reply).then_some(t)
@@ -4194,7 +4194,7 @@ impl PhotonApp {
                                                     }
                                                 }
                                                 if let Some(Some(v)) = self.wave_env.get(&hash) {
-                                                    if let Some(e) = v.get(chn) {
+                                                    if let Some(e) = v.get(chn) { // WHY/PROOF: channel count comes from the envelope blob — file data
                                                         return Some((hash, chn, e.clone()));
                                                     }
                                                 }
@@ -7275,7 +7275,7 @@ impl RowView {
             party_colour(&relationship_digest(&c.handle_hash, our_handle_hash))
         };
         RowView {
-            name_lines: app.contact_row_lines.get(ci).cloned().unwrap_or_default(),
+            name_lines: app.contact_row_lines.get(ci).cloned().unwrap_or_default(), // (stale wrap cache — see above)
             has_real_name: c.has_real_name(),
             colour,
             unread: dm_conversation(app.conversations, our_handle_hash, c).is_some_and(|v| v.unread_count > 0),
@@ -7304,7 +7304,7 @@ impl RowView {
             _ => *theme::RING_OFFLINE_COLOUR,
         };
         RowView {
-            name_lines: app.molecule_row_lines.get(gi).cloned().unwrap_or_default(),
+            name_lines: app.molecule_row_lines.get(gi).cloned().unwrap_or_default(), // (stale wrap cache — see above)
             has_real_name: matches!(phase, crate::storage::molecule::MoleculePhase::Standing | crate::storage::molecule::MoleculePhase::CatchingUp),
             colour: party_colour(&molecule_digest(gid, our_handle_hash)),
             unread: conv.is_some_and(|v| v.unread_count > 0),

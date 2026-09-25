@@ -1017,7 +1017,7 @@ impl FriendshipChains {
     /// The stamp a sibling's replicated lane carries, normalized: a blob from a build that stamped lanes with the era INDEX (or a ceremony-born blob with no stamps) reads as that blob's current era.
     fn lane_stamp_from(other: &FriendshipChains, i: usize) -> u64 {
         let current = other.era_tag().map(u64::from).unwrap_or(0);
-        match other.lane_eras.get(i).copied() {
+        match other.lane_eras.get(i).copied() { // WHY/PROOF: `other` is a sibling's chains off fleet sync — its lane-era column can be shorter than its lane list
             None => current,
             Some(v) if v == other.era_index => current,
             Some(v) => v,

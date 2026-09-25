@@ -230,7 +230,7 @@ fn pread_exact(f: &File, buf: &mut [u8], off: u64) -> io::Result<()> {
 
 /// Land one sealed chunk. The length must be exactly the layout's — a short write would leave zeros that honestly read missing, but a LONG one would smear into the neighbour, so it is refused outright.
 pub fn write_slot(f: &File, layout: &SpoolLayout, idx: usize, sealed: &[u8]) -> io::Result<()> {
-    if layout.lens.get(idx).copied() != Some(sealed.len() as u64) {
+    if layout.lens.get(idx).copied() != Some(sealed.len() as u64) { // WHY/PROOF: `idx` is a record's slot as read back from the spool file
         return Err(io::Error::new(io::ErrorKind::InvalidInput, "spool slot length mismatch"));
     }
     pwrite_all(f, sealed, layout.offsets[idx])

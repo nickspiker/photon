@@ -459,6 +459,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
     let marks_ok = flat_total == mk.len() && flat_total == ms.len() && flat_total == ml.len() && flat_total == md.len();
 
     // Zip the parallel arrays; a malformed page (mismatched lengths) yields the common prefix.
+    // RULE 0 — WHY the per-row columns below are read with `.get(i)` and a default: OPTIONAL columns (tombstones, notified, references, marks, wave, attachments, control, file) are absent on pages built before each column existed, and a peer's malformed page can carry any of them short. PROOF: an absent or short column reads as its documented default for that row, where `[i]` would panic on a page the peer controls.
     // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
     let n = times.len().min(texts.len()).min(outs.len()).min(dels.len());
     let mut rows = Vec::with_capacity(n);

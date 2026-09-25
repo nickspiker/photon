@@ -1507,6 +1507,7 @@ pub struct PhotonApp {
         crate::types::friendship::FriendshipChains,
     )>,
     /// Group rosters, keyed by group id (docs/molecules.md §4): the membership truth every group-frame gate and standing set reads. Persisted via `save_roster`; loaded on attest/resume thru the group index.
+    /// RULE 0: indexed by `gi` the way `contacts` is by `ci` — every `.get(gi)` is the same deferred-index guard, proven once on `contacts` above (and carries the same stale-index limit).
     molecule_rosters: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)>,
     /// This DEVICE's local state per group (D12: mute, phase) — beside the roster, never inside it. Persisted at vault_key("molecule-local", gid).
     molecule_locals: Vec<(crate::types::molecule::MoleculeId, crate::storage::molecule::MoleculeLocal)>,
@@ -1616,6 +1617,8 @@ pub struct PhotonApp {
     /// Encrypted local storage — initialized after attestation success with the device secret + handle. Held behind an `Arc` so it can be handed to the avatar background-download/sync threads (a plain `&FlatStorage` borrow can't cross `thread::spawn`); the inner `Mutex<Vault>` makes `Arc<FlatStorage>` `Send + Sync`.
     storage: Option<std::sync::Arc<crate::storage::FlatStorage>>,
     /// Contact list. Populated from `AttestationData.contacts` on attestation success and grown by `submit_add_friend` → `HandleQuery::search` results. Persisted to FlatStorage on add.
+    /// RULE 0 — WHY every lookup in this crate is `self.contacts.get(ci)`, stated once here instead of at each of ~80 sites: a contact INDEX is captured at one edge and used at a later one (a queued job, a deferred send, a hit id, a worker's reply), and a removal in between shrinks this vec.
+    /// PROOF: `.get` answers None past the end where `[ci]` would panic. The limit it cannot cover: after a removal a stale `ci` can name a DIFFERENT contact — stable contact ids instead of indices are the real fix (docs/rule0-audit-2026-09-25.md).
     contacts: Vec<crate::types::Contact>,
     /// Conversations, keyed by their participant-set id. A contact row and its DM conversation are 1:1 today, so entries materialize lazily the first time something touches a conversation; nothing assumes the count matches `contacts`, which is what leaves room for zero-contact (notes-to-self) and many-contact (group) sets without changing shape.
     conversations: Vec<crate::types::Conversation>,
