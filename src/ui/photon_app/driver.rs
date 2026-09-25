@@ -2601,9 +2601,15 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
 
-                // Every OTHER item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons — activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change for them: focusing on press left a button stuck in its dark focused tint after a drag-off (and swallowed hover). The host has already armed the element (held colour); we just consume the press so it doesn't fall thru to a window drag.
+                // A slider is dragged ALONG, never thru to the window — it keeps its press.
+                if self.settings_zoom_slider.as_ref().is_some_and(|sl| sl.hit_id() == hit_id) {
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+                // Every OTHER item — contacts, pills, nav, orb, back, avatar, start-fresh, the Buttons — activates on RELEASE over the same element (fluor's PointerArbiter → `on_activate`); a drag-off before release cancels. So the press arm does NO activation and NO focus change for them: focusing on press left a button stuck in its dark focused tint after a drag-off (and swallowed hover).
+                // DRAG ANYWHERE MOVES THE WINDOW (Nick 2026-09-25): only text boxes, the waveform scrub, the viewer and sliders own a drag (all claimed above); a press on anything else arms a window move. The host commits it past the OS drag threshold and then cancels this press's activation, so a still click still clicks and a drag never fires the button. Hosts without a movable window (Android) ignore the response.
                 ctx.window.request_redraw();
-                EventResponse::Handled
+                EventResponse::StartWindowDrag
             }
             Event::MouseInput {
                 state: ElementState::Released,
