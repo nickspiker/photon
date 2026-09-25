@@ -16,7 +16,7 @@ const LANE_SECTION: &str = "lane";
 const PENDING_SECTION: &str = "pending";
 const KEM_SECTION: &str = "kem";
 
-/// The chains codec's version: 10 = one section per record. The strict decoder refuses anything else; the v8/v9 column shape is read only by the disk migration (legacy_columns.rs).
+/// The chains codec's version: 10 = one section per record. The strict decoder refuses anything else, on disk as on the wire: a v8/v9 blob leaves its contact chainless and the sweep re-clutches it.
 const CHAINS_VERSION: u8 = 10;
 
 /// Vault address for a friendship's chain state — `vault_key("chains", friendship_id)`. The conversation id is the scope (already `blake3` of the sorted participant seeds, so 1/2/N participants all resolve here); "chains" names the entry.
@@ -184,19 +184,8 @@ pub fn load_friendship_chains(
     #[cfg(feature = "development")]
     crate::network::inspect::vsf_read_decrypted(&vsf_bytes, "friendship/chains");
 
-    let mut chains = match chains_from_vsf_bytes(&vsf_bytes) {
-        Ok(c) => c,
-        // DISK-ONLY MIGRATION (legacy_columns.rs): this device's own v8/v9 blob, read once and rewritten in the record shape — refusing it would re-clutch every friendship on upgrade.
-        Err(strict) => match crate::storage::legacy_columns::chains_from_v9_bytes(&vsf_bytes) {
-            Ok(mut old) => {
-                crate::storage::legacy_columns::migrate_embedded_roster(&mut old);
-                save_friendship_chains(&old, storage)?;
-                crate::logf!("MIGRATION: parallel-column chains for {} rewritten as record sections", hex::encode(&friendship_id.as_bytes()[..4]));
-                old
-            }
-            Err(_) => return Err(strict),
-        },
-    };
+    // STRICT: a blob in the retired column shape (v8/v9) is refused like any unreadable blob, and the contact's chainless sweep re-clutches it (Nick 2026-09-25: "mass re-clutch is okay") — the contact stays, the conversation id is the participants', and undelivered rows re-send on the fresh chain.
+    let mut chains = chains_from_vsf_bytes(&vsf_bytes)?;
     // LOAD-TIME SELF-HEAL for graveyard blobs minted before rotation learned to sweep (the 8.1MB / 490-lane Emma specimen, 2026-08-28): receipt-less non-active lanes are losslessly re-derivable from the root, so a poisoned blob trims here and the next persist shrinks it for good. Healthy blobs pay one cheap scan.
     let pruned = chains.prune_retired_lanes(8);
     if pruned > 0 {
