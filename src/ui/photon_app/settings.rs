@@ -895,6 +895,7 @@ impl PhotonApp {
 
     /// The earpiece trim (the Wave page): step by one stop, clamp, apply live, persist device-local (`audio.rx.trim`).
     pub(super) fn step_rx_trim(&mut self, delta: i32) {
+        // WHY/PROOF: a stepper press at the end of its range stays at the end — the human's input held to the trim's range (the store re-checks it for synced values).
         let stops = (crate::platform::audio::rx_trim_stops() + delta).clamp(-crate::platform::audio::RX_TRIM_MAX_STOPS, crate::platform::audio::RX_TRIM_MAX_STOPS);
         crate::platform::audio::set_rx_trim_stops(stops);
         if self.ensure_fleet_settings() {

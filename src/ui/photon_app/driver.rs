@@ -1946,7 +1946,7 @@ impl FluorApp for PhotonApp {
                                     self.selected_msg_copied = false;
                                 } else {
                                     if self.music_play.as_ref().is_some_and(|m| m.hash == v.hash && m.playing()) {
-                                        let f = ((px - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0);
+                                        let f = ((px - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0); // WHY/PROOF: the pointer can press past the bar's ends — a seek holds to the track's start or end
                                         if let Some(m) = self.music_play.as_ref() {
                                             m.seek_frac(f);
                                         }
@@ -1996,7 +1996,7 @@ impl FluorApp for PhotonApp {
                     if let Some(v) = self.msg_attach_visuals.get(vis).copied().flatten() {
                         if v.kind == crate::types::AttachKind::Audio {
                             if let Some(m) = self.music_play.as_ref().filter(|m| m.hash == v.hash && m.playing()) {
-                                let f = (((ctx.cursor_x as f32) - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0);
+                                let f = (((ctx.cursor_x as f32) - v.x0) / (v.x1 - v.x0).max(1.0)).clamp(0.0, 1.0); // WHY/PROOF: a drag leaves the bar; the seek holds to its ends
                                 m.seek_frac(f);
                                 self.scene_dirty = true;
                                 ctx.window.request_redraw();
@@ -2434,7 +2434,7 @@ impl FluorApp for PhotonApp {
                                 // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
                                 let step = -(dy as f32)
                                     * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
-                                let off = (self.conv_topbar_off + step).clamp(0.0, bar_h);
+                                let off = (self.conv_topbar_off + step).clamp(0.0, bar_h); // WHY/PROOF: a scroll wheel's delta is the human's — the bar slides between fully shown and fully hidden, no further
                                 if (off - self.conv_topbar_off).abs() > 0.01 {
                                     self.conv_topbar_off = off;
                                     self.scene_dirty = true;

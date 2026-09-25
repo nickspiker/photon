@@ -28,7 +28,8 @@ fn to_display(hex: u32) -> u32 {
         let b = (hex & 0xFF) as f32 / 255.0;
         let lin = [r * r, g * g, b * b]; // γ=2.0 authoring transfer (decode)
         let out = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &lin);
-        let e = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 255.0).round().clamp(0.0, 255.0) as u32; // γ2 encode — sqrt, never sRGB OETF
+        // γ2 encode — sqrt, never sRGB OETF. WHY/PROOF of the one clip: the result is shifted into a packed u32, and a u32 cast saturates at 2^32 not 255 — an out-of-gamut channel would bleed into its neighbour; clipped to [0, 1] first, √x × 255 ≤ 255 and needs nothing more.
+        let e = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 255.0).round() as u32;
         (hex & 0xFF00_0000) | (e(out[0]) << 16) | (e(out[1]) << 8) | e(out[2])
     }
 }
@@ -161,9 +162,11 @@ pub fn rgb_colour(r: u8, g: u8, b: u8) -> u32 {
 /// The colour's hue at a fraction of its brightness, alpha kept — a NEAR-BLACK button fill that still says which verb it is (Nick 2026-09-12: "buttons need to be very dark colours, almost black"). Scales the display bytes, so `keep` is in gamma space: 0.15 reads as a few percent of the light.
 pub fn near_black(c: u32, keep: f32) -> u32 {
     // The stored bytes are DARKNESS: keeping `keep` of the VISIBLE brightness means pulling darkness TOWARD 255 — scaling the stored bytes down was brightening toward white, which made every "near-black tint" a near-WHITE tint (the blinding buttons, 2026-09-12).
+    // `keep` is a fraction of the light; with keep ∈ [0, 1] each channel lands in [dark, 255], inside its byte. Outside that range the packed u32 would bleed channels, so it fails here, loud.
+    assert!((0.0..=1.0).contains(&keep), "near_black: keep {keep} is not a fraction");
     let ch = |shift: u32| {
         let dark = ((c >> shift) & 0xFF) as f32;
-        ((255.0 - (255.0 - dark) * keep).round().clamp(0.0, 255.0) as u32) << shift
+        ((255.0 - (255.0 - dark) * keep).round() as u32) << shift
     };
     (c & 0xFF00_0000) | ch(16) | ch(8) | ch(0)
 }

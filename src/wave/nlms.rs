@@ -145,7 +145,7 @@ impl Nlms {
             let e = raw - est;
             pre += (raw * raw) as f64;
             post += (e * e) as f64;
-            *m = e.clamp(-32768.0, 32767.0) as i16;
+            *m = e as i16; // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
             e_hist.push(e);
             if adapting {
                 if j > 0 {
@@ -229,7 +229,7 @@ mod tests {
                         acc += hk * r[idx as usize];
                     }
                 }
-                m[j] = acc.clamp(-32768.0, 32767.0) as i16;
+                m[j] = acc as i16; // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
             }
             mics.push(m);
         }
@@ -320,7 +320,7 @@ mod tests {
                         a += hk * r[idx as usize];
                     }
                 }
-                m[j] = a.clamp(-32768.0, 32767.0) as i16;
+                m[j] = a as i16; // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
             }
             let (p0, q0) = (nlms.pre_e, nlms.post_e);
             nlms.cancel_frame(&mut m, &ring, base as i64, true, 1.0);
@@ -365,6 +365,7 @@ mod tests {
         let mut pre = 0f64;
         let mut post = 0f64;
         for (fi, m) in mics.into_iter().enumerate() {
+            // WHY/PROOF: doubling an i16 in i32 can reach ±65536, and an int→int `as` WRAPS (it does not saturate) — the clamp is the saturating mix, pinning overs to the rail instead of flipping their sign.
             let mut loud: Vec<i16> = m.iter().map(|&s| (s as i32 * 2).clamp(-32768, 32767) as i16).collect();
             let pos = (TAPS + 4096 + fi * 240) as i64;
             let p: f64 = loud.iter().map(|&s| (s as f64) * (s as f64)).sum();

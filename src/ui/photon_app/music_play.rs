@@ -32,6 +32,7 @@ mod real {
             self.sink.empty()
         }
         pub fn frac(&self) -> f32 {
+            // WHY/PROOF: the sink's position is the PLAYER's clock, which runs a few ms past the decoded duration at the end — a fraction is held to [0, 1] so the playhead never draws past the bar.
             (self.sink.get_pos().as_secs_f32() / self.duration_secs.max(0.001)).clamp(0.0, 1.0)
         }
         pub fn seek_frac(&self, f: f32) {

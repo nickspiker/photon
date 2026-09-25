@@ -144,6 +144,7 @@ fn input_callback() -> ndk::audio::AudioStreamDataCallback {
             }
             f if f == ndk_sys::AAUDIO_FORMAT_PCM_FLOAT as i32 => {
                 let s = unsafe { std::slice::from_raw_parts(data as *const f32, n) };
+                // WHY/PROOF: the capture domain is 24-bit, and an i32 cast only saturates at ±2^31 — the OS's f32 can exceed ±1.0, so the 24-bit rails are enforced here, where the float enters.
                 acc.extend(s.iter().map(|v| (v * 8_388_608.0).clamp(-8_388_608.0, 8_388_607.0) as i32));
             }
             _ => {

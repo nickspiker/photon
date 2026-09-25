@@ -3413,6 +3413,7 @@ impl PhotonApp {
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
                         self.msg_max_scroll = max_scroll;
                         self.msg_view_h = view_h;
+                        // WHY/PROOF: the stored offset was set against LAST frame's content — rows tombstoned or re-wrapped since can shrink the ceiling under it.
                         let scroll = conv
                             .map(|v| v.scroll_offset)
                             .unwrap_or(0.0)
@@ -3589,6 +3590,7 @@ impl PhotonApp {
                                 }
                             }
                             if let Some(frac) = bar_frac {
+                                // WHY/PROOF: the fraction is built from TRANSFER COUNTERS the far side reports (acks, pigeon receipts), which can momentarily lead the local total; the bar never draws past its track.
                                 let frac = frac.clamp(0.0, 1.0);
                                 let bar_w = (buf_w as f32 - pad_x * 2.0) * frac;
                                 let (bx, bw) = if msg.is_outgoing {
@@ -6043,6 +6045,7 @@ impl PhotonApp {
                             let bar_h = (bar.h * 0.6) as isize;
                             if total > 0 {
                                 let fill_w = (bar.w as f64 * (done as f64 / total as f64)) as isize;
+                                // WHY/PROOF: done/total are reported counters, as above — the fill is held inside its track.
                                 paint::fill_rect(canvas, bar.x as isize, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
                             }
                             paint::fill_rect(canvas, bar.x as isize, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
@@ -7343,6 +7346,7 @@ pub(super) fn wave_fold_coverage(e: &crate::wave::wave_env::WaveEnv, cols: usize
     let lsb0 = e.lsb(0);
     let mut h_lut = [0f32; 256];
     for (b, h) in h_lut.iter_mut().enumerate() {
+        // WHY/PROOF: a bin louder than the reference amplitude fills its column and no more — the bar's height is capped by the rows it has.
         *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32;
     }
     let bins = e.bins.max(1);
@@ -7394,7 +7398,7 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
             let g = (p(0) * p(1) * p(2)).cbrt();
             let r = [p(0) / g, p(1) / g, p(2) / g];
             let top = r[0].max(r[1]).max(r[2]).max(1e-12);
-            let ch = |v: f32| ((v / top).clamp(0.0, 1.0) * 255.0).round() as u8;
+            let ch = |v: f32| ((v / top) * 255.0).round() as u8; // `top` is the max of these three energies, so v/top ∈ [0, 1] — and the u8 cast saturates regardless
             theme::rgb_colour(ch(r[0]), ch(r[1]), ch(r[2]))
         })
         .collect()

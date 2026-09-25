@@ -603,7 +603,7 @@ pub fn encode_av1_wh(rgb_data: &[f32], w: usize, h: usize, quantizer: usize) -> 
     for i in 0..(w * h) {
         let idx = i * 3;
         let y = (rgb_data[idx] + 2. * rgb_data[idx + 1] + rgb_data[idx + 2]) / 4.;
-        y_plane[i] = (y.clamp(0., 1.) * 255.) as u8;
+        y_plane[i] = (y * 255.) as u8; // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
     }
     frame.planes[0].copy_from_raw_u8(&y_plane, w, 1);
     let (cw, ch) = (w / 2, h / 2);
@@ -617,8 +617,9 @@ pub fn encode_av1_wh(rgb_data: &[f32], w: usize, h: usize, quantizer: usize) -> 
             let g = idx.iter().map(|&i| rgb_data[i + 1]).sum::<f32>() / 4.;
             let b = idx.iter().map(|&i| rgb_data[i + 2]).sum::<f32>() / 4.;
             let y = (r + 2. * g + b) / 4.;
-            cb_plane[cy * cw + cx] = (((b - y) / 2. + 0.5).clamp(0., 1.) * 255.) as u8;
-            cr_plane[cy * cw + cx] = (((r - y) / 2. + 0.5).clamp(0., 1.) * 255.) as u8;
+            // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0).
+            cb_plane[cy * cw + cx] = (((b - y) / 2. + 0.5) * 255.) as u8;
+            cr_plane[cy * cw + cx] = (((r - y) / 2. + 0.5) * 255.) as u8;
         }
     }
     frame.planes[1].copy_from_raw_u8(&cb_plane, cw, 1);
@@ -840,9 +841,11 @@ pub fn decode_avatar(av1_data: &[u8]) -> Result<(usize, usize, Vec<u8>), String>
             let cr = v_val - 0.5;
 
             // R = Y + 2*Cr, B = Y + 2*Cb, G = (4*Y - R - B) / 2
+            // WHY: R and B are GAMUT-CLIPPED before G is solved from them — a decoded Y/Cb/Cr can name a colour outside the RGB cube.
+            // PROOF: G = (4Y − R − B)/2 must use the clipped R and B, or G drifts to compensate for red and blue the pixel cannot show; this clip is the conversion, not a guard.
             let r = (y_val + 2.0 * cr).clamp(0.0, 1.0);
             let b = (y_val + 2.0 * cb).clamp(0.0, 1.0);
-            let g: f32 = ((4.0 * y_val - r - b) / 2.0).clamp(0.0, 1.0);
+            let g: f32 = (4.0 * y_val - r - b) / 2.0; // only ever cast below, and the cast saturates
 
             let idx = (y * width + x) * 3;
             rgb[idx] = (r * 255.0) as u8;

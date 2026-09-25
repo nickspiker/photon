@@ -305,11 +305,14 @@ fn run(
         Some(v) => (v as i64, "stored"),
         // QUIET OUTRANKS THE VENDOR (Nick 2026-09-15, "normalize on quiet"): a stored fine floor × a nominal 20× speech-over-quiet seeds the makeup when no voiced profile exists yet — the quiet was MEASURED on this device where the sensitivity is a vendor claim (sign flips between vendors, ~10 dB off even when plausible). Bounded like the sensitivity estimate; the in-wave re-aim corrects it from real speech within seconds anyway.
         None => match params.cal.as_ref().and_then(|c| c.floor).filter(|f| *f > 0.05) {
+            // WHY/PROOF: the floor is a LEARNED value from storage; the makeup it derives is held to the band a real mic can need, like the vendor figures below.
             Some(f) => (((f * 20.0).clamp(16.0, 512.0)) as i64, "floor-derived (stored quiet x 20)"),
             None => match crate::platform::audio::mic_sensitivity_dbfs() {
             // Only a PLAUSIBLE sensitivity is believed (field 2026-09-13 23:47: Nick's vendor reports ~−8 dBFS at 94 dB SPL — physically absurd — and the derived 2048 gave a 1.3× makeup, his voice at 66 on the wire). Real elements sit −25..−50 dBFS; outside that the report is garbage and the default carries until the first wave's measurement stores the truth.
+            // WHY/PROOF: the sensitivity is the VENDOR's report (already known to be absurd on some phones — see above); the derived level is held to [16, 512], the band the makeup gain is sized for.
             Some(s) if (-50.0..=-25.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity"),
             // Nick's vendor reports +37.0 where Emma's reports −37.0 — the HAL's sign convention is backwards. A positive magnitude in the plausible band is believed, negated.
+            // WHY/PROOF: the same vendor-report bound as above.
             Some(s) if (25.0..=50.0).contains(&s) => (((TX_CAL_VOICED as f32) * 10f32.powf((-s - CDD_REF_SENS_DBFS) / 20.0)).clamp(16.0, 512.0) as i64, "sensitivity (vendor sign flipped)"),
             Some(_) => (TX_CAL_VOICED, "default (sensitivity implausible)"),
             None => (TX_CAL_VOICED, "default"),
@@ -1222,6 +1225,7 @@ fn run(
                     );
                     reaim_ring.clear();
                 } else if measured_q8 > 0 && measured_q8 >= noise_est_q8 * 3 {
+                    // WHY/PROOF: `measured_q8` is the live mic level — near-silence drives the ideal gain toward infinity and a shout toward zero; the makeup's range (−3 to +6 stops) is the design, so a pause never cranks the next word into the rail.
                     let ideal = (((TX_WIRE_TARGET * 2 / 3) << 40) / measured_q8)
                         .clamp(crate::wave::qgain::UNITY / 8, 64 * crate::wave::qgain::UNITY);
                     // Both steps fire past 1.5× off-aim (inside that band the rocker covers it); the correction is earned by its EVIDENCE (8 s against 4 s), not a wider band — the 42-minute Kalispell↔Southworth wave (2026-09-16): Theresa's greeting energy aimed the first step at 243, her conversation ran 143, and the 2× correction band let a 1.7× (−4.6 dB) quiet aim stand for the whole wave; Emma's quiet first words showed the same bias the other way.
@@ -1498,8 +1502,10 @@ fn loss_loop_step(bits: &mut [u64; LOSS_RING / 64], pos: &mut u8, integ: &mut f3
     let losses = bits.iter().map(|x| x.count_ones()).sum::<u32>() as f32;
     let rate = (losses / LOSS_RING as f32).max(1.0 / 4096.0);
     let err_stops = (rate / LOSS_SETPOINT).log2();
+    // WHY/PROOF: anti-windup — an integrator left free during a long outage winds past the cap and then takes as long to unwind after the link heals; bounding it to the output's own range is the PI controller, not a guard.
     *integ = (*integ + LOSS_KI * err_stops).clamp(0.0, JITTER_TARGET_CAP as f32);
     let floor = floor_frames.max(1) as f32;
+    // WHY/PROOF: the controller's output range — never below the measured jitter floor, never past the cap the buffer can hold.
     let target = (floor + LOSS_KP * err_stops + *integ).round().clamp(floor, JITTER_TARGET_CAP as f32) as usize;
     crate::platform::audio::set_jitter_target(target);
     target

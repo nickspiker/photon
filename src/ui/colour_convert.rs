@@ -17,9 +17,10 @@ pub fn vsf_rgb_to_bt2020(src: &[u8]) -> Vec<u8> {
         let g = (src[i3 + 1] as f32 / 255.0).powi(2);
         let b = (src[i3 + 2] as f32 / 255.0).powi(2);
         let bt = apply_matrix_3x3_f32(&VSF_RGB2REC2020, &[r, g, b]);
-        out[i3] = (bt[0].clamp(0.0, 1.0).sqrt() * 255.0) as u8;
-        out[i3 + 1] = (bt[1].clamp(0.0, 1.0).sqrt() * 255.0) as u8;
-        out[i3 + 2] = (bt[2].clamp(0.0, 1.0).sqrt() * 255.0) as u8;
+        // The u8 cast saturates: an out-of-gamut value above 1 lands on 255, and a negative's √ is NaN, which casts to 0 — the same bytes the old clamp produced, without it.
+        out[i3] = (bt[0].sqrt() * 255.0) as u8;
+        out[i3 + 1] = (bt[1].sqrt() * 255.0) as u8;
+        out[i3 + 2] = (bt[2].sqrt() * 255.0) as u8;
     }
     out
 }

@@ -376,7 +376,7 @@ mod tests {
     fn synth(delay: usize, gain: f32, seed: u64) -> Vec<i16> {
         let mut cap = noise(delay + CHIRP_SAMPLES + 9600, 40, seed);
         for (i, &s) in template().iter().enumerate() {
-            cap[delay + i] = (cap[delay + i] as f32 + s as f32 * gain).clamp(-32768.0, 32767.0) as i16;
+            cap[delay + i] = (cap[delay + i] as f32 + s as f32 * gain) as i16; // the float→i16 cast saturates on its own
         }
         cap
     }
@@ -420,7 +420,7 @@ mod tests {
         for i in 0..4800usize {
             let v = (8000.0 * (std::f64::consts::TAU * 220.0 * i as f64 / SAMPLE_RATE as f64).sin()) as i16;
             let j = 2400 + i;
-            cap[j] = (cap[j] as i32 + v as i32).clamp(-32768, 32767) as i16;
+            cap[j] = (cap[j] as i32 + v as i32).clamp(-32768, 32767) as i16; // WHY/PROOF: an i16 + i16 sum can pass the rail, and the int→int cast WRAPS — this is the saturating mix
         }
         let f = fit(&cap, 6000).expect("fit");
         assert!(f.coupled);

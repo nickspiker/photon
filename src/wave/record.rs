@@ -52,6 +52,8 @@ pub fn resample_linear(slots: &[f32], out_len: usize) -> Vec<f32> {
                 if cov > 0.0 { acc / cov } else { 0.0 }
             } else {
                 // Stretch: interpolate between the two nearest slot centres.
+                // WHY: interpolation between the two nearest slot centres — the first and last output columns reach past the outermost centres.
+                // PROOF: the algorithm holds the edge value there (nearest-centre at the ends), which is what the clamp to [0, n − 1] computes; it is the interpolant's definition, not a guard.
                 let c = ((s0 + s1) * 0.5 - 0.5).clamp(0.0, (n - 1) as f32);
                 let i0 = c.floor() as usize;
                 let i1 = (i0 + 1).min(n - 1);
@@ -223,7 +225,7 @@ impl EnvPyramid {
         let mut data = vec![0u8; k * bins];
         for c in 0..k {
             for bin in 0..bins {
-                let q = if peaks[c] > 0.0 { (mean(bin, c) / peaks[c] * 256.0).clamp(0.0, 256.0) } else { 0.0 };
+                let q = if peaks[c] > 0.0 { mean(bin, c) / peaks[c] * 256.0 } else { 0.0 }; // a mean power over its own channel's peak lies in [0, 1], so q ∈ [0, 256]
                 let f = q.floor();
                 let up = (q - f) > dither01((c * self.cap + bin) as u64);
                 data[c * bins + bin] = (f as u64 + up as u64).min(255) as u8;
@@ -383,7 +385,7 @@ fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> 
             .chunks_exact(2)
             .map(|c| {
                 let s = i16::from_le_bytes([c[0], c[1]]);
-                if (*gain - 1.0).abs() < 0.002 { s } else { (s as f32 * gain).clamp(-32768.0, 32767.0) as i16 }
+                if (*gain - 1.0).abs() < 0.002 { s } else { (s as f32 * gain) as i16 } // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
             })
             .collect(),
         Some(Cell::Pcm(..)) | None => vec![0i16; frame],

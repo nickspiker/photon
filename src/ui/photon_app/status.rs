@@ -3255,6 +3255,7 @@ impl PhotonApp {
                         {
                             // OFF THE RENDER THREAD. Serving a page reads and decrypts up to 50 vault rows and then seals them — measured at 2195ms inline, which is what a peer's backfill felt like from inside our own UI. Everything the work needs is copied here (ids, keys, an Arc of storage, a cloned dispatch sender) and the whole read-seal-send runs on a worker; nothing it produces touches app state, so there is no result to drain back.
                             let their_seed = self.contacts[idx].handle_hash;
+                            // WHY/PROOF: `limit` is the REQUESTER's — any number off the wire; a page is served at no more than our own row cap and at least one row.
                             let page_limit = (limit as usize)
                                 .clamp(1, crate::network::history_pages::MAX_PAGE_ROWS);
                             let storage = Arc::clone(storage);

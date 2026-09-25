@@ -22,6 +22,7 @@ pub fn legacy_linear_planar(bytes: &[u8], name: &str, kind: AttachKind, max_edge
     for i in 0..n {
         for ch in 0..3 {
             // The fold hands back gamma-2 VSF RGB; the square is the exact inverse.
+            // WHY/PROOF: the next step SQUARES this — a negative would square back to a positive, lighting a pixel that was below black; the clip must come first.
             let g = f.px[i * 3 + ch].clamp(0.0, 1.0);
             planar[ch * n + i] = (g * g * 65535.0 + 0.5) as u16;
         }
@@ -61,7 +62,7 @@ pub fn prepare(bytes: &[u8], name: &str, raw_path: Option<&std::path::Path>) -> 
                 // Micro tier from the same decode (a second fold, linear).
                 let (tw, th) = thumb_dims(f.w, f.h, MICRO_PREVIEW_MAX_EDGE);
                 let micro = fold_gamma2(&f.px, f.w, f.h, tw, th);
-                preview = crate::types::encode_micro_image(tw, th, &micro.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect::<Vec<u8>>());
+                preview = crate::types::encode_micro_image(tw, th, &micro.iter().map(|v| (v * 255.0 + 0.5) as u8).collect::<Vec<u8>>()); // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
                 // Preview tier: even dims for 4:2:0, AV1, the VSF image container.
                 let (ew, eh) = (f.w & !1, f.h & !1);
                 if ew >= 2 && eh >= 2 {
@@ -95,7 +96,7 @@ pub fn decode_preview_blob(vsf_bytes: &[u8]) -> Option<(usize, usize, Vec<u32>)>
 /// The "open original" render: the original bytes decoded and folded to ≤ FULL_VIEW_MAX_EDGE, as display pixels. Off-thread only.
 pub fn full_image(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>) -> Option<(usize, usize, Vec<u32>)> {
     let f = decode_folded(bytes, name, kind, raw_path, FULL_VIEW_MAX_EDGE)?;
-    let rgb: Vec<u8> = f.px.iter().map(|v| (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8).collect();
+    let rgb: Vec<u8> = f.px.iter().map(|v| (v * 255.0 + 0.5) as u8).collect(); // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
     Some((f.w, f.h, micro_to_display(&rgb)))
 }
 
@@ -159,7 +160,7 @@ fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     let buf = fb.buf();
     #[allow(deprecated)]
     let lin_of = |e: f32| -> f32 {
-        let e = e.clamp(0.0, 1.0);
+        let e = e.clamp(0.0, 1.0); // WHY/PROOF: squared next — a negative would come back positive, as above
         match tf {
             TransferFunction::Linear => e,
             TransferFunction::Srgb => vsf::colour::srgb_eotf(e),
@@ -330,6 +331,7 @@ fn fold_gamma2(src: &[f32], sw: usize, sh: usize, tw: usize, th: usize) -> Vec<f
 }
 
 fn gamma2(lin: &[f32]) -> Vec<f32> {
+    // WHY/PROOF: these stay f32 (no saturating cast follows) — a negative's √ would be a NaN carried into every fold downstream, so the clip is part of the transform.
     lin.iter().map(|v| v.clamp(0.0, 1.0).sqrt()).collect()
 }
 

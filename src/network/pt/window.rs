@@ -70,6 +70,7 @@ impl RTTEstimator {
         // Clamp RTO between 100ms and 10s
         self.rto = self
             .rto
+            // WHY/PROOF: the retransmit timeout's floor and ceiling are the protocol's (the RFC 6298 shape): a sub-100 ms RTO retransmits into a queue that has not drained, an unbounded one waits out a transient forever — the bound is the design, not a guard.
             .clamp(Duration::from_millis(100), Duration::from_secs(10));
     }
 

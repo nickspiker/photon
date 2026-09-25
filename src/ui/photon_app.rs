@@ -158,6 +158,7 @@ fn dist_to_capsule(px: f32, py: f32, ax: f32, ay: f32, bx: f32, by: f32, r: f32)
     let (bax, bay) = (bx - ax, by - ay);
     let denom = bax * bax + bay * bay;
     let h = if denom > 0.0 {
+        // WHY/PROOF: the projection onto a SEGMENT, not a line — the nearest point lies between the endpoints, so the parameter is held to [0, 1] by definition.
         ((pax * bax + pay * bay) / denom).clamp(0.0, 1.0)
     } else {
         0.0
@@ -279,6 +280,7 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             let (ex, ey) = (xj - xi, yj - yi);
             let len2 = ex * ex + ey * ey;
             let t = if len2 > 0.0 {
+                // WHY/PROOF: the projection onto a SEGMENT, not a line — the nearest point lies between the endpoints, so the parameter is held to [0, 1] by definition.
                 (((px - xi) * ex + (py - yi) * ey) / len2).clamp(0.0, 1.0)
             } else {
                 0.0
@@ -300,6 +302,7 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
             let cov = if inside(fx, fy) {
                 (d + 0.5).min(1.0)
             } else {
+                // WHY/PROOF: coverage is a fraction of a pixel — inside the shape it saturates to 1, outside to 0; the clip is the anti-aliasing ramp itself.
                 (0.5 - d).clamp(0.0, 1.0)
             };
             if cov <= 0.0 {
@@ -375,6 +378,7 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
             let (ex, ey) = (xj - xi, yj - yi);
             let len2 = ex * ex + ey * ey;
             let t = if len2 > 0.0 {
+                // WHY/PROOF: the projection onto a SEGMENT, not a line — the nearest point lies between the endpoints, so the parameter is held to [0, 1] by definition.
                 (((px - xi) * ex + (py - yi) * ey) / len2).clamp(0.0, 1.0)
             } else {
                 0.0
@@ -394,6 +398,7 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
             let cov = if inside(fx, fy) {
                 (d + 0.5).min(1.0)
             } else {
+                // WHY/PROOF: coverage is a fraction of a pixel — inside the shape it saturates to 1, outside to 0; the clip is the anti-aliasing ramp itself.
                 (0.5 - d).clamp(0.0, 1.0)
             };
             if cov <= 0.0 {
@@ -473,6 +478,7 @@ fn molecule_avatar_rgb(gid: &crate::types::molecule::MoleculeId, members: &[[u8;
     for py in 0..diam {
         for px in 0..diam {
             let ang = (py as f64 - c).atan2(px as f64 - c) + std::f64::consts::PI; // 0..2π, first slice starts at the left
+            // WHY/PROOF: atan2 returns π on the negative x-axis, so `ang` reaches exactly 2π and the slice index reaches n — one past the last slice; that edge belongs to the last slice.
             let k = ((ang / (2.0 * std::f64::consts::PI)) * n).floor().clamp(0.0, n - 1.0) as usize;
             let i = (py * diam + px) * 3;
             out[i..i + 3].copy_from_slice(&slices[k][i..i + 3]);
@@ -489,6 +495,7 @@ fn vsf_rgb_to_stored(rgb_vsf: [f32; 3]) -> u32 {
     // Android + Linux/Windows: VSF → Rec.2020 primaries (E→D65 baked in), then sqrt.
     #[cfg(not(target_os = "macos"))]
     let out = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &rgb_vsf);
+    // WHY/PROOF: packed into a u32 next, and a u32 cast saturates at 2^32 not 255 — an out-of-gamut channel would bleed into its neighbour; clipped first, √x × 255 ≤ 255.
     let e = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 255.0).round() as u32;
     fluor::theme::dark(fluor::theme::fmt(
         (e(out[0]) << 16) | (e(out[1]) << 8) | e(out[2]),
@@ -944,6 +951,7 @@ impl WaveBand {
     }
     /// Playhead fraction for a pointer x over the waveform part.
     fn frac_at(&self, x: f32) -> f32 {
+        // WHY/PROOF: `x` is the pointer — a press past either end of the slider sets its end, not a value outside it.
         ((x - self.glyph_x1) / (self.x1 - self.glyph_x1).max(1.0)).clamp(0.0, 1.0)
     }
 }

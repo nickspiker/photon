@@ -904,6 +904,7 @@ impl PhotonApp {
         let Some(center_dist) = found else {
             return; // target not in the visible stream (never synced here)
         };
+        // WHY/PROOF: centring a row near either end of the stream asks for a scroll past the content; the view stops at its ends, which is what the clamp to [0, max] is.
         let scroll = (center_dist - self.msg_view_h * 0.5).clamp(0.0, self.msg_max_scroll);
         if let Some(v) = self.conv_mut_of(ci) {
             v.scroll_offset = scroll;

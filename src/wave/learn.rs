@@ -100,6 +100,7 @@ impl StampReg {
                 self.dev_n += 1;
                 let mut next = exp + BIN_OSC;
                 if self.dev_n >= SLEW_WINDOW {
+                    // WHY/PROOF: the SLEW LIMIT — how far one window may pull the lattice (±100 ppm of the window); a bursty stamp's deviation is the input, and the limit is what makes this a slew rather than a jump.
                     next += (self.dev_max / 8).clamp(-SLEW_OSC * SLEW_WINDOW as i64, SLEW_OSC * SLEW_WINDOW as i64);
                     self.dev_max = i64::MIN;
                     self.dev_n = 0;

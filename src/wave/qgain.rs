@@ -60,7 +60,8 @@ impl QGain {
 /// The wire shaper: `y = (3x − x³) >> 1` on the i16 domain (Nick 2026-09-13). Odd (sign is free), branchless, C² inside, slope 3/2 at the origin (folded into the makeup constant: pre-shaper target = wire target × ⅔), slope 0 exactly at the rails, and its only distortion product is 3rd-order — the least-aliasing memoryless saturator there is. Exactly invertible below the rails (`x = 2·sin(asin(y)/3)`), so a kept wave can be un-warped to the bit offline. The input clamp is load-bearing: beyond |x| = FS the cubic FOLDS BACK (f(1.2·FS) < FS), so overs pin to the rail, where the slope is already zero and the join is seamless.
 #[inline]
 pub fn cubic_rail(x: i64) -> i64 {
-    let x = x.clamp(-32768, 32767);
+    let x = x.clamp(-32768, 32767); // load-bearing: see above — beyond the rails the cubic folds back
+    // WHY/PROOF of the output clip: at x = 32767 the shaper gives (3·32767 − (32767³ ≫ 30)) ≫ 1 = 32768, one past the i16 rail — the top input lands exactly one over.
     ((3 * x - ((x * x * x) >> 30)) >> 1).clamp(-32768, 32767)
 }
 

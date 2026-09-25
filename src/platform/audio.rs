@@ -45,6 +45,7 @@ static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 
 /// Engine hook: the loss-rate loop's target depth, clamped to floor..cap.
 pub fn set_jitter_target(frames: usize) {
+    // WHY/PROOF: the jitter buffer's physical range — below the floor the play loop underruns every window, above the cap the latency is a phone call from the moon; the loss controller's output is held to it here, at the one store.
     JITTER_TARGET.store(frames.clamp(JITTER_FLOOR, JITTER_CAP), Ordering::Relaxed);
 }
 static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
@@ -64,6 +65,7 @@ pub fn rx_trim_stops() -> i32 {
 }
 
 pub fn set_rx_trim_stops(stops: i32) {
+    // WHY/PROOF: the trim is a HUMAN's input (the Wave page's steppers, a synced setting) — held to the ± range the shift math below is sized for.
     RX_TRIM_STOPS.store(stops.clamp(-RX_TRIM_MAX_STOPS, RX_TRIM_MAX_STOPS), Ordering::Relaxed);
 }
 // SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 240 = ±0.42% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
@@ -261,6 +263,7 @@ pub fn set_speaker_duck(armed: bool) {
 
 /// The duck law: the FIXED presence slope `UNITY − near·2^20` (full duck at plan-unit mic 4096 = twice the plan level, as 8192 was to the old 4096 plan — the field-passed 0.95.21 shape). k is measured and PRINTED but deliberately out of the gain path (2026-09-13 23:30: the 35× mic makeup sits INSIDE the echo loop, so true plan-unit coupling on a normal earpiece is ~0.3-1.0 — feeding measured k in as the slope silenced the far voice at any k ≈ 0.4; the coupling-aware law needs the margin form, gain ≤ ε·near/(k·far), designed against k telemetry across rocker positions, not another guessed slope).
 pub fn duck_gain_q32(near: i64, _k_q16: i64) -> i64 {
+    // WHY/PROOF: a duck only ever TAKES gain away — a loud near end drives UNITY − near past zero, and a negative gain would invert the speaker; the clip to [0, UNITY] is the duck's definition.
     (crate::wave::qgain::UNITY - (near << 20)).clamp(0, crate::wave::qgain::UNITY)
 }
 
@@ -270,6 +273,7 @@ pub fn note_near_level(mean: u32) {
     let emitted = EMITTED_LEVEL.load(Ordering::Relaxed) as i64;
     // k is a MINIMUM statistic, not a mean (field 2026-09-13 23:00, two waves: the EMA version could not tell echo from Emma's loud room — room/emitted ≈ 0.3 fed k as if it were coupling, and deeper duck → smaller emitted → bigger ratio was a RUNAWAY to k 0.37-0.46 that silenced the far voice outright). True echo scales WITH the emitted level, so near/emitted ≈ k in every echo-only instant, ducked or not; room and voice sit ON TOP, so every sample is ≥ k and the min over far-active frames converges to the truth in the quiet gaps. Down instantly; up by k>>9 per far-active frame (τ ≈ 2.5 s of far speech) so a rocker-up re-learns without ever stepping.
     if SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) && emitted > 256 {
+        // WHY/PROOF: one frame's coupling ratio is a noisy MEASUREMENT (near-end level over what we emitted); the learner accepts it only inside the physically plausible band, so a transient cannot teach the duck a coupling no speaker has.
         let sample = ((near << 16) / emitted).clamp(DUCK_K_MIN_Q16, DUCK_K_MAX_Q16);
         let k = DUCK_K_Q16.load(Ordering::Relaxed);
         let next = if sample < k { sample } else { (k + (k >> 9)).min(DUCK_K_MAX_Q16) };
@@ -456,6 +460,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
         let stops = RX_TRIM_STOPS.load(Ordering::Relaxed);
         if stops > 0 {
             for s in frame.iter_mut() {
+                // WHY/PROOF: a positive trim shifts an i16 up in i32, past ±32767, and an int→int `as` WRAPS — the clamp is the saturating gain, pinning overs to the rail instead of flipping their sign.
                 *s = ((*s as i32) << stops).clamp(i16::MIN as i32, i16::MAX as i32) as i16;
             }
         } else if stops < 0 {
@@ -675,6 +680,7 @@ mod desktop {
                             .drain(..FRAME_SAMPLES)
                             .map(|s| {
                                 // The one float boundary (the OS hands f32): error-feedback the cast at 24-bit — floor with the fraction carried to the next sample, zero-mean instead of a truncation bias.
+                                // WHY/PROOF: as on Android — the 24-bit domain's rails, which the later i32 cast (±2^31) would not enforce, applied where the OS's float enters.
                                 let acc = (s as f64 * 8_388_608.0).clamp(-8_388_608.0, 8_388_607.0) + cast_carry;
                                 let out = acc.floor();
                                 cast_carry = acc - out;
