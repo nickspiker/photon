@@ -6352,8 +6352,8 @@ impl PhotonApp {
                             let path = tr(if w.lan_path { Msg::WavePathLan } else { Msg::WavePathWan });
                             let (fl, em, mx) = (crate::fmt_num(w.rtt_floor_ms), crate::fmt_num(w.rtt_ema_ms), crate::fmt_num(w.rtt_max_ms));
                             flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLink { dur: &dur, path: &path, floor: &fl, ema: &em, max: &mx }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
-                            let (lost, of, filled, holes) = (crate::fmt_num64(w.windows_lost), crate::fmt_num64(w.windows_in), crate::fmt_num64(w.fills_got), crate::fmt_num64(w.holes));
-                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLoss { lost: &lost, of: &of, filled: &filled, holes: &holes }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                            let (lost, of, filled) = (crate::fmt_num64(w.windows_lost), crate::fmt_num64(w.windows_in), crate::fmt_num64(w.fills_got));
+                            flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLoss { lost: &lost, of: &of, filled: &filled }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
                             let rate = if w.tier_end + 1 == crate::wave::engine::TIER_RATES.len() { "plaid".to_string() } else { format!("{} kbps", crate::fmt_num((crate::wave::engine::TIER_RATES[w.tier_end] / 1000) as u32)) };
                             let (ups, downs, peer) = (crate::fmt_num(w.tier_ups), crate::fmt_num(w.tier_downs), crate::fmt_num(w.peer_lost_max));
                             flow.line(&mut canvas, ctx.text, &tr(Msg::WaveLastLadder { rate: &rate, ups: &ups, downs: &downs, peer: &peer }), hspan2 * 0.95, *theme::LABEL_COLOUR, 400);

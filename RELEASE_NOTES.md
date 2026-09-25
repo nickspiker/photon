@@ -19,6 +19,7 @@ One sentence per line, however long; plain language for the person who installs 
 - On the desktop you can move the window by dragging almost anywhere, not only the top bar; text boxes, sliders, the waveform and the image viewer still keep their own drags, and a plain click still clicks. How far the pointer must move before it counts as a drag follows your system's own setting.
 - After updating, every friendship quietly re-connects once (a fresh key exchange, done automatically); your messages and contacts are untouched, and anything unsent goes out when it finishes.
 - Photon keeps better time: its clock now learns how fast this device's clock drifts, not just how far off it is, and several time servers were being read up to a sixth of a second wrong, which is fixed.
+- A wave no longer papers over lost audio: a moment that never arrived plays as a moment of silence at exactly its place, with no repeated sound, no fading and no stretching, so what you hear is what arrived. Dropouts are shorter and sharper (you may hear a tick at their edges), and a late piece of audio still plays from the point its time has reached instead of shifting everything after it.
 - Waves now line up each person's voice by the moment their microphone heard it, measured against true time, so a kept recording plays both sides in step with no guessing at delay. This build cannot wave with an older one; update both devices.
 
 ## v103

@@ -603,7 +603,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveLastLink { dur, path, floor, ema, max } => format!("{dur} · {path} · ida y vuelta {floor} mínimo, {ema} típico, {max} peor (ms)").into(),
         Msg::WavePathLan => "misma red".into(),
         Msg::WavePathWan => "a través de internet".into(),
-        Msg::WaveLastLoss { lost, of, filled, holes } => format!("{lost} de {of} ventanas perdidas, {filled} recuperadas por rellenos, {holes} huecos atenuados").into(),
+        Msg::WaveLastLoss { lost, of, filled } => format!("{lost} de {of} ventanas perdidas, {filled} recuperadas por rellenos").into(),
         Msg::WaveLastLadder { rate, ups, downs, peer } => format!("terminó en {rate} · {ups} subidas, {downs} bajadas · peor segundo del otro lado: {peer} perdidas").into(),
         Msg::WaveLastLevel { start, end, voiced } => format!("ganancia de envío {start}× al inicio, {end}× al final · tu voz midió {voiced}").into(),
         Msg::WaveLastReaim { voiced, from, to } => format!("reajustado con {voiced}: {from}× → {to}×").into(),

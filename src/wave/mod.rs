@@ -187,7 +187,6 @@ pub struct LastWave {
     pub windows_in: u64,
     pub windows_lost: u64,
     pub fills_got: u64,
-    pub holes: u64,
     /// Ladder: where it ended (engine::TIER_RATES index), how often it moved.
     pub tier_end: usize,
     pub tier_ups: u32,
@@ -199,7 +198,9 @@ pub struct LastWave {
     pub makeup_end_x10: u32,
     pub measured_voiced: u32,
     pub reaims: Vec<(u32, u32, u32)>,
+    /// Frames with samples due that had not arrived (named playout misses).
     pub underruns: u64,
+    /// Frames that arrived after their instant and were never played.
     pub trims: u64,
 }
 pub static LAST_WAVE: std::sync::Mutex<Option<LastWave>> = std::sync::Mutex::new(None);

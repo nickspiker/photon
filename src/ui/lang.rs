@@ -782,7 +782,7 @@ pub enum Msg<'a> {
     WaveLastLink { dur: &'a str, path: &'a str, floor: &'a str, ema: &'a str, max: &'a str },
     WavePathLan,
     WavePathWan,
-    WaveLastLoss { lost: &'a str, of: &'a str, filled: &'a str, holes: &'a str },
+    WaveLastLoss { lost: &'a str, of: &'a str, filled: &'a str },
     WaveLastLadder { rate: &'a str, ups: &'a str, downs: &'a str, peer: &'a str },
     WaveLastLevel { start: &'a str, end: &'a str, voiced: &'a str },
     WaveLastReaim { voiced: &'a str, from: &'a str, to: &'a str },

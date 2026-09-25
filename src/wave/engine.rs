@@ -36,7 +36,7 @@ pub const TIER_NAMES: [&str; 5] = ["sublight", "light speed", "ridiculous speed"
 pub fn tier_name(tier: usize) -> &'static str {
     TIER_NAMES.get(tier).copied().unwrap_or(TIER_NAMES[0])
 }
-// PLAID (Nick 2026-09-10, "stupid plaid mode"): the top rung is RAW 48 kHz mono 16-bit PCM — no codec at all, one 5 ms frame per datagram, no repair symbol. A lost datagram is skipped outright (a 5 ms hole, faded not synthesized) so the jitter buffer stays hot instead of paying standing latency for everyone. Reached only on a LAN-class direct path (EngineParams::plaid_allowed) after a full second of clean 10 ms windows; left only when losses run past a rate, not on a lone pair. What it buys is the codec's lookahead and CPU, not fidelity — 128 kbps CELT is already transparent for speech.
+// PLAID (Nick 2026-09-10, "stupid plaid mode"): the top rung is RAW 48 kHz mono 16-bit PCM — no codec at all, one 5 ms frame per datagram, no repair symbol. A lost datagram is skipped outright (a 5 ms hole, played as its own silence — never faded, never synthesized) so the jitter buffer stays hot instead of paying standing latency for everyone. Reached only on a LAN-class direct path (EngineParams::plaid_allowed) after a full second of clean 10 ms windows; left only when losses run past a rate, not on a lone pair. What it buys is the codec's lookahead and CPU, not fidelity — 128 kbps CELT is already transparent for speech.
 const RAW_TIER: usize = 4;
 const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 /// Clean 10 ms windows in a row that earn the plaid rung (1 s at the 128 kbps rung's cadence).
@@ -53,7 +53,7 @@ const PLAID_OFF_LAN_RING_MAX: usize = 2;
 const PLAID_PROBATION_UNDERRUNS: u32 = 5;
 /// Two probation failures in one wave and plaid is off for the rest of it: the path has said what it can carry (Nick's link measured 0.93/1.03 Mbps during the cellular wave — 768 kbps of raw PCM is the whole pipe). The codec rungs stay live; only the raw rung retires.
 const PLAID_PROBATION_STRIKES: u32 = 2;
-// LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). Holes are faded (the crispy), never synthesized.
+// LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). A hole plays as its own silence at its own instant (named playout, 2026-09-25) — never faded, never synthesized.
 const LOSS_RING: usize = 256;
 const LOSS_SETPOINT: f32 = 1.0 / 512.0; // 2026-09-15: the loop HELD the 1/256 setpoint exactly — 50 five-millisecond gaps a minute at plaid, every one audible; "under 1/256" wants the setpoint below the ceiling
 const LOSS_KP: f32 = 1.0; // frames per stop of error, immediately
@@ -193,6 +193,8 @@ pub fn start(params: EngineParams) -> EngineHandle {
     let sink_gen = super::install_media_sink(sink_tx);
     // CLAIM the session (start_owned): against a live ringback session this is the click-free handover, and the ringback's own late stop becomes a no-op because the generation moved on.
     let _ = crate::platform::audio::start_owned();
+    // The far channel plays BY NAME against true time from here (platform/audio.rs NAMED PLAYOUT) — after start_owned, whose queue hygiene resets it.
+    crate::platform::audio::set_named_playout(true);
     match std::thread::Builder::new()
         .name("wave-engine".into())
         .spawn(move || {
@@ -378,10 +380,12 @@ fn run(
     let mut next_play: Option<u32> = None;
 
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
-    // Plaid forensics: raw frames each way, and the holes the fade covered.
-    let (mut raw_out, mut raw_in, mut holes_faded) = (0u64, 0u64, 0u64);
-    // The fade's exit half: the first real frame after a hole ramps up from silence (see the RESUME UP-RAMP comment).
-    let mut resume_ramp = false;
+    // Plaid forensics: raw frames each way.
+    let (mut raw_out, mut raw_in) = (0u64, 0u64);
+    // The PATH FLOOR (docs/lock.md §7.1): the smallest arrival-minus-capture age of a window's first frame, in samples, kept as per-second minima over the last 30 s — the base of the playout latency. It needs no agreement between the two clocks: an offset between them is part of every age, so it is part of the floor too (spec §7.5).
+    let mut age_minima: std::collections::VecDeque<i64> = std::collections::VecDeque::new();
+    let mut age_sec_min: i64 = i64::MAX;
+    let mut age_sec_at = std::time::Instant::now();
     // Loss-rate loop state: the 256-bit ring, its cursor, the integral, the last underrun count sampled, and the target we last set.
     let mut loss_bits = [0u64; LOSS_RING / 64];
     let mut loss_pos: u8 = 0;
@@ -407,7 +411,6 @@ fn run(
     let mut recent_rtt_floor: u32 = u32::MAX;
     let (mut win_rtt_min, mut win_rtt_max, mut win_rtt_n) = (u32::MAX, 0u32, 0u64);
     let mut win_losses_at = 0u32;
-    let mut last_played: Option<Vec<i16>> = None;
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
     // Recording-fill plane (see the FILL consts): its own chains + seq, the sent-frame index the peer's requests are served from, the arrived-window bits, the wanted set, the peer's requests we owe, and the drain state.
@@ -894,6 +897,19 @@ fn run(
                 if let Some((dtier, dfno, data)) = decoded {
                     // The SENDER's name for this window's first frame, unwrapped against our clock — every frame below is spooled at the instant ITS microphone heard it, so both parties' channels line up at mic time.
                     let win_k0 = unwrap_frame_no(dfno) * super::align::FRAME;
+                    // How old the window's first frame is on arrival — the path floor's evidence.
+                    let age = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - win_k0;
+                    age_sec_min = age_sec_min.min(age);
+                    if age_sec_at.elapsed() >= std::time::Duration::from_secs(1) {
+                        age_sec_at = std::time::Instant::now();
+                        if age_minima.len() >= 30 {
+                            age_minima.pop_front();
+                        }
+                        age_minima.push_back(age_sec_min);
+                        age_sec_min = i64::MAX;
+                    }
+                    let floor = age_minima.iter().copied().chain(std::iter::once(age_sec_min)).min().unwrap_or(age); // the algorithm: the current second's running minimum is always in the chain
+                    crate::platform::audio::set_play_floor(floor);
                     rx_decoders.remove(&wid);
                     let mut frames = Vec::with_capacity(TIER_FRAMES[dtier]);
                     for slot in 0..TIER_FRAMES[dtier] {
@@ -920,6 +936,9 @@ fn run(
                             rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
                             rx_frames += 1;
                             raw_in += 1;
+                            if draining.is_none() {
+                                crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm.clone());
+                            }
                             frames.push(pcm);
                             continue;
                         }
@@ -931,6 +950,10 @@ fn run(
                             Ok(s) if s == FRAME_SAMPLES => {
                                 rx_energy += pcm.iter().map(|v| v.unsigned_abs() as u64).sum::<u64>();
                                 rx_frames += 1;
+                                // Into named playout the moment it decodes: whether it is still in time is the speaker's question, answered by its name.
+                                if draining.is_none() {
+                                    crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm.clone());
+                                }
                                 frames.push(pcm);
                             }
                             Ok(_) | Err(_) => {}
@@ -987,22 +1010,8 @@ fn run(
             let mut np = np;
             loop {
                 if let Some(frames) = rx_done.remove(&np) {
-                    for mut f in frames {
-                        // RESUME UP-RAMP (Nick 2026-09-13, the fade's other half): the first real frame after a hole starts at an arbitrary value — silence up to it is a step, a click on every hole EXIT. Ramp it up over its own length; no lookahead needed, the hole already happened.
-                        if resume_ramp && !f.is_empty() {
-                            resume_ramp = false;
-                            let len = f.len() as i32;
-                            for (i, s) in f.iter_mut().enumerate() {
-                                *s = ((*s as i32) * (i as i32 + 1) / len) as i16;
-                            }
-                        }
-                        // THE LEVEL PLAN: nothing adaptive on RX — the wire arrived at plan level, the speaker duck and the rocker are the only hands on it.
-                        if draining.is_some() {
-                            continue;
-                        }
-                        last_played = Some(f.clone());
-                        crate::platform::audio::queue_playback(f);
-                    }
+                    // The frames already went to named playout at decode; this walk is the loss bookkeeping (the loop, fills, the ladder) in window order. THE LEVEL PLAN: nothing adaptive on RX — the wire arrived at plan level, the speaker duck and the rocker are the only hands on it.
+                    drop(frames);
                     // Loss loop: a played window slot (an underrun since the last slot counts as lost — silence reached the ear either way).
                     let underruns = crate::platform::audio::jitter_stats().2;
                     let lost = underruns > last_underruns;
@@ -1031,16 +1040,7 @@ fn run(
                     let underruns = crate::platform::audio::jitter_stats().2;
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, true, TIER_FRAMES[tier]);
-                    resume_ramp = true;
-                    // CRISPY, NOT CLICK: the hole is filled with the last played frame fading to silence over its own length — a decaying tail at the edge instead of a hard cut to zero; the matching up-ramp rides the first REAL frame after the hole. Once per run of holes (the fade ends at zero, so a second hole needs no fade). Never a synthesized guess at the missing sound.
-                    if draining.is_none() {
-                        if let Some(prev) = last_played.take() {
-                            let len = prev.len().max(1) as i32; // WHY/PROOF: the fade divides by the frame's length, and a spliced-to-empty frame has none
-                            let fade: Vec<i16> = prev.iter().enumerate().map(|(i, s)| ((*s as i32) * (len - i as i32) / len) as i16).collect();
-                            crate::platform::audio::queue_playback(fade);
-                            holes_faded += 1;
-                        }
-                    }
+                    // A HOLE PLAYS AS ITS OWN SILENCE (Nick 2026-09-25: "if it's not there, don't play it … no fade in either. honest and clean"): nothing is queued for it — named playout renders zeros for names it does not hold, at exactly their instants. No repeated frame, no fade-out, no fade-in.
                     // A lost window restarts the climb evidence; it is the AIMD drop edge only when losses cluster (LOSSES_TO_DROP inside LOSS_WINDOW) — one lost pair on a clean channel is noise, not congestion.
                     clean_rx_windows = 0;
                     let now = std::time::Instant::now();
@@ -1423,13 +1423,8 @@ fn run(
             jitter_target
         );
     }
-    if raw_out > 0 || raw_in > 0 || holes_faded > 0 {
-        crate::logf!(
-            "WAVE: plaid — {} raw frames out, {} in; {} hole(s) faded",
-            raw_out,
-            raw_in,
-            holes_faded
-        );
+    if raw_out > 0 || raw_in > 0 {
+        crate::logf!("WAVE: plaid — {} raw frames out, {} in", raw_out, raw_in);
     }
     // The diagnostic that separates the two silent-failure worlds (see the RX loop): rx_seen=0 → media never arrived (target address / NAT / relay); rx_seen>0 with pkts_in=0 and rx_drop_open>0 → arrived but the basket secret didn't match (key derivation desync). Only logged when something was received or dropped, so a clean wave stays quiet.
     if rx_seen > 0 || rx_drop_parse > 0 || rx_drop_shape > 0 || rx_drop_open > 0 {
@@ -1484,7 +1479,6 @@ fn run(
             windows_in: pkts_in,
             windows_lost,
             fills_got: fills_got_live + fills_got_drain,
-            holes: holes_faded,
             tier_end: tier,
             tier_ups,
             tier_downs,
@@ -1494,7 +1488,7 @@ fn run(
             measured_voiced: if voiced_frames > 0 { (voiced_sum_q8 / voiced_frames >> 8) as u32 } else { 0 },
             reaims: reaim_history.clone(),
             underruns: js.2 as u64,
-            trims: js.4 as u64,
+            trims: js.3 as u64,
         });
     }
     crate::logf!(

@@ -607,7 +607,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveLastLink { dur, path, floor, ema, max } => format!("{dur} · {path} · hurihanga {floor} iti, {ema} noa, {max} kino rawa (ms)").into(),
         Msg::WavePathLan => "whatunga kotahi".into(),
         Msg::WavePathWan => "puta noa i te ipurangi".into(),
-        Msg::WaveLastLoss { lost, of, filled, holes } => format!("{lost} o ngā {of} matapihi i ngaro, {filled} i whakahokia mai, {holes} kōhao i memeha").into(),
+        Msg::WaveLastLoss { lost, of, filled } => format!("{lost} o ngā {of} matapihi i ngaro, {filled} i whakahokia mai").into(),
         Msg::WaveLastLadder { rate, ups, downs, peer } => format!("i mutu i te {rate} · {ups} piki, {downs} heke · hēkona kino rawa o tērā taha: {peer} i ngaro").into(),
         Msg::WaveLastLevel { start, end, voiced } => format!("kaha tuku {start}× i te tīmatanga, {end}× i te mutunga · i inea tō reo ki te {voiced}").into(),
         Msg::WaveLastReaim { voiced, from, to } => format!("i whakatikahia i runga i te {voiced}: {from}× → {to}×").into(),

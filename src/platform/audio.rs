@@ -38,23 +38,109 @@ const RENDER_ENV_MAX: usize = 2048; // ~10s of 5ms frames
 /// Monotonic count of entries ever pushed — the cursor base for `render_env_since`.
 static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
-// LOSS-RATE JITTER BUFFER (Nick 2026-09-10, replacing the event ratchet): the render side plays silence until the queue reaches `JITTER_TARGET` frames (priming), then drains steadily; a dry queue (underrun) renders silence, counts, and re-primes. The TARGET itself is set by the wave engine's loss-rate loop (engine.rs: late = lost, a PID on the loss rate over the last 256 windows toward 1/256) — nothing here grows or decays it any more. The only actuator left here is the one-sample splice that glides the standing depth onto the target (the fine clock control), plus a stall guard that sheds a queue standing far past the target after an arrival stall.
-const JITTER_FLOOR: usize = 1; // one frame — the queue is frame-quantized, so zero is mechanically meaningless
-const JITTER_CAP: usize = 24; // 120ms — the most the engine's loop may ask for, even on a bad relay
+// NAMED PLAYOUT (docs/lock.md §7, Nick 2026-09-25: "if it's not there, don't play it; if it gets there late and we are still within the window, cue it up and start it late … no fade in either. honest and clean"). The far party's frames arrive NAMED by grid sample (the sender's microphone instant) and are played by name against true time: each render asks for the samples whose names belong at the DAC's true instant minus the playout latency L. A sample that is here plays; one that is not plays as zero; one whose instant has passed is never played; nothing is repeated, faded, spliced or primed.
+// L = the path floor (the smallest arrival-minus-capture age over the last 30 s, measured by the engine — it also absorbs a peer whose clock is off, spec §7.5) + the loss loop's margin in frames. L changes only on a frame that is silent or empty, as one step (spec §7.1).
+const JITTER_FLOOR: usize = 1; // the loss loop's least margin: one 5 ms frame over the path floor
+const JITTER_CAP: usize = 24; // 120 ms of margin — the most the engine's loop may ask for, even on a bad relay
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
 
-/// Engine hook: the loss-rate loop's target depth, clamped to floor..cap.
+/// Engine hook: the loss-rate loop's margin over the path floor, in frames.
 pub fn set_jitter_target(frames: usize) {
-    // WHY/PROOF: the jitter buffer's physical range — below the floor the play loop underruns every window, above the cap the latency is a phone call from the moon; the loss controller's output is held to it here, at the one store.
+    // WHY/PROOF: the margin's physical range — under one frame every jitter spike is a miss, past the cap the latency is a phone call from the moon; the loss controller's output is held to it here, at the one store.
     JITTER_TARGET.store(frames.clamp(JITTER_FLOOR, JITTER_CAP), Ordering::Relaxed);
 }
-static JITTER_PRIMING: AtomicBool = AtomicBool::new(true);
-// STALL GUARD: after an arrival stall the whole backlog lands at once and the queue stands far past the target; the one-sample splice would take most of a minute to shed 200ms, so a queue past target + STALL_SLACK sheds frames now, bounded per render. This is not depth control (the loss loop owns the target) — it is the one case where standing latency is pure debris.
-const STALL_SLACK: usize = 16; // 80ms past target (2026-09-15 18:31: at 4 the guard fought the loss loop on a bursty Wi-Fi — aggregated arrivals push the depth 8–12 frames for a moment, the guard shed them, the queue then ran dry in the next inter-burst gap, 50 underruns and 910 trims in one 66 s wave; a real stall lands 200+ frames and still trips this). Was 4 — 20ms past target (2026-09-10 field: the loop held target 1 while the standing depth sat at 5-17 frames for a whole wave — the splice alone sheds a sample a frame, so the guard must do the shedding)
-const STALL_MAX_DROP_PER_RENDER: usize = 4;
-/// The recent render level (mean |sample|, fast attack / ~0.6 s decay) the stall guard reads pauses against, and the voiced-frame drop cadence counter (one voiced frame per eight renders at most).
-static RENDER_LEVEL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-static STALL_VOICED_SKIP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Named playout is live (a wave's far channel); off = the plain FIFO for local sources.
+static NAMED: AtomicBool = AtomicBool::new(false);
+/// The far party's decoded frames by grid name (k0 of the frame's first sample), ascending.
+static WAVE_RX: Mutex<VecDeque<(i64, Vec<i16>)>> = Mutex::new(VecDeque::new());
+/// The path floor in samples (engine-measured); `i64::MIN` until the first frame has been measured.
+static PLAY_FLOOR: AtomicI64 = AtomicI64::new(i64::MIN);
+/// The playout latency in force, samples; `i64::MIN` until the first render sets it.
+static PLAY_L: AtomicI64 = AtomicI64::new(i64::MIN);
+/// The next grid name the speaker may play — names before it have had their instant (played or passed) and are never played again.
+static PLAY_NEXT: AtomicI64 = AtomicI64::new(i64::MIN);
+/// Some far audio has reached the speaker this wave — misses count only after it has.
+static PLAYED_ANY: AtomicBool = AtomicBool::new(false);
+/// A rendered frame whose loudest sample is under this is silence, where L may step (spec §7.1: never mid-speech).
+const SILENT_MEAN: u64 = 16;
+/// Missing samples a frame may have before it counts as a miss: the DAC's own drift against true time opens a one-sample gap now and then, which is not the network losing anything.
+const MISS_SLACK: usize = 2;
+
+/// Wave playout on: the far channel plays by name from here until the session's queues clear.
+pub fn set_named_playout(on: bool) {
+    NAMED.store(on, Ordering::Relaxed);
+}
+
+/// Engine hook: the path floor — the smallest (arrival − capture) age, in samples, over the recent window.
+pub fn set_play_floor(samples: i64) {
+    PLAY_FLOOR.store(samples, Ordering::Relaxed);
+}
+
+/// One decoded far frame, named by the grid sample of its first sample. A frame whose instant has already passed is dropped here — it would never play.
+pub fn queue_named(k0: i64, frame: Vec<i16>) {
+    if k0 + frame.len() as i64 <= PLAY_NEXT.load(Ordering::Relaxed) {
+        LATE_DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
+    let mut q = WAVE_RX.lock().unwrap();
+    let at = q.partition_point(|(k, _)| *k < k0);
+    if q.get(at).is_some_and(|(k, _)| *k == k0) {
+        return; // the same name twice (a fill racing the live copy) — the first one stands
+    }
+    q.insert(at, (k0, frame));
+}
+
+/// Build the far channel's render frame for the DAC instant `at_osc` (true time of its first sample): every sample whose name is due and present, zeros elsewhere.
+fn named_frame(at_osc: i64) -> Vec<i16> {
+    let mut out = vec![0i16; FRAME_SAMPLES];
+    let floor = PLAY_FLOOR.load(Ordering::Relaxed);
+    if floor == i64::MIN {
+        return out; // nothing measured yet — nothing can be due
+    }
+    let target = floor + (JITTER_TARGET.load(Ordering::Relaxed) * FRAME_SAMPLES) as i64;
+    let mut l = PLAY_L.load(Ordering::Relaxed);
+    if l == i64::MIN {
+        l = target;
+        PLAY_L.store(l, Ordering::Relaxed);
+    }
+    let want = vsf::grid::eagle_to_sample(at_osc) - l;
+    let next = PLAY_NEXT.load(Ordering::Relaxed);
+    let from = if next == i64::MIN { want } else { want.max(next) };
+    let end = want + FRAME_SAMPLES as i64;
+    let mut got = 0usize;
+    {
+        let mut q = WAVE_RX.lock().unwrap();
+        for (k0, f) in q.iter() {
+            if *k0 >= end {
+                break;
+            }
+            let lo = (*k0).max(from);
+            let hi = (*k0 + f.len() as i64).min(end);
+            for k in lo..hi {
+                out[(k - want) as usize] = f[(k - *k0) as usize]; // PROOF: want ≤ from ≤ k < end = want + FRAME_SAMPLES, and k0 ≤ k < k0 + len
+                got += 1;
+            }
+        }
+        // Every name before `end` has now had its instant.
+        while q.front().is_some_and(|(k0, f)| *k0 + f.len() as i64 <= end) {
+            q.pop_front();
+        }
+    }
+    PLAY_NEXT.store(if next == i64::MIN { end } else { end.max(next) }, Ordering::Relaxed);
+    let due = (end - from).max(0) as usize; // WHY/PROOF: after L grows, `from` (never replay) can sit past this frame's end — nothing is due then, which is a gap, not a negative count
+    if PLAYED_ANY.load(Ordering::Relaxed) && got + MISS_SLACK < due {
+        JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
+    }
+    if got > 0 {
+        PLAYED_ANY.store(true, Ordering::Relaxed);
+    }
+    // L moves only on silence or emptiness, as one step: a longer L leaves a gap (never a replay — PLAY_NEXT holds), a shorter one passes over names whose instant is gone.
+    if target != l && (got == 0 || mean_abs(&out) < SILENT_MEAN) {
+        PLAY_L.store(target, Ordering::Relaxed);
+    }
+    out
+}
 /// The earpiece trim in stops (−6..=6), device-local; see the render chain.
 static RX_TRIM_STOPS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 /// Six stops (Lun) each way (Nick 2026-09-16): a bar with a tick per stop shows how close the ear sits to loud-max and quiet-min.
@@ -68,44 +154,20 @@ pub fn set_rx_trim_stops(stops: i32) {
     // WHY/PROOF: the trim is a HUMAN's input (the Wave page's steppers, a synced setting) — held to the ± range the shift math below is sized for.
     RX_TRIM_STOPS.store(stops.clamp(-RX_TRIM_MAX_STOPS, RX_TRIM_MAX_STOPS), Ordering::Relaxed);
 }
-// SAMPLE-SPLICE CLOCK CONTROL (Nick's spec 2026-09-02: "at most one dropped sample per adjustment or 1 duplicated — minimize the DSP catchup framing"): the FINE actuator that nulls sample-clock drift so the coarse frame trims above become last-resort safeties instead of the steady-state. Bang-bang on queue depth: standing over target → DELETE one sample from the outgoing frame; standing under → DUPLICATE one. The splice lands where the waveform is flattest — a first-difference of exactly 0 (two identical adjacent samples: an error-FREE edit) short-circuits the scan, else the minimum-|diff| point (the local extremum, where the slope crosses zero — NOT an amplitude zero-crossing, which is the steepest-slope WORST place). One sample per 240 = ±0.42% rate authority, far beyond any real crystal drift; a splice at a flat point is unrepresentable-to-inaudible. Consumers are length-agnostic (desktop stages thru a VecDeque, Kotlin writes frame.size), so a 479/481-sample frame just paces the DAC pull.
-const SPLICE_UNDER_MARGIN: usize = 2; // duplicate only when depth sits ≥2 under target (priming/underrun own the empty case; hysteresis keeps delete/duplicate from chattering)
-static SPLICE_DROPPED: AtomicUsize = AtomicUsize::new(0);
-static SPLICE_DUPED: AtomicUsize = AtomicUsize::new(0);
+// Telemetry: named-playout misses (a frame with samples due that never arrived in time), reset per wave in clear_queues, logged at session teardown.
+static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
+/// Far frames that arrived after their instant had passed — never played (the honest "frames shed").
+static LATE_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
-/// The splice-point ladder: first-diff == 0 anywhere → take it immediately (perfect edit); else the min-|first-diff| index (flattest point). Returns an index n in 1..len (the edit touches sample n).
-fn best_splice(f: &[i16]) -> usize {
-    let mut best = 1usize;
-    let mut best_d = i32::MAX;
-    for n in 1..f.len() {
-        let d = (f[n] as i32 - f[n - 1] as i32).abs();
-        if d == 0 {
-            return n; // exact zero diff — error-free splice, stop looking
-        }
-        if d < best_d {
-            best_d = d;
-            best = n;
-        }
-    }
-    best
+/// Per-wave playout diagnostics: (margin frames over the path floor, far frames waiting, misses, frames too late to play).
+pub fn jitter_stats() -> (usize, usize, usize, usize) {
+    (JITTER_TARGET.load(Ordering::Relaxed), WAVE_RX.lock().unwrap().len(), JITTER_UNDERRUNS.load(Ordering::Relaxed), LATE_DROPPED.load(Ordering::Relaxed))
 }
 
-// Telemetry — the numbers that turn "latency feels a little off" into a diagnosis (peak standing depth vs target vs trims vs splice rate). Reset per wave in clear_queues, logged at session teardown.
-static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
-static JITTER_DEPTH_PEAK: AtomicUsize = AtomicUsize::new(0);
-static JITTER_TRIMS: AtomicUsize = AtomicUsize::new(0);
-
-/// Per-wave jitter diagnostics: (target_frames, current_depth, underruns, peak_depth, trims, samples_dropped, samples_duplicated). 10ms per frame; the splice counts are SAMPLES (20.8µs each) — a settled drift shows a steady low rate, a hammering rate means an upstream nominal-rate bug.
-pub fn jitter_stats() -> (usize, usize, usize, usize, usize, usize, usize) {
-    (
-        JITTER_TARGET.load(Ordering::Relaxed),
-        PLAYBACK_Q.lock().unwrap().len(),
-        JITTER_UNDERRUNS.load(Ordering::Relaxed),
-        JITTER_DEPTH_PEAK.load(Ordering::Relaxed),
-        JITTER_TRIMS.load(Ordering::Relaxed),
-        SPLICE_DROPPED.load(Ordering::Relaxed),
-        SPLICE_DUPED.load(Ordering::Relaxed),
-    )
+/// The playout latency in force, in samples (path floor + margin); `None` before the first far frame.
+pub fn play_latency() -> Option<i64> {
+    let l = PLAY_L.load(Ordering::Relaxed);
+    (l != i64::MIN).then_some(l)
 }
 
 /// Peak-held mean |sample| of what the device is rendering (~80ms decay) — the engine's soft duck reads this as the far-end activity signal, covering the device-buffer + acoustic lag without sample-accurate alignment.
@@ -212,7 +274,7 @@ pub fn route_id() -> String {
 }
 
 /// The mean absolute level of one 16-bit frame — the one level every duck, envelope and stall guard reads.
-/// WHY the empty case: the sample splice and the stall guard reshape frames, and a frame that came out empty has no level.
+/// WHY the empty case: a caller may hand an empty frame (nothing captured yet), and an empty frame has no level.
 /// PROOF: zero is that level; a bare `sum / len` would divide by zero, so the one place that divides says so here instead of `.max(1)` at every caller.
 pub fn mean_abs(frame: &[i16]) -> u64 {
     if frame.is_empty() {
@@ -255,7 +317,6 @@ pub fn queue_playback(frame: Vec<i16>) {
         q.pop_front();
     }
     q.push_back(frame);
-    JITTER_DEPTH_PEAK.fetch_max(q.len(), Ordering::Relaxed);
 }
 
 /// Frames currently queued for render — the engine's jitter-buffer depth signal.
@@ -363,88 +424,18 @@ pub fn set_local_source(on: bool) {
     LOCAL_SOURCE.store(on, Ordering::Relaxed);
 }
 
-/// Pop the next render frame thru the adaptive jitter buffer (silence when priming or dry — the no-PLC doctrine: missing audio is silence, never guesswork) and log it into the reference ring. Single-consumer (the one render loop), so the jitter atomics need no CAS.
-/// Pop the next render frame, stamped with NOW (desktop: the device callback is the DAC moment within a burst).
+/// Render the next frame at NOW — the fallback stamp where no device timestamp exists.
 fn next_render_frame() -> Vec<i16> {
-    next_render_frame_at(vsf::eagle_time_oscillations())
+    next_render_frame_at(crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_now()))
 }
 
-/// Pop the next render frame and stamp its reference-ring and envelope entries with `at_osc` — the eagle time its first sample hits the DAC, which Android reads from the HAL (audio_aaudio).
+/// The next render frame for the DAC instant `at_osc` (true time of its first sample, from the HAL on Android and the callback's playback delay on desktop), logged into the reference ring and envelope tap under that stamp.
+/// A wave's far channel plays BY NAME (see NAMED PLAYOUT); local sources (the chirp, ringback, previews, kept-wave replay) play their queue in order, exactly once, silence when dry — neither path ever repeats, fades, splices or primes.
 pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
-    let silence = || vec![0i16; FRAME_SAMPLES];
-    let frame = {
-        let mut q = PLAYBACK_Q.lock().unwrap();
-        if LOCAL_SOURCE.load(Ordering::Relaxed) {
-            // Local source: verbatim drain — every queued sample reaches the DAC in order, exactly once.
-            q.pop_front().unwrap_or_else(silence)
-        } else if JITTER_PRIMING.load(Ordering::Relaxed) {
-            // Building depth: play silence until the queue reaches the target, then start draining.
-            if q.len() >= JITTER_TARGET.load(Ordering::Relaxed) {
-                JITTER_PRIMING.store(false, Ordering::Relaxed);
-                q.pop_front().unwrap_or_else(silence)
-            } else {
-                silence()
-            }
-        } else {
-            match q.pop_front() {
-                Some(mut f) => {
-                    let target = JITTER_TARGET.load(Ordering::Relaxed);
-                    // Stall guard (see the consts): shed a backlog standing far past the target, a few frames per render — FROM THE PAUSES (field 2026-09-15, "splotchy": a Wi-Fi stall of 1–3 s lands its whole backlog at once and the guard shed it four frames per render regardless of content, 1,782 frames — 8.9 s of the far voice — cut from one 108 s wave; words vanished). A frame well under the recent render envelope (a pause, a breath gap) drops freely; a frame carrying voice drops at most one per eight renders, so a pure-speech backlog sheds at 12% while latency recovers over seconds instead of words disappearing in one.
-                    if q.len() > target + STALL_SLACK {
-                        let mut dropped = 0;
-                        let mut scanned = 0;
-                        while q.len() > target + STALL_SLACK && dropped < STALL_MAX_DROP_PER_RENDER && scanned < STALL_MAX_DROP_PER_RENDER * 2 {
-                            scanned += 1;
-                            let Some(head) = q.front() else { break };
-                            let lvl = mean_abs(head);
-                            let env = RENDER_LEVEL.load(Ordering::Relaxed);
-                            let quiet = lvl * 6 < env;
-                            if quiet {
-                                q.pop_front();
-                                dropped += 1;
-                            } else if STALL_VOICED_SKIP.fetch_add(1, Ordering::Relaxed) % 8 == 7 {
-                                q.pop_front();
-                                dropped += 1;
-                            } else {
-                                break;
-                            }
-                        }
-                        JITTER_TRIMS.fetch_add(dropped, Ordering::Relaxed);
-                    }
-                    // The render envelope the stall guard reads pauses against: fast attack on the frame just popped, ~0.6 s decay.
-                    {
-                        let lvl = mean_abs(&f);
-                        let env = RENDER_LEVEL.load(Ordering::Relaxed);
-                        RENDER_LEVEL.store(lvl.max(env - (env >> 7)), Ordering::Relaxed);
-                    }
-                    // Sample-splice clock control (the fine actuator — see the consts): one sample per frame, at the flattest point, glides the depth toward target so the frame trims above stay dormant.
-                    if f.len() > 2 {
-                        let depth = q.len();
-                        if depth > target {
-                            // Standing over → delete one sample (frame drains 20.8µs sooner; queue sheds).
-                            let n = best_splice(&f);
-                            f.remove(n);
-                            SPLICE_DROPPED.fetch_add(1, Ordering::Relaxed);
-                        } else if depth + SPLICE_UNDER_MARGIN <= target
-                            && !JITTER_PRIMING.load(Ordering::Relaxed)
-                        {
-                            // Standing under → duplicate one sample (frame lasts 20.8µs longer; queue rebuilds before an underrun stumbles playback).
-                            let n = best_splice(&f);
-                            let s = f[n];
-                            f.insert(n, s);
-                            SPLICE_DUPED.fetch_add(1, Ordering::Relaxed);
-                        }
-                    }
-                    f
-                }
-                None => {
-                    // Underrun: silence, count it (the engine's loss loop reads the count and treats it as loss), re-prime to the target.
-                    JITTER_PRIMING.store(true, Ordering::Relaxed);
-                    JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
-                    silence()
-                }
-            }
-        }
+    let frame = if NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) {
+        named_frame(at_osc)
+    } else {
+        PLAYBACK_Q.lock().unwrap().pop_front().unwrap_or_else(|| vec![0i16; FRAME_SAMPLES])
     };
     // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC — Q32 with the carried remainder (wave/qgain.rs), the gain pre-shifted at capture time, so this path is load + mul-add-shift-and per sample. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
     let mut frame = frame;
@@ -488,7 +479,6 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
         }
     }
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
-    // frame.len(), not FRAME_SAMPLES: the sample splice can hand back 479/481-sample frames.
     let lvl = mean_abs(&frame) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
     FAR_LEVEL.store(lvl.max(old - old / 8), Ordering::Relaxed);
@@ -537,34 +527,26 @@ pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
 /// Reset all queues — session start/stop hygiene so a new wave never hears the last wave's tail.
 /// Logs the session's jitter diagnostics FIRST (this runs at both start and stop; the stop edge is the one whose numbers matter, and a start against zeroed stats logs nothing).
 fn clear_queues() {
-    let (target, depth, underruns, peak, trims, dropped, duped) = jitter_stats();
-    if underruns > 0 || peak > 0 || trims > 0 || dropped > 0 || duped > 0 {
-        crate::logf!(
-            "WAVE: jitter — target {} depth {} peak {} underruns {} trims {} (frames, 5ms each); splice -{}/+{} samples",
-            target,
-            depth,
-            peak,
-            underruns,
-            trims,
-            dropped,
-            duped
-        );
+    let (margin, waiting, misses, late) = jitter_stats();
+    if misses > 0 || waiting > 0 || late > 0 {
+        crate::logf!("WAVE: playout — margin {} frames over the path floor, latency {} samples, {} far frame(s) left waiting, {} miss(es), {} too late to play (5 ms frames)", margin, play_latency().map_or("?".to_string(), |l| l.to_string()), waiting, misses, late);
     }
     CAPTURE_Q.lock().unwrap().clear();
     PLAYBACK_Q.lock().unwrap().clear();
+    WAVE_RX.lock().unwrap().clear();
+    NAMED.store(false, Ordering::Relaxed);
+    PLAY_FLOOR.store(i64::MIN, Ordering::Relaxed);
+    PLAY_L.store(i64::MIN, Ordering::Relaxed);
+    PLAY_NEXT.store(i64::MIN, Ordering::Relaxed);
+    PLAYED_ANY.store(false, Ordering::Relaxed);
     RENDER_REF.lock().unwrap().clear();
     // RENDER_ENV clears but its TOTAL cursor base does NOT reset — a learner holding a cursor across the hygiene edge just sees a gap, never a phantom replay.
     RENDER_ENV.lock().unwrap().clear();
-    // Each wave starts fresh at the jitter floor, re-priming — never inheriting the last wave's grown depth or window size.
+    // Each wave starts fresh at the least margin — never inheriting the last wave's grown latency.
     JITTER_TARGET.store(JITTER_FLOOR, Ordering::Relaxed);
     LOCAL_SOURCE.store(false, Ordering::Relaxed);
-    JITTER_PRIMING.store(true, Ordering::Relaxed);
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
-    JITTER_DEPTH_PEAK.store(0, Ordering::Relaxed);
-    JITTER_TRIMS.store(0, Ordering::Relaxed);
-    RENDER_LEVEL.store(0, Ordering::Relaxed);
-    SPLICE_DROPPED.store(0, Ordering::Relaxed);
-    SPLICE_DUPED.store(0, Ordering::Relaxed);
+    LATE_DROPPED.store(0, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_GAIN.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);
@@ -741,11 +723,17 @@ mod desktop {
         let stream = dev
             .build_output_stream(
                 &cfg,
-                move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
+                move |data: &mut [T], info: &cpal::OutputCallbackInfo| {
                     let ch = channels.max(1); // WHY/PROOF: the device's reported channel count — the buffer is chunked by it, and a chunk size of 0 panics
                     let need_mono = data.len() / ch;
+                    // When this buffer's first sample reaches the DAC: now, plus the delay the device reports between this callback and playback (docs/lock.md §7.2) — named playout schedules against it.
+                    let ts = info.timestamp();
+                    let ahead = ts.playback.duration_since(&ts.callback).map_or(0, |d| crate::network::time_base::boot_ns_to_osc(d.as_nanos() as i64));
+                    let dac_boot = crate::network::time_base::boot_now() + ahead;
                     while staged.len() < need_mono {
-                        let frame = next_render_frame();
+                        // Each pulled frame starts after everything already staged, at the device rate.
+                        let offset = staged.len() as i128 * crate::OSC_PER_SEC as i128 / dst_rate as i128;
+                        let frame = next_render_frame_at(crate::network::time_base::eagle_at_boot_rt(dac_boot + offset as i64));
                         let f: Vec<f32> = frame.iter().map(|&s| s as f32 / 32768.0).collect();
                         let mut out = Vec::with_capacity(f.len() + 8);
                         rs.run(&f, &mut out);
@@ -964,33 +952,27 @@ mod tests {
         assert_eq!(drained[0].2[0], 10);
         assert_eq!(drained[0].1, 10 * FRAME_SAMPLES as i64);
 
-        // Adaptive jitter buffer: renders silence while PRIMING (queue below the floor), drains real frames once the floor is reached, and a dry queue underruns to silence (never PLC guesswork). Every rendered frame — silence or real — feeds the AEC reference.
-        clear_queues(); // resets the jitter state: priming, target = JITTER_FLOOR
-        assert_eq!(JITTER_FLOOR, 1, "this test assumes a 1-frame floor");
-        // Empty queue below the floor → still priming → silence.
+        // LOCAL SOURCES play their queue verbatim: in order, exactly once, silence when dry — no priming, no splice, no trims.
+        clear_queues();
         let s = next_render_frame();
-        assert_eq!(s[0], 0, "priming below the jitter floor renders silence");
-        // The FIRST frame reaches the floor and plays immediately — the whole point of floor 1: zero added hold on a clean chain.
+        assert_eq!(s[0], 0, "a dry queue renders silence");
         queue_playback(vec![100i16; FRAME_SAMPLES]);
         let a = next_render_frame();
-        assert_eq!(a[0], 100, "at the floor, the first frame plays immediately");
+        assert_eq!(a, vec![100i16; FRAME_SAMPLES], "the first frame plays at once and whole");
         queue_playback(vec![101i16; FRAME_SAMPLES]);
         let b = next_render_frame();
         assert_eq!(b[0], 101, "then the next in order");
-        // Now dry → underrun → silence (never PLC guesswork).
         let c = next_render_frame();
-        assert_eq!(c[0], 0, "dry buffer renders silence, never PLC guesswork");
+        assert_eq!(c[0], 0, "dry again: silence, never a guess");
         let r = render_reference();
         assert_eq!(r.len(), 4, "every rendered frame — silence or real — lands in the AEC reference");
         assert!(r[0].0 <= r[3].0, "reference is eagle-stamped in order");
-        // The duck's far-end signal: rendering real frames raised it (peak-hold survives the one silent frame), and session hygiene zeroes it.
         assert!(far_level() > 0, "far_level tracks rendered energy for the duck");
-
         // The learner's envelope tap: every rendered frame (silence AND real) appended as (osc, env), cursor drain is exactly-once, and the cursor base survives hygiene (a gap, never a replay).
         let (entries, cur) = render_env_since(0);
         assert_eq!(entries.len().min(4), 4, "all four rendered frames tapped (silence env 0.0 included)");
         let tail = &entries[entries.len() - 4..];
-        assert_eq!(tail[0].1, 0.0, "priming silence lands as env 0.0 — the true DAC signal");
+        assert_eq!(tail[0].1, 0.0, "dry-queue silence lands as env 0.0 — the true DAC signal");
         assert!(tail[1].1 > 0.0 && tail[2].1 > 0.0, "real frames carry their envelope");
         assert_eq!(tail[3].1, 0.0, "underrun silence lands as env 0.0");
         let (none, cur2) = render_env_since(cur);
@@ -1006,5 +988,35 @@ mod tests {
         let _ = next_render_frame();
         let (fresh, _) = render_env_since(cur);
         assert_eq!(fresh.len(), 1, "post-hygiene renders resume flowing to the held cursor");
+
+        // NAMED PLAYOUT: the far channel plays by name against true time — present samples at their instant, zeros for what is not here, a late frame from where its time has reached, nothing twice.
+        clear_queues();
+        set_named_playout(true);
+        set_play_floor(0);
+        set_jitter_target(1); // L = 0 + one frame = 240 samples
+        let k: i64 = 1_000_000 * FRAME_SAMPLES as i64;
+        let dac = |want: i64| vsf::grid::sample_to_eagle(want + FRAME_SAMPLES as i64); // the DAC instant whose due names start at `want`
+        let f = FRAME_SAMPLES as i64;
+        queue_named(k, vec![100; FRAME_SAMPLES]);
+        assert_eq!(next_render_frame_at(dac(k)), vec![100i16; FRAME_SAMPLES], "present and due: played whole");
+        assert_eq!(next_render_frame_at(dac(k + f)), vec![0i16; FRAME_SAMPLES], "absent: its own silence, nothing repeated or faded");
+        assert_eq!(jitter_stats().2, 1, "and it counts as a miss");
+        // A render straddling two names: the missing frame's half is zeros, the present frame's half plays.
+        queue_named(k + 3 * f, vec![7; FRAME_SAMPLES]);
+        let straddle = next_render_frame_at(dac(k + 2 * f + f / 2));
+        assert!(straddle[..(f / 2) as usize].iter().all(|&x| x == 0) && straddle[(f / 2) as usize..].iter().all(|&x| x == 7));
+        let rest = next_render_frame_at(dac(k + 3 * f + f / 2));
+        assert!(rest[..(f / 2) as usize].iter().all(|&x| x == 7) && rest[(f / 2) as usize..].iter().all(|&x| x == 0), "the second half of that frame, exactly once");
+        // LATE BUT IN THE WINDOW: a frame whose first part's instant has passed plays its remaining part — it starts late.
+        let pass = next_render_frame_at(dac(k + 5 * f - f / 4));
+        assert!(pass.iter().all(|&x| x == 0));
+        queue_named(k + 5 * f, vec![9; FRAME_SAMPLES]);
+        let late = next_render_frame_at(dac(k + 6 * f - f / 4));
+        assert!(late[..(f / 4) as usize].iter().all(|&x| x == 9) && late[(f / 4) as usize..].iter().all(|&x| x == 0), "only the names still ahead of the speaker play");
+        // TOO LATE: every name of the frame has had its instant — dropped at the door, never played.
+        queue_named(k + 2 * f, vec![5; FRAME_SAMPLES]);
+        assert_eq!(jitter_stats().3, 1, "counted as too late");
+        assert!(next_render_frame_at(dac(k + 7 * f)).iter().all(|&x| x == 0));
+        clear_queues();
     }
 }
