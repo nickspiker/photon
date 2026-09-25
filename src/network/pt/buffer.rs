@@ -185,7 +185,7 @@ impl SendBuffer {
         }
 
         let start = sequence as usize * self.packet_size as usize;
-        let end = ((sequence as usize + 1) * self.packet_size as usize).min(self.data.len());
+        let end = ((sequence as usize + 1) * self.packet_size as usize).min(self.data.len()); // the algorithm: the LAST packet is the remainder, shorter than packet_size
 
         if start < self.data.len() {
             Some(&self.data[start..end])

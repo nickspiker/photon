@@ -6196,7 +6196,7 @@ impl PhotonApp {
                         let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
                         let visible = (inset.h / row_h).ceil() as usize + 2;
                         let size = row_h * 0.62;
-                        for i in first..(first + visible).min(ins_lines.len()) {
+                        for i in first..(first + visible).min(ins_lines.len()) { // the algorithm: the last page of the list is shorter than a full view
                             let r = diag_log_row_rect(&layout, settings_content_scroll, i);
                             if r.y > inset.y + inset.h {
                                 break;
@@ -6223,7 +6223,7 @@ impl PhotonApp {
                         let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
                         let visible = (inset.h / row_h).ceil() as usize + 2;
                         let size = row_h * 0.62;
-                        for i in first..(first + visible).min(self.diag_log_rows.len()) {
+                        for i in first..(first + visible).min(self.diag_log_rows.len()) { // the last page is shorter, as above
                             let r = diag_log_row_rect(&layout, settings_content_scroll, i);
                             if r.y > inset.y + inset.h {
                                 break;
@@ -7146,7 +7146,7 @@ impl PhotonApp {
         // Hit-mask overlay (`[]h`): replace every pixel with the opaque random colour for its hit_test_map ID. Drawn LAST over everything (including chrome + chord hint) — hit testing is per-final-pixel anyway, so the overlay shows exactly what `hit_at` would return. `.get` keeps the index lookup safe for any stale stamp at an unregistered high ID.
         if show_hitmask && !self.debug_hit_colours.is_empty() {
             let map = chrome.hit_test_map();
-            let n = map.len().min(target.len());
+            let n = map.len().min(target.len()); // WHY/PROOF: the map is built for last frame's layout; a resize this frame can shorten the target it indexes
             for i in 0..n {
                 target[i] = self
                     .debug_hit_colours

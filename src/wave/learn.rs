@@ -160,7 +160,7 @@ impl BinStream {
     }
     /// The last `n` bins ending at this stream's newest bin, as (first_bin_index, values).
     fn tail(&self, n: usize) -> (i64, Vec<f32>) {
-        let take = n.min(self.vals.len());
+        let take = n.min(self.vals.len()); // the algorithm: the newest n, or all of them while fewer have arrived
         let start = self.vals.len() - take;
         (self.start_bin + start as i64, self.vals.iter().skip(start).cloned().collect())
     }
@@ -536,7 +536,7 @@ impl PredGate {
 
 /// Pearson correlation — the window quality gate's statistic.
 fn pearson(a: &[f32], b: &[f32]) -> f32 {
-    let n = a.len().min(b.len());
+    let n = a.len().min(b.len()); // the algorithm: a correlation runs over the length both buffers share
     if n < 2 {
         return 0.0;
     }

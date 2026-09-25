@@ -123,7 +123,7 @@ impl Renderer {
             let mut y_max = self.dirty_y_max;
 
             // Union with previous (age-1) frames from history
-            let frames_behind = (age as usize - 1).min(self.history.len());
+            let frames_behind = (age as usize - 1).min(self.history.len()); // WHY/PROOF: `age` is the compositor's buffer-age report; it can name a frame older than the damage history we kept
             for i in 0..frames_behind {
                 let idx = (self.history_idx + self.history.len() - 1 - i) % self.history.len();
                 let (h_min, h_max) = self.history[idx];

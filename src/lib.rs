@@ -1111,7 +1111,7 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
     let bytes = std::fs::read(&path).ok()?;
     let age_cutoff = now_osc - jitter(LOG_AGE_KEEP_BASE_OSC); // keep a random 12–24h
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
-    let kept = &bytes[keep.min(bytes.len())..];
+    let kept = &bytes[keep..]; // log_keep_offset returns an offset inside the buffer, or exactly its length
     let mut w = std::fs::OpenOptions::new()
         .create(true)
         .write(true)

@@ -45,6 +45,7 @@ impl PhotonApp {
     /// The compose box's tagged links as wire marks (byte offsets over the box's text), taken at submit before the box clears.
     fn take_compose_tagged_marks(&mut self) -> Vec<crate::types::MessageMark> {
         let Some(tb) = self.message_textbox.as_ref() else { return Vec::new() };
+        // WHY/PROOF: `idx` comes from a tagged mark's recorded char span, which the human's later edits can leave past the end of the text.
         let byte_at_char = |idx: usize| -> usize { tb.chars[..idx.min(tb.chars.len())].iter().map(|c| c.len_utf8()).sum() };
         tb.spans()
             .iter()

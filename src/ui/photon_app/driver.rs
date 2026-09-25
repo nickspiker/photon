@@ -48,12 +48,12 @@ impl FluorApp for PhotonApp {
             .filter(|t| t.hit_id() == focus)
         {
             let text: String = tb.chars.iter().collect();
-            let cursor = tb.cursor.min(tb.chars.len());
+            let cursor = tb.cursor.min(tb.chars.len()); // WHY/PROOF: `Textbox.cursor` and `.chars` are public fields, and this app rewrites `chars` directly (a rename prefill) without moving the cursor — the type cannot hold cursor ≤ len, so its reader must
             return Some((text, cursor));
         }
         let tb = self.textbox_by_hit_mut(focus)?;
         let text: String = tb.chars.iter().collect();
-        let cursor = tb.cursor.min(tb.chars.len());
+        let cursor = tb.cursor.min(tb.chars.len()); // WHY/PROOF: `Textbox.cursor` and `.chars` are public fields, and this app rewrites `chars` directly (a rename prefill) without moving the cursor — the type cannot hold cursor ≤ len, so its reader must
         Some((text, cursor))
     }
 

@@ -291,6 +291,7 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), S
         col64("m_sig"),
         col32("m_signer"),
     );
+    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
     let n = mp
         .len()
         .min(mh.len())
@@ -315,6 +316,7 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), S
 
     // Vouches BEFORE leaves: merge_vouch needs genesis (present above); standing is derived, so order among the rest is immaterial.
     let (vv, vs, vo, vw, vsig, vsd) = (col32("v_voucher"), col32("v_subject"), col_osc("v_osc"), col_u("v_withdrawn"), col64("v_sig"), col32("v_signer"));
+    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
     let n = vv.len().min(vs.len()).min(vo.len()).min(vw.len()).min(vsig.len()).min(vsd.len());
     for i in 0..n {
         roster.merge_vouch(VouchRecord { voucher: vv[i], subject: vs[i], signed_osc: vo[i], withdrawn: vw[i] != 0, signature: vsig[i], signer_device: vsd[i] });
@@ -331,6 +333,7 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), S
         col_osc("b_osc"),
         col64("b_sig"),
     );
+    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
     let n = bp.len().min(bd.len()).min(be.len()).min(bs.len()).min(bm.len()).min(bx.len()).min(bh.len()).min(bo.len()).min(bsig.len());
     for i in 0..n {
         roster.merge_bundle(BundleRecord {
@@ -358,6 +361,7 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), S
     }
 
     let (lp, lo, lsig, lsd) = (col32("l_party"), col_osc("l_osc"), col64("l_sig"), col32("l_signer"));
+    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
     let n = lp.len().min(lo.len()).min(lsig.len()).min(lsd.len());
     for i in 0..n {
         roster.merge_leave(LeaveRecord {

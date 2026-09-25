@@ -468,7 +468,7 @@ fn apply_trc_normalized(normalized: f32, trc: &TrcCurve) -> f32 {
             // Interpolate in pre-normalized LUT
             let index = normalized * (lut.len() - 1) as f32;
             let i0 = index.floor() as usize;
-            let i1 = (i0 + 1).min(lut.len() - 1);
+            let i1 = (i0 + 1).min(lut.len() - 1); // the algorithm: linear interpolation holds the table's last value at its top end
             let frac = index - i0 as f32;
             lut[i0] + (lut[i1] - lut[i0]) * frac
         }

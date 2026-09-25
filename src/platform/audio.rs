@@ -519,7 +519,7 @@ pub fn render_ref_since(cursor: usize) -> (Vec<(i64, Vec<i16>)>, usize) {
     let r = RENDER_REF.lock().unwrap();
     let total = RENDER_REF_TOTAL.load(Ordering::Relaxed);
     let missed = total - cursor; // the total only grows, and every cursor is a total this function returned
-    let take = missed.min(r.len());
+    let take = missed.min(r.len()); // the algorithm: the ring keeps only its newest entries — anything older than that fell off and is simply gone
     let out: Vec<(i64, Vec<i16>)> = r.iter().skip(r.len() - take).cloned().collect();
     (out, total)
 }
@@ -529,7 +529,7 @@ pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
     let r = RENDER_ENV.lock().unwrap();
     let total = RENDER_ENV_TOTAL.load(Ordering::Relaxed);
     let missed = total - cursor; // the total only grows, and every cursor is a total this function returned
-    let take = missed.min(r.len());
+    let take = missed.min(r.len()); // the algorithm: the ring keeps only its newest entries — anything older than that fell off and is simply gone
     let out: Vec<(i64, f32)> = r.iter().skip(r.len() - take).cloned().collect();
     (out, total)
 }

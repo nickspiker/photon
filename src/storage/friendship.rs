@@ -573,6 +573,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         .collect();
 
     // Reconstruct pending messages (all arrays must have same length)
+    // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
     let pending_count = eagle_times
         .len()
         .min(plaintexts.len())
@@ -836,6 +837,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
                 _ => None,
             })
             .collect();
+        // WHY/PROOF: parallel columns decoded from a stored or received record — a malformed or truncated one can carry columns of different lengths, and the zip takes their common prefix instead of indexing past the shortest.
         let n = eras.len().min(sets.len()).min(mlkems.len()).min(xs.len()).min(hqcs.len()).min(bids.len());
         let kems: Vec<crate::crypto::era::EraDecapKeys> = (0..n)
             .map(|i| crate::crypto::era::EraDecapKeys {

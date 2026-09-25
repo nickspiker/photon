@@ -33,7 +33,7 @@ mod imp {
         {
             let mut buf = [0u16; 260];
             let n = GetModuleFileNameW(hmod, &mut buf) as usize;
-            let full = String::from_utf16_lossy(&buf[..n.min(buf.len())]);
+            let full = String::from_utf16_lossy(&buf[..n.min(buf.len())]); // WHY/PROOF: `n` is the OS call's return — on truncation Windows reports the buffer's size, and a crash handler cannot afford to trust it past the buffer
             // Basename only — the full path carries the Windows username, and sidecar text lands in the submitted log (name-scrub happens at the sink, not here; don't rely on it).
             let name = full.rsplit(['\\', '/']).next().unwrap_or("?").to_string();
             (name, addr.wrapping_sub(hmod.0 as usize))
@@ -100,7 +100,7 @@ mod imp {
 
     fn put_str(buf: &mut [u8], pos: &mut usize, s: &str) {
         let bytes = s.as_bytes();
-        let take = bytes.len().min(buf.len() - *pos);
+        let take = bytes.len().min(buf.len() - *pos); // the algorithm: a fixed crash buffer takes what still fits and drops the rest — no allocation inside a signal handler
         buf[*pos..*pos + take].copy_from_slice(&bytes[..take]);
         *pos += take;
     }

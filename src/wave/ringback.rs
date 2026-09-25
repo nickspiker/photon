@@ -53,6 +53,7 @@ fn to_wave_rate(src: &[f32], src_rate: u32) -> Vec<f32> {
         let pos = i as f64 * ratio;
         let idx = pos as usize;
         let frac = (pos - idx as f64) as f32;
+        // the algorithm: linear resampling holds the source's last sample at its end
         let a = src[idx.min(src.len() - 1)];
         let b = src[(idx + 1).min(src.len() - 1)];
         out.push(a + (b - a) * frac);
