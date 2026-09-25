@@ -275,7 +275,7 @@ pub fn save_fleet_settings(fs: &FleetSettings, storage: &FlatStorage) -> Result<
     let bytes = settings_to_bytes(&fs.global, &fs.devices);
     // GROWTH CONFESSION (field 2026-08-28): a single 6.4MB live value was 93% of the Mac's vault, re-put in pairs every few seconds — the librarian queue behind it was the settings-open beachball and 5s waits for 53-byte puts. When this blob is fat, name WHICH key family holds the bytes (prefix before the first '.'), because the blob is opaque at every other layer.
     if bytes.len() > 512 * 1024 {
-        let mut fams: std::collections::HashMap<&str, (usize, usize)> = Default::default();
+        let mut fams: crate::linear_map::LinearMap<&str, (usize, usize)> = Default::default();
         for e in &fs.global {
             let fam = e.key.split('.').next().unwrap_or("");
             let f = fams.entry(fam).or_default();

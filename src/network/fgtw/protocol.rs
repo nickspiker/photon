@@ -1507,7 +1507,7 @@ fn decode_offer_pubkeys(
         .iter()
         .find(|f| f.name == "pubkeys")
         .ok_or("ClutchOffer missing pubkeys")?;
-    let mut labeled: std::collections::HashMap<&str, &VsfType> = std::collections::HashMap::new();
+    let mut labeled: crate::linear_map::LinearMap<&str, &VsfType> = crate::linear_map::LinearMap::new();
     let mut it = pk_field.values.iter();
     while let Some(v) = it.next() {
         if let VsfType::d(name) = v {
@@ -1517,7 +1517,7 @@ fn decode_offer_pubkeys(
         }
     }
     let key_bytes = |name: &str| -> Result<Vec<u8>, String> {
-        match labeled.get(name) {
+        match labeled.get(&name) {
             Some(VsfType::kx(b)) | Some(VsfType::kp(b)) | Some(VsfType::kk(b))
             | Some(VsfType::kf(b)) | Some(VsfType::kn(b)) | Some(VsfType::kl(b))
             | Some(VsfType::kh(b)) => Ok(b.clone()),
@@ -1559,8 +1559,8 @@ fn decode_kem_payload(
     fn labeled<'a>(
         fields: &'a [vsf::file_format::VsfField],
         name: &str,
-    ) -> std::collections::HashMap<&'a str, &'a VsfType> {
-        let mut map = std::collections::HashMap::new();
+    ) -> crate::linear_map::LinearMap<&'a str, &'a VsfType> {
+        let mut map = crate::linear_map::LinearMap::new();
         let Some(f) = fields.iter().find(|f| f.name == name) else {
             return map;
         };

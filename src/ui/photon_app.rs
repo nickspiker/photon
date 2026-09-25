@@ -1351,7 +1351,7 @@ pub(crate) const MSG_HIT_SPAN: HitId = 256;
 #[derive(Clone, Debug, Default)]
 pub struct FleetSchemes {
     pub floor: fgtw::fleet::scheme::Mask,
-    pub declared: std::collections::HashMap<[u8; 32], fgtw::fleet::scheme::Mask>,
+    pub declared: crate::linear_map::LinearMap<[u8; 32], fgtw::fleet::scheme::Mask>,
     pub locked: Vec<[u8; 32]>,
     pub members: usize,
 }
@@ -1493,15 +1493,15 @@ pub struct PhotonApp {
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
-    avatar_req_pending: std::collections::HashMap<[u8; 32], i64>,
+    avatar_req_pending: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today. Entries are consumed on match and swept by the same in-flight timeout.
-    hist_rid_map: std::collections::HashMap<[u8; 32], (crate::types::ConversationId, i64)>,
+    hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64)>,
     /// Fleet-first keygen gate edge state — true while the gate is actively holding friend keygens (logs the hold and the release ONCE each, not per tick).
     keygen_fleet_gate_holding: bool,
     /// Blind-deposit flip-flop detector, keyed (contact hp, depositor device): (hash of the blob the CURRENT stored deposit replaced, consecutive A-B-A flips). Two photon installs sharing one device key wage an S-war — each twin's deposit replaces the other's forever (field 2026-08-21: 400 deposits from ONE device in an afternoon log, each a ~1.5s durable commit, wall-to-wall vault load). At 3 consecutive flips the commits DECIMATE 8:1 (drop-unacked; pure counter, no timer) — the war's write load collapses, a GENUINE re-key still lands within 8 retries, and a byte-identical (stable) deposit resets the detector. Runtime-only: a restart re-arms detection, which is fine.
-    blind_flip: std::collections::HashMap<([u8; 32], [u8; 32]), ([u8; 32], u32)>,
+    blind_flip: crate::linear_map::LinearMap<([u8; 32], [u8; 32]), ([u8; 32], u32)>,
     /// History-serve rate limiting, keyed by conversation_token: (last-served eagle-time, recent request ids). Dedups replayed hist_req frames (the redundant alt-path copy arrives ~always) and caps the serve cadence per conversation.
-    history_serve: std::collections::HashMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
+    history_serve: crate::linear_map::LinearMap<[u8; 32], (i64, std::collections::VecDeque<[u8; 32]>)>,
     /// Completed friendship chains, keyed by friendship id — populated when a CLUTCH ceremony completes (the per-conversation rolling key material lives here). Persisted via `save_friendship_chains`; loaded on attest/resume. GROUP chains (docs/molecules.md) live here too under FriendshipId(molecule_id) — the token scan and era routing treat them identically; only trust and attribution branch.
     friendship_chains: Vec<(
         crate::types::friendship::FriendshipId,
@@ -1785,11 +1785,11 @@ pub struct PhotonApp {
     /// One-shot launch sweep for waves whose keep a crash interrupted (spool.rs recover_orphans).
     orphan_waves_swept: bool,
     /// Runtime-only stuck-tip ledger per friendship: (the peer's advertised head for OUR lane, exhaust→re-arm ladders seen at exactly that head). The anchor-wedge detector needs tip 0; a NONZERO head that never moves while our exhausted pendings re-arm and exhaust again is the same dead lane in disguise (the peer holds those rows as forwards it can never re-ACK) — two full ladders at one head trips the rotation.
-    lane_rearm_cycles: std::collections::HashMap<crate::types::friendship::FriendshipId, (i64, u8)>,
+    lane_rearm_cycles: crate::linear_map::LinearMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Runtime-only re-serve cap, keyed per (friendship, peer DEVICE): the record's evidence tuple (tip for OUR lane, peer row_count, peer row_digest) plus ROWS ACTUALLY TRANSMITTED against exactly that testimony (2026-09-01: was bursts ATTEMPTED — the serial-send gate let ~1 row out per burst, so 2 attempted bursts spent the cap having served ~2 rows and a deeper hole parked forever; counting transmitted rows keeps the anti-loop convergence while letting the whole deficit drain). Device-keyed because each peer device pongs its OWN lane view — a fid-keyed slot flip-flopped between two devices' tips and reset the cap every cycle (the hours-long 8-rows-per-pong loop, field 2026-08-21). ANY change in the peer's testimony is the new-evidence edge that re-arms the cap; a peer that holds the rows but counts them differently (deleted/edit/reaction rows) goes quiet after the cap instead of bursting forever.
     /// Rows already RE-SERVED to a friendship this session (fid, eagle_time). One re-serve per row, ever — the field storm of 2026-09-08: the burst cap above re-arms on ANY testimony change, and a live chat changes the peer's (row_count, digest) on every pong, so the same two rows were re-encrypted 29 times in 75 minutes while the peer dedup'd and re-ACKed every copy. A row the peer has re-ACKed is held; a row they genuinely lost after a re-serve rides that re-serve's own retry ladder. The count deficit that keeps firing after this set is exhausted is a counting divergence, not a delivery hole.
     lane_reserved_rows: std::collections::HashSet<(crate::types::friendship::FriendshipId, i64)>,
-    lane_reserve_bursts: std::collections::HashMap<
+    lane_reserve_bursts: crate::linear_map::LinearMap<
         (crate::types::friendship::FriendshipId, [u8; 32]),
         (i64, u32, [u8; 32], u8),
     >,
@@ -1862,7 +1862,7 @@ pub struct PhotonApp {
     /// When the phonebook was last flushed to the worker — the debounce clock for `peer_persist_dirty`.
     last_peer_persist: Option<std::time::Instant>,
     /// Recently observed OWN LAN addresses (from our looped-back discovery beacons) with last-seen times. A multi-homed device loops a beacon back on EVERY interface each round, so `our_lan_ip` used to flip between them every round — and each flip cleared `self_record_published_for`, re-signing + re-publishing + persisting the record on a loop. This set makes the published choice sticky: keep the current address while it's still observed, only switch when it ages out. See `OurLanAddrObserved`.
-    our_lan_ips: std::collections::HashMap<std::net::Ipv4Addr, std::time::Instant>,
+    our_lan_ips: crate::linear_map::LinearMap<std::net::Ipv4Addr, std::time::Instant>,
     /// Last zoom value actually persisted. Android saves on the pinch-release edge (onScaleEnd → take_scale_ended); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
     zoom_saved_ru: f32,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
@@ -2020,7 +2020,7 @@ pub struct PhotonApp {
     /// Hit base for the consent pills: +0 Open, +1 Copy, +2 Cancel.
     link_consent_base: HitId,
     /// Fold-freshness tripwire pursuit: hp → the claimed tip we are currently refetching against. EDGES, not timers: inserted at spawn, cleared by the fold drain's result (or fetch-error sentinel); while standing, only a strictly newer claim re-fires. Cardinality ≤ roster size (keys come only from matched contacts).
-    fleet_tip_pursuit: std::collections::HashMap<[u8; 32], i64>,
+    fleet_tip_pursuit: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Session dedup for the no-contact presence-verdict breadcrumb (cleared wholesale at 64 — a diagnostic, not a ledger).
     unknown_verdict_logged: std::collections::HashSet<[u8; 32]>,
     /// Hit id for the selected message's "copy" pill inside the details strip.
@@ -2066,19 +2066,19 @@ pub struct PhotonApp {
     /// Last periodic fleet-history-sweep kick. The edge-triggered kicks (roster merge, sibling-online) cover the common cases, but edges get missed (presence flaps, app-in-background misses); this jittered ~5 min re-arm is the convergence backstop — cheap because a complete conversation early-stops after ONE page.
     last_fleet_sweep: Option<Instant>,
     /// Fleet chain-replication bookkeeping: per-friendship, the `mutated_osc` we last PUSHED to siblings (or last ADOPTED from one — recording the adopted stamp stops the echo). The per-tick `drive_chain_replication` sweep pushes any chain whose live stamp is newer; comparing stamps instead of hooking every mutation site coalesces bursts and covers every path (send, ACK, receive, ceremony completion, reset) for free.
-    chain_pushed_osc: std::collections::HashMap<[u8; 32], i64>,
+    chain_pushed_osc: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Tokens we fired a `chain_pull` for (Complete-without-chains, siblings exist) — once per session, so the fleet gets ONE ask before any re-key verdict. RAM-only.
     chain_pull_sent: std::collections::HashSet<[u8; 32]>,
     /// Per-token miss answers: sibling device pubkeys that replied `chain_pull_miss`. When every live sibling contact has a device in the set, the fleet truly holds nothing and the re-key runs. RAM-only.
-    chain_pull_misses: std::collections::HashMap<[u8; 32], std::collections::HashSet<[u8; 32]>>,
+    chain_pull_misses: crate::linear_map::LinearMap<[u8; 32], Vec<[u8; 32]>>,
     /// Last era each peer DEVICE advertised per friendship (index, tag) — the change edge for the stale-era observation (era ratchet stage 2). Runtime only.
-    peer_era_seen: std::collections::HashMap<(crate::types::friendship::FriendshipId, [u8; 32]), (u64, u32)>,
+    peer_era_seen: crate::linear_map::LinearMap<(crate::types::friendship::FriendshipId, [u8; 32]), (u64, u32)>,
     /// era_pull asks sent this session: token → the era index we held when we asked. A miss verdict for one of these is "no sibling holds a newer era", never a reason to re-key.
-    era_pull_sent: std::collections::HashMap<[u8; 32], u64>,
+    era_pull_sent: crate::linear_map::LinearMap<[u8; 32], u64>,
     /// The era each peer LAST advertised for a friendship (token → (index, tag)): the fleet's era_pull answer is classified against this, not a blanket "ahead".
-    era_peer_seen: std::collections::HashMap<[u8; 32], (u64, u32)>,
+    era_peer_seen: crate::linear_map::LinearMap<[u8; 32], (u64, u32)>,
     /// Per-LANE replication bookkeeping: (friendship_id ‖ lane_label) → the lane position we last pushed to siblings. `drive_chain_replication` sends ONLY the lanes whose position advanced past this, as a per-lane checkpoint subset — so a mutation on one lane no longer re-transmits every other lane's 16KB chain (the 85KB whole-blob frame that stalled the render thread every tick).
-    lane_pushed_pos: std::collections::HashMap<[u8; 64], u64>,
+    lane_pushed_pos: crate::linear_map::LinearMap<[u8; 64], u64>,
     /// Base hit id for the settings stub action pills (immediate-mode Buttons — Add device, Lock, Shred, Snapshot, …). Each page draws its pills over a small contiguous slice of this range; clicks land here and log a stub line. Allocated in `init` with a fixed span.
     settings_btn_base: HitId,
     /// The Vault page's snapshot (fetched on page entry and on Refresh — event edges, never a cadence) and its worker channel.
@@ -2096,7 +2096,7 @@ pub struct PhotonApp {
     /// Chunked-blob arrival progress keyed by the WHOLE-FILE hash: (chunks held, chunks total) — the pill bar's first source (typed attachments Phase 1; the PT snapshot above stays the fallback for whole-value blobs).
     attach_chunk_progress: std::collections::HashMap<[u8; 32], (u32, u32)>,
     /// OUTBOUND chunked sends this device dispatched: hash → total chunks. The render derives overall send progress from it and the PT snapshot (chunks no longer in flight are done); cleared when the peer's attach_have lands. 2026-09-14 (Nick: "drag/drop for sending pigeons has no indication of progress") — the bar used to show one chunk's transfer at a time, 0→100 % over and over.
-    attach_send_total: std::collections::HashMap<[u8; 32], u32>,
+    attach_send_total: crate::linear_map::LinearMap<[u8; 32], u32>,
     /// Blob pushes confirmed landed (attach_have), this session.
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
@@ -2111,9 +2111,9 @@ pub struct PhotonApp {
     >,
     /// Last wire-send instant per conversation for streamed PARTIALS — the ONE granted timer (Nick 2026-08-31): at most one partial per second per conversation; the latest-wins slot holds anything faster. Finals never consult it.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_partial_sent: std::collections::HashMap<ContactId, std::time::Instant>,
+    bridge_partial_sent: crate::linear_map::LinearMap<ContactId, std::time::Instant>,
     /// Eagle-time of the last bridge PARTIAL sent per conversation — the own-ACK gate: the next partial ships only once this one has left pending_messages (see drain_bridge_output).
-    bridge_partial_inflight: std::collections::HashMap<ContactId, i64>,
+    bridge_partial_inflight: crate::linear_map::LinearMap<ContactId, i64>,
     /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_fg: Option<bridge::BridgeFgMap>,
@@ -2397,7 +2397,7 @@ impl PhotonApp {
             peer_persist_tx: None,
             peer_persist_dirty: false,
             last_peer_persist: None,
-            our_lan_ips: std::collections::HashMap::new(),
+            our_lan_ips: crate::linear_map::LinearMap::new(),
             tick_serial: 0,
             pending_chain_sends: Vec::new(),
             seed_identity_count: 0,
@@ -2522,11 +2522,11 @@ impl PhotonApp {
             },
             fleet_rotated_rx: std::sync::mpsc::channel().1,
             avatar_dl_started: std::collections::HashSet::new(),
-            avatar_req_pending: std::collections::HashMap::new(),
-            hist_rid_map: std::collections::HashMap::new(),
+            avatar_req_pending: crate::linear_map::LinearMap::new(),
+            hist_rid_map: crate::linear_map::LinearMap::new(),
             keygen_fleet_gate_holding: false,
-            blind_flip: std::collections::HashMap::new(),
-            history_serve: std::collections::HashMap::new(),
+            blind_flip: crate::linear_map::LinearMap::new(),
+            history_serve: crate::linear_map::LinearMap::new(),
             friendship_chains: Vec::new(),
             molecule_rosters: Vec::new(),
             molecule_locals: Vec::new(),
@@ -2671,9 +2671,9 @@ impl PhotonApp {
             msg_attach_visuals: Vec::new(),
             wave_scrub: None,
             orphan_waves_swept: false,
-            lane_rearm_cycles: std::collections::HashMap::new(),
+            lane_rearm_cycles: crate::linear_map::LinearMap::new(),
             lane_reserved_rows: std::collections::HashSet::new(),
-            lane_reserve_bursts: std::collections::HashMap::new(),
+            lane_reserve_bursts: crate::linear_map::LinearMap::new(),
             pb_resolve_cursor: 0,
             ckpt_mint_due: false,
             ckpt_spineless_holds: 0,
@@ -2752,7 +2752,7 @@ impl PhotonApp {
             compose_tagged_marks: Vec::new(),
             link_consent: None,
             link_consent_base: HIT_NONE,
-            fleet_tip_pursuit: std::collections::HashMap::new(),
+            fleet_tip_pursuit: crate::linear_map::LinearMap::new(),
             unknown_verdict_logged: std::collections::HashSet::new(),
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,
@@ -2775,13 +2775,13 @@ impl PhotonApp {
             last_ime_inset: 0,
             settings_repushed: false,
             last_fleet_sweep: None,
-            chain_pushed_osc: std::collections::HashMap::new(),
+            chain_pushed_osc: crate::linear_map::LinearMap::new(),
             chain_pull_sent: std::collections::HashSet::new(),
-            chain_pull_misses: std::collections::HashMap::new(),
-            peer_era_seen: std::collections::HashMap::new(),
-            era_pull_sent: std::collections::HashMap::new(),
-            era_peer_seen: std::collections::HashMap::new(),
-            lane_pushed_pos: std::collections::HashMap::new(),
+            chain_pull_misses: crate::linear_map::LinearMap::new(),
+            peer_era_seen: crate::linear_map::LinearMap::new(),
+            era_pull_sent: crate::linear_map::LinearMap::new(),
+            era_peer_seen: crate::linear_map::LinearMap::new(),
+            lane_pushed_pos: crate::linear_map::LinearMap::new(),
             settings_btn_base: HIT_NONE,
             vault_stats: None,
             vault_stats_rx: None,
@@ -2791,7 +2791,7 @@ impl PhotonApp {
             settings_zoom_slider: None,
             attach_progress: Vec::new(),
             attach_chunk_progress: std::collections::HashMap::new(),
-            attach_send_total: std::collections::HashMap::new(),
+            attach_send_total: crate::linear_map::LinearMap::new(),
             attach_confirmed: std::collections::HashSet::new(),
             pending_attach_picker: false,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
@@ -2800,8 +2800,8 @@ impl PhotonApp {
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_partials: None,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-            bridge_partial_sent: std::collections::HashMap::new(),
-            bridge_partial_inflight: std::collections::HashMap::new(),
+            bridge_partial_sent: crate::linear_map::LinearMap::new(),
+            bridge_partial_inflight: crate::linear_map::LinearMap::new(),
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_fg: None,
             bridge_cwds: None,

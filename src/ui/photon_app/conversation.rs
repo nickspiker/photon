@@ -2107,7 +2107,7 @@ impl PhotonApp {
             }
             let fid = incoming.friendship_id;
             // Pre-adopt lane positions — the echo kill below stamps only what the ADOPT moved.
-            let pre_positions: std::collections::HashMap<[u8; 32], u64> = self
+            let pre_positions: crate::linear_map::LinearMap<[u8; 32], u64> = self
                 .friendship_chains
                 .iter()
                 .find(|(id, _)| *id == fid)

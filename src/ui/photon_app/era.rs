@@ -479,7 +479,9 @@ impl PhotonApp {
         let Some(&held) = self.era_pull_sent.get(&token) else { return };
         let all_missed = {
             let set = self.chain_pull_misses.entry(token).or_default();
-            set.insert(sender_key);
+            if !set.contains(&sender_key) {
+                set.push(sender_key);
+            }
             // The quorum is the LIVE fleet: a sibling probed offline (a phone in a desk for a week, or a wiped device never released) cannot answer and needs nothing from this answer — replication carries the era to it on its return. Counting it froze every repair on "era_pull in flight" for as long as it stayed dark (2026-09-09).
             self.contacts.iter().filter(|c| c.is_sibling && !c.locked_out && !(c.presence_probed && !c.is_online)).all(|c| set.iter().any(|d| c.knows_device(d)))
         };

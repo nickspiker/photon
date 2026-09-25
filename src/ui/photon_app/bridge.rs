@@ -648,10 +648,10 @@ impl PhotonApp {
         std::thread::Builder::new()
             .name("bridge-exec".to_string())
             .spawn(move || {
-                let mut workers: std::collections::HashMap<
+                let mut workers: crate::linear_map::LinearMap<
                     [u8; 32],
                     std::sync::mpsc::Sender<(ContactId, String, i64)>,
-                > = std::collections::HashMap::new();
+                > = crate::linear_map::LinearMap::new();
                 while let Ok(job) = cmd_rx.recv() {
                     match job {
                         BridgeJob::Reset(dev) => {

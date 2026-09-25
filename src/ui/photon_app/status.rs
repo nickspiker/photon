@@ -364,8 +364,8 @@ impl PhotonApp {
         // Per-PASS accounting beside the per-arm timer: the 2026-08-11 desktop showed 1.8s passes with ZERO arms over 100ms — death by hundreds of moderate updates, invisible to a threshold that only names single offenders. The profile line names the cumulative eaters; the budget below bounds the stall.
         let pass_start = std::time::Instant::now();
         let mut pass_updates: u32 = 0;
-        let mut pass_profile: std::collections::HashMap<&'static str, (u32, u128)> =
-            std::collections::HashMap::new();
+        let mut pass_profile: crate::linear_map::LinearMap<&'static str, (u32, u128)> =
+            crate::linear_map::LinearMap::new();
         macro_rules! close_arm_timer {
             () => {
                 if let Some((label, t)) = arm_timer.take() {
@@ -5236,12 +5236,11 @@ impl PhotonApp {
             if !self.chain_pull_sent.contains(&token) {
                 continue;
             }
-            self.chain_pull_misses
-                .entry(token)
-                .or_default()
-                .insert(sender_key);
+            let misses = self.chain_pull_misses.entry(token).or_default();
+            if !misses.contains(&sender_key) {
+                misses.push(sender_key);
+            }
             let all_missed = {
-                let misses = &self.chain_pull_misses[&token];
                 self.contacts
                     .iter()
                     .filter(|c| c.is_sibling && !c.locked_out)

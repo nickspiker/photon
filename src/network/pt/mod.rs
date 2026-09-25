@@ -81,7 +81,7 @@ pub struct PTManager {
     /// Stale timeout (no activity for this long = abort)
     stale_timeout: Duration,
     /// Next stream id per peer, rotating a..z by modulo. Per PEER, because the collision that matters is (peer, stream): a global counter let one peer's ids come back around while its earlier holder was still in flight.
-    next_stream_id: std::collections::HashMap<PeerKey, u8>,
+    next_stream_id: crate::linear_map::LinearMap<PeerKey, u8>,
     /// Monotonic transfer ID counter for external tracking
     next_transfer_id: usize,
     /// Large payloads waiting for a slot in their peer's window, FIFO. Released in `tick()` on the completion/failure edge of an in-flight transfer.
@@ -142,7 +142,7 @@ impl PTManager {
             outbound_packets: Vec::new(),
             keypair,
             stale_timeout: Duration::from_secs(30),
-            next_stream_id: std::collections::HashMap::new(),
+            next_stream_id: crate::linear_map::LinearMap::new(),
             next_transfer_id: 0,
             pending_outbound: std::collections::VecDeque::new(),
             window_parked: std::collections::HashSet::new(),

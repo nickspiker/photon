@@ -999,8 +999,8 @@ impl PhotonApp {
     }
 
     /// Fleet-wide reaction RECENCY: each device keeps `glyph → last_used_osc` in its own single-writer key (`react.recent.<device>` — per-device because the settings layer is LWW per key: one shared key would drop concurrent stamps across devices, the `fleet.locked` race shape). The fleet view is the max stamp per glyph across keys. Recency, not tally, ON PURPOSE: all-time counts ossify (an old habit needs to be out-used to dethrone), while most-recent-first keeps the strip current and reshuffles the moment a new codepoint is used — the contacts list's float-to-top, derived from stamps because two devices' bare orders can't merge. Values are typed VSF (see encode_react_recent).
-    pub(super) fn react_recency(&self) -> std::collections::HashMap<String, i64> {
-        let mut out: std::collections::HashMap<String, i64> = std::collections::HashMap::new();
+    pub(super) fn react_recency(&self) -> crate::linear_map::LinearMap<String, i64> {
+        let mut out: crate::linear_map::LinearMap<String, i64> = crate::linear_map::LinearMap::new();
         let Some(fs) = self.fleet_settings.as_ref() else {
             return out;
         };

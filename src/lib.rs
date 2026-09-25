@@ -36,6 +36,8 @@
 //
 // platform/  — mod.rs (platform detection), jni_android.rs (Android JNI bridge), autostart.rs (desktop login-item write/read/remove: HKCU Run / LaunchAgent plist / XDG autostart), control.rs (second-launch handoff channel: "show" surfaces the resident, "yield" makes a lifeline release the lock), desktop_notify.rs (generic "New message" system notification, hidden/unfocused-gated), crash_native.rs (native-fault catcher: SEH filter / unix signal handlers write the panic hook's crash sidecar so segfaults ride the next log submission), locale.rs (os_language: first-launch language seed sniff — LC_* ladder / GetUserDefaultLocaleName), audio.rs (wave audio queues: HAL-stamped capture frames, adaptive jitter buffer, render reference/envelope rings; desktop cpal loops), audio_aaudio.rs (ANDROID device loops on AAudio, Rust-owned 2026-09-09: exclusive LOW_LATENCY streams with shared fallback, frames stamped from AAudioStream_getTimestamp, start/stop/ensure_input, stream-error rebuild off the callback thread).
 //
+// linear_map.rs — LinearMap<K,V>: a map by linear search over a Vec of pairs, HashMap's method names, insertion-ordered — the AGENT.md default for maps of tens (friends, devices, lanes, requests in flight).
+//
 // storage/ — ONE device vault via the kete crate; conversation content in the rarangi crate. The vault opens from the device secret alone at first launch (device scope: hash(thing|device) — binding, flags, capsule) and gains the identity scope at attest (hash(thing|device|person)). Every entry is addressed by a flat 32-byte key vault_key(domain, scope) = blake3_kdf("photon.storage.entry.v0", domain||scope), never a path — domain is a plain word ("avatar","state","chains",...), scope is the 32-byte identity the entry is about. Blobs are vault values at identity-keyed addresses (blob_store/load/present/delete). NO migration/import layer — the fleet is the backup (chain replication + history sync fill a fresh vault); every file in the primary/secondary photon dirs that isn't `<device token>.vsf`/the log is deleted at first vault open (census_sweep), the legacy `Photon/` sibling dirs wholesale with them.
 //   mod.rs        — kete re-exports (FlatStorage, StorageError, encrypt/decrypt_bytes, App, APP, android_vault_dirs), open_session_vault (THE session open), device_vault + install_device_secret + device_flag/set_device_flag (pre-identity device scope), vault_key, blob_* (vault-backed), runtime_dir/runtime_artifact (lock + control socket), raw file helpers, photon_config_dir, isolate_test_storage.
 //   cloud.rs      — FGTW cloud backup (contacts sync): CloudContact, CloudError, contacts_storage_key, contacts_encryption_key.
@@ -1705,6 +1707,7 @@ pub fn install_log_bridge() {}
 
 pub mod wave;
 pub mod crypto;
+pub mod linear_map;
 pub mod network;
 pub mod platform;
 pub mod storage;

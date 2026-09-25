@@ -4,7 +4,6 @@
 //!
 //! The probe is friend-tier: a friend answers it (contact/fleet-gated in the dispatch, exactly like ping), a stranger is ignored. Wire framing is the canonical full-header VSF via [`FgtwMessage::to_vsf_bytes`].
 
-use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
@@ -65,7 +64,7 @@ pub fn build_probe_ack(
 /// Outstanding probes: an ack matched by provenance tells us which candidate validated, for which peer.
 #[derive(Default)]
 pub struct PendingProbes {
-    inner: HashMap<[u8; 32], PendingProbe>,
+    inner: crate::linear_map::LinearMap<[u8; 32], PendingProbe>,
 }
 
 struct PendingProbe {

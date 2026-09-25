@@ -1064,7 +1064,7 @@ impl FluorApp for PhotonApp {
                                     .as_ref()
                                     .is_some_and(|(_, _, _, _, wc)| wc.is_some());
                                 if has_commit && self.depart_words_entry.is_none() {
-                                    let mut tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
+                                    let tb = Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.);
                                     let id = tb.hit_id();
                                     self.depart_words_entry = Some((pk, tb));
                                     self.change_focus(Some(id));
@@ -4216,7 +4216,7 @@ impl PhotonApp {
                     Ok(s) => {
                         // Preserve any IN-FLIGHT ceremony round across this reload. CLUTCH keypairs/slots are ephemeral scratch, so a wholesale reload from disk wipes a live round — and a warm resume (Android foregrounds constantly) then trips the keygen sweep into minting a DIVERGENT round the peer never agreed to. That is exactly what stranded the relay ceremony: the slow relay round-trip outlived the keys, the peer's KEM came back addressed to keys we'd already discarded, and it was dropped as "old keys". Re-key must be deliberate on real failure — never a side effect of a lifecycle event. Snapshot rounds that are still FRESH by eagle time (a genuinely stale one is let go, to be re-keyed cleanly) and restore them after the reload.
                         let now = vsf::eagle_time_oscillations();
-                        let inflight: std::collections::HashMap<[u8; 32], _> = self
+                        let inflight: crate::linear_map::LinearMap<[u8; 32], _> = self
                             .contacts
                             .iter()
                             .filter(|c| {
