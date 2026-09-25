@@ -1326,6 +1326,10 @@ impl FriendshipChains {
             return other.era_index > self.era_index;
         }
         if self.genesis_osc != other.genesis_osc {
+            // A genesis dated past our known time never supersedes — it would otherwise win this comparison against every honest era for as long as the lie lasts.
+            if crate::network::time_base::from_the_future(other.genesis_osc) {
+                return false;
+            }
             return other.genesis_osc > self.genesis_osc;
         }
         other.lane_root > self.lane_root

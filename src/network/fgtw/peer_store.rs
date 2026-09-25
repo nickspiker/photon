@@ -98,6 +98,11 @@ impl PeerStore {
 
     /// Add or update a peer record If device already exists for this handle, update it Otherwise insert at sorted position
     pub fn add_peer(&mut self, peer: PeerRecord) {
+        // A record dated past our known time is refused: its `last_seen` is signed, so it cannot be floored in place, and admitted it would never expire and would win every merge.
+        if crate::network::time_base::from_the_future(peer.last_seen) {
+            crate::logf!("PEERS: refused a record from {} dated {} s in the future", crate::fp(&peer.handle_proof), (peer.last_seen - crate::network::time_base::now_osc()) / crate::OSC_PER_SEC);
+            return;
+        }
         // Refuse a record whose address is unspecified, at EVERY ingest (gossip, fetch, load): the signing-point guard only protects records made by current builds, and a record signed before it existed — or by a retired device that will never republish — otherwise circulates its 0.0.0.0 claim forever.
         if crate::network::traverse::gather::is_bogus_addr(&peer.ip) {
             return;
@@ -156,6 +161,10 @@ impl PeerStore {
             if !fleet.iter().any(|m| m == peer.device_pubkey.as_bytes()) {
                 return false;
             }
+        }
+        // Gossip is the other door a future-dated record could walk in thru — same refusal as `add_peer`.
+        if crate::network::time_base::from_the_future(peer.last_seen) {
+            return false;
         }
         let pos = self.find_position(&peer.handle_proof);
 
@@ -383,6 +392,35 @@ mod tests {
             !forged.verify(),
             "signature by a non-matching key must not verify"
         );
+    }
+
+    /// A record dated past our known time never enters — not by FGTW, not by gossip — so it can neither outlive its expiry nor outrank an honest record in a newest-wins merge. Inside the 30 s skew it is believed (two honest clocks differ).
+    #[test]
+    fn future_dated_records_are_refused_at_every_door() {
+        let now = crate::network::time_base::now_osc();
+        let ahead = |secs: i64| now + secs * crate::OSC_PER_SEC;
+        // `rec` is loopback, which add_peer refuses on its own — the FGTW door is exercised on a routable address, so only the date can be what refuses it.
+        let routable = |last_seen: i64| {
+            use ed25519_dalek::SigningKey;
+            let sk = SigningKey::from_bytes(&[1; 32]);
+            let mut r = PeerRecord::new([1; 32], DevicePubkey::from_bytes(sk.verifying_key().to_bytes()), "203.0.113.50:4383".parse().unwrap());
+            r.last_seen = last_seen;
+            r.sign(&sk);
+            r
+        };
+        let mut store = PeerStore::new();
+        store.add_peer(routable(ahead(3600)));
+        assert!(store.get_all_peers().is_empty(), "an hour ahead is a lie, not skew");
+        store.add_peer(routable(ahead(5)));
+        assert_eq!(store.get_all_peers().len(), 1, "the same routable record inside the skew is admitted — so the date alone refused the first");
+        let mut store = PeerStore::new();
+        assert!(!store.merge_peer(rec(1, 1, ahead(3600))));
+        assert!(store.peers.is_empty());
+        // Honest skew is believed.
+        assert!(store.merge_peer(rec(1, 1, ahead(5))));
+        // And a later honest record still wins over it — the lever is bounded by the skew, not by the liar.
+        assert!(!store.merge_peer(rec(1, 1, ahead(3600))), "a future copy cannot displace the honest one");
+        assert_eq!(store.peers.len(), 1);
     }
 
     #[test]

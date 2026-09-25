@@ -1300,6 +1300,10 @@ impl PhotonApp {
                 if e.updated <= self.contacts[pos].roster_updated {
                     continue; // ours is as new or newer — our push carries it
                 }
+                // A sibling's entry dated past our known time is refused — adopted, its clock would outrank every honest edit after it.
+                if crate::network::time_base::from_the_future(e.updated) {
+                    continue;
+                }
                 if e.tombstone {
                     let gone = self.contacts.remove(pos);
                     crate::logf!(

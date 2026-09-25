@@ -3186,7 +3186,7 @@ impl PhotonApp {
                     const HIST_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
                     // WHY: `sent_osc` is the REQUESTER's stamp, any i64 the wire carries.
                     // PROOF: `now − i64::MIN` overflows; saturating makes an absurdly old stamp read as stale (dropped) rather than wrapping to a fresh-looking negative.
-                    let stale = sent_osc != 0 && now.saturating_sub(sent_osc) > HIST_STALE_OSC;
+                    let stale = sent_osc != 0 && (now.saturating_sub(sent_osc) > HIST_STALE_OSC || crate::network::time_base::from_the_future(sent_osc)); // the window is symmetric: a request dated in the future is a replay aimed past the staleness check
 
                     // Per-conversation dedup (rid) + cadence cap (≥500ms between served pages).
                     let entry = self
@@ -4374,7 +4374,7 @@ impl PhotonApp {
                     let now = vsf::eagle_time_oscillations();
                     const BLIND_STALE_OSC: i64 = 600 * crate::OSC_PER_SEC;
                     // WHY/PROOF: `sent_osc` is the peer's stamp — as for hist_req above, an absurd stamp must read as stale, not wrap to fresh.
-                    if sent_osc != 0 && now.saturating_sub(sent_osc) > BLIND_STALE_OSC {
+                    if sent_osc != 0 && (now.saturating_sub(sent_osc) > BLIND_STALE_OSC || crate::network::time_base::from_the_future(sent_osc)) { // symmetric window, as for hist_req
                         continue;
                     }
                     let Some(our_seed) = self.session.as_ref().map(|s| s.identity_seed) else {

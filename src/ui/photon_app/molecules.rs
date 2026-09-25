@@ -468,15 +468,21 @@ impl PhotonApp {
         if verified.genesis.is_none() {
             verified.genesis = self.molecule_rosters[pos].1.genesis.clone();
         }
+        // Roster merges are newest-wins on `signed_osc`, which sits inside each record's signature: a record dated past our known time would outrank every later edit forever, so it is refused whole.
+        let future = |t: i64| crate::network::time_base::from_the_future(t);
         for (_, m) in snapshot.members {
-            if verify_record(&m.signing_bytes(), &m.signature, &m.signer_device) {
+            if future(m.signed_osc) {
+                crate::logf!("MOLECULE: member record for {} is dated in the future — refused", crate::fp(&m.party));
+            } else if verify_record(&m.signing_bytes(), &m.signature, &m.signer_device) {
                 verified.merge_member(m);
             } else {
                 crate::logf!("MOLECULE: member record for {} fails its signature — skipped", crate::fp(&m.party));
             }
         }
         for (_, l) in snapshot.leaves {
-            if verify_record(&l.signing_bytes(), &l.signature, &l.signer_device) {
+            if future(l.signed_osc) {
+                crate::logf!("MOLECULE: leave record for {} is dated in the future — refused", crate::fp(&l.party));
+            } else if verify_record(&l.signing_bytes(), &l.signature, &l.signer_device) {
                 verified.merge_leave(l);
             } else {
                 crate::logf!("MOLECULE: leave record for {} fails its signature — skipped", crate::fp(&l.party));
@@ -484,7 +490,9 @@ impl PhotonApp {
         }
         for (_, list) in snapshot.vouches {
             for v in list {
-                if verify_record(&v.signing_bytes(), &v.signature, &v.signer_device) {
+                if future(v.signed_osc) {
+                    crate::logf!("MOLECULE: vouch {} → {} is dated in the future — refused", crate::fp(&v.voucher), crate::fp(&v.subject));
+                } else if verify_record(&v.signing_bytes(), &v.signature, &v.signer_device) {
                     verified.merge_vouch(v);
                 } else {
                     crate::logf!("MOLECULE: vouch {} → {} fails its signature — skipped", crate::fp(&v.voucher), crate::fp(&v.subject));
@@ -492,14 +500,16 @@ impl PhotonApp {
             }
         }
         for (_, b) in snapshot.bundles {
-            if verify_record(&b.signing_bytes(), &b.signature, &b.device) {
+            if future(b.signed_osc) {
+                crate::logf!("MOLECULE: bundle for device {} is dated in the future — refused", hex::encode(&b.device[..4]));
+            } else if verify_record(&b.signing_bytes(), &b.signature, &b.device) {
                 verified.merge_bundle(b);
             } else {
                 crate::logf!("MOLECULE: bundle for device {} fails its signature — skipped", hex::encode(&b.device[..4]));
             }
         }
         if let Some(t) = snapshot.title {
-            if verify_record(&t.signing_bytes(), &t.signature, &t.signer_device) {
+            if !future(t.signed_osc) && verify_record(&t.signing_bytes(), &t.signature, &t.signer_device) {
                 verified.title = Some(t);
             }
         }
