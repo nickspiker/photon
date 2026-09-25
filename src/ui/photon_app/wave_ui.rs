@@ -1577,7 +1577,9 @@ impl PhotonApp {
     /// Fetch far-party env blobs the render saw but this device doesn't hold — once per hash per session; the blob is small and the fetch rides the ordinary attachment machinery.
     pub(super) fn drain_wave_env_wants(&mut self) {
         let wants = std::mem::take(&mut self.wave_env_wants);
-        for (ci, h) in wants {
+        for (id, h) in wants {
+            // A want whose contact was removed since the render queued it has no one to ask.
+            let Some(ci) = self.ci_of(&id) else { continue };
             if self.attach_auto_fetched.insert(h) {
                 self.attach_fetch(ci, &h);
             }

@@ -178,12 +178,12 @@ impl PhotonApp {
     /// Collapse the ACTIVE contact's presence backoff — called when its conversation opens. Looking at someone is the clearest possible signal that their presence matters now, and it is the escape hatch that makes an hour-long backoff safe to have at all.
     /// The conversation-enter verdict: the open-ping had one second to draw a pong. Unanswered, the header goes offline NOW instead of after the presence sweep's three strikes (a pong landing later flips it straight back thru the ordinary Online arm — the verdict is a fast first word, never the last).
     pub(super) fn presence_probe_tick(&mut self, now: std::time::Instant) -> bool {
-        let Some((ci, at)) = self.presence_probe else { return false };
+        let Some((id, at)) = self.presence_probe else { return false };
         if now < at + std::time::Duration::from_secs(1) {
             return false;
         }
         self.presence_probe = None;
-        let Some(contact) = self.contacts.get_mut(ci) else { return false };
+        let Some(contact) = self.ci_of(&id).and_then(|ci| self.contacts.get_mut(ci)) else { return false };
         let answered = contact.last_heard.is_some_and(|h| h >= at);
         if answered || !contact.is_online {
             return false;

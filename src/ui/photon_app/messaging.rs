@@ -285,7 +285,7 @@ impl PhotonApp {
 
         // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
         self.pending_chain_sends
-            .push((ci, text, eagle_time, reference, bridge, self.tick_serial));
+            .push((self.contacts[ci].id, text, eagle_time, reference, bridge, self.tick_serial)); // PROOF: `self.contacts.get(ci)` returned Some at entry and nothing in this call shrinks the list
         return true;
     }
 
@@ -807,7 +807,12 @@ impl PhotonApp {
         if sends.is_empty() {
             return false;
         }
-        for (ci, text, eagle_time, reference, bridge, _) in sends {
+        for (id, text, eagle_time, reference, bridge, _) in sends {
+            // The contact may have been removed since the press — its send goes nowhere rather than to whoever took its row.
+            let Some(ci) = self.ci_of(&id) else {
+                crate::log("CHAT: queued send dropped — its contact was removed before the wire half ran");
+                continue;
+            };
             let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
             msg.marks = crate::types::detect_url_marks(&text);
             msg.reference = reference;

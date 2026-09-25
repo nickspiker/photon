@@ -45,7 +45,7 @@ impl PhotonApp {
         let orb_key = target.map(|ci| {
             let c = &self.contacts[ci];
             (
-                ci,
+                c.id,
                 has_avatar,
                 c.avatar_pin,
                 self.row_ring_tier(c),
@@ -56,7 +56,7 @@ impl PhotonApp {
             return;
         }
         self.orb_key = orb_key;
-        self.orb_contact = target;
+        self.orb_contact = target.map(|ci| self.contacts[ci].id); // PROOF: `target` came from active_contact() this call
         self.orb_had_avatar = has_avatar;
         let Some(chrome) = self.chrome.as_mut() else {
             return;
@@ -241,6 +241,17 @@ impl PhotonApp {
     }
 
     /// The contact row the active conversation is with — RESOLVED from the id, never stored. `None` when nothing is open or the participant left the roster, which is an honest answer where a stale index was a lie.
+    /// The row holding contact `id` now, by linear search over tens of contacts.
+    /// Anything that outlives the call that found a contact — a queued send, a worker's reply, a selection, an open viewer — carries the [`ContactId`], never the index: an index names whichever row sits there when the job runs, and a removal in between points it at the NEXT contact.
+    pub(super) fn ci_of(&self, id: &ContactId) -> Option<usize> {
+        self.contacts.iter().position(|c| c.id == *id)
+    }
+
+    /// The stable id of the row `ci` names right now — what anything stored past this call keys on.
+    pub(super) fn cid(&self, ci: usize) -> Option<ContactId> {
+        self.contacts.get(ci).map(|c| c.id)
+    }
+
     pub(super) fn active_contact(&self) -> Option<usize> {
         let id = self.active_conversation?;
         (0..self.contacts.len()).find(|&ci| {
@@ -861,7 +872,7 @@ impl PhotonApp {
             return;
         };
         if wrap_lines.len() != visible.len()
-            || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != ci)
+            || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != self.cid(ci))
         {
             return; // cache is for another conversation/row set — a jump from stale math lands wrong, so don't
         }
@@ -875,7 +886,7 @@ impl PhotonApp {
         let intra = msg_size * 1.25;
         let sel_key = self
             .selected_msg
-            .filter(|(sci, _, _)| *sci == ci)
+            .filter(|(sid, _, _)| Some(*sid) == self.cid(ci))
             .map(|(_, ts, out)| (ts, out));
         let mut dist_from_bottom = 0.0f32;
         let mut found: Option<f32> = None;
@@ -981,14 +992,14 @@ impl PhotonApp {
 
     /// The row the details strip is FOR — the same resolution the render uses for `sel_key` (field 2026-09-15, "the play button shows but does nothing until I tap something else"): the explicit selection, else the NEWEST visible row of the open conversation, whose strip shows unasked (unless the user dismissed it). Every pill dispatch reads this, never `selected_msg` alone — a strip that is painted must answer.
     pub(super) fn strip_target(&self) -> Option<(usize, i64, bool)> {
-        if let Some(sel) = self.selected_msg {
-            return Some(sel);
+        if let Some((id, ts, out)) = self.selected_msg {
+            return Some((self.ci_of(&id)?, ts, out));
         }
         let ci = self.active_contact()?;
         let conv = self.conv_of(ci)?;
         let raw: &[crate::types::ChatMessage] = &conv.messages;
         let newest = raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (ci, m.timestamp, m.is_outgoing))?;
-        if self.strip_dismissed == Some(newest) {
+        if self.strip_dismissed == self.cid(ci).map(|id| (id, newest.1, newest.2)) {
             return None;
         }
         Some(newest)
@@ -1765,7 +1776,7 @@ impl PhotonApp {
                 }
                 // QUICK-REPLY AUTO-SELECT (Nick 2026-09-12, the fourth section's trigger): a fresh incoming message in the OPEN conversation selects itself, so the reactions and actions are one glance away; the next tap replaces the selection as ever. Plain and reply rows only — control/reaction/bridge rows never steal the strip.
                 if looking && !is_edit_row && !msg.is_control() && msg.reference.is_none_or(|(k, _)| matches!(k, crate::types::RefKind::Reply)) {
-                    self.selected_msg = Some((contact_idx, msg.timestamp, false));
+                    self.selected_msg = self.cid(contact_idx).map(|id| (id, msg.timestamp, false));
                     self.selected_msg_copied = false;
                     self.strip_dismissed = None;
                 }

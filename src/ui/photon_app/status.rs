@@ -3587,8 +3587,8 @@ impl PhotonApp {
                     if landed.is_some_and(|(got, of)| got >= of) {
                         if let Some(inf) = self.pigeon_rx.take_complete(&content_hash) {
                         let seed = self.session.as_ref().map(|s| s.identity_seed);
-                        let ci = self.contacts.iter().position(|c| c.device_key() == Some(signer));
-                        if let (Some(seed), Some(ci)) = (seed, ci) {
+                        let contact = self.contacts.iter().find(|c| c.device_key() == Some(signer)).map(|c| c.id);
+                        if let (Some(seed), Some(contact)) = (seed, contact) {
                             // The landing directory: the sibling's shell cwd as of its last command, else the shell's starting directory (home).
                             let cwd = self.bridge_cwds.as_ref().and_then(|m| m.lock().ok()).and_then(|m| m.get(&signer).cloned()).filter(|c| !c.is_empty());
                             let dir = cwd.map(std::path::PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| std::path::PathBuf::from("."));
@@ -3597,7 +3597,7 @@ impl PhotonApp {
                             queue_job(&self.seal_job_tx, move || {
                                 let dir_s = dir.to_string_lossy().into_owned();
                                 let landed = crate::network::pigeon::finalize_inflight(inf, &seed, &dir).unwrap_or(None);
-                                let _ = tx.send((ci, landed, dir_s));
+                                let _ = tx.send((contact, landed, dir_s));
                                 super::bridge::bridge_wake(&wake);
                             });
                         }

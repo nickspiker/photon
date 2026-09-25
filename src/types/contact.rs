@@ -693,7 +693,7 @@ pub struct Contact {
 }
 
 /// Contact identifier - BLAKE3 hash of the contact's public identity key This provides deterministic, collision-resistant identification
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ContactId([u8; 32]);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -1500,7 +1500,7 @@ impl FluorApp for PhotonApp {
                 self.change_focus(None);
                 // Refresh this contact's presence on conversation-enter so the header reflects reality promptly — and arm the one-second verdict (presence_probe_tick).
                 self.ping_contact(ci);
-                self.presence_probe = Some((ci, Instant::now()));
+                self.presence_probe = self.contacts.get(ci).map(|c| (c.id, Instant::now()));
                 // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
                 self.spawn_avatar_download(ci);
                 ctx.window.request_redraw();
@@ -1788,7 +1788,7 @@ impl FluorApp for PhotonApp {
                         }
                         // DELETE: arm the deferred delete — the strip repaints "deleting…" THIS frame, and the tick performs the removal + mirror-verified persist after that frame painted (doing it synchronously here blocked the UI for the save's duration, reading as stuck). Tombstone caveat unchanged: until they exist, fleet sync can resurrect the row.
                         3 => {
-                            self.pending_delete = Some(((sci, ts, out), false));
+                            self.pending_delete = self.cid(sci).map(|id| ((id, ts, out), false));
                         }
                         // SAVE (slot 10): the held original of any attachment row → Downloads, independent of what the row's primary tap does (open/play).
                         10 => {
@@ -1941,8 +1941,9 @@ impl FluorApp for PhotonApp {
                                 self.conv_of(ci).and_then(|c| c.messages.iter().find(|m| m.file_parts().is_some_and(|(h, _, _)| h == v.hash)).map(|m| (ci, m.timestamp, m.is_outgoing)))
                             });
                             if let Some((ci, ts, out)) = row {
-                                if self.selected_msg != Some((ci, ts, out)) {
-                                    self.selected_msg = Some((ci, ts, out));
+                                let key = self.cid(ci).map(|id| (id, ts, out));
+                                if self.selected_msg != key {
+                                    self.selected_msg = key;
                                     self.selected_msg_copied = false;
                                 } else {
                                     if self.music_play.as_ref().is_some_and(|m| m.hash == v.hash && m.playing()) {
@@ -1953,7 +1954,7 @@ impl FluorApp for PhotonApp {
                                     } else {
                                         // Close must ALSO dismiss: the newest row auto-opens its strip whenever nothing is selected, so a bare deselect popped straight back — the undismissable strip (field 2026-09-12).
                                         self.selected_msg = None;
-                                        self.strip_dismissed = Some((ci, ts, out));
+                                        self.strip_dismissed = key;
                                     }
                                 }
                                 self.scene_dirty = true;
@@ -2004,7 +2005,7 @@ impl FluorApp for PhotonApp {
                             }
                         }
                     }
-                    let key = (ci, ts, out);
+                    let key = (self.contacts[ci].id, ts, out); // PROOF: `ci` is this handler's active_contact()
                     // Toggle: same message deselects; another message moves the strip. The NEWEST row shows its strip unasked, so a tap on it while nothing is selected CLOSES it (remembered by key until a newer row arrives). Event-shown, interaction-cleared — no timers.
                     let newest = self.conv_of(ci).and_then(|v| {
                         let raw: &[crate::types::ChatMessage] = &v.messages;
@@ -3228,8 +3229,15 @@ impl FluorApp for PhotonApp {
         self.update_orb();
 
         // Deferred message delete: runs only AFTER the "deleting…" frame painted (see pending_delete). TOMBSTONE, not removal: the flag propagates monotonically thru fleet sync (push + sweep + merge true-wins), and a hidden DELETE marker rides the chain to the FRIEND so their side tombstones too — delete-for-everyone. Content is preserved internally (braid weave dependency — see ChatMessage::deleted).
-        if let Some(((sci, ts, out), true)) = self.pending_delete {
-            self.pending_delete = None;
+        let armed = match self.pending_delete {
+            Some(((id, ts, out), true)) => {
+                self.pending_delete = None;
+                // The contact may have gone while the "deleting…" frame painted — nothing left to tombstone then.
+                self.ci_of(&id).map(|sci| (sci, ts, out))
+            }
+            _ => None,
+        };
+        if let Some((sci, ts, out)) = armed {
             let mut tombstoned: Option<ChatMessage> = None;
             // Deleting a wave card deletes the wave: the recording row that references it goes too (its blob is shredded below like any attachment).
             let mut cascade: Vec<ChatMessage> = Vec::new();
@@ -4575,8 +4583,9 @@ impl PhotonApp {
 
 impl PhotonApp {
     /// A wave row that stopped being the selection takes its playback with it — the band's play glyph is only shown while selected, so a playing wave with no visible stop would be a trap.
-    pub(super) fn stop_playback_if_row_left(&mut self, left: Option<(usize, i64, bool)>) {
-        let Some((ci, ts, out)) = left else { return };
+    pub(super) fn stop_playback_if_row_left(&mut self, left: Option<(ContactId, i64, bool)>) {
+        let Some((id, ts, out)) = left else { return };
+        let Some(ci) = self.ci_of(&id) else { return };
         // The recording folds into the wave row by a Wave reference to the row's timestamp (the render's rec_over rule).
         let Some(hash) = self.conv_of(ci).and_then(|c| {
             let raw: &[crate::types::ChatMessage] = &c.messages;

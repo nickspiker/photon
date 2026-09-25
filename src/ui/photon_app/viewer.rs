@@ -6,7 +6,8 @@ use super::*;
 
 /// The open image: which row, and opsin's view once the original is decoded.
 pub(super) struct Viewer {
-    pub ci: usize,
+    /// The conversation's contact, by id: the viewer stays open across ticks, and an index would drift onto another contact after a removal.
+    pub contact: ContactId,
     pub hash: [u8; 32],
     pub preview_hash: Option<[u8; 32]>,
     pub name: String,
@@ -91,7 +92,8 @@ impl PhotonApp {
         }) else {
             return;
         };
-        self.viewer = Some(Viewer { ci, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false });
+        let Some(contact) = self.cid(ci) else { return };
+        self.viewer = Some(Viewer { contact, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false });
         self.reader = None;
         self.selected_msg = None;
         self.scene_dirty = true;
@@ -107,12 +109,14 @@ impl PhotonApp {
         if v.view.is_some() || v.decoding || v.failed {
             return;
         }
-        let (ci, hash, name, kind) = (v.ci, v.hash, v.name.clone(), v.kind);
+        let (contact, hash, name, kind) = (v.contact, v.hash, v.name.clone(), v.kind);
         match crate::storage::blob_present_known(&hash) {
             Some(true) => {}
             Some(false) => {
-                if self.attach_auto_fetched.insert(hash) {
-                    self.attach_fetch(ci, &hash);
+                if let Some(ci) = self.ci_of(&contact) {
+                    if self.attach_auto_fetched.insert(hash) {
+                        self.attach_fetch(ci, &hash);
+                    }
                 }
                 return;
             }
@@ -192,7 +196,8 @@ impl PhotonApp {
         let Some(v) = self.viewer.as_ref() else {
             return;
         };
-        let (ci, cur) = (v.ci, v.hash);
+        let (contact, cur) = (v.contact, v.hash);
+        let Some(ci) = self.ci_of(&contact) else { return };
         let images: Vec<[u8; 32]> = self
             .conv_of(ci)
             .map(|c| {

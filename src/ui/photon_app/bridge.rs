@@ -5,15 +5,16 @@ use super::*;
 /// Work item for the off-thread bridge executor: run a command in a sibling's persistent shell, or reset (kill) that sibling's shell so the next command starts fresh.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) enum BridgeJob {
-    /// (contact idx, device, command text, the command row's eagle_time — the target streamed output frames reference).
-    Run(usize, [u8; 32], String, i64),
+    /// (contact id, device, command text, the command row's eagle_time — the target streamed output frames reference).
+    Run(ContactId, [u8; 32], String, i64),
     Reset([u8; 32]),
 }
 
 /// One streamed emission from the executor toward the wire: `body` is the FULL accumulated output so far (a snapshot, never a delta — loss/reorder/dedup of any one frame is then a free no-op), `target` is the command row's eagle_time (what the client's replace-in-place keys on), `fin` carries the exit code once the command completed, and the locus names where the shell stands so the operator is never blind to host+cwd again (field 2026-08-23: a pull meant for photon ran in keys/). Partials ride a latest-wins slot (a superseded snapshot is garbage by definition); finals ride the ordered channel because every one must reach the wire.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) struct BridgeEmit {
-    pub ci: usize,
+    /// The sibling conversation, by id — the emit crosses the executor thread and back, and an index would drift after a removal.
+    pub contact: ContactId,
     pub target: i64,
     pub seq: u64,
     /// The UNSENT output accumulated since the last frame that made it onto the wire — a DELTA, not a snapshot (Nick 2026-09-03: "just send what's missing"). The chain's hash links carry the ordering; the client appends.
@@ -83,15 +84,15 @@ pub(super) fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 fn spawn_bridge_worker(
     dev: [u8; 32],
-    partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>>,
+    partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>>,
     fg: BridgeFgMap,
     cwds: BridgeCwdMap,
     wake: Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>,
-) -> std::sync::mpsc::Sender<(usize, String, i64)> {
+) -> std::sync::mpsc::Sender<(ContactId, String, i64)> {
     // Append `chunk` to the command's unsent-delta buffer (creating it on first output), bounding memory by trimming the FRONT with an explicit dropped-byte count. Wake only on the empty→occupied edge so a spewing build can't flood the event loop — the UI drain reads the buffer at its own pace.
     fn push_delta(
-        partials: &std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>,
-        ci: usize,
+        partials: &std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>,
+        contact: ContactId,
         ts: i64,
         seq: u64,
         chunk: &str,
@@ -100,7 +101,7 @@ fn spawn_bridge_worker(
         cwd: &str,
     ) -> bool {
         let mut m = partials.lock().unwrap();
-        let e = m.entry(ci).or_insert_with(|| BridgeEmit { ci, target: ts, seq, body: String::new(), dropped: 0, fin: None, host: host.to_string(), cwd: cwd.to_string() });
+        let e = m.entry(contact).or_insert_with(|| BridgeEmit { contact, target: ts, seq, body: String::new(), dropped: 0, fin: None, host: host.to_string(), cwd: cwd.to_string() });
         let fresh = e.body.is_empty() && e.fin.is_none();
         e.target = ts;
         e.seq = seq;
@@ -119,13 +120,13 @@ fn spawn_bridge_worker(
         }
         fresh
     }
-    let (tx, rx) = std::sync::mpsc::channel::<(usize, String, i64)>();
+    let (tx, rx) = std::sync::mpsc::channel::<(ContactId, String, i64)>();
     let spawned = std::thread::Builder::new()
         .name("bridge-shell".to_string())
         .spawn(move || {
             let mut shell: Option<BridgeShell> = None;
             let mut last_cwd = String::new();
-            while let Ok((ci, cmd, ts)) = rx.recv() {
+            while let Ok((contact, cmd, ts)) = rx.recv() {
                 if shell.is_none() {
                     match BridgeShell::spawn() {
                         Ok(s) => {
@@ -133,7 +134,7 @@ fn spawn_bridge_worker(
                             shell = Some(s);
                         }
                         Err(e) => {
-                            push_delta(&partials, ci, ts, 1, &tr(Msg::BridgeShellStartFailed(&e.to_string())), Some(-1), "", "");
+                            push_delta(&partials, contact, ts, 1, &tr(Msg::BridgeShellStartFailed(&e.to_string())), Some(-1), "", "");
                             bridge_wake(&wake);
                             continue;
                         }
@@ -147,7 +148,7 @@ fn spawn_bridge_worker(
                 let res = sh.run_streaming(&cmd, |chunk| {
                     emitted_any = true;
                     seq += 1;
-                    if push_delta(&partials, ci, ts, seq, chunk, None, &host, &cwd0) {
+                    if push_delta(&partials, contact, ts, seq, chunk, None, &host, &cwd0) {
                         bridge_wake(&wake);
                     }
                 });
@@ -157,14 +158,14 @@ fn spawn_bridge_worker(
                         cwds.lock().unwrap().insert(dev, cwd.clone());
                         // "Finished" is a FIELD, not a message (Nick 2026-09-03): the exit code folds into whatever delta is still buffered and rides out on that frame. A command that never printed and failed still names itself; clean silent success stays an empty-bodied exit frame the client stamps without a bubble.
                         let text = if !emitted_any && code != 0 { tr(Msg::BridgeNoOutput(code)).into_owned() } else { String::new() };
-                        push_delta(&partials, ci, ts, seq + 1, &text, Some(code), &host, &cwd);
+                        push_delta(&partials, contact, ts, seq + 1, &text, Some(code), &host, &cwd);
                         bridge_wake(&wake);
                     }
                     Err(e) => {
                         // Registry absence = a deliberate Reset killed us — the client wiped its screen, so a death notice would land as a stray bubble in a fresh session. A REAL death (bash exited, crashed) reports once and the next command respawns.
                         let was_registered = fg.lock().unwrap().remove(&dev).is_some();
                         if was_registered {
-                            push_delta(&partials, ci, ts, seq + 1, &tr(Msg::BridgeShellDied(&e)), Some(-1), &host, &cwd0);
+                            push_delta(&partials, contact, ts, seq + 1, &tr(Msg::BridgeShellDied(&e)), Some(-1), &host, &cwd0);
                             bridge_wake(&wake);
                         }
                         return;
@@ -426,12 +427,12 @@ impl PhotonApp {
     /// HOST role, chat transport: a NEW command arrived as an ordinary chat message in the sibling `ci`'s conversation — dispatch it to the OFF-THREAD bridge executor, which runs it in that sibling's PERSISTENT shell and posts the raw output back for `drain_bridge_output` to reply with (typed RefKind::BridgeOut so it renders but never re-runs). Running the shell inline froze the host's event loop for the command's whole duration, stalling the ACK it owes the operator (field 2026-08-22). ONE shell per sibling, spawned on first command and reused after so `cd`/env/state persist like a real session; the executor thread OWNS the shells so nothing blocks the UI.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str, cmd_ts: i64) {
-        let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
+        let Some((contact, dev)) = self.contacts.get(ci).and_then(|c| Some((c.id, c.device_key()?))) else {
             return;
         };
         self.ensure_bridge_exec();
         if let Some(tx) = self.bridge_cmd_tx.as_ref() {
-            let _ = tx.send(BridgeJob::Run(ci, dev, cmd.to_string(), cmd_ts));
+            let _ = tx.send(BridgeJob::Run(contact, dev, cmd.to_string(), cmd_ts));
         }
     }
 
@@ -638,7 +639,7 @@ impl PhotonApp {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BridgeJob>();
         // ONE shared per-command delta buffer carries everything — output AND the exit that folds into the last frame (no separate final channel; "finished" is a field, not a message).
         let partials: std::sync::Arc<
-            std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>,
+            std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>,
         > = Default::default();
         let fg: BridgeFgMap = Default::default();
         let cwds: BridgeCwdMap = self.bridge_cwds.get_or_insert_with(Default::default).clone();
@@ -649,7 +650,7 @@ impl PhotonApp {
             .spawn(move || {
                 let mut workers: std::collections::HashMap<
                     [u8; 32],
-                    std::sync::mpsc::Sender<(usize, String, i64)>,
+                    std::sync::mpsc::Sender<(ContactId, String, i64)>,
                 > = std::collections::HashMap::new();
                 while let Ok(job) = cmd_rx.recv() {
                     match job {
@@ -669,11 +670,11 @@ impl PhotonApp {
                                 }
                             }
                         }
-                        BridgeJob::Run(ci, dev, cmd, ts) => {
+                        BridgeJob::Run(contact, dev, cmd, ts) => {
                             crate::logf!("BRIDGE: running command from sibling: {}", cmd);
                             let alive = workers
                                 .get(&dev)
-                                .map(|tx| tx.send((ci, cmd.clone(), ts)).is_ok())
+                                .map(|tx| tx.send((contact, cmd.clone(), ts)).is_ok())
                                 .unwrap_or(false);
                             if !alive {
                                 let tx = spawn_bridge_worker(
@@ -683,7 +684,7 @@ impl PhotonApp {
                                     cwds.clone(),
                                     wake.clone(),
                                 );
-                                let _ = tx.send((ci, cmd, ts));
+                                let _ = tx.send((contact, cmd, ts));
                                 workers.insert(dev, tx);
                             }
                         }
@@ -701,9 +702,9 @@ impl PhotonApp {
             return;
         };
         // Put an unsent delta BACK, prepending it to whatever the worker spooled meanwhile — content is never dropped by a parked or failed send, order is preserved, and the exit survives the merge.
-        let put_back = |slots: &std::sync::Mutex<std::collections::HashMap<usize, BridgeEmit>>, e: BridgeEmit| {
+        let put_back = |slots: &std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>, e: BridgeEmit| {
             let mut m = slots.lock().unwrap();
-            match m.entry(e.ci) {
+            match m.entry(e.contact) {
                 std::collections::hash_map::Entry::Occupied(mut o) => {
                     let cur = o.get_mut();
                     let mut body = e.body;
@@ -722,17 +723,24 @@ impl PhotonApp {
             if e.body.is_empty() && e.fin.is_none() {
                 continue;
             }
+            // The sibling may have been removed while its command ran — its output has no conversation to land in.
+            let Some(ci) = self.ci_of(&e.contact) else {
+                crate::log("BRIDGE: output dropped — its sibling was removed while the command ran");
+                self.bridge_partial_inflight.remove(&e.contact);
+                self.bridge_partial_sent.remove(&e.contact);
+                continue;
+            };
             let is_final = e.fin.is_some();
             if !is_final {
                 // THE ONE TIMER (Nick's grant, 2026-08-31): deltas reach the wire at most once per second per conversation — the spool collapses bursts, this paces the broadcast. The exit-carrying frame is never paced.
                 let recently = self
                     .bridge_partial_sent
-                    .get(&e.ci)
+                    .get(&e.contact)
                     .map_or(false, |t| t.elapsed() < std::time::Duration::from_secs(1));
                 // ONE delta in flight per feed, gated on ITS OWN ACK edge — the whole-lane pending count starved the feed behind fleet-sync chatter (the silent v82 deploy, 2026-09-03). The ACK arriving is the wake edge that ships the next spool; a parked spool keeps accumulating, nothing is lost.
-                let prev_unacked = self.bridge_partial_inflight.get(&e.ci).map_or(false, |&et| {
+                let prev_unacked = self.bridge_partial_inflight.get(&e.contact).map_or(false, |&et| {
                     self.contacts
-                        .get(e.ci)
+                        .get(ci)
                         .and_then(|c| c.friendship_id)
                         .and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid))
                         .map_or(false, |(_, ch)| ch.pending_messages.iter().any(|m| m.eagle_time == et))
@@ -759,9 +767,9 @@ impl PhotonApp {
             };
             if is_final {
                 // The exit-carrying delta rides the full durable path (host row + retransmit + held-row re-serve) — it is the one frame that must survive.
-                self.bridge_partial_inflight.remove(&e.ci);
+                self.bridge_partial_inflight.remove(&e.contact);
                 let sent = self.send_chain_message(
-                    e.ci,
+                    ci,
                     &body,
                     false,
                     Some((crate::types::RefKind::BridgeOut, e.target)),
@@ -773,9 +781,9 @@ impl PhotonApp {
             } else {
                 // Mid-command deltas ride chain_transmit directly with an eagle_time minted HERE so the own-ACK gate can watch this exact frame leave pending. A refused send (window full, no address yet) puts the spool back intact — the transcript never loses a byte to flow control.
                 let et = vsf::eagle_time_oscillations();
-                if self.chain_transmit(e.ci, &body, et, Some((crate::types::RefKind::BridgeOut, e.target)), Some(&wire)) {
-                    self.bridge_partial_inflight.insert(e.ci, et);
-                    self.bridge_partial_sent.insert(e.ci, std::time::Instant::now());
+                if self.chain_transmit(ci, &body, et, Some((crate::types::RefKind::BridgeOut, e.target)), Some(&wire)) {
+                    self.bridge_partial_inflight.insert(e.contact, et);
+                    self.bridge_partial_sent.insert(e.contact, std::time::Instant::now());
                 } else {
                     put_back(&slots, e);
                 }
@@ -958,7 +966,7 @@ impl PhotonApp {
         while let Ok(v) = self.pigeon_landed_rx.try_recv() {
             landed.push(v);
         }
-        for (ci, res, dir) in landed {
+        for (contact, res, dir) in landed {
             // The bar has done its job either way — the row that follows says where it landed, or that it did not.
             self.pigeon_progress.retain(|_, pp| pp.got < pp.of);
             let body = match res {
@@ -971,7 +979,10 @@ impl PhotonApp {
                     tr(Msg::PigeonLandFailed(&dir)).into_owned()
                 }
             };
-            self.send_chain_message(ci, &body, false, Some((crate::types::RefKind::BridgeOut, 0)), None);
+            // The sibling may have been removed while the pigeon finalized — the log above is then the only record.
+            if let Some(ci) = self.ci_of(&contact) {
+                self.send_chain_message(ci, &body, false, Some((crate::types::RefKind::BridgeOut, 0)), None);
+            }
         }
     }
 }

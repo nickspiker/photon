@@ -414,7 +414,8 @@ impl PhotonApp {
             tag: None,
         });
         crate::logf!("attach: fetch request dispatched to device {} (rank {}, candidate {} of {})", crate::fp(&recipient_pubkey), rank, tries as usize % targets.len() + 1, targets.len());
-        self.attach_fetch_inflight.insert(*content_hash, (sci, std::time::Instant::now(), tries.saturating_add(1))); // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
+        let Some(conv_id) = self.contacts.get(sci).map(|c| c.id) else { return };
+        self.attach_fetch_inflight.insert(*content_hash, (conv_id, std::time::Instant::now(), tries.saturating_add(1))); // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
     }
 
     /// Re-ask for fetches nobody answered: every 20 s while nothing has landed (no blob, no manifest), up to eight times, then let go. Landed fetches leave the map at once.
@@ -422,22 +423,23 @@ impl PhotonApp {
         const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
         const MAX_TRIES: u8 = 8;
         let now = std::time::Instant::now();
-        let due: Vec<([u8; 32], usize, u8)> = self
+        let due: Vec<([u8; 32], ContactId, u8)> = self
             .attach_fetch_inflight
             .iter()
             .filter(|(_, (_, at, _))| now.duration_since(*at) >= RETRY_AFTER)
-            .map(|(h, (sci, _, n))| (*h, *sci, *n))
+            .map(|(h, (id, _, n))| (*h, *id, *n))
             .collect();
-        for (hash, sci, tries) in due {
+        for (hash, id, tries) in due {
             if crate::storage::blob_present(&hash) || crate::storage::blob_manifest(&hash).is_some() {
                 self.attach_fetch_inflight.remove(&hash);
                 continue;
             }
-            if tries >= MAX_TRIES || sci >= self.contacts.len() {
-                crate::logf!("attach: fetch of {}… gave up after {} asks — nobody answered", hex::encode(&hash[..4]), tries);
+            // The conversation's contact may be gone since the ask — its fetch is let go, never re-aimed at whoever took its row.
+            let Some(sci) = self.ci_of(&id).filter(|_| tries < MAX_TRIES) else {
+                crate::logf!("attach: fetch of {}… let go after {} asks — nobody answered, or its contact was removed", hex::encode(&hash[..4]), tries);
                 self.attach_fetch_inflight.remove(&hash);
                 continue;
-            }
+            };
             crate::logf!("attach: fetch of {}… unanswered for {}s — asking again ({} of {})", hex::encode(&hash[..4]), RETRY_AFTER.as_secs(), tries + 1, MAX_TRIES);
             self.attach_fetch(sci, &hash);
         }

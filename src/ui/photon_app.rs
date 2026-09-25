@@ -1405,7 +1405,7 @@ pub struct PhotonApp {
     /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
     last_presence_ping: Option<Instant>,
     /// The conversation-enter presence probe: (contact, when the open-ping fired). The verdict tick clears it at one second — offline if no pong landed since.
-    presence_probe: Option<(usize, Instant)>,
+    presence_probe: Option<(ContactId, Instant)>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
     last_interaction: Option<Instant>,
     /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
@@ -1566,9 +1566,9 @@ pub struct PhotonApp {
     /// A clone of the Photon brand orb (chrome's default app_icon) kept so the orb can be RESTORED after a conversation swapped it for the peer's avatar. `None` if the orb asset failed to decode.
     photon_orb: Option<fluor::host::icon::Icon>,
     /// Which contact the top-left orb currently shows (its avatar + their presence-tier ring). `None` = the Photon orb + our own FGTW connectivity ring. Diffed each tick so the Icon rebuild happens only on a change, not every frame.
-    orb_contact: Option<usize>,
+    orb_contact: Option<ContactId>,
     /// The FULL derived key the orb was last built from — see update_orb's diff comment. None = brand orb.
-    orb_key: Option<(usize, bool, [u8; 64], u32, bool)>,
+    orb_key: Option<(ContactId, bool, [u8; 64], u32, bool)>,
     /// The contact-list ring colours as last PAINTED, diffed each tick — the same doctrine as the orb's per-tick diff, because ring state is DERIVED (validated_path appearing, reached_via_relay flipping, TTL expiry) and half its inputs mutate without any repaint-marked event: the ring held its old colour until a page change forced a re-raster (field, 2026-08-05). Empty until the first tick.
     painted_ring_tiers: Vec<u32>,
     /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
@@ -1604,8 +1604,8 @@ pub struct PhotonApp {
     resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, tohu::SessionIdentity, std::time::Instant)>,
     /// The last frame the ACTIVE wave screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "wave screen should update at most every second").
     last_wave_redraw: Option<std::time::Instant>,
-    /// Attachment fetches in flight: content hash → (conversation contact index, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
-    attach_fetch_inflight: std::collections::HashMap<[u8; 32], (usize, std::time::Instant, u8)>,
+    /// Attachment fetches in flight: content hash → (conversation contact id, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
+    attach_fetch_inflight: std::collections::HashMap<[u8; 32], (ContactId, std::time::Instant, u8)>,
     /// Blob requests served lately, by (requesting device, hash) — a second copy of the same ask within ten seconds is not served again (status.rs AttachReqReceived).
     attach_served_recent: std::collections::HashMap<([u8; 32], [u8; 32]), std::time::Instant>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
@@ -1757,7 +1757,7 @@ pub struct PhotonApp {
     ended_waves: std::collections::HashSet<[u8; 16]>,
     rejected_offers: std::collections::HashSet<i64>,
     /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
-    strip_dismissed: Option<(usize, i64, bool)>,
+    strip_dismissed: Option<(ContactId, i64, bool)>,
     /// Hit id of the filter pill.
     conv_filter_hit: HitId,
     /// The compose digit strip's twelve hit ids (dozenal base only, while the message box is focused).
@@ -1853,9 +1853,9 @@ pub struct PhotonApp {
     zoom_saved_ru: f32,
     /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
     tick_serial: u64,
-    /// Outgoing sends whose WIRE half is deferred: (contact idx, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, tho inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
+    /// Outgoing sends whose WIRE half is deferred: (contact id, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, tho inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
     pending_chain_sends: Vec<(
-        usize,
+        ContactId,
         String,
         i64,
         Option<(crate::types::RefKind, i64)>,
@@ -2019,16 +2019,16 @@ pub struct PhotonApp {
     msg_view_h: f32,
     /// Compose-box line count at the last frame — the growth edge: a change moves list_bottom, so the next frame reflows the whole scene while ordinary keystrokes stay on the narrow path.
     painted_compose_lines: usize,
-    /// The message whose details strip is open: (contact idx, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
-    selected_msg: Option<(usize, i64, bool)>,
+    /// The message whose details strip is open: (contact id, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
+    selected_msg: Option<(ContactId, i64, bool)>,
     /// The selected message's wrapped META section height, measured at draw — the extent walk reads it (a frame late on selection change; settles like any overshoot).
     sel_meta_h: f32,
     /// Wrap overflow of the selected message's ACTION ROW (extra lines × pill height): measured in the pill loop, consumed by the next frame's detail_h — the sel_meta_h pattern.
     sel_action_extra_h: f32,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
-    /// Deferred delete: ((contact idx, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
-    pending_delete: Option<((usize, i64, bool), bool)>,
+    /// Deferred delete: ((contact id, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
+    pending_delete: Option<((ContactId, i64, bool), bool)>,
     /// Armed reply target: the eagle_time the next send REFERENCES (a reply row, not a quote). Set by the strip's reply pill; the compose strip shows the referenced message at half alpha. Cleared on send, Esc, or conversation switch.
     compose_reply_to: Option<i64>,
     /// Armed edit target: the eagle_time of OUR row the next send SUPERSEDES. The compose box prefills with the current body and the send button trades its arrowhead for a check mark. Cleared on send, Esc (which also clears the prefill), or conversation switch.
@@ -2041,8 +2041,8 @@ pub struct PhotonApp {
     react_strip_glyphs: Vec<String>,
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
-    /// Word-wrap cache for the conversation's message list: key (contact idx, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
-    msg_wrap: Option<((usize, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
+    /// Word-wrap cache for the conversation's message list: key (contact id, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
+    msg_wrap: Option<((Option<ContactId>, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -2093,13 +2093,13 @@ pub struct PhotonApp {
     /// Per-command unsent-DELTA spool (host side) — the worker appends what's new, the UI drain broadcasts what's missing at most 1Hz; the exit folds into the last frame (no separate final channel).
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_partials: Option<
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<usize, bridge::BridgeEmit>>>,
+        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ContactId, bridge::BridgeEmit>>>,
     >,
     /// Last wire-send instant per conversation for streamed PARTIALS — the ONE granted timer (Nick 2026-08-31): at most one partial per second per conversation; the latest-wins slot holds anything faster. Finals never consult it.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-    bridge_partial_sent: std::collections::HashMap<usize, std::time::Instant>,
+    bridge_partial_sent: std::collections::HashMap<ContactId, std::time::Instant>,
     /// Eagle-time of the last bridge PARTIAL sent per conversation — the own-ACK gate: the next partial ships only once this one has left pending_messages (see drain_bridge_output).
-    bridge_partial_inflight: std::collections::HashMap<usize, i64>,
+    bridge_partial_inflight: std::collections::HashMap<ContactId, i64>,
     /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
     #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
     bridge_fg: Option<bridge::BridgeFgMap>,
@@ -2107,8 +2107,8 @@ pub struct PhotonApp {
     bridge_cwds: Option<bridge::BridgeCwdMap>,
     /// HOST: in-flight bridge pigeons, one zero-bitmap spool each (network::pigeon). Fed by the announcement row and pigeon_chunk PT frames; finalize runs on the seal worker and reports back over `pigeon_landed`.
     pigeon_rx: crate::network::pigeon::PigeonReceiver,
-    pigeon_landed_tx: std::sync::mpsc::Sender<(usize, Option<crate::network::pigeon::Landed>, String)>,
-    pigeon_landed_rx: std::sync::mpsc::Receiver<(usize, Option<crate::network::pigeon::Landed>, String)>,
+    pigeon_landed_tx: std::sync::mpsc::Sender<(ContactId, Option<crate::network::pigeon::Landed>, String)>,
+    pigeon_landed_rx: std::sync::mpsc::Receiver<(ContactId, Option<crate::network::pigeon::Landed>, String)>,
     /// BOTH ENDS: how far each bridge pigeon has got, keyed by its whole-file hash — the sender learns it from the host's pigeon_ack frames, the host from its own spool. Draws the bar on the pigeon row; RAM-only like the rows themselves.
     pigeon_progress: std::collections::HashMap<[u8; 32], PigeonProgress>,
     /// CLIENT side, any platform: the latest locus the bridge host reported — (device, host name, cwd) — rendered as the strip above the compose box so the operator is never blind to where commands land (field 2026-08-23: a pull meant for photon ran in keys/).
@@ -2236,8 +2236,8 @@ pub struct PhotonApp {
     wave_env: std::collections::HashMap<[u8; 32], Option<Vec<std::sync::Arc<crate::wave::wave_env::WaveEnv>>>>,
     /// Loads in flight (one per hash).
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
-    /// Far-party env blobs seen but not held: (ci, hash) queued by the render, fetched once per session by drain_wave_env_wants.
-    wave_env_wants: Vec<(usize, [u8; 32])>,
+    /// Far-party env blobs seen but not held: (contact id, hash) queued by the render, fetched once per session by drain_wave_env_wants.
+    wave_env_wants: Vec<(ContactId, [u8; 32])>,
     /// Finished band folds per (source hash, channel-in-source, width, rows): per-column-per-row VERTICAL COVERAGE 0..1 (the downscale-with-opacity-contributions fold) — built once, the per-frame loop is solid runs + graded contour pixels. Cleared wholesale past a small cap.
     wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
     /// The playing music pigeon, if any (desktop; Android stubs until music routes thru its audio engine).

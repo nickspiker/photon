@@ -3329,7 +3329,7 @@ impl PhotonApp {
                         // The strip's row: the selection, else the NEWEST row unasked (its options stay up until tapped closed or a newer row lands).
                         let sel_key = self
                             .selected_msg
-                            .filter(|(sci, _, _)| *sci == ci)
+                            .filter(|(sid, _, _)| Some(*sid) == self.contacts.get(ci).map(|c| c.id))
                             .map(|(_, ts, out)| (ts, out))
                             .or_else(|| {
                                 if self.selected_msg.is_some() {
@@ -3338,7 +3338,7 @@ impl PhotonApp {
                                 visible
                                     .last()
                                     .map(|m| (m.timestamp, m.is_outgoing))
-                                    .filter(|&(ts, out)| self.strip_dismissed != Some((ci, ts, out)))
+                                    .filter(|&(ts, out)| self.strip_dismissed != self.contacts.get(ci).map(|c| c.id).map(|id| (id, ts, out)))
                             });
                         // Two strip lines BELOW the media, padded — the action row and the reaction row — PLUS the action row's wrap overflow: the pills WRAP to more lines instead of walking off a narrow screen (Nick 2026-09-14), and the extra height is measured in the pill loop and fed back thru self.sel_action_extra_h exactly like sel_meta_h (one frame late on a selection change; settles like any overshoot). The META section lives ABOVE the media (Nick 2026-09-12, the four-section block) and wraps too.
                         let detail_h = line_h * 2.5 + self.sel_action_extra_h;
@@ -3355,7 +3355,7 @@ impl PhotonApp {
                         let peer_handle_hash = self.contacts.get(ci).map(|c| c.handle_hash).unwrap_or([0u8; 32]);
                         // The decoded-picture count rides the key: a preview blob landing grows its row's band.
                         let wrap_key =
-                            (ci, n, raw_msgs.len() + (self.img_cache.len() << 20) + sel_key.map_or(0, |(t, o)| (t as usize) ^ (o as usize)), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
+                            (self.contacts.get(ci).map(|c| c.id), n, raw_msgs.len() + (self.img_cache.len() << 20) + sel_key.map_or(0, |(t, o)| (t as usize) ^ (o as usize)), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
                         if self.msg_wrap.as_ref().map(|(k, _, _)| *k) != Some(wrap_key) {
                             let mut all_lines: Vec<Vec<String>> = Vec::with_capacity(n);
                             let mut total = 0usize;
@@ -3870,7 +3870,7 @@ impl PhotonApp {
                                 }
                                 let deleting =
                                     self.pending_delete.as_ref().is_some_and(|(k, _)| {
-                                        *k == (ci, msg.timestamp, msg.is_outgoing)
+                                        Some(*k) == self.contacts.get(ci).map(|c| c.id).map(|id| (id, msg.timestamp, msg.is_outgoing))
                                     });
                                 pills.push((
                                     tr(if deleting {
@@ -4155,7 +4155,9 @@ impl PhotonApp {
                                                             let _ = wake;
                                                         });
                                                     } else if known == Some(false) {
-                                                        self.wave_env_wants.push((ci, eh));
+                                                        if let Some(id) = self.contacts.get(ci).map(|c| c.id) {
+                                                            self.wave_env_wants.push((id, eh));
+                                                        }
                                                     }
                                                 }
                                                 let side_unresolvable = |h: Option<[u8; 32]>| h.is_none_or(|x| crate::storage::blob_present_known(&x) == Some(false));
