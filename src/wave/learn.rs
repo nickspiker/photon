@@ -340,7 +340,7 @@ impl Learner {
             return None;
         }
         let micp: Vec<f32> = if corrected {
-            mic.iter().map(|&m| (m - self.floor).max(0.0)).collect()
+            mic.iter().map(|&m| (m - self.floor).max(0.0)).collect() // the algorithm: mic energy above the learned floor — below it there is none
         } else {
             mic.clone()
         };
@@ -488,7 +488,7 @@ fn xcorr(play: &[f32], cap: &[f32], max_lag: usize) -> Option<(usize, f32)> {
             best = (lag, dot);
         }
     }
-    let gain = (best.1 / play_energy).max(0.0) as f32;
+    let gain = (best.1 / play_energy).max(0.0) as f32; // the algorithm: an anti-correlated best match has no positive gain
     Some((best.0, gain))
 }
 

@@ -199,7 +199,7 @@ fn parse_trc(trc: Option<&Data>) -> Result<TrcCurve, String> {
 
 /// Apply TRC curve to convert linear [0,1] to display u8 This applies the OETF (optical-electro transfer function)
 fn apply_trc(linear: f32, trc: &TrcCurve) -> u8 {
-    let clamped = linear.max(0.0).min(1.0);
+    let clamped = linear.max(0.0).min(1.0); // the algorithm: the transfer curve is defined on [0, 1], and a pow of a negative is NaN
 
     let encoded = match trc {
         TrcCurve::Linear => clamped,
@@ -241,7 +241,7 @@ fn apply_trc(linear: f32, trc: &TrcCurve) -> u8 {
         }
     };
 
-    (encoded.max(0.0).min(1.0) * 256.) as u8
+    (encoded * 256.) as u8 // the u8 cast saturates: at or above 1.0 it lands on 255, and below 0 (or NaN) on 0
 }
 
 /// Invert a 3×3 matrix (column-major format)

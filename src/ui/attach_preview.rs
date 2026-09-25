@@ -172,9 +172,9 @@ fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     for i in 0..sw * sh {
         let v = [lin_of(buf[i * ch]), lin_of(buf[i * ch + 1]), lin_of(buf[i * ch + 2])];
         let o = mat_vec(&to_vsf, &v);
-        lin[i * 3] = o[0].max(0.0);
-        lin[i * 3 + 1] = o[1].max(0.0);
-        lin[i * 3 + 2] = o[2].max(0.0);
+        lin[i * 3] = o[0].max(0.0); // the algorithm: a gamut floor — the matrix's negative out-of-gamut channels have no light to fold
+        lin[i * 3 + 1] = o[1].max(0.0); // (gamut floor)
+        lin[i * 3 + 2] = o[2].max(0.0); // (gamut floor)
     }
     let (tw, th) = fit_dims(sw, sh, max_edge);
     let px = fold_linear(&lin, sw, sh, tw, th);
@@ -248,7 +248,7 @@ fn decode_raw(path: &std::path::Path, max_edge: usize) -> Option<Folded> {
             None => c,
         };
         for k in 0..3 {
-            let x = v[k].max(0.0);
+            let x = v[k].max(0.0); // the algorithm: the same gamut floor ahead of the transfer curve
             lin[i * 3 + k] = x;
             peak = peak.max(x);
         }
@@ -285,9 +285,9 @@ fn srgb8_to_linear_vsf(src: &[u8], w: usize, h: usize) -> Vec<f32> {
     for i in 0..w * h {
         let lin = [linearize_srgb_u8(src[i * 3]), linearize_srgb_u8(src[i * 3 + 1]), linearize_srgb_u8(src[i * 3 + 2])];
         let v = mat_vec(&m, &lin);
-        out[i * 3] = v[0].max(0.0);
-        out[i * 3 + 1] = v[1].max(0.0);
-        out[i * 3 + 2] = v[2].max(0.0);
+        out[i * 3] = v[0].max(0.0); // (gamut floor)
+        out[i * 3 + 1] = v[1].max(0.0); // (gamut floor)
+        out[i * 3 + 2] = v[2].max(0.0); // (gamut floor)
     }
     out
 }

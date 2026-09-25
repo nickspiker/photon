@@ -217,7 +217,7 @@ pub fn fit(cap: &[i16], max_lag: usize) -> Option<Fit> {
             continue;
         }
         if let Some(&ce) = cap_env.get(j + off) {
-            let r = ((ce - floor).max(0.0)) / te;
+            let r = ((ce - floor).max(0.0)) / te; // the algorithm: envelope energy above the noise floor — below it there is no chirp
             ratios.push(r);
             by_bin.push((j, r));
         }
@@ -286,7 +286,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
             - render_start_osc as f64;
         let anchor_ms = (cap_anchor_osc - render_start_osc) as f64 / ops * 1000.0;
         let acoustic_ms = f.delay_samples as f64 * 1000.0 / SAMPLE_RATE as f64;
-        let delay_bins_raw = (lag_osc / ops * 100.0).round().max(0.0) as usize;
+        let delay_bins_raw = (lag_osc / ops * 100.0).round() as usize;
         // A delay AT the grid's bound is not a room, it is the two clock anchors disagreeing (Brittany 2026-09-09: 1500 ms with a 1.4 s capture-anchor offset — the duck then muted her 1.5 s after every phrase of Nick's). No seed, nothing persisted; the reactive duck and the learner carry the wave.
         if delay_bins_raw >= 150 {
             crate::logf!(
@@ -305,7 +305,7 @@ pub fn finish(cap: Vec<i16>, vol_lin: f32, render_start_osc: i64, cap_anchor_osc
         let g_norm = if vol_lin > 0.0 { f.g / scale / vol_lin } else { f.g / scale };
         let taps: Vec<f32> = f.taps.iter().map(|&t| t / scale).collect();
         // THE SEED'S LAG IS THE PHYSICAL RENDER→CAPTURE DELAY, on the reference timeline (nlms.rs: `from = frame_pos − ir_start − n + 1`), NOT the chirp's position inside the capture buffer — the capture starts at probe start, the sweep sits a quarter-second pad later (2026-09-10 Azie/Nick: the position-as-lag seed sat 250 ms wrong; Nick's filter never found its reference window, Azie's adapted from a wrong seed and read −17 dB). lag_osc already holds the physical delay; convert it to samples and back off by the pre-roll.
-        let lag_ref_samples = (lag_osc / ops * SAMPLE_RATE as f64).round().max(0.0) as usize;
+        let lag_ref_samples = (lag_osc / ops * SAMPLE_RATE as f64).round() as usize;
         let ir_start = lag_ref_samples.saturating_sub(crate::wave::nlms::PRE); // WHY/PROOF: the same pre-roll floor as the chirp seed above
         crate::logf!(
             "WAVE: v-chirp — g {} delay {}ms (anchor {}ms + capture pos {}ms) skew {} sample(s) (legs g {} / {}), floor {}, route \"{}\", fit {}ms; spectral 200-500 {} / 500-1k2 {} / 1k2-3k {} / 3k-8k {} / 8k-20k {}",

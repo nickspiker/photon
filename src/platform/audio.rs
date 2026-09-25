@@ -300,7 +300,7 @@ pub fn note_near_level(mean: u32) {
     // The duck keys on the mic level ABOVE plausible echo (field 2026-09-14 00:15, the echo-ey wave: at 65-76x makeup the far side's own echo inflated `near` while they talked, so each talker was ducked BY their echo — chop with zero loss). k is the min-statistic lower bound, doubled for margin; the subtraction is continuous, no gate: echo-only mic → input ~0 → full duplex; real speech → input ≈ the voice.
     let k = DUCK_K_Q16.load(Ordering::Relaxed);
     let echo_est = (2 * k * emitted) >> 16;
-    let g = duck_gain_q32((near - echo_est).max(0), k);
+    let g = duck_gain_q32((near - echo_est).max(0), k); // the algorithm: the echo estimate can exceed the near level, and a negative residual is simply no near talker
     SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
 }
 

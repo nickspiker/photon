@@ -244,7 +244,7 @@ pub fn dms_doublings_spell(k: i32) -> String {
 pub fn dms_length(metres: f64) -> String {
     match num_base() {
         NumBase::Dozenal => dms_doublings_glyphs(length_doublings(metres)),
-        NumBase::Hex => hex_linear((metres * 1000.0).round().max(0.0) as u64),
+        NumBase::Hex => hex_linear((metres * 1000.0).round() as u64),
         NumBase::Arabic => format!("{metres:.3} m"),
     }
 }
@@ -292,8 +292,8 @@ pub fn dms_size(bytes: u64) -> String {
 /// The age in the current base: dozenal = DMS doublings (Oxanium `+glyphs` face at the draw site), hex = linear seconds.
 pub fn dms_age(secs: i64) -> String {
     match num_base() {
-        NumBase::Hex => hex_linear(secs.max(0) as u64),
-        _ => match dms_log(secs.max(0) as u64) {
+        NumBase::Hex => hex_linear(secs.max(0) as u64), // WHY/PROOF: an age from a peer's stamp ahead of our clock is negative, and an i64→u64 cast would wrap it to the oldest age there is
+        _ => match dms_log(secs.max(0) as u64) { // WHY/PROOF: as above — a future stamp reads as now
             Some(k) => fmt_num(k),
             None => crate::ui::lang::tr(crate::ui::lang::Msg::DmsNow).into_owned(),
         },
@@ -426,7 +426,7 @@ pub fn dozenal_glyphs(mut n: u32) -> String {
 
 /// Dozenal-glyph SERIALIZATION of a non-negative i64 — same byte convention as [`dozenal_glyphs`] (0x10..=0x1B = digits 0..11, most-significant first), widened for eagle times. THE encoding for numbers inside content-string markers (the reply/edit/react references): ASCII decimal never enters a row (AGENT.md — the `s{idx}_` concatenation shape is forbidden), and a client that predates a marker renders photon's own numerals instead of arabic droppings. Negative input clamps to zero (eagle times are non-negative; a clamped reference simply resolves to nothing).
 pub fn dozenal_bytes(n: i64) -> String {
-    let mut n = n.max(0) as u64;
+    let mut n = n.max(0) as u64; // WHY/PROOF: a negative has no dozenal digits here, and the u64 cast would wrap it to 2^64 − |n|
     if n == 0 {
         return char::from(0x10).to_string();
     }

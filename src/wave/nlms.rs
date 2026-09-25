@@ -154,7 +154,7 @@ impl Nlms {
                 // Whitened error at this sample from the raw error history (this sample and its lags).
                 let i = WHITEN_SPAN + j;
                 let ew: f32 = WHITEN_SCALES.iter().map(|&s| e_hist[i] - e_hist[i - s]).sum::<f32>() / k;
-                let norm = (power.max(0.0) * g2).max(floor);
+                let norm = (power.max(0.0) * g2).max(floor); // the algorithm: a power estimate drifts a hair negative under float cancellation — a normaliser divides by it
                 let g = MU * ew * ref_gain / norm;
                 if !g.is_finite() {
                     self.diverged = true;

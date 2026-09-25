@@ -103,7 +103,7 @@ fn output_callback() -> ndk::audio::AudioStreamDataCallback {
     let mut leftover: Vec<i16> = Vec::with_capacity(FRAME_SAMPLES);
     let mut leftover_at: usize = 0;
     Box::new(move |stream: &AudioStream, data: *mut c_void, num_frames: i32| {
-        let n = num_frames.max(0) as usize;
+        let n = num_frames.max(0) as usize; // WHY/PROOF: AAudio's callback hands frames as i32 — the usize cast would wrap a negative count into an allocation of 2^64
         let out = unsafe { std::slice::from_raw_parts_mut(data as *mut i16, n) };
         let mut written = 0usize;
         while written < n {
@@ -131,7 +131,7 @@ fn input_callback() -> ndk::audio::AudioStreamDataCallback {
     let mut acc: Vec<i32> = Vec::with_capacity(FRAME_SAMPLES * 2);
     let mut acc_start: i64 = 0;
     Box::new(move |stream: &AudioStream, data: *mut c_void, num_frames: i32| {
-        let n = num_frames.max(0) as usize;
+        let n = num_frames.max(0) as usize; // WHY/PROOF: as above
         if acc.is_empty() {
             acc_start = pos;
         }

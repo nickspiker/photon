@@ -446,7 +446,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         .iter()
         .filter_map(|f| f.values.first())
         .map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64,
+            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64, // WHY/PROOF: a stamp read back from disk — i64 on the page; the u64 cast would wrap a negative
             _ => 0,
         })
         .collect();
@@ -456,7 +456,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         .iter()
         .filter_map(|f| f.values.first())
         .map(|v| match v {
-            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64,
+            VsfType::e(vsf::types::EtType::e6(osc)) => (*osc).max(0) as u64, // WHY/PROOF: as above
             _ => 0,
         })
         .collect();
@@ -709,25 +709,25 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     chains.set_lane_root(lane_root);
     chains.genesis_osc = genesis_osc;
     // Era state: absent = a pre-era blob — era 0 of the lineage its own root names, every lane in it.
-    chains.era_index = e6_i64("era_index").map(|v| v.max(0) as u64).unwrap_or(0);
+    chains.era_index = e6_i64("era_index").map(|v| v.max(0) as u64).unwrap_or(0); // WHY/PROOF: stored i64 counters (era index, rows, grace) decode through a u64/u32 cast that would wrap a negative
     chains.era_lineage = section
         .get_value::<[u8; 32]>("era_lineage")
         .ok()
         .or_else(|| lane_root.as_ref().map(crate::crypto::clutch::era_lineage))
         .unwrap_or([0u8; 32]);
-    chains.rows_since_ratchet = e6_i64("rows_since_ratchet").map(|v| v.max(0) as u32).unwrap_or(0);
+    chains.rows_since_ratchet = e6_i64("rows_since_ratchet").map(|v| v.max(0) as u32).unwrap_or(0); // (stored counter — see above)
     if let (Ok(idx), Ok(root)) = (e6_i64("retired_index"), section.get_value::<[u8; 32]>("retired_root")) {
         chains.set_retired_era(crate::types::friendship::RetiredEra {
-            era_index: idx.max(0) as u64,
+            era_index: idx.max(0) as u64, // (stored counter — see above)
             lane_root: root,
             history_key: section.get_value::<[u8; 32]>("retired_history_key").ok(),
             tag: crate::crypto::clutch::era_tag(&root),
-            grace_left: e6_i64("retired_grace").map(|v| v.max(0) as u32).unwrap_or(0),
+            grace_left: e6_i64("retired_grace").map(|v| v.max(0) as u32).unwrap_or(0), // (stored counter — see above)
         });
     }
     if let (Ok(idx), Ok(root)) = (e6_i64("pending_index"), section.get_value::<[u8; 32]>("pending_root")) {
         chains.install_pending(crate::types::friendship::PendingEra {
-            era_index: idx.max(0) as u64,
+            era_index: idx.max(0) as u64, // (stored counter — see above)
             lane_root: root,
             history_key: section.get_value::<[u8; 32]>("pending_history_key").ok(),
             tag: crate::crypto::clutch::era_tag(&root),
@@ -791,7 +791,7 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             .iter()
             .filter_map(|f| f.values.first())
             .map(|v| match v {
-                VsfType::e(vsf::types::EtType::e6(o)) => (*o).max(0) as u64,
+                VsfType::e(vsf::types::EtType::e6(o)) => (*o).max(0) as u64, // WHY/PROOF: a stamp read back from disk, as above
                 other => other.as_u64().unwrap_or(0),
             })
             .collect();

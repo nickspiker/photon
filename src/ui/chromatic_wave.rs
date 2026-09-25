@@ -43,8 +43,8 @@ pub fn chromatic_wave_clipped(
         return;
     }
     {
-        let dy0 = top.max(clip_y0 as isize).max(0) as usize;
-        let dy1 = ((top + region_h as isize).max(0) as usize).min(clip_y1);
+        let dy0 = top.max(clip_y0 as isize).max(0) as usize; // WHY/PROOF: the band's top can sit above the canvas (negative isize), and the usize cast would wrap it to a huge row
+        let dy1 = ((top + region_h as isize).max(0) as usize).min(clip_y1); // WHY/PROOF: as above for the bottom edge
         if dy1 > dy0 {
             canvas.damage.add(PixelRect::new(x0, dy0, x1, dy1));
         }

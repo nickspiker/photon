@@ -252,9 +252,9 @@ pub fn image_to_avatar_rgb_f32(image_data: &[u8]) -> Result<Vec<f32>, String> {
             };
 
             // Apply VSF gamma 2 encoding .max(0.) prevents NaN from sqrt() - Lanczos3 ringing can produce negatives
-            vsf_rgb_f32[idx] = delinearize_gamma2(masked_linear[0].max(0.));
-            vsf_rgb_f32[idx + 1] = delinearize_gamma2(masked_linear[1].max(0.));
-            vsf_rgb_f32[idx + 2] = delinearize_gamma2(masked_linear[2].max(0.));
+            vsf_rgb_f32[idx] = delinearize_gamma2(masked_linear[0].max(0.)); // the algorithm: out-of-gamut channels come out of the matrix negative, and the gamma curve's √ is undefined there
+            vsf_rgb_f32[idx + 1] = delinearize_gamma2(masked_linear[1].max(0.)); // (gamut floor — see above)
+            vsf_rgb_f32[idx + 2] = delinearize_gamma2(masked_linear[2].max(0.)); // (gamut floor — see above)
         }
     }
 
@@ -551,7 +551,7 @@ fn convert_pixel_linear(r: u8, g: u8, b: u8, converter: &IccColourConverter) -> 
 
     // Apply XYZ → VSF_RGB matrix Clamp negative values: out-of-gamut colors can produce negatives, but negative light intensity is physically impossible. This prevents NaN from sqrt() in delinearize_gamma2.
     let vsf = apply_matrix_3x3_f32(&converter.xyz_to_vsf, &xyz);
-    [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)]
+    [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)] // the algorithm: a gamut floor before gamma, as above
 }
 
 /// Fast per-pixel conversion from ICC RGB (u16) to linear VSF RGB
@@ -569,7 +569,7 @@ fn convert_pixel_linear_u16(r: u16, g: u16, b: u16, converter: &IccColourConvert
 
     // Apply XYZ → VSF_RGB matrix Clamp negative values: out-of-gamut colors can produce negatives, but negative light intensity is physically impossible. This prevents NaN from sqrt() in delinearize_gamma2.
     let vsf = apply_matrix_3x3_f32(&converter.xyz_to_vsf, &xyz);
-    [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)]
+    [vsf[0].max(0.), vsf[1].max(0.), vsf[2].max(0.)] // (gamut floor — see above)
 }
 
 /// Encodes VSF RGB f32 data as AV1 using rav1e (optimized for f32 pipeline)

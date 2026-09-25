@@ -52,7 +52,7 @@ pub fn draw_avatar(
     if radius <= 0.0 || scaled_diameter == 0 || width == 0 || height == 0 {
         return;
     }
-    let r_in = (radius - 0.5).max(0.0);
+    let r_in = (radius - 0.5).max(0.0); // the algorithm: the anti-aliased rim's inner radius; a disk under half a pixel has no solid interior
     let r_out = radius + 0.5;
     let r_in2 = r_in * r_in;
     let r_out2 = r_out * r_out;

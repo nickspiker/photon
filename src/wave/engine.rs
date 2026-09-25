@@ -1409,7 +1409,7 @@ fn run(
         format!("{:.1}", wave_secs)
     );
     if let Some(first) = cap_first_osc {
-        let hal_secs = (cap_last_osc - first).max(0) as f64 / vsf::OSCILLATIONS_PER_SECOND as f64;
+        let hal_secs = (cap_last_osc - first).max(0) as f64 / vsf::OSCILLATIONS_PER_SECOND as f64; // WHY/PROOF: two HAL stamps from different streams — the capture can report a last stamp before the first after a device reset
         crate::logf!(
             "WAVE: capture — {} frames over {}s of HAL time ({} fps by the HAL clock; 200 nominal)",
             tx_frames,

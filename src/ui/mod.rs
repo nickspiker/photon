@@ -12,7 +12,7 @@ pub mod state;
 pub fn safe_top_px() -> usize {
     #[cfg(target_os = "android")]
     {
-        crate::platform::jni_android::top_inset_px().max(0) as usize
+        crate::platform::jni_android::top_inset_px().max(0) as usize // WHY/PROOF: the Kotlin inset, cast to usize — see jni_android
     }
     #[cfg(not(target_os = "android"))]
     {

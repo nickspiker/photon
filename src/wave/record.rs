@@ -44,7 +44,7 @@ pub fn resample_linear(slots: &[f32], out_len: usize) -> Vec<f32> {
                 let (mut acc, mut cov) = (0f32, 0f32);
                 let mut i = s0.floor() as usize;
                 while (i as f32) < s1 && i < n {
-                    let c = (s1.min(i as f32 + 1.0) - s0.max(i as f32)).max(0.0);
+                    let c = (s1.min(i as f32 + 1.0) - s0.max(i as f32)).max(0.0); // the algorithm: the overlap of two intervals — none is 0, not negative
                     acc += slots[i] * c;
                     cov += c;
                     i += 1;
@@ -265,7 +265,7 @@ fn osc_to_slot(osc: i64, base: i64) -> i64 {
     if ops <= 0 {
         return 0;
     }
-    let d = (osc - base).max(0);
+    let d = (osc - base).max(0); // WHY/PROOF: an archive record stamped before the recording's base (a fill that raced the first frame) sits at slot 0
     (d * SLOTS_PER_SEC + ops / 2) / ops
 }
 
@@ -312,7 +312,7 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
             }
             _ => by_stamp,
         };
-        let slot_u = slot.max(0) as usize;
+        let slot_u = slot.max(0) as usize; // WHY/PROOF: the stamp lattice can put a frame before slot 0 near the start — the usize cast would wrap it
         lat[c] = Some((slot + 1, base + (slot + 1) * ops / SLOTS_PER_SEC));
         if let Some((seq, wslot)) = r.seq {
             seq_lat[c] = match seq_lat[c] {
@@ -432,10 +432,10 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     // Archive records land on the 10ms output lattice straight from their stamps.
     let mut arch_by_slot: Vec<Option<&Record>> = Vec::new();
     if has_arch {
-        let max_arch_slot = arch.iter().map(|r| (osc_to_slot(r.osc, base).max(0) as usize) / 2).max().unwrap_or(0);
+        let max_arch_slot = arch.iter().map(|r| (osc_to_slot(r.osc, base).max(0) as usize) / 2).max().unwrap_or(0); // WHY/PROOF: as above — a pre-base stamp's slot, cast to usize
         arch_by_slot = vec![None; max_arch_slot + 1];
         for r in &arch {
-            let so = (osc_to_slot(r.osc, base).max(0) as usize) / 2;
+            let so = (osc_to_slot(r.osc, base).max(0) as usize) / 2; // (pre-base stamp — see above)
             if arch_by_slot[so].is_none() {
                 arch_by_slot[so] = Some(r);
             }

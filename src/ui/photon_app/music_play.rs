@@ -36,7 +36,7 @@ mod real {
             (self.sink.get_pos().as_secs_f32() / self.duration_secs.max(0.001)).clamp(0.0, 1.0)
         }
         pub fn seek_frac(&self, f: f32) {
-            let _ = self.sink.try_seek(std::time::Duration::from_secs_f32((f * self.duration_secs).max(0.0)));
+            let _ = self.sink.try_seek(std::time::Duration::from_secs_f32((f * self.duration_secs).max(0.0))); // WHY/PROOF: a seek fraction from the pointer can dip below the bar — Duration panics on a negative
             self.sink.play();
         }
     }

@@ -158,8 +158,8 @@ pub fn paint_photon_logo_clipped(
     composite_glow_white(canvas.pixels, buf_w, canvas_start, clip_y0, clip_y1, &scratch_glow);
 
     // Report the rasterized area to the damage accumulator — full window width since blur passes spread horizontally; clamped to the clip band.
-    let dy0 = canvas_start.max(clip_y0 as isize).max(0) as usize;
-    let dy1 = ((top + stop).max(0) as usize).min(clip_y1);
+    let dy0 = canvas_start.max(clip_y0 as isize).max(0) as usize; // WHY/PROOF: the logo can start above the canvas (negative isize) — the usize cast would wrap it
+    let dy1 = ((top + stop).max(0) as usize).min(clip_y1); // WHY/PROOF: as above for its bottom
     if dy1 > dy0 {
         canvas.damage.add_bounds(0, dy0, buf_w, dy1);
     }

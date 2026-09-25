@@ -444,9 +444,9 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.trust_level = u8_to_trust_level(trust_u8);
     contact.consent_mutual = section.get_value::<u8>("consent").unwrap_or(1) != 0;
     contact.peer_era_capable = section.get_value::<u8>("era_cap").unwrap_or(0) != 0;
-    contact.era_weave_due = section.get_value::<i64>("era_weave_due").map(|v| v.max(0) as u64).unwrap_or(0);
+    contact.era_weave_due = section.get_value::<i64>("era_weave_due").map(|v| v.max(0) as u64).unwrap_or(0); // WHY/PROOF: a stored i64 decoded through a u64 cast that would wrap a negative
     contact.era_prior_claim = match (section.get_value::<i64>("era_prior_tag").ok(), section.get_value::<i64>("era_prior_idx").ok()) {
-        (Some(t), Some(i)) if t != 0 => Some((t as u32, i.max(0) as u64)),
+        (Some(t), Some(i)) if t != 0 => Some((t as u32, i.max(0) as u64)), // WHY/PROOF: as above
         _ => None,
     };
     contact.added = added;

@@ -186,10 +186,10 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
     ];
     let (w, h) = (canvas.width, canvas.height);
     let half = (size * 0.5 + 2.0) as isize;
-    let x0 = (cx as isize - half).max(0) as usize;
-    let x1 = ((cx as isize + half).max(0) as usize).min(w);
-    let y0 = (cy as isize - half).max(0) as usize;
-    let y1 = ((cy as isize + half).max(0) as usize).min(h);
+    let x0 = (cx as isize - half).max(0) as usize; // WHY/PROOF: a mark near the canvas edge extends past it (negative isize), and the usize cast would wrap
+    let x1 = ((cx as isize + half).max(0) as usize).min(w); // (offscreen edge — see above)
+    let y0 = (cy as isize - half).max(0) as usize; // (offscreen edge — see above)
+    let y1 = ((cy as isize + half).max(0) as usize).min(h); // (offscreen edge — see above)
     if x0 >= x1 || y0 >= y1 {
         return;
     }
@@ -241,9 +241,9 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
     ];
 
     let (w, h) = (canvas.width, canvas.height);
-    let x0 = (cx - half_w - 1.0).floor().max(0.0) as usize;
+    let x0 = (cx - half_w - 1.0).floor() as usize;
     let x1 = ((cx + half_w + 1.0).ceil() as usize).min(w);
-    let y0 = (top - 1.0).floor().max(0.0) as usize;
+    let y0 = (top - 1.0).floor() as usize;
     let y1 = ((bot + 1.0).ceil() as usize).min(h);
     if x0 >= x1 || y0 >= y1 {
         return;
@@ -342,9 +342,9 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
     ];
 
     let (w, h) = (canvas.width, canvas.height);
-    let x0 = (cx - size * 0.5 - 1.0).floor().max(0.0) as usize;
+    let x0 = (cx - size * 0.5 - 1.0).floor() as usize;
     let x1 = ((cx + size * 0.5 + 1.0).ceil() as usize).min(w);
-    let y0 = (cy - size * 0.5 - 1.0).floor().max(0.0) as usize;
+    let y0 = (cy - size * 0.5 - 1.0).floor() as usize;
     let y1 = ((cy + size * 0.5 + 1.0).ceil() as usize).min(h);
     if x0 >= x1 || y0 >= y1 {
         return;
@@ -551,7 +551,7 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
                 t = t.min((wall - origin[i]) / d[i]);
             }
         }
-        t.max(0.0)
+        t.max(0.0) // the algorithm: a parameter before the curve's start holds at its start
     };
     // Column-major 3x3 apply (matches vsf's matrix layout).
     let apply = |m: &[f32; 9], p: [f32; 3]| -> [f32; 3] {
@@ -1078,10 +1078,10 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
     let panel_w = span * 0.45;
     let cx = vw as f32 * 0.5;
     let cy = vh as f32 * 0.4;
-    let x0 = (cx - panel_w * 0.5).max(0.0) as usize;
-    let y0 = (cy - panel_h * 0.5).max(0.0) as usize;
-    let x1 = ((cx + panel_w * 0.5).max(0.0) as usize).min(vw);
-    let y1 = ((cy + panel_h * 0.5).max(0.0) as usize).min(vh);
+    let x0 = (cx - panel_w * 0.5) as usize;
+    let y0 = (cy - panel_h * 0.5) as usize;
+    let x1 = ((cx + panel_w * 0.5) as usize).min(vw);
+    let y1 = ((cy + panel_h * 0.5) as usize).min(vh);
     PixelRect::new(x0, y0, x1, y1)
 }
 
@@ -3159,7 +3159,7 @@ fn dev_gradient_orb() -> fluor::host::icon::Icon {
             let xc = 2.0 * (px as f64 / (N - 1) as f64) - 1.0;
             let yc = 2.0 * (py as f64 / (N - 1) as f64) - 1.0;
             let (x, y) = (xc * s, yc * s);
-            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
+            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt(); // the algorithm: outside the unit disk 1 − r² is negative and the vignette is zero
             let ch =
                 |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u32;
             let (cr, cg, cb) = (ch(r_a, r_b), ch(g_a, g_b), ch(b_a, b_b));
@@ -3206,7 +3206,7 @@ fn gradient_avatar_rgb(mut seed: u64, diam: usize) -> Vec<u8> {
             let xc = 2.0 * (px as f64 / denom) - 1.0;
             let yc = 2.0 * (py as f64 / denom) - 1.0;
             let (x, y) = (xc * s, yc * s);
-            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt();
+            let vignette = (1.0 - xc * xc - yc * yc).max(0.0).sqrt(); // (outside the disk — see above)
             let ch =
                 |a: f64, b: f64| ((((a * x + b * y).sin() + 1.0) / 2.0) * vignette * 255.0) as u8;
             let i = (py * diam + px) * 3;
@@ -3572,10 +3572,10 @@ fn stamp_hit_circle(
         return;
     }
     let r2 = radius * radius;
-    let x_min = ((cx - radius).max(0.0) as usize).min(buf_w);
-    let x_max = ((cx + radius + 1.0).max(0.0) as usize).min(buf_w);
-    let y_min = ((cy - radius).max(0.0) as usize).min(buf_h);
-    let y_max = ((cy + radius + 1.0).max(0.0) as usize).min(buf_h);
+    let x_min = ((cx - radius) as usize).min(buf_w);
+    let x_max = ((cx + radius + 1.0) as usize).min(buf_w);
+    let y_min = ((cy - radius) as usize).min(buf_h);
+    let y_max = ((cy + radius + 1.0) as usize).min(buf_h);
     for y in y_min..y_max {
         let dy = (y as f32 + 0.5) - cy;
         let dy2 = dy * dy;
@@ -4344,10 +4344,10 @@ fn restamp_hit_rect(
     y1: isize,
     hit_id: HitId,
 ) {
-    let xs = x0.max(0) as usize;
-    let ys = y0.max(0) as usize;
-    let xe = (x1.max(0) as usize).min(buf_w);
-    let ye = (y1.max(0) as usize).min(buf_h);
+    let xs = x0.max(0) as usize; // WHY/PROOF: a rect that starts offscreen (negative isize) — the usize cast would wrap
+    let ys = y0.max(0) as usize; // (offscreen rect — see above)
+    let xe = (x1.max(0) as usize).min(buf_w); // (offscreen rect — see above)
+    let ye = (y1.max(0) as usize).min(buf_h); // (offscreen rect — see above)
     for y in ys..ye {
         let row_base = y * buf_w;
         for x in xs..xe {

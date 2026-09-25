@@ -20,7 +20,7 @@ pub(super) struct WaveKeepResult {
 
 /// Format a duration base-aware: `M:SS` in dozenal and arabic, the plain seconds count in hex (hex is linear everywhere, Nick 2026-09-11). A free function so the render can call it under its chrome borrow (the method form reads `&self`). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
 pub(super) fn fmt_duration_secs(secs: i64) -> String {
-    let secs = secs.max(0);
+    let secs = secs.max(0); // WHY/PROOF: a duration computed across the wall clock, which can step backwards — a negative wave length reads as 0
     let (m, s) = ((secs / 60) as u32, (secs % 60) as u32);
     match crate::num_base() {
         crate::NumBase::Dozenal => {
@@ -1391,7 +1391,7 @@ impl PhotonApp {
             .active_wave
             .as_ref()
             .filter(|c| c.phase == WavePhase::Active)
-            .map(|c| ((vsf::eagle_time_oscillations() - c.phase_osc).max(0) / vsf::OSCILLATIONS_PER_SECOND as i64) as u32)
+            .map(|c| ((vsf::eagle_time_oscillations() - c.phase_osc).max(0) / vsf::OSCILLATIONS_PER_SECOND as i64) as u32) // WHY/PROOF: the wall clock can step back past a phase's start — the age is 0, not a u32 wrapped from a negative
             .unwrap_or(0);
         // The engine thread outlives `stop()` by the fill drain (engine.rs: the peer hands back the windows we lost); the keep joins it before reading the spool.
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {

@@ -609,8 +609,8 @@ impl FluorApp for PhotonApp {
         }
         let h = ctx.viewport.height_px as f32;
         let ay = anchor_y as f32;
-        let top_hung = |s: f32| ((s + ay) * factor - ay).max(0.0);
-        let bottom_hung = |s: f32| ((s + h - ay) * factor - (h - ay)).max(0.0);
+        let top_hung = |s: f32| ((s + ay) * factor - ay).max(0.0); // the algorithm: a hung margin is room, and a squeezed pane has none rather than negative room
+        let bottom_hung = |s: f32| ((s + h - ay) * factor - (h - ay)).max(0.0); // (no negative room — see above)
         match self.state {
             AppState::Ready => {
                 self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
@@ -2319,8 +2319,8 @@ impl FluorApp for PhotonApp {
                     // The image viewer's wheel is opsin's view's (forwarded above); before the decode lands the preview just sits fitted.
                     if let Some(r) = self.reader.as_mut() {
                         let step = if pixel { 1.0 } else { 24.0 };
-                        r.scroll = (r.scroll - dy * step).max(0.0);
-                        r.hscroll = (r.hscroll - dx * step).max(0.0);
+                        r.scroll = (r.scroll - dy * step).max(0.0); // the algorithm: scrolling past the top stops at the top
+                        r.hscroll = (r.hscroll - dx * step).max(0.0); // the algorithm: scrolling past the left edge stops there
                     }
                     self.scene_dirty = true;
                     ctx.window.request_redraw();

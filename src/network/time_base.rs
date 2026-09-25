@@ -101,7 +101,7 @@ pub fn adopt(offset_osc: i64, confidence_osc: i64, local_osc: i64) {
 
 /// Adopt the SERVER'S verdict (2026-09-17, Theresa's phone: "Timestamp outside valid window" on every log submit, and nothing to say whether photon's clock was ahead or behind): FGTW refused a frame we stamped and answered with its own clock in the refusal. That server is NTP-disciplined and is the one judging the window, so its reading outranks whatever anchor we hold — this REPLACES the standing anchor unconditionally (the standing one just proved itself wrong by over a minute), at the width the round trip allows: the server read its clock somewhere inside the trip, so the midpoint is the estimate and half the trip the honest width, floored at a quarter second. A later nunc consensus (±ms) refines it thru [`adopt`]'s ordinary rule.
 pub fn adopt_from_server(server_now_osc: i64, rtt_osc: i64) {
-    let rtt = rtt_osc.max(0);
+    let rtt = rtt_osc.max(0); // WHY/PROOF: the RTT is measured across a wall clock that can step backwards mid-flight — a negative round trip is 0
     let confidence_osc = (rtt / 2).max(crate::OSC_PER_SEC / 4);
     let true_now = server_now_osc + rtt / 2;
     let system_now = vsf::eagle_time_oscillations();

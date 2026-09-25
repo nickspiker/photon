@@ -605,8 +605,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSystemInsets(
     top: jint,
     bottom: jint,
 ) {
-    TOP_INSET.store(top.max(0), std::sync::atomic::Ordering::Relaxed);
-    BOTTOM_INSET.store(bottom.max(0), std::sync::atomic::Ordering::Relaxed);
+    TOP_INSET.store(top.max(0), std::sync::atomic::Ordering::Relaxed); // WHY/PROOF: insets arrive from Kotlin as jint — negative on some OEM builds mid-rotation; the layout reads them as usize
+    BOTTOM_INSET.store(bottom.max(0), std::sync::atomic::Ordering::Relaxed); // (Kotlin inset — see above)
     crate::logf!("DISPLAY: system insets — top {} px (status bar / cutout), bottom {} px (gesture nav); the surface is edge to edge", top, bottom);
 }
 
@@ -666,7 +666,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeReplace(
     };
     let s: String = env.get_string(&text).map(|j| j.into()).unwrap_or_default();
     ctx.shell
-        .ime_replace_chars(start.max(0) as usize, end.max(0) as usize, &s);
+        .ime_replace_chars(start.max(0) as usize, end.max(0) as usize, &s); // WHY/PROOF: IME replacement indices arrive as jint from the platform, and the usize casts would wrap a negative
 }
 
 /// Kotlin's inset listener → the IME-inset mirror. Ptr-less like the foreground mirror; the app's per-frame tick diffs the value and relayouts on change.
@@ -694,7 +694,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeImeInset(
     _class: JClass<'_>,
     px: jint,
 ) {
-    IME_INSET.store(px.max(0), std::sync::atomic::Ordering::Relaxed);
+    IME_INSET.store(px.max(0), std::sync::atomic::Ordering::Relaxed); // (Kotlin inset — see above)
 }
 
 /// JNI ingress: the display's rounded-corner radius in pixels (the largest of the four the OS reports).
@@ -704,7 +704,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeGlassRadius(
     _class: JClass<'_>,
     px: jint,
 ) {
-    GLASS_RADIUS.store(px.max(0), std::sync::atomic::Ordering::Relaxed);
+    GLASS_RADIUS.store(px.max(0), std::sync::atomic::Ordering::Relaxed); // (Kotlin inset — see above)
     crate::logf!("DISPLAY: glass corner radius {} px (chrome corners: {} px TR/BL, {} px TL/BR)", px, px, px * 2);
 }
 

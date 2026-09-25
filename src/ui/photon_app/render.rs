@@ -294,7 +294,7 @@ impl PhotonApp {
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
-            let max_scroll = (block_end - buf_h as isize).max(0);
+            let max_scroll = (block_end - buf_h as isize).max(0); // the algorithm: a block shorter than the window has no scroll
             // Publish the extent — no hard clamp; the wheel resists past-the-end and tick() springs the overshoot back (rubber-band).
             self.contacts_scroll_extent = max_scroll;
             self.update_widget_layout(ctx);
@@ -310,7 +310,7 @@ impl PhotonApp {
             // Publish the extents (rubber-band bounds) — NO hard clamp: the wheel handler resists past-the-end steps and tick() eases the overshoot back, so an out-of-range value here is the rubber-band mid-stretch, rendered as-is. Labels, widgets, and bg all read this same raw value, so the whole pane stretches together.
             self.settings_rail_extent =
                 (sl.nav_row_h() * (self.settings_pages().len() as Coord + 1.0) - sl.rail_inset().h)
-                    .max(0.0);
+                    .max(0.0); // the algorithm: content shorter than its pane does not scroll
             // The You page is a dynamic form — its row count is the field set plus the fixed chrome rows, not a constant. The Diagnostics log viewer counts fractionally: two full-height header rows plus half-height record rows (matching diag_log_row_rect exactly, or the scroll bound and the drawn rows disagree).
             let content_rows_h = if page == SettingsPage::You {
                 sl.content_line_h() * you_rows_plan(&self.you_fields).len() as Coord
@@ -327,7 +327,7 @@ impl PhotonApp {
             } else {
                 sl.content_line_h() * settings_page_rows(page) as Coord
             };
-            self.settings_content_extent = (content_rows_h - sl.content_inset().h).max(0.0);
+            self.settings_content_extent = (content_rows_h - sl.content_inset().h).max(0.0); // (no scroll when it fits — see above)
             // The pinned log viewer rides the newest record: scroll sits at the extent as records append, until the user scrolls up (the wheel handler un-pins).
             if page == SettingsPage::Diagnostics && self.diag_log_view && self.diag_log_follow {
                 self.settings_content_scroll = self.settings_content_extent;
@@ -338,16 +338,16 @@ impl PhotonApp {
             let sl = SettingsLayout::compute(&ctx.viewport);
             self.settings_rail_extent = (sl.nav_row_h() * (ContactPage::ALL.len() as Coord + 1.0)
                 - sl.rail_inset().h)
-                .max(0.0);
+                .max(0.0); // (no scroll when it fits)
             let n = if cpage == ContactPage::Manage { self.manage_page_rows() } else { contact_page_rows(cpage) };
             self.settings_content_extent =
-                (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
+                (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0); // (no scroll when it fits)
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else if let AppState::MoleculePanel(gpage) = self.state {
             let sl = SettingsLayout::compute(&ctx.viewport);
-            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::MoleculePage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0);
+            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::MoleculePage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0); // (no scroll when it fits)
             let n = self.molecule_page_rows(gpage);
-            self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0);
+            self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0); // (no scroll when it fits)
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
             (0.0, 0.0)
@@ -408,7 +408,7 @@ impl PhotonApp {
                 let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
                 let dur = match c.phase {
                     crate::wave::WavePhase::Active => {
-                        (vsf::eagle_time_oscillations() - c.phase_osc).max(0) / ops
+                        (vsf::eagle_time_oscillations() - c.phase_osc).max(0) / ops // WHY/PROOF: the wall clock can step back past a phase's start — its age is 0, never negative
                     }
                     _ => 0,
                 };
@@ -540,10 +540,10 @@ impl PhotonApp {
         let zoom_size = version_size * 2.0;
         // Dozenal zoom is per-GROSS, not per-cent: no ×100, just base convert — 1.0× renders as dozenal 100 ("zila", = ×144), 2.0× as dozenal 200 ("zilor"). No % sign (percent is a decimal concept). Decimal mode keeps the familiar NN%.
         let zoom_text = match crate::num_base() {
-            crate::NumBase::Dozenal => crate::dozenal_glyphs((ctx.viewport.ru * 144.0).round().max(0.0) as u32),
+            crate::NumBase::Dozenal => crate::dozenal_glyphs((ctx.viewport.ru * 144.0).round() as u32),
             // Hex zoom is per-256 by the same logic: 1.0× renders as hex 100.
-            crate::NumBase::Hex => crate::hex_glyphs((ctx.viewport.ru * 256.0).round().max(0.0) as u32),
-            crate::NumBase::Arabic => format!("{}%", (ctx.viewport.ru * 100.0).round().max(0.0) as u32),
+            crate::NumBase::Hex => crate::hex_glyphs((ctx.viewport.ru * 256.0).round() as u32),
+            crate::NumBase::Arabic => format!("{}%", (ctx.viewport.ru * 100.0).round() as u32),
         };
         let zoom_cx = buf_w as f32 * 0.5;
         let zoom_cy = zoom_size;
@@ -559,10 +559,10 @@ impl PhotonApp {
                 let (unit, _) = about_slab(buf_w, buf_h, inset.w);
                 // LOGICAL band: the attest proportions in slab units (air 0.75u, wave 6u, wordmark 3.5u overlapping by 2u), fixed size, positioned by the scroll — may extend above the pane; the clipped draws crop.
                 let top = (inset.y - settings_content_scroll) as isize;
-                let sx0 = inset.x.max(0.0) as usize;
-                let sx1 = ((inset.x + inset.w).max(0.0) as usize).min(buf_w);
-                let clip_y0 = inset.y.max(0.0) as usize;
-                let clip_y1 = ((inset.y + inset.h).max(0.0) as usize).min(buf_h);
+                let sx0 = inset.x as usize;
+                let sx1 = ((inset.x + inset.w) as usize).min(buf_w);
+                let clip_y0 = inset.y as usize;
+                let clip_y1 = ((inset.y + inset.h) as usize).min(buf_h);
                 (sx1 > sx0 && clip_y1 > clip_y0).then(|| {
                     (
                         sx0,
@@ -1809,7 +1809,7 @@ impl PhotonApp {
                     .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
             let block_end = block_bottom_at_zero + row_h * 2;
-            let max_scroll = (block_end - buf_h as isize).max(0);
+            let max_scroll = (block_end - buf_h as isize).max(0); // the algorithm: a block shorter than the window has no scroll
             if self.contacts_scroll > max_scroll {
                 self.contacts_scroll = max_scroll;
             }
@@ -1981,7 +1981,7 @@ impl PhotonApp {
                 }
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
-                    let band_top = row_top.max(0) as usize;
+                    let band_top = row_top.max(0) as usize; // WHY/PROOF: a row scrolled above the buffer has a negative top — the usize cast would wrap it
                     // WHY: a scrolled row can lie wholly BELOW the buffer, so its clipped bottom is above its top.
                     // PROOF: that row has no band — zero height, skipped by the `>= 2` gate — where a plain subtraction would wrap to a band taller than the screen.
                     let band_h =
@@ -2024,7 +2024,7 @@ impl PhotonApp {
                         buf_w,
                         buf_h,
                         rows.x0 as isize,
-                        row_top.max(0),
+                        row_top.max(0), // WHY/PROOF: as above
                         rows.x1 as isize,
                         (row_top + rh).min(buf_h as isize),
                         row_hit,
@@ -2158,10 +2158,10 @@ impl PhotonApp {
                 }
                 let pages_top = rail_inset.y + nav_h;
                 let pages_clip = fluor::paint::Clip::new(
-                    layout.rail.x.max(0.0) as usize,
-                    pages_top.max(layout.rail.y).max(0.0) as usize,
-                    layout.rail.right().max(0.0) as usize,
-                    layout.rail.bottom().max(0.0) as usize,
+                    layout.rail.x as usize,
+                    pages_top.max(layout.rail.y) as usize,
+                    layout.rail.right() as usize,
+                    layout.rail.bottom() as usize,
                 );
                 for (i, p) in ContactPage::ALL.iter().enumerate() {
                     let r = fluor::region::Region::new(
@@ -2242,10 +2242,10 @@ impl PhotonApp {
                 // --- Selected page body: natural-height rows over the shared content scroll, clipped to the reading column. ---
                 let inset = layout.content_inset();
                 let content_clip = fluor::paint::Clip::new(
-                    inset.x.max(0.0) as usize,
-                    inset.y.max(0.0) as usize,
-                    inset.right().max(0.0) as usize,
-                    inset.bottom().max(0.0) as usize,
+                    inset.x as usize,
+                    inset.y as usize,
+                    inset.right() as usize,
+                    inset.bottom() as usize,
                 );
                 let tspan = layout.unit * 0.72;
                 let hspan2 = tspan * 0.75;
@@ -2405,7 +2405,7 @@ impl PhotonApp {
                             match (first, last) {
                                 (Some(a), Some(b)) if b > a => {
                                     ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400))
-                                        .max(0) as usize
+                                        .max(0) as usize // WHY/PROOF: a negative isize before a usize cast — see the row band above
                                 }
                                 _ => 0,
                             }
@@ -2647,7 +2647,7 @@ impl PhotonApp {
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, layout.rail.y as isize, layout.rail.right() as isize, r.bottom() as isize, self.back_btn_hit_id);
                 }
                 let pages_top = rail_inset.y + nav_h;
-                let pages_clip = fluor::paint::Clip::new(layout.rail.x.max(0.0) as usize, pages_top.max(layout.rail.y).max(0.0) as usize, layout.rail.right().max(0.0) as usize, layout.rail.bottom().max(0.0) as usize);
+                let pages_clip = fluor::paint::Clip::new(layout.rail.x as usize, pages_top.max(layout.rail.y) as usize, layout.rail.right() as usize, layout.rail.bottom() as usize);
                 for (i, p) in MoleculePage::ALL.iter().enumerate() {
                     let r = fluor::region::Region::new(rail_inset.x, pages_top - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h);
                     if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
@@ -2807,7 +2807,7 @@ impl PhotonApp {
                         let text_top = py + pill_h * 1.1;
                         let text_bottom = buf_h as f32 - line_h;
                         let clip = fluor::paint::Clip::new(0, text_top as usize, buf_w, text_bottom as usize);
-                        let first = (r.scroll / step).floor().max(0.0) as usize;
+                        let first = (r.scroll / step).floor() as usize;
                         let mut ly = text_top + step - (r.scroll - first as f32 * step);
                         for line in r.lines.iter().skip(first) {
                             if ly > text_bottom + step {
@@ -2896,7 +2896,7 @@ impl PhotonApp {
                         );
                     }
                     if back_pressed {
-                        let band_top = (back_y - back_size).max(0.) as usize;
+                        let band_top = (back_y - back_size) as usize;
                         // WHY/PROOF: as for the row band above — the back pill can sit below the buffer, and its band is then empty, not a wrapped giant.
                         let band_h =
                             (((back_y + back_size) as usize).min(buf_h)).saturating_sub(band_top);
@@ -3409,8 +3409,8 @@ impl PhotonApp {
                             + (total_lines - n) as f32 * intra // the wrap cache is keyed to these rows and every row wraps to ≥ 1 line, so total ≥ n
                             + header_block_h
                             + if sel_in_stream { detail_h + self.sel_meta_h } else { 0.0 };
-                        let view_h = (list_bottom - list_top).max(0.0);
-                        let max_scroll = (content_h - view_h).max(0.0);
+                        let view_h = (list_bottom - list_top).max(0.0); // the algorithm: a list squeezed to nothing has no view, not a negative one
+                        let max_scroll = (content_h - view_h).max(0.0); // the algorithm: content shorter than its view does not scroll
                         // Publish the ceiling so the tick can clamp the STORED offset (this field write is disjoint from the `contact` borrow above); the local `scroll` only fixes THIS frame's draw.
                         self.msg_max_scroll = max_scroll;
                         self.msg_view_h = view_h;
@@ -3629,7 +3629,7 @@ impl PhotonApp {
                             }) {
                                 // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve. A closure because the edit-history lines below stamp each prior version's age too.
                                 let fmt_age = |ts: i64| -> String {
-                                    let secs = ((vsf::eagle_time_oscillations() - ts) / crate::OSC_PER_SEC).max(0);
+                                    let secs = ((vsf::eagle_time_oscillations() - ts) / crate::OSC_PER_SEC).max(0); // WHY/PROOF: a row stamped by a peer's clock ahead of ours has a negative age — it reads as now
                                     if crate::dms_ui() {
                                         let dms = crate::dms_age(secs);
                                         tr(Msg::AgoDms(&dms)).into_owned()
@@ -5206,10 +5206,10 @@ impl PhotonApp {
             // The page rows scroll within the region BELOW the pinned Back row — clipped so a scrolled row never paints over Back.
             let pages_top = rail_inset.y + nav_h;
             let pages_clip = fluor::paint::Clip::new(
-                layout.rail.x.max(0.0) as usize,
-                pages_top.max(layout.rail.y).max(0.0) as usize,
-                layout.rail.right().max(0.0) as usize,
-                layout.rail.bottom().max(0.0) as usize,
+                layout.rail.x as usize,
+                pages_top.max(layout.rail.y) as usize,
+                layout.rail.right() as usize,
+                layout.rail.bottom() as usize,
             );
             for (i, p) in settings_pages.iter().enumerate() {
                 let r = fluor::region::Region::new(
@@ -5306,17 +5306,17 @@ impl PhotonApp {
                     // Everything clips to the content pane so a scrolled-up row can't bleed into the header band (this page is far taller than the viewport). Rows fully outside the visible band are culled (perf + the pills carry no clip of their own).
                     let inset = layout.content_inset();
                     let content_clip = fluor::paint::Clip::new(
-                        inset.x.max(0.0) as usize,
-                        inset.y.max(0.0) as usize,
-                        inset.right().max(0.0) as usize,
-                        inset.bottom().max(0.0) as usize,
+                        inset.x as usize,
+                        inset.y as usize,
+                        inset.right() as usize,
+                        inset.bottom() as usize,
                     );
                     // Textboxes clip to the FULL content pane, not the reading inset — the focus glow blooms a few px past the pill, so the tighter inset clip was shaving it at the edges. Still bounded to the content pane, so it never bleeds into the rail or header.
                     let glow_clip = fluor::paint::Clip::new(
-                        layout.content.x.max(0.0) as usize,
-                        layout.content.y.max(0.0) as usize,
-                        layout.content.right().max(0.0) as usize,
-                        layout.content.bottom().max(0.0) as usize,
+                        layout.content.x as usize,
+                        layout.content.y as usize,
+                        layout.content.right() as usize,
+                        layout.content.bottom() as usize,
                     );
                     let content_top = inset.y;
                     let content_bot = inset.bottom();
@@ -6124,10 +6124,10 @@ impl PhotonApp {
                     let line = layout.content_line_h();
                     // Records clip BELOW the pinned header band.
                     let content_clip = fluor::paint::Clip::new(
-                        inset.x.max(0.0) as usize,
-                        (inset.y + 2. * line).max(0.0) as usize,
-                        inset.right().max(0.0) as usize,
-                        inset.bottom().max(0.0) as usize,
+                        inset.x as usize,
+                        (inset.y + 2. * line) as usize,
+                        inset.right() as usize,
+                        inset.bottom() as usize,
                     );
                     let header = layout.content_scrolled(2, 0.0).split_v([1.0; 2]);
                     let hr = header[0].split_h([2.0, 1.0]);
@@ -6193,7 +6193,7 @@ impl PhotonApp {
                     let row_h = line * 0.5;
                     // INSPECTOR: the tapped record's coloured VSF pretty-print, span by span (the same output vsfinfo pipes to a terminal, ANSI parsed to fluor colours). Same culling/extent math as the list — one branch, then done.
                     if let Some((_, ins_lines)) = &self.diag_log_inspect {
-                        let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
+                        let first = ((settings_content_scroll / row_h).floor()) as usize;
                         let visible = (inset.h / row_h).ceil() as usize + 2;
                         let size = row_h * 0.62;
                         for i in first..(first + visible).min(ins_lines.len()) { // the algorithm: the last page of the list is shorter than a full view
@@ -6220,7 +6220,7 @@ impl PhotonApp {
                         // The list rendering below is the OTHER mode.
                     } else {
                         // First visible record: the band's top scrolls as inset.y + 2·line − scroll, the clip top sits at inset.y + 2·line, so the first index is simply scroll/row_h. +2 rows of slack covers the fractional edges.
-                        let first = ((settings_content_scroll / row_h).floor().max(0.)) as usize;
+                        let first = ((settings_content_scroll / row_h).floor()) as usize;
                         let visible = (inset.h / row_h).ceil() as usize + 2;
                         let size = row_h * 0.62;
                         for i in first..(first + visible).min(self.diag_log_rows.len()) { // the last page is shorter, as above
@@ -6543,7 +6543,7 @@ impl PhotonApp {
                     let line_h = layout.content_line_h();
                     let cx = inset.x + inset.w * 0.5;
                     let wrap_w = inset.w - line_h;
-                    let page_clip = Some(fluor::paint::Clip::new(inset.x.max(0.0) as usize, inset.y.max(0.0) as usize, (inset.x + inset.w).max(0.0) as usize, (inset.y + inset.h).max(0.0) as usize));
+                    let page_clip = Some(fluor::paint::Clip::new(inset.x as usize, inset.y as usize, (inset.x + inset.w) as usize, (inset.y + inset.h) as usize));
                     let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
                     let head_style = TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
                     let mut y = inset.y - settings_content_scroll;
@@ -6595,10 +6595,10 @@ impl PhotonApp {
                     let cx = inset.x + inset.w * 0.5;
                     let wrap_w = inset.w - line_h;
                     let page_clip = Some(fluor::paint::Clip::new(
-                        inset.x.max(0.0) as usize,
-                        inset.y.max(0.0) as usize,
-                        (inset.x + inset.w).max(0.0) as usize,
-                        (inset.y + inset.h).max(0.0) as usize,
+                        inset.x as usize,
+                        inset.y as usize,
+                        (inset.x + inset.w) as usize,
+                        (inset.y + inset.h) as usize,
                     ));
                     let prose_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(400).font("Oxanium");
                     let head_style = TextStyle::new(hspan2, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
@@ -6825,10 +6825,10 @@ impl PhotonApp {
                     let wrap_w = inset.w - line_h;
                     // Pane clip for the CONTENT-pass text — the bg-pass slab crops at the pane top, and unclipped card text scrolling over the title band beside a trimmed logo read as a layer glitch (Nick 2026-09-02).
                     let about_clip = Some(fluor::paint::Clip::new(
-                        inset.x.max(0.0) as usize,
-                        inset.y.max(0.0) as usize,
-                        (inset.x + inset.w).max(0.0) as usize,
-                        (inset.y + inset.h).max(0.0) as usize,
+                        inset.x as usize,
+                        inset.y as usize,
+                        (inset.x + inset.w) as usize,
+                        (inset.y + inset.h) as usize,
                     ));
                     let mut y = inset.y - settings_content_scroll;
                     // The wave + wordmark now paint in the BG pass (see about_slab in the bg closure): the attest screen's proportions at pane width, never zoom-scaled, scrolled with the card. The card just advances past the slab.
@@ -7042,7 +7042,7 @@ impl PhotonApp {
 
         // Apply the frame's MEASURED extent (Flow pages) — next frame's clamp reads it.
         if let Some((content_h, pane_h)) = measured_extent {
-            self.settings_content_extent = (content_h - pane_h).max(0.0);
+            self.settings_content_extent = (content_h - pane_h).max(0.0); // (no scroll when it fits)
         }
 
         // JOINER SELECTED — the green flood (docs/lifecycle.md): this device is bound and waiting on the sponsor's human to confirm "yes, it's green and says Selected". A HOLD, not an interstitial — stray taps must not kill a ceremony mid-confirm, so presses are simply ignored while it's up (the poller or a relaunch are the exits).
@@ -7348,7 +7348,7 @@ pub(super) fn wave_fold_coverage(e: &crate::wave::wave_env::WaveEnv, cols: usize
     let mut h_lut = [0f32; 256];
     for (b, h) in h_lut.iter_mut().enumerate() {
         // WHY/PROOF: a bin louder than the reference amplitude fills its column and no more — the bar's height is capped by the rows it has.
-        *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32;
+        *h = ((b as f32 * lsb0).max(0.0).sqrt() / ref_amp).clamp(0.0, 1.0) * rows as f32; // the algorithm: the lowest bin's level sits a hair under zero after calibration
     }
     let bins = e.bins.max(1); // WHY/PROOF: the envelope's bin count is the blob's header — file data; the column walk divides by it
     let mut cov = vec![0f32; cols * rows.max(1)]; // WHY/PROOF: a band too short for one row still needs one row of coverage to index
