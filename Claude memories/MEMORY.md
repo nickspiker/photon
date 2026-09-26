@@ -32,7 +32,7 @@
 - [feedback_legacy_first.md](feedback_legacy_first.md) — port legacy compositing as visible-RGB RMW first; fluor under-blend later
 - [feedback_orb_settings_panel.md](feedback_orb_settings_panel.md) — orb = settings/about/help panel; device mgmt its own page
 - [Persist findings early](persist-findings-early.md) — Nick undoes via message edits: write load-bearing findings to memory/docs as they land
-- [Epoch is fixed](feedback_epoch_fixed.md) — HARD: Eagle epoch 20:17:48 TAI forever; never float moving it
+- [Epoch is fixed](feedback_epoch_fixed.md) — HARD: never move the epoch; fleet mints on legacy 20:17:40 UTC, TAI def 20:17:48 is +29 s; NO flip (decided 2026-09-26)
 - [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding: every string parser is an attacker's lever; drop-and-purge legacy forms the same day
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when required
 

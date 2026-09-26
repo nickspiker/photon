@@ -512,6 +512,6 @@ Test: `index_of(d, eagle_of(d, n)) == n` for all `n`, all declarations.
 
 ## Decisions since the draft (maintained by the implementer)
 
-- §16 `EPOCH`: DECIDED — 1969-07-20T20:17:48 TAI, permanently (Nick 2026-09-25: "we're not changing the epoch"). Photon and vsf have written Eagle stamps on this epoch for years; it is not an open question.
+- §16 `EPOCH`: DECIDED — never moved to another instant (Nick 2026-09-25: "we're not changing the epoch"); the definition is 1969-07-20T20:17:48 TAI. Note for implementers: the stamps the fleet mints today count POSIX seconds from the legacy label 1969-07-20T20:17:40 UTC, which runs exactly 29 s behind that definition for any instant since 2017 (vsf `LOCK_MINUS_LEGACY_SECS`); flipping minted stamps onto the TAI scale was DECIDED against (Nick 2026-09-26: "the way it was was fine") — stamps stay on the legacy scale.
 - §5.2 `sig`: optional and unused for now (Nick 2026-09-25: decryption is verification too; roll the chain — `root`/`prev` — but don't worry about per-second signatures yet).
 - Implementation: `vsf::tukutahi` (vsf/src/tukutahi.rs).
