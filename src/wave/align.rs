@@ -135,7 +135,12 @@ pub struct AlignStats {
     pub residual_ns: u64,
     /// Buffers dropped before the first HAL timestamp arrived (the spec forbids naming samples by callback time).
     pub unnamed_dropped: u64,
+    /// Times a stamp broke from the fit by more than [`REANCHOR_OSC`] and naming restarted from it.
+    pub reanchors: u64,
 }
+
+/// A HAL stamp this far from where the fit says its frame was is not drift — a crystal needs minutes to walk that far — it is a DISCONTINUITY: a stepped clock, or a HAL answering on another clock (field v104: 21 h and 55 h of sleep between MONOTONIC and BOOTTIME). The fit restarts from the new stamps and naming re-anchors, instead of slipping one sample per tick toward a target hours away.
+pub const REANCHOR_OSC: i64 = crate::OSC_PER_SEC / 100;
 
 /// The sender's aligner: HAL pairs in, grid-named frames out.
 #[derive(Clone, Debug, Default)]
@@ -152,6 +157,8 @@ pub struct Aligner {
     since_loop: i64,
     /// A slip the loop ordered that no buffer has carried yet.
     owed: Option<Slip>,
+    /// The last stamp broke from the fit: the next buffer re-anchors the names.
+    reanchor: bool,
     pub stats: AlignStats,
 }
 
@@ -162,6 +169,10 @@ impl Aligner {
 
     /// Feed one HAL timestamp pair (hardware frame position, true capture time).
     pub fn timestamp(&mut self, frame: i64, eagle: i64) {
+        if self.fit.eagle_of(frame).is_some_and(|pred| (eagle - pred).abs() > REANCHOR_OSC) {
+            self.fit = RateFit::default();
+            self.reanchor = true;
+        }
         self.fit.push(frame, eagle);
         self.stats.adc_ppm = self.fit.adc_ppm();
         self.stats.residual_ns = self.fit.residual_ns();
@@ -173,6 +184,13 @@ impl Aligner {
             self.stats.unnamed_dropped += 1;
             return;
         };
+        if std::mem::take(&mut self.reanchor) && self.next_k.is_some() {
+            // Names restart at the new truth, first frame padded exactly as at the wave's start; the partial frame held under the old names is not renamed into the new ones.
+            self.next_k = None;
+            self.pending.clear();
+            (self.filt, self.integ, self.acc, self.owed) = (0.0, 0.0, 0.0, None);
+            self.stats.reanchors += 1;
+        }
         let next_k = match self.next_k {
             Some(k) => k,
             None => {
@@ -318,6 +336,27 @@ mod tests {
         }
         assert!(worst < 0.5, "held phase {worst} samples under jitter");
         assert!(a.stats.residual_ns > 100_000, "the residual reports the jitter it absorbed: {} ns", a.stats.residual_ns);
+    }
+
+    /// A stamp that jumps by hours (a HAL answering on the wrong clock) re-anchors the names once instead of slipping forever: names after the jump sit on the new truth, and the held phase is small again.
+    #[test]
+    fn a_clock_discontinuity_re_anchors_the_names() {
+        let (mut a, mut out) = (Aligner::new(), Vec::new());
+        let e0 = 1_790_000_000 * S;
+        let mut f = 0i64;
+        let jump = -21 * 3600 * S;
+        for i in 0..(20 * RATE / 96) {
+            let off = if i as i64 * 96 >= 10 * RATE { jump } else { 0 };
+            a.timestamp(f, e0 + off + (f as f64 * (S as f64 / RATE as f64)).round() as i64);
+            a.push(&[1i32; 96], f, &mut out);
+            f += 96;
+        }
+        assert_eq!(a.stats.reanchors, 1, "one discontinuity, one re-anchor");
+        assert!(a.stats.phase_filtered.abs() < 0.5, "held on the new truth: {}", a.stats.phase_filtered);
+        let last = out.last().unwrap().0;
+        let expect = vsf::grid::eagle_to_sample(e0 + jump + (f as f64 * (S as f64 / RATE as f64)) as i64);
+        assert!((last - expect).abs() < 2 * FRAME, "names follow the new clock");
+        assert!(a.stats.slips_inserted + a.stats.slips_deleted < 5, "no slipping toward a target hours away");
     }
 
     /// And a slow crystal is held by insertions.

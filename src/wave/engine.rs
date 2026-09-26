@@ -906,6 +906,12 @@ fn run(
                     let win_k0 = unwrap_frame_no(dfno) * super::align::FRAME;
                     // How old the window's first frame is on arrival — the path floor's evidence.
                     let age = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - win_k0;
+                    // A DISCONTINUITY in the peer's names (its aligner re-anchored onto a stepped clock) shows as an age a whole second past the floor — far beyond any jitter. The old floor now describes names that no longer exist: start the minima over from here.
+                    let floor_now = age_minima.iter().copied().chain(std::iter::once(age_sec_min)).min().unwrap_or(age);
+                    if age > floor_now + 48_000 {
+                        age_minima.clear();
+                        age_sec_min = age;
+                    }
                     age_sec_min = age_sec_min.min(age);
                     if age_sec_at.elapsed() >= std::time::Duration::from_secs(1) {
                         age_sec_at = std::time::Instant::now();
@@ -1208,13 +1214,14 @@ fn run(
                 let st = aligner.stats;
                 let clk = crate::network::time_base::now_stamp();
                 crate::logf!(
-                    "WAVE: lock — adc {} ppm (fit residual {} µs), phase {} samples held ({} raw), slips +{} −{}, clock {} ±{} µs{}",
+                    "WAVE: lock — adc {} ppm (fit residual {} µs), phase {} samples held ({} raw), slips +{} −{}, re-anchors {}, clock {} ±{} µs{}",
                     st.adc_ppm.map_or("?".to_string(), |p| format!("{p:+.1}")),
                     st.residual_ns / 1000,
                     format!("{:+.2}", st.phase_filtered),
                     format!("{:+.2}", st.phase_samples),
                     st.slips_inserted,
                     st.slips_deleted,
+                    st.reanchors,
                     clk.source.name(),
                     clk.uncertainty_ns / 1000,
                     if clk.degraded() { " (DEGRADED — grid alignment not guaranteed)" } else { "" }

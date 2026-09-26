@@ -62,6 +62,8 @@ static PLAY_L: AtomicI64 = AtomicI64::new(i64::MIN);
 static PLAY_NEXT: AtomicI64 = AtomicI64::new(i64::MIN);
 /// Some far audio has reached the speaker this wave — misses count only after it has.
 static PLAYED_ANY: AtomicBool = AtomicBool::new(false);
+/// One second of samples — the size of an L step that means the peer's names jumped.
+const NATIVE_RATE_SAMPLES: i64 = 48_000;
 /// A rendered frame whose loudest sample is under this is silence, where L may step (spec §7.1: never mid-speech).
 const SILENT_MEAN: u64 = 16;
 /// Missing samples a frame may have before it counts as a miss: the DAC's own drift against true time opens a one-sample gap now and then, which is not the network losing anything.
@@ -138,6 +140,10 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     // L moves only on silence or emptiness, as one step: a longer L leaves a gap (never a replay — PLAY_NEXT holds), a shorter one passes over names whose instant is gone.
     if target != l && (got == 0 || mean_abs(&out) < SILENT_MEAN) {
         PLAY_L.store(target, Ordering::Relaxed);
+        // A step of over a second is a discontinuity in the peer's names, not a latency change: the names ahead of the speaker are a new stream, so the never-replay mark starts over with it.
+        if (target - l).abs() > NATIVE_RATE_SAMPLES {
+            PLAY_NEXT.store(i64::MIN, Ordering::Relaxed);
+        }
     }
     out
 }

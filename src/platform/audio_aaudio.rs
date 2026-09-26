@@ -27,11 +27,19 @@ static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// A stream reported an error (route change, device gone): rebuilt off the callback thread, once per fault.
 static REOPENING: AtomicBool = AtomicBool::new(false);
 
-/// The true time at which frame `pos` of this stream hits the DAC (output) or left the ADC (input): the HAL's latest timestamp, taken on the BOOT clock photon's TrueClock runs on, extrapolated to `pos` and mapped without a lock (docs/lock.md §5.1). None before the HAL has one (the first few bursts).
+/// The true time at which frame `pos` of this stream hits the DAC (output) or left the ADC (input): the HAL's latest timestamp extrapolated to `pos`, moved onto the BOOT clock photon's TrueClock runs on, and mapped without a lock (docs/lock.md §5.1). None before the HAL has one (the first few bursts).
+/// The HAL is asked for CLOCK_MONOTONIC and the answer is moved to CLOCK_BOOTTIME by reading both clocks back to back (field v104, 2026-09-26: asked for BOOTTIME, Pixel HALs answered on MONOTONIC anyway — the two differ by every second the phone ever slept, 21 h on one phone and 55 h on the other, so capture was named hours wrong and playout never found a frame due).
 fn frame_time(stream: &AudioStream, pos: i64) -> Option<i64> {
-    let ts = stream.timestamp(Clockid::Boottime).ok()?;
-    let ns = ts.time_nanoseconds + (pos - ts.frame_position) * 1_000_000_000 / SAMPLE_RATE as i64;
-    Some(crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_ns_to_osc(ns)))
+    let ts = stream.timestamp(Clockid::Monotonic).ok()?;
+    let mono = ts.time_nanoseconds + (pos - ts.frame_position) * 1_000_000_000 / SAMPLE_RATE as i64;
+    let read = |clock: libc::clockid_t| -> i64 {
+        let mut t = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        unsafe { libc::clock_gettime(clock, &mut t) };
+        t.tv_sec as i64 * 1_000_000_000 + t.tv_nsec as i64
+    };
+    // MONOTONIC and BOOTTIME tick together while awake and differ only by time asleep, so one back-to-back pair maps any recent monotonic instant exactly (to the read skew, microseconds).
+    let boot_minus_mono = read(libc::CLOCK_BOOTTIME) - read(libc::CLOCK_MONOTONIC);
+    Some(crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_ns_to_osc(mono + boot_minus_mono)))
 }
 
 /// True time now, lock-free — the stamp for a frame the HAL has not timed yet.
