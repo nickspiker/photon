@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v105
+
 ## v104
 
 - The garbled bubbles that read like `photon-callhangup…` are gone, and so are the notifications they set off: behind-the-scenes rows (wave signals, delete requests, key updates, group invites) now carry what they are as labelled fields instead of hidden inside the message text, so they can never again show up as a message or ring you.
