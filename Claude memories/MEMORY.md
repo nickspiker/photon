@@ -11,6 +11,7 @@
 - [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only
 - [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
 - [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; prose uses petnames; doctrine: [project_humanitys_code.md](project_humanitys_code.md)
+- [Stage only your own files](feedback_stage_only_own_files.md) — HARD: stage by explicit path; never `git add -u`/`-A` (shared tree; 2026-09-26 vsf sweep)
 - [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
 - [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
 - [No wrapped comments](no-wrapped-comments.md) — one sentence per line, never hard-wrapped ([feedback_no_comment_wraps.md](feedback_no_comment_wraps.md))
