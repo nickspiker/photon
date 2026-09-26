@@ -375,6 +375,10 @@ be an integer multiple of the line rate to hide the chroma/sound beat.
 `286 × 15,750 Hz = 4,504,500 Hz = 1.001 × 4.5 MHz`. They moved the line
 rate rather than the sound carrier. Every 23.976 since is that decision.
 
+Note the absurdity (Nick, 2026-09-26): the alternative was nudging the sound carrier from 4.5 MHz to 4.5045 MHz, a 4.5 kHz shift.
+The FM sound channel already swings ±25 kHz with ordinary audio, so the installed sets' intercarrier sound would have tracked a 4.5 kHz offset without anyone hearing it.
+Instead the frame rate was bent, and seventy years of timecode, drop-frame counting and 1000/1001 rationals inherited a fix for a problem one oscillator could have absorbed.
+
 ---
 
 ## 13. VSF encoding
