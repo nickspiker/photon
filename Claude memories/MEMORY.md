@@ -50,6 +50,7 @@
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid every divergence older than page one (6h, 288 rows, restart-only heal); catch-up chirped per PAGE → 36 chirps; vault = 2 commits + full catalog re-encode PER ROW (chronic, not the burst) → rarangi put_rows_in; all fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
+- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed; fix unbuilt
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission; instrumented cron kept bait (unconvicted)
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — party colours placeholder; go perceptual L≈50% via vsf spectral/LMS
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
