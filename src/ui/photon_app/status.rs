@@ -79,6 +79,8 @@ impl PhotonApp {
         let locked_device_set = self.locked_devices();
         // Clock sanity: drain any completed nunc verdict, then (if the wall clock has grossly jumped since the last baseline) spawn a fresh re-check. Both are cheap — the jump check is two clock reads and a subtraction; a re-check only spawns on an actual jump.
         self.drain_clock_check();
+        // A key exchange wedged on repeated ceremony-id mismatches is discarded and re-keyed from its deterministic posture.
+        self.break_wedged_ceremonies();
         // Surface any fleet-inbox alerts pulled since the last tick (bind attempts on our devices).
         self.drain_fleet_inbox();
         // Clock discipline refresh: on the jump edge (an NTP step, a long sleep, a hand on the clock) OR on the hourly cadence, because quartz drifts ±20-50 ppm — up to ~180 ms an hour, which is the scale that reorders a live conversation. A measurement cadence, like the engine's learner tick or PT's RTO; never UI timing.
@@ -2108,6 +2110,7 @@ impl PhotonApp {
                                 )
                                 .as_bytes();
                                 contact.ceremony_id = Some(ceremony_id);
+                                contact.ceremony_mismatch_streak = 0; // a new ceremony id is a new round: mismatches against the old one no longer count
                                 crate::logf!(
                                     "CLUTCH: Derived ceremony_id={}... from {} offer_provenances",
                                     hex::encode(&ceremony_id[..4]),
@@ -2229,6 +2232,7 @@ impl PhotonApp {
                                                 )
                                                 .as_bytes();
                                                 contact.ceremony_id = Some(ceremony_id);
+                                                contact.ceremony_mismatch_streak = 0; // a new ceremony id is a new round: mismatches against the old one no longer count
                                                 crate::logf!("CLUTCH: Derived ceremony_id={}... after sending offer", hex::encode(&ceremony_id[..4]));
                                             }
 
@@ -2576,9 +2580,12 @@ impl PhotonApp {
                             // Verify ceremony_id matches (if we have one)
                             if let Some(our_ceremony_id) = contact.ceremony_id {
                                 if received_ceremony_id != our_ceremony_id {
-                                    crate::logf!("CLUTCH: ceremony_id mismatch! Received {:02x}{:02x}..., expected {:02x}{:02x}...", received_ceremony_id[0], received_ceremony_id[1], our_ceremony_id[0], our_ceremony_id[1]);
+                                    // Counted toward the breaker (break_wedged_ceremonies): a lone mismatch is a response from a round already replaced; a run of them is two sides that will never agree on their own.
+                                    contact.ceremony_mismatch_streak = contact.ceremony_mismatch_streak.saturating_add(1); // WHY/PROOF: a u8 run of mismatches past 255 must stay "wedged", not wrap to fresh
+                                    crate::logf!("CLUTCH: ceremony_id mismatch! Received {:02x}{:02x}..., expected {:02x}{:02x}... ({} in a row)", received_ceremony_id[0], received_ceremony_id[1], our_ceremony_id[0], our_ceremony_id[1], contact.ceremony_mismatch_streak);
                                     continue;
                                 }
+                                contact.ceremony_mismatch_streak = 0;
                             } else {
                                 // No ceremony_id yet - check if we have keypairs and if KEM targets them This happens when keypairs are loaded from disk but offers not yet exchanged
                                 if let Some(our_keys_cloned) = contact.clutch_our_keypairs.clone() {

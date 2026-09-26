@@ -716,6 +716,7 @@ impl PhotonApp {
                         )
                         .as_bytes();
                         contact.ceremony_id = Some(ceremony_id);
+                        contact.ceremony_mismatch_streak = 0; // a new ceremony id is a new round: mismatches against the old one no longer count
                         crate::logf!(
                             "CLUTCH: Computed ceremony_id for {} from {} offer provenances",
                             crate::fp(&contact.handle_proof),
@@ -772,6 +773,7 @@ impl PhotonApp {
                             )
                             .as_bytes();
                             contact.ceremony_id = Some(ceremony_id);
+                            contact.ceremony_mismatch_streak = 0; // a new ceremony id is a new round: mismatches against the old one no longer count
                             crate::logf!(
                                 "CLUTCH: Computed ceremony_id for {} while draining queued KEM",
                                 crate::fp(&contact.handle_proof)

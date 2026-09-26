@@ -578,6 +578,7 @@ impl PhotonApp {
 
     /// Flag-day edge (docs/lanes.md): a keyed contact whose chains are GONE — a pre-v8 blob the loader rejected — can never speak again on its own, because Complete contacts are invisible to the keygen queue and nothing else re-keys unprompted. Reset the ceremony so the ordinary machinery mints fresh v8 chains; §4.2 parking keeps a fleet from racing itself, and the peer accepts the offer as a routine re-key whatever build it runs. Zero-remote conversations have no ceremony and are untouched.
     pub(super) fn reclutch_chainless_contacts(&mut self, why: &str) {
+        let why = &format!("keyed but holds no chains — {why}");
         for ci in 0..self.contacts.len() {
             let c = &self.contacts[ci];
             // Complete-and-chainless is the flag-day shape; Pending-and-chainless qualifies too when the pair COMPLETED a ceremony in some earlier life (the persisted completion prefix says so) — that is a device the first sweep build reset on BOTH sides, mid-storm, and a fresh add never has the prefix so it is never touched.
@@ -590,56 +591,62 @@ impl PhotonApp {
             if !sweepable || !self.has_remote(c) {
                 continue;
             }
+            // Only a contact still NAMING a friendship whose chains are gone is the flag-day shape. One with no friendship id is already in its re-key posture — this sweep or an earlier one put it there (field v104, 2026-09-26: the resume-load and attest-load sweeps ran two seconds apart, the second threw away the round the first had started, the peer had already answered the first offer, and the pair wedged on mismatched ceremony ids).
             let missing = match c.friendship_id {
                 Some(fid) => !self.friendship_chains.iter().any(|(id, _)| *id == fid),
-                None => true,
+                None => false,
             };
             if !missing {
                 continue;
             }
-            // ONE deterministic initiator per pair, or both sides reset simultaneously and cross offers forever — observed live (a field phone, 2026-08-02): 573KB offers ping-ponging between siblings every few seconds with ceremony_id mismatches, the continuous keygen/expand churn starving the phone's main thread into "Photon isn't responding". Lower key initiates (siblings compare device pubkeys, friends compare identity pids); the higher side stays Complete-but-chainless and takes the offer thru the established "peer lost their chains, accept re-key" responder path.
-            let c = &self.contacts[ci];
-            let we_initiate = if c.is_sibling {
-                self.device_keypair
-                    .as_ref()
-                    .zip(c.device_key()).is_some_and(|(kp, k)| *kp.public.as_bytes() < k)
-            } else {
-                self.our_party_id(c).is_some_and(|us| us < c.handle_hash)
-            };
-            let c = &mut self.contacts[ci];
-            crate::logf!(
-                "LANE: {} is keyed but holds no chains ({}) — {}",
-                crate::fp(&c.handle_proof).as_str(),
-                why,
-                if we_initiate {
-                    "re-clutch (we initiate)"
-                } else {
-                    "awaiting their offer (they initiate)"
-                }
-            );
-            // Whatever round either posture holds is DISCARDED — a storm-era round left in place blocks the keygen queue (it only picks keyless contacts) while its offer keeps re-sending, which IS the churn.
-            if let Some(ref mut keys) = c.clutch_our_keypairs {
-                keys.zeroize();
-            }
-            c.clutch_our_keypairs = None;
-            c.clutch_slots.clear();
-            c.ceremony_id = None;
-            c.clutch_state = if we_initiate {
-                crate::types::ClutchState::Pending
-            } else {
-                // Responder posture: Complete keeps it out of the keygen queue; the initiator's offer lands thru the established Complete-without-keypairs re-key path.
-                crate::types::ClutchState::Complete
-            };
-            c.chain_woven = false;
-            c.probe_sent = false;
-            c.their_probe_seen = false;
-            c.chain_advanced_by_ack = false;
-            c.clutch_offer_sent = false;
-            c.friendship_id = None;
-            c.clutch_round_started = None;
-            if let Some(storage) = self.storage.as_ref() {
-                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
-            }
+            self.repose_clutch_round(ci, why);
+        }
+    }
+
+    /// Put one contact's key exchange into its deterministic re-key POSTURE, discarding whatever round it held: the lower key initiates (Pending, the keygen queue mints a fresh offer), the higher waits (Complete without keys, the peer's offer lands thru the "peer lost their chains, accept re-key" path).
+    /// ONE deterministic initiator per pair, or both sides reset simultaneously and cross offers forever — observed live (a field phone, 2026-08-02): 573KB offers ping-ponging between siblings every few seconds with ceremony_id mismatches, the continuous keygen/expand churn starving the phone's main thread into "Photon isn't responding". Lower key initiates (siblings compare device pubkeys, friends compare identity pids).
+    pub(super) fn repose_clutch_round(&mut self, ci: usize, why: &str) {
+        let Some(c) = self.contacts.get(ci) else { return };
+        let we_initiate = if c.is_sibling {
+            self.device_keypair
+                .as_ref()
+                .zip(c.device_key()).is_some_and(|(kp, k)| *kp.public.as_bytes() < k)
+        } else {
+            self.our_party_id(c).is_some_and(|us| us < c.handle_hash)
+        };
+        let c = &mut self.contacts[ci]; // PROOF: `get(ci)` returned Some above and nothing between shrinks the list
+        crate::logf!(
+            "LANE: {} — {} ({})",
+            crate::fp(&c.handle_proof).as_str(),
+            if we_initiate { "re-clutch (we initiate)" } else { "awaiting their offer (they initiate)" },
+            why
+        );
+        // Whatever round either posture holds is DISCARDED — a storm-era round left in place blocks the keygen queue (it only picks keyless contacts) while its offer keeps re-sending, which IS the churn.
+        if let Some(ref mut keys) = c.clutch_our_keypairs {
+            keys.zeroize();
+        }
+        c.discard_clutch_round();
+        c.ceremony_mismatch_streak = 0;
+        c.clutch_state = if we_initiate {
+            crate::types::ClutchState::Pending
+        } else {
+            crate::types::ClutchState::Complete
+        };
+        c.chain_woven = false;
+        c.probe_sent = false;
+        c.their_probe_seen = false;
+        c.chain_advanced_by_ack = false;
+        c.friendship_id = None;
+        if let Some(storage) = self.storage.as_ref() {
+            let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+        }
+    }
+
+    /// The CEREMONY BREAKER (field v104, 2026-09-26: a sibling pair re-sent at each other every ~3 s for 40 minutes on ceremony_id mismatches — each held a ceremony id derived from offers the other had already replaced, "same keys" made each re-send its stale KEM response, and a mismatch was silently skipped, so nothing ever broke the tie). A contact that has seen [`CEREMONY_MISMATCH_LIMIT`] mismatches in a row gets its round thrown away and its deterministic posture re-taken: the initiator mints a fresh offer, the other side meets it as new keys and accepts.
+    pub(super) fn break_wedged_ceremonies(&mut self) {
+        let wedged: Vec<usize> = (0..self.contacts.len()).filter(|&ci| self.contacts[ci].ceremony_mismatch_streak >= CEREMONY_MISMATCH_LIMIT).collect();
+        for ci in wedged {
+            self.repose_clutch_round(ci, "ceremony wedged on repeated ceremony_id mismatches — round discarded, re-keying from the deterministic posture");
         }
     }
 

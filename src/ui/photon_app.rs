@@ -426,6 +426,8 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
 
 // Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the user looks, regardless of how far the cadence had backed off.
 /// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
+/// Ceremony-id mismatches in a row that mark a key exchange as wedged (see break_wedged_ceremonies). Three: one or two are a response from a round already replaced, crossing in flight; a steady run is a pair that will never agree unaided.
+const CEREMONY_MISMATCH_LIMIT: u8 = 3;
 const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs(5);
 /// Idle tier: sweep every 1min once idle past `PRESENCE_IDLE_NEAR`.
 const PRESENCE_PING_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
