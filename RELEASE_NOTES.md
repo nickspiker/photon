@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- A wave no longer stays seconds behind when it starts on a slow connection: playback now starts at a short delay and continuously tunes itself one sample at a time, at the quietest points of the sound, until it sits just behind what the network needs.
+- A wave no longer stays seconds behind when it starts on a slow connection: playback tunes itself continuously, one sample at a time at the quietest points of the sound, to sit just behind what the network actually needs, and a packet that takes more than twice as long as the fastest recent one is treated as lost instead of held for.
 - Under each avatar, the wave screen shows the quality level that voice is sent at and how late it plays at the other end; the connection colour fills the top-left circle while you wave; the rippling picture lets the background show through quiet sound, and it stops animating when the screen is off or the window is in the background.
 - The wave screen now shows the conversation as it happens: your voice and theirs ripple out of each avatar in the same colours the saved recording uses, the rings around the avatars show each side's level (green, then yellow at half, red when it clips), and the connection's colour moved to a dot beside the status line.
 - A wave no longer goes rough when a phone's clock is still settling at the start: the sender used to over-correct and drift further off time for the rest of the wave; it now lines its audio up in one step and stays within a sample.

@@ -310,7 +310,11 @@ One packet:
 
 **Superseded (Nick 2026-09-28, after a wave played 2.2 s late for its whole length: the first packets arrived in a 2.4 s burst, L was seeded from them, and the far side never went quiet enough to count as silence):**
 - **L is the target, l is the actual. No hardcoded timings anywhere** (Nick: "get rid of any timings that are hardcoded").
-- **L = the largest arrival age among the last 256 RECEIVED windows, plus the repair copy's offset** (the repair rides two windows behind its source; without that slack the backup lands just after its slot and saves nothing). One in 256 arrived later than L — the 1-in-256 rule stated as a count, with no step size. The first arrival alone sets it, whatever it is; a slow first burst leaves the window after 256 more arrivals. Only arrivals count: a lost window says nothing about delay and is the repair copy's job, so loss can never ratchet L up.
+- **Timing is trusted** ("trust the floor, it'll balance out"). Over the last 256 RECEIVED windows (a count, never a time):
+  - **floor** = the shortest arrival age — the path's best case;
+  - **cutoff** = 2 × floor: a window not here by then is **lost** — never waited for, never counted toward L ("if we haven't received it in 2x that? Lost!"). A lone 4 s straggler among 5 ms arrivals is simply lost;
+  - **L** = the 1-in-256 point of the ages inside the cutoff (with a full window inside, the single slowest may sit above L), **plus the repair copy's offset** (the repair rides two windows behind its source; without that slack the backup lands just after its slot and saves nothing).
+  - Jitter spreads ages toward the cutoff and L rises with it; past the cutoff is the repair copy's job. The first arrival alone sets L, whatever it is. The floor itself always counts, so a floor at or below zero (a clock offset larger than the path) still yields an L.
 - **l follows L one sample at a time**, never by a jump and never waiting for silence: at every sample where the stream's slope is zero or changes sign (the flat points, peaks and troughs — every sample of a silence), and l ≠ L, exactly one sample is dropped (l too long) or repeated (l too short). Uncapped: a silence lets l meet L at once; speech offers a slip at every peak and trough.
 - Nothing else moves l — not even a jump in the peer's names (a re-anchored aligner): L moves to it and l walks there by slips like any other change.
 - The DAC's own drift lands in l the same way (l is measured against the DAC's true instant), so §7.3's loop is this same corrector.

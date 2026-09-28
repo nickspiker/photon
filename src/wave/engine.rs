@@ -61,8 +61,20 @@ const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
 const JITTER_TARGET_CAP: usize = 24;
 /// Every bundle carries a 10-byte LINK TAIL: [our send stamp ms u32][echo of the peer's newest stamp u32][ms we held it u16] — an RTT measured on every packet, no separate probe.
 const LINK_TAIL: usize = 10;
-/// L's window, in RECEIVED windows (a count, never a time): L is the largest age among the last this-many arrivals, so one in this-many arrived later — Nick's 1-in-256.
+/// L's window, in RECEIVED windows (a count, never a time): the floor and the 1-in-this-many point are taken over the last this-many arrivals — Nick's 1-in-256.
 const L_WINDOW: usize = 256;
+
+/// L before the repair slack, from the recent arrival ages (docs/lock.md §7.1 as amended): the floor is the shortest age, the cutoff twice the floor (anything later is lost and ignored), and L the 1-in-L_WINDOW point of the ages inside the cutoff.
+/// The floor itself always counts, so a floor at or under zero (a clock offset larger than the path) still yields L = the floor rather than nothing.
+fn target_latency(ages: &std::collections::VecDeque<i64>) -> i64 {
+    let floor = ages.iter().copied().min().unwrap_or(0);
+    let cutoff = floor.max(floor.saturating_mul(2));
+    let mut inside: Vec<i64> = ages.iter().copied().filter(|&a| a <= cutoff).collect();
+    inside.sort_unstable_by(|a, b| b.cmp(a));
+    // With a full window of arrivals inside the cutoff, one of them is allowed above L; with fewer, none is.
+    let allowed_above = inside.len() / L_WINDOW;
+    inside.get(allowed_above).copied().unwrap_or(floor)
+}
 // PEER LOSS IN THE TAIL (Nick 2026-09-14, "go for both"): the 11th byte is MY windows-lost count over the last second — the one signal the SENDER needs, because a sender's tier affects what the PEER receives, and until today every tier decision keyed on the local receive side (the cellular wave: Emma's clean rx held her plaid at 768 kbps while Nick lost 500 windows per 10 s, and Nick's drowning rx flapped his innocent tx 11-up/8-down). A 10-byte tail (v96 and earlier) still parses — the byte is simply absent and the old local-loss governance carries.
 const LINK_TAIL_V2: usize = 11;
 /// THE LATENCY TAIL (Nick 2026-09-28, "show our and their latency below the avatar"): once a second the tail grows by a u16 — OUR playout latency l in whole ms — so the peer can show how late its voice plays for us. Only one packet a second carries it: an older peer, whose parser accepts only 10/11-byte tails, drops that one packet and its repair copy covers it.
@@ -393,8 +405,11 @@ fn run(
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
     // Plaid forensics: raw frames each way.
     let (mut raw_out, mut raw_in) = (0u64, 0u64);
-    // L, THE TARGET LATENCY (docs/lock.md §7.1 as amended, Nick 2026-09-28): the largest arrival age among the last L_WINDOW RECEIVED windows — exactly one in L_WINDOW arrived later than it, which IS the 1-in-256 rule, stated as a count with no timing and no step size. The first arrival alone sets it (whatever it is: "we just keep the first latency we get"); a slow first burst leaves the window after 256 more arrivals, and l walks to the new L by slips.
-    // Only arrivals count: a lost window says nothing about delay (more latency could not have saved it) and is the repair copy's job. It needs no agreement between the two clocks: an offset between them is part of every age (spec §7.5).
+    // L, THE TARGET LATENCY (docs/lock.md §7.1 as amended, Nick 2026-09-28) — no hardcoded timing anywhere:
+    // FLOOR = the shortest arrival age among the last L_WINDOW received windows (the path's best case — timing is trusted: "trust the floor, it'll balance out").
+    // CUTOFF = twice the floor: a window not here by then is LOST — never waited for, never counted toward L ("if we haven't received it in 2x that? Lost!").
+    // L = the 1-in-L_WINDOW point among the ages inside the cutoff (with a full window, one of them may sit above L), plus the repair copy's slack. Jitter spreads ages toward the cutoff and L rises with it; anything past the cutoff is the repair copy's job.
+    // The first arrival alone sets it, whatever it is; l walks to every new L by slips.
     let mut recent_ages: std::collections::VecDeque<i64> = std::collections::VecDeque::with_capacity(L_WINDOW);
     // Loss-rate loop state: the 256-bit ring, its cursor, the integral, the last underrun count sampled, and the target we last set.
     let mut loss_bits = [0u64; LOSS_RING / 64];
@@ -934,9 +949,7 @@ fn run(
                         recent_ages.pop_front();
                     }
                     recent_ages.push_back(age);
-                    // PROOF: the window was just pushed to, so it is never empty here.
-                    let worst = recent_ages.iter().copied().max().unwrap_or(age);
-                    crate::platform::audio::set_play_target(worst + repair_slack);
+                    crate::platform::audio::set_play_target(target_latency(&recent_ages) + repair_slack);
                     rx_decoders.remove(&wid);
                     for slot in 0..TIER_FRAMES[dtier] {
                         let base = slot * tier_slot(dtier);
@@ -1767,6 +1780,37 @@ fn serve_window_from_archive(params: &EngineParams, reader: &mut Option<super::s
         }
     }
     any.then_some((tier as u8, fno?, window))
+}
+
+#[cfg(test)]
+mod latency_target_tests {
+    use super::*;
+
+    fn window(ages: &[i64]) -> std::collections::VecDeque<i64> {
+        ages.iter().copied().collect()
+    }
+
+    /// Nick's cases (2026-09-28): a 4 s straggler among 5 ms arrivals is LOST (past twice the floor) and never moves L; jitter inside the cutoff raises L; with a full window, one arrival may sit above L; the first arrival alone sets it.
+    #[test]
+    fn floor_cutoff_and_one_in_256() {
+        let ms = |v: i64| v * 48;
+        // One arrival: it IS the floor and L.
+        assert_eq!(target_latency(&window(&[ms(2000)])), ms(2000), "the first latency we get, whatever it is");
+        // 255 at 5 ms and one at 4 s: the 4 s one is past 2 × 5 ms — lost, ignored.
+        let mut a = vec![ms(5); 255];
+        a.push(ms(4000));
+        assert_eq!(target_latency(&window(&a)), ms(5));
+        // Jitter inside the cutoff: L rises to the slowest in-cutoff arrival (fewer than 256 inside → none may sit above).
+        let mut b = vec![ms(5); 250];
+        b.extend([ms(7), ms(9), ms(10)]);
+        assert_eq!(target_latency(&window(&b)), ms(10));
+        // A full window inside the cutoff: the single slowest may sit above L — the 1-in-256.
+        let mut c = vec![ms(5); 255];
+        c.push(ms(9));
+        assert_eq!(target_latency(&window(&c)), ms(5));
+        // A floor at or under zero (a clock offset past the path) still gives an L, never nothing.
+        assert_eq!(target_latency(&window(&[-100, -50, 30])), -100);
+    }
 }
 
 #[cfg(test)]
