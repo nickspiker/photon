@@ -983,6 +983,17 @@ impl Contact {
     }
 
     /// Upsert the per-device endpoint for `pubkey` and apply `update` to it. Linear scan — fleets are single-digit sized.
+    /// The device whose offer we are answering this round (the signer of the offer in their slot) and where it was last heard — LAN first, public as the alternate. `None` when no offer is held or the device has no known address.
+    pub fn offer_device_addrs(&self) -> Option<([u8; 32], SocketAddr, Option<SocketAddr>)> {
+        let dev = self.clutch_slots.iter().filter_map(|s| s.offer_device).find(|d| self.device_endpoints.iter().any(|e| e.pubkey == *d))?;
+        let ep = self.device_endpoints.iter().find(|e| e.pubkey == dev)?;
+        match (ep.lan, ep.public) {
+            (Some(l), p) => Some((dev, l, p)),
+            (None, Some(p)) => Some((dev, p, None)),
+            (None, None) => None,
+        }
+    }
+
     pub fn endpoint_mut(&mut self, pubkey: &[u8; 32]) -> &mut DeviceEndpoint {
         if let Some(i) = self
             .device_endpoints

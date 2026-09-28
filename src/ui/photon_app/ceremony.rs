@@ -928,10 +928,18 @@ impl PhotonApp {
                         }
                     }
 
-                    // Send the KEM response
-                    if let (Some(ref checker), Some(recipient_key)) = (self.status_checker.as_ref(), contact.device_key()) {
-                        let (primary, alt) =
-                            contact.race_addrs().unwrap_or((result.peer_addr, None));
+                    // Send the KEM response — to the device whose OFFER we are answering, when we know where it is (field 2026-09-28: Emma's replies went to Nick's phone, the contact's active device, which parks a round its fleet's owner runs; the desktop that offered never saw them for nine minutes). Otherwise the contact's usual route.
+                    if let (Some(ref checker), Some(pinned)) = (self.status_checker.as_ref(), contact.device_key()) {
+                        let (recipient_key, primary, alt) = match contact.offer_device_addrs() {
+                            Some((dev, p, a)) => (dev, p, a),
+                            None => {
+                                let (p, a) = contact.race_addrs().unwrap_or((result.peer_addr, None));
+                                (pinned, p, a)
+                            }
+                        };
+                        let mut relay_to = contact.relay_device_list();
+                        relay_to.retain(|d| *d != recipient_key);
+                        relay_to.insert(0, recipient_key);
                         checker.send_kem_response(ClutchKemResponseRequest {
                             peer_addr: primary,
                             alt_addr: alt,
@@ -941,7 +949,7 @@ impl PhotonApp {
                             device_pubkey,
                             device_secret,
                             recipient_pubkey: recipient_key,
-                            relay_to: contact.relay_device_list(),
+                            relay_to,
                         });
                         crate::logf!(
                             "CLUTCH: Sent KEM response to {}",

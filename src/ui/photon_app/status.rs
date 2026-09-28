@@ -989,6 +989,9 @@ impl PhotonApp {
                                 && contact.clutch_state == ClutchState::Pending
                                 && contact.clutch_pending_kem.is_some()
                                 && contact.clutch_offer_sent
+                                // Their offer really IS missing (both slots hold one otherwise): a queued KEM next to a present offer is only a duplicate parked behind an in-flight decap, and re-sending on every pong for it was a 570 KB offer storm (field 2026-09-28: Emma re-sent 65 times in two seconds).
+                                && contact.clutch_slots.iter().filter(|s| s.offer.is_some()).count() < 2
+                                && !contact.clutch_ceremony_in_progress
                                 && !ceremony_parked_by(contact, our_device_pk, &siblings)
                             {
                                 crate::logf!("CLUTCH: still waiting for offer from {} (their KEM is queued) — re-requesting by re-sending our offer", crate::fp(&contact.handle_proof));
@@ -2317,8 +2320,14 @@ impl PhotonApp {
                                                 .expect("device_keypair set in init")
                                                 .secret
                                                 .as_bytes(),
-                                            recipient_pubkey: contact.device_key().unwrap_or_default(), // unreachable-zero: this arm answers a frame-verified peer; Option-izing the request API is the follow-up
-                                            relay_to: contact.relay_device_list(),
+                                            // The device that SIGNED the offer we answer — relay routing keys on it (a relayed offer's source address is the relay itself), and the pinned device may be a sibling that parks this round (field 2026-09-28).
+                                            recipient_pubkey: sender_pubkey,
+                                            relay_to: {
+                                                let mut r = contact.relay_device_list();
+                                                r.retain(|d| *d != sender_pubkey);
+                                                r.insert(0, sender_pubkey);
+                                                r
+                                            },
                                         });
                                         crate::logf!(
                                             "CLUTCH: Re-sent KEM response to {}",
