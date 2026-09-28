@@ -55,7 +55,7 @@
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28 (anti-windup + one-step re-align)
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears waves/all history fleet-wide; relationship × history × reach design; rest unbuilt
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
-- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28 DESIGN: independent mic/speaker pickers (BT incl.), stop-scaled TX/RX bars with linear green/yellow/red, only the selected mic's circle live; unbuilt
+- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28 DESIGN: independent mic/speaker pickers (BT incl.), stop-scaled TX/RX bars with linear green/yellow/red, every concurrently-readable mic live, the rest grey, never rotate; unbuilt
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission; instrumented cron kept bait (unconvicted)
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — party colours placeholder; go perceptual L≈50% via vsf spectral/LMS
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
