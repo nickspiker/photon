@@ -653,12 +653,7 @@ impl PhotonApp {
                                 ) {
                                     Ok((vsf_bytes, our_offer_provenance)) => {
                                         // Store our offer provenance (for ceremony_id derivation)
-                                        if !contact
-                                            .offer_provenances
-                                            .contains(&our_offer_provenance)
-                                        {
-                                            contact.offer_provenances.push(our_offer_provenance);
-                                        }
+                                        contact.note_offer_provenance(our_offer_provenance, true);
 
                                         // Persist provenance immediately
                                         if let Some(storage) = self.storage.as_ref() {

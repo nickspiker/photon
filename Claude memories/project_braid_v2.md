@@ -26,3 +26,18 @@ Migration: pong edge that completes a friend fleet's v2 → arm_heavy_weave_for 
   2. The breaker keeps existing chains and discards only the round.
   3. A weave offer for an era we don't hold (Err("no era")) is answered as a FRESH ceremony (era_prior_claim = None).
 - NEXT: a migration trigger must see BOTH fleets are v2 before arming.
+
+**SECOND OUTAGE 2026-09-28 22:36 (Nick↔Emma, era fork) — CONVICTED + FIXED (unpublished at write):**
+1. At 21:06 a fresh ceremony completed on both sides (era 17484aa3). Nick's non-owner devices (phone cacbc223, fe46a74b) still advertised the old era 7120df3c in pongs until they chain-synced; Emma (no siblings) classified it as Foreign → ConsentFresh → a heavy weave.
+2. Emma's straggling "First ACK" for the 21:06 round zeroized the NEW round's keypairs → a keygen per ACK (5 in 30 s) → a stale own-provenance left in offer_provenances (3 held) → ceremony_id mismatch ×3 on her side.
+3. The desktop still completed and SUPERSEDED to era#1 (469e1aef) at eggs time; Emma stayed on era#0.
+4. Deadlock:
+   - The desktop refused her offers from its RETIRED era ("peer is behind").
+   - The repair table said Behind → Hold ("its own repair moves it"); a friend can't catch up to an era born of a ceremony it never finished.
+   - Emma → LightRatchet → Nudge (non-initiator), ignored.
+- Fixes:
+  a. The zeroize on First ACK happens only when clutch_state == Complete.
+  b. Contact::note_offer_provenance: one provenance per side, a new offer replaces that side's old one.
+  c. A friend's weave offer is ALWAYS answered (fresh) when we can't weave its prior (retired or unknown); only siblings wait/pull.
+  d. RetiredEra.heavy (persisted "retired_heavy", absent = true): Behind on a heavy-retired era + friend + owner → ConsentFresh.
+- Still open: a lagging sibling's stale pong advertisement can make a friend arm a needless ceremony (cause 1). Now it self-heals, but it's churn.

@@ -818,9 +818,7 @@ impl PhotonApp {
                     crate::fp(&contact.handle_proof),
                     hex::encode(&our_offer_provenance[..4])
                 );
-                if !contact.offer_provenances.contains(&our_offer_provenance) {
-                    contact.offer_provenances.push(our_offer_provenance);
-                }
+                contact.note_offer_provenance(our_offer_provenance, true);
                 let (primary, alt) = contact.race_addrs().unwrap_or((ip, None));
                 checker.send_offer(ClutchOfferRequest {
                     peer_addr: primary,

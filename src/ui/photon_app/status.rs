@@ -1641,9 +1641,9 @@ impl PhotonApp {
                             }
                             ack_sealed_idx = Some(contact_idx);
 
-                            // First ACK confirms both sides have working chains - safe to zeroize CLUTCH keypairs
+                            // First ACK confirms both sides have working chains - safe to zeroize CLUTCH keypairs — but ONLY a completed round's: an ACK of the last era arriving while a NEWER round is Pending would wipe that round's fresh keys, forcing a keygen and a new provenance per straggling ACK (field 2026-09-28: Emma re-keyed five times in 30 s, the stale provenances forked the ceremony id).
                             if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                                if contact.clutch_our_keypairs.is_some() {
+                                if contact.clutch_our_keypairs.is_some() && contact.clutch_state == ClutchState::Complete {
                                     let their_identity_seed = contact.handle_hash;
                                     crate::logf!(
                                         "CLUTCH: First ACK from {} - zeroizing ephemeral keypairs",
@@ -1887,6 +1887,11 @@ impl PhotonApp {
                                     self.contacts[matched_ci].era_prior_claim = None;
                                     crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — we hold no era for this friendship; answering as a FRESH ceremony", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag);
                                 }
+                                // A FRIEND's offer is ALWAYS answered: from our retired era (the era we moved to came from a ceremony it never finished, and a friend has no chain-sync into our fleet) or from one we do not hold, the mismatched claims make both sides derive a fresh channel (field 2026-09-28: our side superseded to era#1 while Emma's side mismatched, then refused her every offer, and she refused ours — no messages either way). Only a sibling waits for chain-sync or asks the fleet.
+                                Err(why) if !self.contacts[matched_ci].is_sibling => {
+                                    self.contacts[matched_ci].era_prior_claim = None;
+                                    crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — {}; a friend's offer is always answered, as a FRESH ceremony", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag, if why == "behind" { "our RETIRED era" } else { "an era we do not hold" });
+                                }
                                 Err(why) => {
                                     crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — {}; offer not answered", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag, match why { "behind" => "that is our RETIRED era, the peer is behind (its pong shows it)", "unknown" => "an era we do not hold — asking the fleet", _ => "we hold no era for this friendship" });
                                     if why == "unknown" {
@@ -2022,6 +2027,8 @@ impl PhotonApp {
                                         contact.clutch_slots.clear();
                                         contact.ceremony_id = None;
                                         contact.offer_provenances.clear();
+                                        contact.prov_ours = None;
+                                        contact.prov_theirs = None;
                                         contact.clutch_pending_kem = None;
                                         contact.clutch_offer_sent = false;
                                         contact.clutch_state = ClutchState::Pending;
@@ -2099,8 +2106,7 @@ impl PhotonApp {
                             }
 
                             // Store their offer_provenance for ceremony_id derivation
-                            if !contact.offer_provenances.contains(&offer_provenance) {
-                                contact.offer_provenances.push(offer_provenance);
+                            if contact.note_offer_provenance(offer_provenance, false) {
                                 crate::logf!(
                                     "CLUTCH: Stored offer_provenance from {} (now have {})",
                                     crate::fp(&contact.handle_proof),
@@ -2386,9 +2392,7 @@ impl PhotonApp {
                                             slot.offer_device = Some(sender_pubkey);
                                         }
                                         // Store their offer_provenance (was cleared, need to re-add)
-                                        if !contact.offer_provenances.contains(&offer_provenance) {
-                                            contact.offer_provenances.push(offer_provenance);
-                                        }
+                                        contact.note_offer_provenance(offer_provenance, false);
 
                                         // Persist re-key state immediately
                                         if let Some(storage) = self.storage.as_ref() {
@@ -2435,9 +2439,7 @@ impl PhotonApp {
                                             slot.offer = Some(their_offer.clone());
                                             slot.offer_device = Some(sender_pubkey);
                                         }
-                                        if !contact.offer_provenances.contains(&offer_provenance) {
-                                            contact.offer_provenances.push(offer_provenance);
-                                        }
+                                        contact.note_offer_provenance(offer_provenance, false);
                                         contact.clutch_keygen_in_progress = true;
                                         rekey_request =
                                             Some((contact.id.clone(), contact.handle_hash));

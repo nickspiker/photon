@@ -286,6 +286,8 @@ pub struct RetiredEra {
     pub braid: u8,
     /// Current-era frames from the peer still to be seen before this era is dropped (RETIRED_ERA_GRACE_ROWS at cutover, decremented per frame).
     pub grace_left: u32,
+    /// The era that replaced this one came from a FULL ceremony (supersede), not an in-band light ratchet (cutover). A friend still on it cannot catch up on its own — nothing it holds derives the new era — so the owner re-keys it instead of waiting (field 2026-09-28, Emma stranded on era#0 while we held era#1).
+    pub heavy: bool,
 }
 
 /// The era a heavy weave ratchets FROM (stage 4): a snapshot of the current era taken when the ceremony round completes, plus the ceremony id as the transcript. Secret material — zeroized on drop.
@@ -1109,6 +1111,7 @@ impl FriendshipChains {
             tag: old_tag,
             grace_left: RETIRED_ERA_GRACE_ROWS,
             braid: self.braid,
+            heavy: false,
         });
         self.lane_root = Some(next.lane_root);
         self.history_key = next.history_key;
@@ -1138,6 +1141,7 @@ impl FriendshipChains {
                 tag: crate::crypto::clutch::era_tag(&old_root),
                 grace_left: RETIRED_ERA_GRACE_ROWS,
                 braid: self.braid,
+                heavy: true,
             });
         }
         self.lane_root = other.lane_root;

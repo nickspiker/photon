@@ -90,6 +90,7 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         main.push(f("retired_braid", uint(r.braid as u64)));
         main.push(f("retired_root", VsfType::hb(r.lane_root.to_vec())));
         main.push(f("retired_grace", uint(r.grace_left as u64)));
+        main.push(f("retired_heavy", uint(r.heavy as u64)));
         if let Some(hk) = r.history_key {
             main.push(f("retired_history_key", VsfType::hb(hk.to_vec())));
         }
@@ -315,6 +316,8 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             braid: braid_of(main.uint("retired_braid")),
             // WHY/PROOF: a u32 on write — as above, a wider value saturates to the longest grace instead of wrapping to none.
             grace_left: main.uint("retired_grace").map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX)),
+            // Absent = written before the flag: read as a ceremony's retirement, so a friend stranded on it gets re-keyed (the worst case is one fresh ceremony, never a friendship left holding forever).
+            heavy: main.uint("retired_heavy").map_or(true, |v| v != 0),
         });
     }
     if let (Some(idx), Some(root)) = (main.uint("pending_index"), main.h32("pending_root")) {

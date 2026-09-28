@@ -606,6 +606,9 @@ pub struct Contact {
     pub completed_their_hqc_prefix: Option<[u8; 8]>,
     /// Collected offer provenances for ceremony nonce derivation. Each offer's VSF header has hp = BLAKE3(signer_pubkey || creation_time_nanos). Sorted and combined via spaghettify to derive unique ceremony_id. Cleared when CLUTCH ceremony completes.
     pub offer_provenances: Vec<[u8; 32]>,
+    /// The provenance each SIDE last contributed to `offer_provenances` (runtime). A new offer from a side REPLACES that side's old one, so the set is always this round's two — a stale one left behind made the two sides derive different ceremony ids (field 2026-09-28: Emma held three, "ceremony_id mismatch" ×3, the era forked).
+    pub prov_ours: Option<[u8; 32]>,
+    pub prov_theirs: Option<[u8; 32]>,
 
     pub trust_level: TrustLevel,
     /// THE CONSENT GATE (2026-08-25): false = we added them and await their reciprocal add — the ceremony must NOT arm and no key material leaves this fleet toward them. Flips true on the mutuality edge (their knock/offer token-matching our roster). ABSENT AT REST = TRUE: every pre-feature row — the whole existing fleet and friend set — is grandfathered mutual, so shipping this changes nothing for anyone already connected.
@@ -801,6 +804,8 @@ impl Contact {
             clutch_ceremony_in_progress: false, // No ceremony completion running yet
             completed_their_hqc_prefix: None,   // Set when CLUTCH completes, persisted
             offer_provenances: Vec::new(),      // Collected offer provenances for ceremony nonce
+            prov_ours: None,
+            prov_theirs: None,
             trust_level: TrustLevel::Stranger,
             // Reconstruct/materialize paths default MUTUAL (legacy grandfathering + sibling stubs, which §4.2 parking already keeps from racing the owner); the ONE local-add site flips this false explicitly.
             consent_mutual: true,
@@ -1110,6 +1115,22 @@ impl Contact {
 
     /// May our next ceremony offer toward this contact claim braid v2? Only when EVERY current device of theirs has shown v2 in a pong: whichever of their devices owns the ceremony answers it, and an older one would read the claim-bound provenance differently and the round could never match.
     /// The current devices are the adopted fold, or the pinned device before any fold; a device we have not heard from counts as v1.
+    /// Record one side's offer provenance for the ceremony id: the side's previous provenance (an older round's offer) leaves the set, so both parties derive the id from exactly this round's two offers. Returns true when the set changed.
+    pub fn note_offer_provenance(&mut self, p: [u8; 32], ours: bool) -> bool {
+        let old = if ours { self.prov_ours.replace(p) } else { self.prov_theirs.replace(p) };
+        let mut changed = false;
+        if let Some(o) = old.filter(|o| *o != p) {
+            let before = self.offer_provenances.len();
+            self.offer_provenances.retain(|x| *x != o);
+            changed = self.offer_provenances.len() != before;
+        }
+        if !self.offer_provenances.contains(&p) {
+            self.offer_provenances.push(p);
+            changed = true;
+        }
+        changed
+    }
+
     pub fn braid_claimable(&self) -> bool {
         let devices: Vec<[u8; 32]> = if self.fleet_members.is_empty() {
             self.device_key().into_iter().collect()
@@ -1132,6 +1153,8 @@ impl Contact {
         self.clutch_slots.clear();
         self.ceremony_id = None;
         self.offer_provenances.clear();
+        self.prov_ours = None;
+        self.prov_theirs = None;
         self.clutch_pending_kem = None;
         self.clutch_offer_sent = false;
         self.clutch_our_eggs_proof = None;

@@ -43,6 +43,8 @@ pub(crate) struct RepairInput {
     pub siblings: SiblingVerdict,
     pub we_own: bool,
     pub peer_era_capable: bool,
+    /// A FRIEND on our retired era where a full ceremony moved us on: it cannot catch up by itself (RetiredEra::heavy).
+    pub peer_stranded: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -65,6 +67,10 @@ pub(crate) fn friendship_repair(i: &RepairInput) -> RepairVerdict {
     match i.trigger {
         RepairTrigger::StaleEraObserved { .. } => match i.peer {
             PeerEra::NoRecord | PeerEra::Same => Hold("peer era matches"),
+            // Behind on an era a light ratchet retired: the peer holds the pending era and its own cutover edge moves it. Behind on an era a CEREMONY retired: nothing it holds reaches ours — the owner re-keys it (fresh, since its prior claim cannot match ours).
+            PeerEra::Behind if i.peer_stranded => {
+                if i.we_own { ConsentFresh } else { Hold("not the era owner") }
+            }
             PeerEra::Behind => Hold("the peer is behind — its own repair moves it"),
             PeerEra::Ahead => match i.siblings {
                 SiblingVerdict::Unasked => PullFleet,
@@ -201,6 +207,11 @@ impl PhotonApp {
             RepairTrigger::FleetAllMissed => self.era_peer_seen.get(&token).map_or(PeerEra::Ahead, |(idx, tag)| classify(*idx, *tag)),
             RepairTrigger::CadenceReached | RepairTrigger::NudgeReceived => PeerEra::Same,
         };
+        let seen_tag = match trigger {
+            RepairTrigger::StaleEraObserved { peer_tag, .. } => Some(peer_tag),
+            _ => self.era_peer_seen.get(&token).map(|(_, t)| *t),
+        };
+        let peer_stranded = peer == PeerEra::Behind && !contact.is_sibling && chains.retired_era().is_some_and(|r| r.heavy && Some(r.tag) == seen_tag);
         let held = chains.era_index;
         let held_tag = chains.era_tag();
         if let RepairTrigger::StaleEraObserved { peer_index, peer_tag } = trigger {
@@ -221,8 +232,8 @@ impl PhotonApp {
         let we_own = contact.ceremony_owner.map_or(true, |o| Some(o) == ours);
         let capable = contact.peer_era_capable;
         let fp = crate::fp(&contact.handle_proof);
-        let verdict = friendship_repair(&RepairInput { trigger, peer, siblings, we_own, peer_era_capable: capable });
-        let line = format!("{trigger:?} peer={peer:?} siblings={siblings:?} own={we_own} capable={capable} → {verdict:?}");
+        let verdict = friendship_repair(&RepairInput { trigger, peer, siblings, we_own, peer_era_capable: capable, peer_stranded });
+        let line = format!("{trigger:?} peer={peer:?} stranded={peer_stranded} siblings={siblings:?} own={we_own} capable={capable} → {verdict:?}");
         crate::logf!("ERA: {} {}", fp, line);
         match verdict {
             RepairVerdict::PullFleet => {
@@ -518,7 +529,19 @@ mod tests {
     use super::*;
 
     fn input(trigger: RepairTrigger, peer: PeerEra, siblings: SiblingVerdict, we_own: bool, capable: bool) -> RepairInput {
-        RepairInput { trigger, peer, siblings, we_own, peer_era_capable: capable }
+        RepairInput { trigger, peer, siblings, we_own, peer_era_capable: capable, peer_stranded: false }
+    }
+
+    /// A friend stranded on an era a ceremony retired is re-keyed by the owner (fresh), never left holding; a non-owner still holds; a peer merely behind a light ratchet still holds.
+    #[test]
+    fn a_stranded_friend_is_re_keyed_by_the_owner() {
+        let stale = RepairTrigger::StaleEraObserved { peer_index: 0, peer_tag: 0x1748_4aa3 };
+        let mut i = input(stale, PeerEra::Behind, SiblingVerdict::Unasked, true, true);
+        assert!(matches!(friendship_repair(&i), RepairVerdict::Hold(_)), "behind a light ratchet: hold");
+        i.peer_stranded = true;
+        assert_eq!(friendship_repair(&i), RepairVerdict::ConsentFresh);
+        i.we_own = false;
+        assert!(matches!(friendship_repair(&i), RepairVerdict::Hold(_)), "only the owner re-keys");
     }
 
     /// The whole table: non-owners never mint, an unasked fleet is asked first, matching/behind peers always hold, a foreign channel goes to consent — and the verdict enum has no destructive member to reach.
