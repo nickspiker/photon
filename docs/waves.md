@@ -235,6 +235,16 @@ Nick's law (2026-09-13): "map a gain based on the speaker output… a nice linea
 Gone: the predictive gate (`PredGate` stays in `learn.rs` for its tests only), the bounded hard run, the reactive fallback, the 0.15 soft floor, the 0.02 near-mute and the "gated" tally. Kept: the canceller's adapt gate (far talks alone), the chirp's delay and floor, and a seed-time warning when `g × volume` exceeds 0.3 (the earpiece driven into the mic is not a linear path; lower the rocker).
 The one constant to tune is `DUCK_FAR_FULL` (800: emitted mean |sample| × linear volume at which the mic is fully ducked, half at half). The subband canceller and a near-aware gain (only once a filter has proven ≥ 6 dB) are the next steps on top of this, not instead of it.
 
+## The wave field (2026-09-28)
+
+The active wave screen shows the wave as it happens: a square at the top holds both parties' avatars, theirs a third in from the top-right and ours a third in from the bottom-left, and every 5 ms frame of audio ripples out of the avatar that made it.
+
+- **Age is area.** A pixel's audio age is its squared distance from the avatar's edge divided by a constant, so there is no square root anywhere and every frame of audio covers the same screen area: the newest second sits wide against the avatar, older audio packs toward the edges, about five seconds in all. The ages are precomputed per layout; a paint is two table lookups per pixel.
+- **The card's colours.** Each frame carries the same four envelope powers the kept recording's card is built from (the band rig in `record.rs`, run live), and its hue comes from the same function (`agb_bytes`), so what the screen shows live is what the card shows afterwards. Brightness is the frame's level in stops below full scale over a dozen stops.
+- **Both sides add** in linear light where the ripples overlap. A frame that never arrived paints nothing: a dark ring travelling outward.
+- **TX** is exactly the frame the far side gets (after the level plan); **RX** is each frame under its name, rippling from the frame the speaker is playing now.
+- **The avatar rings carry the live level** at the usual fixed width: green below half of full scale, yellow at exactly half, blending linearly to red at full scale. The path colour (LAN / radio / internet / relay) moved to a dot beside the status line.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-wave handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept wave are the follow-up.

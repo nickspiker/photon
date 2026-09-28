@@ -3133,7 +3133,9 @@ impl FluorApp for PhotonApp {
             || self
                 .active_wave
                 .as_ref()
-                .map_or(false, |c| c.phase == crate::wave::WavePhase::Ringing);
+                .map_or(false, |c| c.phase == crate::wave::WavePhase::Ringing)
+            // The wave field ripples with every audio frame while an Active wave owns the screen: the audio is the edge, the display rate is how often it is shown.
+            || (!self.wave_minimized && self.active_wave.as_ref().map_or(false, |c| c.phase == crate::wave::WavePhase::Active));
         let anim = animating.then(Instant::now);
         // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run. Interval tapers with idle time, so as the user stays away the scheduled wake naturally pushes further out.
         let presence = matches!(self.state, AppState::Ready).then(|| {

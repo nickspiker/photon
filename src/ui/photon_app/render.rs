@@ -478,6 +478,40 @@ impl PhotonApp {
         } else if self.ring_avatar_scaled.is_some() {
             self.ring_avatar_scaled = None;
         }
+        // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
+        let field_geom = (wave_fullscreen && matches!(wave_overlay.as_ref().map(|o| o.0), Some(crate::wave::WavePhase::Active))).then(|| {
+            let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+            super::wave_field::field_geom(buf_w, buf_h, unit_now)
+        });
+        if let Some(g) = field_geom {
+            if self.wave_field_map.as_ref().map_or(true, |m| m.side != g.side) {
+                self.wave_field_map = Some(super::wave_field::FieldMap::build(g.side));
+            }
+            let (tx, rx) = &mut self.wave_field_scratch;
+            if crate::wave::live::snapshot(crate::platform::audio::play_head(), tx, rx) {
+                self.wave_field_tabs.fill(rx, tx);
+            } else {
+                self.wave_field_tabs = Default::default();
+            }
+            let diameter = ((g.r * 2.0) as usize).max(2);
+            if self.wave_field_avatars.as_ref().map_or(true, |(d, _, _)| *d != diameter) {
+                if let Some((_, _, _, Some(pi), _)) = &wave_overlay {
+                    let scaled = |pixels: Option<&Vec<u8>>, proof: &[u8; 32]| match pixels {
+                        Some(base) => crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diameter),
+                        None => gradient_avatar_rgb(proof_gradient_seed(proof), diameter),
+                    };
+                    let c = &self.contacts[*pi];
+                    let theirs = scaled(c.avatar_pixels.as_ref(), &c.handle_proof);
+                    let our_proof = self.session.as_ref().map(|s| s.handle_proof).unwrap_or_default();
+                    let ours = scaled(self.device_avatar_pixels.as_ref(), &our_proof);
+                    self.wave_field_avatars = Some((diameter, theirs, ours));
+                }
+            }
+        } else if self.wave_field_map.is_some() {
+            self.wave_field_map = None;
+            self.wave_field_avatars = None;
+            self.wave_field_tabs = Default::default();
+        }
 
         // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
         let content_bg_scroll: isize = match self.state {
@@ -696,16 +730,20 @@ impl PhotonApp {
                         })
                     })
                     .unwrap_or(*theme::STATUS_TEXT_COLOUR);
-                let (acx, acy) = (w * 0.5, h * 0.36);
                 let avatar_r = unit * 3.5;
-                if let Some((diam, px)) = self.ring_avatar_scaled.as_ref() {
-                    crate::ui::avatar_render::draw_avatar(
-                        &mut canvas, acx, acy, avatar_r, px, *diam, None,
-                    );
+                // With the field up (an Active wave), the name/status/stats block sits under the square; otherwise the single ringing avatar at its usual height.
+                let (acx, acy) = match field_geom {
+                    Some(g) => (w * 0.5, (g.y0 + g.side) as f32 + unit * 0.2 - avatar_r),
+                    None => (w * 0.5, h * 0.36),
+                };
+                if field_geom.is_none() {
+                    if let Some((diam, px)) = self.ring_avatar_scaled.as_ref() {
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, acx, acy, avatar_r, px, *diam, None);
+                    }
                 }
-                // THE PRESENCE RING ON THE WAVE SCREEN (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings.
-                {
-                    let ring = match crate::wave::wave_tx_addr() {
+                // THE PATH COLOUR (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings. With the field up it moves OFF the avatars (Nick 2026-09-28: the avatar rings carry the live level) to a dot beside the status line.
+                let path_colour = {
+                    match crate::wave::wave_tx_addr() {
                         Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip().to_canonical() {
                             std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
                             std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
@@ -715,8 +753,20 @@ impl PhotonApp {
                         }),
                         Some(_) => super::ring_colour_of(super::ConnTier::Relay),
                         None => pi.map(|i| super::ring_tier_colour(&self.contacts[i], true)).unwrap_or(super::ring_colour_of(super::ConnTier::Relay)),
-                    };
-                    paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), ring, None);
+                    }
+                };
+                match field_geom {
+                    None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
+                    Some(g) => {
+                        // Both parties, theirs top-right and ours bottom-left, each ringed in its LIVE LEVEL colour at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
+                        if let Some((diam, theirs, ours)) = self.wave_field_avatars.as_ref() {
+                            crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
+                            crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
+                        }
+                        let th = super::ring_thickness(g.r);
+                        paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, super::wave_field::level_colour(self.wave_field_tabs.level_theirs), None);
+                        paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, super::wave_field::level_colour(self.wave_field_tabs.level_ours), None);
+                    }
                 }
                 // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
                 if matches!(phase, crate::wave::WavePhase::Ringing) {
@@ -777,15 +827,13 @@ impl PhotonApp {
                     }
                     crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(&name)).into_owned(),
                 };
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &status_line,
-                    acx,
-                    acy + avatar_r + unit * 2.2,
-                    &TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium"),
-                    None,
-                    None,
-                );
+                let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
+                if field_geom.is_some() {
+                    // The path colour's new home: a dot just left of the status line.
+                    let tw = ctx.text.measure_text(&status_line, &status_style);
+                    paint::draw_circle(&mut canvas, acx - tw * 0.5 - unit * 0.45, acy + avatar_r + unit * 2.2, unit * 0.2, path_colour, None);
+                }
+                ctx.text.draw_text_center(&mut canvas, &status_line, acx, acy + avatar_r + unit * 2.2, &status_style, None, None);
                 // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs.
                 if matches!(phase, crate::wave::WavePhase::Active) {
                     let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
@@ -805,6 +853,10 @@ impl PhotonApp {
                             None,
                         );
                     }
+                }
+                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text): fluor composites front to back.
+                if let (Some(g), Some(m)) = (field_geom, self.wave_field_map.as_ref()) {
+                    super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
                 // Actions: bottom third, thumb-reach, decline LEFT answer RIGHT with a generous gap — and bottom-anchored so an Android heads-up banner (which owns the top) can never cover them.
                 let bh = unit * 2.4;
@@ -7390,14 +7442,21 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
             if n[px] == 0 {
                 return theme::rgb_colour(0, 0, 0);
             }
-            let p = |c: usize| (acc[px][c] as f32 / n[px] as f32 * lsb[c]).max(1e-12); // WHY/PROOF: a silent column has zero energy in every band, and the colour divides by the loudest
-            let g = (p(0) * p(1) * p(2)).cbrt();
-            let r = [p(0) / g, p(1) / g, p(2) / g];
-            let top = r[0].max(r[1]).max(r[2]).max(1e-12); // WHY/PROOF: as above — the divisor is the loudest band, which silence leaves at zero
-            let ch = |v: f32| ((v / top) * 255.0).round() as u8; // `top` is the max of these three energies, so v/top ∈ [0, 1] — and the u8 cast saturates regardless
-            theme::rgb_colour(ch(r[0]), ch(r[1]), ch(r[2]))
+            let p = |c: usize| acc[px][c] as f32 / n[px] as f32 * lsb[c];
+            let [r, g, b] = agb_bytes([p(0), p(1), p(2)]);
+            theme::rgb_colour(r, g, b)
         })
         .collect()
+}
+
+/// THE AGB COLOUR (Nick: each band's power over the geometric mean of the three, the top ratio pinned at full — hue from the ratios, brightness constant), as authored VSF RGB bytes. The ONE colour function behind the kept card and the live wave field, so the two can never drift.
+/// `p` = red, green, blue band powers (any common scale).
+pub(super) fn agb_bytes(p: [f32; 3]) -> [u8; 3] {
+    let p = p.map(|v| v.max(1e-12)); // WHY/PROOF: a silent frame has zero energy in every band, and the colour divides by the geometric mean and the loudest
+    let g = (p[0] * p[1] * p[2]).cbrt();
+    let r = [p[0] / g, p[1] / g, p[2] / g];
+    let top = r[0].max(r[1]).max(r[2]).max(1e-12); // WHY/PROOF: as above — the divisor is the loudest band
+    r.map(|v| ((v / top) * 255.0).round() as u8) // `top` is the max of these three, so v/top ∈ [0, 1] — and the u8 cast saturates regardless
 }
 
 /// Draw one half-band from a coverage fold: one solid run where coverage saturates, then per-pixel alpha up the graded contour (coverage is monotone, so the first near-zero row ends the column). `colour_of` picks the column's colour (the played/unplayed split).

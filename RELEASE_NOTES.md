@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The wave screen now shows the conversation as it happens: your voice and theirs ripple out of each avatar in the same colours the saved recording uses, the rings around the avatars show each side's level (green, then yellow at half, red when it clips), and the connection's colour moved to a dot beside the status line.
 - A wave no longer goes rough when a phone's clock is still settling at the start: the sender used to over-correct and drift further off time for the rest of the wave; it now lines its audio up in one step and stays within a sample.
 - On phones that play waves through the loudspeaker because their earpiece path is too slow, the volume buttons now control the wave's volume and the screen no longer blanks as if the phone were at your ear.
 - When a wave's recording cannot be saved, the log now says exactly why.

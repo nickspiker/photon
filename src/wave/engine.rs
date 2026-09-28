@@ -443,6 +443,8 @@ fn run(
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
     // Capture cadence forensics (2026-09-09: both phones, both waves, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
     let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
+    // The wave screen's field reads what this engine sends and hears, frame by frame (wave::live).
+    crate::wave::live::start();
 
     crate::logf!(
         "WAVE: engine up — tx {} → {}, ladder {}..{} kbps (start {}{}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
@@ -579,6 +581,8 @@ fn run(
             }
             // Wire level: the health tally ("tx(mic)" now reads the PLAN level, comparable to the far side's rx tally), and the level the SPEAKER duck reads (post-makeup, so the duck's FULL constant is in plan units; muted zeros read as silence and never duck the speaker).
             let frame_sum = frame.iter().map(|s| s.unsigned_abs() as u64).sum::<u64>();
+            // The field's TX side: exactly the frame the far side is getting.
+            crate::wave::live::push_tx(k0, &frame);
             tx_energy += frame_sum;
             tx_frames += 1;
             crate::platform::audio::note_near_level(crate::platform::audio::mean_abs(&frame) as u32);
@@ -949,6 +953,7 @@ fn run(
                             rx_frames += 1;
                             raw_in += 1;
                             if draining.is_none() {
+                                crate::wave::live::push_rx(win_k0 + slot as i64 * super::align::FRAME, &pcm);
                                 crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm);
                             }
                             continue;
@@ -963,6 +968,7 @@ fn run(
                                 rx_frames += 1;
                                 // Into named playout the moment it decodes: whether it is still in time is the speaker's question, answered by its name — the name of the INPUT it carries, the codec's lookahead behind the wire name.
                                 if draining.is_none() {
+                                    crate::wave::live::push_rx(win_k0 + slot as i64 * super::align::FRAME - codec_delay, &pcm);
                                     crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME - codec_delay, pcm);
                                 }
                             }
@@ -1402,6 +1408,7 @@ fn run(
         // 1ms poll granularity (was 4ms): captured frames and just-arrived packets wait at most 1ms for their loop pass, shaving ~6ms off the round trip for the cost of a few more wakeups — cheap on a wave-dedicated thread.
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
+    crate::wave::live::stop();
 
     crate::logf!(
         "WAVE: engine down — {} pkts out, {} in, {} windows lost",

@@ -123,6 +123,33 @@ impl BandRig {
     }
 }
 
+/// The recording's band rig run LIVE, one 5 ms frame at a time (the wave screen's field, Nick 2026-09-28): the same filters and the same four mean powers the pyramid bins, so the live colours are the kept card's colours.
+pub(crate) struct LiveBands {
+    rig: BandRig,
+}
+
+impl LiveBands {
+    pub(crate) fn new() -> Self {
+        LiveBands { rig: BandRig::new() }
+    }
+
+    /// One frame's mean power per component — total, red, green, blue — as a fraction of full-scale power (32768²), the pyramid's sumsq/count at the display boundary.
+    pub(crate) fn frame_powers(&mut self, pcm: &[i16]) -> [f32; ENV_COMPONENTS] {
+        let mut sumsq = [0u64; ENV_COMPONENTS];
+        for &x in pcm {
+            let xi = x as i64;
+            let (red, green, blue) = self.rig.push(xi);
+            sumsq[0] += (xi * xi) as u64;
+            sumsq[1] += (red * red) as u64;
+            sumsq[2] += (green * green) as u64;
+            sumsq[3] += (blue * blue) as u64;
+        }
+        let n = pcm.len().max(1) as f32; // WHY/PROOF: an empty frame is silence, never a division by zero
+        let fs = 32768.0f32 * 32768.0;
+        sumsq.map(|v| v as f32 / n / fs)
+    }
+}
+
 /// The streaming envelope accumulator (Nick 2026-09-11: "a bin that's 2^17 wide that triggers a resize to downsample all by 2 to keep the total size under 2^17").
 /// Fixed integer samples-per-bin starting at 2^ENV_S0_LOG2; when a sample's bin index would pass ENV_CAP, adjacent bin pairs merge (sums and counts ADD, so the fold is bit-exact) and the bin width doubles.
 /// u64 sums of squares: a full-scale square wave needs ~25 hours in one bin to overflow, and unlike f64 the sums never round, so any resize history yields identical bytes.

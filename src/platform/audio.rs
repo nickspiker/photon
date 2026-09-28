@@ -60,6 +60,12 @@ static PLAY_FLOOR: AtomicI64 = AtomicI64::new(i64::MIN);
 static PLAY_L: AtomicI64 = AtomicI64::new(i64::MIN);
 /// The next grid name the speaker may play — names before it have had their instant (played or passed) and are never played again.
 static PLAY_NEXT: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// The grid sample the speaker plays next, or None before named playout has begun — the wave screen's RX field ripples from here.
+pub fn play_head() -> Option<i64> {
+    let k = PLAY_NEXT.load(Ordering::Relaxed);
+    (k != i64::MIN).then_some(k)
+}
 /// Some far audio has reached the speaker this wave — misses count only after it has.
 static PLAYED_ANY: AtomicBool = AtomicBool::new(false);
 /// One second of samples — the size of an L step that means the peer's names jumped.

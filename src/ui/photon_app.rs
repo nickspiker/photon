@@ -43,6 +43,7 @@ mod attachments;
 mod viewer;
 mod bridge;
 mod wave_ui;
+mod wave_field;
 mod ceremony;
 mod era;
 mod conversation;
@@ -2298,6 +2299,11 @@ pub struct PhotonApp {
     pub pending_woods_add: Option<(String, [u8; 32])>,
     /// Ring-panel avatar cache: the origin's avatar (or gradient) pre-scaled to the full-screen panel diameter — the list-size `avatar_scaled` is far too small to blit large. (diameter, pixels); rebuilt when the panel diameter changes, dropped when no wave is ringing.
     pub ring_avatar_scaled: Option<(usize, Vec<u8>)>,
+    /// The active wave screen's field (wave_field.rs): per-pixel audio ages for the current square size, this paint's colour tables, the live-history scratch, and both avatars scaled to the field's diameter (theirs, ours).
+    wave_field_map: Option<wave_field::FieldMap>,
+    wave_field_tabs: wave_field::FieldTables,
+    wave_field_scratch: (Vec<crate::wave::live::FrameEnv>, Vec<crate::wave::live::FrameEnv>),
+    wave_field_avatars: Option<(usize, Vec<u8>, Vec<u8>)>,
     /// The off-thread handle_proof derivation for the pending woods add (the ~1s memory-hard PoW never runs on the UI thread).
     pub woods_add_rx: Option<std::sync::mpsc::Receiver<(String, [u8; 32])>>,
     /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
@@ -2891,6 +2897,10 @@ impl PhotonApp {
             pending_woods_add: None,
             woods_add_rx: None,
             ring_avatar_scaled: None,
+            wave_field_map: None,
+            wave_field_tabs: Default::default(),
+            wave_field_scratch: (Vec::new(), Vec::new()),
+            wave_field_avatars: None,
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
             msg_max_scroll: 0.0,
