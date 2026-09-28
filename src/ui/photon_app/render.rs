@@ -486,7 +486,7 @@ impl PhotonApp {
             super::wave_field::field_geom(buf_w, buf_h, unit_now)
         });
         if let Some(g) = field_geom {
-            if self.wave_field_map.as_ref().map_or(true, |m| m.key != (g.w, g.h, g.side)) {
+            if self.wave_field_map.as_ref().map_or(true, |m| m.key != (g.w, g.h, g.side, g.y0)) {
                 self.wave_field_map = Some(super::wave_field::FieldMap::build(&g));
             }
             let (tx, rx) = &mut self.wave_field_scratch;

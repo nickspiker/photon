@@ -723,6 +723,41 @@ class PhotonConnectionService : Service() {
         }
     }
 
+    /** Save a file the user asked for (an attachment, a wave recording) where they can FIND it and every other app can open it (Nick 2026-09-28: "somewhere sane and shared"): the public Downloads folder, under Photon/. API 29+ goes thru MediaStore (no permission needed); older releases write the public directory directly (needs the legacy storage permission, maxSdk 28). Copies `src` (a staging file Rust landed); returns the user-facing location, or "" on failure. */
+    fun saveToDownloads(src: String, name: String): String {
+        return try {
+            val ext = name.substringAfterLast('.', "").lowercase()
+            val mime = android.webkit.MimeTypeMap.getSingleton().getMimeTypeFromExtension(ext) ?: "application/octet-stream"
+            val sub = android.os.Environment.DIRECTORY_DOWNLOADS + "/Photon"
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val values = android.content.ContentValues().apply {
+                    put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
+                    put(android.provider.MediaStore.MediaColumns.MIME_TYPE, mime)
+                    put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, sub)
+                    put(android.provider.MediaStore.MediaColumns.IS_PENDING, 1)
+                }
+                val uri = contentResolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values) ?: return ""
+                contentResolver.openOutputStream(uri)?.use { out -> java.io.File(src).inputStream().use { it.copyTo(out) } } ?: run {
+                    contentResolver.delete(uri, null, null)
+                    return ""
+                }
+                values.clear()
+                values.put(android.provider.MediaStore.MediaColumns.IS_PENDING, 0)
+                contentResolver.update(uri, values, null, null)
+            } else {
+                @Suppress("DEPRECATION")
+                val dir = java.io.File(android.os.Environment.getExternalStoragePublicDirectory(android.os.Environment.DIRECTORY_DOWNLOADS), "Photon")
+                dir.mkdirs()
+                java.io.File(src).copyTo(java.io.File(dir, name), overwrite = true)
+            }
+            PhotonLog.i(TAG, "saveToDownloads: $sub/$name ($mime)")
+            "$sub/$name"
+        } catch (e: Exception) {
+            PhotonLog.w(TAG, "saveToDownloads failed", e)
+            ""
+        }
+    }
+
     /** Ring-stop edge (answered anywhere, declined, origin hangup): tear the ongoing wave notification down. */
     fun cancelWaveNotification() {
         getSystemService(NotificationManager::class.java).cancel(WAVE_NOTIFICATION_ID)

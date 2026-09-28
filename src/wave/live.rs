@@ -7,10 +7,10 @@ use crate::wave::align::FRAME;
 use crate::wave::record::{LiveBands, ENV_COMPONENTS};
 use std::sync::Mutex;
 
-/// Frames of history the field shows: 1024 × 5 ms ≈ 5.1 s rippling out of each avatar.
-pub const FIELD_FRAMES: usize = 1024;
-/// Ring capacity: twice the shown history, a power of two so a frame number maps to its slot by masking.
-const RING: usize = FIELD_FRAMES * 2;
+/// Frames of history the field shows: 200 × 5 ms = ONE SECOND, the span from one avatar's edge to the other's (Nick 2026-09-28).
+pub const FIELD_FRAMES: usize = 200;
+/// Ring capacity: 256 frames, a power of two past the shown second so a frame number maps to its slot by masking.
+const RING: usize = 256;
 
 /// One frame's envelope: its frame number and mean power per component (fraction of full-scale power). `fno == i64::MIN` = empty slot.
 #[derive(Clone, Copy, Debug)]

@@ -3,6 +3,7 @@
     package="com.photon.messenger">
 
     <!-- Network access for messaging -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- MulticastLock (PhotonConnectionService): without it Android's radio firmware drops WiFi multicast, killing same-network LAN discovery. -->

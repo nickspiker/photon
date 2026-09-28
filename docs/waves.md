@@ -237,15 +237,17 @@ The one constant to tune is `DUCK_FAR_FULL` (800: emitted mean |sample| × linea
 
 ## The wave field (2026-09-28)
 
-The active wave screen shows the wave as it happens: a square at the top holds both parties' avatars, theirs a third in from the top-right and ours a third in from the bottom-left, and every 5 ms frame of audio ripples out of the avatar that made it.
+The active wave screen shows the wave as it happens: a square at the top holds both parties' avatars, theirs a third in from the top-right and ours a third in from the bottom-left, and every 5 ms frame of audio ripples out of the avatar that made it. The square is 24 layout units wide (ru, like the rest of the interface), narrowed only when a screen cannot hold it.
 
-- **Age is area.** A pixel's audio age is its squared distance from the avatar's edge divided by a constant, so there is no square root anywhere and every frame of audio covers the same screen area: the newest second sits wide against the avatar, older audio packs toward the edges, about five seconds in all. The ages are precomputed per layout; a paint is two table lookups per pixel.
-- **The card's colours.** Each frame carries the same four envelope powers the kept recording's card is built from (the band rig in `record.rs`, run live), and its hue comes from the same function (`agb_bytes`), so what the screen shows live is what the card shows afterwards. Brightness is the frame's level in stops below full scale over a dozen stops.
+- **One second, avatar to avatar.** A ripple reaches exactly as far as the other avatar: from one avatar's edge to the other's near edge is one second of audio (200 frames, from a 256-frame ring), on every screen. Nothing is painted past that reach, so the paint visits only each row's covered span.
+- **Age is area.** A pixel's audio age is its squared distance from the avatar divided by a constant, so there is no square root anywhere and every frame of audio covers the same screen area: the newest audio sits wide against the avatar and older audio packs toward the reach. Ages are precomputed per layout in 8.8 fixed point, and each pixel blends its two neighbouring frames by the fraction, so there are no steps between frames.
+- **The card's colours.** Each frame carries the same four envelope powers the kept recording's card is built from (the band rig in `record.rs`, run live), and its hue comes from the same function (`agb_bytes`), so what the screen shows live is what the card shows afterwards.
+- **Brightness is amplitude, 1:1, fading linearly.** A frame's light is its hue at full brightness times its amplitude (no log scale; the γ encode makes displayed brightness track amplitude), times a linear fade that reaches zero at the other avatar.
 - **Both sides add** in linear light where the ripples overlap. A frame that never arrived paints nothing: a dark ring travelling outward.
 - **TX** is exactly the frame the far side gets (after the level plan); **RX** is each frame under its name, rippling from the frame the speaker is playing now.
-- **Opacity is brightness:** a field pixel's opacity is its brightest channel, so quiet audio lets the background show thru and only loud audio covers it.
+- **A fluor layer over the speckle.** Each field pixel is the colour at full brightness with its darkness premultiplied by opacity, and its opacity is its brightness; it composites under the avatars, text and buttons, and the screen's speckled background lands under it. The panel paints no backdrop of its own, and the window chrome stays on top.
 - **Colours are computed once per frame** into a ring keyed by frame number; a paint only lays the ring out in age order.
-- **The avatar rings carry the live level** at the usual fixed width: green below half of full scale, yellow at exactly half, blending linearly to red at full scale. Under each avatar: the rung that voice is sent on and how late it plays at the far ear.
+- **The avatar rings take the field's age-0 colour:** the newest audio as its ripple leaves the avatar, at the usual fixed width. Under each avatar: the rung that voice is sent on and how late it plays at the far ear.
 - **The path colour** (LAN / radio / internet / relay) fills the top-left orb, solid, while the wave is up.
 - **Frozen when nobody is looking:** unfocused or hidden window, or the phone's display off (the proximity blank at the ear included).
 

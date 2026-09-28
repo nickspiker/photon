@@ -448,8 +448,9 @@ impl PhotonApp {
     /// Save a held blob to the user's Downloads dir under its own name, replacing an earlier save of that name. Returns the destination on success.
     pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Option<String> {
         let seed = self.session.as_ref().map(|s| s.identity_seed)?;
+        // Android: stage in the app's private dir, then hand the file to the PUBLIC Downloads/Photon (MediaStore) — the private dir was invisible to the user and every other app (Nick 2026-09-28: "somewhere sane and shared").
         #[cfg(target_os = "android")]
-        let base = crate::storage::photon_config_dir().ok()?.join("Download");
+        let base = crate::storage::photon_config_dir().ok()?.join("staging");
         #[cfg(not(target_os = "android"))]
         let base = dirs::download_dir()?;
         let _ = std::fs::create_dir_all(&base);
@@ -463,7 +464,16 @@ impl PhotonApp {
             name
         };
         // Stream the blob under exactly that name, replacing any earlier save — the same landing a bridge pigeon does, factored out.
-        crate::storage::land_blob(&seed, content_hash, &base, name)
+        let landed = crate::storage::land_blob(&seed, content_hash, &base, name)?;
+        #[cfg(target_os = "android")]
+        {
+            let staged = std::path::PathBuf::from(&landed);
+            let shared = crate::platform::jni_android::save_to_downloads(&staged, name);
+            let _ = std::fs::remove_file(&staged); // the staging copy is done with either way
+            return shared;
+        }
+        #[cfg(not(target_os = "android"))]
+        Some(landed)
     }
 
     /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.

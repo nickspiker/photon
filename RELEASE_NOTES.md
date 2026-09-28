@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The wave screen's ripples now travel from one avatar to the other in one second and fade out as they arrive, blend smoothly, show the app's background thru them, and scale with the rest of the interface; the rings around the avatars take the colour of the newest sound, and the connection colour stays in the top-left circle.
+- The window's title bar and buttons stay visible during a wave and when the contact list scrolls under them.
+- On Android, saved files and exported wave recordings now land in your Downloads folder under Photon, where other apps can find them.
 - Fixes messages and waves stopping between two people after v107: a stalled key exchange no longer throws away the keys a conversation already had, a phone that lost its keys starts a fresh exchange instead of refusing, and the automatic key upgrade that set this off is switched off until it can check both sides first.
 
 ## v107

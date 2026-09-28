@@ -269,6 +269,24 @@ pub fn wave_service_void(method: &str) -> bool {
     }
 }
 
+/// Copy a staged file into the PUBLIC Downloads folder (Downloads/Photon/<name>) via Kotlin's MediaStore bridge — where the user and every other app can find it. Returns the user-facing location, or None when the service ref isn't up or the save failed.
+pub fn save_to_downloads(src: &std::path::Path, name: &str) -> Option<String> {
+    let (vm, svc) = MESSAGE_NOTIFIER.get()?;
+    let mut env = vm.attach_current_thread().map_err(|e| error!("save_to_downloads: JVM attach failed: {:?}", e)).ok()?;
+    let js = env.new_string(src.to_string_lossy()).ok()?;
+    let jn = env.new_string(name).ok()?;
+    let out = match env.call_method(svc.as_obj(), "saveToDownloads", "(Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;", &[(&js).into(), (&jn).into()]) {
+        Ok(v) => v.l().ok()?,
+        Err(_) => {
+            let _ = env.exception_clear();
+            error!("save_to_downloads: call failed");
+            return None;
+        }
+    };
+    let s: String = env.get_string(&out.into()).ok()?.into();
+    (!s.is_empty()).then_some(s)
+}
+
 /// Open a URL in the system browser via Kotlin's ACTION_VIEW Intent bridge. Called ONLY downstream of the link consent dialog (or the About weblink) — the human already saw the full destination and said Open. Returns false when the service ref isn't up or the call throws.
 pub fn open_url(url: &str) -> bool {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
