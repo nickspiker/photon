@@ -114,6 +114,7 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 - ✅ Signed binary distribution with self-verification
 - ✅ Waves: end-to-end encrypted voice, direct peer to peer, single-digit-millisecond round trips on a LAN, lossless PCM on a clean path and an Opus ladder elsewhere; lost windows filled from the other side's recording; every wave kept as a per-party archive with a waveform card
 - ✅ Attachments: any file, byte-exact, chunked and resumable; pictures and code previewed in the row, images colour-managed thru opsin with live exposure on the desktop
+- ✅ The bridge: work one of your devices from another — a persistent shell with streamed output and Stop, and files dropped straight into the host's working directory — passless, because being in your fleet is the credential (docs/bridge.md)
 - ✅ Dozenal by default, hexadecimal for coders, arabic if you insist — every number on screen thru one base switch, magnitudes on a doubling scale (docs/dozenal.md)
 
 ### What Doesn't Work Yet
@@ -122,6 +123,7 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 - ⚠️ The wider TOKEN surface — billing you alone authorize, portable reputation, physics-anchored time — is specified in the patent and not yet in Photon
 - ⚠️ Waves have no relay carriage: two phones that cannot reach each other directly (both behind carrier NAT) signal fine but carry no audio yet
 - ⚠️ Video (beams) is on the way; the button is a stub
+- ⚠️ The bridge hosts only on Linux and macOS, sends files one way only (into the host), and has no screen, sensor or interactive-terminal support yet — designed in docs/bridge.md
 
 ### Platform Support
 
