@@ -258,6 +258,11 @@ out       = err * kp + integ
 - Jitter in the *timestamps* must not reach the loop: the regression
   already filters it. Never feed raw callback timing into `err`.
 
+**Amendments (field 2026-09-27/28, Theresa's wave; built in `wave/align.rs`):**
+- **Anti-windup.** The loop is realised as a rate loop (samples of correction per 100 ms tick, delivered as whole slips via an accumulator). `integ` is clamped to ±1 sample per tick and the accumulator to ±(1 + deadband): what one slip per tick can deliver. Without it, a long run at the ceiling banks correction the loop keeps paying after the error has crossed zero; her names ran from +374 to −4016 samples.
+- **Large gaps re-align, never slip.** Naming starts from whatever fit exists at the first buffer, and a fit from one or two stamps can move hundreds of samples as its 10 s window fills. When `|phase|` exceeds one frame (240 samples), naming restarts at the true slot in one step, first frame padded as at a wave's start.
+- **Edge guard relaxed.** The 8-sample edge rule existed because the placement score needs `x[n−1]`, which a slip blind to the previous buffer cannot see. The aligner passes the sample captured just before the buffer, so every index with a known left neighbour is a candidate (all of them, or all but the first on a wave's first buffer). Slip THD+N is unchanged: −44.8 dB at 200 Hz.
+
 ### 5.5 44.1 kHz devices
 
 Resample to 48 kHz in the same ASRC stage (`AsrcCorrector` with base ratio

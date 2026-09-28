@@ -96,16 +96,17 @@ pub enum Slip {
     Delete,
 }
 
-/// Samples at each buffer edge a slip never touches (spec §5.4).
-const SLIP_EDGE: usize = 8;
-
-/// Apply one slip to `buf` in place at the flattest, quietest point: minimise |x[n] − x[n−1]| + ¼|x[n]| over the interior (spec §5.4), duplicating or removing that sample. `false` when the buffer is too short to hold a slip away from its edges — the caller carries the command to the next buffer.
-pub fn apply_slip(buf: &mut Vec<i32>, slip: Slip) -> bool {
-    if buf.len() < 2 * SLIP_EDGE + 1 {
+/// Apply one slip to `buf` in place at the flattest, quietest point: minimise |x[n] − x[n−1]| + ¼|x[n]| (spec §5.4), duplicating or removing that sample.
+/// RELAXED EDGE (Nick 2026-09-28): the spec kept slips 8 samples from each buffer edge because the score needs x[n−1] and a slip code blind to the previous buffer cannot see it. The aligner hands over `prev`, the sample captured just before this buffer, so every index with a known left neighbour is a candidate: the whole buffer, or all but its first sample when `prev` is None (the wave's first buffer).
+/// `false` only when no index has a known left neighbour — the caller carries the command to the next buffer.
+pub fn apply_slip(buf: &mut Vec<i32>, slip: Slip, prev: Option<i32>) -> bool {
+    let first = if prev.is_some() { 0 } else { 1 };
+    if buf.len() <= first {
         return false;
     }
-    let cost = |n: usize| (buf[n] as i64 - buf[n - 1] as i64).abs() * 4 + (buf[n] as i64).abs();
-    let n = (SLIP_EDGE..buf.len() - SLIP_EDGE).min_by_key(|&n| cost(n)).expect("interior is non-empty (length checked above)");
+    let left = |n: usize| if n == 0 { prev.unwrap_or(buf[0]) } else { buf[n - 1] };
+    let cost = |n: usize| (buf[n] as i64 - left(n) as i64).abs() * 4 + (buf[n] as i64).abs();
+    let n = (first..buf.len()).min_by_key(|&n| cost(n)).expect("candidates are non-empty (length checked above)");
     match slip {
         Slip::Insert => buf.insert(n, buf[n]),
         Slip::Delete => {
@@ -165,6 +166,8 @@ pub struct Aligner {
     owed: Option<Slip>,
     /// The last stamp broke from the fit: the next buffer re-anchors the names.
     reanchor: bool,
+    /// The last sample captured before the next buffer — the left neighbour a slip at its first index is scored against.
+    last_sample: Option<i32>,
     pub stats: AlignStats,
 }
 
@@ -226,13 +229,16 @@ impl Aligner {
         }
         let mut buf = input.to_vec();
         if let Some(s) = self.owed {
-            if apply_slip(&mut buf, s) {
+            if apply_slip(&mut buf, s, self.last_sample) {
                 self.owed = None;
                 match s {
                     Slip::Insert => self.stats.slips_inserted += 1,
                     Slip::Delete => self.stats.slips_deleted += 1,
                 }
             }
+        }
+        if let Some(&x) = buf.last() {
+            self.last_sample = Some(x);
         }
         self.pending.extend_from_slice(&buf);
         let mut k = next_k;
@@ -403,6 +409,25 @@ mod tests {
         }
     }
 
+    /// Relaxed edge: with the previous buffer's last sample known, the flattest spot may be the buffer's first or last index; without it, index 0 is never scored.
+    #[test]
+    fn slips_may_land_at_buffer_edges_when_the_neighbour_is_known() {
+        // Flat only at index 0 against prev (both 500), steep everywhere else.
+        let mut b: Vec<i32> = vec![500, 9000, -9000, 9000, -9000];
+        assert!(apply_slip(&mut b, Slip::Insert, Some(500)));
+        assert_eq!(b, vec![500, 500, 9000, -9000, 9000, -9000], "duplicated at the very first index");
+        // Flat only at the last index.
+        let mut c: Vec<i32> = vec![9000, -9000, 9000, -9000, -9000];
+        assert!(apply_slip(&mut c, Slip::Delete, Some(0)));
+        assert_eq!(c, vec![9000, -9000, 9000, -9000], "removed at the very last index");
+        // No left neighbour: index 0 is not a candidate, and a one-sample buffer carries the slip onward.
+        let mut d: Vec<i32> = vec![0, 9000, -9000];
+        assert!(apply_slip(&mut d, Slip::Delete, None));
+        assert_eq!(d[0], 0, "index 0 untouched without a known neighbour");
+        assert!(!apply_slip(&mut vec![7], Slip::Insert, None));
+        assert!(apply_slip(&mut vec![7], Slip::Insert, Some(7)));
+    }
+
     /// And a slow crystal is held by insertions.
     #[test]
     fn a_slow_crystal_is_held_by_insertions() {
@@ -421,7 +446,7 @@ mod tests {
         for (i, chunk) in x.chunks(96).enumerate() {
             let mut b = chunk.to_vec();
             if i % 125 == 60 {
-                apply_slip(&mut b, if (i / 125) % 2 == 0 { Slip::Insert } else { Slip::Delete });
+                apply_slip(&mut b, if (i / 125) % 2 == 0 { Slip::Insert } else { Slip::Delete }, y.last().copied());
             }
             y.extend_from_slice(&b);
         }
