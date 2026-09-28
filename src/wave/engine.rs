@@ -64,17 +64,14 @@ const LINK_TAIL: usize = 10;
 /// L's window, in RECEIVED windows (a count, never a time): the floor and the 1-in-this-many point are taken over the last this-many arrivals — Nick's 1-in-256.
 const L_WINDOW: usize = 256;
 
-/// L before the repair slack, from the recent arrival ages (docs/lock.md §7.1 as amended): the floor is the shortest age, the cutoff the floor plus the shortest recent ROUND TRIP (anything later is lost and ignored), and L the 1-in-L_WINDOW point of the ages inside the cutoff.
-/// WHY the round trip and not twice the floor (Nick 2026-09-28): an age is our clock minus the sender's name, so the floor carries the two clocks' offset — doubling it doubled the offset too (too loose one way, collapsed the other: 1192 frames too late on a 10 ms LAN). The spread above the floor is offset-free, and so is the round trip.
-/// `rtt` = the shortest recent round trip in samples; before one is measured, only the floor counts.
-fn target_latency(ages: &std::collections::VecDeque<i64>, rtt: Option<i64>) -> i64 {
-    let floor = ages.iter().copied().min().unwrap_or(0);
-    let cutoff = floor + rtt.unwrap_or(0).max(0);
-    let mut inside: Vec<i64> = ages.iter().copied().filter(|&a| a <= cutoff).collect();
+/// L before the repair slack, from the recent arrival ages (docs/lock.md §7.1 as amended): the 1-in-L_WINDOW point of ALL the ages — with a full window, the single slowest arrival may sit above L (Nick's 1-in-256 loss rule), with fewer none may.
+/// NO CUTOFF (Nick 2026-09-28): 2 × floor doubled the clock offset, and floor + the round trip was blind to the SENDER's capture jitter (bursty capture spread arrivals 16–36 ms on a 3 ms LAN; thousands of frames played too late). The 1-in-256 point is offset-free in the way that matters — every age shifts by the offset, so L shifts by exactly it — and a lone straggler per 256 is already the one allowed above L.
+fn target_latency(ages: &std::collections::VecDeque<i64>) -> i64 {
+    let mut inside: Vec<i64> = ages.iter().copied().collect();
     inside.sort_unstable_by(|a, b| b.cmp(a));
     // With a full window of arrivals inside the cutoff, one of them is allowed above L; with fewer, none is.
     let allowed_above = inside.len() / L_WINDOW;
-    inside.get(allowed_above).copied().unwrap_or(floor)
+    inside.get(allowed_above).copied().unwrap_or(0)
 }
 // PEER LOSS IN THE TAIL (Nick 2026-09-14, "go for both"): the 11th byte is MY windows-lost count over the last second — the one signal the SENDER needs, because a sender's tier affects what the PEER receives, and until today every tier decision keyed on the local receive side (the cellular wave: Emma's clean rx held her plaid at 768 kbps while Nick lost 500 windows per 10 s, and Nick's drowning rx flapped his innocent tx 11-up/8-down). A 10-byte tail (v96 and earlier) still parses — the byte is simply absent and the old local-loss governance carries.
 const LINK_TAIL_V2: usize = 11;
@@ -412,7 +409,7 @@ fn run(
     // L = the 1-in-L_WINDOW point among the ages inside the cutoff (with a full window, one of them may sit above L), plus the repair copy's slack. Jitter spreads ages toward the cutoff and L rises with it; anything past the cutoff is the repair copy's job.
     // The first arrival alone sets it, whatever it is; l walks to every new L by slips.
     let mut recent_ages: std::collections::VecDeque<i64> = std::collections::VecDeque::with_capacity(L_WINDOW);
-    // The last L_WINDOW round trips in µs (a count, like the ages): their minimum is the cutoff's grace above the floor.
+    // The last L_WINDOW round trips in µs (a count, like the ages): their minimum is the budget line's network estimate.
     let mut recent_rtt_us: std::collections::VecDeque<u32> = std::collections::VecDeque::with_capacity(L_WINDOW);
     // The per-wave LATENCY BUDGET (Nick 2026-09-28: "where do the milliseconds go"): the capture→send hold summed over sent windows, and the RX side's last floor, L before slack, and slack, plus the output latency sampled on the stats cadence — logged once at engine down.
     let (mut budget_cap_sum, mut budget_cap_n) = (0i64, 0i64);
@@ -967,8 +964,7 @@ fn run(
                         recent_ages.pop_front();
                     }
                     recent_ages.push_back(age);
-                    let rtt_samples = recent_rtt_us.iter().copied().min().map(|u| u as i64 * 48 / 1000);
-                    let l_core = target_latency(&recent_ages, rtt_samples);
+                    let l_core = target_latency(&recent_ages);
                     budget_floor = recent_ages.iter().copied().min().unwrap_or(0);
                     budget_core = l_core;
                     budget_slack = repair_slack;
@@ -1830,39 +1826,32 @@ mod latency_target_tests {
         ages.iter().copied().collect()
     }
 
-    /// Nick's cases (2026-09-28): a 4 s straggler among 5 ms arrivals is LOST (past the floor plus the round trip) and never moves L; jitter inside the cutoff raises L; with a full window, one arrival may sit above L; the first arrival alone sets it.
+    /// Nick's 1-in-256 (2026-09-28): a lone 4 s straggler among 5 ms arrivals is the one allowed above L and never moves it; spread below a full window raises L to the slowest; the first arrival alone sets it.
     #[test]
-    fn floor_cutoff_and_one_in_256() {
+    fn one_in_256() {
         let ms = |v: i64| v * 48;
-        let rtt = Some(ms(10));
-        // One arrival: it IS the floor and L.
-        assert_eq!(target_latency(&window(&[ms(2000)]), rtt), ms(2000), "the first latency we get, whatever it is");
-        // 255 at 5 ms and one at 4 s: the 4 s one is past 5 + 10 ms — lost, ignored.
+        assert_eq!(target_latency(&window(&[ms(2000)])), ms(2000), "the first latency we get, whatever it is");
         let mut a = vec![ms(5); 255];
         a.push(ms(4000));
-        assert_eq!(target_latency(&window(&a), rtt), ms(5));
-        // Jitter inside the cutoff: L rises to the slowest in-cutoff arrival (fewer than 256 inside → none may sit above).
-        let mut b = vec![ms(5); 250];
-        b.extend([ms(7), ms(9), ms(15)]);
-        assert_eq!(target_latency(&window(&b), rtt), ms(15));
-        // A full window inside the cutoff: the single slowest may sit above L — the 1-in-256.
-        let mut c = vec![ms(5); 255];
-        c.push(ms(9));
-        assert_eq!(target_latency(&window(&c), rtt), ms(5));
-        // Before any round trip is measured, only the floor counts.
-        assert_eq!(target_latency(&window(&[ms(5), ms(9)]), None), ms(5));
+        assert_eq!(target_latency(&window(&a)), ms(5), "one straggler per 256 sits above L");
+        // Sender jitter (bursty capture): the spread is honoured, never discarded as loss.
+        let b: Vec<i64> = (0..200).map(|i| ms(5) + (i % 5) * ms(4)).collect();
+        assert_eq!(target_latency(&window(&b)), ms(21));
+        // Two stragglers in a full window: the second one moves L.
+        let mut c = vec![ms(5); 254];
+        c.extend([ms(40), ms(90)]);
+        assert_eq!(target_latency(&window(&c)), ms(40));
     }
 
-    /// The clock offset moves L by exactly itself and changes nothing else: the same arrivals seen thru a clock 30 ms ahead or 30 ms behind give the same margin above the floor (twice-the-floor did not — it doubled the offset).
+    /// The clock offset moves L by exactly itself and changes nothing else.
     #[test]
-    fn the_cutoff_is_offset_free() {
+    fn l_moves_by_exactly_the_offset() {
         let ms = |v: i64| v * 48;
-        let rtt = Some(ms(6));
         let base: Vec<i64> = (0..200).map(|i| ms(4) + (i % 9) * 48).collect();
-        let l0 = target_latency(&window(&base), rtt);
+        let l0 = target_latency(&window(&base));
         for d in [ms(30), -ms(30), -ms(4)] {
             let shifted: Vec<i64> = base.iter().map(|a| a + d).collect();
-            assert_eq!(target_latency(&window(&shifted), rtt), l0 + d, "offset {d}");
+            assert_eq!(target_latency(&window(&shifted)), l0 + d, "offset {d}");
         }
     }
 }
