@@ -282,6 +282,22 @@ fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &Fie
     canvas.damage.add_bounds(bx0, by0, bx0 + bw, by0 + map.bh);
 }
 
+/// Is this global IPv6 peer on our own /64? Asks the OS which source address it would send from — a connected UDP socket, no packet leaves — and compares prefixes. Cached per peer address, so a render reads it without a syscall.
+fn v6_same_link(peer: std::net::Ipv6Addr) -> bool {
+    static CACHE: std::sync::Mutex<Option<(std::net::Ipv6Addr, bool)>> = std::sync::Mutex::new(None);
+    let mut c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((p, v)) = *c {
+        if p == peer {
+            return v;
+        }
+    }
+    let same = std::net::UdpSocket::bind("[::]:0")
+        .and_then(|s| s.connect((peer, 9)).and_then(|_| s.local_addr()))
+        .is_ok_and(|l| matches!(l.ip(), std::net::IpAddr::V6(ours) if ours.segments()[..4] == peer.segments()[..4]));
+    *c = Some((peer, same));
+    same
+}
+
 impl PhotonApp {
     /// THE PATH COLOUR (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings. During an Active wave it fills the top-left orb (Nick 2026-09-28); the avatar rings carry the live level instead.
     pub(super) fn wave_path_colour(&self, pi: Option<usize>) -> u32 {
@@ -289,8 +305,8 @@ impl PhotonApp {
             Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip().to_canonical() {
                 std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
                 std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
-                // An IPv6 peer on OUR /64 is the same LAN (field 2026-09-12: a same-room wave ran on the router's global v6 at 10 ms and read green).
-                std::net::IpAddr::V6(v6) if self.our_reflexive.map_or(false, |o| matches!(o.ip().to_canonical(), std::net::IpAddr::V6(ours) if ours.segments()[..4] == v6.segments()[..4])) => super::ConnTier::Lan,
+                // An IPv6 peer on OUR /64 is the same LAN (field 2026-09-12: a same-room wave ran on the router's global v6 at 10 ms and read green). OUR /64 is the source address the OS would send from (field 2026-09-28: the learned reflexive was v4 on one phone, so the same wave read cyan one way and green the other).
+                std::net::IpAddr::V6(v6) if v6_same_link(v6) || self.our_reflexive.map_or(false, |o| matches!(o.ip().to_canonical(), std::net::IpAddr::V6(ours) if ours.segments()[..4] == v6.segments()[..4])) => super::ConnTier::Lan,
                 _ => super::ConnTier::Wan,
             }),
             Some(_) => super::ring_colour_of(super::ConnTier::Relay),

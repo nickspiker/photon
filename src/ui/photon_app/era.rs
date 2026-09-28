@@ -432,6 +432,17 @@ impl PhotonApp {
                 let ours = self.friendship_chains[pos].1.era_tag();
                 if ours == Some(prior_tag) {
                     self.repair_dispatch(ci, RepairTrigger::NudgeReceived);
+                } else if let Some(r) = self.friendship_chains[pos].1.retired_era().filter(|r| r.heavy && r.tag == prior_tag && !self.contacts[ci].is_sibling).map(|r| r.era_index) {
+                    // A STRANDED friend nudging from the era a ceremony retired (field 2026-09-28: Emma nudged all evening, ignored): its nudge is the edge that it is up and asking. A round already pending re-fires our offer now (its earlier sends may have landed on a build that could not answer); none pending starts the re-key.
+                    let pending = self.contacts[ci].clutch_state != crate::types::ClutchState::Complete && self.contacts[ci].clutch_our_keypairs.is_some();
+                    if pending {
+                        crate::logf!("ERA: {} nudged from our retired era {:08x} — stranded; re-firing our pending offer", fp, prior_tag);
+                        self.contacts[ci].clutch_offer_sent = false;
+                        self.resend_clutch_offer(ci);
+                    } else {
+                        crate::logf!("ERA: {} nudged from our retired era {:08x} — stranded; re-keying", fp, prior_tag);
+                        self.repair_dispatch(ci, RepairTrigger::StaleEraObserved { peer_index: r, peer_tag: prior_tag });
+                    }
                 } else {
                     crate::logf!("ERA: {} nudged from {:08x} but we are on {} — ignored (its pong or our chain-sync converges it)", fp, prior_tag, ours.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into()));
                 }

@@ -13,3 +13,9 @@ Nick's rules (he disowned the silence rule: "We said nothing about silence"): ca
 - Each side reports its l once a second in a 13-byte LINK_TAIL_V3 (older peers drop just that packet; repair covers it); UI shows under each avatar: that voice's rung · far-ear latency (≈ when the clock is degraded).
 Also built in the same batch: orb = solid path colour during an Active wave (update_orb wave branch, orb_wave), field frozen when unwatched (desktop window_attended; Android foreground && DisplayListener display_on — proximity blank), field α = brightest channel (background shows thru), colour cache ring keyed by frame number.
 Related: [[project_aligner_windup]], [[project_audio_picker_levels]], [[feedback_stops_not_db]].
+
+**2026-09-28 FIELD FINDING (unfixed, needs Nick's call):**
+- The cutoff = 2 × floor is NOT offset-invariant. The ages are receiver clock − sender's name, so floor = true_min + δ (the clock offset, ±tens of ms between phones on nunc).
+- δ > 0 inflates the cutoff (and L); δ ≤ 0 collapses it to about floor, so L is too tight and frames arrive too late.
+- LAN wave, RTT 10 ms: Nick l = 44 ms with 1192 too-late frames; Emma l = 55 ms with 127 too-late. Emma's phone also captures in 960-frame (20 ms) bursts (no fast path), which makes her arrivals bursty.
+- Proposed offset-free form: cutoff = floor + min RTT (the RTT is exact).
