@@ -394,15 +394,21 @@ fn decode_slot_n(dec: &mut opus::Decoder, cell: &Option<Cell>, frame: usize) -> 
 
 /// KEEP → the `PHCALL8` container (every spooled packet verbatim, one decode pass for the envelope), stored as a content-addressed blob. Returns (content_hash, size); consumes the ticket (dropping it crypto-shreds the spool key either way); removes the spool file on success. `None` = nothing recorded (treat keep as delete) or a codec init failure.
 pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<Kept> {
+    // Every way this returns None names its reason in the log (drain_records names its own); the caller's "not kept" line points back here.
     let records = drain_records(&ticket)?;
     let Some(t) = build_container(&records) else {
+        let (arch, fills) = (records.iter().filter(|r| r.is_arch()).count(), records.iter().filter(|r| r.is_fill()).count());
+        crate::logf!("WAVE: keep failed — {} spool record(s) ({} archive, {} fill) built no recording (nothing on any channel, or a codec init failure)", records.len(), arch, fills);
         crate::wave::spool::shred(ticket);
         return None;
     };
     let hash = *blake3::hash(&t.container).as_bytes();
     let size = t.container.len() as u64;
     // Chunked past BLOB_CHUNK_SIZE (2026-09-11): a 13-minute wave is 26 MB, and one whole PT transfer of that never reached the desktop on any leg — chunks replicate a piece at a time with resume, like every other attachment.
-    crate::storage::blob_store_any(identity_seed, &hash, &t.container).ok()?;
+    if let Err(e) = crate::storage::blob_store_any(identity_seed, &hash, &t.container) {
+        crate::logf!("WAVE: keep failed — the vault refused the {} byte recording ({} s): {}", size, t.secs, e);
+        return None;
+    }
     // The envelope blob rides beside the recording under its own hash — small, so it lands at the far end long before the audio.
     let env = t.env.and_then(|e| {
         let eh = *blake3::hash(&e).as_bytes();

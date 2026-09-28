@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave no longer goes rough when a phone's clock is still settling at the start: the sender used to over-correct and drift further off time for the rest of the wave; it now lines its audio up in one step and stays within a sample.
+- On phones that play waves through the loudspeaker because their earpiece path is too slow, the volume buttons now control the wave's volume and the screen no longer blanks as if the phone were at your ear.
+- When a wave's recording cannot be saved, the log now says exactly why.
 ## v106
 
 - Booting a contact now sticks: a booted contact no longer comes back from your cloud backup, from another of your devices that had not caught up, or from a failed sync; adding them again on purpose still works.

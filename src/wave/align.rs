@@ -121,6 +121,10 @@ const KI: f64 = 0.002;
 const DEADBAND: f64 = 0.5;
 const TAU_S: f64 = 1.0;
 const LOOP_SAMPLES: i64 = RATE / 10;
+/// The most correction one tick can deliver: one slip. ANTI-WINDUP (field 2026-09-27, Theresa's phone): the integrator and the pending correction are clamped to what slips can actually deliver, or a long run at the one-slip ceiling banks a debt the loop keeps paying after the error has crossed zero — her names ran from +374 to −4016 samples and kept going.
+const MAX_TICK: f64 = 1.0;
+/// A named-vs-captured gap this large is not drift for slips to walk off (at one slip a tick that is 24 s of slipping): the names re-align in one step, first frame padded exactly as at the wave's start. An unconverged first fit is the usual source (Theresa's opened 374 samples off).
+pub const REALIGN_SAMPLES: f64 = FRAME as f64;
 
 /// What one push reports for the per-second telemetry (spec §8): the measured phase, the slips so far, the fit's view of the crystal.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
@@ -137,6 +141,8 @@ pub struct AlignStats {
     pub unnamed_dropped: u64,
     /// Times a stamp broke from the fit by more than [`REANCHOR_OSC`] and naming restarted from it.
     pub reanchors: u64,
+    /// Times the names sat more than [`REALIGN_SAMPLES`] from their capture instants and re-aligned in one step instead of slipping.
+    pub realigns: u64,
 }
 
 /// A HAL stamp this far from where the fit says its frame was is not drift — a crystal needs minutes to walk that far — it is a DISCONTINUITY: a stepped clock, or a HAL answering on another clock (field v104: 21 h and 55 h of sleep between MONOTONIC and BOOTTIME). The fit restarts from the new stamps and naming re-anchors, instead of slipping one sample per tick toward a target hours away.
@@ -185,26 +191,18 @@ impl Aligner {
             return;
         };
         if std::mem::take(&mut self.reanchor) && self.next_k.is_some() {
-            // Names restart at the new truth, first frame padded exactly as at the wave's start; the partial frame held under the old names is not renamed into the new ones.
-            self.next_k = None;
-            self.pending.clear();
-            (self.filt, self.integ, self.acc, self.owed) = (0.0, 0.0, 0.0, None);
+            self.restart_names();
             self.stats.reanchors += 1;
         }
-        let next_k = match self.next_k {
-            Some(k) => k,
-            None => {
-                // THE FIRST FRAME IS PADDED (Nick 2026-09-25): the first captured sample takes the grid name nearest its true instant, and the part of its frame before it is zeros — the wave starts the instant the human speaks, on a grid boundary.
-                let k = vsf::grid::eagle_to_sample(measured);
-                let f0 = frame_start(k);
-                self.pending = vec![0; (k - f0) as usize]; // PROOF: frame_start(k) ≤ k < frame_start(k) + FRAME
-                self.next_k = Some(f0);
-                f0
-            }
-        };
+        let mut next_k = self.name_from(measured);
         // The name this buffer's first sample is about to receive, against the instant it was actually captured.
-        let named = next_k + self.pending.len() as i64;
-        let phase = vsf::grid::phase_error_samples(named, measured);
+        let mut phase = vsf::grid::phase_error_samples(next_k + self.pending.len() as i64, measured);
+        if phase.abs() > REALIGN_SAMPLES {
+            self.restart_names();
+            self.stats.realigns += 1;
+            next_k = self.name_from(measured);
+            phase = vsf::grid::phase_error_samples(next_k + self.pending.len() as i64, measured);
+        }
         self.stats.phase_samples = phase;
         let dt = input.len() as f64 / RATE as f64;
         self.filt += (phase - self.filt) * (dt / TAU_S).min(1.0);
@@ -213,8 +211,8 @@ impl Aligner {
         if self.since_loop >= LOOP_SAMPLES {
             self.since_loop = 0;
             // PI on the filtered phase; the output is samples of correction per 100 ms tick (discrete loop: ζ ≈ kp / 2√ki ≈ 0.56, settling ≈ 16 s — inside the spec's 30 s).
-            self.integ += self.filt * KI;
-            self.acc += self.filt * KP + self.integ;
+            self.integ = (self.integ + self.filt * KI).clamp(-MAX_TICK, MAX_TICK);
+            self.acc = (self.acc + self.filt * KP + self.integ).clamp(-(MAX_TICK + DEADBAND), MAX_TICK + DEADBAND);
             // Captured LATER than its name says (positive phase) ⇒ the names run early ⇒ insert a sample to push the rest later; earlier ⇒ delete one. At most one slip per tick; the deadband keeps a half-sample of accumulated correction from dithering.
             if self.owed.is_none() {
                 if self.acc > DEADBAND {
@@ -245,6 +243,28 @@ impl Aligner {
         }
         self.pending.drain(..whole);
         self.next_k = Some(k);
+    }
+
+    /// Names restart at the truth on the next buffer, first frame padded exactly as at the wave's start; the partial frame held under the old names is not renamed into the new ones, and the loop forgets everything it was correcting.
+    fn restart_names(&mut self) {
+        self.next_k = None;
+        self.pending.clear();
+        (self.filt, self.integ, self.acc, self.owed) = (0.0, 0.0, 0.0, None);
+    }
+
+    /// The grid name of `pending[0]`, minting it from `measured` when naming (re)starts.
+    fn name_from(&mut self, measured: i64) -> i64 {
+        match self.next_k {
+            Some(k) => k,
+            None => {
+                // THE FIRST FRAME IS PADDED (Nick 2026-09-25): the first captured sample takes the grid name nearest its true instant, and the part of its frame before it is zeros — the wave starts the instant the human speaks, on a grid boundary.
+                let k = vsf::grid::eagle_to_sample(measured);
+                let f0 = frame_start(k);
+                self.pending = vec![0; (k - f0) as usize]; // PROOF: frame_start(k) ≤ k < frame_start(k) + FRAME
+                self.next_k = Some(f0);
+                f0
+            }
+        }
     }
 }
 
@@ -357,6 +377,30 @@ mod tests {
         let expect = vsf::grid::eagle_to_sample(e0 + jump + (f as f64 * (S as f64 / RATE as f64)) as i64);
         assert!((last - expect).abs() < 2 * FRAME, "names follow the new clock");
         assert!(a.stats.slips_inserted + a.stats.slips_deleted < 5, "no slipping toward a target hours away");
+    }
+
+    /// Field 2026-09-27 (Theresa's phone): the first frame named far off true time — an unconverged first fit — must never wind the loop up into a runaway. A gap past REALIGN_SAMPLES re-aligns in one step; a gap just under it is slipped off at the one-slip ceiling and then HELD, with no overshoot past the far side.
+    #[test]
+    fn a_large_start_offset_never_winds_the_loop_up() {
+        for start_off in [400i64, -400, 200, -200] {
+            let (mut a, mut out) = (Aligner::new(), Vec::new());
+            let e0 = 1_790_000_000 * S;
+            let mut f = 0i64;
+            let mut worst_late = 0.0f64;
+            for i in 0..(90 * RATE / 96) {
+                // The first second's stamps sit `start_off` samples away from the truth the rest of the wave reports: the fit converging after naming began.
+                let off = if i as i64 * 96 < RATE { start_off * S / RATE } else { 0 };
+                a.timestamp(f, e0 + off + (f as f64 * (S as f64 / RATE as f64)).round() as i64);
+                a.push(&[0i32; 96], f, &mut out);
+                f += 96;
+                if i as i64 * 96 > 60 * RATE {
+                    worst_late = worst_late.max(a.stats.phase_filtered.abs());
+                }
+            }
+            eprintln!("start {start_off}: held phase after 60 s {worst_late:.3}, realigns {}, reanchors {}, slips +{} -{}", a.stats.realigns, a.stats.reanchors, a.stats.slips_inserted, a.stats.slips_deleted);
+            assert!(worst_late < 0.5, "start {start_off}: held phase {worst_late} samples after a minute");
+            assert!(a.stats.slips_inserted + a.stats.slips_deleted < 400, "start {start_off}: no runaway slipping");
+        }
     }
 
     /// And a slow crystal is held by insertions.

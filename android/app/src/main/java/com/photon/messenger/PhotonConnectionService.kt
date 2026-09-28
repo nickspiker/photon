@@ -180,14 +180,17 @@ class PhotonConnectionService : Service() {
         val outs = am.getDevices(android.media.AudioManager.GET_DEVICES_OUTPUTS)
         var kind = -1
         var id = "unknown"
+        // A media-usage render never reaches the earpiece: while a wave plays on media, the earpiece is not a candidate.
+        val mediaWave = waveAudioRunning && !renderVoiceUsage
         fun rank(t: Int): Int = when (t) {
             android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_HEARING_AID -> 4
             android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 3
-            android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 2
+            android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> if (mediaWave) 0 else 2
             android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> 1
             else -> 0
         }
-        val comm = if (waveAudioRunning && Build.VERSION.SDK_INT >= 31) am.communicationDevice else null
+        // The communication device is the truth only for a voice-usage render; a media render follows Android's media routing.
+        val comm = if (waveAudioRunning && renderVoiceUsage && Build.VERSION.SDK_INT >= 31) am.communicationDevice else null
         val dev = comm ?: outs.maxByOrNull { rank(it.type) }
         if (dev != null) {
             when (rank(dev.type)) {
@@ -219,8 +222,11 @@ class PhotonConnectionService : Service() {
 
     /** Which USAGE the Rust render stream actually opened with — reported by native code after every output open (wave_service_void renderUsageVoice/renderUsageMedia), so the volume mirror reads the stream that truly governs the wave instead of guessing from the route (field 2026-09-15: Nick's mirror said −32 dB while he heard the far side fine). */
     @Volatile var renderVoiceUsage = false
-    fun renderUsageVoice() { renderVoiceUsage = true; pushVolumeMirror() }
-    fun renderUsageMedia() { renderVoiceUsage = false; pushVolumeMirror() }
+    // THE ROCKER FOLLOWS THE RENDER (field 2026-09-26, Emma's SM-N976V): a device whose vendor voice pipeline steals the fast path reopens the render on MEDIA usage, which plays from the loudspeaker under STREAM_MUSIC. The route side effects keyed on the requested earpiece alone left the rocker on STREAM_VOICE_CALL (maxed, governing nothing) and the proximity blank armed, while the wave played at a 7% media volume — silent with the rocker at the top. Every usage report re-runs the side effects so the rocker, the blank and the route pill follow the stream actually playing.
+    fun renderUsageVoice() { renderVoiceUsage = true; applyRouteSideEffects() }
+    fun renderUsageMedia() { renderVoiceUsage = false; applyRouteSideEffects() }
+    /** The wave is truly at the ear: the earpiece is the routed communication device AND the render rides voice usage (the only usage that device carries). A media-usage render plays from the loudspeaker whatever the communication device says. */
+    private fun atEar(): Boolean = earpieceRouted && renderVoiceUsage
 
     /** The routed volume in dB, mirrored to Rust: the stream that governs the RENDER TRACK'S ACTUAL USAGE (voice-communication on the earpiece fast path, media otherwise — native reports it, see renderVoiceUsage). The dB is the plain index ratio (20·log10(idx/max), floor −60): monotone, vendor-curve-free — getStreamVolumeDb's per-device curves returned −32 dB at audible settings on Nick's phone (2026-09-15), which poisoned the echo normalization and every level diagnosis. A member so the route change can call it (2026-09-12). */
     fun pushVolumeMirror() {
@@ -901,10 +907,10 @@ class PhotonConnectionService : Service() {
     fun waveWentActive() {
         PhotonActivity.live?.let { a -> a.runOnUiThread { a.setWaveLockScreenFlags(false) } }
         // Re-assert the lock on the active edge too: an answer that raced the route change can have skipped the acquire.
-        if (waveAudioRunning && earpieceRouted) {
+        if (waveAudioRunning && atEar()) {
             try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         }
-        PhotonLog.i(TAG, "waveAudio: active — keyguard flags cleared, proximity blank armed (earpiece=" + earpieceRouted + ", held=" + (proximityLock?.isHeld ?: false) + ")")
+        PhotonLog.i(TAG, "waveAudio: active — keyguard flags cleared, proximity blank armed (earpiece=" + earpieceRouted + ", voice usage=" + renderVoiceUsage + ", held=" + (proximityLock?.isHeld ?: false) + ")")
     }
 
     /** Called from Rust (wave_service_void) as a wave goes active, BEFORE Rust opens its AAudio streams: the Android-only chores — proximity lock, foreground microphone type (or the permission prompt). No audio threads live here any more. */
@@ -960,15 +966,18 @@ class PhotonConnectionService : Service() {
     private fun applyRouteSideEffects() {
         if (waveAudioRunning) {
             try {
-                if (earpieceRouted) proximityLock?.acquire()
+                if (atEar()) proximityLock?.acquire()
                 else proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) }
             } catch (e: Exception) { PhotonLog.w(TAG, "proximity follow-route failed", e) }
         }
-        val routed = earpieceRouted
+        // The rocker governs the stream the wave actually plays on: voice at the ear, MUSIC for a media-usage render (the fast-path fallback), the default otherwise.
+        val stream = when {
+            atEar() -> android.media.AudioManager.STREAM_VOICE_CALL
+            waveAudioRunning && !renderVoiceUsage -> android.media.AudioManager.STREAM_MUSIC
+            else -> android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
+        }
         PhotonActivity.live?.let { a ->
-            a.runOnUiThread {
-                a.volumeControlStream = if (routed) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
-            }
+            a.runOnUiThread { a.volumeControlStream = stream }
         }
         pushVolumeMirror()
         pushRouteMirror()
@@ -994,7 +1003,7 @@ class PhotonConnectionService : Service() {
         routeWaveAudio(true)
         acquireWaveWifiLock()
         // Proximity blanks the screen ONLY on the earpiece route (2026-09-14, "still being a bugger"): on speaker/headset a hand or pocket over the sensor was turning the screen off mid-wave. Earpiece = at the ear = blanking is right.
-        if (earpieceRouted) {
+        if (atEar()) {
             try { proximityLock?.acquire() } catch (e: Exception) { PhotonLog.w(TAG, "proximity lock acquire failed", e) }
         }
         val hasMic = checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) ==

@@ -1214,7 +1214,7 @@ fn run(
                 let st = aligner.stats;
                 let clk = crate::network::time_base::now_stamp();
                 crate::logf!(
-                    "WAVE: lock — adc {} ppm (fit residual {} µs), phase {} samples held ({} raw), slips +{} −{}, re-anchors {}, clock {} ±{} µs{}",
+                    "WAVE: lock — adc {} ppm (fit residual {} µs), phase {} samples held ({} raw), slips +{} −{}, re-anchors {}, re-aligns {}, clock {} ±{} µs{}",
                     st.adc_ppm.map_or("?".to_string(), |p| format!("{p:+.1}")),
                     st.residual_ns / 1000,
                     format!("{:+.2}", st.phase_filtered),
@@ -1222,6 +1222,7 @@ fn run(
                     st.slips_inserted,
                     st.slips_deleted,
                     st.reanchors,
+                    st.realigns,
                     clk.source.name(),
                     clk.uncertainty_ns / 1000,
                     if clk.degraded() { " (DEGRADED — grid alignment not guaranteed)" } else { "" }

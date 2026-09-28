@@ -15,3 +15,5 @@ Kotlin PhotonConnectionService: pushVolumeMirror correctly reads STREAM_MUSIC (l
 So the rocker raised VOICE_CALL (which nothing plays on) and the media render stayed at ~7%; proximity lock also armed (earpiece=true) so she held a blanked phone to her ear while the render went to the loudspeaker.
 **Why:** a device whose vendor voice pipeline steals the fast path gets a silent wave with no user remedy.
 **How to apply:** the rocker binding, the proximity lock and the route pill must follow the render's ACTUAL usage (renderVoiceUsage), not the requested route; renderUsageMedia/Voice must re-run applyRouteSideEffects. Related: [[project_waves]], [[project_level_plan_reaim]].
+
+**FIXED 2026-09-28 (dev android after v106):** PhotonConnectionService atEar() = earpieceRouted && renderVoiceUsage drives proximity + volumeControlStream (VOICE_CALL at the ear, MUSIC for a media-usage wave, default otherwise); renderUsageVoice/Media re-run applyRouteSideEffects; the route mirror ignores the communication device for a media render. Field verify pending on a fallback device (Emma's SM-N976V).

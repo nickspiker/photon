@@ -1677,7 +1677,7 @@ impl PhotonApp {
                 }
                 None => {
                     crate::wave::spool::drop_register(&r.wave_id8);
-                    crate::log("WAVE: recording was empty — nothing kept");
+                    crate::log("WAVE: recording not kept — the WAVE: keep line(s) just above say why");
                 }
             }
         }

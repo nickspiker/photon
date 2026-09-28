@@ -276,28 +276,48 @@ impl SpoolReader {
 
 /// Decrypt the spool into its raw records `[(channel, osc, opus)…]` in write order (`channel` is the old `dir` byte — 0=local mic, 1=remote, generalizing to a per-participant index). A truncated/corrupt tail record (engine mid-write at the stop edge) ends the read — at most one lost frame, never an error. Shared by [`finalize`] (the PHWAVE1 packer) and the N-channel transcode in [`crate::wave::record`], so the decrypt/nonce discipline lives in exactly one place.
 pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<Record>> {
-    let cipher = XChaCha20Poly1305::new_from_slice(&ticket.key).ok()?;
-    let bytes = std::fs::read(&ticket.path).ok()?;
+    // Every early exit names itself (field 2026-09-27: a 17-minute wave logged only "recording was empty" and the spool was gone before anyone could ask why).
+    let Ok(cipher) = XChaCha20Poly1305::new_from_slice(&ticket.key) else {
+        crate::log("WAVE: keep — spool key unusable, nothing read");
+        return None;
+    };
+    let bytes = match std::fs::read(&ticket.path) {
+        Ok(b) => b,
+        Err(e) => {
+            crate::logf!("WAVE: keep — spool file unreadable: {}", e);
+            return None;
+        }
+    };
     let mut out = Vec::new();
     let mut off = 0usize;
     let mut counter = 0u64;
+    let mut unparsed = 0usize;
     while off + 2 <= bytes.len() {
         let len = u16::from_le_bytes(bytes[off..off + 2].try_into().unwrap()) as usize;
         off += 2;
         if off + len > bytes.len() {
-            break; // truncated tail — the stop-edge race, at most one frame
+            // Truncated tail — the stop-edge race, at most one frame. Named when it is more than that.
+            if bytes.len() - off > len.min(4096) {
+                crate::logf!("WAVE: keep — spool truncated at record {} (offset {} of {} bytes)", counter, off, bytes.len());
+            }
+            break;
         }
         let mut nonce = [0u8; 24];
         nonce[..8].copy_from_slice(&counter.to_le_bytes());
         counter += 1;
         let Ok(plain) = cipher.decrypt(&nonce.into(), &bytes[off..off + len]) else {
-            break; // corruption past here — keep what decrypted
+            // Corruption past here — keep what decrypted, and say where it stopped.
+            crate::logf!("WAVE: keep — spool record {} failed to decrypt at offset {} of {} bytes; keeping the {} before it", counter.saturating_sub(1), off, bytes.len(), out.len());
+            break;
         };
         off += len;
         if let Some(r) = parse_plain(&plain) {
             out.push(r);
+        } else {
+            unparsed += 1;
         }
     }
+    crate::logf!("WAVE: keep — spool read {} record(s) from {} bytes{}", out.len(), bytes.len(), if unparsed > 0 { format!(", {unparsed} unparseable") } else { String::new() });
     Some(out)
 }
 
