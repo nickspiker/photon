@@ -39,7 +39,7 @@ const RENDER_ENV_MAX: usize = 2048; // ~10s of 5ms frames
 static RENDER_ENV_TOTAL: AtomicUsize = AtomicUsize::new(0);
 
 // NAMED PLAYOUT (docs/lock.md §7, Nick 2026-09-25: "if it's not there, don't play it; if it gets there late and we are still within the window, cue it up and start it late … no fade in either. honest and clean"). The far party's frames arrive NAMED by grid sample (the sender's microphone instant) and are played by name against true time: each render asks for the samples whose names belong at the DAC's true instant minus the playout latency L. A sample that is here plays; one that is not plays as zero; one whose instant has passed is never played; nothing is repeated, faded, spliced or primed.
-// L = the path floor (the smallest arrival-minus-capture age over the last 30 s, measured by the engine — it also absorbs a peer whose clock is off, spec §7.5) + the loss loop's margin in frames. L changes only on a frame that is silent or empty, as one step (spec §7.1).
+// L (target) = the engine's 1-in-256 point of arrival ages plus the repair copy's offset (spec §7.1 as amended 2026-09-28); l (actual) follows it one sample at a time at the stream's zero-slope and sign-change points (named_frame). It absorbs a peer whose clock is off (spec §7.5) because the offset is part of every age.
 const JITTER_FLOOR: usize = 1; // the loss loop's least margin: one 5 ms frame over the path floor
 const JITTER_CAP: usize = 24; // 120 ms of margin — the most the engine's loop may ask for, even on a bad relay
 static JITTER_TARGET: AtomicUsize = AtomicUsize::new(JITTER_FLOOR);
@@ -54,11 +54,11 @@ pub fn set_jitter_target(frames: usize) {
 static NAMED: AtomicBool = AtomicBool::new(false);
 /// The far party's decoded frames by grid name (k0 of the frame's first sample), ascending.
 static WAVE_RX: Mutex<VecDeque<(i64, Vec<i16>)>> = Mutex::new(VecDeque::new());
-/// The path floor in samples (engine-measured); `i64::MIN` until the first frame has been measured.
-static PLAY_FLOOR: AtomicI64 = AtomicI64::new(i64::MIN);
-/// The playout latency in force, samples; `i64::MIN` until the first render sets it.
+/// L, the TARGET playout latency in samples (engine-set: the 1-in-256 point of arrival ages plus the repair copy's offset); `i64::MIN` until the engine sets it.
+static PLAY_TARGET: AtomicI64 = AtomicI64::new(i64::MIN);
+/// l, the ACTUAL playout latency in samples at the start of the last rendered frame (DAC true instant minus the name being played); `i64::MIN` before the first render.
 static PLAY_L: AtomicI64 = AtomicI64::new(i64::MIN);
-/// The next grid name the speaker may play — names before it have had their instant (played or passed) and are never played again.
+/// The read cursor: the next grid name the speaker plays. Names before it have had their instant (played, or slipped past) and are never played again.
 static PLAY_NEXT: AtomicI64 = AtomicI64::new(i64::MIN);
 
 /// The grid sample the speaker plays next, or None before named playout has begun — the wave screen's RX field ripples from here.
@@ -70,8 +70,6 @@ pub fn play_head() -> Option<i64> {
 static PLAYED_ANY: AtomicBool = AtomicBool::new(false);
 /// One second of samples — the size of an L step that means the peer's names jumped.
 const NATIVE_RATE_SAMPLES: i64 = 48_000;
-/// A rendered frame whose loudest sample is under this is silence, where L may step (spec §7.1: never mid-speech).
-const SILENT_MEAN: u64 = 16;
 /// Missing samples a frame may have before it counts as a miss: the DAC's own drift against true time opens a one-sample gap now and then, which is not the network losing anything.
 const MISS_SLACK: usize = 2;
 
@@ -80,9 +78,9 @@ pub fn set_named_playout(on: bool) {
     NAMED.store(on, Ordering::Relaxed);
 }
 
-/// Engine hook: the path floor — the smallest (arrival − capture) age, in samples, over the recent window.
-pub fn set_play_floor(samples: i64) {
-    PLAY_FLOOR.store(samples, Ordering::Relaxed);
+/// Engine hook: L, the target playout latency in samples.
+pub fn set_play_target(samples: i64) {
+    PLAY_TARGET.store(samples, Ordering::Relaxed);
 }
 
 /// One decoded far frame, named by the grid sample of its first sample. A frame whose instant has already passed is dropped here — it would never play.
@@ -99,57 +97,77 @@ pub fn queue_named(k0: i64, frame: Vec<i16>) {
     q.insert(at, (k0, frame));
 }
 
-/// Build the far channel's render frame for the DAC instant `at_osc` (true time of its first sample): every sample whose name is due and present, zeros elsewhere.
+/// Build the far channel's render frame for the DAC instant `at_osc` (true time of its first sample).
+/// l FOLLOWS L BY SLIPS (Nick 2026-09-28): each output sample reads the next name at the cursor; at a sample where the stream's slope is zero or changes sign, and l ≠ L, exactly one sample is dropped (l too long) or repeated (l too short). Nothing else ever moves l: no jumps, no waiting for silence, no cap — a silent (all-zero) stretch is eligible at every sample, so l meets L there at once, and speech offers a slip at every peak and trough.
+/// Missing names read as zero (a gap plays as silence, and silence is where l moves freest). A name whose instant has passed is never played.
+/// The DAC's own crystal drift lands in l the same way (it is the DAC's true instant that sets l), so the §7.3 drift loop is this same corrector.
 fn named_frame(at_osc: i64) -> Vec<i16> {
     let mut out = vec![0i16; FRAME_SAMPLES];
-    let floor = PLAY_FLOOR.load(Ordering::Relaxed);
-    if floor == i64::MIN {
-        return out; // nothing measured yet — nothing can be due
+    let target = PLAY_TARGET.load(Ordering::Relaxed);
+    if target == i64::MIN {
+        return out; // no target yet — nothing can be due
     }
-    let target = floor + (JITTER_TARGET.load(Ordering::Relaxed) * FRAME_SAMPLES) as i64;
-    let mut l = PLAY_L.load(Ordering::Relaxed);
-    if l == i64::MIN {
-        l = target;
-        PLAY_L.store(l, Ordering::Relaxed);
+    let dac_k = vsf::grid::eagle_to_sample(at_osc);
+    let mut p = PLAY_NEXT.load(Ordering::Relaxed);
+    // The first frame starts exactly on L. A cursor more than a second from L is a discontinuity in the peer's names (its aligner re-anchored onto a stepped clock), not a latency: the stream ahead of the speaker is a new one, so reading starts over on it.
+    if p == i64::MIN || ((dac_k - p) - target).abs() > NATIVE_RATE_SAMPLES {
+        p = dac_k - target;
     }
-    let want = vsf::grid::eagle_to_sample(at_osc) - l;
-    let next = PLAY_NEXT.load(Ordering::Relaxed);
-    let from = if next == i64::MIN { want } else { want.max(next) };
-    let end = want + FRAME_SAMPLES as i64;
-    let mut got = 0usize;
+    // The names this frame can reach: the one before the cursor (for the slope), and at most two per output sample (a drop per sample in a silent stretch).
+    let lo = p - 1;
+    let span = 2 * FRAME_SAMPLES + 3;
+    let mut win = vec![0i16; span];
+    let mut have = vec![false; span];
     {
-        let mut q = WAVE_RX.lock().unwrap();
+        let q = WAVE_RX.lock().unwrap();
         for (k0, f) in q.iter() {
-            if *k0 >= end {
+            if *k0 >= lo + span as i64 {
                 break;
             }
-            let lo = (*k0).max(from);
-            let hi = (*k0 + f.len() as i64).min(end);
-            for k in lo..hi {
-                out[(k - want) as usize] = f[(k - *k0) as usize]; // PROOF: want ≤ from ≤ k < end = want + FRAME_SAMPLES, and k0 ≤ k < k0 + len
-                got += 1;
+            let a = (*k0).max(lo);
+            let b = (*k0 + f.len() as i64).min(lo + span as i64);
+            for k in a..b {
+                win[(k - lo) as usize] = f[(k - *k0) as usize]; // PROOF: lo ≤ a ≤ k < b ≤ lo + span, and k0 ≤ k < k0 + len
+                have[(k - lo) as usize] = true;
             }
         }
-        // Every name before `end` has now had its instant.
-        while q.front().is_some_and(|(k0, f)| *k0 + f.len() as i64 <= end) {
+    }
+    let at = |k: i64| -> i32 { win[(k - lo) as usize] as i32 }; // PROOF: every k read below lies in [p−1, p + 2·FRAME + 1] ⊂ [lo, lo + span)
+    let mut missing = 0usize;
+    // ONE slip per point: a repeat leaves the cursor on the same sample, and that sample must not qualify again on the next output (it would chain repeats at one peak).
+    let mut slipped_at = i64::MIN;
+    for (i, o) in out.iter_mut().enumerate() {
+        let l = dac_k + i as i64 - p;
+        let (d0, d1) = (at(p) - at(p - 1), at(p + 1) - at(p));
+        let eligible = p != slipped_at && (d0 == 0 || d1 == 0 || (d0 > 0) != (d1 > 0));
+        if eligible && l > target {
+            p += 1; // DROP: this sample is skipped, l shortens by one
+        }
+        if !have[(p - lo) as usize] {
+            missing += 1;
+        }
+        *o = at(p) as i16;
+        if eligible && l < target {
+            slipped_at = p; // a REPEAT leaves the cursor where it is, lengthening l by one
+        } else {
+            p += 1;
+        }
+    }
+    PLAY_L.store(dac_k + FRAME_SAMPLES as i64 - p, Ordering::Relaxed); // the lag the next sample will play at
+    PLAY_NEXT.store(p, Ordering::Relaxed);
+    // Every name before the cursor has had its instant.
+    {
+        let mut q = WAVE_RX.lock().unwrap();
+        while q.front().is_some_and(|(k0, f)| *k0 + f.len() as i64 <= p) {
             q.pop_front();
         }
     }
-    PLAY_NEXT.store(if next == i64::MIN { end } else { end.max(next) }, Ordering::Relaxed);
-    let due = (end - from).max(0) as usize; // WHY/PROOF: after L grows, `from` (never replay) can sit past this frame's end — nothing is due then, which is a gap, not a negative count
-    if PLAYED_ANY.load(Ordering::Relaxed) && got + MISS_SLACK < due {
+    let got = FRAME_SAMPLES - missing;
+    if PLAYED_ANY.load(Ordering::Relaxed) && missing > MISS_SLACK {
         JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
     }
     if got > 0 {
         PLAYED_ANY.store(true, Ordering::Relaxed);
-    }
-    // L moves only on silence or emptiness, as one step: a longer L leaves a gap (never a replay — PLAY_NEXT holds), a shorter one passes over names whose instant is gone.
-    if target != l && (got == 0 || mean_abs(&out) < SILENT_MEAN) {
-        PLAY_L.store(target, Ordering::Relaxed);
-        // A step of over a second is a discontinuity in the peer's names, not a latency change: the names ahead of the speaker are a new stream, so the never-replay mark starts over with it.
-        if (target - l).abs() > NATIVE_RATE_SAMPLES {
-            PLAY_NEXT.store(i64::MIN, Ordering::Relaxed);
-        }
     }
     out
 }
@@ -171,14 +189,20 @@ static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 /// Far frames that arrived after their instant had passed — never played (the honest "frames shed").
 static LATE_DROPPED: AtomicUsize = AtomicUsize::new(0);
 
-/// Per-wave playout diagnostics: (margin frames over the path floor, far frames waiting, misses, frames too late to play).
+/// Per-wave playout diagnostics: (the loss loop's margin frames — telemetry only now, far frames waiting, misses, frames too late to play).
 pub fn jitter_stats() -> (usize, usize, usize, usize) {
     (JITTER_TARGET.load(Ordering::Relaxed), WAVE_RX.lock().unwrap().len(), JITTER_UNDERRUNS.load(Ordering::Relaxed), LATE_DROPPED.load(Ordering::Relaxed))
 }
 
-/// The playout latency in force, in samples (path floor + margin); `None` before the first far frame.
+/// l, the actual playout latency in samples; `None` before the first far frame.
 pub fn play_latency() -> Option<i64> {
     let l = PLAY_L.load(Ordering::Relaxed);
+    (l != i64::MIN).then_some(l)
+}
+
+/// L, the target playout latency in samples; `None` before the engine sets it.
+pub fn play_target() -> Option<i64> {
+    let l = PLAY_TARGET.load(Ordering::Relaxed);
     (l != i64::MIN).then_some(l)
 }
 
@@ -543,13 +567,14 @@ pub fn render_env_since(cursor: usize) -> (Vec<(i64, f32)>, usize) {
 fn clear_queues() {
     let (margin, waiting, misses, late) = jitter_stats();
     if misses > 0 || waiting > 0 || late > 0 {
-        crate::logf!("WAVE: playout — margin {} frames over the path floor, latency {} samples, {} far frame(s) left waiting, {} miss(es), {} too late to play (5 ms frames)", margin, play_latency().map_or("?".to_string(), |l| l.to_string()), waiting, misses, late);
+        let _ = margin;
+        crate::logf!("WAVE: playout — l {} samples against L {}, {} far frame(s) left waiting, {} miss(es), {} too late to play (5 ms frames)", play_latency().map_or("?".to_string(), |l| l.to_string()), play_target().map_or("?".to_string(), |l| l.to_string()), waiting, misses, late);
     }
     CAPTURE_Q.lock().unwrap().clear();
     PLAYBACK_Q.lock().unwrap().clear();
     WAVE_RX.lock().unwrap().clear();
     NAMED.store(false, Ordering::Relaxed);
-    PLAY_FLOOR.store(i64::MIN, Ordering::Relaxed);
+    PLAY_TARGET.store(i64::MIN, Ordering::Relaxed);
     PLAY_L.store(i64::MIN, Ordering::Relaxed);
     PLAY_NEXT.store(i64::MIN, Ordering::Relaxed);
     PLAYED_ANY.store(false, Ordering::Relaxed);
@@ -1003,34 +1028,44 @@ mod tests {
         let (fresh, _) = render_env_since(cur);
         assert_eq!(fresh.len(), 1, "post-hygiene renders resume flowing to the held cursor");
 
-        // NAMED PLAYOUT: the far channel plays by name against true time — present samples at their instant, zeros for what is not here, a late frame from where its time has reached, nothing twice.
+        // NAMED PLAYOUT (as amended 2026-09-28): the far channel plays by name; l, the actual latency, follows L, the target, by ONE sample per zero-slope or sign-change point — never a jump.
         clear_queues();
         set_named_playout(true);
-        set_play_floor(0);
-        set_jitter_target(1); // L = 0 + one frame = 240 samples
-        let k: i64 = 1_000_000 * FRAME_SAMPLES as i64;
-        let dac = |want: i64| vsf::grid::sample_to_eagle(want + FRAME_SAMPLES as i64); // the DAC instant whose due names start at `want`
         let f = FRAME_SAMPLES as i64;
+        set_play_target(f); // L = one frame
+        let k: i64 = 1_000_000 * f;
+        let dac = |dac_k: i64| vsf::grid::sample_to_eagle(dac_k);
+        // On target, a present frame plays whole and exactly; an absent one is its own silence and a miss.
         queue_named(k, vec![100; FRAME_SAMPLES]);
-        assert_eq!(next_render_frame_at(dac(k)), vec![100i16; FRAME_SAMPLES], "present and due: played whole");
-        assert_eq!(next_render_frame_at(dac(k + f)), vec![0i16; FRAME_SAMPLES], "absent: its own silence, nothing repeated or faded");
+        assert_eq!(next_render_frame_at(dac(k + f)), vec![100i16; FRAME_SAMPLES], "present and due: played whole");
+        assert_eq!(next_render_frame_at(dac(k + 2 * f)), vec![0i16; FRAME_SAMPLES], "absent: its own silence, nothing repeated or faded");
         assert_eq!(jitter_stats().2, 1, "and it counts as a miss");
-        // A render straddling two names: the missing frame's half is zeros, the present frame's half plays.
-        queue_named(k + 3 * f, vec![7; FRAME_SAMPLES]);
-        let straddle = next_render_frame_at(dac(k + 2 * f + f / 2));
-        assert!(straddle[..(f / 2) as usize].iter().all(|&x| x == 0) && straddle[(f / 2) as usize..].iter().all(|&x| x == 7));
-        let rest = next_render_frame_at(dac(k + 3 * f + f / 2));
-        assert!(rest[..(f / 2) as usize].iter().all(|&x| x == 7) && rest[(f / 2) as usize..].iter().all(|&x| x == 0), "the second half of that frame, exactly once");
-        // LATE BUT IN THE WINDOW: a frame whose first part's instant has passed plays its remaining part — it starts late.
-        let pass = next_render_frame_at(dac(k + 5 * f - f / 4));
-        assert!(pass.iter().all(|&x| x == 0));
-        queue_named(k + 5 * f, vec![9; FRAME_SAMPLES]);
-        let late = next_render_frame_at(dac(k + 6 * f - f / 4));
-        assert!(late[..(f / 4) as usize].iter().all(|&x| x == 9) && late[(f / 4) as usize..].iter().all(|&x| x == 0), "only the names still ahead of the speaker play");
-        // TOO LATE: every name of the frame has had its instant — dropped at the door, never played.
-        queue_named(k + 2 * f, vec![5; FRAME_SAMPLES]);
+        assert_eq!(play_latency(), Some(f), "l held on L");
+        // L drops by 100 samples: across SILENCE every sample is a zero-slope point, so l walks down one per sample and meets L inside the frame.
+        set_play_target(f - 100);
+        let _ = next_render_frame_at(dac(k + 3 * f));
+        assert_eq!(play_latency(), Some(f - 100), "silence lets l meet L at once");
+        // Speech-like audio (a 1 kHz tone, two peaks per 48 samples, no flat runs): l moves exactly one sample per peak or trough.
+        let tone = |n: i64| (8000.0 * (2.0 * std::f64::consts::PI * n as f64 / 48.0 + 0.3).sin()) as i16;
+        let start = PLAY_NEXT.load(Ordering::Relaxed);
+        for fr in 0..4 {
+            let k0 = start + fr * f;
+            queue_named(k0, (k0..k0 + f).map(tone).collect());
+        }
+        set_play_target(f - 150); // 50 samples shorter than l
+        let before = play_latency().unwrap();
+        let _ = next_render_frame_at(dac(k + 4 * f));
+        let moved = before - play_latency().unwrap();
+        assert!((8..=12).contains(&moved), "one slip per peak or trough: {moved} in a frame holding ~10 of them");
+        // l too SHORT: repeats at the same points, lengthening l one at a time.
+        set_play_target(play_latency().unwrap() + 40);
+        let before = play_latency().unwrap();
+        let _ = next_render_frame_at(dac(k + 5 * f));
+        let grew = play_latency().unwrap() - before;
+        assert!((8..=12).contains(&grew), "repeats lengthen l one per point: {grew}");
+        // TOO LATE: every name of a frame has had its instant — dropped at the door, never played.
+        queue_named(k, vec![5; FRAME_SAMPLES]);
         assert_eq!(jitter_stats().3, 1, "counted as too late");
-        assert!(next_render_frame_at(dac(k + 7 * f)).iter().all(|&x| x == 0));
         clear_queues();
     }
 }

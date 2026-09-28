@@ -3135,7 +3135,7 @@ impl FluorApp for PhotonApp {
                 .as_ref()
                 .map_or(false, |c| c.phase == crate::wave::WavePhase::Ringing)
             // The wave field ripples with every audio frame while an Active wave owns the screen: the audio is the edge, the display rate is how often it is shown.
-            || (!self.wave_minimized && self.active_wave.as_ref().map_or(false, |c| c.phase == crate::wave::WavePhase::Active));
+            || (!self.wave_minimized && self.wave_field_watched() && self.active_wave.as_ref().map_or(false, |c| c.phase == crate::wave::WavePhase::Active));
         let anim = animating.then(Instant::now);
         // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run. Interval tapers with idle time, so as the user stays away the scheduled wake naturally pushes further out.
         let presence = matches!(self.state, AppState::Ready).then(|| {
@@ -3566,7 +3566,8 @@ impl FluorApp for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // THE WAVE FIELD repaints every tick while an Active wave owns the screen (field 2026-09-28, "like 1fps": the wakeups flowed at 32/s but only the once-a-second timer below marked the scene, so the ripples moved once a second). The audio is the edge; the tick rate is how often it is shown.
-        if !self.wave_minimized && self.active_wave.as_ref().map_or(false, |c| c.phase == crate::wave::WavePhase::Active) {
+        // Frozen while nobody is looking (unfocused, hidden, or the display off — the proximity blank at the ear included): the once-a-second timer below still keeps the panel honest.
+        if !self.wave_minimized && self.wave_field_watched() && self.active_wave.as_ref().map_or(false, |c| c.phase == crate::wave::WavePhase::Active) {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }

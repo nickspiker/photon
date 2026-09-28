@@ -243,7 +243,11 @@ The active wave screen shows the wave as it happens: a square at the top holds b
 - **The card's colours.** Each frame carries the same four envelope powers the kept recording's card is built from (the band rig in `record.rs`, run live), and its hue comes from the same function (`agb_bytes`), so what the screen shows live is what the card shows afterwards. Brightness is the frame's level in stops below full scale over a dozen stops.
 - **Both sides add** in linear light where the ripples overlap. A frame that never arrived paints nothing: a dark ring travelling outward.
 - **TX** is exactly the frame the far side gets (after the level plan); **RX** is each frame under its name, rippling from the frame the speaker is playing now.
-- **The avatar rings carry the live level** at the usual fixed width: green below half of full scale, yellow at exactly half, blending linearly to red at full scale. The path colour (LAN / radio / internet / relay) moved to a dot beside the status line.
+- **Opacity is brightness:** a field pixel's opacity is its brightest channel, so quiet audio lets the background show thru and only loud audio covers it.
+- **Colours are computed once per frame** into a ring keyed by frame number; a paint only lays the ring out in age order.
+- **The avatar rings carry the live level** at the usual fixed width: green below half of full scale, yellow at exactly half, blending linearly to red at full scale. Under each avatar: the rung that voice is sent on and how late it plays at the far ear.
+- **The path colour** (LAN / radio / internet / relay) fills the top-left orb, solid, while the wave is up.
+- **Frozen when nobody is looking:** unfocused or hidden window, or the phone's display off (the proximity blank at the ear included).
 
 ## Explicitly deferred (v1 gaps)
 

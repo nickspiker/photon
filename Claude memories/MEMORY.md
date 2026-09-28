@@ -53,6 +53,7 @@
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
 - [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed; FIXED 2026-09-28, field verify pending
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28 (anti-windup + one-step re-align)
+- [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = 1/256 late of RECEIVED + repair slack, starts 20/60 ms; l follows ONE sample per zero/sign-change point, uncapped, no jumps, no silence rule (lock.md §7.1 superseded)
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears waves/all history fleet-wide; relationship × history × reach design; rest unbuilt
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
 - [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, age = d²/k no sqrt, card colours, level-coloured rings); mic/speaker pickers (BT incl., concurrently-readable mics live, never rotate) still unbuilt

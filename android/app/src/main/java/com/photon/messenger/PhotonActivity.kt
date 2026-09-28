@@ -205,6 +205,20 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativeOnScaleEnd(contextPtr: Long)  // Pinch released — the zoom-persist edge
     private external fun nativePollKeyboard(contextPtr: Long): Int  // Per-frame poll for show/hide soft IME — 1=show, -1=hide, 0=no change
     private external fun nativePollInputReset(contextPtr: Long): Int  // Per-frame poll: 1=restartInput (clear the IME's stale composing buffer after a send), 0=no change
+    private external fun nativeSetDisplayOn(on: Boolean)  // the default display's ON/OFF → Rust, so the wave field freezes under the proximity blank (the Activity stays resumed while the display is off)
+    private val displayListener = object : android.hardware.display.DisplayManager.DisplayListener {
+        override fun onDisplayAdded(displayId: Int) {}
+        override fun onDisplayRemoved(displayId: Int) {}
+        override fun onDisplayChanged(displayId: Int) {
+            if (displayId == android.view.Display.DEFAULT_DISPLAY) pushDisplayState()
+        }
+    }
+    private fun pushDisplayState() {
+        try {
+            val d = (getSystemService(DISPLAY_SERVICE) as android.hardware.display.DisplayManager).getDisplay(android.view.Display.DEFAULT_DISPLAY)
+            nativeSetDisplayOn(d == null || d.state == android.view.Display.STATE_ON)
+        } catch (e: Throwable) { PhotonLog.w("Display", "display state mirror failed: ${e.message}") }
+    }
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
     private external fun nativeSystemInsets(top: Int, bottom: Int)  // Status bar / gesture-nav extents under an edge-to-edge surface
@@ -914,6 +928,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         super.onPause()
         inForeground = false
         nativeSetForeground(false)
+        try { (getSystemService(DISPLAY_SERVICE) as android.hardware.display.DisplayManager).unregisterDisplayListener(displayListener) } catch (_: Throwable) {}
         Choreographer.getInstance().removeFrameCallback(this)
         frameHandler.removeCallbacks(idleFrameRunnable)
         sensorManager.unregisterListener(gravityListener)
@@ -930,6 +945,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
         inForeground = true
         nativeSetForeground(true)
+        try { (getSystemService(DISPLAY_SERVICE) as android.hardware.display.DisplayManager).registerDisplayListener(displayListener, null) } catch (_: Throwable) {}
+        pushDisplayState()
         // WFD work parked on the permission gate gets its retry now that a foreground exists to prompt from (a background stranded-arm cannot show the dialog).
         PhotonWifiDirect.retryPending()
         // Entering the app clears any pending "new message" notification — the user is now looking at the message list.

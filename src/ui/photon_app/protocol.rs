@@ -292,7 +292,7 @@ impl PhotonApp {
             while let Some(online) = hq.try_recv_online() {
                 self.online = online;
                 // Only drive the SELF-connectivity ring when the orb isn't currently a peer's avatar (a conversation owns the orb via update_orb); otherwise this would strobe our green/red over their presence ring.
-                if self.orb_contact.is_none() {
+                if self.orb_contact.is_none() && self.orb_wave.is_none() {
                     if let Some(chrome) = self.chrome.as_mut() {
                         chrome.set_orb_tint(orb_tint_for(online));
                     }

@@ -82,11 +82,17 @@ impl FieldMap {
     }
 }
 
+/// Colour-cache ring size: a frame's colour is computed ONCE, when it first appears, into the slot its frame number masks to (Nick 2026-09-28: "write to it like a ring buffer so only our new samples overwrite the old"); a power of two past the shown history.
+const CACHE: usize = FIELD_FRAMES * 2;
+
 /// One paint's colour tables (linear light, display primaries, Q12) and the two live levels.
 #[derive(Default)]
 pub(super) struct FieldTables {
     theirs: Vec<[u16; 3]>,
     ours: Vec<[u16; 3]>,
+    /// The colour cache per side: (frame number, colour) by frame number masked to CACHE.
+    cache_theirs: Vec<(i64, [u16; 3])>,
+    cache_ours: Vec<(i64, [u16; 3])>,
     /// Newest amplitude, linear fraction of full scale (RMS of the frame).
     pub level_theirs: f32,
     pub level_ours: f32,
@@ -95,8 +101,8 @@ pub(super) struct FieldTables {
 impl FieldTables {
     /// Fill from a live snapshot: RX is theirs, TX is ours.
     pub fn fill(&mut self, rx: &[FrameEnv], tx: &[FrameEnv]) {
-        fill_side(&mut self.theirs, rx);
-        fill_side(&mut self.ours, tx);
+        fill_side(&mut self.theirs, &mut self.cache_theirs, rx);
+        fill_side(&mut self.ours, &mut self.cache_ours, tx);
         self.level_theirs = rx.first().map_or(0.0, amplitude);
         self.level_ours = tx.first().map_or(0.0, amplitude);
     }
@@ -106,9 +112,23 @@ fn amplitude(e: &FrameEnv) -> f32 {
     if e.fno == i64::MIN { 0.0 } else { e.p[0].max(0.0).sqrt() }
 }
 
-fn fill_side(out: &mut Vec<[u16; 3]>, frames: &[FrameEnv]) {
+/// Lay one side's history out in age order for the per-pixel lookup. Each frame's colour comes from the cache ring — computed only the first time its frame number is seen — so a paint costs a copy of FIELD_FRAMES entries, not FIELD_FRAMES colour conversions; the per-pixel read stays one plain index (cheaper than an add-and-wrap at every pixel).
+fn fill_side(out: &mut Vec<[u16; 3]>, cache: &mut Vec<(i64, [u16; 3])>, frames: &[FrameEnv]) {
+    if cache.len() != CACHE {
+        *cache = vec![(i64::MIN, [0; 3]); CACHE];
+    }
     out.clear();
-    out.extend(frames.iter().take(FIELD_FRAMES).map(frame_lin));
+    out.extend(frames.iter().take(FIELD_FRAMES).map(|e| {
+        if e.fno == i64::MIN {
+            return [0; 3];
+        }
+        // PROOF: CACHE is a power of two and rem_euclid is non-negative, so the slot is in range for any frame number.
+        let slot = &mut cache[e.fno.rem_euclid(CACHE as i64) as usize];
+        if slot.0 != e.fno {
+            *slot = (e.fno, frame_lin(e));
+        }
+        slot.1
+    }));
     out.resize(FIELD_FRAMES + 1, [0; 3]); // the last entry is NONE's: always empty
 }
 
@@ -131,10 +151,11 @@ fn frame_lin(e: &FrameEnv) -> [u16; 3] {
 }
 
 /// Linear Q12 → stored darkness byte, already in the platform's channel position: γ2 encode (√), then fluor's byte order and darkness flip. One table per channel so a pixel is three lookups and two ORs.
-static ENC: std::sync::LazyLock<[Vec<u32>; 3]> = std::sync::LazyLock::new(|| {
+/// The fourth table is OPACITY (Nick 2026-09-28, "you sure we got the transparency over the speckled background"): a pixel's α is its brightest channel, γ2-encoded, so quiet audio lets the background show thru and only loud audio covers it.
+static ENC: std::sync::LazyLock<[Vec<u32>; 4]> = std::sync::LazyLock::new(|| {
     let byte = |v: usize| ((v as f32 / (Q - 1) as f32).sqrt() * 255.0).round() as u32;
     let chan = |shift: u32| (0..Q).map(|v| fluor::theme::fmt((255 - byte(v)) << shift) & 0x00FF_FFFF).collect::<Vec<u32>>();
-    [chan(16), chan(8), chan(0)]
+    [chan(16), chan(8), chan(0), (0..Q).map(|v| byte(v) << 24).collect()]
 });
 
 /// Field paint timing, logged every PAINT_LOG_EVERY paints (a count of paints, not a clock): what the field costs on this device.
@@ -188,11 +209,40 @@ fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &Fie
             if r | gr | bl == 0 {
                 continue;
             }
-            let src = 0xFF00_0000 | enc[0][r as usize] | enc[1][gr as usize] | enc[2][bl as usize];
+            let src = enc[3][r.max(gr).max(bl) as usize] | enc[0][r as usize] | enc[1][gr as usize] | enc[2][bl as usize];
             *dst = if d == 0 { src } else { d.under(src, fluor::BlendMode::Normal) };
         }
     });
     canvas.damage.add_bounds(g.x0, g.y0, g.x0 + cols, g.y0 + rows);
+}
+
+impl PhotonApp {
+    /// THE PATH COLOUR (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings. During an Active wave it fills the top-left orb (Nick 2026-09-28); the avatar rings carry the live level instead.
+    pub(super) fn wave_path_colour(&self, pi: Option<usize>) -> u32 {
+        match crate::wave::wave_tx_addr() {
+            Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip().to_canonical() {
+                std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
+                std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
+                // An IPv6 peer on OUR /64 is the same LAN (field 2026-09-12: a same-room wave ran on the router's global v6 at 10 ms and read green).
+                std::net::IpAddr::V6(v6) if self.our_reflexive.map_or(false, |o| matches!(o.ip().to_canonical(), std::net::IpAddr::V6(ours) if ours.segments()[..4] == v6.segments()[..4])) => super::ConnTier::Lan,
+                _ => super::ConnTier::Wan,
+            }),
+            Some(_) => super::ring_colour_of(super::ConnTier::Relay),
+            None => pi.map(|i| super::ring_tier_colour(&self.contacts[i], true)).unwrap_or(super::ring_colour_of(super::ConnTier::Relay)),
+        }
+    }
+
+    /// Is anyone looking? The field (and its every-tick repaint) freezes when the window is unfocused or hidden, or the phone's display is off — the proximity blank at the ear included (Nick 2026-09-28: "freeze the animation to save CPU").
+    pub(super) fn wave_field_watched(&self) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            crate::platform::jni_android::app_in_foreground() && crate::platform::jni_android::display_on()
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            crate::platform::desktop_notify::window_attended()
+        }
+    }
 }
 
 /// An avatar ring's colour from the live level (Nick): green below half of full scale, yellow at exactly half, blending linearly to red at full scale (clipping).

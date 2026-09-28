@@ -540,6 +540,22 @@ pub fn app_in_foreground() -> bool {
     APP_FOREGROUND.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The default display is ON (Kotlin's DisplayListener mirror). The proximity blank at the ear turns the display off with the Activity still resumed, so foreground alone cannot tell the wave field nobody is looking. `true` until the first report: an unreported display is treated as seen, never as a frozen screen.
+#[cfg(target_os = "android")]
+static DISPLAY_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[cfg(target_os = "android")]
+pub fn display_on() -> bool {
+    DISPLAY_ON.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// JNI ingress: the default display's state changed (DisplayManager.DisplayListener) — ON or anything else.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetDisplayOn(_env: JNIEnv<'_>, _class: JClass<'_>, on: jni::sys::jboolean) {
+    DISPLAY_ON.store(on != 0, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// Foreground TRANSITION edges, latched for the app's tick thread (2026-08-18): nativeSetForeground runs on the Android main thread with no route to &mut PhotonApp, but the fleet-notification claim must retract on pause (or siblings stay suppressed while only the pocket phone dings) and re-take attention on resume. The tick drains these; laziness is safe because the wrongly-suppressed friend message is itself the inbound traffic that wakes the service tick, and the retraction-receipt drop-sweep at siblings chirps what crossed in flight.
 #[cfg(target_os = "android")]
 static FOREGROUND_EDGE_LOST: std::sync::atomic::AtomicBool =

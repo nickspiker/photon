@@ -1574,6 +1574,8 @@ pub struct PhotonApp {
     orb_contact: Option<ContactId>,
     /// The FULL derived key the orb was last built from — see update_orb's diff comment. None = brand orb.
     orb_key: Option<(ContactId, bool, [u8; 64], u32, bool)>,
+    /// During an Active full-screen wave the orb is a SOLID disk in the wave's path colour (Nick 2026-09-28) — this holds the colour last set, None otherwise; leaving the wave forces the normal orb back.
+    orb_wave: Option<u32>,
     /// The contact-list ring colours as last PAINTED, diffed each tick — the same doctrine as the orb's per-tick diff, because ring state is DERIVED (validated_path appearing, reached_via_relay flipping, TTL expiry) and half its inputs mutate without any repaint-marked event: the ring held its old colour until a page change forced a re-raster (field, 2026-08-05). Empty until the first tick.
     painted_ring_tiers: Vec<u32>,
     /// Whether the orb's current contact had an avatar when the orb was last built — part of the diff key so a mid-conversation avatar download upgrades the orb from the gradient placeholder.
@@ -2578,6 +2580,7 @@ impl PhotonApp {
             photon_orb: None,
             orb_contact: None,
             orb_key: None,
+            orb_wave: None,
             painted_ring_tiers: Vec::new(),
             orb_had_avatar: false,
             contacts_textbox: None,

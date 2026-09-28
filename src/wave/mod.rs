@@ -176,6 +176,10 @@ pub static LAST_LINK_LOSS: std::sync::atomic::AtomicU32 = std::sync::atomic::Ato
 pub static LAST_LINK_TARGET: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 /// The wire rung the engine is sending on (index into engine::TIER_NAMES), for the wave panel's live line.
 pub static LAST_LINK_TIER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// The rung the PEER is sending on (from its packets' ctrl byte), for the wave panel's line under their avatar; u32::MAX = none heard yet.
+pub static LAST_PEER_TIER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
+/// The peer's own playout latency l in ms — how late OUR voice plays for them — from its once-a-second long tail; u32::MAX = not reported (an older peer, or none yet).
+pub static LAST_PEER_L_MS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(u32::MAX);
 
 /// THE LAST WAVE (the Wave settings page, Nick 2026-09-16 "a wave config screen"): the engine's teardown writes one summary; the page renders it. Session-only — the log holds history.
 #[derive(Clone, Debug, Default)]

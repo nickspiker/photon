@@ -478,6 +478,8 @@ impl PhotonApp {
         } else if self.ring_avatar_scaled.is_some() {
             self.ring_avatar_scaled = None;
         }
+        // The wave's path colour (the ringing avatar's ring, and the orb's fill once Active) — computed here, before the chrome borrow pins `self`.
+        let wave_path = self.wave_path_colour(wave_overlay.as_ref().and_then(|o| o.3));
         // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
         let field_geom = (wave_fullscreen && matches!(wave_overlay.as_ref().map(|o| o.0), Some(crate::wave::WavePhase::Active))).then(|| {
             let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
@@ -742,19 +744,7 @@ impl PhotonApp {
                     }
                 }
                 // THE PATH COLOUR (Nick 2026-09-11): the path the wave is actually on — cyan the same LAN, blue radio-direct, green across the internet, amber while the engine waits on the sentinel with no direct path — and the contact's own tier while it still rings. With the field up it moves OFF the avatars (Nick 2026-09-28: the avatar rings carry the live level) to a dot beside the status line.
-                let path_colour = {
-                    match crate::wave::wave_tx_addr() {
-                        Some(a) if a != crate::network::status::RELAY_ADDR => super::ring_colour_of(match a.ip().to_canonical() {
-                            std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_wfd_subnet(v4) => super::ConnTier::Wfd,
-                            std::net::IpAddr::V4(v4) if crate::network::traverse::gather::is_private_ipv4(v4) => super::ConnTier::Lan,
-                            // An IPv6 peer on OUR /64 is the same LAN (field 2026-09-12: a same-room wave ran on the router's global v6 at 10 ms and read green).
-                            std::net::IpAddr::V6(v6) if self.our_reflexive.map_or(false, |o| matches!(o.ip().to_canonical(), std::net::IpAddr::V6(ours) if ours.segments()[..4] == v6.segments()[..4])) => super::ConnTier::Lan,
-                            _ => super::ConnTier::Wan,
-                        }),
-                        Some(_) => super::ring_colour_of(super::ConnTier::Relay),
-                        None => pi.map(|i| super::ring_tier_colour(&self.contacts[i], true)).unwrap_or(super::ring_colour_of(super::ConnTier::Relay)),
-                    }
-                };
+                let path_colour = wave_path;
                 match field_geom {
                     None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
                     Some(g) => {
@@ -828,14 +818,23 @@ impl PhotonApp {
                     crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(&name)).into_owned(),
                 };
                 let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
-                if field_geom.is_some() {
-                    // The path colour's new home: a dot just left of the status line.
-                    let tw = ctx.text.measure_text(&status_line, &status_style);
-                    paint::draw_circle(&mut canvas, acx - tw * 0.5 - unit * 0.45, acy + avatar_r + unit * 2.2, unit * 0.2, path_colour, None);
-                }
                 ctx.text.draw_text_center(&mut canvas, &status_line, acx, acy + avatar_r + unit * 2.2, &status_style, None, None);
-                // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs.
-                if matches!(phase, crate::wave::WavePhase::Active) {
+                // Under each avatar, that voice's path (Nick 2026-09-28, replacing the round trip): the rung it is sent on and how late it plays at the far ear — theirs from our own l, ours from the l they report. ≈ marks a clock the grid cannot vouch for.
+                if let Some(g) = field_geom {
+                    let approx = if crate::network::time_base::now_stamp().degraded() { "\u{2248}" } else { "" };
+                    let ms = |l: Option<u32>| l.map_or("\u{2014}".to_string(), |v| format!("{approx}{} ms", crate::fmt_num(v)));
+                    let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
+                    let ours_l = crate::platform::audio::play_latency().map(|l| (l.max(0) / 48) as u32);
+                    let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(std::sync::atomic::Ordering::Relaxed)).filter(|&v| v != u32::MAX);
+                    let st = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium");
+                    let theirs_line = format!("{} \u{b7} {}", rung(crate::wave::LAST_PEER_TIER.load(std::sync::atomic::Ordering::Relaxed)), ms(ours_l));
+                    let ours_line = format!("{} \u{b7} {}", rung(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed)), ms(theirs_l));
+                    let below = g.r + unit * 0.9;
+                    ctx.text.draw_text_center(&mut canvas, &theirs_line, g.theirs.0, g.theirs.1 + below, &st, None, None);
+                    ctx.text.draw_text_center(&mut canvas, &ours_line, g.ours.0, g.ours.1 + below, &st, None, None);
+                }
+                // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs. With the field up, each voice's rung and latency sit under its avatar instead (Nick 2026-09-28).
+                if matches!(phase, crate::wave::WavePhase::Active) && field_geom.is_none() {
                     let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
                     if rtt > 0 {
                         let rung = crate::wave::engine::tier_name(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed) as usize);

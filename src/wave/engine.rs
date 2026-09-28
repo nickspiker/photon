@@ -61,8 +61,15 @@ const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
 const JITTER_TARGET_CAP: usize = 24;
 /// Every bundle carries a 10-byte LINK TAIL: [our send stamp ms u32][echo of the peer's newest stamp u32][ms we held it u16] — an RTT measured on every packet, no separate probe.
 const LINK_TAIL: usize = 10;
+/// L's step in samples (0.5 ms): a late arrival raises L by this·255/256, an early one lowers it by this/256 — a 10 ms shift is absorbed in ~20 late windows, and L sheds ~0.4 ms a second while every arrival is early.
+const L_STEP: i64 = 24;
+/// L's starting point (spec §7.1): 20 ms on a LAN-class path, 60 ms otherwise.
+const L_START_LAN: i64 = 960;
+const L_START_WAN: i64 = 2880;
 // PEER LOSS IN THE TAIL (Nick 2026-09-14, "go for both"): the 11th byte is MY windows-lost count over the last second — the one signal the SENDER needs, because a sender's tier affects what the PEER receives, and until today every tier decision keyed on the local receive side (the cellular wave: Emma's clean rx held her plaid at 768 kbps while Nick lost 500 windows per 10 s, and Nick's drowning rx flapped his innocent tx 11-up/8-down). A 10-byte tail (v96 and earlier) still parses — the byte is simply absent and the old local-loss governance carries.
 const LINK_TAIL_V2: usize = 11;
+/// THE LATENCY TAIL (Nick 2026-09-28, "show our and their latency below the avatar"): once a second the tail grows by a u16 — OUR playout latency l in whole ms — so the peer can show how late its voice plays for us. Only one packet a second carries it: an older peer, whose parser accepts only 10/11-byte tails, drops that one packet and its repair copy covers it.
+const LINK_TAIL_V3: usize = 13;
 /// A plaid-probation sender being asked for this many fill windows in one second IS the peer saying "I am not receiving you" — the belt-and-suspenders far-loss signal that works even against a peer whose tail bytes cannot get thru (and against v96 peers).
 const PLAID_FILL_ASK_DROP_PER_SEC: u32 = 20;
 // DELAY-GRADIENT GOVERNANCE (Nick 2026-09-14: "if it's 20,22,24,26,28,31 then I know I'm over" — exactly LEDBAT/BBR's observation, made quantitative): a queue growing at slope s seconds-per-second means send rate R exceeds capacity C with s = (R−C)/C, so C = R/(1+s). The RTT is min-filtered per 100 ms bucket (cellular grant jitter is spike noise; the min is immune), the slope is the endpoints' gradient over ~1 s of buckets, and a drop jumps DIRECTLY to the rung under 0.85·C — one right-sized step instead of a staircase, and it fires while the queue is still BUILDING, seconds before the ema-over-floor check or any loss.
@@ -389,10 +396,9 @@ fn run(
     let (mut pkts_out, mut pkts_in, mut windows_lost) = (0u64, 0u64, 0u64);
     // Plaid forensics: raw frames each way.
     let (mut raw_out, mut raw_in) = (0u64, 0u64);
-    // The PATH FLOOR (docs/lock.md §7.1): the smallest arrival-minus-capture age of a window's first frame, in samples, kept as per-second minima over the last 30 s — the base of the playout latency. It needs no agreement between the two clocks: an offset between them is part of every age, so it is part of the floor too (spec §7.5).
-    let mut age_minima: std::collections::VecDeque<i64> = std::collections::VecDeque::new();
-    let mut age_sec_min: i64 = i64::MAX;
-    let mut age_sec_at = std::time::Instant::now();
+    // L, THE TARGET LATENCY (docs/lock.md §7.1 as amended, Nick 2026-09-28): the age at which 1 in 256 RECEIVED windows arrives late, tracked in Q8 samples — a late arrival nudges it up by L_STEP·255/256, an early one down by L_STEP/256, so it settles exactly where 1/256 of arrivals are late. Only arrivals count: a lost window says nothing about delay (more latency could not have saved it) and is the repair copy's job. It needs no agreement between the two clocks: an offset between them is part of every age (spec §7.5).
+    // Starts at the spec's 20 ms on a LAN-class path, 60 ms otherwise — never seeded from the first arrivals (field 2026-09-28: a 2.4 s startup burst set 2.2 s of latency for a whole wave).
+    let mut l_q8: i64 = if plaid_allowed { L_START_LAN } else { L_START_WAN } << 8;
     // Loss-rate loop state: the 256-bit ring, its cursor, the integral, the last underrun count sampled, and the target we last set.
     let mut loss_bits = [0u64; LOSS_RING / 64];
     let mut loss_pos: u8 = 0;
@@ -404,6 +410,8 @@ fn run(
     // Peer-loss governance state (see LINK_TAIL_V2): the tail byte's per-second baseline, the peer's max reported loss this local second, whether this peer speaks the byte at all, the last moment they reported loss, and the fill-ask pressure counter.
     let mut tail_lost_base: u64 = 0;
     let mut peer_loss_sec_max: u32 = 0;
+    // The next datagram carries the latency tail (LINK_TAIL_V3) — raised on the 1 s cadence.
+    let mut send_l_tail = true;
     let mut peer_loss_max_wave: u32 = 0;
     let mut peer_sends_loss = false;
     let mut last_peer_loss_at: Option<std::time::Instant> = None;
@@ -445,6 +453,8 @@ fn run(
     let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
     // The wave screen's field reads what this engine sends and hears, frame by frame (wave::live).
     crate::wave::live::start();
+    super::LAST_PEER_TIER.store(u32::MAX, Ordering::Relaxed);
+    super::LAST_PEER_L_MS.store(u32::MAX, Ordering::Relaxed);
 
     crate::logf!(
         "WAVE: engine up — tx {} → {}, ladder {}..{} kbps (start {}{}), floor window {} frames, repair {}, duck {}, route \"{}\" vol {}",
@@ -687,6 +697,12 @@ fn run(
                     // WHY `.min(255)`: the peer-loss field is ONE BYTE on the wire, and a stalled cadence can span more than a second's windows (200 at the 5 ms rung, more after a stall).
                     // PROOF: the byte saturates at "at least 255 lost" rather than wrapping a heavy loss into a light one.
                     payload.push((windows_lost - tail_lost_base).min(255) as u8);
+                    // Once a second, the latency tail: our l in whole ms (saturating — an l past 65 s is a broken stream, never a wrapped short one).
+                    if send_l_tail {
+                        send_l_tail = false;
+                        let l_ms = crate::platform::audio::play_latency().map_or(u16::MAX, |l| (l.max(0) / 48).min(u16::MAX as i64 - 1) as u16);
+                        payload.extend_from_slice(&l_ms.to_le_bytes());
+                    }
                 }
                 let seq = window_id;
                 tx_chain.advance_to(StepChain::step_for_seq(seq));
@@ -807,6 +823,7 @@ fn run(
             }
             let ctrl = payload[0];
             let tier_src = (ctrl & 0b111) as usize;
+            super::LAST_PEER_TIER.store(tier_src as u32, Ordering::Relaxed);
             let rep_present = ctrl & 0b1000 != 0;
             let tier_rep = ((ctrl >> 4) & 0b111) as usize;
             // Bounds-check BEFORE any geometry lookup: a rung this build doesn't know (a newer peer's future ladder entry) is a shape-drop, never an index panic — which also makes ADDING rungs a graceful degrade instead of a flag day.
@@ -818,7 +835,7 @@ fn run(
             // [ctrl][fno src u32][fno rep u32 if flagged][source][repair if flagged][tail]
             let names = if rep_present { 8 } else { 4 };
             let expected = 1 + names + src_len + if rep_present { tier_window_bytes(tier_rep) } else { 0 };
-            if payload.len() != expected && payload.len() != expected + LINK_TAIL && payload.len() != expected + LINK_TAIL_V2 {
+            if payload.len() != expected && payload.len() != expected + LINK_TAIL && payload.len() != expected + LINK_TAIL_V2 && payload.len() != expected + LINK_TAIL_V3 {
                 rx_drop_shape += 1;
                 continue;
             }
@@ -830,6 +847,10 @@ fn run(
                 let hold = u16::from_le_bytes([t[8], t[9]]) as u32;
                 peer_stamp = Some((stamp, std::time::Instant::now()));
                 // The peer-loss byte: their receive of OUR transmit over their last second. >0 = our tier is too hot for the path RIGHT NOW.
+                if t.len() >= LINK_TAIL_V3 {
+                    let l_ms = u16::from_le_bytes([t[11], t[12]]);
+                    super::LAST_PEER_L_MS.store(if l_ms == u16::MAX { u32::MAX } else { l_ms as u32 }, Ordering::Relaxed);
+                }
                 if t.len() >= LINK_TAIL_V2 {
                     peer_sends_loss = true;
                     let lost = t[10] as u32;
@@ -908,25 +929,20 @@ fn run(
                 if let Some((dtier, dfno, data)) = decoded {
                     // The SENDER's name for this window's first frame, unwrapped against our clock — every frame below is spooled at the instant ITS microphone heard it, so both parties' channels line up at mic time.
                     let win_k0 = unwrap_frame_no(dfno) * super::align::FRAME;
-                    // How old the window's first frame is on arrival — the path floor's evidence.
+                    // How old the window's first frame is on arrival — L's evidence.
                     let age = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - win_k0;
-                    // A DISCONTINUITY in the peer's names (its aligner re-anchored onto a stepped clock) shows as an age a whole second past the floor — far beyond any jitter. The old floor now describes names that no longer exist: start the minima over from here.
-                    let floor_now = age_minima.iter().copied().chain(std::iter::once(age_sec_min)).min().unwrap_or(age);
-                    if age > floor_now + 48_000 {
-                        age_minima.clear();
-                        age_sec_min = age;
+                    // The repair copy rides two windows behind its source (repair_queue): L leaves room for it, or the backup would routinely land just after its slot and save nothing.
+                    let repair_slack = 2 * TIER_FRAMES[dtier] as i64 * super::align::FRAME;
+                    let lq = l_q8 >> 8;
+                    if (age - lq).abs() > 48_000 {
+                        // A DISCONTINUITY in the peer's names (its aligner re-anchored onto a stepped clock) shows as an age a whole second off — no network does that. The estimate restarts at the new names instead of walking to them.
+                        l_q8 = age << 8;
+                    } else if age > lq {
+                        l_q8 += L_STEP * 255;
+                    } else {
+                        l_q8 -= L_STEP;
                     }
-                    age_sec_min = age_sec_min.min(age);
-                    if age_sec_at.elapsed() >= std::time::Duration::from_secs(1) {
-                        age_sec_at = std::time::Instant::now();
-                        if age_minima.len() >= 30 {
-                            age_minima.pop_front();
-                        }
-                        age_minima.push_back(age_sec_min);
-                        age_sec_min = i64::MAX;
-                    }
-                    let floor = age_minima.iter().copied().chain(std::iter::once(age_sec_min)).min().unwrap_or(age); // the algorithm: the current second's running minimum is always in the chain
-                    crate::platform::audio::set_play_floor(floor);
+                    crate::platform::audio::set_play_target((l_q8 >> 8) + repair_slack);
                     rx_decoders.remove(&wid);
                     for slot in 0..TIER_FRAMES[dtier] {
                         let base = slot * tier_slot(dtier);
@@ -1388,6 +1404,7 @@ fn run(
                 peer_loss_sec_max = 0;
                 fill_asks_sec = 0;
                 tail_lost_base = windows_lost;
+                send_l_tail = true;
             }
             let rid = crate::platform::audio::route_id();
             if rid != live_route && !rid.is_empty() {

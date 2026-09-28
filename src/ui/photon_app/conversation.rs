@@ -34,6 +34,32 @@ impl PhotonApp {
 
     /// Point the top-left orb at the right subject: in a conversation it becomes the PEER's avatar with a ring in THEIR presence-tier colour (their online state, not ours); everywhere else it's the Photon brand orb with our own FGTW-connectivity ring. SIBLINGS count — a bridge conversation shows the target machine's gradient avatar and ITS tier ring, not the brand orb with our own ring (field 2026-09-04). Diffed on (contact, has-avatar) so the Icon rebuild only fires on a real change, not every frame.
     pub(super) fn update_orb(&mut self) {
+        // THE WAVE ORB (Nick 2026-09-28): while an Active wave owns the screen, the orb is a solid disk in the path colour — no logo, no avatar (both avatars are already on screen). An icon-less orb renders as its ring colour, filled.
+        let wave_pi = self
+            .active_wave
+            .as_ref()
+            .filter(|w| w.phase == crate::wave::WavePhase::Active && !self.wave_minimized)
+            .map(|w| self.contact_index_by_handle_hash(&w.peer_handle_hash));
+        if let Some(pi) = wave_pi {
+            let colour = self.wave_path_colour(pi);
+            if self.orb_wave != Some(colour) {
+                self.orb_wave = Some(colour);
+                if let Some(chrome) = self.chrome.as_mut() {
+                    chrome.app_icon = None;
+                    chrome.set_orb_tint(fluor::host::chrome::OrbTint::Custom { ring: colour, brighten: true });
+                }
+            }
+            return;
+        }
+        if self.orb_wave.take().is_some() {
+            // Leaving the wave: forget the last-built key so the normal orb rebuilds from scratch, brand orb included.
+            self.orb_key = None;
+            self.orb_contact = None;
+            if let Some(chrome) = self.chrome.as_mut() {
+                chrome.app_icon = self.photon_orb.clone();
+                chrome.set_orb_tint(orb_tint_for(self.online));
+            }
+        }
         let target: Option<usize> = match self.state {
             AppState::Conversation | AppState::ContactPanel(_) => self.active_contact(),
             _ => None,
