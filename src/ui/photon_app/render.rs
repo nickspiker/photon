@@ -486,8 +486,8 @@ impl PhotonApp {
             super::wave_field::field_geom(buf_w, buf_h, unit_now)
         });
         if let Some(g) = field_geom {
-            if self.wave_field_map.as_ref().map_or(true, |m| m.side != g.side) {
-                self.wave_field_map = Some(super::wave_field::FieldMap::build(g.side));
+            if self.wave_field_map.as_ref().map_or(true, |m| m.key != (g.w, g.h, g.side)) {
+                self.wave_field_map = Some(super::wave_field::FieldMap::build(&g));
             }
             let (tx, rx) = &mut self.wave_field_scratch;
             if crate::wave::live::snapshot(crate::platform::audio::play_head(), tx, rx) {
@@ -853,10 +853,6 @@ impl PhotonApp {
                         );
                     }
                 }
-                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text): fluor composites front to back.
-                if let (Some(g), Some(m)) = (field_geom, self.wave_field_map.as_ref()) {
-                    super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
-                }
                 // Actions: bottom third, thumb-reach, decline LEFT answer RIGHT with a generous gap — and bottom-anchored so an Android heads-up banner (which owns the top) can never cover them.
                 let bh = unit * 2.4;
                 let by = h - bh * 0.5 - unit * 1.5;
@@ -962,17 +958,28 @@ impl PhotonApp {
                         }
                     }
                 }
+                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent, so the speckle goes under it in place of the black backdrop (Nick 2026-09-28).
+                let field_painted = match (field_geom, self.wave_field_map.as_ref()) {
+                    (Some(g), Some(m)) => {
+                        super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
+                        paint::background_noise(&mut canvas, 0, true, 0, None, None);
+                        true
+                    }
+                    _ => false,
+                };
                 // OPAQUE background LAST: fluor composes later paints UNDER earlier ones, so the backdrop must follow the panel's own elements or it covers them — painting it FIRST produced a solid-black dead screen on desktop (field 2026-08-31, the very first Linux ring after the redesign). Painted last it slots exactly one layer beneath the pulse/avatar/name/buttons and still blots out whatever screen was up (α 0xFF, darkness 0xFF ⇒ solid black; the translucent-wash ghosting fix holds).
-                paint::fill_rect(
-                    &mut canvas,
-                    0,
-                    0,
-                    buf_w as isize,
-                    buf_h as isize,
-                    0xFFFFFFFF,
-                    None,
-                    None,
-                );
+                if !field_painted {
+                    paint::fill_rect(
+                        &mut canvas,
+                        0,
+                        0,
+                        buf_w as isize,
+                        buf_h as isize,
+                        0xFFFFFFFF,
+                        None,
+                        None,
+                    );
+                }
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {
                 let phase = *phase;
                 let bar_w = buf_w as f32 * 0.9; // window-relative width — a bar spans the window
