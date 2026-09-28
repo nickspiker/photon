@@ -84,8 +84,10 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
     main.push(f("era_index", uint(chains.era_index)));
     main.push(f("era_lineage", VsfType::hb(chains.era_lineage.to_vec())));
     main.push(f("rows_since_ratchet", uint(chains.rows_since_ratchet as u64)));
+    main.push(f("braid", uint(chains.braid as u64)));
     if let Some(r) = chains.retired_era() {
         main.push(f("retired_index", uint(r.era_index)));
+        main.push(f("retired_braid", uint(r.braid as u64)));
         main.push(f("retired_root", VsfType::hb(r.lane_root.to_vec())));
         main.push(f("retired_grace", uint(r.grace_left as u64)));
         if let Some(hk) = r.history_key {
@@ -302,12 +304,15 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         .ok_or_else(|| torn("friendship_chains"))?;
     // WHY/PROOF: a u32 on write — a wider stored value is a foreign blob, and saturating reads it as "due to ratchet now" rather than wrapping to a small count.
     chains.rows_since_ratchet = main.uint("rows_since_ratchet").map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX));
+    // Absent = a blob written before braids were versioned: it wove v1. A stored value past u8 is not a braid this build knows — read as v1, which cannot open a v2 frame, so the mismatch shows as a decrypt failure and the repair path re-keys; it never weaves bytes nobody agreed.
+    chains.braid = braid_of(main.uint("braid"));
     if let (Some(idx), Some(root)) = (main.uint("retired_index"), main.h32("retired_root")) {
         chains.set_retired_era(crate::types::friendship::RetiredEra {
             era_index: idx,
             lane_root: root,
             history_key: main.h32("retired_history_key"),
             tag: crate::crypto::clutch::era_tag(&root),
+            braid: braid_of(main.uint("retired_braid")),
             // WHY/PROOF: a u32 on write — as above, a wider value saturates to the longest grace instead of wrapping to none.
             grace_left: main.uint("retired_grace").map_or(0, |v| u32::try_from(v).unwrap_or(u32::MAX)),
         });
@@ -381,6 +386,11 @@ pub fn delete_friendship_chains(
     storage.delete_addr(&chains_key(friendship_id))
 }
 
+/// A stored braid version, read width-agnostically; absent or out of range reads as v1.
+fn braid_of(v: Option<u64>) -> u8 {
+    v.and_then(|v| u8::try_from(v).ok()).unwrap_or(crate::crypto::chain::BRAID_V1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,6 +418,28 @@ mod tests {
 
         let back = chains_from_vsf_bytes(&bytes).expect("decode");
         assert_eq!(back.participants(), chains.participants());
+    }
+
+    /// Braid versions (2026-09-27): a re-key that moves an era from v1 to v2 retires the old era WITH its v1, the new era weaves v2, and both survive the codec; a blob from before the field reads v1.
+    #[test]
+    fn braid_versions_survive_supersede_and_the_round_trip() {
+        use crate::crypto::chain::{BRAID_V1, BRAID_V2};
+        use crate::types::friendship::FriendshipChains;
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let eggs2: Vec<[u8; 32]> = (0..8).map(|i| [i as u8 + 40; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[a, b], &eggs);
+        assert_eq!(chains.braid, BRAID_V1, "a ceremony with no agreed claim weaves v1");
+        let fresh = FriendshipChains::from_clutch_woven(&[a, b], &eggs2, None, BRAID_V2);
+        chains.supersede_with(&fresh);
+        assert_eq!(chains.braid, BRAID_V2, "the superseding era's braid is current");
+        assert_eq!(chains.retired_era().map(|r| r.braid), Some(BRAID_V1), "the retired era keeps the braid its stragglers were woven with");
+        let bytes = super::chains_to_vsf_bytes(&chains).unwrap();
+        let back = super::chains_from_vsf_bytes(&bytes).unwrap();
+        assert_eq!(back.braid, BRAID_V2);
+        assert_eq!(back.retired_era().map(|r| r.braid), Some(BRAID_V1));
+        assert_eq!(super::braid_of(None), BRAID_V1, "a pre-field blob wove v1");
+        assert_eq!(super::braid_of(Some(300)), BRAID_V1, "an out-of-range stored value never becomes a braid");
     }
 
     /// Pending attempts SURVIVE the round trip: exhaustion is cumulative lane evidence (the anchor-wedge arming gate), and a restart resetting it meant a dead lane could never be diagnosed inside short sessions. Real encode→decode, so the width-agnostic read is exercised too.

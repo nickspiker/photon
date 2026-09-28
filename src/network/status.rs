@@ -365,6 +365,8 @@ pub enum StatusUpdate {
         about: Option<String>,
         /// The sender fleet's membership-chain tip eagle time from the sealed tail — the fold-freshness tripwire's claim. None = legacy/tail-less/no-tail arms (no verdict).
         fleet_tip: Option<i64>,
+        /// The responding device's newest braid from the sealed tail. None = legacy/tail-less/no-tail arms (no verdict, the stored capability stands).
+        braid: Option<u8>,
     },
     // NOTE: ClutchOffer, ClutchInit, ClutchResponse, ClutchComplete REMOVED Full 8-primitive CLUTCH uses ClutchOfferReceived and ClutchKemResponseReceived See docs/clutch.md Section 4.2 for the slot-based ceremony protocol.
     /// Encrypted chat message received (CHAIN format)
@@ -3075,6 +3077,7 @@ async fn run_checker(
                                             locked_reports: Vec::new(),
                                             about: None,
                                             fleet_tip: None,
+                                            braid: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3106,6 +3109,7 @@ async fn run_checker(
                                                 about,
                                                 // Sent unconditionally: the membership chain is public, the tip discloses nothing; the RECEIVER gates the compare (friend-only, folded-once, not superseded).
                                                 fleet_tip: own_fleet_tip(),
+                                                braid: Some(crate::crypto::chain::BRAID_CURRENT),
                                             },
                                             &key,
                                         ) {
@@ -3212,9 +3216,9 @@ async fn run_checker(
                                                             crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                         })
                                                     })
-                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip))
+                                                    .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid))
                                                     .unwrap_or_default();
-                                                let (salvaged, about, fleet_tip) = salvaged;
+                                                let (salvaged, about, fleet_tip, braid) = salvaged;
                                                 crate::logf!("Status: unmatched pong from {} ({}) — liveness + {} sync record(s) (late/twin/announce; no addr adoption)", crate::fp(responder_pubkey.as_bytes()), src_addr, salvaged.len());
                                                 send_status_update(
                                                     &status_tx_recv,
@@ -3231,6 +3235,7 @@ async fn run_checker(
                                                         about,
                                                         // The boot ANNOUNCE lands in THIS arm (zero provenance never matches a pending ping) — the highest-value tripwire carrier: a fleet that just grew announces on the new sibling's first cycle.
                                                         fleet_tip,
+                                                        braid,
                                                     },
                                                     &event_proxy_recv,
                                                 );
@@ -3269,9 +3274,9 @@ async fn run_checker(
                                                         crate::network::fgtw::protocol::open_pong_sensitive(blob, &k).ok()
                                                     })
                                                 })
-                                                .map(|t| (t.sync_records, t.about, t.fleet_tip))
+                                                .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid))
                                                 .unwrap_or_default();
-                                            let (salvaged, about, fleet_tip) = salvaged;
+                                            let (salvaged, about, fleet_tip, braid) = salvaged;
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
                                             send_status_update(
                                                 &status_tx_recv,
@@ -3286,6 +3291,7 @@ async fn run_checker(
                                                     locked_reports: Vec::new(),
                                                     about,
                                                     fleet_tip,
+                                                    braid,
                                                 },
                                                 &event_proxy_recv,
                                             );
@@ -3424,6 +3430,7 @@ async fn run_checker(
                                             locked_reports: tail.locked,
                                             about: tail.about,
                                             fleet_tip: tail.fleet_tip,
+                                            braid: tail.braid,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -3498,6 +3505,7 @@ async fn run_checker(
                                             locked_reports: Vec::new(),
                                             about: None,
                                             fleet_tip: None,
+                                            braid: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -4064,6 +4072,7 @@ async fn run_checker(
                                 locked: locked_report(),
                                 about,
                                 fleet_tip: own_fleet_tip(),
+                                braid: Some(crate::crypto::chain::BRAID_CURRENT),
                             },
                             &key,
                         )
@@ -4213,6 +4222,7 @@ async fn run_checker(
                             locked_reports: Vec::new(),
                             about: None,
                             fleet_tip: None,
+                            braid: None,
                         },
                         &event_proxy,
                     );

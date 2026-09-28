@@ -943,6 +943,35 @@ pub fn clutch_offer_provenance_claimed(device_pubkey: &[u8; 32], send_time_osc: 
     *hasher.finalize().as_bytes()
 }
 
+/// The provenance of an offer carrying a BRAID claim as well (2026-09-27): a v2 claim is folded in after any prior claim, so the round commits to it exactly as it commits to the prior.
+/// A v1 (or absent) claim returns the claimed provenance unchanged, byte for byte, so offers to and from older builds keep matching.
+pub fn clutch_offer_provenance_full(device_pubkey: &[u8; 32], send_time_osc: i64, prior: Option<(u32, u64)>, braid: u8) -> [u8; 32] {
+    if braid < crate::crypto::chain::BRAID_V2 {
+        return clutch_offer_provenance_claimed(device_pubkey, send_time_osc, prior);
+    }
+    let mut hasher = Hasher::new();
+    hasher.update(CLUTCH_OFFER_PROV_DOMAIN);
+    hasher.update(device_pubkey);
+    hasher.update(&send_time_osc.to_le_bytes());
+    if let Some((tag, idx)) = prior {
+        hasher.update(b"prior");
+        hasher.update(&tag.to_le_bytes());
+        hasher.update(&idx.to_le_bytes());
+    }
+    hasher.update(b"braid");
+    hasher.update(&[braid]);
+    *hasher.finalize().as_bytes()
+}
+
+/// The braid a ceremony weaves from the two offers' claims: v2 only when both claimed it; anything else (an older peer, a claim not yet learned) is v1.
+pub fn agreed_braid(ours: u8, theirs: u8) -> u8 {
+    if ours >= crate::crypto::chain::BRAID_V2 && theirs >= crate::crypto::chain::BRAID_V2 {
+        crate::crypto::chain::BRAID_V2
+    } else {
+        crate::crypto::chain::BRAID_V1
+    }
+}
+
 /// Compute the handshake message that both parties sign.
 ///
 /// This is signed by each party with their device private key. The signatures become part of the provenance derivation.
@@ -1086,6 +1115,8 @@ pub struct ClutchAllKeypairs {
     pub hqc256_public: Vec<u8>,   // 7285B
     /// The era-prior claim this round's offer carries (stage 4): copied from the contact when the keygen result lands, so every offer built from these keys claims the same prior.
     pub prior: Option<(u32, u64)>,
+    /// The braid this round's offer claims (crypto::chain::BRAID_*): v2 only toward a peer whose pong showed it runs v2, so an older peer never sees the claim. Set with `prior`, same lifetime.
+    pub braid: u8,
 }
 
 impl ClutchAllKeypairs {
@@ -1128,6 +1159,8 @@ pub struct ClutchOfferPayload {
     pub hqc256_public: Vec<u8>,
     /// ERA PRIOR CLAIM (stage 4): "I am weaving from the era tagged .0 at index .1" — additive wire fields beside the keys, NOT in to_bytes (the legacy instance input). A peer that holds that era echoes the claim; completion then weaves the old roots in (from_clutch_woven). None = a fresh channel.
     pub prior: Option<(u32, u64)>,
+    /// BRAID CLAIM (2026-09-27): the braid version this offer asks the ceremony's chains to weave. Absent on the wire = v1. The ceremony weaves v2 only when BOTH offers claim it, and a v2 claim is folded into the provenance, so two sides that read the claims differently derive different ceremony ids and fail loudly instead of forking.
+    pub braid: u8,
 }
 
 impl ClutchOfferPayload {
@@ -1153,6 +1186,7 @@ impl ClutchOfferPayload {
             mceliece_public: keys.mceliece_public.clone(), // ~512KB - PT transfer handles this
             hqc256_public: keys.hqc256_public.clone(),
             prior: keys.prior,
+            braid: keys.braid,
         }
     }
 
@@ -1513,6 +1547,7 @@ pub fn generate_all_ephemeral_keypairs_with_progress(progress: Option<&std::sync
         hqc256_secret,
         hqc256_public,
         prior: None,
+        braid: crate::crypto::chain::BRAID_V1,
     }
 }
 

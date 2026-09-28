@@ -345,6 +345,7 @@ impl PhotonApp {
         peer_addr: std::net::SocketAddr,
         their_hqc_prefix: [u8; 8],
         prior: Option<crate::types::friendship::EraPrior>,
+        braid: u8,
     ) {
         use crate::crypto::clutch::clutch_complete_full;
 
@@ -383,6 +384,7 @@ impl PhotonApp {
                 &[our_handle_hash, their_handle_hash],
                 result.eggs.as_slice(),
                 prior.as_ref(),
+                braid,
             );
             drop(prior);
 
@@ -568,6 +570,8 @@ impl PhotonApp {
                     // Store keypairs (ceremony_id computed on-demand when provenances available) — stamped with the era-prior claim this round carries (stage 4).
                     let mut keypairs = result.keypairs;
                     keypairs.prior = contact.era_prior_claim;
+                    // The braid claim: v2 only when every device of theirs has shown v2 in a pong — an older device never sees the field, so its ceremonies with us keep matching on v1.
+                    keypairs.braid = if contact.braid_claimable() { crate::crypto::chain::BRAID_CURRENT } else { crate::crypto::chain::BRAID_V1 };
                     contact.clutch_our_keypairs = Some(keypairs);
                     // Stamp the round start (eagle time): this is the moment a round's keys exist. A resume that reloads contacts from disk wipes these ephemeral keys — a fresh stamp lets the resume RESTORE the round instead of the sweep minting a divergent one, and gates re-key on real staleness (see Contact::clutch_round_started).
                     contact.clutch_round_started = Some(vsf::eagle_time_oscillations());
@@ -1442,6 +1446,11 @@ impl PhotonApp {
         // The era-prior claims of this round (stage 4): ours rides our keypairs, theirs their stored offer. Both present and equal ⇒ weave from the era we hold under that tag; anything else ⇒ a fresh channel.
         let our_claim = contact.clutch_our_keypairs.as_ref().and_then(|k| k.prior);
         let their_claim = contact.get_slot(&their_handle_hash).and_then(|s| s.offer.as_ref()).and_then(|o| o.prior);
+        // The braid both offers claimed: each side reads the same two signed offers, so both derive the same version; a claim is folded into its offer's provenance, so a disagreement surfaces as mismatched ceremony ids, never as a silent fork.
+        let braid = crate::crypto::clutch::agreed_braid(
+            contact.clutch_our_keypairs.as_ref().map_or(crate::crypto::chain::BRAID_V1, |k| k.braid),
+            contact.get_slot(&their_handle_hash).and_then(|s| s.offer.as_ref()).map_or(crate::crypto::chain::BRAID_V1, |o| o.braid),
+        );
         let claim_fid = contact.friendship_id;
 
         let our_device_pub = *self
@@ -1483,6 +1492,7 @@ impl PhotonApp {
             (None, None, None) => {}
             (None, o, t) => crate::logf!("ERA: ceremony for {} completes as a FRESH channel — claims ours {} theirs {} do not both name the era we hold", contact_handle, o.map(|c| format!("{:08x}#{}", c.0, c.1)).unwrap_or_else(|| "none".into()), t.map(|c| format!("{:08x}#{}", c.0, c.1)).unwrap_or_else(|| "none".into())),
         }
+        crate::logf!("BRAID: ceremony for {} weaves braid v{}", contact_handle, braid);
         self.spawn_clutch_ceremony(
             contact_id,
             our_handle_hash,
@@ -1496,6 +1506,7 @@ impl PhotonApp {
             peer_addr,
             their_hqc_prefix,
             prior,
+            braid,
         );
     }
 }

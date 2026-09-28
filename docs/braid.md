@@ -325,6 +325,21 @@ Sort by eagle_time (matching the sender) and feed them to `advance`.
 A single device cannot emit two messages at the same 704ps tick, so the eagle_time uniquely identifies one of our outgoing messages.
 The adversarial same-tick collision (two fleet devices) is not yet disambiguated on the wire — see §13.
 
+### 6.2a Braid versions: the strand value (v2)
+
+Decided 2026-09-27 (Nick): a woven strand's own time must enter the weave, so every strand is unique even when two messages say the same thing ("ok" on Tuesday and "ok" on Friday).
+
+- **v1** feeds each strand's raw identity bytes (the x-text, or a typed row's canonical fields) into `derive_fresh_link`. The strand's time only ever rode the wire as a pointer, and a row stays weavable only by keeping its whole text.
+- **v2** feeds each strand as its **strand value** `S = spaghettify(DOMAIN_STRAND ‖ strand_time ‖ len ‖ ident)`, 32 bytes (`crypto::chain::strand_value`). Everything else in §6 is unchanged: the same selection, the same times on the wire, the same resolution on the receiver, then the same mapping to S before `advance`.
+- S is exactly as secret as the text: it never rides the wire and only a holder of the text derives it. It is also **all the braid ever needs from a row**, so under v2 a row's text can be shredded once its S is kept. That is what makes a real delete or truncate possible (the braid-safe redaction ticket).
+
+**The version belongs to an era, agreed at the CLUTCH ceremony, and never switches inside a live chain.**
+
+- A ceremony offer claims v2 (`braid` field, folded into the offer's provenance beside any era-prior claim) only when every current device of the peer has shown v2 in its sealed pong tail (`brd`). An older peer never sees the field, so ceremonies with it keep matching on v1.
+- The chains weave v2 when both offers claimed it (`clutch::agreed_braid`). Both sides read the same two signed offers, and a claim is part of the provenance, so two sides that read the claims differently derive different ceremony ids and fail loudly instead of forking.
+- A light ratchet inherits its era's braid. A retired era keeps its own, so a straggler opens with the strands its sender wove (`FriendshipChains::braid_for_label`).
+- Migration: an existing v1 friendship with a peer whose whole fleet now weaves v2 re-keys through the heavy weave (a full CLUTCH with the prior era woven in). One ceremony per friendship; history is untouched, and pre-re-key rows are woven as S straight from their stored text.
+
 ### 6.3 Strict in-order processing and the gap buffer
 
 The receiver decrypts at `CURRENT_KEY_INDEX` (link [511]), which is only the correct decrypt position when the message is the immediate successor of the last one processed.

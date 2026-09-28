@@ -400,6 +400,8 @@ impl PhotonApp {
         let mut seal_reseed_requested = false;
         // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom). The claim rides along so the pursuit map records what we acted on.
         let mut stale_fold_hps: Vec<([u8; 32], i64)> = Vec::new();
+        // Braid migration candidates (2026-09-27): friend hps whose every device now shows braid v2 — checked against their chains after the drain (the loop holds &mut self.contacts).
+        let mut braid_ready: Vec<[u8; 32]> = Vec::new();
         // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
         let stale_fold_claims = self.fleet_tip_pursuit.clone();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
@@ -457,6 +459,7 @@ impl PhotonApp {
                     locked_reports,
                     about,
                     fleet_tip,
+                    braid,
                 } => {
                     // Stall recovery (runs EVERY ping that carries sync records, not just the offline→online edge): each record advertises the peer's contiguous head. Re-arm any pending of ours newer than the head for OUR lane AND already given up (exhausted attempts) — so a gap-filler the sender abandoned gets resent and a receiver stuck behind a permanently-lost message un-sticks. The staleness gate stays (a fresh send is left to normal backoff; only a given-up one is revived), which keeps a pong that merely raced ahead of the ACK from double-sending. collect_due_retransmits (the tick path) then actually sends the revived messages.
                     let now_osc = vsf::eagle_time_oscillations();
@@ -892,6 +895,16 @@ impl PhotonApp {
                                     // Roster LWW clock: the pin is a synced identity field, so this adoption must win the merge on every sibling (the post-drain sweep pushes the roster).
                                     contact.roster_updated = vsf::eagle_time_oscillations();
                                     changed = true;
+                                }
+                            }
+                            // BRAID CAPABILITY (2026-09-27): this device's sealed tail said which braid it weaves. Recorded per device; once every device of a friend shows v2 while our current era still weaves v1, the friendship is queued for the heavy-weave migration below.
+                            if let Some(b) = braid {
+                                let ep = contact.endpoint_mut(&peer_pubkey.key);
+                                if ep.braid != b {
+                                    ep.braid = b;
+                                    if !contact.is_sibling && contact.braid_claimable() {
+                                        braid_ready.push(contact.handle_proof);
+                                    }
                                 }
                             }
                             // Per-device liveness: this pong/timeout is about the pinged DEVICE. The contact-level ring shows the IDENTITY reachable = any device online.
@@ -5351,6 +5364,18 @@ impl PhotonApp {
                     }
                 }
                 self.spawn_contact_fleet_refresh(due);
+            }
+        }
+
+        // BRAID MIGRATION (Nick 2026-09-27, option 2): a friendship whose current era still weaves v1, with a friend whose every device now weaves v2, re-keys through the heavy weave — a full CLUTCH with the prior era woven in, which now claims v2 on both sides. Edge-driven: only the pong that flipped a device's braid lands here. The pickup respects ceremony ownership, so every device of ours may arm it safely.
+        for hp in braid_ready {
+            let Some(ci) = self.contacts.iter().position(|c| c.handle_proof == hp && !c.is_sibling) else { continue };
+            let behind = self.contacts[ci]
+                .friendship_id
+                .and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f))
+                .is_some_and(|(_, ch)| ch.braid < crate::crypto::chain::BRAID_V2 && ch.era_tag().is_some());
+            if behind && self.contacts[ci].clutch_state == crate::types::ClutchState::Complete {
+                self.arm_heavy_weave_for(ci, "braid v2 — every device of theirs weaves it; re-keying to weave strand values");
             }
         }
 

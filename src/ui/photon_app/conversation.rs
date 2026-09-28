@@ -1431,6 +1431,8 @@ impl PhotonApp {
             // The braid: resolve each woven eagle_time to its message content. The peer wove messages IT received — i.e. messages WE authored — so we resolve against our OUTGOING rows (is_outgoing == true). Both sides hold identical `content` for any such message → identical strands → the chains advance in lockstep. Sort by eagle_time so framing matches the sender's (which also sorted). A single device can't emit two messages at the same 704ps tick, so eagle_time is unique within our stream; the adversarial same-tick collision is not handled here (would need a content_hash tiebreak carried on the wire) — left as a known guard gap.
             // HOLD ON A STRAND MISS, NEVER SKIP: a woven row we don't hold yet (a sibling composed it and its replication hasn't landed) must NOT be silently dropped — a short strand vector changes strand_count in derive_fresh_link, so our advance diverges from the sender's and the lane forks permanently (silent, surfaced only as later garbage). Resolve strands FIRST, before any chain mutation; if any is missing, make zero mutations, don't ACK, collapse backoff so sibling replication catches us up, and let the sender's retransmit replay this frame once the row lands.
             let mut strand_miss: Option<i64> = None;
+            // The braid the sender wove this frame with: its lane's era decides (a retired era's straggler keeps its own).
+            let braid = chains.braid_for_label(&lane);
             let woven_strands: Vec<Vec<u8>> = {
                 let mut times = woven_times.clone();
                 times.sort_unstable();
@@ -1441,7 +1443,7 @@ impl PhotonApp {
                         .iter()
                         .find(|m| m.is_outgoing && m.timestamp == t)
                     {
-                        strands.push(m.ident_bytes());
+                        strands.push(crate::crypto::chain::strand_bytes(braid, t, m.ident_bytes()));
                     } else {
                         strand_miss = Some(t);
                         break;

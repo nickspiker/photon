@@ -76,6 +76,16 @@ const DOMAIN_ADVANCE: &[u8] = b"PHOTON_ADVANCE_v\x01";
 const DOMAIN_ACK: &[u8] = b"PHOTON_ACK_v\x01";
 const DOMAIN_CONFIRM: &[u8] = b"PHOTON_CONFIRM_v\x01";
 const DOMAIN_SALT: &[u8] = b"PHOTON_SALT_v\x01";
+const DOMAIN_STRAND: &[u8] = b"PHOTON_STRAND_v\x01";
+
+// BRAID VERSIONS (Nick 2026-09-27): which bytes a woven peer message contributes to a chain step.
+// v1 weaves the strand's raw text; the strand's own time never enters the derivation, and a row can only stay weavable by keeping its whole text.
+// v2 weaves S = strand_value(time, text), 32 bytes: every strand is unique by its time, and S is all the braid ever needs from a row, so the text can be shredded once S is kept.
+// The version is agreed at the CLUTCH ceremony (both offers claim v2, bound into their provenance) and belongs to an ERA, never switched inside a live chain.
+pub const BRAID_V1: u8 = 1;
+pub const BRAID_V2: u8 = 2;
+/// The newest braid this build weaves — what it claims toward a peer known to run it.
+pub const BRAID_CURRENT: u8 = BRAID_V2;
 
 // Link ranges for different operations
 const ACK_LINK_RANGE: std::ops::Range<usize> = 507..512; // 5 links (160B)
@@ -214,6 +224,28 @@ pub fn derive_salt(prev_plaintext: &[u8], chain: &Chain) -> [u8; 32] {
     hasher.update(prev_plaintext); // Empty for first message
     hasher.update(chain.links[SALT_LINK_RANGE].as_flattened()); // Last 12 links (384B)
     spaghettify(hasher.finalize().as_bytes())
+}
+
+/// A woven strand's braid-v2 value: its eagle time and its identity bytes (the row's text, or the canonical fields of a typed row) spaghettified together.
+/// The time makes every strand unique even when two messages say the same thing, and the fixed 32 bytes are all a v2 chain step needs from the row.
+/// Secret like the text it comes from: it never rides the wire; both sides compute it from their own copy of the row.
+pub fn strand_value(eagle_time: i64, ident: &[u8]) -> [u8; 32] {
+    let mut input = Vec::with_capacity(DOMAIN_STRAND.len() + 8 + 4 + ident.len());
+    input.extend_from_slice(DOMAIN_STRAND);
+    input.extend_from_slice(&eagle_time.to_le_bytes());
+    // PROOF: a row's identity bytes are one message's text or typed fields, far below 4 GiB; the length prefix keeps the framing injective.
+    input.extend_from_slice(&(ident.len() as u32).to_le_bytes());
+    input.extend_from_slice(ident);
+    spaghettify(&input)
+}
+
+/// The bytes a woven strand contributes under `braid`: its raw identity bytes (v1) or its 32-byte strand value (v2).
+pub fn strand_bytes(braid: u8, eagle_time: i64, ident: Vec<u8>) -> Vec<u8> {
+    if braid >= BRAID_V2 {
+        strand_value(eagle_time, &ident).to_vec()
+    } else {
+        ident
+    }
 }
 
 // ============================================================================
@@ -585,6 +617,19 @@ mod tests {
         // Same inputs = same output (deterministic)
         assert_eq!(chain1.current_key(), chain2.current_key());
         assert_eq!(chain1.to_bytes(), chain2.to_bytes());
+    }
+
+    /// Braid v2: a strand is unique by its time (the same text at two times weaves differently), deterministic on both sides, and fixed at 32 bytes; v1 passes the text thru untouched.
+    #[test]
+    fn strand_value_is_unique_by_time_and_fixed_width() {
+        let a = strand_value(1_000, b"ok");
+        assert_eq!(a, strand_value(1_000, b"ok"));
+        assert_ne!(a, strand_value(1_001, b"ok"), "the strand's own time must enter the weave");
+        assert_ne!(a, strand_value(1_000, b"ok."));
+        // Injective framing: moving a byte between the time's neighbourhood and the text never collides.
+        assert_ne!(strand_value(0, b""), strand_value(0, b"\0"));
+        assert_eq!(strand_bytes(BRAID_V2, 1_000, b"ok".to_vec()), a.to_vec());
+        assert_eq!(strand_bytes(BRAID_V1, 1_000, b"ok".to_vec()), b"ok".to_vec());
     }
 
     #[test]

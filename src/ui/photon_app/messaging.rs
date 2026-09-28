@@ -1107,6 +1107,12 @@ impl PhotonApp {
 
         // The braid: choose up to TWO distinct prior PEER messages to weave into this chain step. Eligible = incoming messages (is_outgoing == false) in the last ≤256 of this conversation — any stored incoming row is one the receive path already ACKed, so the sender knows the peer holds it (both-held → identical strands → lockstep). The weave ingredient is the message's x-text (`content`), recoverable identically on both sides from the message DB. Each chosen message's eagle_time goes on the wire so the receiver resolves the SAME content. 0 eligible → weave nothing (anchor). 1 → single strand. ≥2 → two distinct (a true braid). Pick with gen_range (bounded, bias-free) — NEVER modulo. Strands are sorted by eagle_time so both peers frame derive_fresh_link identically regardless of pick order.
         // BRIDGE lanes are ANCHOR-ONLY: a sibling command/output frame weaves ZERO strands and requires none on receive. The braid's extra entropy is a friend-conversation property; a fleet-internal bridge is already fleet-key secured and still ratchets via the incorporated hp each step, so dropping the weave costs no real secrecy. The payoff is what Nick wants: with no strand dependency the terminal rows can be EPHEMERAL (wiped on open, never persisted) without ever producing a "braid strand miss" that holds a reply forever (field 2026-08-22). Anchor is an already-supported case (0 eligible → weave nothing) — this just forces it for siblings.
+        // The braid this step weaves: the current era's version (we only ever send on the current era). v2 turns each strand into its 32-byte strand value; the receiver maps the same rows the same way from the times on the wire.
+        let braid = self
+            .friendship_chains
+            .iter()
+            .find(|(id, _)| *id == friendship_id)
+            .map_or(crate::crypto::chain::BRAID_V1, |(_, c)| c.braid);
         let (woven_strands, woven_times): (Vec<Vec<u8>>, Vec<i64>) = {
             let mut chosen: Vec<(i64, Vec<u8>)> = Vec::new();
             if let Some(conv) = conv.filter(|_| !anchor_only) {
@@ -1137,7 +1143,7 @@ impl PhotonApp {
             }
             chosen.sort_by_key(|(t, _)| *t);
             let times = chosen.iter().map(|(t, _)| *t).collect();
-            let strands = chosen.into_iter().map(|(_, c)| c).collect();
+            let strands = chosen.into_iter().map(|(t, c)| crate::crypto::chain::strand_bytes(braid, t, c)).collect();
             (strands, times)
         };
 

@@ -100,6 +100,7 @@ mod tests {
             public,
             lan,
             online: true,
+            braid: crate::crypto::chain::BRAID_V1,
         }
     }
 

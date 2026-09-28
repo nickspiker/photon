@@ -491,6 +491,8 @@ pub struct DeviceEndpoint {
     pub lan: Option<SocketAddr>,
     /// This device answered its own ping within the timeout window.
     pub online: bool,
+    /// The newest braid this device's last sealed pong said it weaves (crypto::chain::BRAID_*). Runtime only: v1 until a pong says otherwise, so an unheard device never lets us claim v2.
+    pub braid: u8,
 }
 
 /// Cycles an online contact may go punched-but-unvalidated before it's treated as direct-unreachable — read by the relay tiering AND the seed-registry resolve (a contact stuck here needs FRESH addresses, whatever stale `ip` it carries: the 2026-08-17 flap — a cross-subnet LAN path validating and dying over and over — kept a perfectly-reachable WAN v6 from ever being resolved, because the resolve gated on "has an address").
@@ -989,6 +991,7 @@ impl Contact {
             public: None,
             lan: None,
             online: false,
+            braid: crate::crypto::chain::BRAID_V1,
         });
         self.device_endpoints.last_mut().unwrap()
     }
@@ -1103,6 +1106,22 @@ impl Contact {
     /// The pinned device key bytes, if a real key was ever learned. THE way to read `public_identity` — every consumer decides explicitly what absence means for it (skip the leg, hold the send, log and move on), instead of inheriting a zero key that pings "00000000".
     pub fn device_key(&self) -> Option<[u8; 32]> {
         self.public_identity.as_ref().map(|p| p.key)
+    }
+
+    /// May our next ceremony offer toward this contact claim braid v2? Only when EVERY current device of theirs has shown v2 in a pong: whichever of their devices owns the ceremony answers it, and an older one would read the claim-bound provenance differently and the round could never match.
+    /// The current devices are the adopted fold, or the pinned device before any fold; a device we have not heard from counts as v1.
+    pub fn braid_claimable(&self) -> bool {
+        let devices: Vec<[u8; 32]> = if self.fleet_members.is_empty() {
+            self.device_key().into_iter().collect()
+        } else {
+            self.fleet_members.clone()
+        };
+        !devices.is_empty()
+            && devices.iter().all(|d| {
+                self.device_endpoints
+                    .iter()
+                    .any(|e| e.pubkey == *d && e.braid >= crate::crypto::chain::BRAID_V2)
+            })
     }
 
     pub fn discard_clutch_round(&mut self) {

@@ -1220,10 +1220,12 @@ pub struct PongTail {
     pub about: Option<String>,
     /// Fold-freshness tip: the sender's membership-chain tip eagle time.
     pub fleet_tip: Option<i64>,
+    /// The newest braid the sending build weaves (crypto::chain::BRAID_*). None = an older build (v1). Sealed with the rest: a capability is a build fingerprint, so only the paired device reads it.
+    pub braid: Option<u8>,
 }
 
 fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
-    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip } = tail;
+    let PongTail { sync_records, display_name, avatar_pin, locked, about, fleet_tip, braid } = tail;
     // One native multi-value `sync` row per conversation record — (hb token, e6 last_received). No counts, no numbered names.
     for record in sync_records {
         section.add_field_multi(
@@ -1281,6 +1283,10 @@ fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
     if let Some(t) = fleet_tip {
         section.add_field_multi("ftip", vec![VsfType::e(vsf::types::EtType::e6(*t))]);
     }
+    // BRAID CAPABILITY (2026-09-27): the newest braid this build weaves. A new field name an older parser skips; the receiver claims v2 in its next ceremony offer toward us only after reading it.
+    if let Some(b) = braid {
+        section.add_field_multi("brd", vec![VsfType::u(*b as usize, false)]);
+    }
 }
 
 /// Build + AEAD-seal a pong's sensitive tail under the PAIRWISE pong key: the per-conversation sync rows (who-talks-to-whom metadata), the display name, and the 64-byte avatar pin (a bearer capability). Plaintext is an inner `pongsec` VSF section (encode_encrypted — the headerless form made for exactly this), sealed with kete ChaCha20-Poly1305 like history pages and the log seal. The key comes from the caller's PongSealKeys map, derived on the UI thread — this codec never sees an identity seed.
@@ -1327,6 +1333,8 @@ pub fn open_pong_sensitive(
         about,
         // Fold-freshness tip — the stage-1 accessor: width-agnostic across the e-family, absent ⇒ None (legacy tail, no verdict).
         fleet_tip: section.eagle("ftip"),
+        // Width-agnostic; a value past u8 is no braid this build knows and reads as absent.
+        braid: section.get_field("brd").and_then(|f| f.values.first()).and_then(|v| v.as_u64()).and_then(|v| u8::try_from(v).ok()),
     })
 }
 
@@ -1480,6 +1488,10 @@ pub fn build_clutch_offer_vsf(
         section.add_field("prior_tag", VsfType::u(tag as usize, false));
         section.add_field("prior_idx", VsfType::u(idx as usize, false));
     }
+    // Braid claim (2026-09-27): written only for v2, so an older peer's offer and ours stay byte-identical in layout when no claim is made.
+    if payload.braid >= crate::crypto::chain::BRAID_V2 {
+        section.add_field("braid", VsfType::u(payload.braid as usize, false));
+    }
 
     // Stamp the PINNED send-time (Contact::clutch_round_started), NOT a fresh clock read — every re-send of this offer carries the identical time so the provenance is stable and the clutch never rotates.
     let unsigned = VsfBuilder::new()
@@ -1494,7 +1506,7 @@ pub fn build_clutch_offer_vsf(
 
     // TIME-based provenance (this party's device key + its pinned send-time), the shared helper the receiver mirrors from the offer's creation_time header. Restores the original design; the old key-based hash rotated the ceremony on every re-key.
     let offer_provenance =
-        crate::crypto::clutch::clutch_offer_provenance_claimed(device_pubkey, send_time_osc, payload.prior);
+        crate::crypto::clutch::clutch_offer_provenance_full(device_pubkey, send_time_osc, payload.prior, payload.braid);
 
     Ok((signed, offer_provenance))
 }
@@ -1548,6 +1560,14 @@ fn decode_offer_pubkeys(
                 _ => None,
             }
         },
+        // Absent = v1 (an older sender, or a claim not made). A value that does not fit a u8 is not a braid this build knows: read as v1, and the provenance (which folds the claim) makes the round fail to match rather than weave something unagreed.
+        braid: fields
+            .iter()
+            .find(|f| f.name == "braid")
+            .and_then(|f| f.values.first())
+            .and_then(|v| v.as_u64())
+            .and_then(|v| u8::try_from(v).ok())
+            .unwrap_or(crate::crypto::chain::BRAID_V1),
     })
 }
 
@@ -1671,7 +1691,7 @@ pub fn parse_clutch_offer_vsf(
     // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
     let send_time_osc = extract_header_timestamp(&header)?;
     let offer_provenance =
-        crate::crypto::clutch::clutch_offer_provenance_claimed(&sender_pubkey, send_time_osc, payload.prior);
+        crate::crypto::clutch::clutch_offer_provenance_full(&sender_pubkey, send_time_osc, payload.prior, payload.braid);
 
     #[cfg(feature = "development")]
     {
@@ -1933,7 +1953,7 @@ pub fn parse_clutch_offer_vsf_without_recipient_check(
     // TIME-based provenance: mirror the sender's build formula from the offer's creation_time header + its signer device key. Must match crate::crypto::clutch::clutch_offer_provenance exactly or the two sides derive different ceremony_ids.
     let send_time_osc = extract_header_timestamp(&header)?;
     let offer_provenance =
-        crate::crypto::clutch::clutch_offer_provenance_claimed(&sender_pubkey, send_time_osc, payload.prior);
+        crate::crypto::clutch::clutch_offer_provenance_full(&sender_pubkey, send_time_osc, payload.prior, payload.braid);
 
     #[cfg(feature = "development")]
     crate::logf!(
@@ -3984,6 +4004,49 @@ mod pong_seal_tests {
         assert_eq!(got_p.prior, None);
         assert_eq!(prov_p2, prov_p);
         assert_eq!(prov_p, crate::crypto::clutch::clutch_offer_provenance(&pk, 777), "unclaimed = the legacy provenance");
+    }
+
+    /// Braid claim (2026-09-27): a v2 claim round-trips, folds into the provenance (with or without a prior), and an unclaimed offer keeps the exact legacy provenance an older peer computes.
+    #[test]
+    fn clutch_offer_braid_claim_round_trips_and_binds_the_provenance() {
+        use crate::crypto::chain::{BRAID_V1, BRAID_V2};
+        let signing = ed25519_dalek::SigningKey::from_bytes(&[12u8; 32]);
+        let (pk, sk) = (signing.verifying_key().to_bytes(), signing.to_bytes());
+        let keys = crate::crypto::clutch::generate_all_ephemeral_keypairs();
+        let tok = [0x34u8; 32];
+        let plain = crate::crypto::clutch::ClutchOfferPayload::from_keypairs(&keys);
+        assert_eq!(plain.braid, BRAID_V1, "fresh keys claim nothing");
+        let mut v2 = plain.clone();
+        v2.braid = BRAID_V2;
+        let mut v2_prior = v2.clone();
+        v2_prior.prior = Some((0xFEED_F00D, 2));
+        let (bytes_p, prov_p) = build_clutch_offer_vsf(&tok, &plain, &pk, &sk, 888).unwrap();
+        let (bytes_2, prov_2) = build_clutch_offer_vsf(&tok, &v2, &pk, &sk, 888).unwrap();
+        let (bytes_2p, prov_2p) = build_clutch_offer_vsf(&tok, &v2_prior, &pk, &sk, 888).unwrap();
+        assert_eq!(prov_p, crate::crypto::clutch::clutch_offer_provenance(&pk, 888), "no claim = the legacy provenance");
+        assert_ne!(prov_2, prov_p, "a braid claim is part of the round");
+        assert_ne!(prov_2p, prov_2);
+        assert_ne!(prov_2p, crate::crypto::clutch::clutch_offer_provenance_claimed(&pk, 888, v2_prior.prior), "the braid folds in beside the prior");
+        for (bytes, prov, braid, prior) in [(&bytes_p, prov_p, BRAID_V1, None), (&bytes_2, prov_2, BRAID_V2, None), (&bytes_2p, prov_2p, BRAID_V2, v2_prior.prior)] {
+            let (got, _, prov_rx, _) = parse_clutch_offer_vsf_without_recipient_check(bytes).unwrap();
+            assert_eq!((got.braid, got.prior), (braid, prior));
+            assert_eq!(prov_rx, prov, "the receiver mirrors the sender's provenance");
+        }
+        use crate::crypto::clutch::agreed_braid;
+        assert_eq!(agreed_braid(BRAID_V2, BRAID_V2), BRAID_V2);
+        assert_eq!(agreed_braid(BRAID_V2, BRAID_V1), BRAID_V1);
+        assert_eq!(agreed_braid(BRAID_V1, BRAID_V2), BRAID_V1);
+        assert_eq!(agreed_braid(0, 0), BRAID_V1);
+    }
+
+    /// The pong's sealed tail carries the braid capability; an older tail has none.
+    #[test]
+    fn pong_tail_braid_round_trips() {
+        let key = [0x5Au8; 32];
+        let with = seal_pong_sensitive(&PongTail { braid: Some(crate::crypto::chain::BRAID_V2), ..Default::default() }, &key).unwrap();
+        let without = seal_pong_sensitive(&PongTail::default(), &key).unwrap();
+        assert_eq!(open_pong_sensitive(&with, &key).unwrap().braid, Some(crate::crypto::chain::BRAID_V2));
+        assert_eq!(open_pong_sensitive(&without, &key).unwrap().braid, None);
     }
 
     #[test]
