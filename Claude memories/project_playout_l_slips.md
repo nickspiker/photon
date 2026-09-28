@@ -19,3 +19,16 @@ Related: [[project_aligner_windup]], [[project_audio_picker_levels]], [[feedback
 - δ > 0 inflates the cutoff (and L); δ ≤ 0 collapses it to about floor, so L is too tight and frames arrive too late.
 - LAN wave, RTT 10 ms: Nick l = 44 ms with 1192 too-late frames; Emma l = 55 ms with 127 too-late. Emma's phone also captures in 960-frame (20 ms) bursts (no fast path), which makes her arrivals bursty.
 - Proposed offset-free form: cutoff = floor + min RTT (the RTT is exact).
+**2026-09-28 23:41 — floor + min RTT (v0.107.5) is WORSE. Field wave, Emma phone ↔ Nick desktop, LAN, min RTT 3 ms:**
+- Emma: 4441 too late, 5638 misses, loss 123/256.
+- Desktop: 7121 too late, 7330 misses.
+- Budget lines (per side):
+
+| | TX capture→send | jitter margin | repair slack | output |
+|---|---|---|---|---|
+| Emma | 16.4 ms | 2.4 ms | 20 ms | 8 ms |
+| Desktop | 36.4 ms (cpal) | 3.1 ms | 10 ms | 33.3 ms (cpal) |
+
+- Cause: sender-side capture jitter (bursty capture, tens of ms) is invisible to RTT, so floor + RTT marks most frames lost/late. The old 2×floor was accidentally lenient.
+- Pending Nick's call. Recommended: L = the 1-in-256 point over ALL received ages (no cutoff; one straggler per 256 is the allowance).
+- Separately: desktop cpal capture+output buffering ≈ 70 ms is the biggest latency item.
