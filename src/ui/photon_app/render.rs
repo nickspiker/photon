@@ -821,21 +821,22 @@ impl PhotonApp {
                 };
                 let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
                 ctx.text.draw_text_center(&mut canvas, &status_line, acx, acy + avatar_r + unit * 2.2, &status_style, None, None);
-                // Under each avatar, that voice's path (Nick 2026-09-28, replacing the round trip): the rung it is sent on and how late it plays at the far ear — theirs from our own l, ours from the l they report. ≈ marks a clock the grid cannot vouch for.
+                // Under each avatar, the rung that voice is sent on; centred between them, the ROUND TRIP mouth to ear and back (Nick 2026-09-28): our own l plus the l they report. The sum is exact whatever the two clocks disagree by — a one-way split would be a guess until the grid has an outside reference (GPS or the like).
                 if let Some(g) = field_geom {
-                    let approx = if crate::network::time_base::now_stamp().degraded() { "\u{2248}" } else { "" };
-                    let ms = |l: Option<u32>| l.map_or("\u{2014}".to_string(), |v| format!("{approx}{} ms", crate::fmt_num(v)));
                     let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
                     let ours_l = crate::platform::audio::play_latency().map(|l| (l.max(0) / 48) as u32);
                     let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(std::sync::atomic::Ordering::Relaxed)).filter(|&v| v != u32::MAX);
                     let st = TextStyle::new(unit * 0.5, *theme::LABEL_COLOUR).font("Oxanium");
-                    let theirs_line = format!("{} \u{b7} {}", rung(crate::wave::LAST_PEER_TIER.load(std::sync::atomic::Ordering::Relaxed)), ms(ours_l));
-                    let ours_line = format!("{} \u{b7} {}", rung(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed)), ms(theirs_l));
                     let below = g.r + unit * 0.9;
-                    ctx.text.draw_text_center(&mut canvas, &theirs_line, g.theirs.0, g.theirs.1 + below, &st, None, None);
-                    ctx.text.draw_text_center(&mut canvas, &ours_line, g.ours.0, g.ours.1 + below, &st, None, None);
+                    ctx.text.draw_text_center(&mut canvas, &rung(crate::wave::LAST_PEER_TIER.load(std::sync::atomic::Ordering::Relaxed)), g.theirs.0, g.theirs.1 + below, &st, None, None);
+                    ctx.text.draw_text_center(&mut canvas, &rung(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed)), g.ours.0, g.ours.1 + below, &st, None, None);
+                    let round_trip = match (ours_l, theirs_l) {
+                        (Some(a), Some(b)) => format!("{} ms", crate::fmt_num(a + b)),
+                        _ => "\u{2014}".to_string(),
+                    };
+                    ctx.text.draw_text_center(&mut canvas, &round_trip, (g.theirs.0 + g.ours.0) * 0.5, (g.theirs.1 + g.ours.1) * 0.5, &st, None, None);
                 }
-                // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs. With the field up, each voice's rung and latency sit under its avatar instead (Nick 2026-09-28).
+                // RUNNING STATS on every build (Nick 2026-09-11): the rung by its Spaceballs name, the round trip as a frequency in the current base, the loss ring, the buffer — refreshed by the engine once a second while the wave runs. With the field up, each voice's rung sits under its avatar and the round trip between them instead (Nick 2026-09-28).
                 if matches!(phase, crate::wave::WavePhase::Active) && field_geom.is_none() {
                     let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
                     if rtt > 0 {

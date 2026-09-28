@@ -247,7 +247,7 @@ The active wave screen shows the wave as it happens: a square at the top holds b
 - **TX** is exactly the frame the far side gets (after the level plan); **RX** is each frame under its name, rippling from the frame the speaker is playing now.
 - **A fluor layer over the speckle.** Each field pixel is the colour at full brightness with its darkness premultiplied by opacity, and its opacity is its brightness; it composites under the avatars, text and buttons, and the screen's speckled background lands under it. The panel paints no backdrop of its own, and the window chrome stays on top.
 - **Colours are computed once per frame** into a ring keyed by frame number; a paint only lays the ring out in age order.
-- **The avatar rings take the field's age-0 colour:** the newest audio as its ripple leaves the avatar, at the usual fixed width. Under each avatar: the rung that voice is sent on and how late it plays at the far ear.
+- **The avatar rings take the field's age-0 colour:** the newest audio as its ripple leaves the avatar, at the usual fixed width. Under each avatar: the rung that voice is sent on. Centred between them: the round trip, mouth to ear and back (each side's measured playout latency, added). The sum is exact whatever the two clocks disagree by; a one-way split is not shown, because two ends alone cannot tell path asymmetry from clock offset (that needs an outside reference such as GPS).
 - **The path colour** (LAN / radio / internet / relay) fills the top-left orb, solid, while the wave is up.
 - **Frozen when nobody is looking:** unfocused or hidden window, or the phone's display off (the proximity blank at the ear included).
 
