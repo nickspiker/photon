@@ -27,7 +27,10 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 
 /// The media ingress sink: installed by the wave engine at wave start, cleared at teardown. The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. `None` (no live wave) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
-static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>>> = Mutex::new(None);
+static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<MediaIn>>> = Mutex::new(None);
+
+/// One media datagram as the recv worker saw it: bytes, source, and the instant `recv` returned — the RTT and arrival ages measure from the socket, not from whenever the engine thread got round to it.
+pub type MediaIn = (Vec<u8>, SocketAddr, std::time::Instant);
 
 /// True exactly while a wave engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
 pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -35,7 +38,7 @@ pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 /// Sink generation: each install bumps it; an engine clears only the generation it installed (a drained engine exiting seconds after hangup must not tear down the next wave's sink).
 static MEDIA_SINK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-pub fn install_media_sink(tx: std::sync::mpsc::Sender<(Vec<u8>, SocketAddr)>) -> u64 {
+pub fn install_media_sink(tx: std::sync::mpsc::Sender<MediaIn>) -> u64 {
     *MEDIA_SINK.lock().unwrap() = Some(tx);
     MEDIA_QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
     MEDIA_SINK_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
@@ -60,9 +63,10 @@ pub fn clear_media_sink() {
 
 /// Called from the recv worker for every magic-matched datagram. Cheap when idle (one mutex + None).
 pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
+    let at = std::time::Instant::now(); // straight after recv returned: the socket's arrival instant
     let sink = MEDIA_SINK.lock().unwrap();
     if let Some(tx) = sink.as_ref() {
-        let _ = tx.send((bytes.to_vec(), src));
+        let _ = tx.send((bytes.to_vec(), src, at));
     }
 }
 

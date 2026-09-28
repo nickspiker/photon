@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waves on a fast connection play with less delay and fewer dropped moments: the playback buffer no longer gets thrown off by the two phones' clocks disagreeing, and the connection's round trip is measured to the microsecond.
+- The wave screen's connection colour shows the same (local) colour on both phones when you're on the same network.
+- Messages between two people whose key exchange went wrong halfway now recover by themselves instead of staying stuck.
 - The wave screen's ripples now travel from one avatar to the other in one second and fade out as they arrive, blend smoothly, show the app's background thru them, and scale with the rest of the interface; the rings around the avatars take the colour of the newest sound, and the connection colour stays in the top-left circle.
 - The window's title bar and buttons stay visible during a wave and when the contact list scrolls under them.
 - On Android, saved files and exported wave recordings now land in your Downloads folder under Photon, where other apps can find them.

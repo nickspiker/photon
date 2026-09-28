@@ -59,16 +59,17 @@ const LOSS_SETPOINT: f32 = 1.0 / 512.0; // 2026-09-15: the loop HELD the 1/256 s
 const LOSS_KP: f32 = 1.0; // frames per stop of error, immediately
 const LOSS_KI: f32 = 0.01; // frames per stop per window, accumulated
 const JITTER_TARGET_CAP: usize = 24;
-/// Every bundle carries a 10-byte LINK TAIL: [our send stamp ms u32][echo of the peer's newest stamp u32][ms we held it u16] — an RTT measured on every packet, no separate probe.
+/// Every bundle carries a 10-byte LINK TAIL: [our send stamp µs u32][echo of the peer's newest stamp u32][µs we held it u16, saturating] — an RTT measured on every packet, no separate probe, on OUR clock only (no offset). MICROSECONDS since 2026-09-28 (were ms: the truncation alone cost up to 2-3 ms on a 5 ms LAN path); the stamp wraps every 71 min, which modular subtraction absorbs. Arrival is the recv worker's instant (MediaIn), not the engine thread's.
 const LINK_TAIL: usize = 10;
 /// L's window, in RECEIVED windows (a count, never a time): the floor and the 1-in-this-many point are taken over the last this-many arrivals — Nick's 1-in-256.
 const L_WINDOW: usize = 256;
 
-/// L before the repair slack, from the recent arrival ages (docs/lock.md §7.1 as amended): the floor is the shortest age, the cutoff twice the floor (anything later is lost and ignored), and L the 1-in-L_WINDOW point of the ages inside the cutoff.
-/// The floor itself always counts, so a floor at or under zero (a clock offset larger than the path) still yields L = the floor rather than nothing.
-fn target_latency(ages: &std::collections::VecDeque<i64>) -> i64 {
+/// L before the repair slack, from the recent arrival ages (docs/lock.md §7.1 as amended): the floor is the shortest age, the cutoff the floor plus the shortest recent ROUND TRIP (anything later is lost and ignored), and L the 1-in-L_WINDOW point of the ages inside the cutoff.
+/// WHY the round trip and not twice the floor (Nick 2026-09-28): an age is our clock minus the sender's name, so the floor carries the two clocks' offset — doubling it doubled the offset too (too loose one way, collapsed the other: 1192 frames too late on a 10 ms LAN). The spread above the floor is offset-free, and so is the round trip.
+/// `rtt` = the shortest recent round trip in samples; before one is measured, only the floor counts.
+fn target_latency(ages: &std::collections::VecDeque<i64>, rtt: Option<i64>) -> i64 {
     let floor = ages.iter().copied().min().unwrap_or(0);
-    let cutoff = floor.max(floor.saturating_mul(2));
+    let cutoff = floor + rtt.unwrap_or(0).max(0);
     let mut inside: Vec<i64> = ages.iter().copied().filter(|&a| a <= cutoff).collect();
     inside.sort_unstable_by(|a, b| b.cmp(a));
     // With a full window of arrivals inside the cutoff, one of them is allowed above L; with fewer, none is.
@@ -205,7 +206,7 @@ pub fn start(params: EngineParams) -> EngineHandle {
         muted: muted.clone(),
         thread: std::sync::Mutex::new(None),
     };
-    let (sink_tx, sink_rx) = std::sync::mpsc::channel::<(Vec<u8>, SocketAddr)>();
+    let (sink_tx, sink_rx) = std::sync::mpsc::channel::<super::MediaIn>();
     let sink_gen = super::install_media_sink(sink_tx);
     // CLAIM the session (start_owned): against a live ringback session this is the click-free handover, and the ringback's own late stop becomes a no-op because the generation moved on.
     let _ = crate::platform::audio::start_owned();
@@ -236,7 +237,7 @@ fn run(
     params: EngineParams,
     stop: Arc<AtomicBool>,
     muted: Arc<AtomicBool>,
-    sink_rx: std::sync::mpsc::Receiver<(Vec<u8>, SocketAddr)>,
+    sink_rx: std::sync::mpsc::Receiver<super::MediaIn>,
     sink_gen: u64,
 ) {
     let (tx_dir, rx_dir) = if params.we_are_origin {
@@ -411,6 +412,13 @@ fn run(
     // L = the 1-in-L_WINDOW point among the ages inside the cutoff (with a full window, one of them may sit above L), plus the repair copy's slack. Jitter spreads ages toward the cutoff and L rises with it; anything past the cutoff is the repair copy's job.
     // The first arrival alone sets it, whatever it is; l walks to every new L by slips.
     let mut recent_ages: std::collections::VecDeque<i64> = std::collections::VecDeque::with_capacity(L_WINDOW);
+    // The last L_WINDOW round trips in µs (a count, like the ages): their minimum is the cutoff's grace above the floor.
+    let mut recent_rtt_us: std::collections::VecDeque<u32> = std::collections::VecDeque::with_capacity(L_WINDOW);
+    // The per-wave LATENCY BUDGET (Nick 2026-09-28: "where do the milliseconds go"): the capture→send hold summed over sent windows, and the RX side's last floor, L before slack, and slack, plus the output latency sampled on the stats cadence — logged once at engine down.
+    let (mut budget_cap_sum, mut budget_cap_n) = (0i64, 0i64);
+    let (mut budget_floor, mut budget_core, mut budget_slack) = (0i64, 0i64, 0i64);
+    let mut budget_out: Option<i64> = None;
+    let mut window_k0: i64 = 0;
     // Loss-rate loop state: the 256-bit ring, its cursor, the integral, the last underrun count sampled, and the target we last set.
     let mut loss_bits = [0u64; LOSS_RING / 64];
     let mut loss_pos: u8 = 0;
@@ -628,6 +636,7 @@ fn run(
             };
             if frames_in_window == 0 {
                 window_fno = frame_no(k0);
+                window_k0 = k0;
             }
             if let Some(w) = spool.as_mut() {
                 // The record's stamp is the frame's NAME in true time — the instant the microphone heard its first sample — never the moment it was spooled.
@@ -696,12 +705,15 @@ fn run(
                 }
                 // LINK TAIL: our stamp, the peer's newest stamp echoed, and how long we held it — the receiver subtracts the hold from its own round trip.
                 {
-                    let now_ms = start_instant.elapsed().as_millis() as u32;
+                    let now_us = start_instant.elapsed().as_micros() as u32; // the algorithm: a wrapping µs stamp, differences taken modulo 2^32
                     let (echo, hold) = match peer_stamp {
-                        Some((st, at)) => (st, at.elapsed().as_millis().min(u16::MAX as u128) as u16),
+                        Some((st, at)) => (st, at.elapsed().as_micros().min(u16::MAX as u128) as u16), // saturates: the receiver skips a saturated hold rather than trust it
                         None => (0, 0),
                     };
-                    payload.extend_from_slice(&now_ms.to_le_bytes());
+                    // Capture → send on OUR clock: how long the window's first frame waited from the microphone to the wire.
+                    budget_cap_sum += vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - window_k0;
+                    budget_cap_n += 1;
+                    payload.extend_from_slice(&now_us.to_le_bytes());
                     payload.extend_from_slice(&echo.to_le_bytes());
                     payload.extend_from_slice(&hold.to_le_bytes());
                     // The peer-loss byte: OUR windows lost over the last second (the 1 s cadence resets the baseline) — what the peer's tier should answer to.
@@ -734,7 +746,7 @@ fn run(
         }
 
         // ---- RX: sealed packets → fountain windows → opus → speaker ----
-        while let Ok((bytes, src)) = sink_rx.try_recv() {
+        while let Ok((bytes, src, rx_at)) = sink_rx.try_recv() {
             // DROP-REASON TALLY (docs/waves.md diagnostics): every RX reject below is a silent `continue`, so a dead wave is indistinguishable at engine-down between "packets never reached this device" (addressing/NAT) and "packets arrived but won't decrypt" (basket-secret desync). Count them apart. Field 2026-08-19: a wave went Active but engine-down read "0 in" with zero other signal — this tally is the tripwire that says which half broke. `rx_seen` counts datagrams the recv-worker fast-path actually handed us (magic already matched), so `rx_seen > 0 && pkts_in == 0` = arrived-but-undecryptable = secret mismatch; `rx_seen == 0` = never arrived = look at the target address / relay.
             rx_seen += 1;
             let Some((header, sealed)) = packet::parse_header(&bytes) else {
@@ -857,7 +869,7 @@ fn run(
                 let stamp = u32::from_le_bytes([t[0], t[1], t[2], t[3]]);
                 let echo = u32::from_le_bytes([t[4], t[5], t[6], t[7]]);
                 let hold = u16::from_le_bytes([t[8], t[9]]) as u32;
-                peer_stamp = Some((stamp, std::time::Instant::now()));
+                peer_stamp = Some((stamp, rx_at));
                 // The peer-loss byte: their receive of OUR transmit over their last second. >0 = our tier is too hot for the path RIGHT NOW.
                 if t.len() >= LINK_TAIL_V3 {
                     let l_ms = u16::from_le_bytes([t[11], t[12]]);
@@ -872,10 +884,15 @@ fn run(
                         last_peer_loss_at = Some(std::time::Instant::now());
                     }
                 }
-                if echo != 0 {
-                    let now_ms = start_instant.elapsed().as_millis() as u32;
-                    let rtt = now_ms.wrapping_sub(echo).wrapping_sub(hold);
-                    if rtt < 10_000 {
+                if echo != 0 && hold != u16::MAX as u32 {
+                    let now_us = rx_at.saturating_duration_since(start_instant).as_micros() as u32;
+                    let rtt_us = now_us.wrapping_sub(echo).wrapping_sub(hold);
+                    let rtt = (rtt_us + 500) / 1000; // the rest of the link logic reads whole ms
+                    if rtt_us < 10_000_000 {
+                        if recent_rtt_us.len() == L_WINDOW {
+                            recent_rtt_us.pop_front();
+                        }
+                        recent_rtt_us.push_back(rtt_us);
                         rtt_min = rtt_min.min(rtt);
                         rtt_max = rtt_max.max(rtt);
                         rtt_ema = if rtt_n == 0 { rtt as f32 } else { rtt_ema + (rtt as f32 - rtt_ema) * 0.05 };
@@ -942,14 +959,20 @@ fn run(
                     // The SENDER's name for this window's first frame, unwrapped against our clock — every frame below is spooled at the instant ITS microphone heard it, so both parties' channels line up at mic time.
                     let win_k0 = unwrap_frame_no(dfno) * super::align::FRAME;
                     // How old the window's first frame is on arrival — L's evidence.
-                    let age = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - win_k0;
+                    let since_rx = (rx_at.elapsed().as_micros() as i64) * 48 / 1000; // samples since the socket saw the packet that completed it
+                    let age = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - since_rx - win_k0;
                     // The repair copy rides two windows behind its source (repair_queue): L leaves room for it, or the backup would routinely land just after its slot and save nothing.
                     let repair_slack = 2 * TIER_FRAMES[dtier] as i64 * super::align::FRAME;
                     if recent_ages.len() == L_WINDOW {
                         recent_ages.pop_front();
                     }
                     recent_ages.push_back(age);
-                    crate::platform::audio::set_play_target(target_latency(&recent_ages) + repair_slack);
+                    let rtt_samples = recent_rtt_us.iter().copied().min().map(|u| u as i64 * 48 / 1000);
+                    let l_core = target_latency(&recent_ages, rtt_samples);
+                    budget_floor = recent_ages.iter().copied().min().unwrap_or(0);
+                    budget_core = l_core;
+                    budget_slack = repair_slack;
+                    crate::platform::audio::set_play_target(l_core + repair_slack);
                     rx_decoders.remove(&wid);
                     for slot in 0..TIER_FRAMES[dtier] {
                         let base = slot * tier_slot(dtier);
@@ -1218,6 +1241,9 @@ fn run(
         // Periodic link + echo stats (10s cadence on the engine loop — a measurement cadence, not UI timing).
         if last_echo_stats.elapsed() >= std::time::Duration::from_secs(10) {
             last_echo_stats = std::time::Instant::now();
+            if let Some(o) = crate::platform::audio::take_output_ahead_mean() {
+                budget_out = Some(o);
+            }
             fill_hello_due = true; // the fill plane's presence beacon — a peer learns we speak it from any fill datagram
             {
                 let losses = loss_bits.iter().map(|w| w.count_ones()).sum::<u32>();
@@ -1463,6 +1489,20 @@ fn run(
             rtt_ema,
             rtt_n,
             jitter_target
+        );
+    }
+    // THE LATENCY BUDGET (Nick 2026-09-28): where this side's milliseconds go, each on OUR clock except l (which carries the clock offset; the round trip = our l + their l cancels it). Pair it with the peer's line for the other direction.
+    {
+        let ms = |samples: i64| format!("{:.1}", samples as f64 / 48.0);
+        let net = recent_rtt_us.iter().copied().min().map_or("?".to_string(), |u| format!("{:.1}", u as f64 / 2000.0));
+        crate::logf!(
+            "WAVE: latency budget — TX capture→send {} ms · RX network ≈ {} ms (min RTT/2) · jitter margin {} ms (L − floor) · repair slack {} ms · output {} ms (callback→DAC) · l {} ms (with clock offset)",
+            if budget_cap_n > 0 { ms(budget_cap_sum / budget_cap_n) } else { "?".to_string() },
+            net,
+            ms(budget_core - budget_floor),
+            ms(budget_slack),
+            budget_out.map_or("?".to_string(), ms),
+            crate::platform::audio::play_latency().map_or("?".to_string(), ms),
         );
     }
     if raw_out > 0 || raw_in > 0 {
@@ -1790,26 +1830,40 @@ mod latency_target_tests {
         ages.iter().copied().collect()
     }
 
-    /// Nick's cases (2026-09-28): a 4 s straggler among 5 ms arrivals is LOST (past twice the floor) and never moves L; jitter inside the cutoff raises L; with a full window, one arrival may sit above L; the first arrival alone sets it.
+    /// Nick's cases (2026-09-28): a 4 s straggler among 5 ms arrivals is LOST (past the floor plus the round trip) and never moves L; jitter inside the cutoff raises L; with a full window, one arrival may sit above L; the first arrival alone sets it.
     #[test]
     fn floor_cutoff_and_one_in_256() {
         let ms = |v: i64| v * 48;
+        let rtt = Some(ms(10));
         // One arrival: it IS the floor and L.
-        assert_eq!(target_latency(&window(&[ms(2000)])), ms(2000), "the first latency we get, whatever it is");
-        // 255 at 5 ms and one at 4 s: the 4 s one is past 2 × 5 ms — lost, ignored.
+        assert_eq!(target_latency(&window(&[ms(2000)]), rtt), ms(2000), "the first latency we get, whatever it is");
+        // 255 at 5 ms and one at 4 s: the 4 s one is past 5 + 10 ms — lost, ignored.
         let mut a = vec![ms(5); 255];
         a.push(ms(4000));
-        assert_eq!(target_latency(&window(&a)), ms(5));
+        assert_eq!(target_latency(&window(&a), rtt), ms(5));
         // Jitter inside the cutoff: L rises to the slowest in-cutoff arrival (fewer than 256 inside → none may sit above).
         let mut b = vec![ms(5); 250];
-        b.extend([ms(7), ms(9), ms(10)]);
-        assert_eq!(target_latency(&window(&b)), ms(10));
+        b.extend([ms(7), ms(9), ms(15)]);
+        assert_eq!(target_latency(&window(&b), rtt), ms(15));
         // A full window inside the cutoff: the single slowest may sit above L — the 1-in-256.
         let mut c = vec![ms(5); 255];
         c.push(ms(9));
-        assert_eq!(target_latency(&window(&c)), ms(5));
-        // A floor at or under zero (a clock offset past the path) still gives an L, never nothing.
-        assert_eq!(target_latency(&window(&[-100, -50, 30])), -100);
+        assert_eq!(target_latency(&window(&c), rtt), ms(5));
+        // Before any round trip is measured, only the floor counts.
+        assert_eq!(target_latency(&window(&[ms(5), ms(9)]), None), ms(5));
+    }
+
+    /// The clock offset moves L by exactly itself and changes nothing else: the same arrivals seen thru a clock 30 ms ahead or 30 ms behind give the same margin above the floor (twice-the-floor did not — it doubled the offset).
+    #[test]
+    fn the_cutoff_is_offset_free() {
+        let ms = |v: i64| v * 48;
+        let rtt = Some(ms(6));
+        let base: Vec<i64> = (0..200).map(|i| ms(4) + (i % 9) * 48).collect();
+        let l0 = target_latency(&window(&base), rtt);
+        for d in [ms(30), -ms(30), -ms(4)] {
+            let shifted: Vec<i64> = base.iter().map(|a| a + d).collect();
+            assert_eq!(target_latency(&window(&shifted), rtt), l0 + d, "offset {d}");
+        }
     }
 }
 

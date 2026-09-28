@@ -99,7 +99,20 @@ pub fn queue_named(k0: i64, frame: Vec<i16>) {
 /// l FOLLOWS L BY SLIPS (Nick 2026-09-28): each output sample reads the next name at the cursor; at a sample where the stream's slope is zero or changes sign, and l ≠ L, exactly one sample is dropped (l too long) or repeated (l too short). Nothing else ever moves l: no jumps, no waiting for silence, no cap — a silent (all-zero) stretch is eligible at every sample, so l meets L there at once, and speech offers a slip at every peak and trough.
 /// Missing names read as zero (a gap plays as silence, and silence is where l moves freest). A name whose instant has passed is never played.
 /// The DAC's own crystal drift lands in l the same way (it is the DAC's true instant that sets l), so the §7.3 drift loop is this same corrector.
+/// Output latency, callback to DAC, in grid samples on OUR clock (offset-free): summed per named frame for the wave's latency budget.
+static OUT_AHEAD_SUM: AtomicI64 = AtomicI64::new(0);
+static OUT_AHEAD_N: AtomicI64 = AtomicI64::new(0);
+
+/// Mean output latency (samples) since the last read, then restarts the mean; `None` before any named frame.
+pub fn take_output_ahead_mean() -> Option<i64> {
+    let n = OUT_AHEAD_N.swap(0, Ordering::Relaxed);
+    let s = OUT_AHEAD_SUM.swap(0, Ordering::Relaxed);
+    (n > 0).then(|| s / n)
+}
+
 fn named_frame(at_osc: i64) -> Vec<i16> {
+    OUT_AHEAD_SUM.fetch_add(vsf::grid::eagle_to_sample(at_osc) - vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()), Ordering::Relaxed);
+    OUT_AHEAD_N.fetch_add(1, Ordering::Relaxed);
     let mut out = vec![0i16; FRAME_SAMPLES];
     let target = PLAY_TARGET.load(Ordering::Relaxed);
     if target == i64::MIN {
