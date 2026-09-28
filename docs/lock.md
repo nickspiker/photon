@@ -309,10 +309,10 @@ One packet:
   threshold), as a single jump, never via slips.
 
 **Superseded (Nick 2026-09-28, after a wave played 2.2 s late for its whole length: the first packets arrived in a 2.4 s burst, L was seeded from them, and the far side never went quiet enough to count as silence):**
-- **L is the target, l is the actual.** L starts at 20 ms (LAN-class path) or 60 ms (otherwise), never from the first arrivals.
-- **L = the age at which 1 in 256 RECEIVED windows arrives late, plus the repair copy's offset** (the repair rides two windows behind its source; without that slack the backup lands just after its slot and saves nothing). Each arriving window nudges L: up by `L_STEP·255/256` when it arrived later than L, down by `L_STEP/256` otherwise (`L_STEP` = 24 samples), which settles exactly where 1/256 of arrivals are late. Only arrivals count: a lost window says nothing about delay and is the repair copy's job, so loss can never ratchet L up.
+- **L is the target, l is the actual. No hardcoded timings anywhere** (Nick: "get rid of any timings that are hardcoded").
+- **L = the largest arrival age among the last 256 RECEIVED windows, plus the repair copy's offset** (the repair rides two windows behind its source; without that slack the backup lands just after its slot and saves nothing). One in 256 arrived later than L — the 1-in-256 rule stated as a count, with no step size. The first arrival alone sets it, whatever it is; a slow first burst leaves the window after 256 more arrivals. Only arrivals count: a lost window says nothing about delay and is the repair copy's job, so loss can never ratchet L up.
 - **l follows L one sample at a time**, never by a jump and never waiting for silence: at every sample where the stream's slope is zero or changes sign (the flat points, peaks and troughs — every sample of a silence), and l ≠ L, exactly one sample is dropped (l too long) or repeated (l too short). Uncapped: a silence lets l meet L at once; speech offers a slip at every peak and trough.
-- A name more than a second from where l says it should be is a discontinuity in the peer's names (a re-anchored aligner), not a latency; reading restarts on the new stream.
+- Nothing else moves l — not even a jump in the peer's names (a re-anchored aligner): L moves to it and l walks there by slips like any other change.
 - The DAC's own drift lands in l the same way (l is measured against the DAC's true instant), so §7.3's loop is this same corrector.
 - Each side reports its l once a second (the link tail's latency field); each voice's rung and far-ear latency show under its avatar.
 

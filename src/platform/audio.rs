@@ -68,8 +68,6 @@ pub fn play_head() -> Option<i64> {
 }
 /// Some far audio has reached the speaker this wave — misses count only after it has.
 static PLAYED_ANY: AtomicBool = AtomicBool::new(false);
-/// One second of samples — the size of an L step that means the peer's names jumped.
-const NATIVE_RATE_SAMPLES: i64 = 48_000;
 /// Missing samples a frame may have before it counts as a miss: the DAC's own drift against true time opens a one-sample gap now and then, which is not the network losing anything.
 const MISS_SLACK: usize = 2;
 
@@ -109,8 +107,8 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     }
     let dac_k = vsf::grid::eagle_to_sample(at_osc);
     let mut p = PLAY_NEXT.load(Ordering::Relaxed);
-    // The first frame starts exactly on L. A cursor more than a second from L is a discontinuity in the peer's names (its aligner re-anchored onto a stepped clock), not a latency: the stream ahead of the speaker is a new one, so reading starts over on it.
-    if p == i64::MIN || ((dac_k - p) - target).abs() > NATIVE_RATE_SAMPLES {
+    // The first frame starts exactly on L. After that nothing but slips ever moves the cursor — however far L moves, l walks to it (Nick 2026-09-28: no hardcoded timings, no jumps).
+    if p == i64::MIN {
         p = dac_k - target;
     }
     // The names this frame can reach: the one before the cursor (for the slope), and at most two per output sample (a drop per sample in a silent stretch).
