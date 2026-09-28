@@ -229,7 +229,7 @@ fn draw_hourglass(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, angle_deg: f
     }
 }
 
-/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box — the send-button glyph, painted OVER the already-drawn pill (the window-controls pattern: fill the button first, draw the symbol after). The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip. `colour` is α+darkness packed. Composites via source-over onto the existing (opaque pill) pixel, writing the result OPAQUE — so it CAN'T be an under() write (that would be discarded on the opaque pill). Crucially it does NOT touch the hit map: the pill already stamped the full silhouette, so the hover overlay (which wrap-adds a FILL-calibrated delta onto every hit-id pixel) tints only the pill, never the near-white glyph. Stamping the glyph's hit id here cooked the hover — don't. Coverage feathers the 1px boundary against the actual pill colour; `colour`'s α scales the glyph.
+/// Draw an upward-pointing arrowhead (a filled 4-vertex chevron) centred at (cx, cy), sized to a `size`×`size` box — the send-button glyph, painted BEFORE its pill (fluor is front to back: the pill then lands under the glyph). The four vertices: apex (top centre), right wing tip, bottom notch (centre, pulled up so it reads as a chevron with thickness, not a solid triangle), left wing tip. `colour` is α+darkness packed. Composites UNDER whatever is already painted (an overlay drawn earlier stays on top of it). Crucially it does NOT touch the hit map: the pill already stamped the full silhouette, so the hover overlay (which wrap-adds a FILL-calibrated delta onto every hit-id pixel) tints only the pill, never the near-white glyph. Stamping the glyph's hit id here cooked the hover — don't. Coverage feathers the 1px boundary against the actual pill colour; `colour`'s α scales the glyph.
 fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
     // Geometry as fractions of the box: apex up top, wings at the bottom corners, notch pulled up so the shape is a chevron (^) with visible thickness.
     let half_w = size * 0.42;
@@ -252,13 +252,8 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
         return;
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
-    // Glyph darkness channels + its base α; coverage scales α for the source-over onto the pill.
+    // The glyph's base α; coverage scales it for the under-composite.
     let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
-    let (gr, gg, gb) = (
-        ((colour >> 16) & 0xFF) as f32,
-        ((colour >> 8) & 0xFF) as f32,
-        (colour & 0xFF) as f32,
-    );
 
     // Even-odd inside test + distance-to-nearest-edge for 1px coverage AA.
     let inside = |px: f32, py: f32| -> bool {
@@ -316,22 +311,14 @@ fn draw_up_arrowhead(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u
                 continue;
             }
             let idx = row + px;
-            let dst = canvas.pixels[idx];
-            // Source-over the glyph darkness onto the pill pixel, keeping the pill's opacity. Feathers the AA edge against the ACTUAL pill colour (any hover/active state) — no halo. Does NOT touch the hit map: the pill's silhouette stamp already covers here, so the hover overlay tints only the pill, never this near-white glyph.
-            let (dr, dg, db) = (
-                ((dst >> 16) & 0xFF) as f32,
-                ((dst >> 8) & 0xFF) as f32,
-                (dst & 0xFF) as f32,
-            );
-            let nr = (gr * a + dr * (1.0 - a)) as u32;
-            let ng = (gg * a + dg * (1.0 - a)) as u32;
-            let nb = (gb * a + db * (1.0 - a)) as u32;
-            canvas.pixels[idx] = (dst & 0xFF00_0000) | (nr << 16) | (ng << 8) | nb;
+            // Composite UNDER what is already here (fluor is front to back): the glyph is painted BEFORE its pill, so the pill lands under it and feathers the AA edge against whatever pill colour follows. Does NOT touch the hit map: the pill's silhouette stamp covers here, so the hover overlay tints only the pill.
+            let glyph = (((a * 255.0).round() as u32) << 24) | (colour & 0x00FF_FFFF);
+            canvas.pixels[idx] = fluor::pixel::Blend::under(canvas.pixels[idx], glyph, fluor::BlendMode::Normal);
         }
     }
 }
 
-/// Draw a check mark centred at (cx, cy) in a `size`×`size` box — the send button's glyph while an EDIT is armed (commit-the-correction, visually distinct from the send arrowhead by shape AND colour). Same contract as `draw_up_arrowhead`: a filled polygon (two stroke arms as one 6-vertex even-odd shape), source-over onto the already-drawn pill, 1px boundary feather, NEVER touches the hit map. A drawn primitive, not text — the Android font lacks the glyph codepoints (the "→ rendered blank" lesson at the send button's construction site).
+/// Draw a check mark centred at (cx, cy) in a `size`×`size` box — the send button's glyph while an EDIT is armed (commit-the-correction, visually distinct from the send arrowhead by shape AND colour). Same contract as `draw_up_arrowhead`: a filled polygon (two stroke arms as one 6-vertex even-odd shape), composited under what is already painted and BEFORE its pill, 1px boundary feather, NEVER touches the hit map. A drawn primitive, not text — the Android font lacks the glyph codepoints (the "→ rendered blank" lesson at the send button's construction site).
 fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32) {
     // The two arms as a closed hexagon (unit box, y down): short arm down-right, long arm up-right, ~0.16 stroke weight.
     let p = |u: f32, v: f32| (cx + (u - 0.5) * size, cy + (v - 0.5) * size);
@@ -354,11 +341,6 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
     }
     canvas.damage.add_bounds(x0, y0, x1, y1);
     let glyph_a = ((colour >> 24) & 0xFF) as f32 / 255.0;
-    let (gr, gg, gb) = (
-        ((colour >> 16) & 0xFF) as f32,
-        ((colour >> 8) & 0xFF) as f32,
-        (colour & 0xFF) as f32,
-    );
     let inside = |px: f32, py: f32| -> bool {
         let mut wind = false;
         let mut j = verts.len() - 1;
@@ -412,16 +394,9 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
                 continue;
             }
             let idx = row + px;
-            let dst = canvas.pixels[idx];
-            let (dr, dg, db) = (
-                ((dst >> 16) & 0xFF) as f32,
-                ((dst >> 8) & 0xFF) as f32,
-                (dst & 0xFF) as f32,
-            );
-            let nr = (gr * a + dr * (1.0 - a)) as u32;
-            let ng = (gg * a + dg * (1.0 - a)) as u32;
-            let nb = (gb * a + db * (1.0 - a)) as u32;
-            canvas.pixels[idx] = (dst & 0xFF00_0000) | (nr << 16) | (ng << 8) | nb;
+            // Composite UNDER what is already here (fluor is front to back): the glyph is painted BEFORE its pill, so the pill lands under it and feathers the AA edge against whatever pill colour follows. Does NOT touch the hit map: the pill's silhouette stamp covers here, so the hover overlay tints only the pill.
+            let glyph = (((a * 255.0).round() as u32) << 24) | (colour & 0x00FF_FFFF);
+            canvas.pixels[idx] = fluor::pixel::Blend::under(canvas.pixels[idx], glyph, fluor::BlendMode::Normal);
         }
     }
 }

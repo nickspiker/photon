@@ -97,9 +97,6 @@ pub(super) struct FieldTables {
     /// The colour cache per side: (frame number, colour) by frame number masked to CACHE.
     cache_theirs: Vec<(i64, [u16; 3])>,
     cache_ours: Vec<(i64, [u16; 3])>,
-    /// Newest amplitude, linear fraction of full scale (RMS of the frame).
-    pub level_theirs: f32,
-    pub level_ours: f32,
 }
 
 impl FieldTables {
@@ -107,8 +104,22 @@ impl FieldTables {
     pub fn fill(&mut self, rx: &[FrameEnv], tx: &[FrameEnv]) {
         fill_side(&mut self.theirs, &mut self.cache_theirs, rx);
         fill_side(&mut self.ours, &mut self.cache_ours, tx);
-        self.level_theirs = rx.first().map_or(0.0, amplitude);
-        self.level_ours = tx.first().map_or(0.0, amplitude);
+    }
+
+    /// An avatar ring's colour (Nick 2026-09-28): the field's own colour at AGE 0 — the newest audio, as the ripple leaves the avatar — as a straight fluor colour, the hue at full brightness with α its γ-encoded brightness (the same pixel the field paints there, un-premultiplied for `draw_circle`). Silence is transparent.
+    pub fn ring_colour(&self, theirs: bool) -> u32 {
+        let Some(&[r, g, b]) = (if theirs { &self.theirs } else { &self.ours }).first() else {
+            return 0;
+        };
+        let enc = &*ENC;
+        let a = enc[r.max(g).max(b) as usize];
+        if a == 0 {
+            return 0;
+        }
+        // Full-brightness hue byte = ENC[c]·255/α (the brightest channel reads 255).
+        let hue = |c: u16| (enc[c as usize] * 255 + a / 2) / a;
+        let visible = (hue(r) << 16) | (hue(g) << 8) | hue(b);
+        (a << 24) | (fluor::theme::fmt(visible ^ 0x00FF_FFFF) & 0x00FF_FFFF)
     }
 }
 
@@ -197,7 +208,6 @@ fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &Fie
     if map.key != (w, h, g.side) || t.theirs.len() != FIELD_FRAMES + 1 || t.ours.len() != FIELD_FRAMES + 1 {
         return;
     }
-    use fluor::pixel::Blend;
     let enc = &*ENC;
     let lim = (Q - 1) as u16;
     // One task per row, each pixel composited in place (field 2026-09-28: a per-row buffer plus a nested parallel flatten per row cost ~20 ms a paint on a phone).
@@ -252,15 +262,6 @@ impl PhotonApp {
             crate::platform::desktop_notify::window_attended()
         }
     }
-}
-
-/// An avatar ring's colour from the live level (Nick): green below half of full scale, yellow at exactly half, blending linearly to red at full scale (clipping).
-pub(super) fn level_colour(amp: f32) -> u32 {
-    if amp < 0.5 {
-        return theme::rgb_colour(0, 255, 0);
-    }
-    let t = ((amp - 0.5) * 2.0).clamp(0.0, 1.0);
-    theme::rgb_colour(255, (255.0 * (1.0 - t)).round() as u8, 0)
 }
 
 #[cfg(test)]
@@ -326,6 +327,11 @@ mod tests {
         let open = 256 - 0x80;
         assert_eq!(out >> 24, 0x80 + ((p >> 24) * open >> 8));
         assert_eq!(out & 0xFF, 0x40 + ((p & 0xFF) * open >> 8));
+        // The rings take the age-0 colour: straight, full-brightness hue (one channel carries no darkness), α its brightness; silence is transparent.
+        let ring = loud.ring_colour(true);
+        assert!(ring >> 24 > 0);
+        assert_eq!([16, 8, 0].iter().map(|&s| (ring >> s) & 0xFF).min(), Some(0));
+        assert_eq!(silent.ring_colour(false), 0);
     }
 
     /// Brightness is linear in amplitude: half the amplitude, half the linear light.
@@ -362,12 +368,5 @@ mod tests {
         }
         let per = t1.elapsed() / n;
         eprintln!("field {w}×{h}: map build {build:?}, paint {per:?} per frame");
-    }
-
-    #[test]
-    fn level_colour_follows_the_linear_rule() {
-        assert_eq!(level_colour(0.25), theme::rgb_colour(0, 255, 0));
-        assert_eq!(level_colour(0.5), theme::rgb_colour(255, 255, 0));
-        assert_eq!(level_colour(1.0), theme::rgb_colour(255, 0, 0));
     }
 }

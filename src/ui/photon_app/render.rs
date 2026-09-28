@@ -691,12 +691,14 @@ impl PhotonApp {
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         let mark_chrome = std::time::Instant::now();
 
-        // Chord hint — painted INTO `target` BEFORE `flatten_into` so the hint glyphs sit at the TOP of the under-blend chain (chrome composes UNDER them).
+        // Chord hint — painted INTO `target` FIRST so the hint glyphs sit at the TOP of the under-blend chain (the chrome composes under them).
         if held_now {
             let span = ctx.viewport.effective_span();
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             paint::draw_chord_hint(&mut canvas, ctx.text, CHORD_HINTS, span);
         }
+        // The CHROME LAYER (orb, controls strip, title, window buttons) goes in NOW, before any content: fluor is front to back, so it stays on top of everything the screens draw — rows scrolled up under the title strip, the full-screen wave panel. Its bg layer (the speckle) is flattened LAST, under all content (`flatten_bg_into` below).
+        chrome.flatten_chrome_into(target, buf_w, buf_h, None);
 
         // WAVE OVERLAY (docs/waves.md) — retained fluor Buttons (no hand-rolled pills), painted HERE, EARLY, so under-blend keeps them above every screen's body (the whole point: a ring must be visible + answerable from wherever the user is). A live wave shows the status chip + action bar; an open callable conversation with no wave shows the ☎ start pill. Pixels land now (hit_map = None); the hit rects are RE-STAMPED at the very end via `stamp_hit_into` because each screen re-stamps its own hit_test_map region and would otherwise wipe this. Hover/press/dispatch ride `visit_app_widgets`. y sits just below the chrome title-bar band.
         {
@@ -748,14 +750,14 @@ impl PhotonApp {
                 match field_geom {
                     None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
                     Some(g) => {
-                        // Both parties, theirs top-right and ours bottom-left, each ringed in its LIVE LEVEL colour at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
+                        // Both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
                         if let Some((diam, theirs, ours)) = self.wave_field_avatars.as_ref() {
                             crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
                             crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
                         }
                         let th = super::ring_thickness(g.r);
-                        paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, super::wave_field::level_colour(self.wave_field_tabs.level_theirs), None);
-                        paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, super::wave_field::level_colour(self.wave_field_tabs.level_ours), None);
+                        paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, self.wave_field_tabs.ring_colour(true), None);
+                        paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, self.wave_field_tabs.ring_colour(false), None);
                     }
                 }
                 // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
@@ -958,27 +960,9 @@ impl PhotonApp {
                         }
                     }
                 }
-                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent, so the speckle goes under it in place of the black backdrop (Nick 2026-09-28).
-                let field_painted = match (field_geom, self.wave_field_map.as_ref()) {
-                    (Some(g), Some(m)) => {
-                        super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
-                        paint::background_noise(&mut canvas, 0, true, 0, None, None);
-                        true
-                    }
-                    _ => false,
-                };
-                // OPAQUE background LAST: fluor composes later paints UNDER earlier ones, so the backdrop must follow the panel's own elements or it covers them — painting it FIRST produced a solid-black dead screen on desktop (field 2026-08-31, the very first Linux ring after the redesign). Painted last it slots exactly one layer beneath the pulse/avatar/name/buttons and still blots out whatever screen was up (α 0xFF, darkness 0xFF ⇒ solid black; the translucent-wash ghosting fix holds).
-                if !field_painted {
-                    paint::fill_rect(
-                        &mut canvas,
-                        0,
-                        0,
-                        buf_w as isize,
-                        buf_h as isize,
-                        0xFFFFFFFF,
-                        None,
-                        None,
-                    );
+                // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — the per-screen bodies are skipped while it shows, so what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
+                if let (Some(g), Some(m)) = (field_geom, self.wave_field_map.as_ref()) {
+                    super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {
                 let phase = *phase;
@@ -1796,7 +1780,7 @@ impl PhotonApp {
             let row_h = ready_layout.row_height.max(1) as isize; // WHY/PROOF: as above — a 0-height row would make the walk stand still
             let diam = ready_layout.contact_avatar_diameter;
             let avatar_r = diam as f32 * 0.5;
-            // Rows now scroll up into (and past) where the user section sat, so the clip can no longer stop at `rows.y0`. Clip top = the top of the content area (0); the chrome title bar composites on top afterwards via `chrome.flatten_into`, exactly as it does for the unclipped avatar that already draws high. Keep the x extent at the rows' columns.
+            // Rows now scroll up into (and past) where the user section sat, so the clip can no longer stop at `rows.y0`. Clip top = the top of the content area (0); the chrome title bar stays on top because its layer is flattened into `target` BEFORE any content (`flatten_chrome_into`), exactly as it does for the unclipped avatar that already draws high. Keep the x extent at the rows' columns.
             let rows_clip = fluor::paint::Clip::new(rows.x0, 0, rows.x1, buf_h);
 
             // Filter by the search text (case-insensitive substring on the handle); empty filter = all.
@@ -4843,18 +4827,9 @@ impl PhotonApp {
                                 let id = btn.hit_id();
                                 btn.render_content_into(&mut canvas, 0., 0., ctx.text, None, Some(&mut chrome.hit_test_map), id);
                             }
-                            // Send button COLOUR first (its under() blit lands on the noise), then the arrowhead over the pill (source-over). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
+                            // Send GLYPH first, then its pill under it (fluor is front to back). The textbox draws after — it sits over the button and clobbers the button's hit stamp with its own id — so we re-stamp the button's TRUE pill silhouette (fill + stroke, which also covers the arrowhead) AFTER the textbox, as the last writer. That's the whole click + hover region: shape-accurate, not a bbox rectangle.
                             if let Some(btn) = self.message_send_btn.as_mut() {
                                 let id = btn.hit_id();
-                                btn.render_content_into(
-                                    &mut canvas,
-                                    0.,
-                                    0.,
-                                    ctx.text,
-                                    None,
-                                    Some(&mut chrome.hit_test_map),
-                                    id,
-                                );
                                 if self.compose_edit_of.is_some() {
                                     // EDIT armed: commit-the-correction — a green check, distinct from the send arrow by shape AND colour.
                                     draw_check_mark(
@@ -4879,6 +4854,15 @@ impl PhotonApp {
                                         arrow,
                                     );
                                 }
+                                btn.render_content_into(
+                                    &mut canvas,
+                                    0.,
+                                    0.,
+                                    ctx.text,
+                                    None,
+                                    Some(&mut chrome.hit_test_map),
+                                    id,
+                                );
                             }
                             if let Some(tb) = self.message_textbox.as_mut() {
                                 let id = tb.hit_id();
@@ -7192,7 +7176,7 @@ impl PhotonApp {
         }
 
         let mark_content = std::time::Instant::now();
-        chrome.flatten_into(target, buf_w, buf_h, None);
+        chrome.flatten_bg_into(target, buf_w, buf_h, None);
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 
