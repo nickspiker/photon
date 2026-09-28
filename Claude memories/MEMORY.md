@@ -36,6 +36,7 @@
 - [Epoch is fixed](feedback_epoch_fixed.md) — HARD: never move the epoch; fleet mints on legacy 20:17:40 UTC, TAI def 20:17:48 is +29 s; NO flip (decided 2026-09-26)
 - [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding: every string parser is an attacker's lever; drop-and-purge legacy forms the same day
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when required
+- [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; open = live strand pull, never-friended receive commit, offer refresh, Withdraw

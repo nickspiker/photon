@@ -331,7 +331,7 @@ Decided 2026-09-27 (Nick): a woven strand's own time must enter the weave, so ev
 
 - **v1** feeds each strand's raw identity bytes (the x-text, or a typed row's canonical fields) into `derive_fresh_link`. The strand's time only ever rode the wire as a pointer, and a row stays weavable only by keeping its whole text.
 - **v2** feeds each strand as its **strand value** `S = spaghettify(DOMAIN_STRAND ‖ strand_time ‖ len ‖ ident)`, 32 bytes (`crypto::chain::strand_value`). Everything else in §6 is unchanged: the same selection, the same times on the wire, the same resolution on the receiver, then the same mapping to S before `advance`.
-- S is exactly as secret as the text: it never rides the wire and only a holder of the text derives it. It is also **all the braid ever needs from a row**, so under v2 a row's text can be shredded once its S is kept. That is what makes a real delete or truncate possible (the braid-safe redaction ticket).
+- S is exactly as secret as the text: it never rides the wire and only a holder of the text derives it. It is also **all the braid ever needs from a row**, so under v2 a row's text can be DISCARDED once its S is kept: dropped from the vault, its space marked free (or the OS asked to delete it, for a distinct file). That is what makes delete and truncate honest (the braid-safe redaction ticket). Discard, never "shred": until we own the flash, physical erasure is not ours to promise, and everything is encrypted at rest anyway.
 
 **The version belongs to an era, agreed at the CLUTCH ceremony, and never switches inside a live chain.**
 

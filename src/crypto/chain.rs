@@ -80,7 +80,7 @@ const DOMAIN_STRAND: &[u8] = b"PHOTON_STRAND_v\x01";
 
 // BRAID VERSIONS (Nick 2026-09-27): which bytes a woven peer message contributes to a chain step.
 // v1 weaves the strand's raw text; the strand's own time never enters the derivation, and a row can only stay weavable by keeping its whole text.
-// v2 weaves S = strand_value(time, text), 32 bytes: every strand is unique by its time, and S is all the braid ever needs from a row, so the text can be shredded once S is kept.
+// v2 weaves S = strand_value(time, text), 32 bytes: every strand is unique by its time, and S is all the braid ever needs from a row, so the text can be discarded once S is kept.
 // The version is agreed at the CLUTCH ceremony (both offers claim v2, bound into their provenance) and belongs to an ERA, never switched inside a live chain.
 pub const BRAID_V1: u8 = 1;
 pub const BRAID_V2: u8 = 2;

@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- Friendships move to a sturdier way of mixing past messages into each new key, which is what will let a deleted message's words be truly erased later: once every device on both sides runs this build, each friendship re-connects once on its own (a fresh key exchange, done automatically), and your messages and contacts are untouched.
+- Friendships move to a sturdier way of mixing past messages into each new key, which is what will let a deleted message's words be discarded from your devices later instead of kept hidden: once every device on both sides runs this build, each friendship re-connects once on its own (a fresh key exchange, done automatically), and your messages and contacts are untouched.
 
 ## v105
 
