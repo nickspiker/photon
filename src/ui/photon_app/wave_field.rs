@@ -164,6 +164,14 @@ fn field_pixel(enc: &[u32], r: u16, g: u16, b: u16) -> u32 {
     (a << 24) | (fluor::theme::fmt(dark) & 0x00FF_FFFF)
 }
 
+/// A premultiplied layer composited under the partial composite `top`: each byte gains the layer's byte scaled by the opacity still open above it. PROOF: every byte of `bot` ≤ its α ≤ 255 and (256 − top_α)·255 >> 8 ≤ 255 − top_α, so each result stays ≤ 255 (and darkness ≤ α holds wherever it held in both).
+#[inline]
+fn under_premult(top: u32, bot: u32) -> u32 {
+    let open = 256 - (top >> 24);
+    let ch = |s: u32| ((top >> s) & 0xFF) + ((((bot >> s) & 0xFF) * open) >> 8);
+    (ch(24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)
+}
+
 /// Field paint timing, logged every PAINT_LOG_EVERY paints (a count of paints, not a clock): what the field costs on this device.
 static PAINT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -210,7 +218,8 @@ fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &Fie
                 continue;
             }
             let src = field_pixel(enc, r, gr, bl);
-            *dst = if d == 0 { src } else { d.under(src, fluor::BlendMode::Normal) };
+            // `src` is already premultiplied, and `under` would multiply it by its α again (a light fringe at every anti-aliased edge above the field): deposit it into the opacity left, every channel α included.
+            *dst = if d == 0 { src } else { under_premult(d, src) };
         }
     });
     canvas.damage.add_bounds(0, 0, w, h);
@@ -311,6 +320,12 @@ mod tests {
         let enc = &*ENC;
         let p = field_pixel(enc, 2000, 500, 100);
         assert_eq!([16, 8, 0].iter().map(|&s| (p >> s) & 0xFF).min(), Some(0));
+        // Under a half-opaque pixel, the field deposits its premultiplied bytes into the half left open — once, not α twice.
+        let top = 0x8040_4040u32;
+        let out = under_premult(top, p);
+        let open = 256 - 0x80;
+        assert_eq!(out >> 24, 0x80 + ((p >> 24) * open >> 8));
+        assert_eq!(out & 0xFF, 0x40 + ((p & 0xFF) * open >> 8));
     }
 
     /// Brightness is linear in amplitude: half the amplitude, half the linear light.
