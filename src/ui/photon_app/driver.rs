@@ -3565,6 +3565,11 @@ impl FluorApp for PhotonApp {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
+        // THE WAVE FIELD repaints every tick while an Active wave owns the screen (field 2026-09-28, "like 1fps": the wakeups flowed at 32/s but only the once-a-second timer below marked the scene, so the ripples moved once a second). The audio is the edge; the tick rate is how often it is shown.
+        if !self.wave_minimized && self.active_wave.as_ref().map_or(false, |c| c.phase == crate::wave::WavePhase::Active) {
+            self.scene_dirty = true;
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+        }
         // An ACTIVE wave repaints once a second (field 2026-09-12: the wakeups flowed at 2 Hz but nothing marked the scene, so the timer, the live stats and the path ring froze on their first frame).
         if self.active_wave.as_ref().map_or(false, |c| matches!(c.phase, crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing)) {
             if self.last_wave_redraw.map_or(true, |t| now.duration_since(t) >= std::time::Duration::from_secs(1)) {

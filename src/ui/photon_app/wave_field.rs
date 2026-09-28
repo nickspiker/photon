@@ -137,8 +137,26 @@ static ENC: std::sync::LazyLock<[Vec<u32>; 3]> = std::sync::LazyLock::new(|| {
     [chan(16), chan(8), chan(0)]
 });
 
+/// Field paint timing, logged every PAINT_LOG_EVERY paints (a count of paints, not a clock): what the field costs on this device.
+static PAINT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+const PAINT_LOG_EVERY: u64 = 256;
+
 /// Paint the field under whatever is already on the canvas.
 pub(super) fn paint_field(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &FieldTables) {
+    use std::sync::atomic::Ordering;
+    let t0 = std::time::Instant::now();
+    paint_field_inner(canvas, g, map, t);
+    let e = t0.elapsed().as_nanos() as u64;
+    let ns = PAINT_NS.fetch_add(e, Ordering::Relaxed) + e;
+    let n = PAINTS.fetch_add(1, Ordering::Relaxed) + 1;
+    if n % PAINT_LOG_EVERY == 0 {
+        crate::logf!("WAVE: field paint — {:.2} ms per paint over the last {} ({}² px, {} threads)", ns as f64 / PAINT_LOG_EVERY as f64 / 1e6, PAINT_LOG_EVERY, g.side, rayon::current_num_threads());
+        PAINT_NS.store(0, Ordering::Relaxed);
+    }
+}
+
+fn paint_field_inner(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t: &FieldTables) {
     use rayon::prelude::*;
     if map.side != g.side || t.theirs.len() != FIELD_FRAMES + 1 || t.ours.len() != FIELD_FRAMES + 1 {
         return;
@@ -149,21 +167,30 @@ pub(super) fn paint_field(canvas: &mut Canvas, g: &FieldGeom, map: &FieldMap, t:
     }
     let cols = g.side.min(width - g.x0);
     let rows = g.side.min(canvas.height - g.y0);
+    use fluor::pixel::Blend;
     let enc = &*ENC;
     let lim = (Q - 1) as u16;
+    // One task per row, each pixel composited in place (field 2026-09-28: a per-row buffer plus a nested parallel flatten per row cost ~20 ms a paint on a phone).
+    // Fast paths: nothing above yet (0) takes the field pixel as is; an opaque pixel above hides it; only the anti-aliased edges of what is above run the full under-blend.
     canvas.pixels[g.y0 * width..(g.y0 + rows) * width].par_chunks_mut(width).enumerate().for_each(|(y, line)| {
-        let mut row = vec![0u32; cols];
         let base = y * g.side;
-        for (x, px) in row.iter_mut().enumerate() {
-            let a = t.theirs[map.age_theirs[base + x] as usize];
-            let b = t.ours[map.age_ours[base + x] as usize];
+        let ages_t = &map.age_theirs[base..base + cols];
+        let ages_o = &map.age_ours[base..base + cols];
+        for ((dst, &at), &ao) in line[g.x0..g.x0 + cols].iter_mut().zip(ages_t).zip(ages_o) {
+            let d = *dst;
+            if d >= 0xFF00_0000 {
+                continue;
+            }
+            let a = t.theirs[at as usize];
+            let b = t.ours[ao as usize];
             let (r, gr, bl) = ((a[0] + b[0]).min(lim), (a[1] + b[1]).min(lim), (a[2] + b[2]).min(lim));
             // Silence is transparent: the background shows thru where nobody's sound reaches.
-            if r | gr | bl != 0 {
-                *px = 0xFF00_0000 | enc[0][r as usize] | enc[1][gr as usize] | enc[2][bl as usize];
+            if r | gr | bl == 0 {
+                continue;
             }
+            let src = 0xFF00_0000 | enc[0][r as usize] | enc[1][gr as usize] | enc[2][bl as usize];
+            *dst = if d == 0 { src } else { d.under(src, fluor::BlendMode::Normal) };
         }
-        fluor::paint::flatten(&mut line[g.x0..g.x0 + cols], &row, fluor::BlendMode::Normal);
     });
     canvas.damage.add_bounds(g.x0, g.y0, g.x0 + cols, g.y0 + rows);
 }
