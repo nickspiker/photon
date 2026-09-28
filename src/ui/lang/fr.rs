@@ -405,6 +405,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("tu as proposé à {} une liaison dans {} \u{00b7} lié", name, title).into(),
         Msg::BootRemovesEverywhere => "retire cette personne de tous les appareils de TA flotte".into(),
         Msg::BootOstracism => "elle n\u{2019}en est pas informée \u{2014} ses enregistrements restent les siens (ostracisme, pas effacement)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Touche encore \u{2014} effacer les ondes" } else { "Effacer les ondes" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Touche encore \u{2014} tout effacer" } else { "Effacer l\u{2019}historique" }.into(),
+        Msg::ClearHistoryNote => "le masque sur chacun de tes appareils et jette les enregistrements \u{2014} sa copie reste la sienne".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Ajouter un appareil".into(),
         Msg::AddDeviceConfirmOnce => "Ne confirme qu\u{2019}une fois que le nouvel appareil montre qu\u{2019}il est entré".into(),

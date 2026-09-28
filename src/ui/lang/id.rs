@@ -393,6 +393,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("kamu menawarkan {} ikatan ke {} \u{00b7} terikat", name, title).into(),
         Msg::BootRemovesEverywhere => "menghapus dia dari setiap perangkat armada MILIKMU".into(),
         Msg::BootOstracism => "dia tidak diberi tahu \u{2014} catatannya tetap miliknya (pengucilan, bukan penghapusan)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Ketuk lagi \u{2014} hapus gelombang" } else { "Hapus gelombang" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Ketuk lagi \u{2014} hapus semua" } else { "Hapus riwayat" }.into(),
+        Msg::ClearHistoryNote => "menyembunyikannya di setiap perangkatmu dan membuang rekamannya \u{2014} salinan miliknya tetap miliknya".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Tambah sebuah perangkat".into(),
         Msg::AddDeviceConfirmOnce => "Konfirmasi hanya setelah perangkat baru itu menunjukkan dirinya sudah masuk".into(),

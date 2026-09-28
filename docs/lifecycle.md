@@ -131,6 +131,23 @@ Custodian supersession (members>0 recovery, docs/total-loss) needs its own conti
 3. Lost ALL of them, tag included? Custodian supersession over the corpse fleet (members > 0, nobody signed out).
 4. Deliberately walked the count to zero? That was the exit. Gone forever, name free.
 
+## Managing a contact: relationship, history, reach (2026-09-27)
+
+Three independent choices; every "nuke", "unfriend", "just the waves" is a combination.
+
+- **Relationship** — Friend · Appear offline · Mute · Ostracize (Boot) · Unfriend (a signed goodbye).
+- **History** — what: all, waves only, attachments only, chosen rows; when: all time, before a date, a range.
+- **Reach** — this device · my fleet · also ask them (a signed request their device may honour or ignore — never forced, device sovereignty).
+
+Deletion is **discard**, never shred: a row is marked deleted (hidden, true-wins across the fleet) and its space is marked free; a distinct vault object (a recording, an attachment) is deleted outright. Until we own the flash, physical erasure is not ours to promise, and everything is encrypted at rest anyway.
+Under braid v2 a row's text itself can be discarded once its 32-byte strand value is kept (docs/braid.md §6.2a); that step is not built yet.
+
+**Built (v106):**
+- **Boot sticks.** The booted ledger (`storage::booted`, per device, loaded with the contacts at attest) records every boot, ours or a sibling's tombstone. Every roster push re-emits it as a tombstone; the roster merge, the cloud-backup merge (whose restored stubs now stamp older than any roster entry) and chain-sync adoption all refuse a booted contact; a boot rewrites the cloud backup at once. A deliberate re-add, stamped after the boot, lifts it.
+- **Clear waves / clear history** (contact panel, Manage, two-tap): every matching row is marked deleted across our fleet in page-sized pushes, and recordings and attachments are deleted from the vault on every device that applies the tombstones. The friend is not told; their copy is theirs.
+
+**Not built:** Appear offline, Mute, Unfriend's goodbye, date-range and per-kind selectors beyond waves, "ask them too", and discarding a deleted row's text under braid v2.
+
 ## Implementation punch list (ordered)
 
 1. Redeploy the fgtw.org worker (one-owner gate + index live). Verify with a two-handle genesis attempt against a scratch device key.

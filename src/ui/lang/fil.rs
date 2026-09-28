@@ -394,6 +394,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("inalok mo si {} ng bigkis sa {} \u{00b7} nakabigkis", name, title).into(),
         Msg::BootRemovesEverywhere => "aalisin sila sa bawat device ng IYONG armada".into(),
         Msg::BootOstracism => "hindi sila sasabihan \u{2014} mananatiling sa kanila ang mga tala nila (pagtataboy, hindi pagbura)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Pindutin ulit \u{2014} burahin ang mga alon" } else { "Burahin ang mga alon" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Pindutin ulit \u{2014} burahin lahat" } else { "Burahin ang kasaysayan" }.into(),
+        Msg::ClearHistoryNote => "itinatago ito sa bawat device mo at itinatapon ang mga recording \u{2014} sa kanila pa rin ang kopya nila".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Magdagdag ng device".into(),
         Msg::AddDeviceConfirmOnce => "Kumpirmahin lang kapag ipinakita na ng bagong device na nakapasok na ito".into(),

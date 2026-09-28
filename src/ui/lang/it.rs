@@ -398,6 +398,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("hai proposto a {} un legame in {} \u{00b7} legato", name, title).into(),
         Msg::BootRemovesEverywhere => "toglie questa persona da ogni dispositivo della TUA flotta".into(),
         Msg::BootOstracism => "non riceve nessun avviso \u{2014} i suoi dati restano suoi (ostracismo, non cancellazione)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Tocca di nuovo \u{2014} cancella le onde" } else { "Cancella onde" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Tocca di nuovo \u{2014} cancella tutto" } else { "Cancella cronologia" }.into(),
+        Msg::ClearHistoryNote => "la nasconde su ogni tuo dispositivo e scarta le registrazioni \u{2014} la sua copia resta sua".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Aggiungi un dispositivo".into(),
         Msg::AddDeviceConfirmOnce => "Conferma solo quando il nuovo dispositivo mostra che è dentro".into(),

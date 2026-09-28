@@ -392,6 +392,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("ofreciste a {} un enlace a {} \u{00b7} enlazado", name, title).into(),
         Msg::BootRemovesEverywhere => "lo quita de todos los dispositivos de TU flota".into(),
         Msg::BootOstracism => "no se le avisa \u{2014} sus registros siguen siendo suyos (ostracismo, no borrado)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Toca otra vez \u{2014} borrar ondas" } else { "Borrar ondas" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Toca otra vez \u{2014} borrar todo" } else { "Borrar historial" }.into(),
+        Msg::ClearHistoryNote => "lo oculta en todos tus dispositivos y descarta las grabaciones \u{2014} su copia sigue siendo suya".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Agregar un dispositivo".into(),
         Msg::AddDeviceConfirmOnce => "Confirma solo cuando el nuevo dispositivo muestre que ya está dentro".into(),

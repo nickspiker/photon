@@ -396,6 +396,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("nāu he herenga ki a {} ki {} \u{00b7} kua herea", name, title).into(),
         Msg::BootRemovesEverywhere => "ka tangohia rātou i ngā pūrere katoa o TŌU kāhui".into(),
         Msg::BootOstracism => "kāore rātou e whakamōhiotia \u{2014} ka noho tonu ā rātou rēkoata ki a rātou (he whakahau, ehara i te muku)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Pātō anō \u{2014} mukua ngā ngaru" } else { "Mukua ngā ngaru" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Pātō anō \u{2014} mukua katoa" } else { "Mukua te hītori" }.into(),
+        Msg::ClearHistoryNote => "ka hunaia ki ōu pūrere katoa, ka makaia ngā hopunga \u{2014} ka noho tonu tā rātou kape ki a rātou".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Tāpiri he pūrere".into(),
         Msg::AddDeviceConfirmOnce => "Whakaūngia i te wā kua kite te pūrere hou kua uru ia".into(),

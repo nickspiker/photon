@@ -556,6 +556,10 @@ pub enum Msg<'a> {
     BondAccepted { name: &'a str, title: &'a str },
     BootRemovesEverywhere,
     BootOstracism,
+    /// Manage page (2026-09-27): two-tap pills that discard this conversation's waves, or its whole history, on every device of ours — the friend's copy is theirs.
+    ClearWavesPill { armed: bool },
+    ClearHistoryPill { armed: bool },
+    ClearHistoryNote,
     // ---- add device / pairing ----
     AddDeviceTitle,
     AddDeviceConfirmOnce,

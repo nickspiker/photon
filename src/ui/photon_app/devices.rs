@@ -1260,6 +1260,25 @@ impl PhotonApp {
     /// Build the fleet roster from the live contact list — the syncable subset, minus fleet siblings (infrastructure, not friends — a sibling pid leaking into the roster would merge as a bogus contact on every device).
     pub(super) fn current_roster(&self) -> Vec<crate::network::fgtw::fleet::RosterEntry> {
         use crate::network::fgtw::fleet::RosterEntry;
+        // Every boot this device remembers rides every push as a tombstone (manage.rs): a lost one-shot push, or a re-seal that rebuilt the slot without it, heals on the next push instead of letting a sibling's live entry win.
+        let tombstones = self
+            .booted
+            .iter()
+            .filter(|b| !self.contacts.iter().any(|c| !c.is_sibling && c.handle_proof == b.handle_proof))
+            .map(|b| RosterEntry {
+                handle_proof: b.handle_proof,
+                handle_hash: b.party_id,
+                // A tombstone carries no identity payload (the boot path's shape); the wire slot's blank is the roster's "no key".
+                public_identity: [0u8; 32],
+                published_name: String::new(),
+                avatar_pin: [0u8; 64],
+                added: 0,
+                updated: b.at,
+                tombstone: true,
+                ceremony_owner: [0u8; 32],
+                woven: false,
+                trust_level: 0,
+            });
         self.contacts
             .iter()
             // The SELF row rides the roster too. Excluding it meant notes-to-self was the one contact a wipe could never restore — you added it deliberately and then had to add it again, every time. It is a contact you chose, so it belongs in the thing that remembers your contacts; the keygen gate skips zero-remote conversations, so it never tries to run a ceremony against itself on arrival.
@@ -1279,6 +1298,7 @@ impl PhotonApp {
                 woven: c.chain_woven || c.owner_woven,
                 trust_level: crate::storage::cloud::trust_level_to_u8(c.trust_level),
             })
+            .chain(tombstones)
             .collect()
     }
 
@@ -1306,6 +1326,8 @@ impl PhotonApp {
                     continue;
                 }
                 if e.tombstone {
+                    // A sibling's boot becomes ours too: this device now remembers it and re-emits it on every push.
+                    self.note_booted(e.handle_proof, e.handle_hash, e.updated);
                     let gone = self.contacts.remove(pos);
                     crate::logf!(
                         "FLEET: roster tombstone — removed contact {}",
@@ -1392,7 +1414,19 @@ impl PhotonApp {
                 continue;
             }
             if e.tombstone {
-                continue; // removal of a contact we never held — nothing to do locally
+                // Removal of a contact we never held: nothing to drop, but remember the boot, so a stale copy arriving later (cloud backup, a lagging sibling) cannot mint it here.
+                if !crate::network::time_base::from_the_future(e.updated) {
+                    self.note_booted(e.handle_proof, e.handle_hash, e.updated);
+                }
+                continue;
+            }
+            // A contact we booted stays gone unless this entry is a deliberate re-add stamped AFTER the boot.
+            if self.booted_refuses(&e.handle_proof, e.updated) {
+                crate::logf!("BOOT: roster entry for booted contact {} refused (stamped before the boot)", crate::fp(&e.handle_proof));
+                continue;
+            }
+            if self.booted.iter().any(|b| b.handle_proof == e.handle_proof) && !crate::network::time_base::from_the_future(e.updated) {
+                self.forget_booted(&e.handle_proof);
             }
             // SELF-GUARD: never mint a NEW row bearing OUR handle_proof under a foreign key — that is the self-contact stub (an empty duplicate whose keygen queue CLUTCHes at our own fleet; the census caught two of them beside the legit self row, 2026-08-11). The true notes-to-self row keys on our identity pid and merges thru the position() match above; anything else claiming our proof is stale roster debris.
             if let Some((our_proof, our_seed)) = self

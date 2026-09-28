@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Booting a contact now sticks: a booted contact no longer comes back from your cloud backup, from another of your devices that had not caught up, or from a failed sync; adding them again on purpose still works.
+- A contact's Manage page can now clear the conversation's waves, or its whole history, on every one of your devices at once (tap twice to confirm); recordings are deleted, and the other person keeps their own copy.
 - Friendships move to a sturdier way of mixing past messages into each new key, which is what will let a deleted message's words be discarded from your devices later instead of kept hidden: once every device on both sides runs this build, each friendship re-connects once on its own (a fresh key exchange, done automatically), and your messages and contacts are untouched.
 
 ## v105

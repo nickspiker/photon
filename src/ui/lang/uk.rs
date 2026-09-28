@@ -407,6 +407,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("ти запропонував {} зв'язок у {} \u{00b7} зв'язаний", name, title).into(),
         Msg::BootRemovesEverywhere => "прибирає їх з кожного пристрою ТВОГО флоту".into(),
         Msg::BootOstracism => "їм про це не кажуть \u{2014} їхні записи лишаються їхніми (остракізм, не стирання)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Торкніться ще раз \u{2014} очистити хвилі" } else { "Очистити хвилі" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Торкніться ще раз \u{2014} очистити все" } else { "Очистити історію" }.into(),
+        Msg::ClearHistoryNote => "приховує її на кожному вашому пристрої й відкидає записи \u{2014} їхня копія лишається в них".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Додати пристрій".into(),
         Msg::AddDeviceConfirmOnce => "Підтверджуй лише тоді, коли новий пристрій покаже, що він усередині".into(),

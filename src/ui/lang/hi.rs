@@ -401,6 +401,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("तुमने {} को {} में बंधन की पेशकश की \u{00b7} बँध गए", name, title).into(),
         Msg::BootRemovesEverywhere => "यह उन्हें तुम्हारे बेड़े के हर डिवाइस से हटा देता है".into(),
         Msg::BootOstracism => "उन्हें बताया नहीं जाता \u{2014} उनके रिकॉर्ड उन्हीं के रहते हैं (बहिष्कार, मिटाना नहीं)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "फिर से टैप करें \u{2014} लहरें हटाएँ" } else { "लहरें हटाएँ" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "फिर से टैप करें \u{2014} सब हटाएँ" } else { "इतिहास हटाएँ" }.into(),
+        Msg::ClearHistoryNote => "आपके हर डिवाइस पर इसे छिपाता है और रिकॉर्डिंग हटा देता है \u{2014} उनकी कॉपी उन्हीं की रहती है".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "डिवाइस जोड़ो".into(),
         Msg::AddDeviceConfirmOnce => "पुष्टि तभी करो जब नया डिवाइस दिखाए कि वह अंदर आ गया".into(),

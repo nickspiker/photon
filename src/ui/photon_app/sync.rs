@@ -11,6 +11,13 @@ impl PhotonApp {
         if self.contacts[ci].is_sibling {
             return; // device removal is chain consent (self-departure), never a contact boot
         }
+        // The booted ledger FIRST: this device remembers the boot, re-emits it on every roster push, and refuses every path that could mint the contact again (manage.rs). The one-shot push below is only the fast path.
+        let boot_at = vsf::eagle_time_oscillations();
+        {
+            let c = &self.contacts[ci];
+            let (hp, pid) = (c.handle_proof, c.handle_hash);
+            self.note_booted(hp, pid, boot_at);
+        }
         // Sticky tombstone into the fleet roster slot — off-thread, same shape as every roster push. push_roster pull-merges, so the tombstone joins the slot without clobbering concurrent sibling writes.
         if let (Some(hp), Some(kp), Some(fleet_key)) = (
             self.our_handle_proof(),
@@ -26,7 +33,7 @@ impl PhotonApp {
                 published_name: String::new(),
                 avatar_pin: [0u8; 64],
                 added: 0,
-                updated: vsf::eagle_time_oscillations(),
+                updated: boot_at,
                 tombstone: true,
                 ceremony_owner: [0u8; 32],
                 woven: false,
@@ -83,6 +90,21 @@ impl PhotonApp {
             if let Err(e) = crate::storage::contacts::save_contact_list(&index, storage) {
                 crate::logf!("BOOT: index rewrite failed: {}", e);
             }
+        }
+        // The cloud contacts backup is a plain list with no tombstones: rewrite it now without the booted contact, so no device restores it from a stale copy (every attest also refuses booted rows via the ledger).
+        if let (Some(hp), Some(kp), Some(fleet_key), Some(seed)) = (
+            self.our_handle_proof(),
+            self.device_keypair.clone(),
+            self.fleet_key_cached(),
+            self.session.as_ref().map(|s| s.identity_seed),
+        ) {
+            let snapshot: Vec<crate::types::Contact> = self.contacts.iter().filter(|c| !c.is_sibling).cloned().collect();
+            std::thread::spawn(move || {
+                match crate::storage::cloud::sync_contacts_to_cloud(&snapshot, &seed, &fleet_key, &kp, &hp) {
+                    Ok(()) => crate::log("BOOT: cloud contacts backup rewritten without the booted contact"),
+                    Err(e) => crate::logf!("BOOT: cloud backup rewrite failed ({:?}); the next attest's upload corrects it", e),
+                }
+            });
         }
         self.set_active_conversation(None);
         self.reseed_contact_pubkeys();

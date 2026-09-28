@@ -37,6 +37,8 @@ pub struct AttestationData {
     pub groups: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, crate::storage::molecule::MoleculeLocal)>,
     /// Parked offers (docs/molecules.md §10.1 Offered), loaded thru the offer index.
     pub bond_offers: Vec<crate::storage::molecule::BondOffer>,
+    /// The booted ledger (storage::booted) — loaded here, before the cloud merge consults it, so every contact-minting path holds it from the session's first tick.
+    pub booted: Vec<crate::storage::booted::Booted>,
     pub avatar_pixels: Option<Vec<u8>>, // Local avatar if exists
     pub peers: Vec<PeerRecord>,
     /// The address FGTW OBSERVED this announce arriving from, straight off the signed `announce_ok` ack.
@@ -772,6 +774,11 @@ impl HandleQuery {
 
                         // What the cloud already holds, kept so the upload below can tell a real change from a no-op. The blob's BYTES can't answer that — encrypt_bytes draws a fresh random nonce per wave, so re-encrypting identical contacts yields different ciphertext every time. Compare the decoded CONTENT instead.
                         let mut cloud_had: Option<Vec<crate::storage::cloud::CloudContact>> = None;
+                        // The booted ledger: the cloud backup is a plain list with no tombstones, so a contact we booted must be refused here or the merge re-adds it on every device that attests.
+                        let booted = crate::storage::booted::load_booted(&storage).unwrap_or_else(|e| {
+                            crate::logf!("BOOT: booted ledger unreadable — starting empty: {}", e);
+                            Vec::new()
+                        });
                         if fleet_key.is_none() {
                             crate::log(
                                 "Cloud: no fleet key yet — skipping the contacts backup this round",
@@ -786,8 +793,14 @@ impl HandleQuery {
                             for cc in cloud_contacts {
                                 let exists =
                                     contacts.iter().any(|c| c.handle_proof == cc.handle_proof);
+                                if !exists && booted.iter().any(|b| b.handle_proof == cc.handle_proof) {
+                                    crate::logf!("BOOT: cloud backup still lists booted contact {} — not restored", crate::fp(&cc.handle_proof));
+                                    continue;
+                                }
                                 if !exists {
                                     let mut contact = cc.to_contact();
+                                    // A cloud-restored stub is the LEAST authoritative copy there is: stamp it older than any roster entry, so a boot or edit recorded in the roster always outranks it. from_pin stamps "now", which let a stale backup re-publish a booted contact fleet-wide.
+                                    contact.roster_updated = 0;
                                     // Load CLUTCH state for cloud contact too
                                     if contact.clutch_state != crate::types::ClutchState::Complete {
                                         if let Ok(Some(state)) =
@@ -883,6 +896,7 @@ impl HandleQuery {
                             friendships,
                             groups,
                             bond_offers,
+                            booted,
                             avatar_pixels,
                             peers: result.peers,
                             observed_addr: result.observed_addr,

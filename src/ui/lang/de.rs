@@ -395,6 +395,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("du hast {} eine Bindung in {} angeboten \u{00b7} gebunden", name, title).into(),
         Msg::BootRemovesEverywhere => "entfernt sie von jedem Gerät DEINER Flotte".into(),
         Msg::BootOstracism => "sie erfährt es nicht \u{2014} ihre Aufzeichnungen bleiben ihre (Ostrazismus, keine Auslöschung)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Nochmal tippen \u{2014} Wellen löschen" } else { "Wellen löschen" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Nochmal tippen \u{2014} alles löschen" } else { "Verlauf löschen" }.into(),
+        Msg::ClearHistoryNote => "verbirgt ihn auf jedem deiner Geräte und verwirft die Aufnahmen \u{2014} ihre Kopie bleibt ihre".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Ein Gerät hinzufügen".into(),
         Msg::AddDeviceConfirmOnce => "Bestätige erst, wenn das neue Gerät zeigt, dass es drin ist".into(),

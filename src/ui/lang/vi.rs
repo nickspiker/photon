@@ -393,6 +393,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("bạn mời {} liên kết vào {} \u{00b7} đã liên kết", name, title).into(),
         Msg::BootRemovesEverywhere => "gỡ họ khỏi mọi thiết bị trong đội CỦA BẠN".into(),
         Msg::BootOstracism => "họ không được báo \u{2014} hồ sơ của họ vẫn là của họ (tẩy chay, không phải xóa sổ)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Chạm lần nữa \u{2014} xóa sóng" } else { "Xóa sóng" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Chạm lần nữa \u{2014} xóa tất cả" } else { "Xóa lịch sử" }.into(),
+        Msg::ClearHistoryNote => "ẩn nó trên mọi thiết bị của bạn và bỏ các bản ghi \u{2014} bản của họ vẫn là của họ".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Thêm một thiết bị".into(),
         Msg::AddDeviceConfirmOnce => "Chỉ xác nhận khi thiết bị mới đã báo là nó vào được".into(),

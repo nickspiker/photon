@@ -287,6 +287,10 @@ impl PhotonApp {
                         self.molecule_rosters.push((gid, roster));
                     }
                 }
+                // The booted ledger rides in with the contacts, so the first roster merge already knows who must stay gone.
+                for b in data.booted {
+                    crate::storage::booted::note_boot(&mut self.booted, b);
+                }
                 for offer in data.bond_offers {
                     if !self.bond_offers.iter().any(|o| o.molecule_id == offer.molecule_id) {
                         self.bond_offers.push(offer);
@@ -462,6 +466,8 @@ impl PhotonApp {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                 }
                 let their_handle_proof = contact.handle_proof;
+                // Adding someone we once booted is the deliberate re-add: lift the boot, or the ledger would tombstone them again on the next push.
+                self.forget_booted(&their_handle_proof);
                 // THE CONSENT GATE (2026-08-25): adding is a LOCAL act awaiting reciprocation — no keygen, no 548KB offer, no key material toward someone who hasn't added us back. A few-hundred-byte KNOCK announces the intent; the ceremony arms only on the mutuality edge (their knock or offer token-matching this row). Self stays immediate (consent with yourself is a given).
                 if !is_self {
                     contact.consent_mutual = false;

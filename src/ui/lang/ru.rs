@@ -418,6 +418,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("ты предложил {} связь в {} \u{00b7} связан", name, title).into(),
         Msg::BootRemovesEverywhere => "убирает их со всех устройств ТВОЕГО флота".into(),
         Msg::BootOstracism => "им не сообщают \u{2014} их записи остаются их (остракизм, а не стирание)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Нажмите ещё раз \u{2014} очистить волны" } else { "Очистить волны" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Нажмите ещё раз \u{2014} очистить всё" } else { "Очистить историю" }.into(),
+        Msg::ClearHistoryNote => "скрывает её на каждом вашем устройстве и отбрасывает записи \u{2014} их копия остаётся у них".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Добавить устройство".into(),
         Msg::AddDeviceConfirmOnce => "Подтверждай только тогда, когда новое устройство покажет, что оно внутри".into(),

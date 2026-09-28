@@ -368,6 +368,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("you offered {} a bond into {} \u{00b7} bound", name, title).into(),
         Msg::BootRemovesEverywhere => "removes them from every device of YOUR fleet".into(),
         Msg::BootOstracism => "they are not told \u{2014} their records stay theirs (ostracism, not erasure)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Tap again \u{2014} clear waves" } else { "Clear waves" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Tap again \u{2014} clear everything" } else { "Clear history" }.into(),
+        Msg::ClearHistoryNote => "hides it on every device of yours and discards the recordings \u{2014} their copy stays theirs".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Add a device".into(),
         Msg::AddDeviceConfirmOnce => "Confirm only once the new device shows it's in".into(),

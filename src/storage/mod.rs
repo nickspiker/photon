@@ -1,3 +1,4 @@
+pub mod booted;
 pub mod cloud;
 pub mod contacts;
 pub mod device_binding;

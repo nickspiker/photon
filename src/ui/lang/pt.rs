@@ -402,6 +402,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("você ofereceu a {} uma ligação a {} \u{00b7} ligado", name, title).into(),
         Msg::BootRemovesEverywhere => "remove essa pessoa de todos os dispositivos da SUA frota".into(),
         Msg::BootOstracism => "ela não é avisada \u{2014} os registros dela continuam dela (ostracismo, não apagamento)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Toque de novo \u{2014} limpar ondas" } else { "Limpar ondas" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Toque de novo \u{2014} limpar tudo" } else { "Limpar histórico" }.into(),
+        Msg::ClearHistoryNote => "oculta em todos os seus dispositivos e descarta as gravações \u{2014} a cópia dela continua dela".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Adicionar um dispositivo".into(),
         Msg::AddDeviceConfirmOnce => "Confirme só quando o novo dispositivo mostrar que entrou".into(),

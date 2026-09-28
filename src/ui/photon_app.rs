@@ -52,6 +52,7 @@ mod devices;
 mod driver;
 mod input;
 mod launch;
+mod manage;
 /// The headless lifeline pump (docs/headless-lifeline.md) — pub so main.rs can enter it instead of fluor's run_app.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub mod lifeline;
@@ -1584,6 +1585,10 @@ pub struct PhotonApp {
     message_textbox: Option<fluor::widgets::MultiTextbox>,
     /// Compose drafts, one per conversation holding one (drafts.rs, storage/drafts.rs) — this device's unsent text, never synced. Linear search: one entry per conversation with unsent text.
     drafts: Vec<(crate::types::ConversationId, crate::storage::drafts::Draft)>,
+    /// The booted ledger (manage.rs, storage::booted): every contact this identity booted, re-emitted as a roster tombstone on every push and consulted before any path mints a contact. Loaded with the contacts at attest. Linear search: a handful of entries.
+    booted: Vec<crate::storage::booted::Booted>,
+    /// A two-tap Manage-page clear armed: Some(false) = clear waves, Some(true) = clear all history. Any other press disarms.
+    contact_clear_armed: Option<bool>,
     /// The vault's drafts have been read into `drafts` (writes wait for this, or they would clobber drafts not yet seen).
     drafts_loaded: bool,
     /// The drafts load is out on the job worker.
@@ -2572,6 +2577,8 @@ impl PhotonApp {
             contacts_textbox: None,
             message_textbox: None,
             drafts: Vec::new(),
+            booted: Vec::new(),
+            contact_clear_armed: None,
             drafts_loaded: false,
             drafts_loading: false,
             drafts_rx: None,
@@ -3679,7 +3686,7 @@ fn contact_page_rows(page: ContactPage) -> usize {
     match page {
         ContactPage::About => 12,
         ContactPage::Stats => 9,
-        ContactPage::Manage => 6,
+        ContactPage::Manage => 9,
     }
 }
 

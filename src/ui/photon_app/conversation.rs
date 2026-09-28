@@ -2135,6 +2135,9 @@ impl PhotonApp {
             let mut era_moved = false;
             // A GROUP blob carries its roster (docs/molecules.md step 6) — merged after the adopt, whatever the lane math decides.
             let molecule_roster: Option<Vec<u8>> = incoming.molecule.then(|| incoming.molecule_roster().to_vec());
+            // A friendship with someone we booted is never re-adopted from a sibling that has not yet applied the boot (checked here, before the chains borrow).
+            let booted_orphan = incoming.participants().iter().any(|p| self.is_booted_party(p))
+                && !self.contacts.iter().any(|c| c.friendship_id == Some(fid));
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
                 // ERA SUPERSEDE before any lane math: a re-key mints a NEW lane_root, and the lane-wise merge below adopts a root only where one is absent — so a sibling holding the old era would keep dead chains forever, deriving garbage lanes for every new-era label it meets. Two blobs under one friendship with DIFFERENT roots are different eras, and eras replace wholesale: the newer GENESIS wins (era_superseded_by), sanitized like any replicated copy. Losing the race one round just means our next push carries the newer era back.
                 Some((_, local)) if local.differs_in_era_from(&incoming) => {
@@ -2158,6 +2161,11 @@ impl PhotonApp {
                     }
                 }
                 Some((_, local)) => local.merge_lanes_from(&incoming),
+                // A friendship with someone we booted is never re-adopted from a sibling that has not yet applied the boot: it would leave an orphan chain, and a live chain is the first step back to a live contact.
+                None if booted_orphan => {
+                    crate::logf!("BOOT: chain-sync for booted friendship {} refused", crate::fp(&fid.0));
+                    false
+                }
                 None => {
                     incoming.sanitize_replicated();
                     self.friendship_chains.push((fid, incoming));

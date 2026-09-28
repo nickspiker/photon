@@ -900,6 +900,14 @@ impl FluorApp for PhotonApp {
                 self.contact_boot_armed = false;
                 ctx.window.request_redraw();
             }
+            // The same for an armed clear: only a second press on the SAME pill fires it.
+            if let Some(all) = self.contact_clear_armed {
+                if hit_id != self.contact_panel_btn_base + if all { 3 } else { 2 } {
+                    self.contact_clear_armed = None;
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                }
+            }
             if self.contact_nav_base != HIT_NONE
                 && hit_id >= self.contact_nav_base
                 && hit_id < (self.contact_nav_base + 4)
@@ -926,6 +934,17 @@ impl FluorApp for PhotonApp {
                         self.boot_active_contact();
                     } else {
                         self.contact_boot_armed = true;
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                } else if slot == 2 || slot == 3 {
+                    // Clear waves (2) or all history (3), two-tap like Boot: across our fleet, recordings discarded, the friend's copy untouched (manage.rs).
+                    let all = slot == 3;
+                    if self.contact_clear_armed == Some(all) {
+                        self.contact_clear_armed = None;
+                        self.clear_active_history(all == false);
+                    } else {
+                        self.contact_clear_armed = Some(all);
                     }
                     self.scene_dirty = true;
                     ctx.window.request_redraw();

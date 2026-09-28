@@ -396,6 +396,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("{} kişisine {} içine bir bağ önerdin \u{00b7} bağlandı", name, title).into(),
         Msg::BootRemovesEverywhere => "SENİN filondaki her cihazdan çıkarır".into(),
         Msg::BootOstracism => "kendisine söylenmez \u{2014} kayıtları kendisinde kalır (dışlama, silme değil)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Tekrar dokun \u{2014} dalgaları temizle" } else { "Dalgaları temizle" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Tekrar dokun \u{2014} hepsini temizle" } else { "Geçmişi temizle" }.into(),
+        Msg::ClearHistoryNote => "tüm cihazlarında gizler ve kayıtları atar \u{2014} onun kopyası onda kalır".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Bir cihaz ekle".into(),
         Msg::AddDeviceConfirmOnce => "Ancak yeni cihaz içeri girdiğini gösterince onayla".into(),

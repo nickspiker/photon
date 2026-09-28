@@ -400,6 +400,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("umempa {} kifungo kwenye {} \u{00b7} amefungwa", name, title).into(),
         Msg::BootRemovesEverywhere => "humwondoa kwenye kila kifaa cha kundi LAKO".into(),
         Msg::BootOstracism => "haambiwi \u{2014} rekodi zake zinabaki zake (kutengwa, si kufutwa)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Gusa tena \u{2014} futa mawimbi" } else { "Futa mawimbi" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Gusa tena \u{2014} futa yote" } else { "Futa historia" }.into(),
+        Msg::ClearHistoryNote => "huificha kwenye kila kifaa chako na kutupa rekodi \u{2014} nakala yake inabaki yake".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Ongeza kifaa".into(),
         Msg::AddDeviceConfirmOnce => "Thibitisha pale tu kifaa kipya kitakapoonyesha kimeingia".into(),

@@ -400,6 +400,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondAccepted { name, title } => format!("zaproponowałeś {} wiązanie w {} \u{00b7} związany", name, title).into(),
         Msg::BootRemovesEverywhere => "usuwa tę osobę z każdego urządzenia TWOJEJ floty".into(),
         Msg::BootOstracism => "ta osoba nie zostanie powiadomiona \u{2014} jej zapisy zostają jej (ostracyzm, nie wymazanie)".into(),
+        Msg::ClearWavesPill { armed } => if armed { "Stuknij ponownie \u{2014} wyczyść fale" } else { "Wyczyść fale" }.into(),
+        Msg::ClearHistoryPill { armed } => if armed { "Stuknij ponownie \u{2014} wyczyść wszystko" } else { "Wyczyść historię" }.into(),
+        Msg::ClearHistoryNote => "ukrywa ją na każdym twoim urządzeniu i odrzuca nagrania \u{2014} ich kopia zostaje ich".into(),
         // ---- add device / pairing ----
         Msg::AddDeviceTitle => "Dodaj urządzenie".into(),
         Msg::AddDeviceConfirmOnce => "Potwierdź dopiero, gdy nowe urządzenie pokaże, że jest w środku".into(),

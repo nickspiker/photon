@@ -2536,7 +2536,7 @@ impl PhotonApp {
                     ContactPage::Manage => {
                         let n = manage_rows;
                         let all_rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
-                        let rows = &all_rows[..6];
+                        let rows = &all_rows[..9];
                         settings_line(
                             &mut canvas,
                             ctx.text,
@@ -2560,6 +2560,10 @@ impl PhotonApp {
                                 *theme::LABEL_COLOUR,
                                 400,
                             );
+                            // Our own notes can be cleared like any conversation; a sibling's is the bridge terminal and keeps no history.
+                            if is_self {
+                                Self::draw_clear_pills(self.contact_clear_armed, self.contact_panel_btn_base, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows, hspan2, ctx.pressed_hit);
+                            }
                         } else {
                             let pill = fluor::region::Region::new(
                                 rows[2].x + rows[2].w * 0.1,
@@ -2590,20 +2594,22 @@ impl PhotonApp {
                             );
                             settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
                             // BRING INTO A GROUP (docs/molecules.md §10.5): pill slot 1. Opens the picker below: New group (title box, the history policy fixed at birth, Found) and every group we stand in.
-                            let pill2 = fluor::region::Region::new(rows[5].x + rows[5].w * 0.1, rows[5].y, rows[5].w * 0.5, rows[5].h * 0.95);
+                            let pill2 = fluor::region::Region::new(rows[8].x + rows[8].w * 0.1, rows[8].y, rows[8].w * 0.5, rows[8].h * 0.95);
                             draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BindIntoMolecule), self.contact_panel_btn_base + 1, ctx.pressed_hit);
-                            if self.molecule_pick_open && all_rows.len() >= 7 {
+                            // CLEAR (manage.rs): pill slots 2 (waves) and 3 (everything), both two-tap, then the note that says whose copies they touch.
+                            Self::draw_clear_pills(self.contact_clear_armed, self.contact_panel_btn_base, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows, hspan2, ctx.pressed_hit);
+                            if self.molecule_pick_open && all_rows.len() >= 10 {
                                 let pick = |i: u16| self.molecule_pick_base + i as HitId;
-                                settings_line(&mut canvas, ctx.text, all_rows[6], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
+                                settings_line(&mut canvas, ctx.text, all_rows[9], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
                                 // Rows 7..: every atom and molecule we stand in — one tap offers this contact a bond into it (already standing there = drawn disabled).
                                 let contact_pid = contact.handle_hash;
                                 if self.molecule_rosters.is_empty() {
-                                    if let Some(r) = all_rows.get(7) {
+                                    if let Some(r) = all_rows.get(10) {
                                         settings_line(&mut canvas, ctx.text, *r, &tr(Msg::NoAtomsYet), hspan2, *theme::LABEL_COLOUR, 400);
                                     }
                                 }
                                 for (gi, (_, roster)) in self.molecule_rosters.iter().enumerate() {
-                                    let Some(r) = all_rows.get(7 + gi) else { break };
+                                    let Some(r) = all_rows.get(10 + gi) else { break };
                                     let n_standing = roster.standing().len();
                                     let already = roster.is_standing(&contact_pid);
                                     let label = format!("{} \u{00b7} {}", roster.title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_mag(n_standing as u64) });
