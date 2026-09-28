@@ -400,8 +400,6 @@ impl PhotonApp {
         let mut seal_reseed_requested = false;
         // Fold-freshness tripwire (the Jon incident): friend hps whose pong claimed a NEWER chain tip than our stored fold — refetch after the drain (the contacts loop holds &mut self.contacts, so the &mut-self spawn defers, the knock_after idiom). The claim rides along so the pursuit map records what we acted on.
         let mut stale_fold_hps: Vec<([u8; 32], i64)> = Vec::new();
-        // Braid migration candidates (2026-09-27): friend hps whose every device now shows braid v2 — checked against their chains after the drain (the loop holds &mut self.contacts).
-        let mut braid_ready: Vec<[u8; 32]> = Vec::new();
         // Snapshot of the pursuit map for the in-loop gate (the loop holds &mut self.contacts; the map lives on self).
         let stale_fold_claims = self.fleet_tip_pursuit.clone();
         // chain_pull request/miss events, deferred past the checker borrow (their handling mutates watermarks / re-keys).
@@ -897,15 +895,9 @@ impl PhotonApp {
                                     changed = true;
                                 }
                             }
-                            // BRAID CAPABILITY (2026-09-27): this device's sealed tail said which braid it weaves. Recorded per device; once every device of a friend shows v2 while our current era still weaves v1, the friendship is queued for the heavy-weave migration below.
+                            // BRAID CAPABILITY (2026-09-27): this device's sealed tail said which braid it weaves — recorded per device for the ceremony's claim (Contact::braid_claimable).
                             if let Some(b) = braid {
-                                let ep = contact.endpoint_mut(&peer_pubkey.key);
-                                if ep.braid != b {
-                                    ep.braid = b;
-                                    if !contact.is_sibling && contact.braid_claimable() {
-                                        braid_ready.push(contact.handle_proof);
-                                    }
-                                }
+                                contact.endpoint_mut(&peer_pubkey.key).braid = b;
                             }
                             // Per-device liveness: this pong/timeout is about the pinged DEVICE. The contact-level ring shows the IDENTITY reachable = any device online.
                             {
@@ -1889,6 +1881,11 @@ impl PhotonApp {
                                 Ok(()) => {
                                     self.contacts[matched_ci].era_prior_claim = Some((tag, idx));
                                     crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — the era we hold; accepting the weave (AcceptWeave)", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag);
+                                }
+                                // WE HOLD NO ERA AT ALL (a wiped device, or chains lost — field 2026-09-28, Emma): refusing leaves the peer re-offering its weave forever and both sides silent. Answer it as a FRESH ceremony instead: our offer claims no prior, so both sides' completions see unequal claims and mint a fresh channel — history stays, the conversation id is the participants'.
+                                Err("no era") => {
+                                    self.contacts[matched_ci].era_prior_claim = None;
+                                    crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — we hold no era for this friendship; answering as a FRESH ceremony", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag);
                                 }
                                 Err(why) => {
                                     crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — {}; offer not answered", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag, match why { "behind" => "that is our RETIRED era, the peer is behind (its pong shows it)", "unknown" => "an era we do not hold — asking the fleet", _ => "we hold no era for this friendship" });
@@ -5367,17 +5364,7 @@ impl PhotonApp {
             }
         }
 
-        // BRAID MIGRATION (Nick 2026-09-27, option 2): a friendship whose current era still weaves v1, with a friend whose every device now weaves v2, re-keys through the heavy weave — a full CLUTCH with the prior era woven in, which now claims v2 on both sides. Edge-driven: only the pong that flipped a device's braid lands here. The pickup respects ceremony ownership, so every device of ours may arm it safely.
-        for hp in braid_ready {
-            let Some(ci) = self.contacts.iter().position(|c| c.handle_proof == hp && !c.is_sibling) else { continue };
-            let behind = self.contacts[ci]
-                .friendship_id
-                .and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f))
-                .is_some_and(|(_, ch)| ch.braid < crate::crypto::chain::BRAID_V2 && ch.era_tag().is_some());
-            if behind && self.contacts[ci].clutch_state == crate::types::ClutchState::Complete {
-                self.arm_heavy_weave_for(ci, "braid v2 — every device of theirs weaves it; re-keying to weave strand values");
-            }
-        }
+        // BRAID MIGRATION — REMOVED (field 2026-09-28): it armed a heavy weave whenever the FRIEND's devices all showed v2, but the friend claims v2 only when OURS all do, so with any older or refused device of ours the weave could never reach v2 and re-armed on every restart; its churn tripped the ceremony breaker and stranded Emma's chains. v2 now arrives with any natural ceremony (both offers claim it once both fleets are ready). A migration trigger comes back only when it can see BOTH fleets are v2.
 
         // Consent knocks collected on pong edges (after releasing the checker borrow), plus the roster ride for any Mutual flip this drain confirmed — siblings learn the flip so whichever device is in hand completes the handshake.
         for id in knock_after {

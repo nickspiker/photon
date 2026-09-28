@@ -672,7 +672,24 @@ impl PhotonApp {
     pub(super) fn break_wedged_ceremonies(&mut self) {
         let wedged: Vec<usize> = (0..self.contacts.len()).filter(|&ci| self.contacts[ci].ceremony_mismatch_streak >= CEREMONY_MISMATCH_LIMIT).collect();
         for ci in wedged {
-            self.repose_clutch_round(ci, "ceremony wedged on repeated ceremony_id mismatches — round discarded, re-keying from the deterministic posture");
+            // A friendship with LIVE CHAINS keeps them (field 2026-09-28, Emma: the breaker's repose nulled friendship_id mid heavy-weave, stranding a healthy era — the phone then refused every weave offer as "no era" and messaging stopped both ways). Only the stuck round goes; the contact stays Complete on its chains, and any re-key it still owes re-arms on its own edge.
+            let has_chains = self.contacts[ci].friendship_id.is_some_and(|f| self.friendship_chains.iter().any(|(id, _)| *id == f));
+            if has_chains {
+                let c = &mut self.contacts[ci];
+                crate::logf!("CLUTCH: {} — ceremony wedged on repeated ceremony_id mismatches; round discarded, chains kept", crate::fp(&c.handle_proof));
+                if let Some(ref mut keys) = c.clutch_our_keypairs {
+                    keys.zeroize();
+                }
+                c.discard_clutch_round();
+                c.ceremony_mismatch_streak = 0;
+                c.era_prior_claim = None;
+                c.clutch_state = crate::types::ClutchState::Complete;
+                if let Some(storage) = self.storage.as_ref() {
+                    let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
+                }
+            } else {
+                self.repose_clutch_round(ci, "ceremony wedged on repeated ceremony_id mismatches — round discarded, re-keying from the deterministic posture");
+            }
         }
     }
 

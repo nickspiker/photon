@@ -16,3 +16,13 @@ Claim gate: Contact::braid_claimable = EVERY folded device of the peer showed v2
 Migration: pong edge that completes a friend fleet's v2 → arm_heavy_weave_for when current chains are v1 with an era (pickup respects ownership). Logs: "BRAID: ceremony for X weaves braid vN".
 **Why:** under v2 a row's 32-byte S is all the braid needs, so text can be DISCARDED (never "shredded" — [[feedback_discard_not_shred]]) — the braid-safe redaction ticket that blocks real delete/truncate/nuke ([[project_contact_nuke_gaps]]).
 **How to apply:** discarding a row's text must store S (strand_value of the row's time + ident_bytes) before dropping text, and only on v2 eras; v1 eras still need text for rows inside the last-256 incoming window. Docs: docs/braid.md §6.2a.
+
+**v107 OUTAGE 2026-09-28 (Nick↔Emma, no messages or waves either way) — CONVICTED + FIXED:**
+- The braid_ready heavy-weave migration re-armed on every restart: the friend claims v2 only when ALL of OUR devices show v2, so one older or refused device of ours kept the weave from ever landing.
+- 3 ceremony_id mismatches tripped the breaker → repose_clutch_round NULLED friendship_id → Emma's side held no chains ("Loaded 0 friendships", "CHAT: cannot send — no friendship chain").
+- Nick's phone kept offering a weave from era#0; Emma refused it ("we hold no era … offer not answered") → deadlock.
+- Fixes (status.rs, conversation.rs):
+  1. The migration is REMOVED; v2 arrives with any natural ceremony.
+  2. The breaker keeps existing chains and discards only the round.
+  3. A weave offer for an era we don't hold (Err("no era")) is answered as a FRESH ceremony (era_prior_claim = None).
+- NEXT: a migration trigger must see BOTH fleets are v2 before arming.
