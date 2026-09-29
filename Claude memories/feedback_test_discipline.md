@@ -13,3 +13,5 @@ Nick, 2026-09-13, stopwatch in hand: a cargo test build costs minutes of CPU eve
 **Why:** each cargo test builds a separate test-profile artifact set on top of the publish's target build — pure duplication as a compile check. Worse: `cargo test --lib` silently skips `tests/` integration targets; `tests/call_media_loop.rs` was broken for 3 days (derive_call_secret v2) under repeated `--lib` "green" claims.
 
 **How to apply:** edit → publish (`./scripts/publish/dev-android.sh` or dev.sh — the compile gate) → one FULL `cargo test` per batch before push, only when tests/tested logic changed. Never claim green from a subset. Never dev.sh check + cargo test + publish in one iteration. Related: [[feedback_build_dev_script]].
+
+**2026-09-29 repeat offence (Nick: "full test, then a full build, then a publish which invokes another full build?"):** I ran `cargo test` + `scripts/android/build.sh` + `dev-android.sh` per batch. That's three builds for one answer. `android/build.sh` before a publish is PURE duplication: the publish builds the same APK. When a publish is asked for, the publish IS the Android compile check. Don't run build.sh at all unless no publish follows.
