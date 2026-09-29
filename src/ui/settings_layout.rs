@@ -37,9 +37,7 @@ impl SettingsLayout {
         let root = Region::from_viewport(vp);
         // Under the status bar (ui::safe_top_px): the header and every band below it shift down; the root keeps its width.
         let top = (crate::ui::safe_top_px() as Coord).min(root.h - 1.0);
-        // Clear of a side cutout / side nav bar too (landscape), symmetric so the rail|content divider keeps its third.
-        let side = (crate::ui::safe_side_px() as Coord).min(root.w * 0.25);
-        let root = Region::new(root.x + side, root.y + top, root.w - 2.0 * side, root.h - top);
+        let root = Region::new(root.x, root.y + top, root.w, root.h - top);
         let portrait = root.h > root.w;
         let unit = hm((root.span / 32.0) * vp.ru.max(0.2), root.h / 13.0);
         let header_h = (unit * 2.1).min(root.w * 0.13).min(root.h * 0.15);
@@ -76,7 +74,10 @@ impl SettingsLayout {
 
     /// The inset rail band the nav rows tile (x-inset so the touch band doesn't kiss the pane edge).
     pub fn rail_inset(&self) -> Region {
-        self.rail.inset_xy(0.06, 0.0)
+        // The rail's own padding, or the left cutout / side nav bar where that is wider (Nick 2026-09-28: "it can touch the cam, just not go under it" — the max of the two, never added).
+        let r = self.rail.inset_xy(0.06, 0.0);
+        let left = (self.rail.x + crate::ui::safe_left_px() as Coord).max(r.x);
+        Region::new(left, r.y, (r.right() - left).max(0.0), r.h)
     }
 
     /// Natural content line height — `unit · 1.25`, NO clamp. Page bodies stack `N` rows of this from `content_inset().y − content_scroll`; tall pages overflow and scroll.
@@ -86,7 +87,10 @@ impl SettingsLayout {
 
     /// The VISIBLE content pane (inset reading column) — the clip rect for the scrolled body, and the height the scroll extent is measured against.
     pub fn content_inset(&self) -> Region {
-        self.content.inset_xy(0.06, 0.03)
+        // As the rail: the right cutout / side nav bar where it is wider than the pane's own padding, never added to it.
+        let r = self.content.inset_xy(0.06, 0.03);
+        let right = (self.content.right() - crate::ui::safe_right_px() as Coord).min(r.right());
+        Region::new(r.x, r.y, (right - r.x).max(0.0), r.h)
     }
 
     /// The scrolled, natural-height body for a page of `n` rows: anchored at the content inset, shifted up by `scroll`, `n · content_line_h` tall. `split_v([1.0; n])` on it yields natural-height line rows that scroll (no compression). Clip draws to [`content_inset`].

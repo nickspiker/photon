@@ -32,6 +32,18 @@ pub fn safe_left_px() -> usize {
     }
 }
 
+/// THE SAFE RIGHT: as [`safe_left_px`], the right edge.
+pub fn safe_right_px() -> usize {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::jni_android::right_inset_px().max(0) as usize // WHY/PROOF: as above
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        0
+    }
+}
+
 /// THE SAFE SIDE: the larger of the left and right insets, for layouts whose one horizontal padding serves both edges (a landscape phone turned either way puts its camera on one side or the other).
 pub fn safe_side_px() -> usize {
     #[cfg(target_os = "android")]
