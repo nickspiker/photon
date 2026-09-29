@@ -84,7 +84,7 @@ fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream,
     let data = frames * block as u64;
     // WHY/PROOF: a RIFF size is 32 bits — past 4 GiB of samples (~6 h of stereo) the file cannot say its own length; refuse rather than write a lying header.
     let data32 = u32::try_from(data).map_err(|_| "longer than a WAV can hold (4 GiB)".to_string())?;
-    drop(w.into_inner().map_err(|e| format!("flush: {e}"))?);
+    w.into_inner().map_err(|e| format!("flush: {e}"))?; // flushes the buffer and hands the writer back for the header patch
     f.seek(SeekFrom::Start(4)).map_err(|e| format!("seek: {e}"))?;
     f.write_all(&(36 + data32).to_le_bytes()).map_err(|e| format!("write: {e}"))?;
     f.seek(SeekFrom::Start(40)).map_err(|e| format!("seek: {e}"))?;
