@@ -16,6 +16,7 @@ pub mod engine;
 pub mod export;
 pub mod measure;
 pub mod spool;
+pub mod sweep;
 pub mod record;
 pub mod wave_env;
 pub mod music;

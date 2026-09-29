@@ -36,3 +36,8 @@ Related: [[project_aligner_windup]], [[project_audio_picker_levels]], [[feedback
 - Why: Theresa WAN wave, RTT 81 ms with spikes to 300 ms. The per-window rule gave a 134 ms jitter margin, l = 229 ms, and a half-second echo loop ("ringey").
 - The cutoff variants stay dead.
 - Echo: the current duck is speaker gain × OUR mic level NOW, but our echo returns a loop later. Proposed a predicted-echo duck (our voiced frames' names + the peer's reported l); not built yet.
+**2026-09-29 — CONNECT SWEEP BUILT (wave/sweep.rs):**
+- 1 s log sweep, 10 Hz → 20 kHz, at −1.5 stops, mixed OVER the wave via the platform/audio.rs overlay (never holds TX).
+- The mic tee is matched off-thread → `WAVE: sweep — speaker→mic X ms, coupling, psr`. That is `a` for the echo arithmetic: echo at name + l_theirs + a.
+- Hangup of a connected wave plays the reverse; stop() is held (END_HOLD) until the overlay drains, then stop_owned(gen), bounded at 2 s.
+- NEXT: l in samples in the tail + report a to the peer, then the RX-side NLMS canceller (seeded) + residual suppressor.

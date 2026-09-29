@@ -472,6 +472,75 @@ pub fn set_local_source(on: bool) {
     LOCAL_SOURCE.store(on, Ordering::Relaxed);
 }
 
+/// THE OVERLAY (the connect / disconnect sweep, wave/sweep.rs): samples MIXED into whatever is playing, right before the DAC — never replacing the wave, never held back by its playout, never ducked. Popped one sample per rendered sample.
+static OVERLAY: std::sync::Mutex<std::collections::VecDeque<i16>> = std::sync::Mutex::new(std::collections::VecDeque::new());
+/// A fresh overlay's first sample has not rendered yet: the next render stamps its DAC instant into OVERLAY_START.
+static OVERLAY_FRESH: AtomicBool = AtomicBool::new(false);
+/// The DAC instant (Eagle oscillations) of the latest overlay's first sample; i64::MIN = not rendered yet.
+static OVERLAY_START: AtomicI64 = AtomicI64::new(i64::MIN);
+/// Signalled when the overlay runs dry — the edge the end sweep's deferred stop waits on.
+static OVERLAY_DRAINED: (std::sync::Mutex<()>, std::sync::Condvar) = (std::sync::Mutex::new(()), std::sync::Condvar::new());
+/// While the disconnect sweep plays, `stop()` is held: the session closes when the sweep has left the speaker.
+static END_HOLD: AtomicBool = AtomicBool::new(false);
+
+/// Mix `samples` over the output from the next rendered frame on.
+pub fn play_overlay(samples: &[i16]) {
+    let mut q = OVERLAY.lock().unwrap();
+    q.clear();
+    q.extend(samples.iter().copied());
+    OVERLAY_START.store(i64::MIN, Ordering::Relaxed);
+    OVERLAY_FRESH.store(true, Ordering::Relaxed);
+}
+
+/// The DAC instant of the current overlay's first sample, once it has rendered.
+pub fn overlay_start_osc() -> Option<i64> {
+    let s = OVERLAY_START.load(Ordering::Relaxed);
+    (s != i64::MIN).then_some(s)
+}
+
+fn mix_overlay(frame: &mut [i16], at_osc: i64) {
+    let mut q = OVERLAY.lock().unwrap();
+    if q.is_empty() {
+        return;
+    }
+    if OVERLAY_FRESH.swap(false, Ordering::Relaxed) {
+        OVERLAY_START.store(at_osc, Ordering::Relaxed);
+    }
+    for s in frame.iter_mut() {
+        match q.pop_front() {
+            Some(o) => *s = s.saturating_add(o),
+            None => break,
+        }
+    }
+    if q.is_empty() {
+        drop(q);
+        let _g = OVERLAY_DRAINED.0.lock().unwrap();
+        OVERLAY_DRAINED.1.notify_all();
+    }
+}
+
+/// The disconnect sound (Nick 2026-09-29): a connected wave that ends plays the connect sweep reversed, and the audio session closes when it has left the speaker — `stop()` is held until the overlay drains, then this session's own stop runs (a wave that started in the meantime owns a new generation, and its session is left alone).
+pub fn play_end_sweep() {
+    if !is_active() {
+        return;
+    }
+    let gen = SESSION_GEN.load(Ordering::SeqCst);
+    play_overlay(&crate::wave::sweep::down());
+    END_HOLD.store(true, Ordering::SeqCst);
+    let _ = std::thread::Builder::new().name("end-sweep".into()).spawn(move || {
+        let g = OVERLAY_DRAINED.0.lock().unwrap();
+        // WHY/PROOF: the drain edge comes from the render callback; a device that stops calling back (unplugged, route torn down) can never drain the sweep, and the mic must not stay open waiting for it — twice the sweep's length bounds the hold.
+        let _ = OVERLAY_DRAINED.1.wait_timeout_while(g, std::time::Duration::from_secs(2), |_| !OVERLAY.lock().unwrap().is_empty());
+        END_HOLD.store(false, Ordering::SeqCst);
+        stop_owned(gen);
+    });
+}
+
+/// `stop()` is held while the disconnect sweep plays (see [`play_end_sweep`]).
+fn end_sweep_holds_stop() -> bool {
+    END_HOLD.load(Ordering::SeqCst)
+}
+
 /// Render the next frame at NOW — the tests' render call (every device path stamps its own DAC instant).
 #[cfg(test)]
 fn next_render_frame() -> Vec<i16> {
@@ -527,6 +596,8 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             }
         }
     }
+    // The connect / disconnect sweep rides OVER whatever plays (wave/sweep.rs), after the duck and the trim — it is ours, not the far side's.
+    mix_overlay(&mut frame, at_osc);
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
     let lvl = mean_abs(&frame) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
@@ -583,6 +654,7 @@ fn clear_queues() {
     }
     CAPTURE_Q.lock().unwrap().clear();
     PLAYBACK_Q.lock().unwrap().clear();
+    OVERLAY.lock().unwrap().clear();
     WAVE_RX.lock().unwrap().clear();
     NAMED.store(false, Ordering::Relaxed);
     PLAY_TARGET.store(i64::MIN, Ordering::Relaxed);
@@ -698,6 +770,9 @@ mod desktop {
     }
 
     pub fn stop() {
+        if super::end_sweep_holds_stop() {
+            return; // the disconnect sweep is playing; its own stop follows the drain
+        }
         ACTIVE.store(false, Ordering::SeqCst);
     }
 
@@ -919,6 +994,9 @@ mod android {
     }
 
     pub fn stop() {
+        if super::end_sweep_holds_stop() {
+            return; // the disconnect sweep is playing; its own stop follows the drain
+        }
         let _h = HANDOVER.lock().unwrap();
         if ACTIVE.swap(false, Ordering::SeqCst) {
             crate::platform::audio_aaudio::stop();

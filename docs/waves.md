@@ -251,6 +251,12 @@ The active wave screen shows the wave as it happens: a square at the top holds b
 - **The path colour** (LAN / radio / internet / relay) fills the top-left orb, solid, while the wave is up.
 - **Frozen when nobody is looking:** unfocused or hidden window, or the phone's display off (the proximity blank at the ear included).
 
+## The connect sweep (2026-09-29)
+
+Every wave opens with one second of log sweep, 10 Hz → 20 kHz, played on our own speaker OVER the wave. It is mixed in and never holds or replaces the wave (`platform/audio.rs` overlay, `wave/sweep.rs`). A connected wave ends with the same sweep reversed, and the audio session closes when it has left the speaker. Every octave takes the same time on a log sweep, so the part a phone carries is roughly the middle quarter second.
+
+The opening sweep doubles as calibration. The mic's copy of it, matched against the template, gives our speaker→mic path in true time (acoustic flight plus any disagreement between the HAL's two timestamps) and its strength: `WAVE: sweep — speaker→mic … ms, coupling …`. That is the `a` in the echo arithmetic: our voice plays at the far DAC at our frame's name + their l and reaches their mic `a` later. It is the first measurement toward cancelling the far side's echo of us on our speaker.
+
 ## Export (2026-09-28)
 
 A kept wave is Photon's own container (verbatim Opus packets per channel, holes as empty packets), so no other program plays it. Export decodes it, the same decode playback runs, and asks which flavour (`wave/export.rs`, `ExportFormat::ALL`, more can join):

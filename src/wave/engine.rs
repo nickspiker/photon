@@ -506,6 +506,10 @@ fn run(
     super::LAST_MEDIA_RX_OSC.store(0, Ordering::Relaxed);
     let _ = super::take_peer_redirect();
     crate::platform::audio::set_local_source(false);
+    // THE CONNECT SWEEP (Nick 2026-09-29, wave/sweep.rs): one second of 10 Hz → 20 kHz over the wave on our own speaker — the connect indicator, and the mic's copy of it measures our speaker→mic path. Never held: TX runs from the first captured frame as before.
+    crate::platform::audio::play_overlay(super::sweep::up());
+    // The mic from the sweep's start: (first grid sample, samples) until it covers the sweep plus the lag scan; then the fit runs off-thread.
+    let mut sweep_cap: Option<(i64, Vec<i16>)> = Some((i64::MIN, Vec::new()));
 
     loop {
         // STOP → DRAIN (recording fills): audio is over, but a fill-capable peer can still hand us the windows we lost — and wants ours. Both engines stay up on the fill plane until both are satisfied or the deadline passes. A peer that never spoke the fill plane ends the engine at once, exactly as before.
@@ -550,7 +554,7 @@ fn run(
                 continue; // audio is over — the mic is closed, anything left in the queue is not part of the wave
             }
             if cap_first_osc.is_none() {
-                crate::log("WAVE: audio connected — voice from the first captured frame (no probe)");
+                crate::log("WAVE: audio connected — voice from the first captured frame (the connect sweep plays over it)");
             }
             cap_first_osc.get_or_insert(cap_osc);
             cap_last_osc = cap_osc;
@@ -562,6 +566,30 @@ fn run(
             aligner.push(&frame, cap_pos, &mut aligned);
         }
         for (k0, frame) in aligned {
+            // The connect sweep's mic copy (raw 24-bit → 16-bit, before mute and makeup: this measures the room, it is never sent).
+            if let Some((c0, buf)) = sweep_cap.as_mut() {
+                if *c0 == i64::MIN {
+                    *c0 = k0;
+                }
+                let at = (k0 - *c0).max(0) as usize; // WHY/PROOF: aligned frames only move forward; a frame before the first is none
+                if buf.len() < at {
+                    buf.resize(at, 0); // a gap in the capture reads as silence, keeping every sample at its grid place
+                }
+                buf.extend(frame.iter().map(|&s| (s >> 8) as i16));
+                // WHY/PROOF: an overlay that never renders (no output device) never stamps its start; the tee must not grow for the whole wave — three seconds is past any sweep plus scan.
+                if buf.len() > 3 * super::sweep::SWEEP_SAMPLES {
+                    crate::log("WAVE: sweep — the sweep never reached the speaker; no measurement");
+                    sweep_cap = None;
+                } else if let Some(render_osc) = crate::platform::audio::overlay_start_osc() {
+                    let render_k = vsf::grid::eagle_to_sample(render_osc);
+                    let need = (render_k - *c0).max(0) as usize + super::sweep::SWEEP_SAMPLES + super::sweep::MAX_LAG;
+                    if buf.len() >= need {
+                        if let Some((c0, buf)) = sweep_cap.take() {
+                            super::sweep::finish(buf, c0, render_k, crate::platform::audio::route_id());
+                        }
+                    }
+                }
+            }
             // 24-BIT CAPTURE (2026-09-14): `frame` arrives as i32 in the 24-bit domain; the makeup below consumes the extra 8 bits straight into the i16 wire (acc >> 40) — a calibrated mic's quiet signal is lifted, its dither is not. The frame that leaves this block is the i16 wire frame.
             let frame24 = frame;
             // MUTE TRANSMITS ZEROS, NOT ABSENCE (2026-09-08, the drought tick's contract): the CBR cadence never breaks — a muted stretch is invisible to a traffic observer, NAT pinholes stay held open, and the peer's receive-drought measurement can't mistake a long mute for a dead path. Zeroed BEFORE the energy tally so tx(mic) honestly reads what was transmitted.

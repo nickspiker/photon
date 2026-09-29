@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- A wave now opens with a short rising sweep and closes with a falling one, so you can hear it connect and hang up; the opening sweep also measures how much of your speaker your microphone hears, the first step toward removing echo.
+- On a connection with bursts of delay, the playback delay no longer grows to cover each burst: a burst plays as a brief gap instead of adding delay to every word, which also keeps echo shorter.
 ## v108
 
 - Exporting a wave now asks which format you want: WAV (plays anywhere, one channel per person) or VSF (the recording's own compressed audio, about a tenth of the size, with its start time). The file is named with the date, time and who you waved with.

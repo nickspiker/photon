@@ -1413,6 +1413,10 @@ impl PhotonApp {
             .filter(|c| c.phase == WavePhase::Active)
             .map(|c| ((vsf::eagle_time_oscillations() - c.phase_osc).max(0) / vsf::OSCILLATIONS_PER_SECOND as i64) as u32) // WHY/PROOF: the wall clock can step back past a phase's start — the age is 0, not a u32 wrapped from a negative
             .unwrap_or(0);
+        // THE DISCONNECT SWEEP (Nick 2026-09-29): a wave that was connected ends with the connect sweep reversed — played before the stops below, which it holds until it has left the speaker (platform/audio.rs play_end_sweep).
+        if self.active_wave.as_ref().is_some_and(|c| c.phase == WavePhase::Active) {
+            crate::platform::audio::play_end_sweep();
+        }
         // The engine thread outlives `stop()` by the fill drain (engine.rs: the peer hands back the windows we lost); the keep joins it before reading the spool.
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {
             let e = wave.engine.as_ref()?;
