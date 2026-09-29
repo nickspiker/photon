@@ -65,6 +65,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOff => "\u{1F50A} Pūoro".into(),
         Msg::SpeakerPlain => "Pūoro".into(),
         Msg::EarpiecePlain => "Pūoro taringa".into(),
+        Msg::EarpieceSlower => "Taringa (pōturi ake)".into(),
         Msg::AddHandle => "+ Handle".into(),
         Msg::AddHandlePlain => "Tāpiri handle".into(),
         Msg::BackToContact => "\u{2039} Hoa".into(),

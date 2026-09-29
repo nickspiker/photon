@@ -78,6 +78,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOff => "\u{1F50A} Гучномовець".into(),
         Msg::SpeakerPlain => "Гучномовець".into(),
         Msg::EarpiecePlain => "Динамік".into(),
+        Msg::EarpieceSlower => "Динамік (повільніше)".into(),
         Msg::AddHandle => "+ Handle".into(),
         Msg::AddHandlePlain => "Додати handle".into(),
         Msg::BackToContact => "\u{2039} Контакт".into(),

@@ -248,6 +248,47 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
 
 /// Call a zero-arg void method on the foreground service (the MESSAGE_NOTIFIER global ref) — the generic form of the notification-post pattern, used by wave audio start/stop. Returns false when the service ref isn't registered or the call throws. Callable from any thread.
 #[cfg(target_os = "android")]
+/// As [`wave_service_void`], with one String argument.
+pub fn wave_service_str(method: &str, arg: &str) -> bool {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else { return false };
+    let Ok(mut env) = vm.attach_current_thread() else { return false };
+    let Ok(js) = env.new_string(arg) else { return false };
+    if env.call_method(svc.as_obj(), method, "(Ljava/lang/String;)V", &[(&js).into()]).is_err() {
+        let _ = env.exception_clear();
+        error!("wave_service_str: {} failed", method);
+        return false;
+    }
+    true
+}
+
+/// As [`wave_service_void`], with one int argument.
+pub fn wave_service_int(method: &str, arg: i32) -> bool {
+    let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else { return false };
+    let Ok(mut env) = vm.attach_current_thread() else { return false };
+    if env.call_method(svc.as_obj(), method, "(I)V", &[arg.into()]).is_err() {
+        let _ = env.exception_clear();
+        error!("wave_service_int: {} failed", method);
+        return false;
+    }
+    true
+}
+
+/// JNI ingress: the user picked this output on the route pill.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeRoutePicked(mut env: JNIEnv<'_>, _class: JClass<'_>, id: JString<'_>) {
+    let Ok(id) = env.get_string(&id).map(String::from) else { return };
+    crate::logf!("AUDIO: the user picked \"{}\" — remembered for this device", id);
+    crate::platform::audio::note_route_pick(id);
+    crate::platform::audio_aaudio::rebuild();
+}
+
+/// JNI ingress: the wave's volume changed on this route + usage.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeWaveVolume(mut env: JNIEnv<'_>, _class: JClass<'_>, route: JString<'_>, voice: jni::sys::jboolean, index: jint) {
+    let Ok(route) = env.get_string(&route).map(String::from) else { return };
+    crate::platform::audio::note_route_volume(&route, voice != 0, index);
+}
+
 pub fn wave_service_void(method: &str) -> bool {
     let Some((vm, svc)) = MESSAGE_NOTIFIER.get() else {
         return false;

@@ -237,6 +237,8 @@ pub enum Msg<'a> {
     SpeakerToggleOff,
     SpeakerPlain,
     EarpiecePlain,
+    /// The earpiece on a device whose voice path is slow (a longer delay than the loudspeaker).
+    EarpieceSlower,
     AddHandle,
     AddHandlePlain,
     BackToContact,

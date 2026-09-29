@@ -111,6 +111,8 @@ class PhotonConnectionService : Service() {
     private external fun nativeSendSessionBroadcast(context: android.content.Context)
     private external fun nativeClearSessionBroadcast(context: android.content.Context)
     private external fun nativeWaveAction(answer: Boolean)  // Answer/Decline from the wave notification → Rust's pending-action latch (the app tick drains it)
+    private external fun nativeRoutePicked(id: String)  // The user picked this output on the route pill (Rust persists it per device and re-decides the usage)
+    private external fun nativeWaveVolume(routeId: String, voice: Boolean, index: Int)  // The wave's volume changed on this route + usage (Rust keeps it per route)
     private external fun nativeAudioRoute(kind: Int, id: String)  // Route mirror: routed output device kind + calibration-profile identity (AudioDeviceCallback)
     private external fun nativeVolumeDb(db: Float)
     private external fun nativeMicInfo(unprocessedDeclared: Boolean, sensitivityDbfs: Float, desc: String)  // Volume mirror: STREAM_VOICE_CALL dB, at start + on VOLUME_CHANGED
@@ -168,7 +170,17 @@ class PhotonConnectionService : Service() {
             override fun onAudioDevicesRemoved(removed: Array<out android.media.AudioDeviceInfo>?) { pushRouteMirror() }
         }, null)
         registerReceiver(object : android.content.BroadcastReceiver() {
-            override fun onReceive(c: android.content.Context?, i: Intent?) { pushVolumeMirror() }
+            override fun onReceive(c: android.content.Context?, i: Intent?) {
+                pushVolumeMirror()
+                // THE ROUTE KEEPS ITS VOLUME (Nick 2026-09-29, "keeps the user chosen device, same with gain"): while a wave plays, the level the user sets is remembered for this route + usage.
+                if (waveAudioRunning) {
+                    try {
+                        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+                        val stream = if (renderVoiceUsage) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+                        nativeWaveVolume(lastRouteId, renderVoiceUsage, am.getStreamVolume(stream))
+                    } catch (e: Throwable) { PhotonLog.w(TAG, "wave volume report failed: ${e.message}") }
+                }
+            }
         }, android.content.IntentFilter("android.media.VOLUME_CHANGED_ACTION"))
         pushRouteMirror()
         pushVolumeMirror()
@@ -201,6 +213,7 @@ class PhotonConnectionService : Service() {
                 else -> { kind = -1; id = "unknown:${dev.productName}" }
             }
         }
+        lastRouteId = id
         try { nativeAudioRoute(kind, id) } catch (e: Throwable) { PhotonLog.w(TAG, "route mirror failed: ${e.message}") }
         // INPUT side (the voice-profile key): BT mic > wired mic > builtin.
         val ins = am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)
@@ -953,6 +966,43 @@ class PhotonConnectionService : Service() {
     // THE EARPIECE, WITHOUT THE VOICE PIPELINE (Nick 2026-09-12): setCommunicationDevice (API 31) routes this app's voice-usage streams to the device named, with no audio-mode change — the streams stay on the fast path. Cleared at hangup so media plays from the loudspeaker again.
     // WAVE-START POLICY (field 2026-09-14, Nick: "took me a minute to figure out it wasn't using the bluetooth headset at all"): the old arm forced the BUILT-IN earpiece over a connected headset — its keep-the-current-device guard never fired because no communication device is set at wave start. The start route now prefers wired > bluetooth > earpiece from availableCommunicationDevices, and cycleWaveRoute() (the in-wave route pill) walks the full list mid-wave.
     @Volatile var earpieceRouted = false
+    /** The last route id mirrored to Rust — the key the wave's volume is remembered under. */
+    @Volatile var lastRouteId = "unknown"
+    /** The route the user last picked on this device (Rust hands it over before every start; "" = none): the wave starts there when it is available. */
+    @Volatile var preferredRoute = ""
+    fun setPreferredRoute(id: String) { preferredRoute = id }
+
+    /** A communication device's route id — the same names the route mirror uses. */
+    private fun routeIdOf(d: android.media.AudioDeviceInfo): String = when (d.type) {
+        android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_HEARING_AID -> "bt:${d.productName}"
+        android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> "headset:${d.productName}"
+        android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> "earpiece"
+        android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER -> "speaker"
+        else -> "unknown:${d.productName}"
+    }
+
+    /** Rust, when this device's voice path is slow and the user never picked the earpiece: the fast path cannot reach the earpiece, so the wave starts on the loudspeaker (Nick 2026-09-29: fast is the default, the earpiece a choice). */
+    fun routeWaveSpeaker() {
+        if (Build.VERSION.SDK_INT < 31) return
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        try {
+            val spk = am.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            if (spk != null) am.setCommunicationDevice(spk) else am.clearCommunicationDevice()
+            earpieceRouted = false
+            PhotonLog.i(TAG, "waveAudio: slow voice path — starting on the loudspeaker (fast path)")
+        } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: speaker route failed", e) }
+        applyRouteSideEffects()
+    }
+
+    /** Rust, after an output open: put back the volume the user last set on this route + usage. */
+    fun setWaveVolume(index: Int) {
+        try {
+            val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+            val stream = if (renderVoiceUsage) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+            am.setStreamVolume(stream, index.coerceIn(0, am.getStreamMaxVolume(stream)), 0)
+        } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: volume restore failed", e) }
+    }
+
     private fun routeWaveAudio(on: Boolean) {
         if (Build.VERSION.SDK_INT < 31) return
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
@@ -964,8 +1014,15 @@ class PhotonConnectionService : Service() {
                     android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 1
                     else -> 0
                 }
-                val pick = am.availableCommunicationDevices.maxByOrNull { pref(it.type) }
-                if (pick == null || pref(pick.type) == 0) {
+                // The user's own pick first, when that device is here; the priority order otherwise.
+                val avail = am.availableCommunicationDevices
+                val picked = if (preferredRoute.isNotEmpty()) avail.firstOrNull { routeIdOf(it) == preferredRoute } else null
+                val pick = picked ?: avail.maxByOrNull { pref(it.type) }
+                if (picked != null) {
+                    val ok = am.setCommunicationDevice(picked)
+                    earpieceRouted = ok && picked.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    PhotonLog.i(TAG, "waveAudio: start route ${picked.productName} (type ${picked.type}) — the user's pick ${if (ok) "set" else "REFUSED"}")
+                } else if (pick == null || pref(pick.type) == 0) {
                     PhotonLog.i(TAG, "waveAudio: no headset or earpiece to route — loudspeaker")
                     earpieceRouted = false
                 } else {
@@ -994,6 +1051,10 @@ class PhotonConnectionService : Service() {
             val ok = am.setCommunicationDevice(next)
             earpieceRouted = ok && next.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
             PhotonLog.i(TAG, "waveAudio: route cycled to ${next.productName} (type ${next.type})${if (ok) "" else " — REFUSED"}")
+            applyRouteSideEffects()
+            // The user's pick: Rust remembers it for this device and re-decides the render's usage (fast media, or voice for the earpiece / Bluetooth).
+            if (ok) nativeRoutePicked(routeIdOf(next))
+            return
         } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: route cycle failed", e) }
         applyRouteSideEffects()
     }

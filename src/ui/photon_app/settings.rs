@@ -507,6 +507,23 @@ impl PhotonApp {
             .and_then(|v| v.as_i64())
             .unwrap_or(0) as i32;
         crate::platform::audio::set_rx_trim_stops(trim);
+        // The user's own output and its volumes (device-local): the wave starts where they last picked, at the level they last set on each route.
+        if let Some(fs) = self.fleet_settings.as_ref() {
+            let picked = fs.device_local("audio.route").and_then(|v| match v {
+                vsf::VsfType::x(s) => Some(s.clone()),
+                _ => None,
+            });
+            crate::platform::audio::set_picked_route(picked);
+            let mut vols = std::collections::HashMap::new();
+            if let Some(dev) = fs.devices.iter().find(|d| d.device_pubkey == fs.our_device) {
+                for e in &dev.entries {
+                    if let (Some(k), Some(v)) = (e.key.strip_prefix("audio.vol."), e.value.as_i64()) {
+                        vols.insert(k.to_string(), v as i32);
+                    }
+                }
+            }
+            crate::platform::audio::set_route_volumes(vols);
+        }
         // Plaid beyond the LAN: linked, absent = ON.
         let plaid_wan = self
             .fleet_settings
@@ -908,6 +925,35 @@ impl PhotonApp {
                 crate::logf!("AUDIO: earpiece trim = {} stop(s) (device-local)", stops);
                 self.persist_and_push_settings();
             }
+        }
+    }
+
+    /// Persist the route pick and per-route volumes the platform reported (device-local — they describe THIS device's hardware).
+    pub(super) fn drain_route_reports(&mut self) {
+        let (pick, vols) = crate::platform::audio::take_route_reports();
+        if pick.is_none() && vols.is_empty() {
+            return;
+        }
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        let mut changed = false;
+        let mut put = |fs: &mut crate::storage::fleet_settings::FleetSettings, key: String, v: vsf::VsfType| {
+            if fs.linked(&key) {
+                fs.set_link(&key, false, now);
+            }
+            fs.set(&key, v, now)
+        };
+        if let Some(r) = pick {
+            changed |= put(fs, "audio.route".into(), vsf::VsfType::x(r));
+        }
+        for (k, idx) in vols {
+            changed |= put(fs, format!("audio.vol.{k}"), vsf::VsfType::i(idx as isize));
+        }
+        if changed {
+            self.persist_and_push_settings();
         }
     }
 

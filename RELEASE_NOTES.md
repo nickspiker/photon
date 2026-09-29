@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- On phones whose call audio path is slow, a wave now starts on the fast path (the loudspeaker, or a wired headset) instead of adding a fifth of a second of delay; the earpiece is still one tap away on the output button, marked "slower".
+- Your phone remembers the output you pick for waves and the volume you set on each output, and uses them next time.
+- Fixed a wave on a phone with a slow call audio path dropping almost everything the other person said.
 - Waving someone, being waved and talking now share one screen: whoever is in the wave shows in the square, the main button is always in the middle of one bottom row, and placing a wave goes straight there.
 - In a conversation, the orb, Beam, Wave and "‹ Contacts" tuck fully off the top as you scroll to recent messages, and drop back into place one by one as you scroll back.
 - The top-left orb sits a little higher and further left.

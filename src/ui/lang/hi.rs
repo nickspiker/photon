@@ -67,6 +67,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOff => "\u{1F50A} स्पीकर".into(),
         Msg::SpeakerPlain => "स्पीकर".into(),
         Msg::EarpiecePlain => "ईयरपीस".into(),
+        Msg::EarpieceSlower => "ईयरपीस (धीमा)".into(),
         Msg::AddHandle => "+ हैंडल".into(),
         Msg::AddHandlePlain => "हैंडल जोड़ो".into(),
         Msg::BackToContact => "\u{2039} कॉन्टैक्ट".into(),

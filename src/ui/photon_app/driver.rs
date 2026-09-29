@@ -3715,6 +3715,7 @@ impl FluorApp for PhotonApp {
         if self.drain_wave_keep() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
+        self.drain_route_reports();
         if self.drain_wave_export() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }

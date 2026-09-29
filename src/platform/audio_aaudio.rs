@@ -26,6 +26,8 @@ struct Session {
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// A stream reported an error (route change, device gone): rebuilt off the callback thread, once per fault.
 static REOPENING: AtomicBool = AtomicBool::new(false);
+/// The render's usage for the NEXT output open: voice communication (true) or media (false). start_output decides it per open.
+static OUTPUT_VOICE: AtomicBool = AtomicBool::new(true);
 
 /// The true time at which frame `pos` of this stream hits the DAC (output) or left the ADC (input): the HAL's latest timestamp extrapolated to `pos`, moved onto the BOOT clock photon's TrueClock runs on, and mapped without a lock (docs/lock.md §5.1). None before the HAL has one (the first few bursts).
 /// The HAL is asked for CLOCK_MONOTONIC and the answer is moved to CLOCK_BOOTTIME by reading both clocks back to back (field v104, 2026-09-26: asked for BOOTTIME, Pixel HALs answered on MONOTONIC anyway — the two differ by every second the phone ever slept, 21 h on one phone and 55 h on the other, so capture was named hours wrong and playout never found a frame due).
@@ -55,7 +57,7 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, format: i32, cb: 
     let b = AudioStreamBuilder::new()
         .map_err(|e| format!("builder: {e:?}"))?
         .direction(direction)
-        .usage(if matches!(direction, AudioDirection::Output) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
+        .usage(if matches!(direction, AudioDirection::Output) && OUTPUT_VOICE.load(Ordering::Relaxed) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
         // UNPROCESSED, CALIBRATED INPUT (the level plan, 2026-09-13 night). The default preset's vendor AGC woke at zero and ramped 11→145 over twenty seconds (Brittany's silent first ten); Unprocessed is the CDD-calibrated raw feed — 94 dB SPL ≡ ~520 RMS, no AGC, no effects, deterministic from frame one — and its quiet number is exactly what the engine's fixed TX makeup (TX_MAKEUP_Q32) is precomputed for. VoicePerformance lived one unpublished hour between the two.
         .input_preset(ndk::audio::AudioInputPreset::Unprocessed)
         .sharing_mode(sharing)
@@ -174,18 +176,55 @@ fn describe(stream: &AudioStream, what: &str) {
 }
 
 fn start_output() -> Result<AudioStream, String> {
-    let s = open_with_fallback(AudioDirection::Output, &output_callback)?;
-    // NO MEDIA FALLBACK (Nick 2026-09-29: "shouldn't be any fallback — that should be user choice what source and volume to run"): the render stays on voice-communication usage whatever performance mode the device grants. The 2026-09-12 guard swapped a slow voice stream for media on the loudspeaker at the media volume — Emma's phone played a whole wave at media index 0. A slower path costs latency, which the budget line shows; the route and the volume stay the user's.
-    if !matches!(s.performance_mode(), AudioPerformanceMode::LowLatency) {
-        crate::logf!("AUDIO: voice usage runs without the fast path on this device ({}/{}, {} fr bursts) — kept (route and volume are the user's)", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst());
+    // FAST BY DEFAULT, THE EARPIECE A CHOICE (Nick 2026-09-29): open on voice-communication usage — the only usage that reaches the earpiece or a Bluetooth headset. If the device grants it the fast path, that is the render, on every route. If it does not (Emma's Note 10: shared, 20 ms bursts, 220 ms callback → DAC), the loudspeaker and a wired headset take MEDIA usage instead — the fast path — and the earpiece stays voice only when the user picked it; a default earpiece start moves to the loudspeaker. Bluetooth hands-free needs voice either way.
+    OUTPUT_VOICE.store(true, Ordering::Relaxed);
+    let mut s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+    let fast = matches!(s.performance_mode(), AudioPerformanceMode::LowLatency);
+    super::audio::set_voice_path_slow(!fast);
+    // The service reports the route this voice stream is routed to (the communication device) — synchronously, so route_id() below is its answer.
+    let _ = crate::platform::jni_android::wave_service_void("renderUsageVoice");
+    if !fast {
+        let route = super::audio::route_id();
+        let picked = super::audio::picked_route();
+        let keep_voice = route.starts_with("bt:") || route.starts_with("unknown") || (route == "earpiece" && picked.as_deref() == Some("earpiece"));
+        if keep_voice {
+            crate::logf!("AUDIO: voice path is slow on this device ({}/{}, {} fr bursts) — kept on \"{}\" ({})", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst(), route, if route == "earpiece" { "the user's pick" } else { "needs voice usage" });
+        } else {
+            if route == "earpiece" {
+                let _ = crate::platform::jni_android::wave_service_void("routeWaveSpeaker");
+            }
+            crate::logf!("AUDIO: voice path is slow on this device ({}/{}, {} fr bursts) — the fast media path on \"{}\" (the earpiece stays a choice)", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst(), if route == "earpiece" { "speaker" } else { route.as_str() });
+            drop(s);
+            OUTPUT_VOICE.store(false, Ordering::Relaxed);
+            s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+        }
     }
     // Two bursts of buffer: the smallest ask that still absorbs one late callback (the tester's own default).
     let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
     s.request_start().map_err(|e| format!("start: {e:?}"))?;
     describe(&s, "out");
-    // Tell the service which USAGE the render actually opened with, so the volume mirror reads the stream that truly governs it (field 2026-09-15: Nick's mirror said −32 dB while he heard fine — the mirror guessed the stream instead of knowing it).
-    let _ = crate::platform::jni_android::wave_service_void("renderUsageVoice");
+    // Tell the service which USAGE the render actually opened with, so the volume mirror and the rocker follow the stream that truly governs it.
+    let voice = OUTPUT_VOICE.load(Ordering::Relaxed);
+    let _ = crate::platform::jni_android::wave_service_void(if voice { "renderUsageVoice" } else { "renderUsageMedia" });
+    // The route keeps its volume: put back what the user last set on this route + usage.
+    if let Some(idx) = super::audio::route_volume(&super::audio::route_id(), voice) {
+        let _ = crate::platform::jni_android::wave_service_int("setWaveVolume", idx);
+    }
     Ok(s)
+}
+
+/// The user picked another output mid-wave: rebuild both streams so the usage is decided again (a media stream does not follow a communication-device change on its own).
+pub fn rebuild() {
+    if REOPENING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("aaudio-reopen".into()).spawn(|| {
+        if super::audio::is_active() {
+            stop();
+            start();
+        }
+        REOPENING.store(false, Ordering::SeqCst);
+    });
 }
 
 fn start_input() -> Result<AudioStream, String> {

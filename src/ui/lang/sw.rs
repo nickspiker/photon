@@ -67,6 +67,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOff => "\u{1F50A} Spika".into(),
         Msg::SpeakerPlain => "Spika".into(),
         Msg::EarpiecePlain => "Spika ya sikio".into(),
+        Msg::EarpieceSlower => "Spika ya sikio (polepole zaidi)".into(),
         Msg::AddHandle => "+ Handle".into(),
         Msg::AddHandlePlain => "Ongeza handle".into(),
         Msg::BackToContact => "\u{2039} Rafiki".into(),

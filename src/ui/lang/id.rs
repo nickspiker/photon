@@ -65,6 +65,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOff => "\u{1F50A} Speaker".into(),
         Msg::SpeakerPlain => "Speaker".into(),
         Msg::EarpiecePlain => "Speaker telinga".into(),
+        Msg::EarpieceSlower => "Earpiece (lebih lambat)".into(),
         Msg::AddHandle => "+ Handle".into(),
         Msg::AddHandlePlain => "Tambah handle".into(),
         Msg::BackToContact => "\u{2039} Kontak".into(),

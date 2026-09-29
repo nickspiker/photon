@@ -954,6 +954,8 @@ impl PhotonApp {
                             let route = crate::platform::audio::route_id();
                             let label = match route.as_str() {
                                 "speaker" => tr(Msg::SpeakerPlain).into_owned(),
+                                // The earpiece on a device whose voice path is slow is the SLOW choice — say so (Nick 2026-09-29).
+                                "earpiece" if crate::platform::audio::voice_path_slow() => tr(Msg::EarpieceSlower).into_owned(),
                                 "earpiece" => tr(Msg::EarpiecePlain).into_owned(),
                                 _ => route.split_once(':').map_or_else(|| route.clone(), |(_, name)| name.to_string()),
                             };

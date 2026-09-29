@@ -18,3 +18,9 @@ So the rocker raised VOICE_CALL (which nothing plays on) and the media render st
 
 **FIXED 2026-09-28 (dev android after v106):** PhotonConnectionService atEar() = earpieceRouted && renderVoiceUsage drives proximity + volumeControlStream (VOICE_CALL at the ear, MUSIC for a media-usage wave, default otherwise); renderUsageVoice/Media re-run applyRouteSideEffects; the route mirror ignores the communication device for a media render. Field verify pending on a fallback device (Emma's SM-N976V).
 **2026-09-29 — THE FALLBACK IS GONE (Nick: "shouldn't be any fallback, that should be user choice what source and volume to run"):** the render always opens with voice-communication usage; a device that denies it the fast path keeps it, logged. The voice-call volume governs it on every route (mirror + rocker). Why: Emma's phone played a whole wave on media at index 0, so her connect sweep read 'clean' and she could barely hear.
+**2026-09-29 — FAST BY DEFAULT, THE EARPIECE A CHOICE (Nick: choosing 8 ms vs 220 ms is a choice, not an automatic switch, and fast should be the default).**
+- start_output opens voice usage.
+  - Fast → keep it on every route.
+  - Slow → loudspeaker or wired take MEDIA (fast); the earpiece stays voice only when the user picked it (a default earpiece start moves to the loudspeaker via routeWaveSpeaker); Bluetooth keeps voice.
+- The user's route pick is device-local `audio.route`; per-route + usage volume is `audio.vol.<route>.<v|m>`, restored after each output open.
+- Route pill picks call nativeRoutePicked → rebuild. The route pill shows "Earpiece (slower)" on slow devices.

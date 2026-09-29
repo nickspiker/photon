@@ -67,6 +67,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SpeakerToggleOff => "\u{1F50A} Loa ngoài".into(),
         Msg::SpeakerPlain => "Loa ngoài".into(),
         Msg::EarpiecePlain => "Loa tai".into(),
+        Msg::EarpieceSlower => "Loa thoại (chậm hơn)".into(),
         Msg::AddHandle => "+ Handle".into(),
         Msg::AddHandlePlain => "Thêm handle".into(),
         Msg::BackToContact => "\u{2039} Liên hệ".into(),

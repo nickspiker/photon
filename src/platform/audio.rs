@@ -482,6 +482,65 @@ pub fn set_local_source(on: bool) {
     LOCAL_SOURCE.store(on, Ordering::Relaxed);
 }
 
+/// THE USER'S OUTPUT (Nick 2026-09-29, "keeps the user chosen device, same with gain"): the route this device's user last picked on the route pill (a route id: "earpiece", "speaker", "bt:<name>", "headset:<name>"), persisted device-local as `audio.route`.
+static PICKED_ROUTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// The volume the user last set per route + usage (`<route>.v` voice / `<route>.m` media → stream index), persisted device-local as `audio.vol.<key>`.
+static ROUTE_VOLUMES: std::sync::Mutex<Option<std::collections::HashMap<String, i32>>> = std::sync::Mutex::new(None);
+/// Picks and volumes reported from the platform, waiting for the UI thread to persist them.
+static ROUTE_PICK_OUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+static ROUTE_VOLUME_OUT: std::sync::Mutex<Vec<(String, i32)>> = std::sync::Mutex::new(Vec::new());
+/// This device's voice-communication path was refused the fast path at the last open (the route pill says "slower" beside the earpiece).
+static VOICE_PATH_SLOW: AtomicBool = AtomicBool::new(false);
+
+/// The route + usage key a volume is kept under.
+pub fn route_volume_key(route: &str, voice: bool) -> String {
+    format!("{route}.{}", if voice { "v" } else { "m" })
+}
+
+/// Install the persisted pick (settings load).
+pub fn set_picked_route(r: Option<String>) {
+    *PICKED_ROUTE.lock().unwrap() = r;
+}
+
+pub fn picked_route() -> Option<String> {
+    PICKED_ROUTE.lock().unwrap().clone()
+}
+
+/// Install the persisted per-route volumes (settings load).
+pub fn set_route_volumes(m: std::collections::HashMap<String, i32>) {
+    *ROUTE_VOLUMES.lock().unwrap() = Some(m);
+}
+
+pub fn route_volume(route: &str, voice: bool) -> Option<i32> {
+    ROUTE_VOLUMES.lock().unwrap().as_ref()?.get(&route_volume_key(route, voice)).copied()
+}
+
+/// The platform saw the user pick `route`: remember it now, queue it for the UI to persist.
+pub fn note_route_pick(route: String) {
+    *PICKED_ROUTE.lock().unwrap() = Some(route.clone());
+    *ROUTE_PICK_OUT.lock().unwrap() = Some(route);
+}
+
+/// The platform saw the user set the wave's volume on `route` + usage: remember it now, queue it for the UI to persist.
+pub fn note_route_volume(route: &str, voice: bool, index: i32) {
+    let key = route_volume_key(route, voice);
+    ROUTE_VOLUMES.lock().unwrap().get_or_insert_with(Default::default).insert(key.clone(), index);
+    ROUTE_VOLUME_OUT.lock().unwrap().push((key, index));
+}
+
+/// The UI thread's drain: a pick and the volume reports waiting to be persisted.
+pub fn take_route_reports() -> (Option<String>, Vec<(String, i32)>) {
+    (ROUTE_PICK_OUT.lock().unwrap().take(), std::mem::take(&mut *ROUTE_VOLUME_OUT.lock().unwrap()))
+}
+
+pub(crate) fn set_voice_path_slow(slow: bool) {
+    VOICE_PATH_SLOW.store(slow, Ordering::Relaxed);
+}
+
+pub fn voice_path_slow() -> bool {
+    VOICE_PATH_SLOW.load(Ordering::Relaxed)
+}
+
 /// THE OVERLAY (the connect / disconnect sweep, wave/sweep.rs): samples MIXED into whatever is playing, right before the DAC — never replacing the wave, never held back by its playout, never ducked. Popped one sample per rendered sample.
 static OVERLAY: std::sync::Mutex<std::collections::VecDeque<i16>> = std::sync::Mutex::new(std::collections::VecDeque::new());
 /// A fresh overlay's first sample has not rendered yet: the next render stamps its DAC instant into OVERLAY_START.
@@ -994,6 +1053,8 @@ mod android {
             return true;
         }
         clear_queues();
+        // The wave starts on the user's own pick when that device is here (Kotlin's routeWaveAudio).
+        let _ = crate::platform::jni_android::wave_service_str("setPreferredRoute", &super::picked_route().unwrap_or_default());
         let _ = crate::platform::jni_android::wave_service_void("startWaveAudio");
         if crate::platform::audio_aaudio::start() {
             true
