@@ -41,20 +41,20 @@ fn base_osc(bytes: &[u8]) -> Option<i64> {
     Some(i64::from_le_bytes(b.try_into().ok()?))
 }
 
-/// Decode `blob` (a kept `PHWAVE9`) and write it to `path` in `fmt`. Returns the number of sample frames written.
-pub fn export_to(blob: &[u8], fmt: ExportFormat, path: &std::path::Path) -> Result<u64, String> {
+/// Decode `blob` (a kept `PHWAVE9`) into `out` in `fmt`. Returns the number of sample frames written.
+/// This module never opens a file: the caller hands it the writer (the user-directed save lives in ui/photon_app/attachments.rs, the one sanctioned Downloads writer — scripts/lib/artifact-gate.sh).
+pub fn export_to<W: std::io::Write + std::io::Seek>(blob: &[u8], fmt: ExportFormat, out: &mut W) -> Result<u64, String> {
     let mut stream = record::open_blob(blob).ok_or("not a kept wave (unknown container)")?;
     let nchan = stream.nchan;
     match fmt {
-        ExportFormat::Wav => write_wav(&mut stream, nchan, path),
-        ExportFormat::Vsf => write_vsf(&mut stream, base_osc(blob), path),
+        ExportFormat::Wav => write_wav(&mut stream, nchan, out),
+        ExportFormat::Vsf => write_vsf(&mut stream, base_osc(blob), out),
     }
 }
 
-fn write_wav(stream: &mut record::KeptStream, nchan: usize, path: &std::path::Path) -> Result<u64, String> {
+fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream, nchan: usize, f: &mut W) -> Result<u64, String> {
     use std::io::{Seek, SeekFrom, Write};
-    let f = std::fs::File::create(path).map_err(|e| format!("create: {e}"))?;
-    let mut w = std::io::BufWriter::new(f);
+    let mut w = std::io::BufWriter::new(&mut *f);
     let block = (nchan * 2) as u16;
     // RIFF header with the two sizes patched once the length is known.
     let mut h = Vec::with_capacity(44);
@@ -84,7 +84,7 @@ fn write_wav(stream: &mut record::KeptStream, nchan: usize, path: &std::path::Pa
     let data = frames * block as u64;
     // WHY/PROOF: a RIFF size is 32 bits — past 4 GiB of samples (~6 h of stereo) the file cannot say its own length; refuse rather than write a lying header.
     let data32 = u32::try_from(data).map_err(|_| "longer than a WAV can hold (4 GiB)".to_string())?;
-    let mut f = w.into_inner().map_err(|e| format!("flush: {e}"))?;
+    drop(w.into_inner().map_err(|e| format!("flush: {e}"))?);
     f.seek(SeekFrom::Start(4)).map_err(|e| format!("seek: {e}"))?;
     f.write_all(&(36 + data32).to_le_bytes()).map_err(|e| format!("write: {e}"))?;
     f.seek(SeekFrom::Start(40)).map_err(|e| format!("seek: {e}"))?;
@@ -92,7 +92,7 @@ fn write_wav(stream: &mut record::KeptStream, nchan: usize, path: &std::path::Pa
     Ok(frames)
 }
 
-fn write_vsf(stream: &mut record::KeptStream, start: Option<i64>, path: &std::path::Path) -> Result<u64, String> {
+fn write_vsf<W: std::io::Write>(stream: &mut record::KeptStream, start: Option<i64>, out: &mut W) -> Result<u64, String> {
     use vsf::VsfType;
     // COMPRESSED, not decoded (Nick 2026-09-28: "no need to burn 10x the space when it could just get reframed"): the kept Opus packets exactly as recorded, each one its own `v('o', …)` value, so a VSF reader needs no length-prefix parsing and any audio tool with Opus plays them.
     let (subs, chans) = stream.raw_packets().ok_or("no packets to export")?;
@@ -116,7 +116,7 @@ fn write_vsf(stream: &mut record::KeptStream, start: Option<i64>, path: &std::pa
         builder = builder.add_section_direct(sec);
     }
     let bytes = builder.build().map_err(|e| format!("build: {e}"))?;
-    std::fs::write(path, &bytes).map_err(|e| format!("write: {e}"))?;
+    out.write_all(&bytes).map_err(|e| format!("write: {e}"))?;
     Ok(slots * (RATE as u64 / 100))
 }
 
@@ -149,11 +149,9 @@ mod tests {
             }
         }
         let blob = record::build_container(&records).unwrap().container;
-        let dir = std::env::temp_dir().join(format!("photon-export-test-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&dir);
-        let wav = dir.join("w.wav");
-        let frames = export_to(&blob, ExportFormat::Wav, &wav).unwrap();
-        let bytes = std::fs::read(&wav).unwrap();
+        let mut wav = std::io::Cursor::new(Vec::new());
+        let frames = export_to(&blob, ExportFormat::Wav, &mut wav).unwrap();
+        let bytes = wav.into_inner();
         assert!(frames > 0);
         assert_eq!(&bytes[..4], b"RIFF");
         assert_eq!(&bytes[8..16], b"WAVEfmt ");
@@ -163,18 +161,17 @@ mod tests {
         assert_eq!(bytes.len(), 44 + data);
         assert_eq!(u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize, 36 + data);
         assert!(bytes[44..].chunks_exact(2).any(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs() > 100), "audible");
-        let vsf_path = dir.join("w.vsf");
-        assert_eq!(export_to(&blob, ExportFormat::Vsf, &vsf_path).unwrap(), frames);
-        let vsf_len = std::fs::metadata(&vsf_path).unwrap().len();
+        let mut vsf_out = std::io::Cursor::new(Vec::new());
+        assert_eq!(export_to(&blob, ExportFormat::Vsf, &mut vsf_out).unwrap(), frames);
+        let v = vsf_out.into_inner();
+        let vsf_len = v.len() as u64;
         assert!(vsf_len * 3 < bytes.len() as u64, "the Opus VSF is a fraction of the WAV: {vsf_len} vs {}", bytes.len());
         // Every recorded packet is in it verbatim.
-        let v = std::fs::read(&vsf_path).unwrap();
         let (_, chans) = record::open_blob(&blob).unwrap().raw_packets().unwrap();
         for p in chans.iter().flatten().filter(|p| !p.is_empty()) {
             assert!(v.windows(p.len()).any(|w| w == &p[..]), "a packet is missing from the VSF");
         }
-        assert!(export_to(b"not a wave at all, just bytes........", ExportFormat::Wav, &dir.join("x.wav")).is_err());
-        let _ = std::fs::remove_dir_all(&dir);
+        assert!(export_to(b"not a wave at all, just bytes........", ExportFormat::Wav, &mut std::io::Cursor::new(Vec::new())).is_err());
     }
 
     #[test]

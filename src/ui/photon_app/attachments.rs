@@ -471,7 +471,9 @@ impl PhotonApp {
                 let start = blob.get(13..21).and_then(|b| b.try_into().ok()).map(i64::from_le_bytes).unwrap_or(ts);
                 let name = crate::wave::export::file_name(start, &who, fmt);
                 let path = dir.join(&name);
-                match crate::wave::export::export_to(&blob, fmt, &path) {
+                // The one sanctioned Downloads writer opens the file; the export only fills it.
+                let mut file = std::fs::File::create(&path).ok()?;
+                match crate::wave::export::export_to(&blob, fmt, &mut file) {
                     Ok(frames) => crate::logf!("WAVE: exported {} ({} frames, {})", name, frames, fmt.label()),
                     Err(e) => {
                         crate::logf!("WAVE: export failed — {}", e);
