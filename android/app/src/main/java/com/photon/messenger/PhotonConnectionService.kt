@@ -969,7 +969,7 @@ class PhotonConnectionService : Service() {
     /** The last route id mirrored to Rust — the key the wave's volume is remembered under. */
     @Volatile var lastRouteId = "unknown"
     /** The route the user last picked on this device (Rust hands it over before every start; "" = none): the wave starts there when it is available. */
-    @Volatile var preferredRoute = ""
+    @Volatile private var preferredRoute = ""
     fun setPreferredRoute(id: String) { preferredRoute = id }
 
     /** A communication device's route id — the same names the route mirror uses. */
