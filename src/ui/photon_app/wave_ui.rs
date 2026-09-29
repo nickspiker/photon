@@ -1391,6 +1391,8 @@ impl PhotonApp {
 
     /// Mint THE WAVE ROW (offer_osc+1 — the shared stamp both fleets agree on, +1 clear of the hidden offer row) with its typed outcome on EVERY end edge, stop the engine, and hand a live wave's spool to the keep transcode. The wave card (2026-09-09): one row per wave; the recording, when it lands, REFERENCES this row and folds into its card — so the card exists at hangup, before the transcode finishes, and a sibling that only rang still shows the same event.
     fn end_wave(&mut self, outcome: WaveOutcome, offer_osc: i64) {
+        // The live rings may have been opened by the ringback alone (a wave that never connected); the field has nothing to show once the wave is over.
+        crate::wave::live::stop();
         if let Some(wave) = &self.active_wave {
             // Remember the id so a late copy of its offer never rings again; bounded, since a session sees few waves.
             if self.ended_waves.len() > 256 {

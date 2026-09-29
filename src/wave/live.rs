@@ -65,6 +65,14 @@ pub fn start() {
     *LIVE.lock().unwrap() = Some(Live { tx: Side::new(), rx: Side::new() });
 }
 
+/// Start the rings only if none are running — the ringback opens them while the wave rings out, and the engine joins the SAME rings at answer, so the ripples already leaving our avatar carry on instead of restarting.
+pub fn ensure_started() {
+    let mut g = LIVE.lock().unwrap();
+    if g.is_none() {
+        *g = Some(Live { tx: Side::new(), rx: Side::new() });
+    }
+}
+
 /// The engine went down: the field has nothing to show.
 pub fn stop() {
     *LIVE.lock().unwrap() = None;

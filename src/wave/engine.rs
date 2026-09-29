@@ -480,7 +480,7 @@ fn run(
     // Capture cadence forensics (2026-09-09: both phones, both waves, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
     let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
     // The wave screen's field reads what this engine sends and hears, frame by frame (wave::live).
-    crate::wave::live::start();
+    crate::wave::live::ensure_started(); // the ringback may have opened them already (our mic ripples while it rings out)
     super::LAST_PEER_TIER.store(u32::MAX, Ordering::Relaxed);
     super::LAST_PEER_L_MS.store(u32::MAX, Ordering::Relaxed);
 

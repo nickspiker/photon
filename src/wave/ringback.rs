@@ -111,6 +111,8 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
     let gap_frames =
         (chirp::RING_REPEAT_GAP_SECS * audio::SAMPLE_RATE as f64 / audio::FRAME_SAMPLES as f64) as usize;
 
+    // THE MIC RIPPLES WHILE IT RINGS OUT (Nick 2026-09-29): the live rings open now, and our captured frames feed the TX side, so the field ripples from our avatar before they answer; the engine joins the same rings at answer.
+    crate::wave::live::ensure_started();
     // Local source: the ringback cadence must reach the DAC verbatim (the network-jitter splice/trims warped it and polluted the probe, field 2026-09-08).
     crate::platform::audio::set_local_source(true);
     // The probe: the same learner the engine runs, fed the ring as its far reference. bt_route widens its scan exactly as in-wave; no stored seed — this measurement IS the seed.
@@ -145,7 +147,12 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
                 Some((o, e0)) => learner.push_far(o, (e0 + e) * 0.5),
             }
         }
-        for (_, _, frame) in audio::captured_frames() {
+        for (at_osc, _, frame) in audio::captured_frames() {
+            // The field's TX side, visual only (nothing is sent before the answer): 24-bit → 16-bit at the level plan's usual 16× (4 stops) makeup cap, so the ripples read at the loudness the wave will carry. The engine's own plan takes over at answer.
+            if frame.len() == audio::FRAME_SAMPLES {
+                let pcm: Vec<i16> = frame.iter().map(|&s| (s >> 4).clamp(i16::MIN as i32, i16::MAX as i32) as i16).collect();
+                crate::wave::live::push_tx(vsf::grid::eagle_to_sample(at_osc), &pcm);
+            }
             // 24-bit capture; the learner's envelope contract is 16-bit units.
             let mean = if frame.is_empty() {
                 0.0

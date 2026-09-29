@@ -5190,19 +5190,18 @@ impl PhotonApp {
                 );
             }
 
-            // --- Header: title, centered ON the rail|content divider hairline (1/3 width) — it caps the column split rather than floating at the far-left edge. ---
+            // --- Header: the title LEFT-aligned beside the orb, level with its centre (Nick 2026-09-29) — the chrome title's own rule (orb right edge + a quarter button, the button being 8/9 of the orb radius), in the heading's style. Without an orb, the old place on the divider. ---
             let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-            ctx.text.draw_text_center(
-                &mut canvas,
-                &tr(Msg::SettingsTitle),
-                layout.content.x,
-                layout.header.center_y(),
-                &TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR)
-                    .weight(600)
-                    .font("Oxanium"),
-                None,
-                None,
-            );
+            let (title_x, title_y, title_left) = match chrome.orb_geometry() {
+                Some((ocx, ocy, r)) => ((ocx + r) as f32 + r as f32 * 2.0 / 9.0, ocy as f32, true),
+                None => (layout.content.x, layout.header.center_y(), false),
+            };
+            let title_style = TextStyle::new(hspan, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
+            if title_left {
+                ctx.text.draw_text_left(&mut canvas, &tr(Msg::SettingsTitle), title_x, title_y, &title_style, None, None);
+            } else {
+                ctx.text.draw_text_center(&mut canvas, &tr(Msg::SettingsTitle), title_x, title_y, &title_style, None, None);
+            }
             // --- Nav rail: Back is PINNED at the top (never scrolls — you never have to scroll up to go back); the nine page labels scroll BELOW it. Natural row height, no clamp-to-fit. Fills are painted AFTER the label so, under the settings pane's topmost-first (under-blend) compositing, the text sits in FRONT of the fill. ---
             let rail_inset = layout.rail_inset();
             let nav_h = layout.nav_row_h();
@@ -7451,7 +7450,7 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
 }
 
 /// THE CONVERSATION BLIND (Nick 2026-09-29): the top bar's pieces are slats — the orb (top-left), Beam (right, above Wave, a little left of it), and the row of "‹ Contacts" (left) with Wave (right) — each with a rest band. `hidden` is how far the blind is raised, `0..=conv_blind_extent`, fed 1:1 by the conversation's scroll.
-/// A slat's bottom edge is the lesser of its rest bottom and the top of the slat below it (keeping any overlap it has at rest); the lowest slat's "below" is the blind's edge. Raising it, the row moves first and collects Beam, then the orb; fully raised, every slat sits just above the screen's top edge. Dropping it, the pile falls together and each slat stops at its own place — the orb first, then Beam, then the row.
+/// ONE EDGE (Nick 2026-09-29, "bottoms of all elements should be the same height until the first one gets clamped and so on"): every slat's bottom edge is the lesser of its own rest bottom and the blind's moving edge. Raising it, the lowest slat meets the edge first and rides it, the next joins when the edge reaches its bottom, and so on; fully raised, every bottom sits on the screen's top edge. Dropping it, all bottoms fall together on the edge and each stops at its own rest — the orb first, then Beam, then the row.
 pub(super) struct ConvBlind {
     /// Centre of the "‹ Contacts" / Wave row.
     pub row_cy: f32,
@@ -7476,14 +7475,11 @@ pub(super) fn conv_blind(buf_h: usize, unit: f32, strip_floor: f32, hidden: f32,
     let extent = conv_blind_extent(buf_h, unit, strip_floor);
     let edge = extent - hidden.clamp(0.0, extent);
     let row_rest = conv_row_rest_cy(buf_h, unit, strip_floor);
-    let (row_rt, row_rb) = (row_rest - unit * 0.5, row_rest + unit * 0.5);
+    let row_rb = row_rest + unit * 0.5;
     let row_b = row_rb.min(edge);
-    let row_t = row_b - unit;
     let beam_rest = row_rest - unit * 1.5;
-    let (beam_rt, beam_rb) = (beam_rest - unit * 0.5, beam_rest + unit * 0.5);
-    let beam_b = beam_rb.min(row_t + (beam_rb - row_rt).max(0.0));
-    let beam_t = beam_b - unit;
-    let orb_dy = orb_rest.map_or(0.0, |(_, ob)| ob.min(beam_t + (ob - beam_rt).max(0.0)) - ob);
+    let beam_b = (beam_rest + unit * 0.5).min(edge);
+    let orb_dy = orb_rest.map_or(0.0, |(_, ob)| ob.min(edge) - ob);
     ConvBlind { row_cy: row_b - unit * 0.5, beam_cy: beam_b - unit * 0.5, orb_dy }
 }
 
