@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v108
+
 - Exporting a wave now asks which format you want: WAV (plays anywhere, one channel per person) or VSF (the recording's own compressed audio, about a tenth of the size, with its start time). The file is named with the date, time and who you waved with.
 - Waves on a fast connection play with less delay and fewer dropped moments: the playback buffer no longer gets thrown off by the two phones' clocks disagreeing, and the connection's round trip is measured to the microsecond.
 - The wave screen's connection colour shows the same (local) colour on both phones when you're on the same network.
