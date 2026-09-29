@@ -32,3 +32,7 @@ Related: [[project_aligner_windup]], [[project_audio_picker_levels]], [[feedback
 - Cause: sender-side capture jitter (bursty capture, tens of ms) is invisible to RTT, so floor + RTT marks most frames lost/late. The old 2×floor was accidentally lenient.
 - Pending Nick's call. Recommended: L = the 1-in-256 point over ALL received ages (no cutoff; one straggler per 256 is the allowance).
 - Separately: desktop cpal capture+output buffering ≈ 70 ms is the biggest latency item.
+**2026-09-29 — L = 1-in-256 of arrival EVENTS; a burst counts once.** An event starts where the age rises over the previous arrival; the falling run behind it (a queue releasing) is the same event.
+- Why: Theresa WAN wave, RTT 81 ms with spikes to 300 ms. The per-window rule gave a 134 ms jitter margin, l = 229 ms, and a half-second echo loop ("ringey").
+- The cutoff variants stay dead.
+- Echo: the current duck is speaker gain × OUR mic level NOW, but our echo returns a loop later. Proposed a predicted-echo duck (our voiced frames' names + the peer's reported l); not built yet.

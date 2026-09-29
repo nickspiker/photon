@@ -64,14 +64,22 @@ const LINK_TAIL: usize = 10;
 /// L's window, in RECEIVED windows (a count, never a time): the floor and the 1-in-this-many point are taken over the last this-many arrivals — Nick's 1-in-256.
 const L_WINDOW: usize = 256;
 
-/// L before the repair slack, from the recent arrival ages (docs/lock.md §7.1 as amended): the 1-in-L_WINDOW point of ALL the ages — with a full window, the single slowest arrival may sit above L (Nick's 1-in-256 loss rule), with fewer none may.
-/// NO CUTOFF (Nick 2026-09-28): 2 × floor doubled the clock offset, and floor + the round trip was blind to the SENDER's capture jitter (bursty capture spread arrivals 16–36 ms on a 3 ms LAN; thousands of frames played too late). The 1-in-256 point is offset-free in the way that matters — every age shifts by the offset, so L shifts by exactly it — and a lone straggler per 256 is already the one allowed above L.
+/// L before the repair slack, from the recent arrival ages in ARRIVAL order (docs/lock.md §7.1 as amended): the 1-in-L_WINDOW point of the arrival EVENTS — with a full window, the single slowest event may sit above L (Nick's 1-in-256 loss rule), with fewer none may.
+/// A BURST COUNTS ONCE (Nick 2026-09-29): a queue spike delays a run of consecutive windows together, and the queue releases them back to back, each a little younger than the one before — a falling run of ages. The 1-in-256 rule assumed independent arrivals, so one spike spent the whole allowance and L rose to cover the rest of the same burst (a 134 ms jitter margin on an 81 ms WAN). An event starts wherever the age RISES over the previous arrival; the falling run behind it is the same event, and its first (oldest) arrival stands for it. No threshold, no constant — only the order of the arrivals.
+/// NO CUTOFF (2026-09-28): 2 × floor doubled the clock offset, and floor + the round trip was blind to the SENDER's capture jitter. Every age shifts by the offset, so L shifts by exactly it and nothing else.
 fn target_latency(ages: &std::collections::VecDeque<i64>) -> i64 {
-    let mut inside: Vec<i64> = ages.iter().copied().collect();
-    inside.sort_unstable_by(|a, b| b.cmp(a));
-    // With a full window of arrivals inside the cutoff, one of them is allowed above L; with fewer, none is.
-    let allowed_above = inside.len() / L_WINDOW;
-    inside.get(allowed_above).copied().unwrap_or(0)
+    let mut events: Vec<i64> = Vec::with_capacity(ages.len());
+    let mut prev: Option<i64> = None;
+    for &a in ages {
+        if prev.map_or(true, |p| a > p) {
+            events.push(a);
+        }
+        prev = Some(a);
+    }
+    events.sort_unstable_by(|a, b| b.cmp(a));
+    // With a full window of arrivals, one event is allowed above L; with fewer, none is.
+    let allowed_above = ages.len() / L_WINDOW;
+    events.get(allowed_above).or(events.last()).copied().unwrap_or(0)
 }
 // PEER LOSS IN THE TAIL (Nick 2026-09-14, "go for both"): the 11th byte is MY windows-lost count over the last second — the one signal the SENDER needs, because a sender's tier affects what the PEER receives, and until today every tier decision keyed on the local receive side (the cellular wave: Emma's clean rx held her plaid at 768 kbps while Nick lost 500 windows per 10 s, and Nick's drowning rx flapped his innocent tx 11-up/8-down). A 10-byte tail (v96 and earlier) still parses — the byte is simply absent and the old local-loss governance carries.
 const LINK_TAIL_V2: usize = 11;
@@ -1837,10 +1845,28 @@ mod latency_target_tests {
         // Sender jitter (bursty capture): the spread is honoured, never discarded as loss.
         let b: Vec<i64> = (0..200).map(|i| ms(5) + (i % 5) * ms(4)).collect();
         assert_eq!(target_latency(&window(&b)), ms(21));
-        // Two stragglers in a full window: the second one moves L.
+        // Two separate stragglers in a full window: the second one moves L.
         let mut c = vec![ms(5); 254];
-        c.extend([ms(40), ms(90)]);
+        c.extend([ms(40), ms(5), ms(90)]);
+        c.remove(0);
         assert_eq!(target_latency(&window(&c)), ms(40));
+    }
+
+    /// A QUEUE BURST COUNTS ONCE (Nick 2026-09-29): a spike delays twenty consecutive windows, released back to back (ages falling by a window each); the burst spends the one allowance and L stays at the path, not at the tail of the burst. A second, separate spike in the same window is what moves L.
+    #[test]
+    fn a_burst_counts_once() {
+        let ms = |v: i64| v * 48;
+        let mut a = vec![ms(40); 236];
+        let burst: Vec<i64> = (0..20).map(|i| ms(300) - i * ms(10)).collect();
+        a.splice(100..100, burst.iter().copied());
+        assert_eq!(a.len(), 256);
+        assert_eq!(target_latency(&window(&a)), ms(40), "the whole burst is one event");
+        // A second burst later in the window: now the smaller spike's head sets L.
+        let mut b = a.clone();
+        for (k, i) in (180..190).enumerate() {
+            b[i] = ms(200) - k as i64 * ms(10);
+        }
+        assert_eq!(target_latency(&window(&b)), ms(200));
     }
 
     /// The clock offset moves L by exactly itself and changes nothing else.
