@@ -456,6 +456,8 @@ pub enum Msg<'a> {
     SavePill,
     /// A wave's recording to a file (the wave card's word for save) and a wave off the timeline (its word for delete), Nick 2026-09-12.
     ExportPill,
+    /// Toast while a wave recording decodes into its export file.
+    ExportingWave,
     DiscardPill,
     /// "Keep it, but not here": drop this device's copy of an incoming pigeon's bytes — the row and re-fetch stay.
     LoftPill,

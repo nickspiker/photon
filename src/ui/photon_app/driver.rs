@@ -315,7 +315,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 1);
         self.msg_action_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 14); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/molecules.md)
+        reserve_hits(&mut self.hit_counter, 16); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/molecules.md)
         self.react_strip_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -1597,7 +1597,7 @@ impl FluorApp for PhotonApp {
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
-                && hit_id < (self.msg_action_base + 14)
+                && hit_id < (self.msg_action_base + 16)
             {
                 let slot = hit_id - self.msg_action_base;
                 // JOIN (slot 13, a group offer card — docs/molecules.md §10.1): the consent. The parked offer under the selected row names the group.
@@ -1808,6 +1808,12 @@ impl FluorApp for PhotonApp {
                         3 => {
                             self.pending_delete = self.cid(sci).map(|id| ((id, ts, out), false));
                         }
+                        // EXPORT FLAVOUR chosen (slots 14.. = ExportFormat::ALL): decode the recording off the UI thread and hand the file to Downloads.
+                        14 | 15 => {
+                            let fmt = crate::wave::export::ExportFormat::ALL[(slot - 14) as usize];
+                            self.wave_export_choosing = None;
+                            self.wave_export_start(sci, ts, fmt);
+                        }
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {
                             self.selected_msg = None;
@@ -1824,13 +1830,11 @@ impl FluorApp for PhotonApp {
                                     .find(|m| m.is_wave_recording())
                                     .and_then(|m| m.file_parts().map(|(h, n, _)| (m.timestamp, h, n)))
                             });
-                            if let Some((rec_ts, hash, name)) = rec {
+                            if let Some((rec_ts, hash, _name)) = rec {
                                 if slot == 7 {
                                     if crate::storage::blob_present(&hash) {
-                                        match self.attach_save(&name, &hash) {
-                                            Some(dest) => self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned()),
-                                            None => self.ready_toast = Some(tr(Msg::SaveFailed).into_owned()),
-                                        }
+                                        // EXPORT asks which flavour (Nick 2026-09-28): the pill opens the format choice on this card; a second press closes it.
+                                        self.wave_export_choosing = if self.wave_export_choosing == Some(ts) { None } else { Some(ts) };
                                     } else {
                                         self.attach_fetch(sci, &hash);
                                         self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
@@ -3706,6 +3710,9 @@ impl FluorApp for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         if self.drain_wave_keep() {
+            { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+        }
+        if self.drain_wave_export() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
         // Auto-attest arm/disarm: apply the off-thread handle-proof verdict (spawned on the confirm click). Done here on the main thread so set_unattended's vault write, the checkbox, and focus stay UI-thread. Compute the verdict first so `self` isn't borrowed while we mutate it.

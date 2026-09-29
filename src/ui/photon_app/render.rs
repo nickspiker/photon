@@ -3844,6 +3844,12 @@ impl PhotonApp {
                                         let held = rec.file_parts().is_some_and(|(h, _, _)| crate::storage::blob_present_or_pending(&h));
                                         if held {
                                             v.push((tr(Msg::ExportPill), *theme::SEARCH_FOUND_COLOUR, (self.msg_action_base + 7)));
+                                            // The format choice, open under an Export press (slots 14..): one pill per flavour, labelled by the format's own name.
+                                            if self.wave_export_choosing == Some(msg.timestamp) {
+                                                for (i, f) in crate::wave::export::ExportFormat::ALL.iter().enumerate() {
+                                                    v.push((std::borrow::Cow::Borrowed(f.label()), *theme::SEARCH_FOUND_COLOUR, (self.msg_action_base + 14 + i as HitId)));
+                                                }
+                                            }
                                         }
                                         v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 8)));
                                     }

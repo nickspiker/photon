@@ -303,6 +303,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FetchPill => "kunin".into(),
         Msg::SavePill => "i-save".into(),
         Msg::ExportPill => "i-export".into(),
+        Msg::ExportingWave => "ine-export ang wave…".into(),
         Msg::DiscardPill => "itapon".into(),
         Msg::LoftPill => "sa kulungan".into(),
         Msg::AttachStats { name, kind, size, dims } => {

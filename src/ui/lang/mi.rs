@@ -305,6 +305,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FetchPill => "tiki".into(),
         Msg::SavePill => "tiaki".into(),
         Msg::ExportPill => "kawe atu".into(),
+        Msg::ExportingWave => "e kaweake ana i te ngaru…".into(),
         Msg::DiscardPill => "whakarere".into(),
         Msg::LoftPill => "whata".into(),
         Msg::AttachStats { name, kind, size, dims } => {

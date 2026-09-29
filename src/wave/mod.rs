@@ -13,6 +13,7 @@ pub mod vchirp;
 pub mod nlms;
 pub mod ringback;
 pub mod engine;
+pub mod export;
 pub mod measure;
 pub mod spool;
 pub mod record;

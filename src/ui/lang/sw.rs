@@ -308,6 +308,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FetchPill => "leta".into(),
         Msg::SavePill => "hifadhi".into(),
         Msg::ExportPill => "hamisha".into(),
+        Msg::ExportingWave => "inasafirisha wimbi…".into(),
         Msg::DiscardPill => "tupa".into(),
         Msg::LoftPill => "kwa banda".into(),
         Msg::AttachStats { name, kind, size, dims } => {

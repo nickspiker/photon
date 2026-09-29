@@ -309,6 +309,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FetchPill => "मँगाओ".into(),
         Msg::SavePill => "सेव".into(),
         Msg::ExportPill => "एक्सपोर्ट".into(),
+        Msg::ExportingWave => "वेव निर्यात हो रही है…".into(),
         Msg::DiscardPill => "छोड़ो".into(),
         Msg::LoftPill => "कबूतरखाने".into(),
         Msg::AttachStats { name, kind, size, dims } => {

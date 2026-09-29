@@ -251,6 +251,15 @@ The active wave screen shows the wave as it happens: a square at the top holds b
 - **The path colour** (LAN / radio / internet / relay) fills the top-left orb, solid, while the wave is up.
 - **Frozen when nobody is looking:** unfocused or hidden window, or the phone's display off (the proximity blank at the ear included).
 
+## Export (2026-09-28)
+
+A kept wave is Photon's own container (verbatim Opus packets per channel, holes as empty packets), so no other program plays it. Export decodes it, the same decode playback runs, and asks which flavour (`wave/export.rs`, `ExportFormat::ALL`, more can join):
+
+- **WAV:** 48 kHz, 16-bit PCM, one channel per party (channel 0 the recorder's own voice), holes as silence. It is streamed to disk frame by frame, so memory stays bounded; a recording past a WAV's 4 GiB limit is refused rather than given a lying header.
+- **VSF:** the same samples as a typed i16 tensor `[channels × samples]` in a `wave` section, with `rate`, `start` (Eagle time of the first sample) and `channels` (roles `self` / `peer`, never names or handles).
+
+The file is named `wave-<local date>-<time>-<who>.<ext>` and lands where Save puts files: Downloads, or on Android the public Downloads/Photon.
+
 ## Explicitly deferred (v1 gaps)
 
 - **Mid-wave handoff UX** — the keys are handoff-ready (any sibling derives the basket + joins the ratchet at the current step; address-follows-auth re-points the peer). The container is segment-ready. The UI + segment-reassembly + sibling blob-fetch of a kept wave are the follow-up.

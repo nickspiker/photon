@@ -306,6 +306,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FetchPill => "recupera".into(),
         Msg::SavePill => "salva".into(),
         Msg::ExportPill => "esporta".into(),
+        Msg::ExportingWave => "esportazione dell'onda…".into(),
         Msg::DiscardPill => "scarta".into(),
         Msg::LoftPill => "in piccionaia".into(),
         Msg::AttachStats { name, kind, size, dims } => {

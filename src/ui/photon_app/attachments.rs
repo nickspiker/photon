@@ -445,6 +445,72 @@ impl PhotonApp {
         }
     }
 
+    /// EXPORT a kept wave in `fmt` (wave/export.rs): the vault read and the decode run on a worker — an hour of audio decodes for seconds and the UI thread never touches the vault — then the file goes where Save puts files (Downloads; on Android the public Downloads/Photon). The result toasts from the tick drain.
+    pub(super) fn wave_export_start(&mut self, sci: usize, ts: i64, fmt: crate::wave::export::ExportFormat) {
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else { return };
+        let rec = self.conv_of(sci).and_then(|v| {
+            v.messages
+                .iter()
+                .filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
+                .find(|m| m.is_wave_recording())
+                .and_then(|m| m.file_parts().map(|(h, _, _)| h))
+        });
+        let Some(hash) = rec else { return };
+        let who = self.contacts.get(sci).map(|c| c.display_name()).unwrap_or_default();
+        #[cfg(target_os = "android")]
+        let Some(dir) = crate::storage::photon_config_dir().ok().map(|d| d.join("staging")) else { return };
+        #[cfg(not(target_os = "android"))]
+        let Some(dir) = dirs::download_dir() else { return };
+        let (tx, rx) = std::sync::mpsc::channel();
+        let wake = self.event_proxy.clone();
+        self.ready_toast = Some(tr(Msg::ExportingWave).into_owned());
+        let _ = std::thread::Builder::new().name("wave-export".into()).spawn(move || {
+            let out = (|| {
+                let blob = crate::storage::blob_load(&seed, &hash)?;
+                let _ = std::fs::create_dir_all(&dir);
+                let start = blob.get(13..21).and_then(|b| b.try_into().ok()).map(i64::from_le_bytes).unwrap_or(ts);
+                let name = crate::wave::export::file_name(start, &who, fmt);
+                let path = dir.join(&name);
+                match crate::wave::export::export_to(&blob, fmt, &path) {
+                    Ok(frames) => crate::logf!("WAVE: exported {} ({} frames, {})", name, frames, fmt.label()),
+                    Err(e) => {
+                        crate::logf!("WAVE: export failed — {}", e);
+                        let _ = std::fs::remove_file(&path);
+                        return None;
+                    }
+                }
+                #[cfg(target_os = "android")]
+                {
+                    let shared = crate::platform::jni_android::save_to_downloads(&path, &name);
+                    let _ = std::fs::remove_file(&path); // the staging copy is done with either way
+                    shared
+                }
+                #[cfg(not(target_os = "android"))]
+                Some(path.to_string_lossy().into_owned())
+            })();
+            let _ = tx.send(out);
+            #[cfg(not(target_os = "android"))]
+            if let Some(w) = wake.as_ref() {
+                let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+            }
+            #[cfg(target_os = "android")]
+            let _ = wake;
+        });
+        self.wave_export_rx = Some(rx);
+    }
+
+    /// A finished export: toast where it went (or that it failed). Returns true when something landed.
+    pub(super) fn drain_wave_export(&mut self) -> bool {
+        let Some(res) = self.wave_export_rx.as_ref().and_then(|rx| rx.try_recv().ok()) else { return false };
+        self.wave_export_rx = None;
+        self.ready_toast = Some(match res {
+            Some(dest) => tr(Msg::SavedTo(&dest)).into_owned(),
+            None => tr(Msg::SaveFailed).into_owned(),
+        });
+        self.ready_toast_screen = None;
+        true
+    }
+
     /// Save a held blob to the user's Downloads dir under its own name, replacing an earlier save of that name. Returns the destination on success.
     pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Option<String> {
         let seed = self.session.as_ref().map(|s| s.identity_seed)?;

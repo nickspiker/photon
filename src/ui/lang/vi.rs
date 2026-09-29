@@ -302,6 +302,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FetchPill => "lấy về".into(),
         Msg::SavePill => "lưu".into(),
         Msg::ExportPill => "xuất".into(),
+        Msg::ExportingWave => "đang xuất sóng…".into(),
         Msg::DiscardPill => "bỏ".into(),
         Msg::LoftPill => "vào chuồng".into(),
         Msg::AttachStats { name, kind, size, dims } => {
