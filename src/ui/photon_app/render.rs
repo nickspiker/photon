@@ -2805,7 +2805,7 @@ impl PhotonApp {
                     let unit = ReadyLayout::compute(buf_w, buf_h, ru).unit_height;
                     let msg_size = unit * 0.62;
                     let line_h = msg_size * 1.6;
-                    let pad_x = unit;
+                    let pad_x = unit + crate::ui::safe_side_px() as f32; // clear of a landscape side cutout
                     // The viewer owns everything below the chrome strip (desktop) / the status bar (Android, edge to edge); the Back and Save pills sit at its top-left, over the picture.
                     let area_top = if cfg!(target_os = "android") { crate::ui::safe_top_px() as f32 } else { fluor::host::chrome::strip_height(ctx.viewport) };
                     let pill_h = line_h * 1.4;
@@ -2919,6 +2919,7 @@ impl PhotonApp {
                     let bar_h = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit + back_size;
                     let bar_off = self.conv_topbar_off.min(bar_h);
                     let back_y = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit - bar_off;
+                    let back_x = unit + crate::ui::safe_left_px() as f32; // clear of a landscape left cutout
                     let back_text = tr(Msg::BackToContacts);
                     let topbar_visible = bar_off < bar_h * 0.75;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
@@ -2934,7 +2935,7 @@ impl PhotonApp {
                         ctx.text.draw_text_left(
                             &mut canvas,
                             &back_text,
-                            unit,
+                            back_x,
                             back_y,
                             &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR)
                                 .weight(back_weight)
@@ -2955,7 +2956,7 @@ impl PhotonApp {
                                 buf_w as u32,
                                 band_h as u32,
                                 &back_text,
-                                unit,
+                                back_x,
                                 back_y - band_top as f32,
                                 back_size,
                                 back_weight,
@@ -2988,7 +2989,7 @@ impl PhotonApp {
                         buf_h,
                         0,
                         (back_y - back_size) as isize,
-                        (unit + back_w + unit) as isize,
+                        (back_x + back_w + unit) as isize,
                         (back_y + back_size) as isize,
                         if topbar_visible {
                             self.back_btn_hit_id
@@ -3189,7 +3190,7 @@ impl PhotonApp {
 
                         let msg_size = unit * 0.62;
                         let line_h = msg_size * 1.6; // text + breathing room per message
-                        let pad_x = unit; // left/right inset
+                        let pad_x = unit + crate::ui::safe_side_px() as f32; // left/right inset, clear of a landscape side cutout
                                           // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
                                           // The floor clears the CHROME title strip on desktop plus the tiny always-on name; Android draws no strip (full-edge) so a slim margin stands.
                         let top_floor = if cfg!(target_os = "android") {
@@ -4921,11 +4922,12 @@ impl PhotonApp {
                 let unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
                 let back_y = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit;
                 let back_size = unit * 1.15;
+                let back_x = unit + crate::ui::safe_left_px() as f32; // clear of a landscape left cutout
                 let back_text = tr(Msg::BackToContacts);
                 ctx.text.draw_text_left(
                     &mut canvas,
                     &back_text,
-                    unit,
+                    back_x,
                     back_y,
                     &TextStyle::new(back_size, *theme::CONTACT_NAME_COLOUR)
                         .weight(500)
@@ -4943,7 +4945,7 @@ impl PhotonApp {
                     buf_h,
                     0,
                     (back_y - back_size) as isize,
-                    (unit + back_w + unit) as isize,
+                    (back_x + back_w + unit) as isize,
                     (back_y + back_size) as isize,
                     self.back_btn_hit_id,
                 );

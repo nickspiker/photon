@@ -20,6 +20,30 @@ pub fn safe_top_px() -> usize {
     }
 }
 
+/// THE SAFE LEFT (Nick 2026-09-28, landscape cutouts): the camera cutout or a side nav bar over the first N columns. Zero everywhere but Android.
+pub fn safe_left_px() -> usize {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::jni_android::left_inset_px().max(0) as usize // WHY/PROOF: the Kotlin inset, cast to usize — see jni_android
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        0
+    }
+}
+
+/// THE SAFE SIDE: the larger of the left and right insets, for layouts whose one horizontal padding serves both edges (a landscape phone turned either way puts its camera on one side or the other).
+pub fn safe_side_px() -> usize {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::jni_android::left_inset_px().max(crate::platform::jni_android::right_inset_px()).max(0) as usize // WHY/PROOF: as above
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        0
+    }
+}
+
 // Chromatic wave (sine-modulated visible-spectrum bar). Reads LMS2006SO; writes α + darkness pixels.
 pub mod chromatic_wave;
 

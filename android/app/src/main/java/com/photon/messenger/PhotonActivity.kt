@@ -85,6 +85,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var lastGlassRadius = -1
     private var lastTopInset = -1
     private var lastBottomInset = -1
+    private var lastLeftInset = -1
+    private var lastRightInset = -1
 
     // Scale gesture detector for pinch-to-zoom
     private lateinit var scaleGestureDetector: ScaleGestureDetector
@@ -221,7 +223,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     }
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
-    private external fun nativeSystemInsets(top: Int, bottom: Int)  // Status bar / gesture-nav extents under an edge-to-edge surface
+    private external fun nativeSystemInsets(top: Int, bottom: Int, left: Int, right: Int)  // Status bar / gesture-nav / side cutout extents under an edge-to-edge surface
     private external fun nativeGlassRadius(px: Int)  // The display's rounded-corner radius (WindowInsets.getRoundedCorner, API 31+); the chrome corners follow it
     private external fun nativeImeEditorText(contextPtr: Long): String  // honest-IME mirror: focused textbox's full text
     private external fun nativeImeEditorCursor(contextPtr: Long): Int   // honest-IME mirror: cursor in CHARS (code points)
@@ -428,6 +430,12 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         ))
         // EDGE TO EDGE (Nick 2026-09-16, "the top and bottom grey bars are still there"): the surface spans the whole display, under the status bar and the gesture pill, so the window's corners ARE the glass corners and the chrome's rounded corners can line up against them. The bars go transparent (Android 15 forces this at target 35 anyway); their extents reach Rust thru nativeSystemInsets so the layouts can keep content out from under them.
         WindowCompat.setDecorFitsSystemWindows(window, false)
+        // THE CUTOUT IN EVERY ORIENTATION (Nick 2026-09-28, "landscape draws a full black rectangle where the camera is"): the default mode lets a window into the cutout only inside the status bar — portrait's top edge — and letterboxes a side cutout in landscape. ALWAYS (API 30+; SHORT_EDGES before, which covers a phone's side cutout too) draws everywhere; the side insets below keep content out from under it.
+        if (Build.VERSION.SDK_INT >= 30) {
+            window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS }
+        } else if (Build.VERSION.SDK_INT >= 28) {
+            window.attributes = window.attributes.apply { layoutInDisplayCutoutMode = android.view.WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES }
+        }
         @Suppress("DEPRECATION")
         run {
             window.statusBarColor = android.graphics.Color.TRANSPARENT
@@ -552,10 +560,17 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 nativeImeInset(imeHeight)
             }
             val top = maxOf(statusBar, cutoutTop)
-            if (top != lastTopInset || navBar != lastBottomInset) {
+            // The SIDES: a landscape cutout, or a 3-button nav bar that moves to the side in landscape.
+            val cutout = insets.getInsets(WindowInsetsCompat.Type.displayCutout())
+            val sideNav = insets.getInsets(WindowInsetsCompat.Type.navigationBars())
+            val left = maxOf(cutout.left, sideNav.left)
+            val right = maxOf(cutout.right, sideNav.right)
+            if (top != lastTopInset || navBar != lastBottomInset || left != lastLeftInset || right != lastRightInset) {
                 lastTopInset = top
                 lastBottomInset = navBar
-                nativeSystemInsets(top, navBar)
+                lastLeftInset = left
+                lastRightInset = right
+                nativeSystemInsets(top, navBar, left, right)
             }
             // THE GLASS RADIUS (Nick 2026-09-16): the physical corner radius the OS reports for each corner (API 31+) — the largest of the four is the chrome's small-corner radius, twice it the big one. Reported once per change; -1 = never reported.
             if (Build.VERSION.SDK_INT >= 31) {

@@ -623,6 +623,9 @@ static GLASS_RADIUS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32
 /// System-bar extents under the edge-to-edge surface: the status bar (or cutout) at the top, the gesture-nav bar at the bottom, in pixels. Mirrored from the Activity's insets listener.
 static TOP_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 static BOTTOM_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// The side extents: a landscape camera cutout, or a 3-button nav bar on the side.
+static LEFT_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static RIGHT_INSET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 pub fn top_inset_px() -> i32 {
     TOP_INSET.load(std::sync::atomic::Ordering::Relaxed)
@@ -632,16 +635,28 @@ pub fn bottom_inset_px() -> i32 {
     BOTTOM_INSET.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+pub fn left_inset_px() -> i32 {
+    LEFT_INSET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn right_inset_px() -> i32 {
+    RIGHT_INSET.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSystemInsets(
     _env: JNIEnv<'_>,
     _class: JClass<'_>,
     top: jint,
     bottom: jint,
+    left: jint,
+    right: jint,
 ) {
     TOP_INSET.store(top.max(0), std::sync::atomic::Ordering::Relaxed); // WHY/PROOF: insets arrive from Kotlin as jint — negative on some OEM builds mid-rotation; the layout reads them as usize
     BOTTOM_INSET.store(bottom.max(0), std::sync::atomic::Ordering::Relaxed); // (Kotlin inset — see above)
-    crate::logf!("DISPLAY: system insets — top {} px (status bar / cutout), bottom {} px (gesture nav); the surface is edge to edge", top, bottom);
+    LEFT_INSET.store(left.max(0), std::sync::atomic::Ordering::Relaxed); // (Kotlin inset — see above)
+    RIGHT_INSET.store(right.max(0), std::sync::atomic::Ordering::Relaxed); // (Kotlin inset — see above)
+    crate::logf!("DISPLAY: system insets — top {} px (status bar / cutout), bottom {} px (gesture nav), left {} px, right {} px (side cutout / nav); the surface is edge to edge", top, bottom, left, right);
 }
 
 pub fn glass_radius_px() -> Option<f32> {
