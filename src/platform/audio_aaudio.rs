@@ -202,13 +202,25 @@ pub fn start() -> bool {
     if g.is_some() {
         return true;
     }
-    let output = match start_output() {
-        Ok(s) => s,
-        Err(e) => {
-            crate::logf!("AUDIO: AAudio output failed — {}", e);
-            return false;
+    // The OUTPUT gets the same transient-refusal retries as the input below (field 2026-09-29, Nick on Bluetooth earbuds: the answer re-set the communication device to the headset, the SCO link was still re-establishing, the output open met "start: Disconnected" once — and the whole wave ran with no audio session, 0 packets out).
+    let mut output = None;
+    for attempt in 0..4 {
+        match start_output() {
+            Ok(s) => {
+                output = Some(s);
+                break;
+            }
+            Err(e) if attempt < 3 && e.contains("Disconnected") => {
+                crate::logf!("AUDIO: AAudio output refused ({}) — retry {} of 3", e, attempt + 1);
+                std::thread::sleep(std::time::Duration::from_millis(60));
+            }
+            Err(e) => {
+                crate::logf!("AUDIO: AAudio output failed — {}", e);
+                return false;
+            }
         }
-    };
+    }
+    let Some(output) = output else { return false };
     // A transient refusal (Disconnected: the HAL re-routing under a comm-device change, or a previous input still releasing) gets three more tries a beat apart before the grant path is left to rescue it (2026-09-15: one Disconnected at answer and the whole wave went out silent).
     let mut input = None;
     for attempt in 0..4 {

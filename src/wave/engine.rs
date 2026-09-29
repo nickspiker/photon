@@ -214,7 +214,10 @@ pub fn start(params: EngineParams) -> EngineHandle {
     let (sink_tx, sink_rx) = std::sync::mpsc::channel::<super::MediaIn>();
     let sink_gen = super::install_media_sink(sink_tx);
     // CLAIM the session (start_owned): against a live ringback session this is the click-free handover, and the ringback's own late stop becomes a no-op because the generation moved on.
-    let _ = crate::platform::audio::start_owned();
+    // A wave with no audio session sends nothing and plays nothing — say so, loudly, instead of running silent (field 2026-09-29: 0 pkts out for 30 s with no line naming why).
+    if crate::platform::audio::start_owned().is_none() {
+        crate::log("WAVE: audio session did NOT open — this wave has no microphone and no speaker (see the AUDIO line above)");
+    }
     // The far channel plays BY NAME against true time from here (platform/audio.rs NAMED PLAYOUT) — after start_owned, whose queue hygiene resets it.
     crate::platform::audio::set_named_playout(true);
     match std::thread::Builder::new()
