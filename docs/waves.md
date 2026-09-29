@@ -251,6 +251,15 @@ The active wave screen shows the wave as it happens: a square at the top holds b
 - **The path colour** (LAN / radio / internet / relay) fills the top-left orb, solid, while the wave is up.
 - **Frozen when nobody is looking:** unfocused or hidden window, or the phone's display off (the proximity blank at the ear included).
 
+## One wave screen (2026-09-29)
+
+Ringing in, ringing out and talking share one layout: the avatar square at the top, the name and status line under it, and one bottom row of three slots with the main action in the middle.
+
+- **Who is shown:** each party appears once it is in the wave. Ringing out shows only our avatar; ringing in shows only theirs, with the relationship-coloured living circle breathing around it; answered, both, each with its level ring.
+- **Bottom row:** ringing in, Reject (silent) · **Wave back** · Decline (tells them). Ringing out and talking, ‹ Contact (minimise) · **End wave** · the route (Android). The thumb that answers is already on End wave.
+- **Gone until they work:** + Handle, Beam toggle, Beam back.
+- Placing a wave opens this screen at once; there is no intermediate screen or top bar.
+
 ## The connect sweep (2026-09-29)
 
 Every wave opens with one second of log sweep, 10 Hz → 20 kHz, played on our own speaker OVER the wave. It is mixed in and never holds or replaces the wave (`platform/audio.rs` overlay, `wave/sweep.rs`). A connected wave ends with the same sweep reversed, and the audio session closes when it has left the speaker. Every octave takes the same time on a log sweep, so the part a phone carries is roughly the middle quarter second.

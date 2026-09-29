@@ -2431,7 +2431,9 @@ impl FluorApp for PhotonApp {
                                     ctx.viewport.ru,
                                 )
                                 .unit_height;
-                                let bar_h = ctx.viewport.height_px as f32 * 0.06 + unit_b * 2.15;
+                                // The blind's full rise (render::conv_blind_extent) — the same number the layout draws with, so the row can never stop short and peek.
+                                let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
+                                let bar_h = super::render::conv_blind_extent(ctx.viewport.height_px as usize, unit_b, strip_floor);
                                 // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
                                 let step = -(dy as f32)
                                     * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };

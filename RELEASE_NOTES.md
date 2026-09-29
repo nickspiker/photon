@@ -7,6 +7,10 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waving someone, being waved and talking now share one screen: whoever is in the wave shows in the square, the main button is always in the middle of one bottom row, and placing a wave goes straight there.
+- In a conversation, the orb, Beam, Wave and "‹ Contacts" tuck fully off the top as you scroll to recent messages, and drop back into place one by one as you scroll back.
+- The top-left orb sits a little higher and further left.
+- Waves on Bluetooth earbuds no longer go silent when the headset is still connecting at the moment of answer.
 - A wave now opens with a short rising sweep and closes with a falling one, so you can hear it connect and hang up; the opening sweep also measures how much of your speaker your microphone hears, the first step toward removing echo.
 - On a connection with bursts of delay, the playback delay no longer grows to cover each burst: a burst plays as a brief gap instead of adding delay to every word, which also keeps echo shorter.
 ## v108

@@ -482,7 +482,8 @@ impl PhotonApp {
         // The wave's path colour (the ringing avatar's ring, and the orb's fill once Active) — computed here, before the chrome borrow pins `self`.
         let wave_path = self.wave_path_colour(wave_overlay.as_ref().and_then(|o| o.3));
         // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
-        let field_geom = (wave_fullscreen && matches!(wave_overlay.as_ref().map(|o| o.0), Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing))).then(|| {
+        // ONE WAVE SCREEN (Nick 2026-09-29): ringing in, ringing out and talking all lay out on the same square — only who is shown changes.
+        let field_geom = wave_fullscreen.then(|| {
             let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             super::wave_field::field_geom(buf_w, buf_h, unit_now)
         });
@@ -689,6 +690,18 @@ impl PhotonApp {
         chrome.set_orb_pressed(
             ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == chrome.app_icon_btn.id(),
         );
+        // THE BLIND (conv_blind): on the conversation screen the orb is its top slat; everywhere else it rests.
+        let blind_strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
+        let blind_unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+        let blind_on = matches!(self.state, AppState::Conversation) && !wave_fullscreen && self.viewer.is_none() && self.reader.is_none();
+        let conv_blind_now = {
+            let orb_rest = chrome.orb_geometry().map(|(_, cy, r)| {
+                let cy = cy as f32 - chrome.orb_dy;
+                (cy - r as f32, cy + r as f32 + super::ring_thickness(r as f32))
+            });
+            conv_blind(buf_h, blind_unit, blind_strip_floor, if blind_on { self.conv_topbar_off } else { 0.0 }, orb_rest)
+        };
+        chrome.set_orb_dy(if blind_on { conv_blind_now.orb_dy } else { 0.0 });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         let mark_chrome = std::time::Instant::now();
 
@@ -752,19 +765,25 @@ impl PhotonApp {
                     None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
                     Some(g) => {
                         // Both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
-                        // Theirs appears when they join (Nick 2026-09-29): while the wave is still reaching them, only ours.
-                        let joined = matches!(phase, crate::wave::WavePhase::Active);
+                        // Each party is shown once it is IN the wave (Nick 2026-09-29): ringing out, only ours; ringing in, only theirs (they are already waving); talking, both.
+                        let show_theirs = !matches!(phase, crate::wave::WavePhase::Outgoing);
+                        let show_ours = !matches!(phase, crate::wave::WavePhase::Ringing);
                         if let Some((diam, theirs, ours)) = self.wave_field_avatars.as_ref() {
-                            if joined {
+                            if show_theirs {
                                 crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
                             }
-                            crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
+                            if show_ours {
+                                crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
+                            }
                         }
                         let th = super::ring_thickness(g.r);
-                        if joined {
+                        // Ringing in, their ring is the living circle below; the level ring takes over once the wave's audio runs.
+                        if show_theirs && !matches!(phase, crate::wave::WavePhase::Ringing) {
                             paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, self.wave_field_tabs.ring_colour(true), None);
                         }
-                        paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, self.wave_field_tabs.ring_colour(false), None);
+                        if show_ours {
+                            paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, self.wave_field_tabs.ring_colour(false), None);
+                        }
                     }
                 }
                 // The living circle — ONLY while Ringing (Active/Ended sit calm): one perfect circle BEHIND the avatar (paint order per Nick: avatar, circle, text/buttons, background — later paints compose under earlier, so the avatar covers it and it washes over the text where it reaches). Digest-keyed waveforms move it, a spin decouples the offsets from the axes, a fourth scales it, a fifth breathes its opacity (ui::ring_rim); relationship colour, same as the name. Pure function of (digest, now) — the wake_at tick keeps frames coming while Ringing.
@@ -782,6 +801,11 @@ impl PhotonApp {
                         let t_secs = vsf::eagle_time_oscillations() as f64
                             / vsf::OSCILLATIONS_PER_SECOND as f64;
                         let m = crate::ui::ring_rim::sample(&orbit, t_secs);
+                        // Around THEIR avatar in the square (the one wave screen), or the lone avatar when there is no square.
+                        let (acx, acy, avatar_r) = match field_geom {
+                            Some(g) => (g.theirs.0, g.theirs.1, g.r),
+                            None => (acx, acy, avatar_r),
+                        };
                         // Edge budget (Nick 2026-09-04): the rim lives roughly 31/32..17/16 of the avatar radius — mostly peeking, sometimes swallowed. Radius carries ±1/64 of it, the offset the remaining ~1.5/64 (×√2 when both axes peak lands the extremes on the budget).
                         let r = avatar_r * (65.0 + m.scale) / 64.0;
                         let a = (0x28 as f32 + m.opacity * 0x38 as f32) as u32;
@@ -863,36 +887,27 @@ impl PhotonApp {
                         );
                     }
                 }
-                // Actions: bottom third, thumb-reach, decline LEFT answer RIGHT with a generous gap — and bottom-anchored so an Android heads-up banner (which owns the top) can never cover them.
+                // ONE BOTTOM ROW, three slots, every phase (Nick 2026-09-29): the main action always in the middle, so the thumb that answers is already on End wave. Ringing in: Reject (silent — nothing leaves the fleet) · Wave back · Decline (tells them). Ringing out and talking: ‹ Contact (minimise) · End wave · the route (Android). Bottom-anchored so a heads-up banner (which owns the top) never covers them.
                 let bh = unit * 2.4;
                 let by = h - bh * 0.5 - unit * 1.5;
                 let bfont = unit * 0.75;
+                let bw = w * 0.28;
+                let gap = unit * 0.6;
+                let (lx, cx, rx) = (w * 0.5 - bw - gap, w * 0.5, w * 0.5 + bw + gap);
                 match phase {
                     crate::wave::WavePhase::Ringing => {
-                        // Reject LEFT (silent: no signal leaves the fleet), Decline MIDDLE (tells them), Wave back RIGHT — three across, thumb-reach.
-                        let bw = w * 0.27;
                         if let Some(b) = self.wave_reject_btn.as_mut() {
-                            b.set_rect(w * 0.5 - bw - unit * 0.6, by, bw, bh);
+                            b.set_rect(lx, by, bw, bh);
                             b.set_font_size(bfont * 0.9);
                             b.set_label(tr(Msg::Reject));
                             b.set_fill(Some(theme::PILL_GREY.0));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        if let Some(b) = self.wave_decline_btn.as_mut() {
-                            b.set_rect(w * 0.5, by, bw, bh);
-                            b.set_font_size(bfont);
-                            b.set_label(tr(Msg::Decline));
-                            b.set_fill(Some(*theme::WAVE_DANGER_FILL));
-                            b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
-                            b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
                         if let Some(b) = self.wave_action_btn.as_mut() {
-                            b.set_rect(w * 0.5 + bw + unit * 0.6, by, bw, bh);
+                            b.set_rect(cx, by, bw, bh);
                             b.set_font_size(bfont);
-                            // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO — the beam answer sits above as its own choice, so the answering side picks audio-only even when the origin beams.
+                            // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO.
                             b.set_label(tr(Msg::WaveBack));
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
@@ -901,27 +916,41 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        // Beam back — the video answer, a STUB greyed out until video lands; centred above the decline/answer pair.
-                        if let Some(b) = self.beam_back_btn.as_mut() {
-                            b.set_rect(w * 0.5, by - bh - unit * 0.6, bw, bh * 0.85);
-                            b.set_font_size(bfont * 0.9);
-                            b.set_label(tr(Msg::BeamBack));
-                            b.set_enabled(false);
+                        if let Some(b) = self.wave_decline_btn.as_mut() {
+                            b.set_rect(rx, by, bw, bh);
+                            b.set_font_size(bfont);
+                            b.set_label(tr(Msg::Decline));
+                            b.set_fill(Some(*theme::WAVE_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                     }
                     _ => {
-                        // Active in-wave screen: a secondary row (+Handle / ‹ Contact) above the primary End wave. Add-handle is a stub; ‹ Contact minimizes.
-                        let sw = w * 0.29;
-                        let sh = unit * 2.0;
-                        let sfont = unit * 0.58;
-                        let sy = by - bh - unit * 0.6;
-                        // The route pill (Android, field 2026-09-14 "it wasn't using the bluetooth headset at all — how do we control that?"): labelled with the device the wave is playing on (the Kotlin route mirror), a tap cycles to the next available output. Left seat of the beam-toggle row.
+                        if let Some(b) = self.wave_back_btn.as_mut() {
+                            b.set_rect(lx, by, bw, bh);
+                            b.set_font_size(bfont * 0.8);
+                            b.set_label(tr(Msg::BackToContact));
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        if let Some(b) = self.wave_action_btn.as_mut() {
+                            b.set_rect(cx, by, bw, bh);
+                            b.set_font_size(bfont);
+                            b.set_label(tr(Msg::EndWave));
+                            b.set_enabled(true);
+                            b.set_fill(Some(*theme::WAVE_DANGER_FILL));
+                            b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
+                            b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        // The route (Android, field 2026-09-14): labelled with the device the wave plays on (the Kotlin route mirror); a tap cycles to the next available output.
                         #[cfg(target_os = "android")]
                         if let Some(b) = self.wave_speaker_btn.as_mut() {
-                            b.set_rect(w * 0.5 - sw - unit * 0.2, sy - sh - unit * 0.4, sw, sh);
-                            b.set_font_size(sfont);
+                            b.set_rect(rx, by, bw, bh);
+                            b.set_font_size(bfont * 0.8);
                             let route = crate::platform::audio::route_id();
                             let label = match route.as_str() {
                                 "speaker" => tr(Msg::SpeakerPlain).into_owned(),
@@ -932,40 +961,8 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        // Beam toggle — switch this side to video mid-wave; a STUB greyed out until video lands, one row above the secondary pair.
-                        if let Some(b) = self.beam_back_btn.as_mut() {
-                            b.set_rect(w * 0.5, sy - sh - unit * 0.4, sw, sh);
-                            b.set_font_size(sfont);
-                            b.set_label(tr(Msg::BeamToggle));
-                            b.set_enabled(false);
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        if let Some(b) = self.wave_addhandle_btn.as_mut() {
-                            b.set_rect(w * 0.5 - sw - unit * 0.2, sy, sw, sh);
-                            b.set_font_size(sfont);
-                            b.set_label(tr(Msg::AddHandle));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        if let Some(b) = self.wave_back_btn.as_mut() {
-                            b.set_rect(w * 0.5 + unit * 0.2, sy, sw, sh);
-                            b.set_font_size(sfont);
-                            b.set_label(tr(Msg::BackToContact));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
-                        if let Some(b) = self.wave_action_btn.as_mut() {
-                            b.set_rect(w * 0.5, by, w * 0.5, bh);
-                            b.set_font_size(bfont);
-                            b.set_label(tr(Msg::EndWave));
-                            b.set_enabled(true);
-                            b.set_fill(Some(*theme::WAVE_DANGER_FILL));
-                            b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));
-                            b.set_held_fill(Some(*theme::WAVE_DANGER_HOVER));
-                            let id = b.hit_id();
-                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
-                        }
+                        #[cfg(not(target_os = "android"))]
+                        let _ = rx;
                     }
                 }
                 // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — the per-screen bodies are skipped while it shows, so what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
@@ -1040,11 +1037,10 @@ impl PhotonApp {
                 let pill_h = unit;
                 let pill_font = wave_font * 0.5;
                 let pill_w = unit * 2.5;
-                let px = buf_w as f32 - pill_w - unit * 0.5; // top-right, half a unit of margin from the edge
-                let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
-                let bar_h = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit + pill_h;
-                let bar_off = self.conv_topbar_off.min(bar_h);
-                let wave_cy = ((buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32)).max(strip_floor + pill_h * 0.6) - bar_off;
+                // The blind's slats (conv_blind): Wave on the "‹ Contacts" row at the right margin, Beam above it and a little left, stacked.
+                let wave_cy = conv_blind_now.row_cy;
+                let beam_cy = conv_blind_now.beam_cy;
+                let wave_cx = buf_w as f32 - unit * 0.5 - pill_w * 0.5;
                 if let Some(b) = self.wave_start_btn.as_mut() {
                     let pw = pill_w * if wave_pill_no_path { 1.8 } else { 1.0 };
                     b.set_rect(buf_w as f32 - unit * 0.5 - pw * 0.5, wave_cy, pw, pill_h);
@@ -1054,9 +1050,9 @@ impl PhotonApp {
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
-                // Beam (video) stub — sits left of Wave, permanently disabled until video lands.
+                // Beam (video) stub — the slat above Wave, a third of a pill left of it so the two read as a stack; disabled until video lands.
                 if let Some(b) = self.beam_btn.as_mut() {
-                    b.set_rect(px - pill_w * 0.5 - unit * 0.2, wave_cy, pill_w, pill_h);
+                    b.set_rect(wave_cx - pill_w * 0.35, beam_cy, pill_w, pill_h);
                     b.set_font_size(pill_font);
                     b.set_enabled(false);
                     let id = b.hit_id();
@@ -2923,12 +2919,11 @@ impl PhotonApp {
                     // Back arrow (top-left) — below the chrome title bar area. Slides off vertically by conv_topbar_off (scroll-tied, browser-toolbar style); the hit rect follows and stamps HIT_NONE once mostly gone so a ghost tap can't fire it.
                     // Half the old size (Nick 2026-09-15: "2x too big").
                     let back_size = unit * 0.575;
-                    let bar_h = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit + back_size;
-                    let bar_off = self.conv_topbar_off.min(bar_h);
-                    let back_y = (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32) + unit - bar_off;
+                    // The blind's bottom row (conv_blind): wholly above the screen once raised, never a sliver left peeking.
+                    let back_y = conv_blind_now.row_cy;
                     let back_x = unit.max(crate::ui::safe_left_px() as f32); // the padding, or a landscape left cutout where wider — never added
                     let back_text = tr(Msg::BackToContacts);
-                    let topbar_visible = bar_off < bar_h * 0.75;
+                    let topbar_visible = back_y + back_size > 0.0;
                     // Same hover/press vocabulary as the contact rows: hover = weight 500 → 700, press = the wordmark's glow behind the label (composited AFTER the text — under() layers beneath).
                     let back_pressed = topbar_visible
                         && ctx.pressed_hit != HIT_NONE
@@ -3538,7 +3533,7 @@ impl PhotonApp {
                             });
                             let f_h = unit * 1.3;
                             let f_w = unit * 3.2;
-                            let f_x = buf_w as f32 - pad_x - f_w + bar_off;
+                            let f_x = buf_w as f32 - pad_x - f_w + self.conv_topbar_off; // slides off to the right as the blind rises
                             let f_y = list_bottom - f_h - unit * 0.25;
                             if f_x < buf_w as f32 {
                                 filter_stamp = Some((fluor::region::Region::new(f_x, f_y, f_w, f_h), if topbar_visible { self.conv_filter_hit } else { HIT_NONE }));
@@ -7160,7 +7155,7 @@ impl PhotonApp {
                     b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                 }
             }
-            // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): Active in-wave = speaker / +handle / ‹ contact; Ended = play preview.
+            // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): the bottom row's side slots.
             if wave_fullscreen {
                 match wave_overlay.as_ref().map(|t| t.0) {
                     Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing) => {
@@ -7169,13 +7164,13 @@ impl PhotonApp {
                         if let Some(b) = self.wave_speaker_btn.as_ref() {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                         }
-                        for b in [
-                            self.wave_addhandle_btn.as_ref(),
-                            self.wave_back_btn.as_ref(),
-                        ]
-                        .into_iter()
-                        .flatten()
-                        {
+                        if let Some(b) = self.wave_back_btn.as_ref() {
+                            b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        }
+                    }
+                    // Reject was painted but never re-stamped after the modal wipe — a tap on it hit nothing.
+                    Some(crate::wave::WavePhase::Ringing) => {
+                        if let Some(b) = self.wave_reject_btn.as_ref() {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                         }
                     }
@@ -7453,6 +7448,43 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
             theme::rgb_colour(r, g, b)
         })
         .collect()
+}
+
+/// THE CONVERSATION BLIND (Nick 2026-09-29): the top bar's pieces are slats — the orb (top-left), Beam (right, above Wave, a little left of it), and the row of "‹ Contacts" (left) with Wave (right) — each with a rest band. `hidden` is how far the blind is raised, `0..=conv_blind_extent`, fed 1:1 by the conversation's scroll.
+/// A slat's bottom edge is the lesser of its rest bottom and the top of the slat below it (keeping any overlap it has at rest); the lowest slat's "below" is the blind's edge. Raising it, the row moves first and collects Beam, then the orb; fully raised, every slat sits just above the screen's top edge. Dropping it, the pile falls together and each slat stops at its own place — the orb first, then Beam, then the row.
+pub(super) struct ConvBlind {
+    /// Centre of the "‹ Contacts" / Wave row.
+    pub row_cy: f32,
+    /// Centre of the Beam pill.
+    pub beam_cy: f32,
+    /// The orb's slide from its rest place (negative = up).
+    pub orb_dy: f32,
+}
+
+/// The row's rest centre: under the status bar with the old breathing room, and on desktop low enough that Beam (a pill and a half above) clears the chrome controls strip.
+fn conv_row_rest_cy(buf_h: usize, unit: f32, strip_floor: f32) -> f32 {
+    (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32 + unit).max(strip_floor + unit * 2.5)
+}
+
+/// How far the blind can rise: the row's rest bottom edge (fully raised, it touches the screen's top).
+pub(super) fn conv_blind_extent(buf_h: usize, unit: f32, strip_floor: f32) -> f32 {
+    conv_row_rest_cy(buf_h, unit, strip_floor) + unit * 0.5
+}
+
+/// Lay the blind out for `hidden` pixels raised. `orb_rest` = the orb's rest band (top, bottom) when there is an orb.
+pub(super) fn conv_blind(buf_h: usize, unit: f32, strip_floor: f32, hidden: f32, orb_rest: Option<(f32, f32)>) -> ConvBlind {
+    let extent = conv_blind_extent(buf_h, unit, strip_floor);
+    let edge = extent - hidden.clamp(0.0, extent);
+    let row_rest = conv_row_rest_cy(buf_h, unit, strip_floor);
+    let (row_rt, row_rb) = (row_rest - unit * 0.5, row_rest + unit * 0.5);
+    let row_b = row_rb.min(edge);
+    let row_t = row_b - unit;
+    let beam_rest = row_rest - unit * 1.5;
+    let (beam_rt, beam_rb) = (beam_rest - unit * 0.5, beam_rest + unit * 0.5);
+    let beam_b = beam_rb.min(row_t + (beam_rb - row_rt).max(0.0));
+    let beam_t = beam_b - unit;
+    let orb_dy = orb_rest.map_or(0.0, |(_, ob)| ob.min(beam_t + (ob - beam_rt).max(0.0)) - ob);
+    ConvBlind { row_cy: row_b - unit * 0.5, beam_cy: beam_b - unit * 0.5, orb_dy }
 }
 
 /// THE AGB COLOUR (Nick: each band's power over the geometric mean of the three, the top ratio pinned at full — hue from the ratios, brightness constant), as authored VSF RGB bytes. The ONE colour function behind the kept card and the live wave field, so the two can never drift.
