@@ -232,7 +232,8 @@ class PhotonConnectionService : Service() {
     fun pushVolumeMirror() {
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         try {
-            val stream = if (earpieceRouted && renderVoiceUsage) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
+            // Voice-communication usage is governed by the voice-call volume on EVERY route — earpiece and loudspeaker alike (no media fallback since 2026-09-29).
+            val stream = if (renderVoiceUsage) android.media.AudioManager.STREAM_VOICE_CALL else android.media.AudioManager.STREAM_MUSIC
             val v = am.getStreamVolume(stream).toFloat()
             val max = am.getStreamMaxVolume(stream).toFloat().coerceAtLeast(1f)
             val db = if (v <= 0f) -60f else (20.0 * Math.log10((v / max).toDouble())).toFloat()
@@ -1005,9 +1006,10 @@ class PhotonConnectionService : Service() {
                 else proximityLock?.let { if (it.isHeld) it.release(PowerManager.RELEASE_FLAG_WAIT_FOR_NO_PROXIMITY) }
             } catch (e: Exception) { PhotonLog.w(TAG, "proximity follow-route failed", e) }
         }
-        // The rocker governs the stream the wave actually plays on: voice at the ear, MUSIC for a media-usage render (the fast-path fallback), the default otherwise.
+        // The rocker governs the stream the wave actually plays on: the voice-call volume on every route while a wave's audio runs (the render is always voice-communication usage), the default otherwise.
         val stream = when {
             atEar() -> android.media.AudioManager.STREAM_VOICE_CALL
+            waveAudioRunning && renderVoiceUsage -> android.media.AudioManager.STREAM_VOICE_CALL
             waveAudioRunning && !renderVoiceUsage -> android.media.AudioManager.STREAM_MUSIC
             else -> android.media.AudioManager.USE_DEFAULT_STREAM_TYPE
         }

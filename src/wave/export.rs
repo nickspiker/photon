@@ -53,7 +53,7 @@ pub fn export_to<W: std::io::Write + std::io::Seek>(blob: &[u8], fmt: ExportForm
 }
 
 fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream, nchan: usize, f: &mut W) -> Result<u64, String> {
-    use std::io::{Seek, SeekFrom, Write};
+    use std::io::{SeekFrom, Write};
     let mut w = std::io::BufWriter::new(&mut *f);
     let block = (nchan * 2) as u16;
     // RIFF header with the two sizes patched once the length is known.

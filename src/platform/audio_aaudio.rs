@@ -47,10 +47,6 @@ fn now_true() -> i64 {
     crate::network::time_base::eagle_at_boot_rt(crate::network::time_base::boot_now())
 }
 
-/// Build one stream. AAudio's DEFAULTS are the attributes we want — MEDIA usage rides the fast mixer (the vendor voice pipeline behind VOICE_COMMUNICATION was the 80 ms floor, 2026-08-19) and the VOICE_RECOGNITION preset is the mic without the vendor NS/AGC/AEC chain — and the explicit setters are API 28 while minSdk is 26, so nothing is set. The callback box is consumed by the builder, so a failed open needs a fresh one from the factory.
-/// Whether the output opens with the voice-communication usage (the earpiece route's label). Field 2026-09-12: Nick's Pixel kept Exclusive/LowLatency at 4 ms under it, Emma's phone came up Shared/None at 40 ms on every wave — the vendor policy there hands voice-usage streams to its voice pipeline. So the usage is tried first and DROPPED for the process when it costs the fast path (the loudspeaker at 4 ms beats the earpiece at 40).
-static VOICE_USAGE_OK: AtomicBool = AtomicBool::new(true);
-
 /// The input opens 24-bit: I32 (the codec's 24 left-justified — a true integer route) first, float (an exact 24-bit significand) second, I16 last; each format Exclusive then Shared. The callback reads the stream's actual format and lands every source in the 24-bit domain. Output stays I16 — what the wire and the DAC speak.
 const INPUT_FORMATS: [i32; 3] = [ndk_sys::AAUDIO_FORMAT_PCM_I32 as i32, ndk_sys::AAUDIO_FORMAT_PCM_FLOAT as i32, ndk_sys::AAUDIO_FORMAT_PCM_I16 as i32];
 
@@ -59,7 +55,7 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, format: i32, cb: 
     let b = AudioStreamBuilder::new()
         .map_err(|e| format!("builder: {e:?}"))?
         .direction(direction)
-        .usage(if matches!(direction, AudioDirection::Output) && VOICE_USAGE_OK.load(Ordering::Relaxed) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
+        .usage(if matches!(direction, AudioDirection::Output) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
         // UNPROCESSED, CALIBRATED INPUT (the level plan, 2026-09-13 night). The default preset's vendor AGC woke at zero and ramped 11→145 over twenty seconds (Brittany's silent first ten); Unprocessed is the CDD-calibrated raw feed — 94 dB SPL ≡ ~520 RMS, no AGC, no effects, deterministic from frame one — and its quiet number is exactly what the engine's fixed TX makeup (TX_MAKEUP_Q32) is precomputed for. VoicePerformance lived one unpublished hour between the two.
         .input_preset(ndk::audio::AudioInputPreset::Unprocessed)
         .sharing_mode(sharing)
@@ -178,20 +174,17 @@ fn describe(stream: &AudioStream, what: &str) {
 }
 
 fn start_output() -> Result<AudioStream, String> {
-    let mut s = open_with_fallback(AudioDirection::Output, &output_callback)?;
-    // THE GUARD (2026-09-12): the earpiece is only free when the voice-usage stream still runs the fast path. A stream that came up without LowLatency has been claimed by the vendor voice pipeline — close it, forget voice usage for this process, and reopen on media (the loudspeaker; Kotlin's earpiece route then has nothing to attach to and the OS falls back on its own).
-    if VOICE_USAGE_OK.load(Ordering::Relaxed) && !matches!(s.performance_mode(), AudioPerformanceMode::LowLatency) {
-        crate::logf!("AUDIO: voice usage cost the fast path on this device ({}/{}, {} fr bursts) — reopening on media usage, loudspeaker", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst());
-        VOICE_USAGE_OK.store(false, Ordering::Relaxed);
-        drop(s);
-        s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+    let s = open_with_fallback(AudioDirection::Output, &output_callback)?;
+    // NO MEDIA FALLBACK (Nick 2026-09-29: "shouldn't be any fallback — that should be user choice what source and volume to run"): the render stays on voice-communication usage whatever performance mode the device grants. The 2026-09-12 guard swapped a slow voice stream for media on the loudspeaker at the media volume — Emma's phone played a whole wave at media index 0. A slower path costs latency, which the budget line shows; the route and the volume stay the user's.
+    if !matches!(s.performance_mode(), AudioPerformanceMode::LowLatency) {
+        crate::logf!("AUDIO: voice usage runs without the fast path on this device ({}/{}, {} fr bursts) — kept (route and volume are the user's)", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst());
     }
     // Two bursts of buffer: the smallest ask that still absorbs one late callback (the tester's own default).
     let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
     s.request_start().map_err(|e| format!("start: {e:?}"))?;
     describe(&s, "out");
     // Tell the service which USAGE the render actually opened with, so the volume mirror reads the stream that truly governs it (field 2026-09-15: Nick's mirror said −32 dB while he heard fine — the mirror guessed the stream instead of knowing it).
-    let _ = crate::platform::jni_android::wave_service_void(if VOICE_USAGE_OK.load(Ordering::Relaxed) { "renderUsageVoice" } else { "renderUsageMedia" });
+    let _ = crate::platform::jni_android::wave_service_void("renderUsageVoice");
     Ok(s)
 }
 
