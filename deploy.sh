@@ -406,10 +406,18 @@ DEPLOY_DATE=$(date +%Y-%m-%d)
 sed_i "s/Version: [^·]*· Updated: [^<]*/Version: $DOZENAL_VERSION · Updated: $DEPLOY_DATE/" "$WEBSITE_DIR/index.html"
 echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
 # WHAT'S NEW on the page (Nick 2026-09-09): the newest three shipped sections of RELEASE_NOTES.md rendered between the RELEASE-NOTES markers — from the SNAPSHOT tree, where Upcoming already reads v${SHIP_VERSION}.
+# Headings read as dozenal names (v108 → Stel Zil), the same words as the page's Version line; RELEASE_NOTES.md keeps `## vN` because the app and this parser match on it.
 render_release_notes_html() {
     awk -v max=3 '
+        function dozenal(n,    d, r) {
+            split("Zil Zila Zilor Ter Tera Teror Lun Luna Lunor Stel Stela Stelor", d, " ")
+            if (n == 0) return "Zil"
+            r = ""
+            while (n > 0) { r = (r == "" ? d[n % 12 + 1] : d[n % 12 + 1] " " r); n = int(n / 12) }
+            return r
+        }
         /^## Upcoming$/ { skip=1; next }
-        /^## v[0-9]+$/ { if (open) print "</ul>"; n++; if (n>max) { exit } skip=0; open=1; sub(/^## /, ""); print "<h3 class=\"notes-version\">" $0 "</h3>"; print "<ul class=\"notes-list\">"; next }
+        /^## v[0-9]+$/ { if (open) print "</ul>"; open=0; n++; if (n>max) { exit } skip=0; open=1; sub(/^## v/, ""); print "<h3 class=\"notes-version\">" dozenal($0 + 0) "</h3>"; print "<ul class=\"notes-list\">"; next }
         /^- / { if (!skip && open) { sub(/^- /, ""); gsub(/&/, "\\&amp;"); gsub(/</, "\\&lt;"); print "<li>" $0 "</li>" } }
         END { if (open) print "</ul>" }
     ' "$SNAP_DIR/RELEASE_NOTES.md"
