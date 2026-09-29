@@ -422,7 +422,8 @@ impl PhotonApp {
         let wave_minimized = self.wave_minimized;
         let wave_fullscreen = match wave_overlay.as_ref().map(|(p, _, _, _, _)| *p) {
             Some(crate::wave::WavePhase::Ringing) => true,
-            Some(crate::wave::WavePhase::Active) => !wave_minimized,
+            // Placing a wave IS the wave (Nick 2026-09-29: "no intermediary screen between placing a wave and a wave happening"): Outgoing opens the same full-screen panel as Active, only our own avatar until they join.
+            Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing) => !wave_minimized,
             _ => false,
         };
         // Duration string hoisted BEFORE the chrome borrow (`fmt_duration` reads `&self`; the `&mut self.chrome` borrow below would otherwise block it). Used by the full-screen timer + the Ended summary.
@@ -481,7 +482,7 @@ impl PhotonApp {
         // The wave's path colour (the ringing avatar's ring, and the orb's fill once Active) — computed here, before the chrome borrow pins `self`.
         let wave_path = self.wave_path_colour(wave_overlay.as_ref().and_then(|o| o.3));
         // THE WAVE FIELD (wave_field.rs), prepared here for the same reason: the square, its per-pixel ages (rebuilt only when the square changes size), this paint's live snapshot as colour tables, and both avatars at the field's diameter.
-        let field_geom = (wave_fullscreen && matches!(wave_overlay.as_ref().map(|o| o.0), Some(crate::wave::WavePhase::Active))).then(|| {
+        let field_geom = (wave_fullscreen && matches!(wave_overlay.as_ref().map(|o| o.0), Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing))).then(|| {
             let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
             super::wave_field::field_geom(buf_w, buf_h, unit_now)
         });
@@ -751,12 +752,18 @@ impl PhotonApp {
                     None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
                     Some(g) => {
                         // Both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
+                        // Theirs appears when they join (Nick 2026-09-29): while the wave is still reaching them, only ours.
+                        let joined = matches!(phase, crate::wave::WavePhase::Active);
                         if let Some((diam, theirs, ours)) = self.wave_field_avatars.as_ref() {
-                            crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
+                            if joined {
+                                crate::ui::avatar_render::draw_avatar(&mut canvas, g.theirs.0, g.theirs.1, g.r, theirs, *diam, None);
+                            }
                             crate::ui::avatar_render::draw_avatar(&mut canvas, g.ours.0, g.ours.1, g.r, ours, *diam, None);
                         }
                         let th = super::ring_thickness(g.r);
-                        paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, self.wave_field_tabs.ring_colour(true), None);
+                        if joined {
+                            paint::draw_circle(&mut canvas, g.theirs.0, g.theirs.1, g.r + th, self.wave_field_tabs.ring_colour(true), None);
+                        }
                         paint::draw_circle(&mut canvas, g.ours.0, g.ours.1, g.r + th, self.wave_field_tabs.ring_colour(false), None);
                     }
                 }
@@ -822,7 +829,7 @@ impl PhotonApp {
                 let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
                 ctx.text.draw_text_center(&mut canvas, &status_line, acx, acy + avatar_r + unit * 2.2, &status_style, None, None);
                 // Under each avatar, the rung that voice is sent on; centred between them, the ROUND TRIP mouth to ear and back (Nick 2026-09-28): our own l plus the l they report. The sum is exact whatever the two clocks disagree by — a one-way split would be a guess until the grid has an outside reference (GPS or the like).
-                if let Some(g) = field_geom {
+                if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active)) {
                     let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
                     let ours_l = crate::platform::audio::play_latency().map(|l| (l.max(0) / 48) as u32);
                     let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(std::sync::atomic::Ordering::Relaxed)).filter(|&v| v != u32::MAX);
@@ -7156,7 +7163,7 @@ impl PhotonApp {
             // Full-screen-only controls, phase-gated (the modal wipe above cleared the map, so these must re-assert): Active in-wave = speaker / +handle / ‹ contact; Ended = play preview.
             if wave_fullscreen {
                 match wave_overlay.as_ref().map(|t| t.0) {
-                    Some(crate::wave::WavePhase::Active) => {
+                    Some(crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing) => {
                         // The route pill stamps only where it renders (Android).
                         #[cfg(target_os = "android")]
                         if let Some(b) = self.wave_speaker_btn.as_ref() {

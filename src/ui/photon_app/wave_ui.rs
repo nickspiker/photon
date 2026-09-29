@@ -143,7 +143,8 @@ impl PhotonApp {
             .map(|b| b.take_click())
             .unwrap_or(false)
         {
-            if matches!(phase, Some(WavePhase::Active)) {
+            // Outgoing too: the ringback already holds the wave's audio session and route (placing a wave is the wave, 2026-09-29).
+            if matches!(phase, Some(WavePhase::Active | WavePhase::Outgoing)) {
                 let _ = crate::platform::jni_android::wave_service_void("cycleWaveRoute");
             }
             any = true;
@@ -165,7 +166,7 @@ impl PhotonApp {
             .map(|b| b.take_click())
             .unwrap_or(false)
         {
-            if matches!(phase, Some(WavePhase::Active)) {
+            if matches!(phase, Some(WavePhase::Active | WavePhase::Outgoing)) {
                 self.minimize_wave_to_contact();
             }
             any = true;
