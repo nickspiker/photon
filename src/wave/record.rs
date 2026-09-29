@@ -673,6 +673,27 @@ pub(crate) fn stream_from_records(records: &[Record]) -> Option<KeptStream> {
 const SEEK_PRIME: usize = 8;
 
 impl KeptStream {
+    /// The kept container's Opus packets per channel, VERBATIM — holes as empty packets — with each channel's packets per 10 ms slot (1 = 10 ms packets, 2 = 5 ms). The compressed export reframes these instead of decoding. `None` for a live-spool preview (no container yet).
+    pub fn raw_packets(&self) -> Option<(Vec<u8>, Vec<Vec<Vec<u8>>>)> {
+        let Inner::Multi { bytes, subs, .. } = &self.inner else { return None };
+        let mut chans: Vec<Vec<Vec<u8>>> = vec![Vec::new(); self.nchan];
+        let mut cur = 0usize;
+        'slots: loop {
+            for (ch, &sub) in subs.iter().enumerate() {
+                for k in 0..sub {
+                    let Some(p) = read_pkt(bytes, &mut cur) else {
+                        if ch == 0 && k == 0 {
+                            break 'slots; // clean end on a slot boundary
+                        }
+                        break 'slots; // truncated tail mid-slot: keep what is whole
+                    };
+                    chans[ch].push(p.to_vec());
+                }
+            }
+        }
+        Some((subs.clone(), chans))
+    }
+
     /// Position the stream at archive slot `slot` (clamped to the end): packets before the target are WALKED by their length prefix, never decoded — a two-hour seek is a byte scan, not a two-hour decode — then `SEEK_PRIME` frames prime the decoder. The tap-to-seek path.
     pub fn seek(&mut self, slot: usize) {
         let slot = slot.min(self.total);

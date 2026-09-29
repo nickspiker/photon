@@ -2,7 +2,7 @@
 //!
 //! The kept blob (`PHWAVE9`) is Photon's own container: verbatim Opus packets per channel, holes as empty packets. Nothing outside Photon plays it, so an export always DECODES it — the same decode playback runs — into a stream of 48 kHz frames, channel 0 the recorder's own voice, the rest the other party, holes as silence.
 //! WAV: 16-bit PCM, one channel per party, streamed to disk frame by frame (bounded memory, whatever the length).
-//! VSF: the same samples as a typed i16 tensor `[channels × samples]` with the rate, the recording's start in Eagle time and each channel's role — exact samples, no codec, readable by any VSF reader.
+//! VSF: the recorded Opus packets themselves, NOT decoded (Nick 2026-09-28: "no need to burn 10x the space") — one section per channel named by role (`self`, `peer`), each packet its own `v('o', …)` value (holes as empty ones) beside the channel's packet length, and a `wave` section with the rate and the recording's start in Eagle time.
 
 use super::record;
 
@@ -47,7 +47,7 @@ pub fn export_to(blob: &[u8], fmt: ExportFormat, path: &std::path::Path) -> Resu
     let nchan = stream.nchan;
     match fmt {
         ExportFormat::Wav => write_wav(&mut stream, nchan, path),
-        ExportFormat::Vsf => write_vsf(&mut stream, nchan, base_osc(blob), path),
+        ExportFormat::Vsf => write_vsf(&mut stream, base_osc(blob), path),
     }
 }
 
@@ -92,34 +92,32 @@ fn write_wav(stream: &mut record::KeptStream, nchan: usize, path: &std::path::Pa
     Ok(frames)
 }
 
-fn write_vsf(stream: &mut record::KeptStream, nchan: usize, start: Option<i64>, path: &std::path::Path) -> Result<u64, String> {
+fn write_vsf(stream: &mut record::KeptStream, start: Option<i64>, path: &std::path::Path) -> Result<u64, String> {
     use vsf::VsfType;
-    // Planar [channel][sample]: each party's voice is one contiguous row.
-    let mut planes: Vec<Vec<i16>> = vec![Vec::new(); nchan];
-    while let Some(frame) = stream.next_frame() {
-        for (i, s) in frame.iter().enumerate() {
-            planes[i % nchan].push(*s);
-        }
-    }
-    let samples = planes.first().map_or(0, |p| p.len());
-    let data: Vec<i16> = planes.into_iter().flatten().collect();
-    let mut section = vsf::VsfSection::new("wave");
-    section.add_field_multi("rate", vec![VsfType::u(RATE as usize, false)]);
+    // COMPRESSED, not decoded (Nick 2026-09-28: "no need to burn 10x the space when it could just get reframed"): the kept Opus packets exactly as recorded, each one its own `v('o', …)` value, so a VSF reader needs no length-prefix parsing and any audio tool with Opus plays them.
+    let (subs, chans) = stream.raw_packets().ok_or("no packets to export")?;
+    let mut builder = vsf::VsfBuilder::new().creation_time_oscillations(vsf::eagle_time_oscillations()).provenance_only();
+    let mut wave = vsf::VsfSection::new("wave");
+    wave.add_field_multi("rate", vec![VsfType::u(RATE as usize, false)]);
     if let Some(s) = start {
-        section.add_field_multi("start", vec![VsfType::e(vsf::types::EtType::e6(s))]);
+        wave.add_field_multi("start", vec![VsfType::e(vsf::types::EtType::e6(s))]);
     }
-    // Channel 0 is the recorder's own voice; every other channel is the other party. Roles, never names or handles.
-    let roles: Vec<VsfType> = (0..nchan).map(|c| VsfType::x(if c == 0 { "self".into() } else { "peer".into() })).collect();
-    section.add_field_multi("channels", roles);
-    section.add_field_multi("pcm", vec![VsfType::t_i4(vsf::types::Tensor { shape: vec![nchan, samples], data })]);
-    let bytes = vsf::VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
-        .provenance_only()
-        .add_section_direct(section)
-        .build()
-        .map_err(|e| format!("build: {e}"))?;
+    builder = builder.add_section_direct(wave);
+    let mut slots = 0u64;
+    for (c, packets) in chans.into_iter().enumerate() {
+        let sub = subs.get(c).copied().unwrap_or(1).max(1) as u64;
+        if c == 0 {
+            slots = packets.len() as u64 / sub;
+        }
+        // One section per channel, named by ROLE — the recorder's own voice, then the other party — never a name or handle. Packet length declared so a hole (an empty packet) keeps its place in time.
+        let mut sec = vsf::VsfSection::new(if c == 0 { "self" } else { "peer" });
+        sec.add_field_multi("packet_ms", vec![VsfType::u((10 / sub) as usize, false)]);
+        sec.add_field_multi("opus", packets.into_iter().map(|p| VsfType::v(b'o', p)).collect());
+        builder = builder.add_section_direct(sec);
+    }
+    let bytes = builder.build().map_err(|e| format!("build: {e}"))?;
     std::fs::write(path, &bytes).map_err(|e| format!("write: {e}"))?;
-    Ok(samples as u64)
+    Ok(slots * (RATE as u64 / 100))
 }
 
 /// The export's file name: `wave-<local date and time>-<who>.<ext>`, with anything a file system would choke on replaced.
@@ -167,7 +165,14 @@ mod tests {
         assert!(bytes[44..].chunks_exact(2).any(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs() > 100), "audible");
         let vsf_path = dir.join("w.vsf");
         assert_eq!(export_to(&blob, ExportFormat::Vsf, &vsf_path).unwrap(), frames);
-        assert!(std::fs::metadata(&vsf_path).unwrap().len() as u64 > frames * 4);
+        let vsf_len = std::fs::metadata(&vsf_path).unwrap().len();
+        assert!(vsf_len * 3 < bytes.len() as u64, "the Opus VSF is a fraction of the WAV: {vsf_len} vs {}", bytes.len());
+        // Every recorded packet is in it verbatim.
+        let v = std::fs::read(&vsf_path).unwrap();
+        let (_, chans) = record::open_blob(&blob).unwrap().raw_packets().unwrap();
+        for p in chans.iter().flatten().filter(|p| !p.is_empty()) {
+            assert!(v.windows(p.len()).any(|w| w == &p[..]), "a packet is missing from the VSF");
+        }
         assert!(export_to(b"not a wave at all, just bytes........", ExportFormat::Wav, &dir.join("x.wav")).is_err());
         let _ = std::fs::remove_dir_all(&dir);
     }

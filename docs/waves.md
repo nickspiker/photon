@@ -256,7 +256,7 @@ The active wave screen shows the wave as it happens: a square at the top holds b
 A kept wave is Photon's own container (verbatim Opus packets per channel, holes as empty packets), so no other program plays it. Export decodes it, the same decode playback runs, and asks which flavour (`wave/export.rs`, `ExportFormat::ALL`, more can join):
 
 - **WAV:** 48 kHz, 16-bit PCM, one channel per party (channel 0 the recorder's own voice), holes as silence. It is streamed to disk frame by frame, so memory stays bounded; a recording past a WAV's 4 GiB limit is refused rather than given a lying header.
-- **VSF:** the same samples as a typed i16 tensor `[channels × samples]` in a `wave` section, with `rate`, `start` (Eagle time of the first sample) and `channels` (roles `self` / `peer`, never names or handles).
+- **VSF:** the recorded Opus packets themselves, not decoded (about a tenth of the WAV). A `wave` section carries `rate` and `start` (Eagle time of the first sample); then one section per channel, named by role (`self`, `peer`, never names or handles), with `packet_ms` (10 for the recorder's archive stream, 5 for the wire stream) and `opus`: every packet in order as its own `v('o', …)` value, a hole as an empty one, so its place in time is kept.
 
 The file is named `wave-<local date>-<time>-<who>.<ext>` and lands where Save puts files: Downloads, or on Android the public Downloads/Photon.
 
