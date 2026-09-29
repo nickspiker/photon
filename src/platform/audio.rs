@@ -102,6 +102,14 @@ pub fn queue_named(k0: i64, frame: Vec<i16>) {
 /// Output latency, callback to DAC, in grid samples on OUR clock (offset-free): summed per named frame for the wave's latency budget.
 static OUT_AHEAD_SUM: AtomicI64 = AtomicI64::new(0);
 static OUT_AHEAD_N: AtomicI64 = AtomicI64::new(0);
+/// The output lead of the latest named frame, samples (callback → DAC); i64::MIN before any. L adds it (engine.rs).
+static OUT_AHEAD_LAST: AtomicI64 = AtomicI64::new(i64::MIN);
+
+/// The output lead now: how long before the DAC a render frame must be ready — L has to cover it or every frame arrives after its callback (field 2026-09-29: Emma's voice path runs 220 ms callback → DAC; L without it dropped 8957 of ~9000 frames as too late).
+pub fn output_ahead() -> Option<i64> {
+    let v = OUT_AHEAD_LAST.load(Ordering::Relaxed);
+    (v != i64::MIN).then_some(v)
+}
 
 /// Mean output latency (samples) since the last read, then restarts the mean; `None` before any named frame.
 pub fn take_output_ahead_mean() -> Option<i64> {
@@ -111,7 +119,9 @@ pub fn take_output_ahead_mean() -> Option<i64> {
 }
 
 fn named_frame(at_osc: i64) -> Vec<i16> {
-    OUT_AHEAD_SUM.fetch_add(vsf::grid::eagle_to_sample(at_osc) - vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()), Ordering::Relaxed);
+    let ahead = vsf::grid::eagle_to_sample(at_osc) - vsf::grid::eagle_to_sample(crate::network::time_base::now_osc());
+    OUT_AHEAD_LAST.store(ahead.max(0), Ordering::Relaxed);
+    OUT_AHEAD_SUM.fetch_add(ahead, Ordering::Relaxed);
     OUT_AHEAD_N.fetch_add(1, Ordering::Relaxed);
     let mut out = vec![0i16; FRAME_SAMPLES];
     let target = PLAY_TARGET.load(Ordering::Relaxed);
@@ -669,6 +679,7 @@ fn clear_queues() {
     LOCAL_SOURCE.store(false, Ordering::Relaxed);
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
     LATE_DROPPED.store(0, Ordering::Relaxed);
+    OUT_AHEAD_LAST.store(i64::MIN, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_GAIN.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);

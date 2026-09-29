@@ -41,3 +41,7 @@ Related: [[project_aligner_windup]], [[project_audio_picker_levels]], [[feedback
 - The mic tee is matched off-thread → `WAVE: sweep — speaker→mic X ms, coupling, psr`. That is `a` for the echo arithmetic: echo at name + l_theirs + a.
 - Hangup of a connected wave plays the reverse; stop() is held (END_HOLD) until the overlay drains, then stop_owned(gen), bounded at 2 s.
 - NEXT: l in samples in the tail + report a to the peer, then the RX-side NLMS canceller (seeded) + residual suppressor.
+**2026-09-29 — L MUST INCLUDE THE OUTPUT LEAD.** Frames are read at the render callback, which runs `ahead` before the DAC instant that l is measured against. So L = 1-in-256 of arrival events + repair slack + output lead (audio::output_ahead).
+- Field evidence: Emma's Note 10 on voice usage without the fast path (Shared, 960 fr bursts) reported 220 ms callback→DAC. With L = 8 ms, 8957 of ~9000 of Nick's frames were dropped as too late.
+- On fast devices the lead is ~4.5 ms: small, but it explains Nick's 318 late frames.
+- Cost of removing the media fallback: Emma's output 8 ms → 220 ms.

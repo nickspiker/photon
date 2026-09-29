@@ -1007,7 +1007,9 @@ fn run(
                     budget_floor = recent_ages.iter().copied().min().unwrap_or(0);
                     budget_core = l_core;
                     budget_slack = repair_slack;
-                    crate::platform::audio::set_play_target(l_core + repair_slack);
+                    // PLUS THE OUTPUT LEAD: a frame is read at its render CALLBACK, which runs the output lead ahead of the DAC instant l is measured at — so L must cover arrival + that lead, or a device with a deep output buffer (Emma's voice path, 220 ms) finds every frame already past (2026-09-29).
+                    let ahead = crate::platform::audio::output_ahead().unwrap_or(0);
+                    crate::platform::audio::set_play_target(l_core + repair_slack + ahead);
                     rx_decoders.remove(&wid);
                     for slot in 0..TIER_FRAMES[dtier] {
                         let base = slot * tier_slot(dtier);
