@@ -24,3 +24,7 @@ So the rocker raised VOICE_CALL (which nothing plays on) and the media render st
   - Slow → loudspeaker or wired take MEDIA (fast); the earpiece stays voice only when the user picked it (a default earpiece start moves to the loudspeaker via routeWaveSpeaker); Bluetooth keeps voice.
 - The user's route pick is device-local `audio.route`; per-route + usage volume is `audio.vol.<route>.<v|m>`, restored after each output open.
 - Route pill picks call nativeRoutePicked → rebuild. The route pill shows "Earpiece (slower)" on slow devices.
+**2026-09-30 — BT OUTPUT STALL CONVICTED (Nick, X15 earbuds, Emma's wave):**
+- After route churn (Disconnected rebuilds around the answer), the AAudio output reported "out up" on bt:X15 but was never called back: render frames frozen at 164 for 40 s, and again after re-picking the X15. Emma's frames piled up (25791 waiting); the mic sent zeros.
+- Fix: an arrival-edge watchdog in engine.rs. 400 far frames queued with no render → audio::rebuild_streams().
+- The wave screen is now a distinct screen: PhotonApp::wave_screen() gates conversation layout, input (keys, IME, taps, drops, scroll), springs, the chrome title and the bg scroll.

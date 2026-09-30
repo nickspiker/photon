@@ -421,6 +421,9 @@ fn run(
     // The first arrival alone sets it, whatever it is; l walks to every new L by slips.
     let mut recent_ages: std::collections::VecDeque<i64> = std::collections::VecDeque::with_capacity(L_WINDOW);
     // The last L_WINDOW round trips in µs (a count, like the ages): their minimum is the budget line's network estimate.
+    // THE STALL WATCHDOG (field 2026-09-30, Nick on X15 earbuds): a Bluetooth route change can leave the output stream "up" but never called back — Emma's frames piled up unplayed for two minutes and the mic sent silence, with no error from the HAL. The edge is the peer's audio ARRIVING: once 400 frames (2 s) have been queued since the speaker last rendered one, the streams are rebuilt.
+    let mut rx_queued_frames: u64 = 0;
+    let mut stall_mark: (usize, u64) = (crate::platform::audio::render_frames_total(), 0);
     let mut recent_rtt_us: std::collections::VecDeque<u32> = std::collections::VecDeque::with_capacity(L_WINDOW);
     // The per-wave LATENCY BUDGET (Nick 2026-09-28: "where do the milliseconds go"): the capture→send hold summed over sent windows, and the RX side's last floor, L before slack, and slack, plus the output latency sampled on the stats cadence — logged once at engine down.
     let (mut budget_cap_sum, mut budget_cap_n) = (0i64, 0i64);
@@ -781,6 +784,16 @@ fn run(
             }
         }
 
+        {
+            let rendered = crate::platform::audio::render_frames_total();
+            if rendered != stall_mark.0 {
+                stall_mark = (rendered, rx_queued_frames);
+            } else if rx_queued_frames - stall_mark.1 >= 400 {
+                crate::logf!("WAVE: the speaker stopped rendering — {} far frame(s) queued since its last frame; rebuilding the audio streams", rx_queued_frames - stall_mark.1);
+                crate::platform::audio::rebuild_streams();
+                stall_mark = (rendered, rx_queued_frames);
+            }
+        }
         // ---- RX: sealed packets → fountain windows → opus → speaker ----
         while let Ok((bytes, src, rx_at)) = sink_rx.try_recv() {
             // DROP-REASON TALLY (docs/waves.md diagnostics): every RX reject below is a silent `continue`, so a dead wave is indistinguishable at engine-down between "packets never reached this device" (addressing/NAT) and "packets arrived but won't decrypt" (basket-secret desync). Count them apart. Field 2026-08-19: a wave went Active but engine-down read "0 in" with zero other signal — this tally is the tripwire that says which half broke. `rx_seen` counts datagrams the recv-worker fast-path actually handed us (magic already matched), so `rx_seen > 0 && pkts_in == 0` = arrived-but-undecryptable = secret mismatch; `rx_seen == 0` = never arrived = look at the target address / relay.
@@ -1038,6 +1051,7 @@ fn run(
                             if draining.is_none() {
                                 crate::wave::live::push_rx(win_k0 + slot as i64 * super::align::FRAME, &pcm);
                                 crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME, pcm);
+                                rx_queued_frames += 1;
                             }
                             continue;
                         }
@@ -1053,6 +1067,7 @@ fn run(
                                 if draining.is_none() {
                                     crate::wave::live::push_rx(win_k0 + slot as i64 * super::align::FRAME - codec_delay, &pcm);
                                     crate::platform::audio::queue_named(win_k0 + slot as i64 * super::align::FRAME - codec_delay, pcm);
+                                    rx_queued_frames += 1;
                                 }
                             }
                             Ok(_) | Err(_) => {}

@@ -188,7 +188,10 @@ impl PhotonApp {
         // The ranked reaction strip, same pre-chrome discipline (reads fleet settings thru &self). Cheap: a prefix scan of the settings map.
         let ranked_reactions = self.ranked_reactions();
         // Title-bar text by screen, computed BEFORE the chrome borrow (peer count reads `self.handle_query` / `self.session`). Launch/attest shows the "← Network" affordance; once attested (Ready) it shows the peer count — distinct identities in the store EXCLUDING our own: peers are PEOPLE, so the FGTW seed is not a peer (the old `+1` when online) and neither are our own fleet siblings (their records ride the same store for direct routing). `set_title` only re-rasterizes chrome when the string actually changes, so this is cheap to recompute each frame.
-        let title_text: String = if matches!(
+        let title_text: String = if self.wave_screen() {
+            // The wave screen names the other party itself, under the square — no chrome title behind it.
+            String::new()
+        } else if matches!(
             self.state,
             AppState::Conversation | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
         ) {
@@ -363,7 +366,7 @@ impl PhotonApp {
             Vec::new()
         };
         // Conversation: lay out the compose textbox + send button each frame. Without this the send button kept stale placeholder geometry (mid-screen), rendered under the opaque message-list fill, and under()-blend discarded it — it never appeared. Same reason as the Ready/Settings branches above; must run before the long-lived `chrome` borrow (takes `&mut self`).
-        if matches!(self.state, AppState::Conversation) {
+        if matches!(self.state, AppState::Conversation) && !self.wave_screen() {
             self.update_widget_layout(ctx);
         }
 
@@ -518,14 +521,14 @@ impl PhotonApp {
         }
 
         // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
-        let content_bg_scroll: isize = match self.state {
+        let content_bg_scroll: isize = if self.wave_screen() { 0 } else { match self.state {
             AppState::Ready => -self.contacts_scroll,
             AppState::Conversation => self
                 .active_conversation
                 .and_then(|id| self.conversations.iter().find(|v| v.id() == id))
                 .map_or(0, |v| v.scroll_offset.round() as isize),
             _ => 0,
-        };
+        } };
         // Security page's fleet-of-one gate — hoisted here for the same reason as the scroll above: the pills draw inside the chrome borrow, and asking `self` a question there is a second borrow. Cheap (a filtered pass over sibling rows), and ONE definition shared with the action that would otherwise refuse the tap.
         let has_sibling_device = self.has_usable_sibling();
         // The standing bands are computed BEFORE the chrome borrow (they read plain state), then painted by a free fn on the two screens that show them.

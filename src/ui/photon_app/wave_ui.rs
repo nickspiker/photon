@@ -177,6 +177,11 @@ impl PhotonApp {
         any
     }
 
+    /// THE WAVE SCREEN OWNS THE DEVICE (Nick 2026-09-29, "completely distinct screens"): true while the full-screen wave panel shows — ringing in, ringing out or talking, not minimised. Every conversation-screen path (layout, input, scroll, drops, the chrome title) checks this and stands down; the conversation's DATA (rows, delivery, persistence) keeps flowing.
+    pub(super) fn wave_screen(&self) -> bool {
+        !self.wave_minimized && self.active_wave.as_ref().is_some_and(|c| matches!(c.phase, WavePhase::Ringing | WavePhase::Outgoing | WavePhase::Active))
+    }
+
     /// Minimize the in-wave full-screen to the app-wide strip / compact bar and navigate to the peer's conversation, so messaging + scrolling stay live during the wave. The wave keeps running (only the modal panel yields).
     fn minimize_wave_to_contact(&mut self) {
         self.wave_minimized = true;

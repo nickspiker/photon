@@ -1531,7 +1531,7 @@ impl FluorApp for PhotonApp {
         }
 
         // Message-row tap (conversation) — toggle that message's details strip (direction, age, delivery, copy). The copy pill copies the message text via the platform clipboard (arboard / Kotlin poll bridge).
-        if matches!(self.state, AppState::Conversation) && self.msg_hit_base != HIT_NONE {
+        if matches!(self.state, AppState::Conversation) && !self.wave_screen() && self.msg_hit_base != HIT_NONE {
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
                 if let Some((sci, ts, out)) = self.strip_target() {
                     let text_opt = self.conv_of(sci).and_then(|v| {
@@ -2071,6 +2071,7 @@ impl FluorApp for PhotonApp {
         // Every event except cursor movement may move immediate-mode content, so it claims a full-viewport frame. CursorMoved's effects are all narrow-tracked: hover tints live in the host overlay pass, drag-select is the textbox's own damage, and the one content-flavoured hover (the Ready avatar hint) sets `scene_dirty` at its flip site.
         // COMPOSE TYPING is the other narrow case: a plain keystroke (or Android IME commit) into the focused compose box only moves pixels the box's own damage tracking already claims — and the full-viewport re-raster it used to trigger cost the phone an average 21ms PER KEYSTROKE against a 16.6ms frame budget (the 2026-08-08 typing lag, measured by the render probe). Chorded keys stay full (zoom/clipboard reach beyond the box), as do Enter (submits), Esc (disarms/navigates), and Tab (moves focus). Emptiness transitions need nothing extra since the placeholder's removal — no scene pixels depend on the box's char count.
         let compose_typing = matches!(self.state, AppState::Conversation)
+            && !self.wave_screen()
             && !ctx.modifiers.control_key()
             && !ctx.modifiers.super_key()
             && self
@@ -2316,7 +2317,7 @@ impl FluorApp for PhotonApp {
             }
             Event::MouseWheel { delta } => {
                 // THE WAVE PANEL IS MODAL (Nick 2026-09-29, "a weird double window"): while the full-screen wave shows, a scroll must not reach the conversation hidden behind it — it moved the conversation, its blind and the speckle under the panel. Nothing on the wave screen scrolls.
-                if !self.wave_minimized && self.active_wave.as_ref().is_some_and(|c| matches!(c.phase, crate::wave::WavePhase::Ringing | crate::wave::WavePhase::Outgoing | crate::wave::WavePhase::Active)) {
+                if self.wave_screen() {
                     let _ = delta;
                     return EventResponse::Handled;
                 }
@@ -2699,6 +2700,11 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::KeyboardInput { event: kev, .. } => {
+                // The wave screen takes no typing: keys must not reach the conversation's compose box behind it.
+                if self.wave_screen() {
+                    let _ = kev;
+                    return EventResponse::Handled;
+                }
                 // Any keystroke dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
                 // A PLAIN keystroke also acknowledges the toast — but zoom chords (Ctrl/Cmd + anything) don't, so the user can zoom in to read it (fluor host handles the zoom itself; the modifier guard covers any chords that fall thru to us).
@@ -3057,6 +3063,10 @@ impl FluorApp for PhotonApp {
                 }
             }
             Event::Ime(Ime::Commit(s)) => {
+                if self.wave_screen() {
+                    let _ = s;
+                    return EventResponse::Handled;
+                }
                 // IME typing also dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
                 // Soft-keyboard input is a keystroke: it acknowledges the toast too (Android has no zoom chords to guard).
@@ -3104,7 +3114,10 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::DroppedFile(path) => {
-                // A file dropped on an OPEN CONVERSATION = send it as an attachment. (Ready-screen drops stay the avatar pipeline below.)
+                // A file dropped on an OPEN CONVERSATION = send it as an attachment. (Ready-screen drops stay the avatar pipeline below.) Not while the wave screen covers it.
+                if self.wave_screen() {
+                    return EventResponse::Handled;
+                }
                 if matches!(self.state, AppState::Conversation) {
                     if let Some(ci) = self.active_contact() {
                         // A drop on a BRIDGE (a sibling's shell) is a pigeon: ephemeral, lands in the host's cwd, never a fleet attachment (docs/PT.md spooled receive).
@@ -3636,7 +3649,7 @@ impl FluorApp for PhotonApp {
                     spring = true;
                 }
             }
-            if matches!(self.state, AppState::Conversation) {
+            if matches!(self.state, AppState::Conversation) && !self.wave_screen() {
                 let ceiling = self.msg_max_scroll;
                 if let Some(conv) = self.active_conv_mut() {
                     spring |= relax(&mut conv.scroll_offset, f32::INFINITY);

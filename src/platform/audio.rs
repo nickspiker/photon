@@ -444,6 +444,17 @@ pub fn speaker_duck_stats() -> (u64, u64, u64) {
     )
 }
 
+/// Render frames produced since process start — the stall watchdog's evidence that the speaker is being called back.
+pub fn render_frames_total() -> usize {
+    RENDER_REF_TOTAL.load(Ordering::Relaxed)
+}
+
+/// Rebuild the device streams in place (the stall watchdog). Android reopens both AAudio streams; elsewhere the device callback cannot silently die this way, so nothing.
+pub fn rebuild_streams() {
+    #[cfg(target_os = "android")]
+    crate::platform::audio_aaudio::rebuild();
+}
+
 pub fn is_active() -> bool {
     ACTIVE.load(Ordering::Relaxed)
 }
