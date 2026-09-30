@@ -2315,6 +2315,11 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::MouseWheel { delta } => {
+                // THE WAVE PANEL IS MODAL (Nick 2026-09-29, "a weird double window"): while the full-screen wave shows, a scroll must not reach the conversation hidden behind it — it moved the conversation, its blind and the speckle under the panel. Nothing on the wave screen scrolls.
+                if !self.wave_minimized && self.active_wave.as_ref().is_some_and(|c| matches!(c.phase, crate::wave::WavePhase::Ringing | crate::wave::WavePhase::Outgoing | crate::wave::WavePhase::Active)) {
+                    let _ = delta;
+                    return EventResponse::Handled;
+                }
                 // The viewer / reader own the wheel while open: pixel deltas (touch drag, trackpads) PAN; line deltas (a wheel) ZOOM the picture or SCROLL the text.
                 if self.viewer.is_some() || self.reader.is_some() {
                     let (dx, dy, pixel) = match delta {
