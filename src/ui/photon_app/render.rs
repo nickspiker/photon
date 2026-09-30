@@ -1755,7 +1755,7 @@ impl PhotonApp {
                     } else {
                         0.0
                     };
-                    let tcy = (hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift;
+                    let tcy = ((hint.y0 + hint.y1) as f32 * 0.5 - scroll - lift).min(toast_floor(buf_h, region_h * 0.6));
                     ctx.text.draw_text_center(
                         &mut canvas,
                         msg,
@@ -3247,7 +3247,7 @@ impl PhotonApp {
                                 &mut canvas,
                                 msg,
                                 buf_w as f32 * 0.5,
-                                list_bottom - ts * 0.4,
+                                (list_bottom - ts * 0.4).min(toast_floor(buf_h, ts)),
                                 &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR)
                                     .weight(600)
                                     .font("Oxanium"),
@@ -5181,7 +5181,7 @@ impl PhotonApp {
                     &mut canvas,
                     msg,
                     layout.content.x + layout.content.w * 0.5,
-                    layout.content.bottom() - ts,
+                    (layout.content.bottom() - ts).min(toast_floor(buf_h, ts)),
                     &TextStyle::new(ts, *theme::SEARCH_FOUND_COLOUR)
                         .weight(600)
                         .font("Oxanium"),
@@ -7447,6 +7447,11 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
             theme::rgb_colour(r, g, b)
         })
         .collect()
+}
+
+/// The lowest a toast's centre may sit (Nick 2026-09-30, "toast messages need to render above navbar buttons"): its text clear of the Android navigation bar. `ts` = the toast's text size.
+fn toast_floor(buf_h: usize, ts: f32) -> f32 {
+    buf_h as f32 - crate::ui::safe_bottom_px() as f32 - ts
 }
 
 /// THE CONVERSATION BLIND (Nick 2026-09-29): the top bar's pieces are slats — the orb (top-left), Beam (right, above Wave, a little left of it), and the row of "‹ Contacts" (left) with Wave (right) — each with a rest band, and each remembering how far it is hidden (`h`, index 0 orb, 1 Beam, 2 row).
