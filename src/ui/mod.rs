@@ -20,6 +20,18 @@ pub fn safe_top_px() -> usize {
     }
 }
 
+/// THE SAFE BOTTOM (Nick 2026-09-30): the Android navigation bar (gesture pill or three buttons) over the last N rows. Zero everywhere but Android.
+pub fn safe_bottom_px() -> usize {
+    #[cfg(target_os = "android")]
+    {
+        crate::platform::jni_android::bottom_inset_px().max(0) as usize // WHY/PROOF: the Kotlin inset, cast to usize — see jni_android
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        0
+    }
+}
+
 /// THE SAFE LEFT (Nick 2026-09-28, landscape cutouts): the camera cutout or a side nav bar over the first N columns. Zero everywhere but Android.
 pub fn safe_left_px() -> usize {
     #[cfg(target_os = "android")]

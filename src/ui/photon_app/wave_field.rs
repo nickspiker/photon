@@ -34,9 +34,11 @@ pub(super) struct FieldGeom {
 
 /// The avatars' square: SQUARE_UNITS layout units under the top inset, centred — narrowed only when the screen cannot hold it above the three text lines and the wave's button rows (`unit` = the layout unit the wave screen scales from).
 pub(super) fn field_geom(buf_w: usize, buf_h: usize, unit: f32) -> FieldGeom {
-    let top = unit * 0.4;
-    // The wave screen's bottom stack (primary, secondary and route rows) takes about 10 units; the name, status and stats lines about 4 more.
-    let room = buf_h as f32 - top - unit * 14.5;
+    // Under the status bar (max rule: the margin or the bar, whichever is taller), and clear of the navigation bar at the bottom.
+    let top = (unit * 0.4).max(crate::ui::safe_top_px() as f32);
+    // The wave screen's bottom stack (the diagonal button row) and the name and status lines take about 14.5 units, plus whatever of the navigation bar the button margin does not already cover.
+    let nav_extra = (crate::ui::safe_bottom_px() as f32 - unit * 1.5).max(0.0);
+    let room = buf_h as f32 - top - unit * 14.5 - nav_extra;
     // WHY/PROOF: a square wider than the buffer, or taller than the room above the text and buttons, would put an avatar off screen; the ru size stands wherever it fits, and the floor keeps a degenerate window drawable.
     let side = (unit * SQUARE_UNITS).min(buf_w as f32).min(room).max(16.0).floor() as usize;
     let x0 = buf_w.saturating_sub(side) / 2;

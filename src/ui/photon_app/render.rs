@@ -885,16 +885,20 @@ impl PhotonApp {
                     }
                 }
                 // ONE BOTTOM ROW, three slots, every phase (Nick 2026-09-29): the main action always in the middle, so the thumb that answers is already on End wave. Ringing in: Reject (silent — nothing leaves the fleet) · Wave back · Decline (tells them). Ringing out and talking: ‹ Contact (minimise) · End wave · the route (Android). Bottom-anchored so a heads-up banner (which owns the top) never covers them.
+                // THE DIAGONAL (Nick 2026-09-30, in the spirit of Beam over Wave): each slot sits a little higher than the one to its right — left highest, the main action centred, right lowest. The lowest edge clears the navigation bar by the max rule: the usual margin, or the bar where it is taller, never the two added.
                 let bh = unit * 2.4;
-                let by = h - bh * 0.5 - unit * 1.5;
                 let bfont = unit * 0.75;
                 let bw = w * 0.28;
                 let gap = unit * 0.6;
                 let (lx, cx, rx) = (w * 0.5 - bw - gap, w * 0.5, w * 0.5 + bw + gap);
+                let bottom = (unit * 1.5).max(crate::ui::safe_bottom_px() as f32);
+                let step = bh * 0.55;
+                let ry = h - bottom - bh * 0.5;
+                let (ly, by) = (ry - 2.0 * step, ry - step);
                 match phase {
                     crate::wave::WavePhase::Ringing => {
                         if let Some(b) = self.wave_reject_btn.as_mut() {
-                            b.set_rect(lx, by, bw, bh);
+                            b.set_rect(lx, ly, bw, bh);
                             b.set_font_size(bfont * 0.9);
                             b.set_label(tr(Msg::Reject));
                             b.set_fill(Some(theme::PILL_GREY.0));
@@ -914,7 +918,7 @@ impl PhotonApp {
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
                         if let Some(b) = self.wave_decline_btn.as_mut() {
-                            b.set_rect(rx, by, bw, bh);
+                            b.set_rect(rx, ry, bw, bh);
                             b.set_font_size(bfont);
                             b.set_label(tr(Msg::Decline));
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
@@ -926,7 +930,7 @@ impl PhotonApp {
                     }
                     _ => {
                         if let Some(b) = self.wave_back_btn.as_mut() {
-                            b.set_rect(lx, by, bw, bh);
+                            b.set_rect(lx, ly, bw, bh);
                             b.set_font_size(bfont * 0.8);
                             b.set_label(tr(Msg::BackToContact));
                             let id = b.hit_id();
@@ -946,7 +950,7 @@ impl PhotonApp {
                         // The route (Android, field 2026-09-14): labelled with the device the wave plays on (the Kotlin route mirror); a tap cycles to the next available output.
                         #[cfg(target_os = "android")]
                         if let Some(b) = self.wave_speaker_btn.as_mut() {
-                            b.set_rect(rx, by, bw, bh);
+                            b.set_rect(rx, ry, bw, bh);
                             b.set_font_size(bfont * 0.8);
                             let route = crate::platform::audio::route_id();
                             let label = match route.as_str() {
