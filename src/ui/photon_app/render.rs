@@ -3194,11 +3194,8 @@ impl PhotonApp {
                         let pad_x = unit.max(crate::ui::safe_side_px() as f32); // left/right inset: the padding, or a landscape side cutout where wider — never added
                                           // Woven chat reclaims the whole header strip for the message list (the avatar/name ride the scroll-top instead, drawn below); pre-woven keeps the status header space.
                                           // The floor clears the CHROME title strip on desktop plus the tiny always-on name; Android draws no strip (full-edge) so a slim margin stands.
-                        let top_floor = if cfg!(target_os = "android") {
-                            unit * 1.1
-                        } else {
-                            fluor::host::chrome::strip_height(ctx.viewport) + unit * 0.9
-                        };
+                        // The list's hard top (Nick 2026-09-30): the status bar's bottom on a phone, the window's top edge on desktop — never a layout-unit guess. The blind's row sits above it while down; raised, the text runs right up to this line (the chrome is flattened on top of it).
+                        let top_floor = crate::ui::safe_top_px() as f32;
                         let list_top = (back_y + unit).max(top_floor);
                         // Compose bar reserves the bottom strip, lifted off the bottom edge by `compose_margin` — and above the soft keyboard (`ime_lift`; the surface never resizes for the IME). The list lives between list_top and list_bottom. Must match the layout pass's `compose_h`/`compose_margin` below.
                         let compose_h = unit * 1.8;
