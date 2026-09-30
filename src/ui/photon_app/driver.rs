@@ -1490,6 +1490,8 @@ impl FluorApp for PhotonApp {
                 self.open_molecule_conversation(gi);
                 self.state = AppState::Conversation;
                 self.conv_topbar_off = 0.0;
+                self.conv_blind_h = [0.0; 3];
+                self.conv_blind_edge = f32::MAX;
                 self.clear_molecule_unread(gi);
                 self.change_focus(None);
                 ctx.window.request_redraw();
@@ -1513,6 +1515,8 @@ impl FluorApp for PhotonApp {
                 self.state = AppState::Conversation;
                 self.reset_contact_ping_backoff();
                 self.conv_topbar_off = 0.0;
+                self.conv_blind_h = [0.0; 3];
+                self.conv_blind_edge = f32::MAX;
                 // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
                 self.clear_unread(ci);
                 self.change_focus(None);
@@ -2437,8 +2441,12 @@ impl FluorApp for PhotonApp {
                                 // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
                                 let step = -(dy as f32)
                                     * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
-                                let off = (self.conv_topbar_off + step).clamp(0.0, bar_h); // WHY/PROOF: a scroll wheel's delta is the human's — the bar slides between fully shown and fully hidden, no further
-                                if (off - self.conv_topbar_off).abs() > 0.01 {
+                                // The slats' rest bottoms (render::conv_blind_rests), the orb's read from the chrome at rest.
+                                let orb_rest_b = self.chrome.as_ref().and_then(|c| c.orb_geometry().map(|(_, cy, r)| cy as f32 - c.orb_dy + r as f32 + super::ring_thickness(r as f32)));
+                                let rests = super::render::conv_blind_rests(ctx.viewport.height_px as usize, unit_b, strip_floor, orb_rest_b);
+                                super::render::conv_blind_step(&mut self.conv_blind_h, &mut self.conv_blind_edge, rests, bar_h, step);
+                                let off = self.conv_blind_h[2]; // the row's hidden amount — what the rest of the screen (the filter pill, the ‹ Contacts hit gate) reads
+                                if (off - self.conv_topbar_off).abs() > 0.01 || step != 0.0 {
                                     self.conv_topbar_off = off;
                                     self.scene_dirty = true;
                                 }

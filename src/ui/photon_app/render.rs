@@ -694,13 +694,7 @@ impl PhotonApp {
         let blind_strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
         let blind_unit = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
         let blind_on = matches!(self.state, AppState::Conversation) && !wave_fullscreen && self.viewer.is_none() && self.reader.is_none();
-        let conv_blind_now = {
-            let orb_rest = chrome.orb_geometry().map(|(_, cy, r)| {
-                let cy = cy as f32 - chrome.orb_dy;
-                (cy - r as f32, cy + r as f32 + super::ring_thickness(r as f32))
-            });
-            conv_blind(buf_h, blind_unit, blind_strip_floor, if blind_on { self.conv_topbar_off } else { 0.0 }, orb_rest)
-        };
+        let conv_blind_now = conv_blind(buf_h, blind_unit, blind_strip_floor, if blind_on { self.conv_blind_h } else { [0.0; 3] }, chrome.orb_geometry().is_some());
         chrome.set_orb_dy(if blind_on { conv_blind_now.orb_dy } else { 0.0 });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
         let mark_chrome = std::time::Instant::now();
@@ -7451,8 +7445,9 @@ pub(super) fn wave_fold_colours(e: &crate::wave::wave_env::WaveEnv, cols: usize)
         .collect()
 }
 
-/// THE CONVERSATION BLIND (Nick 2026-09-29): the top bar's pieces are slats — the orb (top-left), Beam (right, above Wave, a little left of it), and the row of "‹ Contacts" (left) with Wave (right) — each with a rest band. `hidden` is how far the blind is raised, `0..=conv_blind_extent`, fed 1:1 by the conversation's scroll.
-/// ONE EDGE (Nick 2026-09-29, "bottoms of all elements should be the same height until the first one gets clamped and so on"): every slat's bottom edge is the lesser of its own rest bottom and the blind's moving edge. Raising it, the lowest slat meets the edge first and rides it, the next joins when the edge reaches its bottom, and so on; fully raised, every bottom sits on the screen's top edge. Dropping it, all bottoms fall together on the edge and each stops at its own rest — the orb first, then Beam, then the row.
+/// THE CONVERSATION BLIND (Nick 2026-09-29): the top bar's pieces are slats — the orb (top-left), Beam (right, above Wave, a little left of it), and the row of "‹ Contacts" (left) with Wave (right) — each with a rest band, and each remembering how far it is hidden (`h`, index 0 orb, 1 Beam, 2 row).
+/// RAISING (scrolling toward the newest) moves every slat up WITH the text, all at once, each stopping once its bottom edge reaches the screen's top.
+/// DROPPING (toward the past) is the blind unrolling: one shared edge falls from the highest slat's bottom, every slat above it is carried down on it, and each stops at its own rest — the orb first, the row last ("bottoms of all elements should be the same height until the first one gets clamped and so on").
 pub(super) struct ConvBlind {
     /// Centre of the "‹ Contacts" / Wave row.
     pub row_cy: f32,
@@ -7467,22 +7462,39 @@ fn conv_row_rest_cy(buf_h: usize, unit: f32, strip_floor: f32) -> f32 {
     (buf_h as f32 * 0.06 + crate::ui::safe_top_px() as f32 + unit).max(strip_floor + unit * 2.5)
 }
 
-/// How far the blind can rise: the row's rest bottom edge (fully raised, it touches the screen's top).
+/// How far the blind can rise: the row's rest bottom edge.
 pub(super) fn conv_blind_extent(buf_h: usize, unit: f32, strip_floor: f32) -> f32 {
     conv_row_rest_cy(buf_h, unit, strip_floor) + unit * 0.5
 }
 
-/// Lay the blind out for `hidden` pixels raised. `orb_rest` = the orb's rest band (top, bottom) when there is an orb.
-pub(super) fn conv_blind(buf_h: usize, unit: f32, strip_floor: f32, hidden: f32, orb_rest: Option<(f32, f32)>) -> ConvBlind {
-    let extent = conv_blind_extent(buf_h, unit, strip_floor);
-    let edge = extent - hidden.clamp(0.0, extent);
-    let row_rest = conv_row_rest_cy(buf_h, unit, strip_floor);
-    let row_rb = row_rest + unit * 0.5;
-    let row_b = row_rb.min(edge);
-    let beam_rest = row_rest - unit * 1.5;
-    let beam_b = (beam_rest + unit * 0.5).min(edge);
-    let orb_dy = orb_rest.map_or(0.0, |(_, ob)| ob.min(edge) - ob);
-    ConvBlind { row_cy: row_b - unit * 0.5, beam_cy: beam_b - unit * 0.5, orb_dy }
+/// Each slat's rest BOTTOM edge, pixels from the top: the orb's (when there is one; `orb_rest_b` from the chrome at rest), Beam's, the row's.
+pub(super) fn conv_blind_rests(buf_h: usize, unit: f32, strip_floor: f32, orb_rest_b: Option<f32>) -> [f32; 3] {
+    let row = conv_row_rest_cy(buf_h, unit, strip_floor);
+    [orb_rest_b.unwrap_or(0.0).max(0.0), row - unit, row + unit * 0.5]
+}
+
+/// One scroll step of `step` pixels (positive = toward the newest = raising) on the blind's state.
+pub(super) fn conv_blind_step(h: &mut [f32; 3], edge: &mut f32, rests: [f32; 3], extent: f32, step: f32) {
+    if step > 0.0 {
+        // Raise: all together, each only until its bottom meets the top.
+        for i in 0..3 {
+            h[i] = (h[i] + step).min(rests[i]);
+        }
+        // The drop that follows starts from the highest bottom now on screen.
+        *edge = (0..3).map(|i| rests[i] - h[i]).fold(f32::MAX, f32::min).max(0.0);
+    } else if step < 0.0 {
+        // Drop: the shared edge falls; every slat above it rides it, each stopping at its rest.
+        *edge = (edge.min(extent) - step).min(extent);
+        for i in 0..3 {
+            h[i] = h[i].min((rests[i] - *edge).max(0.0));
+        }
+    }
+}
+
+/// Lay the blind out from its state.
+pub(super) fn conv_blind(buf_h: usize, unit: f32, strip_floor: f32, h: [f32; 3], orb_on: bool) -> ConvBlind {
+    let rests = conv_blind_rests(buf_h, unit, strip_floor, None);
+    ConvBlind { row_cy: rests[2] - h[2] - unit * 0.5, beam_cy: rests[1] - h[1] - unit * 0.5, orb_dy: if orb_on { -h[0] } else { 0.0 } }
 }
 
 /// THE AGB COLOUR (Nick: each band's power over the geometric mean of the three, the top ratio pinned at full — hue from the ratios, brightness constant), as authored VSF RGB bytes. The ONE colour function behind the kept card and the live wave field, so the two can never drift.
@@ -7567,5 +7579,25 @@ fn blob_send_frac(progress: &[crate::network::pt::TransferProgress], chunks: Opt
             Some((frac_of(finished as u64, total as u64) + partial / total.max(1) as f32).min(1.0)) // total.max(1): an empty file's manifest has zero chunks; `.min(1.0)`: the duplicate's partial can lift the sum past whole
         }
         None => mine.first().map(|p| frac_of(p.done as u64, p.total as u64)),
+    }
+}
+
+#[cfg(test)]
+mod blind_tests {
+    use super::conv_blind_step;
+
+    /// Raising moves every slat by the scroll, together, each stopping at the top; dropping from fully raised carries them all down on one edge, the orb stopping first and the row last (Nick 2026-09-29).
+    #[test]
+    fn raise_together_drop_unrolls() {
+        let rests = [100.0, 200.0, 300.0];
+        let (mut h, mut edge) = ([0.0f32; 3], f32::MAX);
+        conv_blind_step(&mut h, &mut edge, rests, 300.0, 50.0);
+        assert_eq!(h, [50.0, 50.0, 50.0], "raised together, with the text");
+        conv_blind_step(&mut h, &mut edge, rests, 300.0, 1000.0);
+        assert_eq!(h, rests, "each bottom at the top edge");
+        conv_blind_step(&mut h, &mut edge, rests, 300.0, -150.0);
+        assert_eq!(h, [0.0, 50.0, 150.0], "the orb has landed; Beam and the row ride the edge at 150");
+        conv_blind_step(&mut h, &mut edge, rests, 300.0, -150.0);
+        assert_eq!(h, [0.0; 3], "the row lands last");
     }
 }

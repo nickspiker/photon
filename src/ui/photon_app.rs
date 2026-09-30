@@ -2038,6 +2038,9 @@ pub struct PhotonApp {
     react_strip_glyphs: Vec<String>,
     /// Conversation top-bar slide-off in PIXELS (0 = fully shown): the "‹ Contacts" strip slides out/in WITH the scroll gesture, browser-toolbar style — pure scroll-delta accumulation, no timers, clamped to the bar height in the wheel arm and at render. Reset on conversation open.
     conv_topbar_off: f32,
+    /// THE BLIND's state (render::conv_blind): how far each slat is hidden — orb, Beam, the ‹ Contacts / Wave row — and the shared edge a drop drags them down with (pixels from the top; f32::MAX = fully down).
+    conv_blind_h: [f32; 3],
+    conv_blind_edge: f32,
     /// Word-wrap cache for the conversation's message list: key (contact id, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
     msg_wrap: Option<((Option<ContactId>, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
@@ -2766,6 +2769,8 @@ impl PhotonApp {
             react_strip_base: HIT_NONE,
             react_strip_glyphs: Vec::new(),
             conv_topbar_off: 0.0,
+            conv_blind_h: [0.0; 3],
+            conv_blind_edge: f32::MAX,
             msg_wrap: None,
             #[cfg(target_os = "android")]
             last_ime_inset: 0,

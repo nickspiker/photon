@@ -225,6 +225,8 @@ impl PhotonApp {
                 self.open_molecule_conversation(gi);
                 self.state = AppState::Conversation;
                 self.conv_topbar_off = 0.0;
+                self.conv_blind_h = [0.0; 3];
+                self.conv_blind_edge = f32::MAX;
             }
             self.scene_dirty = true;
         }

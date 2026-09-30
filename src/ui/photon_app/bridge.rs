@@ -394,6 +394,8 @@ impl PhotonApp {
         self.open_conversation_with(ci);
         self.state = AppState::Conversation;
         self.conv_topbar_off = 0.0;
+                self.conv_blind_h = [0.0; 3];
+                self.conv_blind_edge = f32::MAX;
         self.clear_unread(ci);
         self.change_focus(None);
         crate::logf!(
