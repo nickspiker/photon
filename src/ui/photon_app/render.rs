@@ -1870,7 +1870,7 @@ impl PhotonApp {
             let ring_thickness = super::ring_thickness(avatar_r);
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
             // THE FILTER STRIP (docs/molecules.md §10.5): All · Friends · Atoms · Molecules, then New atom — a pseudo-row at the top of the block that scrolls with it.
-            {
+            let strip_now: isize = {
                 let strip_top = rows.y0 as f32 - scroll as f32;
                 let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
                 let labels = [tr(Msg::FilterAll), tr(Msg::FilterFriends), tr(Msg::FilterAtoms), tr(Msg::FilterMolecules), tr(Msg::NewAtom)];
@@ -1888,9 +1888,10 @@ impl PhotonApp {
                     self.ready_strip_h = measured.max(row_h as f32);
                     self.scene_dirty = true;
                 }
-            }
-            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero, the strip's measured height down.
-            let mut row_cursor = rows.y0 as isize + strip_h;
+                measured.max(row_h as f32).ceil() as isize
+            };
+            // Rows stack at their OWN heights (a wrapped name grows its row); `row_cursor` is the next row's top at scroll zero, THIS frame's measured strip height down (field 2026-09-30: the first frame used last frame's height — none yet, one row — and the contacts sat under the strip's wrapped second line until something else redrew).
+            let mut row_cursor = rows.y0 as isize + strip_now;
             for row in matching.iter() {
                 // One row, two sources: a contact (the cached scaled avatar, the relationship colour, the presence tier) or a group (the members' gradient pie, the group's own colour, the best tier over its members' rows). Everything below reads the view, never a contact index, so a group row paints thru the identical geometry.
                 let rctx = ReadyCtx {
