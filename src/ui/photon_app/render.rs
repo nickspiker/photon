@@ -2819,6 +2819,10 @@ impl PhotonApp {
                                 // OPSIN'S VIEWER, WHOLE (Nick 2026-09-17): image area + tool panel + HUD, its pills stamped into the shared hit map under the ids photon reserved for them.
                                 view.set_area(opsin::view::Area { x: 0.0, y: area_top, w: buf_w as f32, h: buf_h as f32 - area_top });
                                 view.render(&mut canvas, ctx.viewport, ctx.text, ctx.damage_clip, (ctx.cursor_x, ctx.cursor_y), &mut chrome.hit_test_map);
+                                // PHOTON'S PILLS WIN THEIR RECTS LAST (field 2026-10-01, "back button doesn't do anything on the full-screen viewer"): the view's own buttons stamp during their blit, after the pills above, and a panel widget laid over the top-left took the Back pill's pixels. A deliberate after-paint re-win — the pills were painted first, so they are on top on screen too.
+                                for (i, r) in prects.iter().enumerate() {
+                                    restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, self.viewer_base + if i == 0 { 0 } else { 2 });
+                                }
                             }
                             None => {
                                 // The decode is on its way (or the original is still being fetched): the preview blob / micro thumb fitted in the area, the name and the state underneath.
