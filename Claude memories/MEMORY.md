@@ -39,6 +39,7 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
+- [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed; fixed, field verify pending; own-notes row now bootable
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry; newest row's strip unasked
 - [Ready first paint](project_ready_first_paint.md) — v110: content hit stamps ride the paint decision (stamp BEFORE paint, only where not yet opaque); never re-stamp the orb; a mid-render dirty flag must survive its render

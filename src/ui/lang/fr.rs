@@ -327,7 +327,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "toujours joignable (c\u{2019}est toi)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} envoyés \u{00b7} {} reçus", fmt_mag(total as u64), if total == 1 { "message" } else { "messages" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ces lignes devraient concorder sur chacun de tes appareils".into(),
-        Msg::OwnNotesCantBoot => "tes propres notes ne peuvent pas être écartées".into(),
+        Msg::OwnNotesRemoveNote => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "un appareil de la flotte part de sa propre demande \u{2014} voir Réglages \u{2192} Flotte".into(),
         Msg::BootPill { armed } => if armed { "Touche encore \u{2014} l\u{2019}écarter" } else { "Écarter" }.into(),
         Msg::BindIntoMolecule => "Lier dans une molécule".into(),

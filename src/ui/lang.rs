@@ -522,7 +522,8 @@ pub enum Msg<'a> {
     AlwaysReachableSelf,
     MessagesSentReceived { total: usize, sent: usize, recv: usize },
     RowsShouldMatch,
-    OwnNotesCantBoot,
+    /// The Manage page's note under Boot on your OWN notes row (Nick 2026-10-01: "you cannot even leave that thread"): it removes the notes from every device and nothing is lost that matters — your own handle can be added again any time.
+    OwnNotesRemoveNote,
     SiblingSignsItselfOut,
     BootPill { armed: bool },
     // ---- groups (docs/molecules.md §10.5) ----

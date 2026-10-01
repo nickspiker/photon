@@ -266,6 +266,8 @@ impl PhotonApp {
                     crate::types::Contact::new(handle_text, session.handle_proof, device_pubkey);
                 // No forced state: a conversation with zero remote participants is reachable and keyed BY DEFINITION, and every gate now derives that from the participant set rather than reading fields nobody maintains.
                 crate::log("add-friend: self-contact created (zero remote participants — nothing to exchange)");
+                // A booted notes row can be started again: lift the boot first, or the ledger tombstones it on the next push (the friend-add path does the same).
+                self.forget_booted(&contact.handle_proof);
                 self.contacts.push(contact);
                 if let Some(storage) = self.storage.as_ref() {
                     if let Some(c) = self.contacts.last() {

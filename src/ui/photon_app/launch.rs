@@ -484,6 +484,15 @@ impl PhotonApp {
                 if !is_self {
                     let ci = self.contacts.len() - 1;
                     self.send_friend_knock(ci);
+                    // THEIR KNOCK CAME FIRST (Jeff's log 2026-10-01): they added us before we added them, so their knock arrived as a stranger's and only its token survived. This add is the mutuality edge in that order — our knock just went out so their side flips too, and consent here lets the keygen queue arm the ceremony.
+                    if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+                        let token = crate::crypto::clutch::derive_conversation_token(&[us, self.contacts[ci].handle_hash]);
+                        if let Some(pos) = self.stranger_knocks.iter().position(|t| *t == token) {
+                            self.stranger_knocks.remove(pos);
+                            self.contacts[ci].consent_mutual = true;
+                            crate::logf!("CONSENT: {} knocked before we added them — mutual add confirmed by this add, arming the ceremony", crate::fp(&self.contacts[ci].handle_proof));
+                        }
+                    }
                 }
                 if let Some(storage) = self.storage.as_ref() {
                     if let Some(c) = self.contacts.last() {

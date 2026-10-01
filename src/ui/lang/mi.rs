@@ -318,7 +318,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "e taea tonutia (ko koe tēnei)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => if total == 1 { format!("{} karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_mag(1), fmt_mag(sent as u64), fmt_mag(recv as u64)) } else { format!("{} ngā karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)) }.into(),
         Msg::RowsShouldMatch => "me ōrite ēnei rārangi i ō pūrere katoa".into(),
-        Msg::OwnNotesCantBoot => "kāore e taea ō pitopito kōrero ake te pana".into(),
+        Msg::OwnNotesRemoveNote => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "mā te pūrere kāhui anō ia e wehe \u{2014} tirohia Tautuhinga \u{2192} Kāhui".into(),
         Msg::BootPill { armed } => if armed { "Pāwhiritia anō \u{2014} panaia rātou" } else { "Pana" }.into(),
         Msg::BindIntoMolecule => "Herea ki tētahi ngota-rahi".into(),

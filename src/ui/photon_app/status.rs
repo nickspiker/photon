@@ -3951,7 +3951,14 @@ impl PhotonApp {
                         })
                     });
                     let Some(ci) = matched else {
-                        continue; // stranger's knock: unresolvable by construction — silence
+                        // A stranger's knock is unresolvable by construction — silence on the wire, but the TOKEN is kept: if we add them later, that add completes the mutuality the other way round (see stranger_knocks).
+                        if !self.stranger_knocks.contains(&conversation_token) {
+                            if self.stranger_knocks.len() >= 32 {
+                                self.stranger_knocks.remove(0);
+                            }
+                            self.stranger_knocks.push(conversation_token);
+                        }
+                        continue;
                     };
                     if !self.sender_trusted_for(&self.contacts[ci], &sender_pubkey.key) {
                         continue; // matched row but an unknown/refused device — same silence

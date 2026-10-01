@@ -1757,6 +1757,8 @@ pub struct PhotonApp {
     rejected_offers: std::collections::HashSet<i64>,
     /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
     strip_dismissed: Option<(ContactId, i64, bool)>,
+    /// Conversation tokens of knocks that arrived from people we had NOT yet added (Jeff's log 2026-10-01: he added first, his knock reached us as a stranger's and was dropped; when we added him later our knock flipped his side but nothing came back, and the ceremony never armed). A token is a few bytes and proves nothing on its own, so remembering it is safe; an add whose token matches one is the mutuality edge in the other order. Session-only, bounded, oldest out.
+    stranger_knocks: Vec<[u8; 32]>,
     /// Hit id of the filter pill.
     conv_filter_hit: HitId,
     /// The compose digit strip's twelve hit ids (dozenal base only, while the message box is focused).
@@ -2669,6 +2671,7 @@ impl PhotonApp {
             ended_waves: std::collections::HashSet::new(),
             rejected_offers: std::collections::HashSet::new(),
             strip_dismissed: None,
+            stranger_knocks: Vec::new(),
             conv_filter_hit: HIT_NONE,
             digit_strip_base: HIT_NONE,
             msg_wave_bands: Vec::new(),

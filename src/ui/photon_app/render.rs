@@ -2581,24 +2581,23 @@ impl PhotonApp {
                             *theme::CONTACT_NAME_COLOUR,
                             600,
                         );
-                        if is_self || contact.is_sibling {
+                        if contact.is_sibling {
                             settings_line(
                                 &mut canvas,
                                 ctx.text,
                                 rows[1],
-                                &tr(if is_self {
-                                    Msg::OwnNotesCantBoot
-                                } else {
-                                    Msg::SiblingSignsItselfOut
-                                }),
+                                &tr(Msg::SiblingSignsItselfOut),
                                 hspan2,
                                 *theme::LABEL_COLOUR,
                                 400,
                             );
-                            // Our own notes can be cleared like any conversation; a sibling's is the bridge terminal and keeps no history.
-                            if is_self {
-                                Self::draw_clear_pills(self.contact_clear_armed, self.contact_panel_btn_base, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows, hspan2, ctx.pressed_hit);
-                            }
+                        } else if is_self {
+                            // YOUR OWN NOTES can be removed like any contact (Nick 2026-10-01: "you cannot even leave that thread"): the same two-tap Boot, slot 0 — a roster tombstone drops the row on every device, and adding your own handle again starts a fresh one (the add path lifts the boot). Clearing stays too.
+                            let pill = fluor::region::Region::new(rows[2].x + rows[2].w * 0.1, rows[2].y, rows[2].w * 0.5, rows[2].h * 0.95);
+                            let label = tr(Msg::BootPill { armed: self.contact_boot_armed });
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &label, self.contact_panel_btn_base, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::OwnNotesRemoveNote), hspan2, *theme::LABEL_COLOUR, 400);
+                            Self::draw_clear_pills(self.contact_clear_armed, self.contact_panel_btn_base, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows, hspan2, ctx.pressed_hit);
                         } else {
                             let pill = fluor::region::Region::new(
                                 rows[2].x + rows[2].w * 0.1,

@@ -322,7 +322,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // Kichwa pekee ndicho hubadilika kwa idadi (ujumbe/jumbe); hesabu za kutuma na kupokea hurejelea "jumbe" kwa ujumla, hivyo hubaki katika ngeli ya zi-.
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} zilizotumwa {} \u{00b7} zilizopokelewa {}", if total == 1 { "ujumbe" } else { "jumbe" }, fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "safu hizi zinapaswa kufanana kwenye kila kifaa chako".into(),
-        Msg::OwnNotesCantBoot => "madokezo yako mwenyewe hayawezi kufukuzwa".into(),
+        Msg::OwnNotesRemoveNote => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "kifaa cha kundi huondoka kwa ombi lake lenyewe \u{2014} angalia Mipangilio \u{2192} Kundi".into(),
         Msg::BootPill { armed } => if armed { "Gusa tena \u{2014} mfukuze" } else { "Fukuza" }.into(),
         Msg::BindIntoMolecule => "Funga kwenye molekuli".into(),

@@ -407,7 +407,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "always reachable (this is you)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} sent \u{00b7} {} received", fmt_mag(total as u64), if total == 1 { "message" } else { "messages" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "these rows should match on every one of your devices".into(),
-        Msg::OwnNotesCantBoot => "your own notes can\u{2019}t be booted".into(),
+        Msg::OwnNotesRemoveNote => "removes your notes from every device; add your own handle again any time to start a new one".into(),
         Msg::SiblingSignsItselfOut => "a fleet device leaves by its own request \u{2014} see Settings \u{2192} Fleet".into(),
         Msg::BootPill { armed } => if armed { "Tap again \u{2014} boot them" } else { "Boot" }.into(),
         Msg::BindIntoMolecule => "Bind into a molecule".into(),
