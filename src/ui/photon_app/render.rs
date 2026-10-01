@@ -291,7 +291,7 @@ impl PhotonApp {
                     .molecule_rosters
                     .iter()
                     .enumerate()
-                    .filter(|(_, (_, r))| ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.title().to_lowercase().contains(&filter)))
+                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>();
             self.contact_row_lines = lines_by_ci;
@@ -1809,7 +1809,8 @@ impl PhotonApp {
                     self.molecule_rosters
                         .iter()
                         .enumerate()
-                        .filter(|(_, (_, r))| ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || r.title().to_lowercase().contains(&filter)))
+                        // A molecule we LEFT is off the list (its records stay on disk, read-only). Read the field, not the method: the chrome borrow is live here.
+                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || r.title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 .collect();

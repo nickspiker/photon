@@ -640,6 +640,11 @@ impl PhotonApp {
     }
 
     /// Mutate + persist this device's local state for a group.
+    /// Have we LEFT this molecule (our leave record posted, phase Left)? A left molecule is out of the contact list (Nick 2026-10-01: "You left this molecule" and the row stayed) — its records stay on disk, read-only, exactly as the doctrine keeps every record, but nothing shows and nothing is posted.
+    pub(super) fn molecule_is_left(&self, gid: &MoleculeId) -> bool {
+        self.molecule_locals.iter().any(|(g, l)| g == gid && l.phase == MoleculePhase::Left)
+    }
+
     pub(super) fn set_molecule_local(&mut self, gid: &MoleculeId, f: impl FnOnce(&mut MoleculeLocal)) {
         let pos = match self.molecule_locals.iter().position(|(id, _)| id == gid) {
             Some(p) => p,

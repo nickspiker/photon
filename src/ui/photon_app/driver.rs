@@ -859,7 +859,12 @@ impl FluorApp for PhotonApp {
                         0 => {
                             if self.molecule_leave_armed {
                                 self.molecule_leave_armed = false;
-                                self.leave_molecule(gid);
+                                if self.leave_molecule(gid) {
+                                    // Left means gone from the list: back to the contacts, nothing to look at here any more.
+                                    self.change_focus(None);
+                                    self.set_active_conversation(None);
+                                    self.state = AppState::Ready;
+                                }
                             } else {
                                 self.molecule_leave_armed = true;
                             }
