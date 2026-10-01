@@ -7,6 +7,8 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+## v110
+
 - The Base page is now a full lesson: the twelve digits and how their names carry their values, counting and adding in dozenal, how a doubling count works and how to multiply, divide and add with one, how fine four digits are, what "one" is on every scale, and a "let's imagine" section with speed, temperature and mass read off the same hydrogen atom.
 - The base buttons and the digit table run arabic, hexadecimal, dozenal, in the order the world met them; dozenal stays the default, and the arabic page is a plain lesson on the digits 0 to 9 with no sales pitch.
 - Reputation on the Base page is now a doubling count of praise over dings, so one bad review costs about one doubling whoever you are and perfect is off the top of the scale; the ladder walks two restaurants, one with twenty thousand reviews and one with four.
