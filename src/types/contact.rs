@@ -1234,7 +1234,7 @@ impl Contact {
             return tr(Msg::ClutchSecured).into_owned();
         };
         let prefix = if crate::dozenal_ui() {
-            format!(".{}", crate::dozenal_glyphs(n as u32))
+            format!("{}{}", crate::DOZENAL_POINT, crate::dozenal_glyphs(n as u32))
         } else {
             format!("{}/{}", crate::fmt_num(n as u32), crate::fmt_num(Self::CLUTCH_STEPS as u32))
         };

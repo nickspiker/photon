@@ -224,7 +224,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Danh bạ".into(),
         Msg::NameReclaimed => "cái tên đã bị một người mới nhận lại \u{2014} đây KHÔNG phải người cũ".into(),
         Msg::IdentityEndedFrozen => "danh tính đã chấm dứt \u{2014} cuộc trò chuyện đóng băng".into(),
-        Msg::NotesToSelf => "ghi chú cho chính mình".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "đã bảo mật".into(),
         Msg::ClutchStep(n) => match n {

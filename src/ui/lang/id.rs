@@ -224,7 +224,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Kontak".into(),
         Msg::NameReclaimed => "nama ini diklaim ulang oleh orang baru \u{2014} ini BUKAN dia".into(),
         Msg::IdentityEndedFrozen => "identitas berakhir \u{2014} percakapan dibekukan".into(),
-        Msg::NotesToSelf => "catatan untuk diri sendiri".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "aman".into(),
         Msg::ClutchStep(n) => match n {

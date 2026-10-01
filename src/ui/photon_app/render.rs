@@ -3125,9 +3125,9 @@ impl PhotonApp {
                     };
 
                     // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the name, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
+                    // A conversation with nobody else in it (your own notes, an atom you stand in alone) has nothing pending and gets NO line — it used to read "notes to self", which named a solo atom wrong and named you as if you were not a person (Nick 2026-10-01: self is a contact like anyone).
                     let show_status = contact.identity_superseded
                         || contact.identity_ended
-                        || (is_self_contact && conv.is_none_or(|v| v.messages.is_empty()))
                         || (!is_self_contact && !contact.chain_woven);
                     let status_in_stream: Option<(String, u32)> = if show_status {
                         Some(if contact.identity_superseded {
@@ -3140,8 +3140,6 @@ impl PhotonApp {
                                 tr(Msg::IdentityEndedFrozen).into_owned(),
                                 *theme::LABEL_COLOUR,
                             )
-                        } else if is_self_contact {
-                            (tr(Msg::NotesToSelf).into_owned(), *theme::SEARCH_FOUND_COLOUR)
                         } else {
                             (
                                 tr(Msg::ClutchStatus(&contact_status_line(

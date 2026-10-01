@@ -230,7 +230,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Marafiki".into(),
         Msg::NameReclaimed => "jina limedaiwa upya na mtu mpya \u{2014} HUYU SI yeye".into(),
         Msg::IdentityEndedFrozen => "utambulisho umekwisha \u{2014} mazungumzo yamegandishwa".into(),
-        Msg::NotesToSelf => "madokezo yangu mwenyewe".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "salama".into(),
         Msg::ClutchStep(n) => match n {

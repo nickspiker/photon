@@ -227,7 +227,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Ngā hoa".into(),
         Msg::NameReclaimed => "kua riro te ingoa i tētahi tangata hou \u{2014} EHARA tēnei i a rātou".into(),
         Msg::IdentityEndedFrozen => "kua mutu te tuakiri \u{2014} kua whakatiotia te kōrerorero".into(),
-        Msg::NotesToSelf => "pitopito kōrero māu anō".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "kua haumaru".into(),
         Msg::ClutchStep(n) => match n {

@@ -228,7 +228,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} कॉन्टैक्ट".into(),
         Msg::NameReclaimed => "यह नाम किसी नए ने दोबारा ले लिया \u{2014} यह वही शख़्स नहीं है".into(),
         Msg::IdentityEndedFrozen => "पहचान ख़त्म \u{2014} बातचीत जम गई".into(),
-        Msg::NotesToSelf => "अपने लिए नोट".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "सुरक्षित".into(),
         Msg::ClutchStep(n) => match n {

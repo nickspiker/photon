@@ -225,7 +225,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Mga kontak".into(),
         Msg::NameReclaimed => "muling inangkin ng ibang tao ang pangalan \u{2014} HINDI ito sila".into(),
         Msg::IdentityEndedFrozen => "tapos na ang pagkakakilanlan \u{2014} nakapirmi na ang usapan".into(),
-        Msg::NotesToSelf => "mga tala sa sarili".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "sigurado".into(),
         Msg::ClutchStep(n) => match n {

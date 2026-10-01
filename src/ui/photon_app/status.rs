@@ -3964,6 +3964,18 @@ impl PhotonApp {
                         continue; // matched row but an unknown/refused device — same silence
                     }
                     let _ = sender_addr;
+                    // THE KNOCK-BACK HEAL (Nick 2026-10-01, "make get dev auto-heal"): a knock from someone we ALREADY hold mutual consent with means their side never got our offer (it left before they had added us, or was dropped as a stranger's) — they re-knock on every new session while their consent is still false, so answer by re-firing our offer on the next pong edge. Edge-driven, idempotent, nothing re-blasted at anyone who did not knock.
+                    if self.contacts[ci].consent_mutual
+                        && self.contacts[ci].clutch_state == ClutchState::Pending
+                        && self.contacts[ci].clutch_our_keypairs.is_some()
+                        && self.contacts[ci].clutch_offer_sent
+                    {
+                        self.contacts[ci].clutch_offer_sent = false;
+                        crate::logf!(
+                            "CONSENT: {} knocked while we already hold mutual consent — they lack our offer, re-firing it",
+                            crate::fp(&self.contacts[ci].handle_proof)
+                        );
+                    }
                     if !self.contacts[ci].consent_mutual {
                         self.contacts[ci].consent_mutual = true;
                         crate::logf!(

@@ -316,7 +316,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Contacts".into(),
         Msg::NameReclaimed => "name re-claimed by someone new \u{2014} this is NOT them".into(),
         Msg::IdentityEndedFrozen => "identity ended \u{2014} conversation frozen".into(),
-        Msg::NotesToSelf => "notes to self".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "secured".into(),
         Msg::ClutchStep(n) => match n {

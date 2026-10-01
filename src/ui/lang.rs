@@ -430,7 +430,6 @@ pub enum Msg<'a> {
     BackToContacts,
     NameReclaimed,
     IdentityEndedFrozen,
-    NotesToSelf,
     // The param is the CLUTCH ladder status string (already narrated elsewhere), passed thru verbatim.
     ClutchStatus(&'a str),
     // The ceremony ladder's step text, zero-indexed 0..=11 — the prefix (.⟨dozenal digit⟩ or n/12) is the caller's (Contact::clutch_status_detail).

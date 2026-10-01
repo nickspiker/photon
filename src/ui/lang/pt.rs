@@ -224,7 +224,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Contatos".into(),
         Msg::NameReclaimed => "nome re-reivindicado por alguém novo \u{2014} esta NÃO é a mesma pessoa".into(),
         Msg::IdentityEndedFrozen => "identidade encerrada \u{2014} conversa congelada".into(),
-        Msg::NotesToSelf => "notas para você".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "protegido".into(),
         Msg::ClutchStep(n) => match n {

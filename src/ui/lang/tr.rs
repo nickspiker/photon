@@ -227,7 +227,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Kişiler".into(),
         Msg::NameReclaimed => "adı yeni biri devraldı \u{2014} bu kişi O DEĞİL".into(),
         Msg::IdentityEndedFrozen => "kimlik sonlandı \u{2014} sohbet donduruldu".into(),
-        Msg::NotesToSelf => "kendine notlar".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "güvende".into(),
         Msg::ClutchStep(n) => match n {

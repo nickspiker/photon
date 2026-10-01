@@ -238,7 +238,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BackToContacts => "\u{2039} Контакти".into(),
         Msg::NameReclaimed => "ім'я перебрав хтось новий \u{2014} це НЕ та сама людина".into(),
         Msg::IdentityEndedFrozen => "ідентичність завершено \u{2014} розмову заморожено".into(),
-        Msg::NotesToSelf => "нотатки собі".into(),
         Msg::ClutchStatus(s) => format!("CLUTCH: {s}").into(),
         Msg::ClutchSecured => "захищено".into(),
         Msg::ClutchStep(n) => match n {
