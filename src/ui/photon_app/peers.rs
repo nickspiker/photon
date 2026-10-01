@@ -306,47 +306,7 @@ impl PhotonApp {
             .filter_map(|c| c.device_key())
             .collect();
         for (hp, dev, pubaddr, lan) in found {
-            // Never adopt the relay sentinel or an unspecified address as an endpoint — it validates locally and then poisons every send that keys off `validated_path`.
-            if crate::network::traverse::gather::is_bogus_addr(&pubaddr) {
-                continue;
-            }
-            if locked.contains(&dev) {
-                continue;
-            }
-            for contact in self.contacts.iter_mut() {
-                // A FRIEND adopts every device the registry vouches for its identity — the registry is fresher than the contact, and gating on the devices we already knew rejected exactly the record that heals a dead pin (the contact pinned a retired pre-wipe device, its relay sends went to a key nobody polls, and the live fleet's endpoints were resolved and then thrown away — live pair, 2026-08-03). The endpoint upsert extends the relay fan-out to the vouched device; message trust is unchanged, every parser still signature-gates. SIBLING rows stay device-scoped: each row is one device, and identity-wide adoption would smear every sibling's endpoint onto every row.
-                let ours = if contact.is_sibling {
-                    contact.relay_device_list().contains(&dev)
-                } else {
-                    contact.handle_proof == hp
-                };
-                if !ours {
-                    continue;
-                }
-                let lan_ok =
-                    lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a));
-                let ep = contact.endpoint_mut(&dev);
-                // CHANGE-EDGE ONLY: an identical record is a no-op — no log line, no `learned`, no re-punch. The resolve sweep re-delivers the same records every cycle, and adopting them unconditionally logged 1,768 identical adoptions in one 35-minute field log (2026-08-21) while re-firing ping_contacts each pass — a self-inflicted punch storm against a record that never moved.
-                let changed = ep.public != Some(pubaddr) || (lan_ok.is_some() && ep.lan != lan_ok);
-                ep.public = Some(pubaddr);
-                if let Some(l) = lan_ok {
-                    ep.lan = Some(l);
-                }
-                if !changed {
-                    continue;
-                }
-                // Named adoption, not just a count: five field rounds of "the record is perfect but the punch never probes it" (2026-08-16) came down to guessing WHICH device/address pair actually landed on WHICH contact — this line answers it.
-                // The sib marker kills the "same line twice" illusion: a device can legitimately adopt onto BOTH its sibling row and the self/friend row, and both rows print the same handle_proof (sibling rows carry our own).
-                crate::logf!(
-                    "PHONEBOOK: adopted {} → contact {}{} (dev {}, lan {})",
-                    pubaddr,
-                    crate::fp(&contact.handle_proof),
-                    if contact.is_sibling { " (sib row)" } else { "" },
-                    crate::fp(&dev),
-                    lan.map(|l| l.to_string()).unwrap_or_else(|| "-".into())
-                );
-                learned += 1;
-            }
+            learned += adopt_endpoint_into(&mut self.contacts, &locked, hp, dev, pubaddr, lan, false);
         }
         if learned > 0 {
             crate::logf!(
@@ -451,5 +411,78 @@ impl PhotonApp {
                 e
             ),
         }
+    }
+}
+
+/// Adopt one phonebook record's addresses onto every contact row the device belongs to — THE one reconciler (Nick 2026-10-01: "maintain that phonebook and an extended version of it… on record changes, re-punch and all the things"). The phonebook (signed, newest-wins) is the source of truth; the per-device endpoint rows are the extended book the punch reads. Change-edge only: an identical record is a no-op. `skip_validated` leaves a contact with a PROVEN path alone (the harvest's case — a validated path stands until its own keepalive verdict; the seed drain adopts regardless, it answered an explicit ask).
+/// Returns how many endpoints changed; on the pinned device it also refreshes `contact.ip` and re-arms the punch counter, so the next presence cycle probes the fresh address instead of riding the stale one to the backoff ceiling.
+pub(super) fn adopt_endpoint_into(contacts: &mut [crate::types::Contact], locked: &[[u8; 32]], hp: [u8; 32], dev: [u8; 32], pubaddr: std::net::SocketAddr, lan: Option<std::net::SocketAddr>, skip_validated: bool) -> usize {
+    if crate::network::traverse::gather::is_bogus_addr(&pubaddr) || locked.contains(&dev) {
+        return 0;
+    }
+    let mut learned = 0usize;
+    for contact in contacts.iter_mut() {
+        let ours = if contact.is_sibling {
+            contact.relay_device_list().contains(&dev)
+        } else {
+            contact.handle_proof == hp
+        };
+        if !ours || (skip_validated && contact.validated_path.is_some()) {
+            continue;
+        }
+        let lan_ok = lan.filter(|a| !crate::network::traverse::gather::is_bogus_addr(a));
+        let ep = contact.endpoint_mut(&dev);
+        let changed = ep.public != Some(pubaddr) || (lan_ok.is_some() && ep.lan != lan_ok);
+        ep.public = Some(pubaddr);
+        if let Some(l) = lan_ok {
+            ep.lan = Some(l);
+        }
+        if !changed {
+            continue;
+        }
+        // The pinned device's record also refreshes the contact's primary address and re-arms the punch (the M2 "pending relay" parking released by the very record that heals it).
+        if contact.device_key() == Some(dev) {
+            contact.ip = Some(pubaddr);
+            contact.punch_unvalidated_cycles = 0;
+        }
+        crate::logf!(
+            "PHONEBOOK: adopted {} → contact {}{} (dev {}, lan {})",
+            pubaddr,
+            crate::fp(&contact.handle_proof),
+            if contact.is_sibling { " (sib row)" } else { "" },
+            crate::fp(&dev),
+            lan.map(|l| l.to_string()).unwrap_or_else(|| "-".into())
+        );
+        learned += 1;
+    }
+    learned
+}
+
+#[cfg(test)]
+mod adopt_tests {
+    use super::adopt_endpoint_into;
+    use crate::types::{Contact, DevicePubkey, HandleText};
+
+    /// A CHANGED record re-aims the endpoint, the pinned device's primary address and the punch counter; the identical record is a no-op; a validated path is left alone under `skip_validated`; a locked device adopts nowhere (Nick 2026-10-01, the stale-address flap).
+    #[test]
+    fn a_changed_record_re_aims_a_stale_contact() {
+        let dev = [7u8; 32];
+        let hp = [0x22; 32];
+        let mut c = Contact::new(HandleText::new("friend"), hp, DevicePubkey::from_bytes(dev));
+        let old: std::net::SocketAddr = "71.36.49.132:4383".parse().unwrap();
+        let new: std::net::SocketAddr = "65.131.199.121:4383".parse().unwrap();
+        c.ip = Some(old);
+        c.endpoint_mut(&dev).public = Some(old);
+        c.punch_unvalidated_cycles = 9;
+        let mut contacts = vec![c];
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, None, true), 1, "the differing record adopts");
+        assert_eq!(contacts[0].ip, Some(new), "the pinned device refreshes the primary address");
+        assert_eq!(contacts[0].punch_unvalidated_cycles, 0, "the punch re-arms");
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, new, None, true), 0, "an identical record is a no-op");
+        contacts[0].validated_path = Some((new, std::time::Instant::now()));
+        let other: std::net::SocketAddr = "10.0.0.9:4383".parse().unwrap();
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[], hp, dev, other, None, true), 0, "a proven path stands");
+        contacts[0].validated_path = None;
+        assert_eq!(adopt_endpoint_into(&mut contacts, &[dev], hp, dev, other, None, true), 0, "a locked device adopts nowhere");
     }
 }

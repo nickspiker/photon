@@ -137,26 +137,26 @@ impl PhotonApp {
                     .map(|s| s.lock().unwrap().get_all_peers())
                     .unwrap_or_default();
                 if !recs.is_empty() {
-                    let mut learned = false;
-                    for contact in self.contacts.iter_mut() {
-                        if contact.ip.is_some() {
-                            continue;
-                        }
-                        if let Some(rec) = recs.iter().find(|r| {
-                            r.handle_proof == contact.handle_proof
-                                && Some(*r.device_pubkey.as_bytes()) == contact.device_key()
-                        }) {
-                            // Same refusal as the phonebook drain: a record signed before the bogus-address guard existed (or by a since-retired device that will never republish) can carry the unspecified address forever — adopting it points every send at 0.0.0.0 and the contact reads permanently offline.
-                            if crate::network::traverse::gather::is_bogus_addr(&rec.ip) {
-                                continue;
-                            }
-                            contact.ip = Some(rec.ip);
-                            contact.punch_unvalidated_cycles = 0;
-                            learned = true;
-                            crate::logf!("GOSSIP/harvest: adopted a stalled contact's address from the peer store");
-                        }
+                    // CHANGE, not just absence (Nick 2026-10-01, the Theresa flap): the old harvest adopted only for contacts with NO address, so a friend whose home IP moved kept a STALE one forever — her pushed record sat in the store while every punch fired at the old address, and the only healer was HER side's coordinated punch. The one reconciler now applies any store record that DIFFERS from the endpoint rows, for every contact still hunting a path (a validated path stands until its own keepalive verdict); merge_peer's signed newest-wins makes "differs" mean "fresher".
+                    let locked: Vec<[u8; 32]> = self
+                        .contacts
+                        .iter()
+                        .filter(|c| c.is_sibling && c.locked_out)
+                        .filter_map(|c| c.device_key())
+                        .collect();
+                    let mut learned = 0usize;
+                    for rec in &recs {
+                        learned += super::peers::adopt_endpoint_into(
+                            &mut self.contacts,
+                            &locked,
+                            rec.handle_proof,
+                            *rec.device_pubkey.as_bytes(),
+                            rec.ip,
+                            rec.local_ip.map(|ip| std::net::SocketAddr::new(ip, rec.ip.port())),
+                            true,
+                        );
                     }
-                    if learned {
+                    if learned > 0 {
                         self.stalled_refetch_streak = 0;
                         self.ping_contacts();
                     }
