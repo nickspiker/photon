@@ -324,7 +324,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         )
         .into(),
         Msg::RowsShouldMatch => "estas linhas devem bater em cada um dos seus dispositivos".into(),
-        Msg::OwnNotesRemoveNote => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "um dispositivo da frota sai a pedido dele mesmo \u{2014} veja Ajustes \u{2192} Frota".into(),
         Msg::BootPill { armed } => if armed { "Toque de novo \u{2014} expulsar" } else { "Expulsar" }.into(),
         Msg::BindIntoMolecule => "Ligar a uma molécula".into(),

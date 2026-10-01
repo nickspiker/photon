@@ -524,6 +524,8 @@ pub enum Msg<'a> {
     RowsShouldMatch,
     /// The Manage page's note under Boot on your OWN notes row (Nick 2026-10-01: "you cannot even leave that thread"): it removes the notes from every device and nothing is lost that matters — your own handle can be added again any time.
     OwnNotesRemoveNote,
+    /// The ceremony status while OUR add awaits theirs (consent gate): nothing is being made yet, and "making keys 0/12" said otherwise (Nick 2026-10-01).
+    ClutchWaitingTheirAdd,
     SiblingSignsItselfOut,
     BootPill { armed: bool },
     // ---- groups (docs/molecules.md §10.5) ----

@@ -3520,7 +3520,9 @@ impl PhotonApp {
                             let f_w = unit * 3.2;
                             let f_x = buf_w as f32 - pad_x - f_w + self.conv_topbar_off; // slides off to the right as the blind rises
                             let f_y = list_bottom - f_h - unit * 0.25;
-                            if f_x < buf_w as f32 {
+                            // Only once there is something to filter (Nick 2026-10-01): a link established, or rows already in the stream — never on the barren CLUTCH screen.
+                            let linked = is_self_contact || contact.chain_woven || contact.owner_woven || !visible.is_empty();
+                            if linked && f_x < buf_w as f32 {
                                 filter_stamp = Some((fluor::region::Region::new(f_x, f_y, f_w, f_h), if topbar_visible { self.conv_filter_hit } else { HIT_NONE }));
                                 super::draw_stub_pill(
                                     &mut canvas,

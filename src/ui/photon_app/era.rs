@@ -127,7 +127,28 @@ pub(crate) fn classify_peer_era(ours_index: u64, ours_tag: Option<u32>, peer_ind
     PeerEra::Foreign
 }
 
-/// The fleet's ceremony owner, COMPUTED (plan §4, replacing claim-on-pickup): the lowest device pubkey among fold members that are not locked and not probed-offline. "Unprobed" counts as present (the boot-race rule: a freshly booted device must not take over from a live owner it has not heard from yet). Every device computes the same answer from the same evidence; divergent presence views are arbitrated at the peer (first Init wins) and the loser converges by chain-sync.
+/// Is `d` a device that can carry a ceremony right now: ours, or a fold member (the fold when known, else the sibling list) that is not locked and not probed-offline. "Unprobed" counts as present (the boot-race rule: a freshly booted device must not take over from a live owner it has not heard from yet).
+pub(crate) fn device_live(d: [u8; 32], ours: [u8; 32], fold: &[[u8; 32]], locked: &[[u8; 32]], siblings: &[super::SiblingPresence], locked_out: &[[u8; 32]]) -> bool {
+    if locked.contains(&d) || locked_out.contains(&d) {
+        return false;
+    }
+    if d == ours {
+        return true;
+    }
+    if fold.is_empty() {
+        if !siblings.iter().any(|(k, _, _)| *k == d) {
+            return false;
+        }
+    } else if !fold.contains(&d) {
+        return false;
+    }
+    match siblings.iter().find(|(k, _, _)| *k == d) {
+        Some((_, online, probed)) => !(*probed && !*online),
+        None => true,
+    }
+}
+
+/// The fleet's FALLBACK ceremony owner, computed (plan §4): the lowest device pubkey among the live devices (`device_live`). Every device computes the same answer from the same evidence. It is the owner only for a friendship whose CLAIM is dead or absent — see `recompute_ceremony_owners`.
 pub(crate) fn era_owner(ours: [u8; 32], fold: &[[u8; 32]], locked: &[[u8; 32]], siblings: &[super::SiblingPresence], locked_out: &[[u8; 32]]) -> [u8; 32] {
     let mut candidates: Vec<[u8; 32]> = if fold.is_empty() {
         let mut v = vec![ours];
@@ -136,32 +157,30 @@ pub(crate) fn era_owner(ours: [u8; 32], fold: &[[u8; 32]], locked: &[[u8; 32]], 
     } else {
         fold.to_vec()
     };
-    candidates.retain(|d| {
-        if locked.contains(d) || locked_out.contains(d) {
-            return false;
-        }
-        if *d == ours {
-            return true;
-        }
-        match siblings.iter().find(|(k, _, _)| k == d) {
-            Some((_, online, probed)) => !(*probed && !*online),
-            None => true,
-        }
-    });
+    candidates.retain(|d| device_live(*d, ours, fold, locked, siblings, locked_out));
     candidates.into_iter().min().unwrap_or(ours)
 }
 
 impl PhotonApp {
-    /// Recompute the ceremony owner from fold + presence and re-point every friendship at it. Called on the evidence EDGES (a sibling's presence verdict, a fold adopt, a locked-set change, a roster adopt) — never on a timer. A round this device holds for a friendship that just moved to another owner is discarded (fleet-sync.md §4.2 discard-on-park), so the friend never sees two instances from one fleet.
+    /// THE BALL STAYS WITH WHOEVER GRABBED IT (Nick 2026-10-01: "pin that to the first device to grab the ball, rather than a low hash … for a device that may not be online very often"). Per friendship: the CLAIM on the roster entry (`ceremony_owner`, set by the adding device, synced LWW thru the roster) stands while that device is live (`device_live`); only a dead or absent claim falls back to the computed lowest-live device — and when the fallback is THIS device it TAKES OVER by writing a fresh claim and pushing the roster, so the sleepy claimant does not reclaim the ball when it wakes (it adopts the newer entry instead). Deterministic across the fleet because every device reads the same claim; the two places presence views can still disagree are arbitrated as before — the peer takes the first Init, and the loser discards on park.
+    /// Called on the evidence EDGES (a sibling's presence verdict, a fold adopt, a locked-set change, a roster adopt) — never on a timer. A round this device holds for a friendship that just moved to another owner is discarded (fleet-sync.md §4.2 discard-on-park), so the friend never sees two instances from one fleet.
     pub(super) fn recompute_ceremony_owners(&mut self, why: &str) {
         let Some(ours) = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()) else { return };
         let locked = self.locked_devices();
         let siblings = super::sibling_presence_snapshot(&self.contacts);
         let locked_out: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.is_sibling && c.locked_out).filter_map(|c| c.device_key()).collect();
-        let owner = era_owner(ours, &self.registry_converged_fold, &locked, &siblings, &locked_out);
+        let fold = self.registry_converged_fold.clone();
+        let fallback = era_owner(ours, &fold, &locked, &siblings, &locked_out);
         let mut moved = 0usize;
         let mut discarded = 0usize;
-        for c in self.contacts.iter_mut().filter(|c| !c.is_sibling) {
+        let mut took_over = 0usize;
+        let now = vsf::eagle_time_oscillations();
+        let mut to_persist: Vec<usize> = Vec::new();
+        for (i, c) in self.contacts.iter_mut().enumerate().filter(|(_, c)| !c.is_sibling) {
+            let owner = match c.ceremony_owner {
+                Some(d) if device_live(d, ours, &fold, &locked, &siblings, &locked_out) => d,
+                _ => fallback,
+            };
             if c.ceremony_owner == Some(owner) {
                 continue;
             }
@@ -171,17 +190,34 @@ impl PhotonApp {
                 c.discard_clutch_round();
                 discarded += 1;
             }
-            // DERIVED STATE, never written here: the owner is recomputed on every edge and at the keygen pickup after a load, so persisting it bought nothing — and 13 synchronous vault writes on a presence verdict were two 1.8 s UI hangs in the middle of a wave (Nick's phone 2026-09-09 01:55, 46 windows lost).
+            let from = c.ceremony_owner;
             c.ceremony_owner = Some(owner);
             moved += 1;
+            // The takeover IS a claim: it rides the roster with a fresh LWW clock, so every sibling (the dead claimant included, when it wakes) adopts it.
+            if owner == ours {
+                c.roster_updated = now;
+                c.owner_woven = false;
+                took_over += 1;
+                to_persist.push(i);
+                crate::logf!("CLUTCH §4.2: taking the ball for {} — its claimant {} is not live", crate::fp(&c.handle_proof).as_str(), from.map_or("none".to_string(), |d| hex::encode(&d[..4])));
+            }
+        }
+        if !to_persist.is_empty() {
+            if let Some(storage) = self.storage.as_ref() {
+                for i in to_persist {
+                    let _ = crate::storage::contacts::save_contact(&self.contacts[i], storage);
+                }
+            }
+            self.spawn_roster_push();
         }
         if moved > 0 {
             crate::logf!(
-                "ERA: ceremony owner → {}{} ({}) — {} friendship(s) re-pointed, {} parked round(s) discarded",
-                hex::encode(&owner[..4]),
-                if owner == ours { " (this device)" } else { "" },
-                why,
+                "ERA: ceremony owner moved for {} friendship(s) ({}) — fallback {}{}, {} taken over here, {} parked round(s) discarded",
                 moved,
+                why,
+                hex::encode(&fallback[..4]),
+                if fallback == ours { " (this device)" } else { "" },
+                took_over,
                 discarded
             );
         }

@@ -3860,6 +3860,13 @@ fn contact_status_line(
             _ => {}
         }
     }
+    // THE CONSENT GATE, shown honestly (Nick 2026-10-01, "stuck on clutch: 0/12 making keys"): nothing is being made while our add awaits theirs — the keygen queue holds until their knock or offer.
+    if !c.is_sibling && !c.chain_woven && !c.consent_mutual && c.clutch_our_keypairs.is_none() && c.clutch_state != crate::types::ClutchState::Complete {
+        let is_self = identity_seed.is_some_and(|seed| c.remote_count(&crate::crypto::clutch::identity_party_id(seed)) == 0);
+        if !is_self {
+            return tr(Msg::ClutchWaitingTheirAdd).into_owned();
+        }
+    }
     c.clutch_status_detail()
 }
 

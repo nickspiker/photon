@@ -329,7 +329,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "завжди на зв'язку (це ти)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} надіслано \u{00b7} {} отримано", fmt_mag(total as u64), plural(total as u64, "повідомлення", "повідомлення", "повідомлень"), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ці рядки мають збігатися на кожному твоєму пристрої".into(),
-        Msg::OwnNotesRemoveNote => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "пристрій флоту йде за власним проханням \u{2014} дивись Налаштування \u{2192} Флот".into(),
         Msg::BootPill { armed } => if armed { "Торкнись ще раз \u{2014} вигнати" } else { "Вигнати" }.into(),
         Msg::BindIntoMolecule => "Зв'язати в молекулу".into(),
