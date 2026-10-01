@@ -52,6 +52,8 @@ fn flow_checkbox(flow: &mut Flow, canvas: &mut Canvas, text: &mut fluor::text::T
 impl PhotonApp {
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
     pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
+        // The scene is about to be painted in full: clear the dirty flag NOW, so a flag raised DURING this render (a first-frame measurement that moved the rows) survives to claim the next frame instead of being wiped at the end of this one (field 2026-10-01: the contacts sat under the wrapped filter strip's second line until a scroll forced another frame — the correction frame was asked for and then forgotten).
+        self.scene_dirty = false;
         // Standing render probe (born in the 2026-08-08 typing-lag hunt, kept for regressions). A Drop guard so it fires on every return path. The bar is a MISSED 60fps FRAME: the phone's healthy full-viewport render is 9-16ms, and the hunt's original 8ms bar logged every one of those — 3,326 lines in a 15-minute field log, the single biggest log-volume source (2026-08-09).
         // Stage marks ride the guard (the render-pass sub-profiler, TICKETS 2026-08-21: 5.8/8.3/8.8s single renders named no stage): each `mark` stamps the elapsed ms at a boundary, and a pass past ONE SECOND logs them — bg+chrome, the screen body, and the tail (overlays, extent, chrome finalize) fall out by subtraction.
         struct RenderTimer(std::time::Instant, &'static str, Vec<(&'static str, u128)>);
@@ -869,7 +871,7 @@ impl PhotonApp {
                     let rtt = crate::wave::LAST_LINK_RTT_MS.load(std::sync::atomic::Ordering::Relaxed);
                     if rtt > 0 {
                         let rung = crate::wave::engine::tier_name(crate::wave::LAST_LINK_TIER.load(std::sync::atomic::Ordering::Relaxed) as usize);
-                        let freq = crate::link_freq_label(rtt);
+                        let freq = crate::link_rtt_label(rtt);
                         let loss = crate::fmt_num(crate::wave::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
                         let buf = crate::fmt_num(crate::wave::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
                         let line = tr(Msg::WaveLiveStats { rung, freq: &freq, loss: &loss, buf: &buf });
@@ -1571,6 +1573,8 @@ impl PhotonApp {
 
             let (cx, cy_natural, radius) = ready_layout.avatar_center_radius();
             let cy = cy_natural - scroll;
+            // The avatar's hit circle, stamped BEFORE it paints and only where nothing opaque (the chrome) already sits — the stamp rides the paint decision (see stamp_hit_rect_under).
+            stamp_hit_circle_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, cx, cy, radius, self.avatar_hit_id);
             // 0xFFC5C5C5 in fluor's α+darkness format = α 0xFF, darkness 0xC5 each channel = visible RGB(0x3A, 0x3A, 0x3A) ≈ 22% brightness. Standalone constant (no theme.rs entry yet) — promote when Ready chrome gets a proper palette pass.
             if self.device_avatar_pixels.is_some() {
                 let diameter = (radius * 2.0) as usize;
@@ -1613,17 +1617,6 @@ impl PhotonApp {
                     None,
                 );
             }
-            // Stamp the avatar circle into the shared hit_test_map so a tap dispatches to the picker. Squared-distance test in the same row-major buffer the renderers use; bbox-clipped against the buffer extent so off-screen circles don't underflow.
-            stamp_hit_circle(
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                cx,
-                cy,
-                radius,
-                self.avatar_hit_id,
-            );
-
             // Avatar update hint below the circle — DESKTOP ONLY, shown on hover. On Android, tapping the grey circle to pick an image is self-evident.
             #[cfg(not(target_os = "android"))]
             if self.avatar_hovered {
@@ -1886,7 +1879,9 @@ impl PhotonApp {
                 let measured = flow.used() + row_h as f32 * 0.2;
                 if (measured - self.ready_strip_h).abs() > 0.5 {
                     self.ready_strip_h = measured.max(row_h as f32);
+                    // The extent and the scroll clamp above read LAST frame's height; ask for the frame that reads this one.
                     self.scene_dirty = true;
+                    ctx.window.request_redraw();
                 }
                 measured.max(row_h as f32).ceil() as isize
             };
@@ -1925,6 +1920,10 @@ impl PhotonApp {
                     || (view.hit != HIT_NONE && ctx.pressed_hit == HIT_NONE && self.hover_hit == row_hit_here);
                 // The avatar centres on the WHOLE row block, so a wrapped name sits balanced beside it (Nick 2026-09-09).
                 let cy = (row_top + rh / 2) as f32;
+                // The row's hit rect, stamped BEFORE the row paints and only where nothing opaque already sits: a row scrolled up under the title strip or the orb leaves those pixels to the chrome, exactly as its pixels do (field 2026-10-01: a blind after-paint stamp took the orb until the next chrome-dirty frame).
+                if view.hit != HIT_NONE {
+                    stamp_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, rows.x0 as isize, row_top, rows.x1 as isize, row_top + rh, view.hit);
+                }
 
                 // Build/refresh a contact's scaled-avatar cache at the row diameter (a group's pie is computed per frame — a few thousand pixels, no cache).
                 if let ReadyRow::Contact(ci) = *row {
@@ -2065,20 +2064,6 @@ impl PhotonApp {
                     }
                 }
 
-                // Stamp the row into the hit map so clicks dispatch to this contact or group.
-                if view.hit != HIT_NONE {
-                    let row_hit = view.hit;
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        rows.x0 as isize,
-                        row_top.max(0), // WHY/PROOF: as above
-                        rows.x1 as isize,
-                        (row_top + rh).min(buf_h as isize),
-                        row_hit,
-                    );
-                }
             }
 
             // Standing bands (storage, auto-attest, clock, update) stacked from the bottom — one list, one painter (standing_bands / draw_standing_bands).
@@ -3600,6 +3585,13 @@ impl PhotonApp {
                                 + wave_band_h
                                 + img_band_h
                                 + audio_band_h;
+                            // THE ROW'S HIT BAND — the WHOLE wrapped block — stamped BEFORE the row paints and only where nothing opaque already sits (the chrome's strip and orb, since the list runs to the window top on desktop): the stamp rides the paint decision (see stamp_hit_rect_under). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is `visible_index % MSG_HIT_SPAN`, so every row HAS an id by construction and there is nothing to exhaust. The table write below happens on the same band test, which keeps map and table in lockstep.
+                            let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
+                            let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
+                            let slot = vi % super::MSG_HIT_SPAN as usize;
+                            if band_bot > band_top {
+                                stamp_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, band_top, buf_w as isize, band_bot, self.msg_hit_base + slot as HitId);
+                            }
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             let mut bar_frac: Option<f32> = None;
                             if let Some((hash, _, _)) =
@@ -3670,9 +3662,11 @@ impl PhotonApp {
                             }) {
                                 // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve. A closure because the edit-history lines below stamp each prior version's age too.
                                 let fmt_age = |ts: i64| -> String {
-                                    let secs = ((vsf::eagle_time_oscillations() - ts) / crate::OSC_PER_SEC).max(0); // WHY/PROOF: a row stamped by a peer's clock ahead of ours has a negative age — it reads as now
+                                    let osc = (vsf::eagle_time_oscillations() - ts).max(0); // WHY/PROOF: a row stamped by a peer's clock ahead of ours has a negative age — it reads as now
+                                    let secs = osc / crate::OSC_PER_SEC;
                                     if crate::dms_ui() {
-                                        let dms = crate::dms_age(secs);
+                                        // LIVE (Nick 2026-10-01): the age is the floor doubling count of its oscillations, and the driver wakes at the next doubling while this row is selected.
+                                        let dms = crate::dms_age(osc);
                                         tr(Msg::AgoDms(&dms)).into_owned()
                                     } else {
                                         tr(if secs >= 86400 {
@@ -3701,6 +3695,9 @@ impl PhotonApp {
                                 } else {
                                     tr(Msg::ReceivedDetail(&age)).into_owned()
                                 };
+                                // WHEN, absolute, under the live age (Nick 2026-10-01): the WHOLE date every time — dozenal `year month-glyph day weekday .share`, hex the raw stamp, arabic the full date and clock. A bare share on its own line read as a decimal with no context.
+                                detail.push('\n');
+                                detail.push_str(&crate::fmt_when(msg.timestamp));
                                 if msg.recovered {
                                     detail.push_str(&tr(Msg::RecoveredSuffix));
                                 }
@@ -4632,22 +4629,8 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            // Stamp the row band — the WHOLE wrapped block — so a tap selects this message (details strip). Clamped to the list region so header/compose never lose their own hits. MODULAR SLOTS, not a spend-down budget (Nick 2026-09-05, after the field bug where the walk's off-screen rows below the viewport exhausted a 64-id budget before any visible row got a target): the slot is `visible_index % MSG_HIT_SPAN`, so every row HAS an id by construction and there is nothing to exhaust. Stamp + table-write only when the clamped band is non-empty (= on screen), which keeps map and table in lockstep and makes wrap collisions need 256+ rows on one screen.
-                            let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
-                            let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
+                            // The hit table entry for the band stamped above (same test, so map and table agree).
                             if band_bot > band_top {
-                                let slot = vi % super::MSG_HIT_SPAN as usize;
-                                let row_hit = self.msg_hit_base + slot as HitId;
-                                restamp_hit_rect(
-                                    &mut chrome.hit_test_map,
-                                    buf_w,
-                                    buf_h,
-                                    0,
-                                    band_top,
-                                    buf_w as isize,
-                                    band_bot,
-                                    row_hit,
-                                );
                                 // A reply row's reference line is its own tap target: the band + the referenced ts ride the hit row, and a tap inside it JUMPS to the source row instead of opening the strip.
                                 let ref_band = reply_target.map(|t| {
                                     let ref_y = y - react_off - lines.len() as f32 * intra;
@@ -6318,7 +6301,14 @@ impl PhotonApp {
                     flow.line(&mut canvas, ctx.text, &tr(Msg::WaveHearingHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
                     {
                         let stops = crate::platform::audio::rx_trim_stops();
-                        let stops_s = if stops < 0 { format!("\u{2212}{}", crate::fmt_num((-stops) as u32)) } else if stops > 0 { format!("+{}", crate::fmt_num(stops as u32)) } else { crate::fmt_num(0) };
+                        // Stops are a signed doubling count, so in dozenal they take the arrows, always shown (↑Zil at nominal); hex and arabic keep +/−.
+                        let stops_s = match (stops.signum(), crate::dozenal_ui()) {
+                            (-1, true) => format!("{}{}", crate::DMS_DOWN, crate::fmt_num((-stops) as u32)),
+                            (_, true) => format!("{}{}", crate::DMS_UP, crate::fmt_num(stops as u32)),
+                            (-1, false) => format!("\u{2212}{}", crate::fmt_num((-stops) as u32)),
+                            (1, false) => format!("+{}", crate::fmt_num(stops as u32)),
+                            _ => crate::fmt_num(0),
+                        };
                         let route = crate::platform::audio::route_id();
                         // WHY: the volume is the PLATFORM's report, and some devices report a boost above unity (dB > 0).
                         // PROOF: a share is part of its whole and `fmt_share` asserts it — the external value is bounded here, where it enters, so a boosting device reads as full rather than crashing the page.
@@ -6555,7 +6545,7 @@ impl PhotonApp {
                         } else {
                             let loss = crate::fmt_num(crate::wave::LAST_LINK_LOSS.load(std::sync::atomic::Ordering::Relaxed));
                             let buffer = crate::fmt_num(crate::wave::LAST_LINK_TARGET.load(std::sync::atomic::Ordering::Relaxed));
-                            tr(Msg::LastWave { link: &crate::link_freq_label(rtt), loss: &loss, buffer: &buffer }).into_owned()
+                            tr(Msg::LastWave { link: &crate::link_rtt_label(rtt), loss: &loss, buffer: &buffer }).into_owned()
                         };
                         flow.line(&mut canvas, ctx.text, &line, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                     }
@@ -6666,11 +6656,12 @@ impl PhotonApp {
                                 Some(*theme::PILL_GREEN)
                             }
                         };
-                        let labels = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
+                        // HISTORICAL ORDER (Nick 2026-09-30): arabic came first, then hex, then dozenal — so that is the order a newcomer reads them in, dozenal still the default. Slots 0..=2 in driver.rs follow this order.
+                        let labels = [tr(Msg::Arabic), tr(Msg::Hexadecimal), tr(Msg::Dozenal)];
                         let pills = [
-                            (labels[0].as_ref(), btn_base, true, fill_for(crate::NumBase::Dozenal)),
+                            (labels[0].as_ref(), btn_base, true, fill_for(crate::NumBase::Arabic)),
                             (labels[1].as_ref(), (btn_base + 1), true, fill_for(crate::NumBase::Hex)),
-                            (labels[2].as_ref(), (btn_base + 2), true, fill_for(crate::NumBase::Arabic)),
+                            (labels[2].as_ref(), (btn_base + 2), true, fill_for(crate::NumBase::Dozenal)),
                         ];
                         // A local Flow anchored at the current cursor (its inset.y is pre-scrolled so the flow's y lands exactly at `y`).
                         let mut flow = Flow::new(fluor::region::Region::new(inset.x, y + settings_content_scroll, inset.w, inset.h), settings_content_scroll);
@@ -6678,57 +6669,39 @@ impl PhotonApp {
                         y += flow.used();
                     }
                     y += line_h * 0.4;
+                    // The accent heading (the "why" of each base's own page); every lesson section uses head_style.
+                    let accent_head_style = TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium");
+                    // THE LIVE BLOCK (Nick 2026-10-01), every base: the clock as a share of today (six digits in dozenal, ticking thirty-five times a second — "something to visually count by"), and the time since this page opened as a magnitude. Both are pure functions of now; the driver's live_digit_edge wakes at each next digit change.
+                    {
+                        // Layout (Nick 2026-10-01): the value big on its own line, its label under it, a bigger space, then the counter the same way.
+                        let clock = crate::fmt_clock(&chrono::Local::now());
+                        let since = self.base_opened_osc.map(|t0| crate::live_since(vsf::eagle_time_oscillations() - t0));
+                        let live_style = TextStyle::new(hspan2 * 1.3, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium");
+                        ctx.text.draw_text_center(&mut canvas, &clock, cx, y + line_h * 0.6, &live_style, page_clip, None);
+                        y += line_h * 1.2;
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::LiveClockLabel), cx, y + line_h * 0.5, &prose_style, page_clip, None);
+                        y += line_h;
+                        if let Some(since) = since {
+                            y += line_h * 0.8;
+                            ctx.text.draw_text_center(&mut canvas, &since, cx, y + line_h * 0.6, &live_style, page_clip, None);
+                            y += line_h * 1.2;
+                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::LiveSinceLabel), cx, y + line_h * 0.5, &prose_style, page_clip, None);
+                            y += line_h;
+                        }
+                        if base == crate::NumBase::Dozenal {
+                            y = base_section(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::LiveHead), &tr(Msg::LiveProse), &head_style, &prose_style, line_h, page_clip);
+                        }
+                    }
                     // PER-PAGE UNITS (Nick 2026-09-10): the dozenal page speaks dozenal, the hex page hex, whatever the base setting — each page's own examples never change base. So the dozenal legends use dozenal_glyphs directly, the hex legends hex_linear directly, and only the cheat sheet (every base, one column each) is shared.
                     match base {
                         crate::NumBase::Dozenal => {
-                            // The logarithm note EARLY: time and size on this base are Dozenal Metric Scaling.
+                            // THE LESSON (Nick 2026-09-30: "a good formal edgumacation … nobody has dealt with another base"), in reading order. This arm is the opening: the one-line note, why dozenal, the digits and how their names carry their values — the cheat sheet follows straight after, shared with every base, and the rest of the lesson continues beneath it.
                             for line in tr(Msg::BaseLogNote).lines() {
                                 y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
                                 y += line_h * 0.3;
                             }
-                            y += line_h * 0.4;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::WhyDozenal), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), page_clip, None);
-                            y += line_h;
-                            for line in tr(Msg::WhyDozenalProse).lines() {
-                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                y += line_h * 0.3;
-                            }
-                            // THE SCALING, EXPLAINED (Nick 2026-09-11): what one number for how much means, why doublings, the three forms; then what "one" is on every scale.
-                            for (head, prose) in [(Msg::DmsScaleHead, Msg::DmsScaleProse), (Msg::DmsUnitsHead, Msg::DmsUnitsProse)] {
-                                y += line_h * 0.4;
-                                ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                                y += line_h;
-                                for line in tr(prose).lines() {
-                                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                    y += line_h * 0.3;
-                                }
-                            }
-                            // WHAT THE SCALING IS FOR (Nick 2026-09-15): reputation. The three sections before the ladder say what a grade is and how one fills; the two after say why the set never totals and what stands behind each grade.
-                            // The ladder sits INSIDE the fill section because it is the argument, not an illustration of it: every rung is a unit fraction, exact in dozenal and repeating in base ten, so base ten cannot write down what a reputation is.
-                            for (head, prose) in [(Msg::RepHead, Msg::RepProse), (Msg::RepOneHead, Msg::RepOneProse), (Msg::RepFillHead, Msg::RepFillProse)] {
-                                y += line_h * 0.4;
-                                ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                                y += line_h;
-                                for line in tr(prose).lines() {
-                                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                    y += line_h * 0.3;
-                                }
-                            }
-                            y += line_h * 0.3;
-                            for evidence in [1u32, 2, 3, 4, 6, 12, 144] {
-                                let row = format!("{}  {}", crate::rep_grade_glyphs(evidence), tr(Msg::RepLadderReading(evidence)));
-                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                                y += line_h * 0.9;
-                            }
-                            for (head, prose) in [(Msg::RepNoTotalHead, Msg::RepNoTotalProse), (Msg::RepBehindHead, Msg::RepBehindProse)] {
-                                y += line_h * 0.4;
-                                ctx.text.draw_text_center(&mut canvas, &tr(head), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                                y += line_h;
-                                for line in tr(prose).lines() {
-                                    y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                    y += line_h * 0.3;
-                                }
-                            }
+                            y = base_section(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::WhyDozenal), &tr(Msg::WhyDozenalProse), &accent_head_style, &prose_style, line_h, page_clip);
+                            y = base_section(&mut canvas, ctx.text, cx, wrap_w, y, &tr(Msg::DigitsHead), &tr(Msg::DigitsNamingProse), &head_style, &prose_style, line_h, page_clip);
                         }
                         crate::NumBase::Hex => {
                             // The coder's page: no dozenal sermon here.
@@ -6751,31 +6724,32 @@ impl PhotonApp {
                     y += line_h * 0.6;
                     // THE DIGIT CHEAT SHEET, every base (Nick 2026-09-10): three columns — dozenal, hexadecimal, arabic — each counting 0 to F in its own numerals, the dozenal column with its digit names. The same table whatever base is chosen.
                     let index_top = y;
-                    ctx.text.draw_text_center(&mut canvas, &tr(Msg::DigitsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                    y += line_h;
+                    // The dozenal arm titles the sheet itself (the digits section leads straight into it); the other bases title it here.
+                    if base != crate::NumBase::Dozenal {
+                        ctx.text.draw_text_center(&mut canvas, &tr(Msg::DigitsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
+                        y += line_h;
+                    }
                     let cols = [inset.x + inset.w * 0.2, inset.x + inset.w * 0.5, inset.x + inset.w * 0.8];
-                    let heads = [tr(Msg::Dozenal), tr(Msg::Hexadecimal), tr(Msg::Arabic)];
+                    // Columns in the same historical order as the pills: arabic, hexadecimal, dozenal.
+                    let heads = [tr(Msg::Arabic), tr(Msg::Hexadecimal), tr(Msg::Dozenal)];
                     for (k, h) in heads.iter().enumerate() {
                         ctx.text.draw_text_center(&mut canvas, h, cols[k], y + line_h * 0.5, &TextStyle::new(hspan2 * 0.8, *theme::CONTACT_NAME_COLOUR).weight(600).font("Oxanium"), page_clip, None);
                     }
                     y += line_h;
+                    // Each column ends where its own base does (Nick 2026-09-30): arabic at 9, hexadecimal at F, dozenal at Stelor — a column that ran past its last digit would be showing two-digit numbers, which is the very thing the sheet is not about.
                     for n in 0..16u32 {
-                        let doz = format!("{}  {}", crate::dozenal_glyphs(n), crate::dozenal_spell(n));
-                        ctx.text.draw_text_center(&mut canvas, &doz, cols[0], y + line_h * 0.5, &cell_style, page_clip, None);
+                        if n < 10 {
+                            ctx.text.draw_text_center(&mut canvas, &n.to_string(), cols[0], y + line_h * 0.5, &cell_style, page_clip, None);
+                        }
                         ctx.text.draw_text_center(&mut canvas, &crate::hex_glyphs(n), cols[1], y + line_h * 0.5, &cell_style, page_clip, None);
-                        ctx.text.draw_text_center(&mut canvas, &n.to_string(), cols[2], y + line_h * 0.5, &cell_style, page_clip, None);
+                        if n < 12 {
+                            let doz = format!("{}  {}", crate::dozenal_glyphs(n), crate::dozenal_spell(n));
+                            ctx.text.draw_text_center(&mut canvas, &doz, cols[2], y + line_h * 0.5, &cell_style, page_clip, None);
+                        }
                         y += line_h * 0.9;
                     }
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, inset.x as isize, index_top as isize, (inset.x + inset.w) as isize, y as isize, btn_base + 5);
-                    // COPY THE DIGITS (Nick 2026-09-16, "an easy spot to copy … so I can use them in casual conversation"): one pill puts the twelve glyph bytes on the clipboard; anywhere in photon they draw as digits (the +glyphs face is first in every fallback chain).
-                    {
-                        y += line_h * 0.3;
-                        let pw = (inset.w * 0.6).min(hspan2 * 14.0);
-                        let ph = hspan2 * 2.0;
-                        let rect = fluor::region::Region::new(cx - pw * 0.5, y, pw, ph);
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rect, &tr(Msg::CopyDigits), btn_base + 6, ctx.pressed_hit, true, None, "Open Sans");
-                        y += ph + line_h * 0.3;
-                    }
+                    y += line_h * 0.3;
                     if self.about_riddle_revealed && base == crate::NumBase::Dozenal {
                         y += line_h * 0.4;
                         ctx.text.draw_text_center(&mut canvas, &crate::dozenal_glyphs(42), cx, y + line_h * 0.5, &TextStyle::new(hspan2, *theme::SEARCH_FOUND_COLOUR).weight(400).font("Oxanium"), page_clip, None);
@@ -6789,50 +6763,59 @@ impl PhotonApp {
                     y += line_h * 0.6;
                     match base {
                         crate::NumBase::Dozenal => {
-                            // DMS — the time-ago legend: the age is the bit length of the seconds count, so each row is a doubling; dozenal glyphs + names, always.
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                            y += line_h;
-                            for line in tr(Msg::DmsIntro).lines() {
-                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                y += line_h * 0.3;
+                            // THE LESSON, continued (Nick 2026-09-30): counting in plain digits (one and one), then THE SCALE, its arithmetic with real sizes, its precision to four digits, its anchor, the three ladders photon shows today, the imagined scales off the same atom, and last what the scaling is FOR: reputation.
+                            let sect = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, y: Coord, head: Msg, prose: Msg| -> Coord {
+                                base_section(canvas, text, cx, wrap_w, y, &tr(head), &tr(prose), &head_style, &prose_style, line_h, page_clip)
+                            };
+                            let ladder = |canvas: &mut Canvas, text: &mut fluor::text::TextRenderer, y: Coord, rows: &[String]| -> Coord { base_rows(canvas, text, cx, y, rows, &cell_style, line_h, page_clip) };
+                            y = sect(&mut canvas, ctx.text, y, Msg::CountHead, Msg::CountProse);
+                            y = sect(&mut canvas, ctx.text, y, Msg::DmsScaleHead, Msg::DmsScaleProse);
+                            y = sect(&mut canvas, ctx.text, y, Msg::MagArithHead, Msg::MagArithProse);
+                            // THE ADD LADDER, from real bit counts: a megabyte is 2^23 bits, a kilobyte 2^13, a count of three is a magnitude like any other. One fraction digit, so the nudge shows.
+                            let mb = 8_388_608.0f64;
+                            let rows: Vec<String> = [mb, 2.0 * mb, 1.5 * mb, 3.0, 3.0 * mb, mb + 8192.0].iter().enumerate().map(|(i, bits)| format!("{}  {}", crate::dms_fine(*bits, 1), tr(Msg::MagAddRow(i as u32)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            y = sect(&mut canvas, ctx.text, y, Msg::FineHead, Msg::FineProse);
+                            // FOUR DIGITS: masses in hydrogens, two fraction digits. The teenager is Nick's own example, Luna Stela.Luna Lun — 2^94.625 atoms, fifty-one kilograms.
+                            let rows: Vec<String> = [3.5f64, 20.0, 51.2, 70.0, 1500.0].iter().enumerate().map(|(i, kg)| format!("{}  {}", crate::dms_fine(kg / crate::PROTIUM_KG, 2), tr(Msg::FineReading(i as u32)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            y = sect(&mut canvas, ctx.text, y, Msg::DmsUnitsHead, Msg::DmsUnitsProse);
+                            // TIME AGO: zero has no logarithm, so the first row is the word.
+                            y = sect(&mut canvas, ctx.text, y, Msg::DmsHead, Msg::DmsIntro);
+                            let mut rows = vec![tr(Msg::DmsNow).into_owned()];
+                            // Rungs are doublings of ONE OSCILLATION (2026-09-30): a second lands at 30, a minute 36, an hour 42, a day 46, a year 55, the universe 89.
+                            rows.extend([0u32, 20, 24, 30, 36, 42, 46, 51, 55, 61, 89].iter().map(|&k| format!("{}  {}  {}", crate::dozenal_glyphs(k), crate::dozenal_spell(k), tr(Msg::DmsReading(k)))));
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            y = sect(&mut canvas, ctx.text, y, Msg::DmsSizeHead, Msg::DmsSizeIntro);
+                            let mut rows = vec![tr(Msg::DmsEmpty).into_owned()];
+                            rows.extend([0u32, 3, 7, 10, 13, 16, 19, 23, 26, 29, 33, 43].iter().map(|&bits| format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsSizeReading(bits)))));
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            // LENGTH (Nick 2026-09-11): doublings of the hydrogen line's wavelength, a minus for halvings.
+                            y = sect(&mut canvas, ctx.text, y, Msg::DmsLengthHead, Msg::DmsLengthIntro);
+                            let rows: Vec<String> = [-11i32, -6, -4, -1, 0, 2, 3, 7, 8, 12, 15, 24, 30, 39, 55, 91].iter().map(|&k| format!("{}  {}  {}", crate::dms_doublings_glyphs(k), crate::dms_doublings_spell(k), tr(Msg::DmsLengthReading(k)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            // LET'S IMAGINE (Nick 2026-09-30): the scales photon does not show yet, every value computed off the one atom's anchors in lib.rs — light is Zil by definition, a room Zila Zil, a person Luna Stelor hydrogens. Rows keyed by index, so a reading can never drift from its value.
+                            y = sect(&mut canvas, ctx.text, y, Msg::ImagineHead, Msg::ImagineProse);
+                            let signed = |ratio: f64| format!("{}  {}", crate::dms_doublings_glyphs(crate::doublings_of(ratio)), crate::dms_doublings_spell(crate::doublings_of(ratio)));
+                            y = sect(&mut canvas, ctx.text, y, Msg::ImagineSpeedHead, Msg::ImagineSpeedIntro);
+                            let rows: Vec<String> = [crate::LIGHT_METRES_PER_SECOND, 230_000.0, 29_800.0, 7_800.0, 343.0, 27.8, 1.4].iter().enumerate().map(|(i, v)| format!("{}  {}", signed(v / crate::LIGHT_METRES_PER_SECOND), tr(Msg::ImagineSpeedReading(i as u32)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            y = sect(&mut canvas, ctx.text, y, Msg::ImagineTempHead, Msg::ImagineTempIntro);
+                            let rows: Vec<String> = [1.416784e32f64, 5772.0, 373.15, 293.15, 273.15, 77.0, 2.7255, 1e-7].iter().enumerate().map(|(i, k)| format!("{}  {}", signed(k / crate::HYDROGEN_LINE_KELVIN), tr(Msg::ImagineTempReading(i as u32)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            y = sect(&mut canvas, ctx.text, y, Msg::ImagineMassHead, Msg::ImagineMassIntro);
+                            let rows: Vec<String> = [9.1093837e-31f64, 1.67262192e-27, crate::PROTIUM_KG, 2.9915e-26, 1e-15, 2.5e-5, 70.0, 1500.0, 5.972e24].iter().enumerate().map(|(i, kg)| format!("{}  {}", signed(kg / crate::PROTIUM_KG), tr(Msg::ImagineMassReading(i as u32)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            // WHAT THE SCALING IS FOR (Nick 2026-09-15): reputation. The three sections before the ladder say what a grade is and how one fills; the two after say why the set never totals and what stands behind each grade.
+                            // The ladder sits INSIDE the fill section because it is the argument, not an illustration of it: a spotless reading equals its support, a ding costs a doubling whoever you are, and the share form the page used to print could not show the big restaurant's ding at all.
+                            for (head, prose) in [(Msg::RepHead, Msg::RepProse), (Msg::RepOneHead, Msg::RepOneProse), (Msg::RepFillHead, Msg::RepFillProse)] {
+                                y = sect(&mut canvas, ctx.text, y, head, prose);
                             }
-                            y += line_h * 0.3;
-                            // Zero has no logarithm: the first row is the word.
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsNow), cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                            y += line_h * 0.9;
-                            for bits in [0u32, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 16, 21, 24] {
-                                let row = format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsReading(bits)));
-                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                                y += line_h * 0.9;
-                            }
-                            y += line_h * 0.6;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsSizeHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                            y += line_h;
-                            for line in tr(Msg::DmsSizeIntro).lines() {
-                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                y += line_h * 0.3;
-                            }
-                            y += line_h * 0.3;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsEmpty), cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                            y += line_h * 0.9;
-                            for bits in [0u32, 3, 7, 10, 13, 16, 19, 23, 26, 29, 33, 43] {
-                                let row = format!("{}  {}  {}", crate::dozenal_glyphs(bits), crate::dozenal_spell(bits), tr(Msg::DmsSizeReading(bits)));
-                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                                y += line_h * 0.9;
-                            }
-                            // LENGTH (Nick 2026-09-11): doublings of the hydrogen line's wavelength, a minus for halvings; the same shape as the time and size legends.
-                            y += line_h * 0.6;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::DmsLengthHead), cx, y + line_h * 0.5, &head_style, page_clip, None);
-                            y += line_h;
-                            for line in tr(Msg::DmsLengthIntro).lines() {
-                                y = centered_wrapped(&mut canvas, ctx.text, cx, wrap_w, y, line, &prose_style, line_h * 0.8, page_clip);
-                                y += line_h * 0.3;
-                            }
-                            y += line_h * 0.3;
-                            for k in [-11i32, -6, -4, -1, 0, 2, 3, 7, 8, 12, 15, 24, 30, 39, 55, 91] {
-                                let row = format!("{}  {}  {}", crate::dms_doublings_glyphs(k), crate::dms_doublings_spell(k), tr(Msg::DmsLengthReading(k)));
-                                ctx.text.draw_text_center(&mut canvas, &row, cx, y + line_h * 0.5, &cell_style, page_clip, None);
-                                y += line_h * 0.9;
+                            // THE LADDER (Nick 2026-09-30): reading · support · what it is. Spotless rungs first (the reading IS the evidence), then the two restaurants — twenty thousand reviews lose one doubling to a ding, four reviews lose half their standing — then even, then dings outweighing.
+                            let rows: Vec<String> = [(0u64, 0u64), (1, 0), (3, 0), (7, 0), (143, 0), (20_000, 0), (20_000, 1), (20_000, 2), (4, 0), (4, 1), (4, 2), (4, 4), (1, 4)].iter().enumerate().map(|(i, &(p, n))| format!("{}  {}  {}", crate::rep_reading(p, n), crate::rep_support(p, n), tr(Msg::RepRow(i as u32)))).collect();
+                            y = ladder(&mut canvas, ctx.text, y, &rows);
+                            for (head, prose) in [(Msg::RepNoTotalHead, Msg::RepNoTotalProse), (Msg::RepBehindHead, Msg::RepBehindProse)] {
+                                y = sect(&mut canvas, ctx.text, y, head, prose);
                             }
                         }
                         crate::NumBase::Hex => {
@@ -7136,16 +7119,8 @@ impl PhotonApp {
         if wave_overlay.is_some() {
             // Full-screen ring panel is MODAL: wipe the whole map first so the screen's own widgets (stamped above) can't be tapped thru the wash — then the two wave buttons are the only live targets.
             if wave_fullscreen {
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    0,
-                    0,
-                    buf_w as isize,
-                    buf_h as isize,
-                    HIT_NONE,
-                );
+                // A direct fill, not restamp_hit_rect: the modal panel covers the chrome too, and the content stampers stop at the chrome's stamp floor by design.
+                chrome.hit_test_map.fill(HIT_NONE);
             }
             if let Some(b) = self.wave_action_btn.as_ref() {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
@@ -7215,8 +7190,7 @@ impl PhotonApp {
                 mark_content.elapsed().as_millis() as u64
             );
         }
-        // Everything content-flavoured is now freshly painted — the next frame can narrow to pure widget damage unless something re-dirties the scene.
-        self.scene_dirty = false;
+        // The dirty flag was cleared at the top of this render; whatever raised it since (a measurement that moved content) keeps the next frame full.
     }
 }
 

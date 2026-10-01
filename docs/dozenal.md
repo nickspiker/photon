@@ -1,39 +1,60 @@
-# Numerals: the three forms, DMS, and the unit of account
+# Numerals: the two forms, DMS, and the one atom
 
-Photon renders every numeral in the base the person chose (`NumBase`: dozenal by default, hexadecimal, arabic). Binary at rest, always; the base is applied at the render edge thru the helpers in `src/lib.rs` (`fmt_num`, `dms_size`, `dms_age`, `dms_length`, `link_freq_label`, `fmt_halves`, `unit_size`). The digit names are photon vocabulary and are never translated (docs/languages.md).
+Photon renders every numeral in the base the person chose (`NumBase`: dozenal by default, hexadecimal, arabic). Binary at rest, always; the base is applied at the render edge thru the helpers in `src/lib.rs` (`fmt_num`, `fmt_mag`, `fmt_share`, `dms_size`, `dms_age`, `dms_length`, `dms_fine`, `link_freq_label`, `fmt_halves`, `unit_size`). The digit names are photon vocabulary and are never translated (docs/languages.md). The Base settings page is the lesson: it teaches everything below, in this order, in the person's own base.
 
-## The three forms
+## The digits and their names
 
-Every number on screen is one of three kinds, and the kind decides the form, not the screen it sits on.
-- **Counts** (peers, devices, unread, chunk three of five) are linear digits in the base. Tera peers is four peers.
-- **Magnitudes** (size, age, rate, length; anything you would otherwise give a unit prefix) are **Dozenal Metric Scaling**: doublings, spelled dozenal. Tera of size is sixteen bits.
-- **Proportions** (a battery, a download, a rung out of the ladder, a vote share) are one dozenal fraction digit with a dot: .Zil none, .Ter a quarter, .Lun a half, .Stelor nearly whole.
-Identifiers (ports, hashes, handles, versions) are never converted. Reputation, when it is built, is a magnitude: signed doublings from the median peer, not a rating.
+Twelve glyphs, drawn by the Oxanium `+glyphs` face at 0x10..0x1B. The names carry the values: four stems count by threes (Zil 0, Ter 3, Lun 6, Stel 9) and three endings add nothing, one or two (plain, -a, -or). Lunor is Lun + 2 = 8; Stela is Stel + 1 = 10. Zila Zil is twelve, a dozen; Zila Zil Zil a gross.
 
-The same word means a different amount on each scale (Tera is four peers, sixteen bits, or a third), so each form has its own face: plain digits for counts, the `+glyphs` face for the scaling, the dot prefix for a fraction.
+Two marks, both chosen because the Zil glyph reads as a dash (Nick 2026-10-01): the radix point is a RAISED dot, U+00B7 (`DOZENAL_POINT`), and the sign of a signed doubling count is an ARROW, ALWAYS SHOWN — `↑` at or above the unit, `↓` below (`DMS_UP`/`DMS_DOWN`): `↑Ter` a person, `↓Tera` a coin, `↑Zil` the unit itself, so a signed column aligns. Unsigned scales (age, size, counts, a reputation's support) carry no arrow. A bar and the fraction slash were tried and both read as a digit. Oxanium lacks the arrows; Noto Symbols in the fallback chain draws them.
+
+Plain arithmetic carries at twelve: Zila + Zila = Zilor, Ter + Tera = Luna, Lun + Lun = Zila Zil, Ter × Tera = Zila Zil. After the point the digits are twelfths, then gross-ths, and the shares people use are exact single digits: .Lun a half, .Tera a third, .Ter a quarter, .Zilor a sixth, .Zila a twelfth.
+
+## The two forms (and names)
+
+Every number on screen is one of two kinds, and the kind decides the form, not the screen it sits on (Nick 2026-09-15, "everything as exponential magnitude when in dozenal": the earlier three-form system with linear counts is retired).
+- **Magnitudes** — how much: size, age, rate, length, AND counts (peers, devices, messages). **Dozenal Metric Scaling**: the doubling count, spelled dozenal, thru `fmt_mag` (counts, one fraction digit) or the per-scale `dms_*` helpers. Tera of size is sixteen bits; a count of three is Zila.Luna.
+- **Shares** — how much of a whole: a battery, a download, a grade. A radix point and the digits after it, thru `fmt_share`: .Zil none, .Ter a quarter, .Lun a half, .Stelor nearly whole. The dot is the marker.
+- **Names** are neither: a version, an era, the day of a month, a port, a hash, a handle. Plain digits, never scaled.
 
 ## DMS: doublings, spelled dozenal
 
-A quantity shows as how many times its unit has doubled: the floor of log base two of the count, written in dozenal digits (Zil 0, Zila 1, Zilor 2, Ter 3, Tera 4, Teror 5, Lun 6, Luna 7, Lunor 8, Stel 9, Stela 10, Stelor 11). One unit reads Zil, two Zila, four Zilor, eight Ter. Zero has no logarithm and reads as a word: an age of nothing is "now", a size of nothing is "empty". Nick, 2026-09-11: "straight up log base something conversion; the only evenly spaced scale on this slide rule". It is a logarithm rather than a count, so a bit and a terabyte, a second and the age of the universe, each fit in two digits, and halving or doubling, the only step people feel, is one digit either way. "Metric" is the doubling; "dozenal" is only the numeral it is written in.
+A quantity shows as how many times its unit has doubled: the floor of log base two of the ratio, written in dozenal digits. One unit reads Zil, two Zila, four Zilor, eight Ter. Zero has no logarithm and reads as a word: an age of nothing is "now", a size of nothing is "empty". Nick, 2026-09-11: "straight up log base something conversion; the only evenly spaced scale on this slide rule". It is a logarithm rather than a count, so a bit and a terabyte, a second and the age of the universe, each fit in two digits, and halving or doubling, the only step people feel, is one digit either way. "Metric" is the doubling; "dozenal" is only the numeral it is written in.
 
-## The unit of account
+**The floor rule** (Nick 2026-09-30, "I don't say I'm six foot because I'm five eleven"): a reading of k means AT LEAST 2^k of the unit, for halvings too. A coin at −3.4 reads −Tera (it is at least a sixteenth of the wavelength); a grain of rice at −11.15 hydrogens-offset reads −Zila Zil, not −Stelor. `doublings_of` is `log2().floor()`.
 
-Every scale counts doublings of one physical anchor, chosen so that it is definitional rather than conventional, and so that the range people care about sits above it, where no sign is needed.
+**Arithmetic on doubling counts.** Multiply = add the counts (Ter × Tera = Luna: 8 × 16 = 128). Divide = subtract. Add is the awkward one: the bigger wins and the smaller nudges it up — the same size again adds one whole doubling (Lun + Lun = Luna as magnitudes), one doubling smaller adds .Luna (log2 1.5 = .585 ≈ 7/12), two smaller .Ter, three .Zilor, four .Zila, five or more nothing visible. A count times a size is an add, because a count is a doubling count too: three files of a megabyte = Zila.Luna + Zila Stelor = Zilor Zil.Luna.
 
-| scale | one is | why | below one |
-|---|---|---|---|
-| size | a bit | the smallest thing that exists in a message | nothing (Zil) |
-| age, duration | an Eagle second: 1,420,407,826 oscillations of the hydrogen line | photon's own second, already its clock | reads Zil, "now"; sub-second spans are shown inverted, as a frequency |
-| rate, latency | one hertz | a round trip's interesting range is 5 ms to 2 s, 0.5 to 200 Hz, so inverting keeps the floor at one | 1 Hz reads Zil; slower than a second is a failure, not a number |
-| length | one wavelength of the hydrogen line, 21.106 cm: the distance light travels in one Eagle oscillation | the one length that is a property of the universe rather than a king's foot, and it is already photon's clock | a minus counts halvings: −Zila is 10.6 cm, −Tera a coin, −ZilaZil a hair; the one scale where sub-unit is everyday, so the sign earns its keep |
-| reputation (future) | the median peer in the category | how much, relative to everyone: unbounded and skewed | signed: −Zila is half the median |
-| proportions | not DMS: a dot-fraction of the whole, one digit | bounded things are linear | .Zil none, .Lun half, .Stelor nearly whole |
+**Fine form** (`dms_fine`): the floor, a radix point, then fraction-of-a-doubling digits, each a twelfth then a gross-th of one doubling (.Lun = ×√2, .Tera = ×2^(1/3)). One fraction digit ≈ 6 %, two ≈ 0.5 %. "Four digits" = two before the point, two after: a 51 kg teenager is Luna Stela.Luna Lun hydrogens (2^94.625). The floor rule holds at the last digit shown; both fraction digits are always drawn (the width is the precision — unlike a share, where a trailing Zil is unearned). Only ratios ≥ 1 get fraction digits.
 
-Anchoring length at the Planck length so that every value is positive was considered and rejected: every everyday length then reads as two digits in the Stel range (a person is StelStela) and the human scale disappears from the digits. The hydrogen anchor keeps a hand to a house inside one digit at the cost of a minus on the small.
+## The one atom
+
+Every scale counts doublings of a property of a single atom, hydrogen-1 (protium: one proton, one bound electron, in the lower hyperfine level), whose hyperfine line is already photon's clock (`vsf::OSCILLATIONS_PER_SECOND`, defined in the Milky Way–Andromeda barycentric frame). Definitional, not conventional; and each unit is placed so the range people care about sits above it. Because the scale is a logarithm, a unit is only where Zil sits, and moving it by a whole number of doublings costs nothing: an addend, never a factor, and a dozen-multiple addend leaves the low digit unchanged.
+
+| scale | one is | why | below one | shown today |
+|---|---|---|---|---|
+| size | a bit | information is dimensionless; the one unit that is not the atom's | nothing (Zil is one bit; "empty" is the word) | yes |
+| age, duration | ONE OSCILLATION of the line (2026-09-30: "1 second is not Zil" — the Eagle second was 2^30.4 oscillations, a factor, which the addend rule forbids) | the clock's own tick, offset zero like every other scale; a second is a landmark at Zilor Lun.Tera, a minute Ter Zil, an hour Ter Lun, a day Ter Stela, a year Tera Luna, the universe Luna Teror | nothing is below one; "now" is the word for no age at all | yes, live: a message's age is the floor glyphs, woken at each doubling; the Base counter shows two fraction digits, woken every t/208 |
+| rate, latency | a round trip is a DURATION, same scale | with Zil at one oscillation every span is positive, so the hertz inversion retired (`link_rtt_label`) | 66 ms reads Zilor Zilor.Lun | yes |
+| time of day | not DMS: a SHARE of today, fixed width (`day_share_glyphs`) | a day is a cycle, and a position in a cycle is a share, which is linear by nature — "how much is a log, where is a share"; Zil midnight, Lun noon, digits of two hours, ten minutes, fifty seconds, four seconds, a third of a second, a thirty-fifth (inksurf convention) | hex = seconds since local midnight; arabic = the wall clock | yes, live on the Base page (six digits) |
+| a date | names: `year month-glyph day weekday .share`, spaces only, months zero-indexed glyphs, weekdays words (`fmt_when`) | always the whole line — a bare share on its own read as a decimal with no context (Nick 2026-10-01) | hex = the raw oscillation stamp since the Eagle epoch | under a tapped message |
+| length | one wavelength of the line, 21.106 cm: the distance light travels in one Eagle oscillation | a property of the universe rather than a king's foot | a minus counts halvings: −Zila a hand, −Tera a coin, −Zila Zil a hair | yes |
+| speed | c, the light that joins the two above | the only speed that is the same for everyone; rest is −∞ (there is no absolute rest) | everything with mass: walking −Zilor Tera, a car −Zilor Zil, sound −Zila Lunor, orbit −Zila Tera | imagined |
+| temperature | the line's own photon, h·f/k_B = 0.068 K | k_B = 1; absolute zero is −∞ (nothing reaches it) | freezing Stelor, a room Zila Zil, the Sun Zila Tera, Planck Stel Zilor, all positive without an offset | imagined |
+| mass | the protium atom itself | mass = how many hydrogens; a second property of the SAME atom, not a photon's mass-equivalent | positive from a molecule up: person Luna Stelor, car Lunor Ter, Earth three digits | imagined |
+| grade (reputation) | even: praise and dings in balance, or nothing yet | r = log2((P+1)/(N+1)), signed doublings of praise over dings, distinct people; a spotless record's reading IS its evidence, and the gap under perfect is −r (the reciprocal), so perfect is off the top like light on the speed scale | −Zila: dings outweigh praise two to one; beside it s = log2(P+N+1), what stands behind it, equal to r only when spotless | ladder only |
+
+**Reputation in log form (2026-09-30, "−1 is the reciprocal").** The share form (1 − 1/E) was retired: it could not show a ding on a big record at all (20,000 reviews read .Stelor Stelor before and after). `rep_reading(P, N)` = log2((P+1)/(N+1)) with one fraction digit, negative rendered as the minus of the swapped pair; `rep_support` = log2(P+N+1). A ding halves the odds, so the first costs ~1 doubling whoever you are, then .Luna, .Ter, .Zilor, .Zila, nothing — the size-add rule backwards. Twenty thousand spotless: Zila Zilor.Ter; one ding: Zila Zila.Ter. Four spotless: Zilor.Ter; one ding: Zila.Ter; one for and four against: −Zila.Ter. Volume cannot buy a doubling (one person is one piece); only distinct people can. No total, no rank, per claim, attached to who gave it — unchanged.
+
+The atom's rest energy is 2^47.18 line photons: the one measured, non-integer constant in the system (it plays the role h plays in SI), harmless because nothing in photon converts mass to energy. Anchoring length at the Planck length was considered and rejected: the human scale disappears from the digits. Anchoring mass on a photon's mass-equivalent was rejected 2026-09-30: a photon has no mass.
+
+**Time's Zil is the oscillation (built 2026-10-01).** The Eagle second (1,420,407,826 oscillations, the SI second measured in hydrogen) was the one inherited convention and sat a non-integer 30.4 doublings from the anchor; no integer offset was kept either, so every scale is at offset zero and c = Zil. The epoch and the oscillation clock never moved — this is the render edge only. Live readings wake at digit edges, never timers: a two-fraction-digit age's last digit ticks every t/208 (one tick per frame at 208 frames whatever the rate, then every 2, 4, 8 frames), the twelfths digit every t/17, the whole doubling at frames 1, 2, 4, 8.
 
 ## Hexadecimal and arabic
 
 Hexadecimal is linear everywhere and shows what the machine holds: ages and durations as the plain seconds count, sizes as the bit count, a round trip in seconds with a hexadecimal fraction (66 ms is 0.10E), a length in millimetres, with no scaling and no M:SS. Arabic shows the ledger world's conventional units. Diagnostics record timestamps are wall-clock coordinates for correlating with photonlog and adb, and stay arabic clock time in every base.
+
+The Base page's pills and cheat-sheet columns run in historical order — arabic, hexadecimal, dozenal — with dozenal the default. The page explains and never argues: no "fingers" line, no scold; the case for twelve is the exact thirds beside the reputation ladder, where it does work. "Base ten" is not a name in photon's text: every base writes itself as 10, so the numerals are called arabic, the way the pill is.
 
 ## The length scale, one row per doubling
 

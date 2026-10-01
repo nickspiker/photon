@@ -8,7 +8,7 @@
 - [feedback_render_never_touches_vault.md](feedback_render_never_touches_vault.md) — HARD: the UI/render thread makes NO vault call (2026-09-18 ANR); presence = cache + worker probe
 - [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy reload mid-CLUTCH; check log for a round in flight, batch fixes
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits "Built with Claude Fable 5" ([feedback_commit_attribution.md](feedback_commit_attribution.md))
-- [Nick publishes](nick-publishes.md) — never run publish scripts; commit/push only
+- [Nick publishes](nick-publishes.md) — Nick INITIATES; when asked, run deploy/publish and push WITH build notes (RELEASE_NOTES.md → Updates panel + site); never unasked
 - [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
 - [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; prose uses petnames; doctrine: [project_humanitys_code.md](project_humanitys_code.md)
 - [Stage only your own files](feedback_stage_only_own_files.md) — HARD: stage by explicit path; never `git add -u`/`-A` (shared tree; 2026-09-26 vsf sweep)
@@ -39,6 +39,9 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
+- [Notification tap unwired](project_notification_tap_unwired.md) — OPEN 2026-10-01: a message notification tap opens nothing anywhere; Android = contact-id extra + JNI latch drained in tick (wave-answer pattern); desktop notifiers have no click path
+- [Strip selection model](project_strip_selection_model.md) — 2026-10-01: selection MANUAL only, never stolen by a new message, cleared on conversation entry; newest row's strip unasked; live age via strip_target
+- [Ready first paint](project_ready_first_paint.md) — 2026-10-01 CONVICTED: orb: blind after-paint hit stamps leaked into the chrome band → content stamps now ride the paint decision (stamp BEFORE paint, only where target not yet opaque: stamp_hit_rect_under/circle_under + fluor pill blit); bandages (orb re-stamp, geometric floor) REMOVED; strip-snap = correction frame's scene_dirty wiped at end of same render (reset moved to render START + request_redraw)
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; open = live strand pull, never-friended receive commit, offer refresh, Withdraw
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows → double encap → deterministic proof mismatch → zombie → re-run; fixed (our_party_id); field verify pending; ghost 1be949c1 retire flow still open
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
@@ -101,9 +104,10 @@
 - [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset mirror + ime_lift)
 - [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor; jitter slack 80 ms + setpoint 1/512; session ownership + HANDOVER lock; never `git add -A` (shared tree)
 - [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC, recorded nowhere
+- [Eagle units first principles](project_eagle_units_first_principles.md) — 2026-09-29/30: one atom (protium: line, wavelength, c, k_B=1 photon temp, atom mass), floor rule, Eagle second = SI in disguise → 2^24 osc display unit (unbuilt); BASE PAGE LESSON BUILT 2026-09-30 + reputation in LOG form + TIME ZIL = ONE OSCILLATION + live clock/age (edge wakes) 2026-10-01; English-only pending Nick (15 langs fall back to en via explicit arms), docs/dozenal.md rewritten, UNCOMMITTED, tests unrun
 - [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction; docs/dozenal.md
 - [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs; Dozenal settings page
-- [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day`; months zero-indexed glyphs
+- [project_dozenal_datetime.md](project_dozenal_datetime.md) — dozenal date = `year month-glyph day weekday .share`; months zero-indexed glyphs; time of day = fixed-width SHARE of today (inksurf clock), hex = seconds since midnight / raw stamp
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor; never hand-roll squircles
 - [project_textbox_one_registry.md](project_textbox_one_registry.md) — new textbox = register in visit_app_widgets + textboxes_mut only
 - [project_font_bundle.md](project_font_bundle.md) — fonts 100% bundled; FE0F/FE0E pick face; dozenal → Oxanium

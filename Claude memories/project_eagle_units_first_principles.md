@@ -1,0 +1,33 @@
+---
+name: project_eagle_units_first_principles
+description: "Eagle units from first principles (2026-09-29 sidebar): one anchor (the hydrogen line, c=ħ=k_B=1), two frames (absolute vs display = absolute minus a dozen-round offset), Eagle second convicted as SI-in-disguise, 2^24 oscillations proposed as the display time unit"
+metadata:
+  node_type: memory
+  type: project
+  originSessionId: 65c091ca-b52d-460b-938b-a6f278f9ac43
+  modified: 2026-09-30T21:48:47.605Z
+---
+
+Design conversation 2026-09-29 (Nick: "clean slate, world is your oyster"). BASE PAGE LESSON BUILT 2026-09-30 (dev.sh only, uncommitted, ENGLISH ONLY pending Nick's tweaks: the other 15 language files hand the new Msg variants to en.rs thru explicit arms — the block after each file's WhyDozenalProse arm — so a translation pass = fill those arms). docs/dozenal.md rewritten (two forms + names, floor rule, magnitude arithmetic, fine form, the one-atom table). Page order: pills Arabic→Hex→Dozenal, note, why, digits+naming, cheat sheet (arabic|hex|dozenal), one-and-one, the scale, doublings-multiply-by-adding + real-size add ladder (dms_fine), how-fine + four-digit mass ladder, what-one-is, time/size/length ladders, let's-imagine speed/temperature/mass ladders (computed off lib.rs anchors), reputation. Tests added in lib.rs (dms_fine_tests) NOT yet run.
+
+**Principle:** DMS is a logarithm, so a unit is only where Zil sits. Any offset by a whole number of doublings is free (an addend, never a factor); a dozen-multiple offset leaves the low digit unchanged.
+
+**One anchor:** the hydrogen line, with c = ħ = k_B = 1. Time = one oscillation, length = one wavelength (as now), energy = one line photon, mass = that photon's mass, temperature = 0.068 K. The hydrogen ATOM's mass is measured (Ter Stelor ≈ 47.2 doublings), not a second anchor.
+
+**Two frames:** absolute (hydrogen = Zil, c = Zil, purist) and display (absolute minus a round per-quantity offset so the human range is positive). Nick already rejected all-absolute for length (Planck): human scale vanishes from the digits.
+
+**Convicted:** the Eagle second (1,420,407,826 oscillations) is the SI second measured in hydrogen, a conventional count. Clean-slate time unit = 2^24 oscillations = 11.8 ms (offset Zilor Zil). Round trips then read as positive durations on the same scale as ages: retires the "link reads as a frequency" inversion. c in the display frame = 2^24 wavelengths per unit = Zilor Zil EXACTLY. Temperature needs no offset (freezing Stelor, room Zila Zil). Mass offset Stelor Zil (unit 57 g): person Stela. Walking speed −Tera is the accepted wart (c stays dozen-round).
+
+**2026-09-30 refinements:** velocity is ABSOLUTE (c = Zil, walking −Zilor Tera, rest = −∞: no absolute rest); temperature ABSOLUTE on the line photon with k_B = 1 (freezing Stelor, room Zila Zil, Planck Stel Zilor, absolute zero = −∞); mass anchor = the ground-state neutral PROTIUM atom (Nick: not a photon's mass-equivalent), mass = "how many hydrogens", person Luna Stelor, NO display offset (two digits reach a 25 km asteroid); the atom is 2^47.18 line photons, the one measured non-integer constant (plays h's role). Only time takes an offset (24). Information: 1 bit = Zil, byte = Ter (floor log2, decided 2026-09-11); the dms_size doc comment at lib.rs ~281 still carries retired bit-length values (14/24/34), strings are right (13/23/33).
+
+**REPUTATION IN LOG FORM (proposed 2026-09-30, Nick: "math needs sorted", not yet on the page):** gap 1/E = 2^−e, so a spotless record's reputation IS its evidence. General: r = log2((P+1)/(N+1)) signed doublings (P praise, N dings, distinct people), s = log2(P+N+1) support; r = s only when spotless; Zil = even or nothing; negative = dings outweigh; +∞ unreachable (no special Zila). First ding costs ~1 doubling whoever you are, then .Luna, .Ter, .Zilor… (the icky-add table backwards). 20,000 reviews: Zila Zilor.Ter → one ding Zila Zila.Ter; 4 reviews: Zilor.Ter → Zila.Ter. Share form hides the big place's ding entirely. Page's RepOne/RepFill + 1−1/E ladder still in share form; "nobody can be a thousand times anybody" needs rewording (volume can't buy r; distinct people can).
+
+**TIME'S ZIL = ONE OSCILLATION, BUILT 2026-10-01** (Nick: "1 second is not Zil"; the Eagle second was 2^30.4 oscillations, a factor): dms_age takes OSCILLATIONS, FLOOR glyphs only (Nick: fraction digits overkill under a message; the Base counter keeps two via dms_fine); ladder re-keyed (second 30, minute 36, hour 42, day 46, month 51, year 55, lifetime 61, universe 89); link_rtt_label = a duration (hertz inversion retired); every scale offset zero, c = Zil. No 2^24/2^30 display offset kept. Render edge only; epoch/clock untouched.
+**LIVE DIGITS (same day):** Base page live block in every base = clock (`fmt_clock`: dozenal six-digit share of today, hex seconds since midnight, arabic HH:MM:SS) + "since you opened this" (`base_opened_osc`, stamped on page entry); selected message's age live + absolute `fmt_when` line (dozenal `year month-glyph day weekday .share4` with today/week/year elision; hex = raw oscillation stamp; arabic wall clock with elision). Wakes = `live_digit_edge()` in driver.rs: next digit edge (next_fine_edge: t/208 apart for two digits; next_day_share_edge; whole seconds in hex/arabic), never a timer. Six-digit clock ticks ~35/s (29 ms). Doctrine line: "how much is a log, where is a share" (reputation left the share form because it has no top; time of day stays because a day is a cycle). OPEN: Nick said "below each message live" — built in the tap-to-select details strip where the age already lived, not under every row; ask.
+
+**Grammar:** "Eagle" names the frame like "metric"; quantity word + digits, never "12 eagles".
+
+**Why:** the Base page must explain DMS as ONE system, and the Eagle second is the one inherited convention in it.
+**How to apply:** clock and epoch NEVER move ([[feedback_epoch_fixed]]); this is display-side only (subtract 24 from the oscillation log). Base page decisions same day: pill order Arabic → Hex → Dozenal, dozenal default, explain-don't-argue (no "fingers" jabs), say "arabic" not "base ten"; reputation gap = 1/E as DMS with a minus (−Stela ≈ three nines). See [[project_numeral_forms]], [[project_dms_age]].
+
+**MARKS (2026-10-01):** dozenal radix = RAISED dot U+00B7 (`DOZENAL_POINT`); sign of a signed doubling count = ARROW, ALWAYS shown, ↑ at/above the unit (↑Zil = the unit), ↓ below (`DMS_UP`/`DMS_DOWN`); unsigned scales (age, size, count, rep support) no arrow. Rejected: "−" (Zil looks like a dash), "|" bar and fraction slash (both read as Zila). Arrows come from Noto Symbols fallback, not Oxanium.

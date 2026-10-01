@@ -1037,6 +1037,10 @@ impl FluorApp for PhotonApp {
                         self.fleet_rename = None;
                         self.change_focus(None);
                     }
+                    // Entering the Base page zeroes its live counter (the clock beside it is a pure function of now).
+                    if *p == SettingsPage::Dozenal && self.state != AppState::Settings(*p) {
+                        self.base_opened_osc = Some(vsf::eagle_time_oscillations());
+                    }
                     self.state = AppState::Settings(*p);
                     ctx.window.request_redraw();
                 }
@@ -1404,10 +1408,11 @@ impl FluorApp for PhotonApp {
                     ctx.window.request_redraw();
                 } else if page == SettingsPage::Dozenal {
                     // The base pills (slots 0..=2): the render-edge static flips NOW so every number on screen switches base this frame, and the fleet-wide linked write follows the identity to every device.
+                    // Historical order, matching the pills in render.rs (Nick 2026-09-30): arabic, hexadecimal, dozenal.
                     let pick = match slot {
-                        0 => Some(crate::NumBase::Dozenal),
+                        0 => Some(crate::NumBase::Arabic),
                         1 => Some(crate::NumBase::Hex),
-                        2 => Some(crate::NumBase::Arabic),
+                        2 => Some(crate::NumBase::Dozenal),
                         _ => None,
                     };
                     if let Some(b) = pick {
@@ -1421,13 +1426,6 @@ impl FluorApp for PhotonApp {
                     if slot == 5 {
                         // A tap anywhere within the dozenal index → the custodian riddle appears beneath it. One tap; session-permanent once found.
                         self.about_riddle_revealed = true;
-                    }
-                    if slot == 6 {
-                        let digits: String = (0x10u8..=0x1B).map(char::from).collect();
-                        if self.copy_to_clipboard(&digits) {
-                            self.ready_toast = Some(tr(Msg::DigitsCopied).into_owned());
-                            self.ready_toast_screen = None;
-                        }
                     }
                 } else {
                     crate::logf!(
@@ -3198,8 +3196,10 @@ impl FluorApp for PhotonApp {
         let probe = self.presence_probe.map(|(_, at)| at + std::time::Duration::from_secs(1));
         // An edited compose draft's write deadline (drafts.rs) — one wake at it, nothing while no edit is unwritten.
         let draft = self.draft_deadline();
+        // LIVE DIGITS (Nick 2026-10-01): the Base page's clock and since-opened counter, and a selected message's live age, each wake at the exact moment their last digit next changes — an edge computed from the reading, never a timer. In dozenal the counter's edges are a gross-th of a doubling apart and a message's age moves only at each doubling; in hex and arabic the clock ticks on the second.
+        let live = self.live_digit_edge();
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold, wave_timer, probe, draft]
+        [blink, anim, presence, pairing, fleet_refold, wave_timer, probe, draft, live]
             .into_iter()
             .flatten()
             .min()
@@ -3497,6 +3497,8 @@ impl FluorApp for PhotonApp {
                 // A screen swap must also re-raster the CACHED bg layer — it's dirty-gated and nothing else invalidates it on navigation, so the previous screen's backdrop stayed baked beneath the new one (the launch chromatic wave + wordmark showing thru the settings panel; the settings divider-split noise lingering after Back). One noise re-raster per screen change is cheap.
                 if let Some(chrome) = self.chrome.as_mut() {
                     chrome.invalidate_bg();
+                    // And the chrome layer with it: its raster is where the orb's hit area is stamped, and the previous screen's stamps otherwise stay in the map until something else dirties it.
+                    chrome.invalidate_chrome();
                 }
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
@@ -3588,6 +3590,14 @@ impl FluorApp for PhotonApp {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
 
+        // LIVE DIGITS (Nick 2026-10-01, "doesn't update live"): the wake landed at a digit edge; repaint iff a live reading's text actually changed since the last tick, so the edge lands one frame and a cursor blink in a conversation lands none.
+        {
+            let live = self.live_readings();
+            if live != self.live_last {
+                self.live_last = live;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            }
+        }
         // Full-screen ring panel: the pulse rings are a pure function of now, so a ringing wave just needs the frame to repaint fully (the panel covers the whole surface; partial damage would leave stale pulse arcs).
         if self
             .active_wave
@@ -4043,6 +4053,54 @@ fn open_url_in_browser(url: &str) {
 
 // The display-free startup half lives OUTSIDE the FluorApp impl so the lifeline can call it with no host at all.
 impl PhotonApp {
+    /// Every live reading on screen right now, as the text it would draw, concatenated: the Base page's clock and since-opened counter, or a selected message's age. Pure function of now and state; tick() compares it with the last one and repaints on a change.
+    fn live_readings(&self) -> String {
+        let now_osc = vsf::eagle_time_oscillations();
+        match self.state {
+            AppState::Settings(SettingsPage::Dozenal) => {
+                let mut s = crate::fmt_clock(&chrono::Local::now());
+                if let Some(t0) = self.base_opened_osc {
+                    s.push_str(&crate::live_since(now_osc - t0));
+                }
+                s
+            }
+            // The strip's row, selected or the newest shown unasked — the same resolution the render uses.
+            AppState::Conversation => self.strip_target().map(|(_, ts, _)| {
+                let osc = (now_osc - ts).max(0);
+                if crate::dms_ui() { crate::dms_age(osc) } else { (osc / crate::OSC_PER_SEC).to_string() }
+            }).unwrap_or_default(),
+            _ => String::new(),
+        }
+    }
+
+    /// The next instant at which a live reading on screen changes its last digit (see `wake_at`): the Base page's clock (six share digits in dozenal, whole seconds otherwise), its since-opened counter (two fraction digits of a doubling), or the selected message's age. None when nothing live is showing.
+    fn live_digit_edge(&self) -> Option<Instant> {
+        let now_osc = vsf::eagle_time_oscillations();
+        let osc_to_instant = |delta_osc: f64| Instant::now() + std::time::Duration::from_secs_f64((delta_osc / crate::OSC_PER_SEC as f64).max(0.0));
+        // A magnitude's next digit edge, from an age in oscillations: `frac` fraction digits (the Base counter shows two, a message's age none — it changes only at each doubling).
+        let age_edge = |stamp: i64, frac: usize| -> Option<Instant> {
+            let age = (now_osc - stamp).max(0) as f64;
+            match crate::num_base() {
+                crate::NumBase::Dozenal => Some(osc_to_instant(crate::next_fine_edge(age, frac) - age)),
+                _ => Some(osc_to_instant(crate::OSC_PER_SEC as f64 - age.rem_euclid(crate::OSC_PER_SEC as f64))),
+            }
+        };
+        match self.state {
+            AppState::Settings(SettingsPage::Dozenal) => {
+                let t = chrono::Local::now();
+                let f = crate::fraction_of_day(&t);
+                let clock = match crate::num_base() {
+                    crate::NumBase::Dozenal => osc_to_instant((crate::next_day_share_edge(f, 6) - f) * 86_400.0 * crate::OSC_PER_SEC as f64),
+                    _ => osc_to_instant((1.0 - (f * 86_400.0).rem_euclid(1.0)) * crate::OSC_PER_SEC as f64),
+                };
+                let since = self.base_opened_osc.and_then(|t0| age_edge(t0, 2));
+                [Some(clock), since].into_iter().flatten().min()
+            }
+            AppState::Conversation => self.strip_target().and_then(|(_, ts, _)| age_edge(ts, 0)),
+            _ => None,
+        }
+    }
+
     /// The display-free half of startup: network stack, job channels, unattended capsule, vault open + session resume. Called by `FluorApp::init` after the widget half, and by `lifeline::run_lifeline` with no UI at all. MUST stay ctx-free.
     pub(super) fn core_init(&mut self) {
         // HandleQuery: device keypair is derived deterministically from the machine fingerprint (NEVER stored to disk — same machine yields the same keypair so attestations are reproducible across restarts). HandleQuery owns the UDP socket + sends/receives FGTW packets; an empty PeerStore wires the transport so query packets have somewhere to fan out to. The proxy expect is structurally safe: fluor's host calls `set_event_proxy` BEFORE `init` (see `run_app` in fluor/src/host/app.rs) and the lifeline sets it before core_init, so `event_proxy` is always `Some` here.

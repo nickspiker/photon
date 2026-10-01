@@ -7,6 +7,18 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The Base page is now a full lesson: the twelve digits and how their names carry their values, counting and adding in dozenal, how a doubling count works and how to multiply, divide and add with one, how fine four digits are, what "one" is on every scale, and a "let's imagine" section with speed, temperature and mass read off the same hydrogen atom.
+- The base buttons and the digit table run arabic, hexadecimal, dozenal, in the order the world met them; dozenal stays the default, and the arabic page is a plain lesson on the digits 0 to 9 with no sales pitch.
+- Reputation on the Base page is now a doubling count of praise over dings, so one bad review costs about one doubling whoever you are and perfect is off the top of the scale; the ladder walks two restaurants, one with twenty thousand reviews and one with four.
+- Time's unit is now one oscillation of the hydrogen line, so an age reads as a doubling count from the clock's own tick: a second is a landmark on the ladder, not its unit, and a round trip reads as a time like any other.
+- The Base page carries two live readings: the time of day as a share of today, ticking thirty-five times a second, and how long since you opened the page, slowing as it ages.
+- A selected message shows its age live under the row, and the full date on the line below it.
+- In dozenal, the point in a number is a raised dot, and a signed reading always carries an arrow: up at or above the unit, down below it.
+- Tapping a message keeps it selected while you reply or play it back; a new message no longer steals the selection, and opening a conversation starts with its newest message's options up.
+- Fixed the top-left orb not responding on the contacts screen until you scrolled.
+- Fixed the contact list sitting under the second row of filter buttons at larger zoom until you scrolled.
+- A friend whose home address changed is reached again without waiting for them to reach you first.
+
 ## v109
 
 - On phones whose call audio path is slow, a wave now starts on the fast path (the loudspeaker, or a wired headset) instead of adding a fifth of a second of delay; the earpiece is still one tap away on the output button, marked "slower".

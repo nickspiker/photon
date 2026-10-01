@@ -2260,7 +2260,6 @@ dependencies = [
  "rav1d",
  "rayon",
  "softbuffer",
- "spirix",
  "swash",
  "unicode-script",
  "vsf 0.9.3",

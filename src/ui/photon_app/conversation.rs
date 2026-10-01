@@ -345,6 +345,10 @@ impl PhotonApp {
         // The stream filter and any waveform scrub belong to the conversation they were set in.
         self.conv_filter = ChatFilter::All;
         self.wave_scrub = None;
+        // THE MANUAL SELECTION belongs to the screen it was made on (Nick 2026-10-01): leaving a conversation drops it, so the next one opens with its newest row's strip up unasked. A selection left pointing at another conversation's row used to leave the new one with NO strip at all — the explicit selection blocked the newest-row fallback without matching anything.
+        self.selected_msg = None;
+        self.selected_msg_copied = false;
+        self.strip_dismissed = None;
         // The open IS the fleet-wide claim edge: this device is now the conversation's active clearer, and every sibling learns it before the next friend message can ding them.
         self.broadcast_focus_claim(true);
     }
@@ -1821,12 +1825,7 @@ impl PhotonApp {
                 if looking || will_ding {
                     msg.notified = true;
                 }
-                // QUICK-REPLY AUTO-SELECT (Nick 2026-09-12, the fourth section's trigger): a fresh incoming message in the OPEN conversation selects itself, so the reactions and actions are one glance away; the next tap replaces the selection as ever. Plain and reply rows only — control/reaction/bridge rows never steal the strip.
-                if looking && !is_edit_row && !msg.is_control() && msg.reference.is_none_or(|(k, _)| matches!(k, crate::types::RefKind::Reply)) {
-                    self.selected_msg = self.cid(contact_idx).map(|id| (id, msg.timestamp, false));
-                    self.selected_msg_copied = false;
-                    self.strip_dismissed = None;
-                }
+                // NO AUTO-SELECT (Nick 2026-10-01, superseding the 2026-09-12 quick-reply self-select): a fresh message never steals a selection the user made by tapping — they are mid-reply or mid-playback on that row. With nothing selected, the newest row's strip is already up unasked (the sel_key / strip_target fallback), and a dismissed strip is keyed to the row that was dismissed, so the new row shows its own.
                 // STALE-HOLDER BALL DROP: our claim stands on this conversation but we are NOT its live clearer anymore (walked away past the recency window, attention stolen, or a missed blur edge). The arriving message is the edge that discovers it — retract NOW, so every sibling whose independently-received copy sat suppressed under our claim gets the retraction and its drop-sweep chirps. Without this, one lost frame (or the walk itself) leaves our claim muting the fleet with no bound.
                 if !looking && !is_edit_row {
                     if let (Some(kp), Some((t, d, cur))) =

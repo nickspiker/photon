@@ -1,6 +1,6 @@
 // PHOTON SOURCE MAP — one readable line per file. Keep updated when files or major pub items change.
 //
-// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age/dms_size/dms_length DMS doubling counts as a pure logarithm, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, fmt_mag (THE quantity render: every count a doubling count in dozenal, spirix lb + glyph-flagged digits, zero answered by spirix's own escape class), fmt_share (the other and only other form: a proportion as a radix point and its digits, integer base twelve so a third stays exactly .Tera), rep_grade_glyphs (the reputation ladder: 1 − 1/evidence, exact on every unit-fraction rung), dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
+// lib.rs   — constants (PHOTON_PORT=4383, PHOTON_PORT_FALLBACK=3546, MULTICAST_PORT=4384, OSC_PER_SEC, PEER_EXPIRY_OSC=7d, KBUCKET_STALE_OSC=1h), always-on VSF logging sink (16 MiB + jittered 24–48h caps, name-scrubbed), and helpers: init_logging/log/log_at/clear_log/snapshot_log_bytes/log_size_bytes/read_log_from/install_log_bridge, LogRecord + parse_log_records (shared record decode: photonlog bin + the in-app Diagnostics viewer), fp(public_id) (non-PII log label), dozenal helpers (DOZENAL_NAMES, NumBase + num_base/dms_ui, dms_log/dms_age (an OSCILLATION count, floor glyphs)/dms_size/dms_length DMS doubling counts as a pure logarithm, next_fine_edge (the oscillation at which a live age's last digit next ticks — the wake edge), live_since (the since-opened counter, shared by render and tick), day_share_glyphs/next_day_share_edge/fraction_of_day/fmt_clock (time of day as a fixed-width SHARE of today, the inksurf clock; hex = seconds since midnight), local_datetime + fmt_when (an absolute stamp, always the whole date: dozenal `year month-glyph day weekday .share`, hex = the raw oscillation stamp), link_rtt_label (a round trip as a duration), doublings_of + dms_fine (a ratio's floored doubling count, and the four-digit fine form with fraction-of-a-doubling digits), the one-atom anchors LIGHT_METRES_PER_SECOND/PROTIUM_KG/HYDROGEN_LINE_KELVIN for the Base page's imagined speed/temperature/mass ladders, hex_seconds_ms/fmt_halves/unit_size hex-linear renders, fmt_mag (THE quantity render: every count a doubling count in dozenal, spirix lb + glyph-flagged digits, zero answered by spirix's own escape class), fmt_share (the other and only other form: a proportion as a radix point and its digits, integer base twelve so a third stays exactly .Tera), rep_reading + rep_support (reputation in log form: signed doublings of praise over dings with a +1 prior, and the doubling count of everyone who spoke), dozenal_glyphs UI / dozenal_spell read-aloud / dozenal_words camelCase log form, deglyph_for_log), jitter/jitter_dur (anti-thundering-herd 50–100% pad), module re-exports. main.rs  — winit event loop, window creation, tokio async runtime.
 //
 // crypto/
 //   blind.rs        — friend-blinded private identity secret S (RAM-only, never persisted): PrivateS{None,Provisional,Live}, derive_blind_pad (per-device+friend OTP pad), make/open_blind_blob ((S⊕pad)‖check, fail-closed), s_check/s_id (tamper commitment + 4-byte tag epoch), seal/open_sibling_s (kete-AEAD S-transfer to a sibling).
@@ -125,6 +125,12 @@ pub const DOZENAL_NAMES: [&str; 12] = [
     "Stelor",
 ];
 
+/// THE DOZENAL RADIX POINT is a RAISED dot (Nick 2026-10-01: "decimal should be centered, not ."): U+00B7, which Oxanium carries. Every dozenal share and fine reading uses it; hex and arabic keep the baseline point of their own worlds.
+pub const DOZENAL_POINT: char = '\u{00B7}';
+/// THE SIGN OF A SIGNED DOUBLING COUNT is an ARROW, ALWAYS SHOWN (Nick 2026-10-01: "zil looks like −", and the bar and the fraction slash both read as a digit): `↑Ter` is a person on the length scale, `↓Tera` a coin, `↑Zila` praise outweighing dings two to one, `↓Zila` the other way round. Zero takes the up arrow — `↑Zil` is the unit itself — so a signed column always aligns. Unsigned scales (an age, a size, a count, a reputation's support) carry no arrow: there is nothing below their one. Oxanium lacks the arrows; the bundled Noto Symbols face in the fallback chain draws them.
+pub const DMS_UP: &str = "\u{2191}";
+pub const DMS_DOWN: &str = "\u{2193}";
+
 /// The numeral base every number on screen renders in (binary at rest; the base is chosen at the render edge). Three choices (Nick 2026-09-09): dozenal is the house base, hexadecimal is the machine's, arabic decimal is the anatomical accident. Stored fleet-wide as `display.base` = the radix.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
@@ -194,14 +200,19 @@ pub fn fmt_num64(n: u64) -> String {
 
 /// Signed HALVES (the viewer's exposure rides half-stop steps) as sign, whole, radix point and the base's own half digit: arabic .5, dozenal .6, hex .8 — exact in every base, no arabic leaking thru a float format. A whole value still prints its .0, so arabic stays byte-identical to the old `{:.1}`.
 pub fn fmt_halves(halves: i32) -> String {
-    let sign = if halves < 0 { "-" } else { "+" };
-    let mag = halves.unsigned_abs();
-    let half = match num_base() {
-        NumBase::Arabic => 5,
-        NumBase::Dozenal => 6,
-        NumBase::Hex => 8,
+    let sign = match (halves < 0, dozenal_ui()) {
+        (true, true) => DMS_DOWN,
+        (false, true) => DMS_UP,
+        (true, false) => "-",
+        (false, false) => "+",
     };
-    format!("{sign}{}.{}", fmt_num(mag / 2), fmt_num(if mag % 2 == 1 { half } else { 0 }))
+    let mag = halves.unsigned_abs();
+    let (half, point) = match num_base() {
+        NumBase::Arabic => (5, '.'),
+        NumBase::Dozenal => (6, DOZENAL_POINT),
+        NumBase::Hex => (8, '.'),
+    };
+    format!("{sign}{}{point}{}", fmt_num(mag / 2), fmt_num(if mag % 2 == 1 { half } else { 0 }))
 }
 
 /// The unit'd sizes of the ledger bases (`n KiB`, `n MiB`).
@@ -225,27 +236,92 @@ pub const HYDROGEN_LINE_METRES: f64 = 299_792_458.0 / 1_420_407_826.0;
 
 /// A length's doubling count from the hydrogen line: 0 is the unit itself, positive doubles, negative halves (a hand is −1, a person 3, the Moon 30, the Planck length −114, the observable universe 91).
 pub fn length_doublings(metres: f64) -> i32 {
-    if !(metres > 0.0) {
-        return i32::MIN;
-    }
-    (metres / HYDROGEN_LINE_METRES).log2().floor() as i32
+    doublings_of(metres / HYDROGEN_LINE_METRES)
 }
 
-/// A signed doubling count in dozenal glyphs: the unit itself is Zil, k doublings read k, k halvings read a minus and k — symmetric about the unit, a pure logarithm.
+/// THE ONE ANCHOR, stated (Nick 2026-09-30, "from first principles"): every scale counts doublings of a property of a single atom, hydrogen-1, whose hyperfine line is already photon's clock (`vsf::OSCILLATIONS_PER_SECOND` is defined on it). Time is its oscillation, length its wavelength, speed the light that connects the two, temperature the energy of its own photon with k_B = 1, mass the atom itself. A bit is the one unit that is not the atom's: information is dimensionless and needs no anchor.
+/// The Base page's "let's imagine" ladders read these; nothing else in photon shows a speed, a temperature or a mass yet. When something does, it reads thru these constants.
+pub const LIGHT_METRES_PER_SECOND: f64 = 299_792_458.0;
+/// The ground-state neutral protium atom, proton plus bound electron in the lower hyperfine level — the same atom in the same state that defines the second. 1.00782503223 u.
+pub const PROTIUM_KG: f64 = 1.00782503223 * 1.66053906660e-27;
+/// The line photon's temperature, h·f / k_B with the exact SI h and k_B: about seven hundredths of a kelvin. Freezing sits just under Zila Zil, a room at Zila Zil, the Planck temperature at Stel Zilor, so the whole thermodynamic range is two positive digits.
+pub const HYDROGEN_LINE_KELVIN: f64 = 6.62607015e-34 * 1_420_407_826.0 / 1.380649e-23;
+
+/// A ratio's signed doubling count: floor(log2), the "five foot eleven" rule (Nick 2026-09-30) — the reading means AT LEAST this many doublings, for halvings too (a coin at −3.4 reads −Tera: it is at least a sixteenth of the unit). A ratio of nothing or less has no logarithm and reads as the bottom of the scale.
+pub fn doublings_of(ratio: f64) -> i32 {
+    if !(ratio > 0.0) {
+        return i32::MIN;
+    }
+    ratio.log2().floor() as i32
+}
+
+/// A doubling count to FRACTION digits (Nick 2026-09-30: "four digits, with concrete examples"): the floor in dozenal glyphs, a radix point, then `frac` dozenal digits of the fraction of a doubling — each a twelfth, then a gross-th, of one doubling. `.Lun` is half a doubling (×√2), `.Tera` a third; one fraction digit resolves about six percent, two about half a percent.
+/// The floor rule holds at the LAST digit: the thing is at least what is read. Both fraction digits are always drawn (unlike a share, where a trailing Zil is unearned): here the width IS the stated precision.
+/// Only ratios of one and up get fraction digits — a sign-magnitude fraction under a floored integer part would read two ways, and nothing on the page needs a fine reading below its unit. A ratio below one renders in the plain signed form.
+pub fn dms_fine(ratio: f64, frac: usize) -> String {
+    if !(ratio >= 1.0) {
+        return dms_doublings_glyphs(doublings_of(ratio));
+    }
+    let lb = ratio.log2();
+    let whole = lb.floor();
+    let mut out = dozenal_glyphs(whole as u32);
+    out.push(DOZENAL_POINT);
+    // Scale the fraction by 12^frac and take its digits, most significant first; floor at the last digit.
+    let mut rem = ((lb - whole) * 12f64.powi(frac as i32)).floor() as u64;
+    let mut digits = Vec::with_capacity(frac);
+    for _ in 0..frac {
+        digits.push(char::from(0x10 + (rem % 12) as u8));
+        rem /= 12;
+    }
+    out.extend(digits.iter().rev());
+    out
+}
+
+#[cfg(test)]
+mod dms_fine_tests {
+    use super::*;
+    fn g(digits: &[u8]) -> String {
+        digits.iter().map(|d| char::from(0x10 + d)).collect()
+    }
+    /// The Base page's own examples: three files is Zila.Luna (log2 3 = 1.585, and .585 of a doubling is seven twelfths); a megabyte and a half is Zila Stelor.Luna; Nick's child, 2^94.625 hydrogens, is Luna Stela.Luna Lun to four digits.
+    #[test]
+    fn fine_doublings_land_on_the_page_examples() {
+        assert_eq!(dms_fine(3.0, 1), format!("{}{}{}", g(&[1]), DOZENAL_POINT, g(&[7])));
+        assert_eq!(dms_fine(1.5 * 8_388_608.0, 1), format!("{}{}{}", g(&[1, 11]), DOZENAL_POINT, g(&[7])));
+        // 2^94.63, not 2^94.625: powf then log2 can land a hair under the exact value, and .625 of a doubling is the last gross-th digit's own boundary. The rendered teenager is 51.2 kg, 2^94.627, for the same reason.
+        assert_eq!(dms_fine(2f64.powf(94.63), 2), format!("{}{}{}", g(&[7, 10]), DOZENAL_POINT, g(&[7, 6])));
+        // Exactly the unit: Zil point Zil Zil — the width is drawn even when the fraction is nothing.
+        assert_eq!(dms_fine(1.0, 2), format!("{}{}{}", g(&[0]), DOZENAL_POINT, g(&[0, 0])));
+        // Below the unit falls back to the signed plain form, never a sign-magnitude fraction.
+        assert_eq!(dms_fine(0.3, 2), dms_doublings_glyphs(-2));
+    }
+    /// The anchors: light is Zil on the speed scale by definition, a room is Zila Zil on the temperature scale, a person Luna Stelor in hydrogens, the proton a hair under the atom.
+    #[test]
+    fn imagined_scales_read_as_designed() {
+        assert_eq!(doublings_of(LIGHT_METRES_PER_SECOND / LIGHT_METRES_PER_SECOND), 0);
+        assert_eq!(doublings_of(293.15 / HYDROGEN_LINE_KELVIN), 12);
+        assert_eq!(doublings_of(273.15 / HYDROGEN_LINE_KELVIN), 11);
+        assert_eq!(doublings_of(70.0 / PROTIUM_KG), 95);
+        assert_eq!(doublings_of(1.67262192e-27 / PROTIUM_KG), -1);
+        assert_eq!(doublings_of(0.0), i32::MIN);
+    }
+}
+
+/// A signed doubling count in dozenal glyphs, the arrow always shown: the unit itself is ↑Zil, k doublings read ↑k, k halvings read ↓k — symmetric about the unit, a pure logarithm.
 pub fn dms_doublings_glyphs(k: i32) -> String {
     if k >= 0 {
-        dozenal_glyphs(k as u32)
+        format!("{DMS_UP}{}", dozenal_glyphs(k as u32))
     } else {
-        format!("\u{2212}{}", dozenal_glyphs(k.unsigned_abs()))
+        format!("{DMS_DOWN}{}", dozenal_glyphs(k.unsigned_abs()))
     }
 }
 
 /// [`dms_doublings_glyphs`] spelled in digit words (the legend's second column).
 pub fn dms_doublings_spell(k: i32) -> String {
     if k >= 0 {
-        dozenal_spell(k as u32)
+        format!("{DMS_UP}{}", dozenal_spell(k as u32))
     } else {
-        format!("\u{2212}{}", dozenal_spell(k.unsigned_abs()))
+        format!("{DMS_DOWN}{}", dozenal_spell(k.unsigned_abs()))
     }
 }
 
@@ -284,7 +360,7 @@ pub fn hex_seconds_ms(ms: u64) -> String {
     format!("{whole:X}.{frac:03X}")
 }
 
-/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — floor(log2) of the size in BITS, so one byte is Ter (3), a kilobyte lands at Zila Zilor (14), a megabyte at Zilor Zil (24), a gigabyte at Zilor Stela (34) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
+/// DMS SIZE (Nick 2026-09-09: "I say bits"): how many times a bit has doubled — floor(log2) of the size in BITS, so one byte is Ter (3), a kilobyte lands at Zila Zila (13), a megabyte at Zila Stelor (23), a gigabyte at Zilor Stel (33) — the same rule as the age, seconds swapped for bits. Rendered in the current base.
 pub fn dms_size(bytes: u64) -> String {
     // WHY: `bytes` is often a peer's claim (an attachment's typed size arrives over the wire), so it can be any u64.
     // PROOF: bits = bytes × 8 overflows u64 above 2^61 bytes; saturating renders an absurd claim as the largest countable size instead of wrapping it to a small, plausible-looking one.
@@ -298,14 +374,144 @@ pub fn dms_size(bytes: u64) -> String {
     }
 }
 
-/// The age in the current base: dozenal = DMS doublings (Oxanium `+glyphs` face at the draw site), hex = linear seconds.
-pub fn dms_age(secs: i64) -> String {
+/// THE AGE in the current base, from an OSCILLATION count (Nick 2026-09-30, "1 second is not Zil": time's Zil is one oscillation of the hydrogen line, no offset — a second is Zilor Lun of them, a landmark on the ladder, not a unit). Dozenal = the FLOOR doubling count in glyphs, no fraction (Nick 2026-10-01: "two digits after the decimal is overkill" under a message), so a live chip changes only at each doubling; hex = linear seconds (Nick 2026-09-11). The Base page's since-opened counter wants the fine form and calls [`dms_fine`] itself.
+pub fn dms_age(osc: i64) -> String {
+    let osc = osc.max(0); // WHY/PROOF: an age from a peer's stamp ahead of our clock is negative — it reads as now
     match num_base() {
-        NumBase::Hex => hex_linear(secs.max(0) as u64), // WHY/PROOF: an age from a peer's stamp ahead of our clock is negative, and an i64→u64 cast would wrap it to the oldest age there is
-        _ => match dms_log(secs.max(0) as u64) { // WHY/PROOF: as above — a future stamp reads as now
+        NumBase::Hex => hex_linear((osc / OSC_PER_SEC) as u64),
+        _ => match dms_log(osc as u64) {
             Some(k) => fmt_num(k),
             None => crate::ui::lang::tr(crate::ui::lang::Msg::DmsNow).into_owned(),
         },
+    }
+}
+
+/// The OSCILLATION COUNT at which a reading's LAST digit next changes: the next gross-th (frac = 2), twelfth (frac = 1) or whole doubling (frac = 0) above `osc`. A live age wakes at this edge and at no other time — the spacing is osc/208 for two digits, so a chip that blurs for three seconds repaints every third of a second after a minute and every seventeen seconds after an hour, with no timer anywhere.
+pub fn next_fine_edge(osc: f64, frac: usize) -> f64 {
+    let scale = 12f64.powi(frac as i32);
+    if !(osc >= 1.0) {
+        return 1.0;
+    }
+    let k = (osc.log2() * scale).floor() + 1.0;
+    let next = 2f64.powf(k / scale);
+    // Floating slack: a rounding that lands at or under `osc` would wake now and repaint for nothing; step one digit further.
+    if next <= osc {
+        2f64.powf((k + 1.0) / scale)
+    } else {
+        next
+    }
+}
+
+/// TIME OF DAY as a SHARE of today (Nick 2026-10-01, the inksurf convention): Zil at midnight, Lun at noon, every digit a twelfth of the one before — two hours, ten minutes, fifty seconds, four seconds, a third of a second, a thirty-fifth. FIXED width, unlike [`fmt_share`]: a clock's trailing Zil is a position, not unearned precision, so `.Tera Lunor Zil` is 9:20:00 to fifty seconds and `.Tera Lunor` is 9:20 to ten minutes. The point is the only mark — a bare Lun Lun is a magnitude of seventy-eight doublings.
+pub fn day_share_glyphs(fraction_of_day: f64, width: usize) -> String {
+    // ONE floor, then integer digits: scaling digit by digit let float slop turn an exact 9:25:00 into 9:24:59.99 (a 5 where the 6 belongs). The epsilon is a millionth of the last digit — thirty nanoseconds of the day at six digits — so an exact boundary lands on its digit and nothing else moves.
+    let scale = 12u64.pow(width as u32);
+    let mut v = (fraction_of_day.rem_euclid(1.0) * scale as f64 + 1e-6).floor() as u64 % scale;
+    let mut digits = Vec::with_capacity(width);
+    for _ in 0..width {
+        digits.push(char::from(0x10 + (v % 12) as u8));
+        v /= 12;
+    }
+    let mut out = String::from(DOZENAL_POINT);
+    out.extend(digits.iter().rev());
+    out
+}
+
+/// The fraction of the day at which a `width`-digit share next changes: the next multiple of 12^−width. The live clock's wake edge.
+pub fn next_day_share_edge(fraction_of_day: f64, width: usize) -> f64 {
+    let unit = 12f64.powi(-(width as i32));
+    (fraction_of_day.rem_euclid(1.0) / unit).floor() * unit + unit
+}
+
+/// The LOCAL wall clock for an oscillation stamp (the OS zone; a day is where the sun is). Returns the local date-time, or None for a stamp chrono cannot place.
+pub fn local_datetime(osc: i64) -> Option<chrono::DateTime<chrono::Local>> {
+    let (secs, nanos) = vsf::types::eagle_time::to_unix_ns(osc);
+    chrono::DateTime::from_timestamp(secs, nanos).map(|d| d.with_timezone(&chrono::Local))
+}
+
+/// How far into the local day `t` is, as a fraction.
+pub fn fraction_of_day(t: &chrono::DateTime<chrono::Local>) -> f64 {
+    use chrono::Timelike;
+    (t.num_seconds_from_midnight() as f64 + t.nanosecond() as f64 * 1e-9) / 86_400.0
+}
+
+/// THE CLOCK, live, in the current base: dozenal a six-digit share of today (the last digit ticks thirty-five times a second — Nick 2026-10-01, "something to visually count by"); hex the seconds since local midnight, linear (9:20:00 is 83E0); arabic the wall clock.
+pub fn fmt_clock(t: &chrono::DateTime<chrono::Local>) -> String {
+    use chrono::Timelike;
+    match num_base() {
+        NumBase::Dozenal => day_share_glyphs(fraction_of_day(t), 6),
+        NumBase::Hex => hex_linear(t.num_seconds_from_midnight() as u64),
+        NumBase::Arabic => t.format("%H:%M:%S").to_string(),
+    }
+}
+
+/// The Base page's SINCE-OPENED counter in the current base: dozenal the fine form with two fraction digits (the odometer Nick asked to watch), hex and arabic whole seconds. Shared by the render and by tick()'s change check so the two can never disagree.
+pub fn live_since(osc: i64) -> String {
+    let osc = osc.max(0);
+    match num_base() {
+        NumBase::Dozenal => {
+            if osc == 0 {
+                crate::ui::lang::tr(crate::ui::lang::Msg::DmsNow).into_owned()
+            } else {
+                dms_fine(osc as f64, 2)
+            }
+        }
+        NumBase::Hex => hex_linear((osc / OSC_PER_SEC) as u64),
+        NumBase::Arabic => format!("{} s", osc / OSC_PER_SEC),
+    }
+}
+
+/// WHEN a stamp was, absolute, in the current base — the line a tapped message shows under its live age, ALWAYS the whole date (Nick 2026-10-01: a bare share on its own line read as "a straight decimal with no context").
+/// Dozenal: the inksurf convention, `year month-glyph day weekday .share` (months zero-indexed glyphs, weekdays WORDS because seven is coprime to twelve), spaces only, four share digits (four-second steps).
+/// Hex: the raw stamp — oscillations since the Eagle epoch, in hex — the one true machine value, no calendar, no zone. Arabic: the ledger world's full date and clock.
+pub fn fmt_when(osc: i64) -> String {
+    use chrono::Datelike;
+    if num_base() == NumBase::Hex {
+        return hex_linear(osc.max(0) as u64);
+    }
+    let Some(t) = local_datetime(osc) else {
+        return String::new();
+    };
+    match num_base() {
+        NumBase::Arabic => t.format("%a %Y-%m-%d %H:%M:%S").to_string(),
+        _ => {
+            let weekday = crate::ui::lang::tr(crate::ui::lang::Msg::Weekday(t.weekday().num_days_from_monday()));
+            format!(
+                "{} {} {} {weekday} {}",
+                dozenal_glyphs(t.year().max(0) as u32),
+                dozenal_glyphs(t.month0()),
+                dozenal_glyphs(t.day()),
+                day_share_glyphs(fraction_of_day(&t), 4)
+            )
+        }
+    }
+}
+
+#[cfg(test)]
+mod clock_tests {
+    use super::*;
+    fn g(digits: &[u8]) -> String {
+        digits.iter().map(|d| char::from(0x10 + d)).collect()
+    }
+    /// 9:20 is .Tera Lunor (four two-hour slices, eight ten-minute slices); 9:25:00 adds a Lun of fifties; noon is .Lun; the width is drawn whole.
+    #[test]
+    fn day_share_is_the_inksurf_clock() {
+        let t920 = (9.0 * 3600.0 + 20.0 * 60.0) / 86_400.0;
+        assert_eq!(day_share_glyphs(t920, 2), format!("{}{}", DOZENAL_POINT, g(&[4, 8])));
+        assert_eq!(day_share_glyphs(t920 + 300.0 / 86_400.0, 3), format!("{}{}", DOZENAL_POINT, g(&[4, 8, 6])));
+        assert_eq!(day_share_glyphs(0.5, 3), format!("{}{}", DOZENAL_POINT, g(&[6, 0, 0])));
+        // The next edge of a two-digit share from 9:20 is 9:30.
+        let edge = next_day_share_edge(t920 + 1.0 / 86_400.0, 2);
+        assert!((edge * 86_400.0 - 9.5 * 3600.0).abs() < 1e-6);
+    }
+    /// A live age's next edge is strictly ahead, and a gross-th of a doubling apart: from 2^30 oscillations, the next two-digit edge is 2^(30 + 1/144).
+    #[test]
+    fn fine_edges_step_by_a_gross_th() {
+        let osc = 2f64.powi(30);
+        let next = next_fine_edge(osc, 2);
+        assert!(next > osc);
+        assert!((next.log2() - (30.0 + 1.0 / 144.0)).abs() < 1e-9);
+        assert!(next_fine_edge(next, 2) > next);
     }
 }
 
@@ -351,7 +557,7 @@ pub fn fmt_share(part: u64, whole: u64) -> String {
         return match num_base() {
             NumBase::Arabic => "100%".to_string(),
             NumBase::Hex => "1.000".to_string(),
-            NumBase::Dozenal => format!("{}.", char::from(0x11)),
+            NumBase::Dozenal => format!("{}{DOZENAL_POINT}", char::from(0x11)),
         };
     }
     // Widened to u128, so no u64 part can overflow the scale — the math holds for every input, no saturation needed.
@@ -363,7 +569,7 @@ pub fn fmt_share(part: u64, whole: u64) -> String {
         NumBase::Dozenal => {
             // 12^5 of headroom, then digits off the top. Two SIGNIFICANT digits — leading zeros are placeholders, not precision.
             let scaled = (p * 248_832 / w) as u64;
-            let mut out = String::from(".");
+            let mut out = String::from(DOZENAL_POINT);
             let (mut rem, mut seen) = (scaled, 0u8);
             for place in (0..5).rev() {
                 let unit = 12u64.pow(place);
@@ -388,32 +594,51 @@ pub fn fmt_share(part: u64, whole: u64) -> String {
     }
 }
 
-/// One rung of the REPUTATION ladder: the grade `1 − 1/evidence`, as a dozenal fraction — a radix point and up to two digits.
-/// Every rung the Base page shows is a unit fraction, and twelve divides by two, three, four and six, so each one lands EXACTLY. The identical values repeat forever in base ten, which is the argument the ladder exists to make rather than merely assert.
-/// Read backwards it is the confidence: one digit means a dozen behind the grade, two digits a gross. A digit that was not earned is not modesty to omit, it is the only honest width.
-pub fn rep_grade_glyphs(evidence: u32) -> String {
-    if evidence == 0 {
-        return String::new();
+/// A REPUTATION reading in LOG FORM (Nick 2026-09-30, "−1 being the same as reciprocal"): how many doublings the praise outweighs the dings by, `log2((P+1)/(N+1))`, signed, one fraction digit.
+/// The +1 on each side is the honest prior: with nothing yet it reads Zil, and four spotless reviews read Zilor.Ter rather than infinite. A spotless record's reputation IS its evidence (r = log2(P+1)), and the gap under perfect is the same number with a minus — the reciprocal — so perfect is off the top of the scale, like light on the speed scale, and nobody gets there.
+/// A ding halves the odds, so the first costs about a doubling whoever you are; the second .Luna, the third .Ter, then .Zilor, .Zila, then nothing visible — the size-add rule run backwards. That is why a ding is a scratch on a grade with a crowd behind it and half the standing of one with four people behind it.
+/// The arrow is always shown: ↑ when praise outweighs or they are even, ↓ when dings do — rendered as the swapped pair, so ↓Zila·Ter means dings outweigh by Zila·Ter doublings, and the floor rule understates the magnitude on either side alike.
+pub fn rep_reading(praise: u64, dings: u64) -> String {
+    let (p, n) = (praise as f64 + 1.0, dings as f64 + 1.0);
+    if p >= n {
+        format!("{DMS_UP}{}", dms_fine(p / n, 1))
+    } else {
+        format!("{DMS_DOWN}{}", dms_fine(n / p, 1))
     }
-    // The grade over a gross: 1 − 1/E is (144 − 144/E)/144, and 144 is exactly what two dozenal fraction digits hold.
-    let n = 144 - 144 / evidence; // evidence ≥ 1 here, so 144/evidence ≤ 144
-    let (high, low) = (n / 12, n % 12);
-    let mut s = String::from(".");
-    s.push(char::from(0x10 + high as u8));
-    // A trailing Zil is a digit nobody earned — one dozen of evidence shows one digit, not two.
-    if low != 0 {
-        s.push(char::from(0x10 + low as u8));
-    }
-    s
 }
 
-/// A LATENCY as a DOZENAL METRIC FREQUENCY (1 Hz reads Zil, 2 Hz Zila, 4 Hz Zilor, 8 Hz Ter): the bit length of the frequency in hertz — each digit a doubling — rendered in the current base (hex reads the plain hertz, arabic the milliseconds).
-pub fn link_freq_label(rtt_ms: u32) -> String {
+/// What stands behind a reputation reading: the doubling count of everyone who spoke, for or against, with the same +1 prior — so it equals [`rep_reading`] exactly when the record is spotless, and "Zila.Ter of Zilor.Luna" says one ding on four reviews without a word.
+pub fn rep_support(praise: u64, dings: u64) -> String {
+    dms_fine(praise as f64 + dings as f64 + 1.0, 1)
+}
+
+#[cfg(test)]
+mod rep_reading_tests {
+    use super::*;
+    fn g(digits: &[u8]) -> String {
+        digits.iter().map(|d| char::from(0x10 + d)).collect()
+    }
+    /// The Base page's two restaurants: twenty thousand reviews read Zila Zilor.Ter and lose one doubling to a ding; four reviews read Zilor.Ter and lose half their standing; one for and four against is the minus of four for and one against; even is Zil; nothing yet is Zil of Zil.
+    #[test]
+    fn two_restaurants() {
+        let fine = |whole: &[u8], frac: &[u8]| format!("{DMS_UP}{}{DOZENAL_POINT}{}", g(whole), g(frac));
+        assert_eq!(rep_reading(20_000, 0), fine(&[1, 2], &[3]));
+        assert_eq!(rep_reading(20_000, 1), fine(&[1, 1], &[3]));
+        assert_eq!(rep_reading(4, 0), fine(&[2], &[3]));
+        assert_eq!(rep_reading(4, 1), fine(&[1], &[3]));
+        assert_eq!(rep_reading(1, 4), rep_reading(4, 1).replacen(DMS_UP, DMS_DOWN, 1));
+        assert_eq!(rep_reading(4, 4), fine(&[0], &[0]));
+        // Spotless: the reading is the evidence (the support carries no arrow — there is nothing below one person).
+        assert_eq!(rep_reading(0, 0), format!("{DMS_UP}{}", rep_support(0, 0)));
+        assert_eq!(rep_reading(20_000, 0), format!("{DMS_UP}{}", rep_support(20_000, 0)));
+        assert_ne!(rep_reading(4, 1), format!("{DMS_UP}{}", rep_support(4, 1)));
+    }
+}
+
+/// A ROUND TRIP as a DURATION in the current base: dozenal the doubling count of its oscillations, one fraction digit (66 ms reads Zilor Zilor.Lun; a LAN trip that rounds to no milliseconds reads as the one-millisecond floor); hex the plain seconds with a hex fraction; arabic the milliseconds. The frequency inversion is gone (2026-09-30): with time's Zil at one oscillation every span is positive, so a link is a time like any other.
+pub fn link_rtt_label(rtt_ms: u32) -> String {
     match num_base() {
-        NumBase::Dozenal => {
-            let hz = (1000.0 / rtt_ms.max(1) as f64).floor() as i64; // WHY/PROOF: a LAN round trip rounds to 0 ms, and 1000/0 is an infinite frequency
-            dozenal_glyphs(dms_log(hz.max(1) as u64).unwrap_or(0)) // WHY/PROOF: a round trip over a second floors to 0 Hz; it reads as the 1 Hz floor — slower than that is a failure, not a number
-        }
+        NumBase::Dozenal => dms_fine(rtt_ms.max(1) as f64 * OSC_PER_SEC as f64 / 1000.0, 1), // WHY/PROOF: a LAN round trip rounds to 0 ms, and the log of nothing is the bottom of the scale
         // Hex is linear in SECONDS, the fraction in hex too (Nick 2026-09-11: "0.0001A is a valid duration in seconds in hex"): no decimal prefix smuggled back in.
         NumBase::Hex => hex_seconds_ms(rtt_ms as u64),
         NumBase::Arabic => format!("{rtt_ms} ms"),
@@ -549,15 +774,15 @@ pub(crate) mod base_kat {
     #[test]
     fn a_share_is_exact_where_dozenal_promises_it() {
         let _g = hold_base(NumBase::Dozenal);
-        assert_eq!(fmt_share(1, 2), format!(".{}", g(&[6])), "a half is .Lun");
-        assert_eq!(fmt_share(1, 3), format!(".{}", g(&[4])), "A THIRD IS EXACTLY .Tera — the claim a float would break");
-        assert_eq!(fmt_share(1, 4), format!(".{}", g(&[3])), "a quarter is .Ter");
-        assert_eq!(fmt_share(1, 6), format!(".{}", g(&[2])), "a sixth is .Zilor");
-        assert_eq!(fmt_share(2, 3), format!(".{}", g(&[8])), "two thirds is .Lunor");
-        // The reputation ladder's own rungs, which the Base page prints beside this.
-        assert_eq!(fmt_share(11, 12), format!(".{}", g(&[11])), "eleven twelfths is .Stelor");
+        assert_eq!(fmt_share(1, 2), format!("{}{}", DOZENAL_POINT, g(&[6])), "a half is .Lun");
+        assert_eq!(fmt_share(1, 3), format!("{}{}", DOZENAL_POINT, g(&[4])), "A THIRD IS EXACTLY .Tera — the claim a float would break");
+        assert_eq!(fmt_share(1, 4), format!("{}{}", DOZENAL_POINT, g(&[3])), "a quarter is .Ter");
+        assert_eq!(fmt_share(1, 6), format!("{}{}", DOZENAL_POINT, g(&[2])), "a sixth is .Zilor");
+        assert_eq!(fmt_share(2, 3), format!("{}{}", DOZENAL_POINT, g(&[8])), "two thirds is .Lunor");
+        // Eleven twelfths, the share the old reputation ladder used to print beside this.
+        assert_eq!(fmt_share(11, 12), format!("{}{}", DOZENAL_POINT, g(&[11])), "eleven twelfths is .Stelor");
         // A whole is not eleven twelfths: the full share reads as the whole one.
-        assert_eq!(fmt_share(1000, 1000), format!("{}.", char::from(0x11)));
+        assert_eq!(fmt_share(1000, 1000), format!("{}{DOZENAL_POINT}", char::from(0x11)));
     }
 
     /// A small share keeps its resolution: leading zeros are placeholders, not significant digits, so a loss rate does not round away to nothing — the one reading where "almost none" and "none" must not look alike.
@@ -565,9 +790,9 @@ pub(crate) mod base_kat {
     fn a_small_share_keeps_its_digits() {
         let _g = hold_base(NumBase::Dozenal);
         let tiny = fmt_share(3, 256);
-        assert_eq!(tiny, format!(".{}", g(&[0, 1, 8])), "three in 256 is .Zil Zila Lunor");
+        assert_eq!(tiny, format!("{}{}", DOZENAL_POINT, g(&[0, 1, 8])), "three in 256 is .Zil Zila Lunor");
         assert_ne!(tiny, fmt_share(0, 256), "almost none must not read as none");
-        assert!(fmt_share(0, 256).starts_with('.'), "and none is still a share, not a bare dot");
+        assert!(fmt_share(0, 256).starts_with(DOZENAL_POINT), "and none is still a share, not a bare dot");
     }
 
     /// EVERY QUANTITY IS A MAGNITUDE IN DOZENAL (Nick 2026-09-15). Sixteen peers reads Tera — the value that started this, because a linear dozenal sixteen renders `Zila Tera` and reads like two separate digits to anyone who has been thinking in doublings.
@@ -614,9 +839,9 @@ pub(crate) mod base_kat {
         let _g = hold_base(NumBase::Hex);
         assert_eq!(hex_linear(0), "0");
         assert_eq!(hex_linear(60), "3C");
-        assert_eq!(dms_age(3600), "E10");
+        assert_eq!(dms_age(3600 * OSC_PER_SEC), "E10", "an hour of oscillations reads as its seconds");
         assert_eq!(dms_size(1 << 20), "800000");
-        assert_eq!(link_freq_label(20), "0.052", "seconds, the fraction in hex");
+        assert_eq!(link_rtt_label(20), "0.052", "seconds, the fraction in hex");
         assert_eq!(hex_seconds_ms(66), "0.10E");
         assert_eq!(hex_seconds_ms(1000), "1.000");
         assert_eq!(hex_seconds_ms(999), "0.FFC");
@@ -629,14 +854,14 @@ pub(crate) mod base_kat {
     #[test]
     fn dozenal_is_doublings() {
         let _g = hold_base(NumBase::Dozenal);
-        assert_eq!(dms_age(3600), g(&[11]), "an hour is eleven doublings of a second");
-        assert_eq!(dms_age(1), g(&[0]), "one second is the unit: Zil");
+        assert_eq!(dms_age(3600 * OSC_PER_SEC), g(&[3, 6]), "an hour is forty-two doublings of one oscillation");
+        assert_eq!(dms_age(1), g(&[0]), "one oscillation is the unit: Zil");
         assert_eq!(dms_age(0), "now", "zero has no logarithm and reads as a word");
         assert_eq!(dms_size(1 << 20), g(&[1, 11]), "a megabyte is twenty-three doublings of a bit");
         assert_eq!(dms_size(0), "empty");
-        assert_eq!(link_freq_label(20), g(&[5]), "50 Hz is five doublings");
-        assert_eq!(fmt_halves(3), format!("+{}.{}", g(&[1]), g(&[6])));
-        assert_eq!(fmt_halves(-1), format!("-{}.{}", g(&[0]), g(&[6])));
+        assert_eq!(link_rtt_label(20), format!("{}{DOZENAL_POINT}{}", g(&[2, 0]), g(&[9])), "a round trip is a duration: twenty milliseconds is twenty-four doublings and nine twelfths of one oscillation");
+        assert_eq!(fmt_halves(3), format!("{DMS_UP}{}{DOZENAL_POINT}{}", g(&[1]), g(&[6])));
+        assert_eq!(fmt_halves(-1), format!("{DMS_DOWN}{}{DOZENAL_POINT}{}", g(&[0]), g(&[6])));
         assert_eq!(unit_size(1024, SizeUnit::KiB), format!("{} KiB", g(&[1])));
         assert_eq!(fmt_num64(1 << 40), dozenal_bytes(1 << 40));
     }
@@ -644,8 +869,8 @@ pub(crate) mod base_kat {
     #[test]
     fn arabic_is_the_ledger_world() {
         let _g = hold_base(NumBase::Arabic);
-        assert_eq!(dms_age(3600), "11");
-        assert_eq!(link_freq_label(20), "20 ms");
+        assert_eq!(dms_age(3600 * OSC_PER_SEC), "42");
+        assert_eq!(link_rtt_label(20), "20 ms");
         assert_eq!(fmt_halves(3), "+1.5");
         assert_eq!(fmt_halves(2), "+1.0");
         assert_eq!(fmt_halves(-1), "-0.5");
@@ -659,15 +884,15 @@ pub(crate) mod base_kat {
     #[test]
     fn lengths_count_doublings_of_the_hydrogen_line() {
         assert_eq!(length_doublings(HYDROGEN_LINE_METRES), 0);
-        assert_eq!(dms_doublings_spell(0), "Zil", "the unit itself reads Zil: a pure logarithm");
-        assert_eq!(dms_doublings_spell(length_doublings(0.19)), "\u{2212}Zila");
-        assert_eq!(dms_doublings_spell(length_doublings(1.7)), "Ter");
-        assert_eq!(dms_doublings_spell(length_doublings(3.844e8)), "Zilor Lun");
-        assert_eq!(dms_doublings_spell(length_doublings(1.616e-35)), "\u{2212}Stel Lun");
-        assert_eq!(dms_doublings_spell(length_doublings(8.8e26)), "Luna Luna");
+        assert_eq!(dms_doublings_spell(0), format!("{DMS_UP}Zil"), "the unit itself reads ↑Zil: a pure logarithm, the arrow always shown");
+        assert_eq!(dms_doublings_spell(length_doublings(0.19)), format!("{DMS_DOWN}Zila"));
+        assert_eq!(dms_doublings_spell(length_doublings(1.7)), format!("{DMS_UP}Ter"));
+        assert_eq!(dms_doublings_spell(length_doublings(3.844e8)), format!("{DMS_UP}Zilor Lun"));
+        assert_eq!(dms_doublings_spell(length_doublings(1.616e-35)), format!("{DMS_DOWN}Stel Lun"));
+        assert_eq!(dms_doublings_spell(length_doublings(8.8e26)), format!("{DMS_UP}Luna Luna"));
         let _g = hold_base(NumBase::Dozenal);
-        assert_eq!(dms_length(1.7), g(&[3]));
-        assert_eq!(dms_length(0.19), format!("\u{2212}{}", g(&[1])));
+        assert_eq!(dms_length(1.7), format!("{DMS_UP}{}", g(&[3])));
+        assert_eq!(dms_length(0.19), format!("{DMS_DOWN}{}", g(&[1])));
     }
 }
 

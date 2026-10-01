@@ -284,9 +284,6 @@ pub enum Msg<'a> {
     ThisDeviceName(&'a str),
     CopyWords,
     WordsCopied,
-    /// The Base page: put the twelve dozenal digits on the clipboard (Nick 2026-09-16: "use them in casual conversation").
-    CopyDigits,
-    DigitsCopied,
     LaunchJoinInstructions,
     LaunchJoinConfirmNote,
     StartFreshIdle,
@@ -343,7 +340,7 @@ pub enum Msg<'a> {
     // ---- the Dozenal page ----
     DmsHead,
     DmsIntro,
-    /// Plain reading of a DMS value (bit length of seconds ago) — the legend's third column; empty for values the legend doesn't list.
+    /// Plain reading of a time-ago rung, keyed by the DOUBLING COUNT OF OSCILLATIONS (0 one oscillation, 20 a millisecond, 24 a frame, 30 a second, 36 a minute, 42 an hour, 46 a day, 51 a month, 55 a year, 61 a lifetime, 89 the age of the universe); empty for values the legend doesn't list.
     DmsReading(u32),
     /// The size legend on the Dozenal page: sizes count doublings of a BIT, so a byte is four.
     DmsSizeHead,
@@ -358,15 +355,15 @@ pub enum Msg<'a> {
     DmsUnitsHead,
     DmsUnitsProse,
     /// REPUTATION, the reason the scaling exists (docs/dozenal.md): five sections on the Base page's dozenal arm — what a grade is, how one fills, why the set never totals, and what stands behind it.
-    /// The grade is a SHARE (the third numeral form: a radix point and up to two digits), and its support is a DOUBLING COUNT — two axes that deliberately cannot be added into one, because any single scalar is a score once people sort by it.
+    /// LOG FORM (2026-09-30): the grade is a signed DOUBLING COUNT of praise over dings, and beside it the doubling count of everyone who spoke — two axes that deliberately cannot be added into one, because any single scalar is a score once people sort by it.
     RepHead,
     RepProse,
     RepOneHead,
     RepOneProse,
     RepFillHead,
     RepFillProse,
-    /// One rung of the fill ladder, keyed by the EVIDENCE count behind the grade (1, 2, 3, 4, 6, 12, 144) — every rung a unit fraction, which is why they land exactly in dozenal and repeat forever in decimal.
-    RepLadderReading(u32),
+    /// One row of the reputation ladder, keyed by ROW INDEX — the two restaurants and the spotless rungs; the reading and its support are computed at the render edge (rep_reading / rep_support), never typed.
+    RepRow(u32),
     RepNoTotalHead,
     RepNoTotalProse,
     RepBehindHead,
@@ -380,6 +377,41 @@ pub enum Msg<'a> {
     /// Zero has no logarithm: an age of nothing and a size of nothing read as words (pure-log DMS, 2026-09-11).
     DmsNow,
     DmsEmpty,
+    // ---- THE BASE PAGE LESSON (Nick 2026-09-30: "a good formal edgumacation … splain how this shiz works with 1+1"), in reading order ----
+    /// How the twelve digit names carry their values: four stems by threes, three endings by ones. Sits above the cheat sheet.
+    DigitsNamingProse,
+    /// Counting and adding in plain dozenal digits — carrying at twelve, Lun plus Lun is Zila Zil, the exact fractions.
+    CountHead,
+    CountProse,
+    /// Arithmetic on DOUBLING COUNTS: multiply by adding, divide by subtracting, and the awkward add (the bigger wins, the smaller nudges).
+    MagArithHead,
+    MagArithProse,
+    /// One row of the add ladder, keyed by row index; the value is computed at the render edge from real bit counts.
+    MagAddRow(u32),
+    /// The fraction digits of a doubling count: four digits, half a percent.
+    FineHead,
+    FineProse,
+    /// One row of the four-digit mass ladder, keyed by row index (a newborn … a car); values computed in hydrogens.
+    FineReading(u32),
+    /// "Let's imagine": the scales photon does not show yet, all read off the same atom — speed, temperature, mass. Rows keyed by index; every value computed from the anchors in lib.rs.
+    ImagineHead,
+    ImagineProse,
+    ImagineSpeedHead,
+    ImagineSpeedIntro,
+    ImagineSpeedReading(u32),
+    ImagineTempHead,
+    ImagineTempIntro,
+    ImagineTempReading(u32),
+    ImagineMassHead,
+    ImagineMassIntro,
+    ImagineMassReading(u32),
+    /// THE LIVE BLOCK at the top of the Base page (Nick 2026-10-01): the clock as a share of today and the time since the page opened as a magnitude, each with its reading pre-rendered in the current base.
+    LiveHead,
+    LiveProse,
+    LiveClockLabel,
+    LiveSinceLabel,
+    /// Day of the week as a WORD, Monday = 0 … Sunday = 6 (seven is coprime to twelve, so weekdays never get glyphs — docs/dozenal.md).
+    Weekday(u32),
     // ---- base page (2026-09-10) ----
     /// Early note on the dozenal page: time and size are logarithmic (Dozenal Metric Scaling).
     BaseLogNote,

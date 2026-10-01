@@ -2320,6 +2320,10 @@ pub struct PhotonApp {
     about_version_spelled: bool,
     /// One tap on the version reveals the dozenal index; ONE tap within the index reveals the custodian riddle easter egg beneath it (session-permanent once found, hidden with the index when the version collapses).
     about_riddle_revealed: bool,
+    /// The oscillation stamp of the moment the Base page was opened — the zero of its live "since you opened this" counter (Nick 2026-10-01). Re-stamped on every entry to the page; None until the first.
+    base_opened_osc: Option<i64>,
+    /// The live readings as last seen by tick() (the clock, the since-opened counter, a selected message's age), concatenated — tick repaints only when this string changes, so a digit edge lands exactly one frame and an unrelated tick (a cursor blink) lands none.
+    live_last: String,
 
     /// This node's own reflexive (public) address, learned via peer-echoed reflection (see [`crate::network::traverse::reflexive`]). `None` until the first signed pong / `ReflectResponse` echo. Fed forward to candidate gathering and the FGTW announce so our published address is the one seen on the live UDP data socket — not fgtw.org's TLS-flow `cf-connecting-ip`, which is only right for cone NATs.
     our_reflexive: Option<std::net::SocketAddr>,
@@ -2907,6 +2911,8 @@ impl PhotonApp {
             signing_bundle: None,
             about_version_spelled: false,
             about_riddle_revealed: false,
+            base_opened_osc: None,
+            live_last: String::new(),
         }
     }
 
@@ -3587,9 +3593,37 @@ fn is_private_addr(ip: &std::net::IpAddr) -> bool {
     }
 }
 
-/// Stamp `hit_id` into every pixel of `hit_map` whose centre is inside the circle at `(cx, cy)` with radius `radius`. Bbox-clipped to the buffer extent; squared-distance test, no sqrt.
-fn stamp_hit_circle(
+/// CONTENT hit stamps RIDE THE PAINT DECISION (Nick 2026-10-01: "when we paint under we get a bool; if we never painted that pixel because something was there, skip the hit map"). fluor is front to back: the chrome is flattened into `target` before any content, opaque where it owns a pixel (the controls strip, the orb), and the under-blend's early-out skips exactly those pixels when content paints. These two stampers take the same decision from the same bit — a pixel already opaque is not ours — and so must run BEFORE the content they stamp for paints (its own paint would make the pixel opaque). The blind forms below stay for CLEARS and for the deliberate after-paint re-wins (a button reclaiming its silhouette over the widget it overlays), which cannot read opacity by then. The modal full-screen wave wipe fills the map directly.
+fn stamp_hit_rect_under(
     hit_map: &mut [HitId],
+    pixels: &[u32],
+    buf_w: usize,
+    buf_h: usize,
+    x0: isize,
+    y0: isize,
+    x1: isize,
+    y1: isize,
+    hit_id: HitId,
+) {
+    let xs = x0.max(0) as usize; // WHY/PROOF: a rect that starts offscreen (negative isize) — the usize cast would wrap
+    let ys = y0.max(0) as usize;
+    let xe = (x1.max(0) as usize).min(buf_w);
+    let ye = (y1.max(0) as usize).min(buf_h);
+    for y in ys..ye {
+        let row_base = y * buf_w;
+        for x in xs..xe {
+            let i = row_base + x;
+            if pixels[i] < 0xFF00_0000 {
+                hit_map[i] = hit_id;
+            }
+        }
+    }
+}
+
+/// The circle twin of [`stamp_hit_rect_under`]: every pixel whose centre is inside the circle AND that nothing opaque has painted yet.
+fn stamp_hit_circle_under(
+    hit_map: &mut [HitId],
+    pixels: &[u32],
     buf_w: usize,
     buf_h: usize,
     cx: f32,
@@ -3611,8 +3645,9 @@ fn stamp_hit_circle(
         let row_base = y * buf_w;
         for x in x_min..x_max {
             let dx = (x as f32 + 0.5) - cx;
-            if dx * dx + dy2 <= r2 {
-                hit_map[row_base + x] = hit_id;
+            let i = row_base + x;
+            if dx * dx + dy2 <= r2 && pixels[i] < 0xFF00_0000 {
+                hit_map[i] = hit_id;
             }
         }
     }
@@ -4170,6 +4205,49 @@ pub(super) fn centered_wrapped(
 
 /// Flow-aware action pills (Nick 2026-09-02: "have button A and button B be on distinct lines if the width starts to clamp on the inside text"): each pill sizes to its MEASURED label at the natural font (matching draw_pill_immediate's h×0.5 + 1.6-em padding, so the fit-to-slot shrink never engages); pills lay side-by-side while the pane holds them and WRAP onto a fresh band when it can't — a label never squeezes. Returns nothing; the flow cursor ends past the last band.
 #[allow(clippy::too_many_arguments)]
+/// A Base-page SECTION: a centred heading, then '\n'-joined prose paragraphs, each wrapped to the card width. Returns the cursor below it. The page is a lesson of a dozen such sections, so the shape lives here once.
+pub(super) fn base_section(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    cx: Coord,
+    wrap_w: Coord,
+    mut y: Coord,
+    head: &str,
+    prose: &str,
+    head_style: &TextStyle,
+    prose_style: &TextStyle,
+    line_h: Coord,
+    clip: Option<fluor::paint::Clip>,
+) -> Coord {
+    y += line_h * 0.4;
+    text.draw_text_center(canvas, head, cx, y + line_h * 0.5, head_style, clip, None);
+    y += line_h;
+    for line in prose.lines() {
+        y = centered_wrapped(canvas, text, cx, wrap_w, y, line, prose_style, line_h * 0.8, clip);
+        y += line_h * 0.3;
+    }
+    y
+}
+
+/// A Base-page LADDER: one centred row per entry, pre-formatted by the caller ("value  spelled  reading"). Returns the cursor below it.
+pub(super) fn base_rows(
+    canvas: &mut Canvas,
+    text: &mut fluor::text::TextRenderer,
+    cx: Coord,
+    mut y: Coord,
+    rows: &[String],
+    cell_style: &TextStyle,
+    line_h: Coord,
+    clip: Option<fluor::paint::Clip>,
+) -> Coord {
+    y += line_h * 0.3;
+    for row in rows {
+        text.draw_text_center(canvas, row, cx, y + line_h * 0.5, cell_style, clip, None);
+        y += line_h * 0.9;
+    }
+    y
+}
+
 pub(super) fn flow_pills(
     flow: &mut Flow,
     canvas: &mut Canvas,
@@ -4236,6 +4314,7 @@ thread_local! {
 pub(super) fn set_stub_hover(hit: HitId) {
     STUB_HOVER_HIT.with(|c| c.set(hit));
 }
+
 
 fn stub_hover() -> HitId {
     STUB_HOVER_HIT.with(|c| c.get())
