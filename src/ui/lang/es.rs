@@ -581,7 +581,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveLastReaim { voiced, from, to } => format!("reajustado con {voiced}: {from}× → {to}×").into(),
         Msg::WaveLastJitter { underruns, trims } => format!("{underruns} huecos de búfer, {trims} cuadros descartados").into(),
         Msg::WavePrefsHead => "Preferencias".into(),
-        Msg::PlaidOffLan => "Probar audio crudo (plaid) fuera de la red local".into(),
         Msg::DiagInfo { used, cap, pct } => format!("Registro en el dispositivo \u{00b7} {used} de {cap} ({}%) \u{00b7} caduca solo en {}\u{2013}{}h", fmt_num(pct as u32), fmt_num(24), fmt_num(48)).into(),
         Msg::LogTitle => "Registro".into(),
         Msg::DiagBack => "Atrás".into(),

@@ -831,7 +831,6 @@ pub enum Msg<'a> {
     WaveLastJitter { underruns: &'a str, trims: &'a str },
     /// "Preferences" — the toggles section head.
     WavePrefsHead,
-    PlaidOffLan,
     LogTitle,
     DiagBack,
     DiagClear,

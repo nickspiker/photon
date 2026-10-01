@@ -6427,12 +6427,10 @@ impl PhotonApp {
                     let ring_wave = tr(Msg::RingIncomingWave);
                     let vib_wave = tr(Msg::VibrateIncomingWave);
                     let wave_hold = tr(Msg::HoldWavesOnDevice);
-                    let plaid_wan = tr(Msg::PlaidOffLan);
-                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 4] = [
+                    let boxes: [(Option<&mut fluor::widgets::Checkbox>, &str); 3] = [
                         (self.settings_ring_wave_check.as_mut(), &*ring_wave),
                         (self.settings_vibrate_wave_check.as_mut(), &*vib_wave),
                         (self.settings_wave_hold_check.as_mut(), &*wave_hold),
-                        (self.settings_plaid_wan_check.as_mut(), &*plaid_wan),
                     ];
                     for (cb, label) in boxes {
                         let Some(cb) = cb else { continue };

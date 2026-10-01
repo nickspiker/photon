@@ -524,17 +524,6 @@ impl PhotonApp {
             }
             crate::platform::audio::set_route_volumes(vols);
         }
-        // Plaid beyond the LAN: linked, absent = ON.
-        let plaid_wan = self
-            .fleet_settings
-            .as_ref()
-            .and_then(|fs| fs.effective("waves.plaid_wan"))
-            .and_then(crate::storage::fleet_settings::as_bool)
-            .unwrap_or(true);
-        crate::wave::PLAID_WAN_ALLOWED.store(plaid_wan, std::sync::atomic::Ordering::Relaxed);
-        if let Some(cb) = self.settings_plaid_wan_check.as_mut() {
-            cb.set_checked(plaid_wan);
-        }
         // Show edit history: linked (a view preference follows the person), absent = OFF — today's clean look until opted in.
         self.chat_history = self
             .fleet_settings

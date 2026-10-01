@@ -585,7 +585,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveLastReaim { voiced, from, to } => format!("i whakatikahia i runga i te {voiced}: {from}× → {to}×").into(),
         Msg::WaveLastJitter { underruns, trims } => format!("{underruns} āputa pūkoro, {trims} anga i tukuna").into(),
         Msg::WavePrefsHead => "Ngā hiahia".into(),
-        Msg::PlaidOffLan => "Whakamātau i te oro matatahi (plaid) i tua atu i te whatunga o konei".into(),
         Msg::DiagInfo { used, cap, pct } => format!("Rangitaki ā-pūrere \u{00b7} {used} o {cap} ({}%) \u{00b7} ka pau i te {}\u{2013}{}h", fmt_num(pct as u32), fmt_num(24), fmt_num(48)).into(),
         Msg::LogTitle => "Rangitaki".into(),
         Msg::DiagBack => "Hoki".into(),

@@ -43,16 +43,7 @@ const RAW_FRAME_BYTES: usize = FRAME_SAMPLES * 2;
 const PLAID_CLIMB_CLEAN_WINDOWS: u32 = 100;
 /// Lost windows inside LOSS_WINDOW that push a plaid wave back to 128 kbps: 20 of ~400 = a 5 % loss rate. Below that the crispies are the price of the hot buffer.
 const PLAID_LOSSES_TO_DROP: usize = 20;
-// PLAID ANYWHERE THE PATH HAS HEADROOM (Nick 2026-09-14: "my waves from here to Pennsylvania on my 350 megabit interwebs and his gig interwebs should be plaid all the way down"). The LAN gate was a proxy for bandwidth; the honest gate is the path itself: a queue that is filling shows up as RTT GROWTH before it shows up as loss (bufferbloat's tell), so the raw rung is earned only while the RTT floor has not risen, and one loss cluster at plaid steps straight back to the codec (drop-hold waived for that edge). Plaid's loss behaviour is BETTER than Opus's (memoryless: one lost 5 ms datagram is exactly 5 ms of hole with a fade at each edge; CELT's overlap-add damages the neighbour and synthesizes the splice) — the only thing the 768 kbps costs is headroom, and headroom is what this measures.
-/// The raw rung is off the table while the recent RTT floor sits this far above the wave's own floor: a queue is building somewhere on the path.
-const PLAID_RTT_GROWTH_MS: u32 = 40;
-/// Off-LAN, the raw rung also wants a LOSS-FREE recent history — the RTT floor is blind to radio loss (field 2026-09-14, Nick/Emma on cellular: eight 16↔32 kbps flaps with 876 windows lost in twenty seconds, then a clean second and the ladder climbed 32→64→128→plaid in three seconds, and Nick's cellular uplink drowned under 768 kbps — Emma's receive fell to 152 fps with nothing to declare lost). No loss cluster inside this window, and the loss ring near-empty, before plaid is earned away from home.
-const PLAID_OFF_LAN_LOSS_QUIET: std::time::Duration = std::time::Duration::from_secs(30);
-const PLAID_OFF_LAN_RING_MAX: usize = 2;
-/// Off-LAN plaid on probation also drops on RECEIVE STARVATION: a window at plaid whose underruns grew by this many is a drowned uplink on the far side (its packets never arrive, so no hole is ever declared to trip the loss drop).
-const PLAID_PROBATION_UNDERRUNS: u32 = 5;
-/// Two probation failures in one wave and plaid is off for the rest of it: the path has said what it can carry (Nick's link measured 0.93/1.03 Mbps during the cellular wave — 768 kbps of raw PCM is the whole pipe). The codec rungs stay live; only the raw rung retires.
-const PLAID_PROBATION_STRIKES: u32 = 2;
+// PLAID IS A LAN RUNG (Nick 2026-10-01, "no plaid on WAN, no reason"): the raw rung is offered only on a LAN-class direct path. The off-LAN "plaid on headroom" probation of 2026-09-14 is gone with its strikes — the Jeff/Nick waves of 2026-10-01 climbed to raw PCM on two Verizon uplinks within seven seconds of every wave, got demoted, climbed again, and five to eight percent of every 5 ms frame arrived too late to play: the fishtank.
 // LOSS-RATE JITTER LOOP (Nick 2026-09-10: "we just always assume packet loss and we PID loop it to keep packet loss under 1/256 and fill in the rest"): a late window is a lost window, never waited for; a 256-slot ring (u8 index, ~1.3-2.5 s — an Earth round trip is under half a second) records lost/played per window slot (an underrun since the last window counts as lost too); the loop drives the jitter TARGET so the loss rate sits at LOSS_SETPOINT. Error in STOPS (log2 of measured over setpoint, floored at −4 stops for a clean window), P + a slow I, no D (loss is too noisy for it). A hole plays as its own silence at its own instant (named playout, 2026-09-25) — never faded, never synthesized.
 const LOSS_RING: usize = 256;
 const LOSS_SETPOINT: f32 = 1.0 / 512.0; // 2026-09-15: the loop HELD the 1/256 setpoint exactly — 50 five-millisecond gaps a minute at plaid, every one audible; "under 1/256" wants the setpoint below the ceiling
@@ -85,8 +76,6 @@ fn target_latency(ages: &std::collections::VecDeque<i64>) -> i64 {
 const LINK_TAIL_V2: usize = 11;
 /// THE LATENCY TAIL (Nick 2026-09-28, "show our and their latency below the avatar"): once a second the tail grows by a u16 — OUR playout latency l in whole ms — so the peer can show how late its voice plays for us. Only one packet a second carries it: an older peer, whose parser accepts only 10/11-byte tails, drops that one packet and its repair copy covers it.
 const LINK_TAIL_V3: usize = 13;
-/// A plaid-probation sender being asked for this many fill windows in one second IS the peer saying "I am not receiving you" — the belt-and-suspenders far-loss signal that works even against a peer whose tail bytes cannot get thru (and against v96 peers).
-const PLAID_FILL_ASK_DROP_PER_SEC: u32 = 20;
 // DELAY-GRADIENT GOVERNANCE (Nick 2026-09-14: "if it's 20,22,24,26,28,31 then I know I'm over" — exactly LEDBAT/BBR's observation, made quantitative): a queue growing at slope s seconds-per-second means send rate R exceeds capacity C with s = (R−C)/C, so C = R/(1+s). The RTT is min-filtered per 100 ms bucket (cellular grant jitter is spike noise; the min is immune), the slope is the endpoints' gradient over ~1 s of buckets, and a drop jumps DIRECTLY to the rung under 0.85·C — one right-sized step instead of a staircase, and it fires while the queue is still BUILDING, seconds before the ema-over-floor check or any loss.
 /// Slope above this (ms of RTT growth per second) convicts a building queue and computes the drop.
 const SLOPE_DROP_MS_PER_SEC: f32 = 50.0;
@@ -98,8 +87,6 @@ const SLOPE_CAPACITY_MARGIN: f32 = 0.85;
 const PEER_LOSS_CATASTROPHIC: u32 = 20;
 /// The corroborating-queue threshold for a loss drop: ema this far over the floor says the loss is congestion's.
 const LOSS_BLOAT_CORROBORATION_MS: f32 = 100.0;
-/// BUFFERBLOAT'S OTHER TELL (field 2026-09-14 17:30, the double-plaid cellular wave: per-window loss near zero yet RTT ema climbed 60 ms → 3.5 s while the FLOOR held 38 — under a standing queue the min slips thru but the mean drowns): off-LAN plaid drops, and the raw rung is barred, while the RTT ema sits this far above the wave's floor.
-const PLAID_RTT_EMA_BLOAT_MS: f32 = 250.0;
 // RECORDING FILLS (Nick 2026-09-10: "get the missing pieces the other party has… fill in as we go and only lose a second or so"): what one side lost is exactly what the other side SENT and spooled, so every window this side declares lost is asked back over a FILL datagram (packet.rs FILL_MAGIC, its own chain), and the peer serves it straight off its spool by window seq. Fills go to the RECORDING only (FILL_FLAG records slotted by seq at transcode) — the live ear already heard the hole. After hangup both engines DRAIN: audio off, the wanted list (declared losses + the tail up to the peer's final window) asked in bulk, each side exits when both are satisfied or the drain deadline passes.
 /// Window seqs asked per fill datagram.
 const FILL_REQ_PER_PACKET: usize = 8;
@@ -314,8 +301,6 @@ fn run(
     let mut peer = params.peer_addr;
     // The plaid gate as the engine LIVES it: seeded by the spawn's read of the initial address, re-evaluated on every media re-point (see "PLAID FOLLOWS THE PATH").
     let mut plaid_allowed = params.plaid_allowed;
-    // Off-LAN plaid probation failures this wave (see PLAID_PROBATION_STRIKES).
-    let mut plaid_strikes: u32 = 0;
     // seq IS the window id — one datagram per window, no independent counter to drift.
     let mut window_id: u32 = 0;
     // The completed window's repair symbol (tier, bytes), waiting to piggyback on the NEXT window's datagram.
@@ -446,15 +431,12 @@ fn run(
     let mut peer_loss_max_wave: u32 = 0;
     let mut peer_sends_loss = false;
     let mut last_peer_loss_at: Option<std::time::Instant> = None;
-    let mut fill_asks_sec: u32 = 0;
     // Delay-gradient state: the current 100 ms bucket's min RTT, its start, and the last ~1 s of bucket minima.
     let mut slope_bucket_min: u32 = u32::MAX;
     let mut slope_bucket_at = std::time::Instant::now();
     let mut slope_buckets: std::collections::VecDeque<u32> = std::collections::VecDeque::with_capacity(10);
     let mut last_slope_drop = std::time::Instant::now() - std::time::Duration::from_secs(10);
     let (mut rtt_min, mut rtt_max, mut rtt_ema, mut rtt_n) = (u32::MAX, 0u32, 0f32, 0u64);
-    // The plaid headroom tell: the min RTT over the last ~1 s of samples (a floor that has risen = a queue standing on the path). Rebuilt per window from `win_rtt_min`.
-    let mut recent_rtt_floor: u32 = u32::MAX;
     let (mut win_rtt_min, mut win_rtt_max, mut win_rtt_n) = (u32::MAX, 0u32, 0u64);
     let mut win_losses_at = 0u32;
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
@@ -493,7 +475,7 @@ fn run(
         peer,
         TIER_RATES[0] / 1000,
         TIER_RATES[TIER_RATES.len() - 1] / 1000,
-        if plaid_allowed { ", plaid armed (LAN)" } else { ", plaid on headroom (RTT floor must hold)" },
+        if plaid_allowed { ", plaid armed (LAN)" } else { ", plaid off (not a LAN path)" },
         TIER_RATES[0] / 1000,
         TIER_FRAMES[0],
         REPAIR_PACKETS,
@@ -816,7 +798,7 @@ fn run(
                 peer_windows = Some(msg.windows);
                 peer_draining = msg.draining;
                 peer_satisfied = msg.satisfied;
-                fill_asks_sec += msg.reqs.len() as u32; // reset every second; a datagram carries at most FILL_REQ_PER_PACKET asks
+                // (The fill-ask count used to drive the off-LAN plaid probation drop; the raw rung is LAN-only now.) FILL_REQ_PER_PACKET asks
                 for r in msg.reqs {
                     if serve_queue.len() < FILL_WANTED_CAP {
                         serve_queue.insert(r);
@@ -1087,17 +1069,8 @@ fn run(
                     let peer_quiet = |d: std::time::Duration| !peer_sends_loss || last_peer_loss_at.map_or(true, |t| now.duration_since(t) >= d);
                     let next = pending_tier + 1;
                     let need = if next == RAW_TIER { PLAID_CLIMB_CLEAN_WINDOWS } else { CLIMB_CLEAN_WINDOWS };
-                    // Plaid climbs anywhere the path has headroom: the recent RTT floor must sit within PLAID_RTT_GROWTH_MS of the wave's own floor.
-                    // The floor in hand: the current window's min once it has a hundred samples (~half a second), else the last closed window's.
-                    let floor_now = if win_rtt_n >= 100 { win_rtt_min } else { recent_rtt_floor };
-                    let loss_quiet = last_tier_drop.map_or(true, |t| now.duration_since(t) >= PLAID_OFF_LAN_LOSS_QUIET)
-                        && recent_losses.iter().all(|t| now.duration_since(*t) >= PLAID_OFF_LAN_LOSS_QUIET)
-                        && loss_bits.iter().map(|w| w.count_ones() as usize).sum::<usize>() <= PLAID_OFF_LAN_RING_MAX;
-                    let ema_calm = rtt_n == 0 || rtt_min == u32::MAX || rtt_ema - rtt_min as f32 <= PLAID_RTT_EMA_BLOAT_MS;
-                    let headroom = rtt_min != u32::MAX && floor_now != u32::MAX && floor_now - rtt_min <= PLAID_RTT_GROWTH_MS && loss_quiet && ema_calm && plaid_strikes < PLAID_PROBATION_STRIKES;
-                    // The Wave page's off-LAN plaid preference (default on): OFF confines the raw rung to a LAN-class path however much headroom the WAN shows.
-                    let wan_ok = super::PLAID_WAN_ALLOWED.load(Ordering::Relaxed);
-                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || (plaid_allowed || (headroom && wan_ok)));
+                    // The raw rung is a LAN rung: nothing beyond 128 kbps off a LAN-class direct path, whatever the headroom says.
+                    let allowed = next < TIER_RATES.len() && (next != RAW_TIER || plaid_allowed);
                     let peer_ok = if next == RAW_TIER { peer_quiet(std::time::Duration::from_secs(10)) } else { peer_quiet(CLIMB_HOLD) };
                     // Delay-gradient climb gate: a building queue (slope past calm) bars every climb — the earliest congestion signal there is.
                     let slope_calm = slope_buckets.len() < 5 || {
@@ -1128,18 +1101,6 @@ fn run(
                     // Loss loop: a played window slot (an underrun since the last slot counts as lost — silence reached the ear either way).
                     let underruns = crate::platform::audio::jitter_stats().2;
                     let lost = underruns > last_underruns;
-                    // PROBATION STARVATION DROP: plaid off-LAN with underruns piling up is the far uplink drowning under 768 kbps — nothing arrives, so no hole is ever declared and the loss drop never trips. Step back to the codec and mark the drop so the loss-quiet window holds plaid off for a while.
-                    if pending_tier == RAW_TIER && !plaid_allowed && (underruns - last_underruns) as u32 >= PLAID_PROBATION_UNDERRUNS {
-                        pending_tier = RAW_TIER - 1;
-                        tier_downs += 1;
-                        plaid_strikes += 1;
-                        let now = std::time::Instant::now();
-                        last_tier_change = now;
-                        last_tier_drop = Some(now);
-                        recent_losses.clear();
-                        clean_rx_windows = 0;
-                        crate::logf!("WAVE: tier down → {} kbps (plaid on probation: {} underruns in one window — the far uplink is drowning)", TIER_RATES[pending_tier] / 1000, underruns - last_underruns);
-                    }
                     last_underruns = underruns;
                     jitter_target = loss_loop_step(&mut loss_bits, &mut loss_pos, &mut loss_integ, lost, TIER_FRAMES[tier]);
                     np = np.wrapping_add(1);
@@ -1162,15 +1123,11 @@ fn run(
                         recent_losses.pop_front();
                     }
                     // Plaid drops on a loss RATE (the crispies are the deal); every Opus rung drops on a clustered pair — and never twice inside DROP_HOLD (2026-09-10: one burst of lost windows cascaded plaid → 128 → 64 → 32 → 16 in a single tick; one rung per burst is the rule).
-                    // Plaid on a LAN-class path tolerates the crispies (a loss RATE); plaid on any other path is on probation — the first clustered pair steps it back to the codec, drop-hold waived.
-                    let plaid_probation = pending_tier == RAW_TIER && !plaid_allowed;
-                    let need = if pending_tier == RAW_TIER && !plaid_probation { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
-                    let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                    // Plaid (a LAN rung now) tolerates the crispies — a loss RATE drops it; every Opus rung drops on a clustered pair.
+                    let need = if pending_tier == RAW_TIER { PLAID_LOSSES_TO_DROP } else { LOSSES_TO_DROP };
+                    let drop_held = last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                     // Against a loss-byte peer, OUR rx loss no longer drops OUR tier (the cross-wired loop that flapped Nick's innocent tx while his rx drowned) — the peer's byte drives the drop in the 1 s cadence below. A v96 peer keeps the old local governance.
                     if !peer_sends_loss && recent_losses.len() >= need && pending_tier > 0 && drop_held {
-                        if plaid_probation {
-                            plaid_strikes += 1;
-                        }
                         // WHY/PROOF: the ladder's floor — a loss at the bottom rung stays at the bottom rung (0), never wraps to a rung that does not exist.
                         pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                         tier_downs += 1;
@@ -1334,7 +1291,6 @@ fn run(
                     clk.uncertainty_ns / 1000,
                     if clk.degraded() { " (DEGRADED — grid alignment not guaranteed)" } else { "" }
                 );
-                recent_rtt_floor = if win_rtt_n > 0 { win_rtt_min } else { u32::MAX };
                 win_rtt_min = u32::MAX;
                 win_rtt_max = 0;
                 win_rtt_n = 0;
@@ -1414,8 +1370,7 @@ fn run(
             // PEER-LOSS TIER GOVERNANCE (the 1 s verdict): the max loss byte the peer reported this second is their receive of OUR transmit. ≥2 = the AIMD drop edge for OUR tier — the direction this tier actually controls.
             {
                 let now = std::time::Instant::now();
-                let plaid_probation = pending_tier == RAW_TIER && !plaid_allowed;
-                let drop_held = plaid_probation || last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
+                let drop_held = last_tier_drop.map_or(true, |t| now.duration_since(t) >= DROP_HOLD);
                 // Radio loss vs congestion loss: flat delay = fades, and a lower tier would lose just as much — hold and let the fills carry it. Delay agreeing (ema over floor, or a building slope) = a queue = drop.
                 let queue_agrees = (rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > LOSS_BLOAT_CORROBORATION_MS)
                     || (slope_buckets.len() >= 5 && {
@@ -1426,9 +1381,6 @@ fn run(
                     crate::logf!("WAVE: peer reported {} lost with a flat queue (ema {:.0} over floor {}) — radio loss, holding {} kbps", peer_loss_sec_max, rtt_ema, if rtt_min == u32::MAX { 0 } else { rtt_min }, TIER_RATES[pending_tier] / 1000);
                 }
                 if peer_loss_sec_max >= LOSSES_TO_DROP as u32 && pending_tier > 0 && drop_held && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC) {
-                    if plaid_probation {
-                        plaid_strikes += 1;
-                    }
                     // WHY/PROOF: the ladder's floor — a loss at the bottom rung stays at the bottom rung (0), never wraps to a rung that does not exist.
                     pending_tier = pending_tier.saturating_sub(DROP_RUNGS_ON_LOSS);
                     tier_downs += 1;
@@ -1452,9 +1404,6 @@ fn run(
                             }
                         }
                         if target < pending_tier {
-                            if pending_tier == RAW_TIER && !plaid_allowed {
-                                plaid_strikes += 1;
-                            }
                             tier_downs += 1;
                             pending_tier = target;
                             last_tier_change = now;
@@ -1466,28 +1415,7 @@ fn run(
                         }
                     }
                 }
-                // BUFFERBLOAT DROP: at off-LAN plaid with the ema drowned over the floor, step down and strike — the standing queue is ours to drain.
-                if pending_tier == RAW_TIER && !plaid_allowed && rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > PLAID_RTT_EMA_BLOAT_MS {
-                    plaid_strikes += 1;
-                    pending_tier = RAW_TIER - 1;
-                    tier_downs += 1;
-                    last_tier_change = now;
-                    last_tier_drop = Some(now);
-                    clean_rx_windows = 0;
-                    crate::logf!("WAVE: tier down → {} kbps (plaid on probation: rtt ema {:.0} ms over a {} ms floor — a standing queue is building)", TIER_RATES[pending_tier] / 1000, rtt_ema, rtt_min);
-                }
-                // FILL-ASK PRESSURE (works against v96 peers and thru one-way tails): a plaid-probation sender hammered with fill requests IS the far side saying "I am not receiving you".
-                if pending_tier == RAW_TIER && !plaid_allowed && fill_asks_sec >= PLAID_FILL_ASK_DROP_PER_SEC {
-                    plaid_strikes += 1;
-                    pending_tier = RAW_TIER - 1;
-                    tier_downs += 1;
-                    last_tier_change = now;
-                    last_tier_drop = Some(now);
-                    clean_rx_windows = 0;
-                    crate::logf!("WAVE: tier down → {} kbps (plaid on probation: {} fill asks in one second — the far side is not receiving us)", TIER_RATES[pending_tier] / 1000, fill_asks_sec);
-                }
                 peer_loss_sec_max = 0;
-                fill_asks_sec = 0;
                 tail_lost_base = windows_lost;
                 send_l_tail = true;
             }

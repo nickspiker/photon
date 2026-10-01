@@ -586,7 +586,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveLastReaim { voiced, from, to } => format!("re-aimed on {voiced}: {from}× → {to}×").into(),
         Msg::WaveLastJitter { underruns, trims } => format!("{underruns} buffer gaps, {trims} frames shed").into(),
         Msg::WavePrefsHead => "Preferences".into(),
-        Msg::PlaidOffLan => "Try raw audio (plaid) beyond the local network".into(),
         // Türkçede yüzde işareti sayının önünde durur (%25), bu yüzden fmt_num çağrısı aynı kalır, simge yer değiştirir.
         Msg::DiagInfo { used, cap, pct } => format!("Cihazdaki günlük \u{00b7} {used} / {cap} (%{}) \u{00b7} {}\u{2013}{} saat içinde kendiliğinden silinir", fmt_num(pct as u32), fmt_num(24), fmt_num(48)).into(),
         Msg::LogTitle => "Günlük".into(),

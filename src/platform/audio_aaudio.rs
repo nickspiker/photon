@@ -184,15 +184,12 @@ fn start_output() -> Result<AudioStream, String> {
     // The service reports the route this voice stream is routed to (the communication device) — synchronously, so route_id() below is its answer.
     let _ = crate::platform::jni_android::wave_service_void("renderUsageVoice");
     if !fast {
+        // THE EARPIECE IS THE DEFAULT (Nick 2026-10-01: "default to earpiece unless the user has chosen or chooses otherwise or the hardware bringup fails, that's it"): a slow voice path is not a bring-up failure, so the wave stays on the earpiece (or the headset) on voice usage, marked "slower" on the pill. Only the loudspeaker — picked, or the fallback when no earpiece could be routed — takes the fast media path.
         let route = super::audio::route_id();
-        let picked = super::audio::picked_route();
-        let keep_voice = route.starts_with("bt:") || route.starts_with("unknown") || (route == "earpiece" && picked.as_deref() == Some("earpiece"));
+        let keep_voice = route != "speaker";
         if keep_voice {
             crate::logf!("AUDIO: voice path is slow on this device ({}/{}, {} fr bursts) — kept on \"{}\" ({})", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst(), route, if route == "earpiece" { "the user's pick" } else { "needs voice usage" });
         } else {
-            if route == "earpiece" {
-                let _ = crate::platform::jni_android::wave_service_void("routeWaveSpeaker");
-            }
             crate::logf!("AUDIO: voice path is slow on this device ({}/{}, {} fr bursts) — the fast media path on \"{}\" (the earpiece stays a choice)", format!("{:?}", s.sharing_mode()), format!("{:?}", s.performance_mode()), s.frames_per_burst(), if route == "earpiece" { "speaker" } else { route.as_str() });
             drop(s);
             OUTPUT_VOICE.store(false, Ordering::Relaxed);

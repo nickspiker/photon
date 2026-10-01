@@ -981,19 +981,6 @@ class PhotonConnectionService : Service() {
         else -> "unknown:${d.productName}"
     }
 
-    /** Rust, when this device's voice path is slow and the user never picked the earpiece: the fast path cannot reach the earpiece, so the wave starts on the loudspeaker (Nick 2026-09-29: fast is the default, the earpiece a choice). */
-    fun routeWaveSpeaker() {
-        if (Build.VERSION.SDK_INT < 31) return
-        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
-        try {
-            val spk = am.availableCommunicationDevices.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
-            if (spk != null) am.setCommunicationDevice(spk) else am.clearCommunicationDevice()
-            earpieceRouted = false
-            PhotonLog.i(TAG, "waveAudio: slow voice path — starting on the loudspeaker (fast path)")
-        } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: speaker route failed", e) }
-        applyRouteSideEffects()
-    }
-
     /** Rust, after an output open: put back the volume the user last set on this route + usage. */
     fun setWaveVolume(index: Int) {
         try {
@@ -1008,27 +995,27 @@ class PhotonConnectionService : Service() {
         val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
         try {
             if (on) {
-                fun pref(t: Int): Int = when (t) {
-                    android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET, android.media.AudioDeviceInfo.TYPE_WIRED_HEADPHONES, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> 3
-                    android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET, android.media.AudioDeviceInfo.TYPE_HEARING_AID -> 2
-                    android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE -> 1
-                    else -> 0
-                }
-                // The user's own pick first, when that device is here; the priority order otherwise.
+                // THE EARPIECE IS THE DEFAULT (Nick 2026-10-01: "default to earpiece unless the user has chosen or chooses otherwise or the hardware bringup fails, that's it"). The user's own pick first, when that device is here; otherwise the built-in earpiece; the loudspeaker only when there is no earpiece to route or the platform refuses it. A connected headset is one tap away on the route pill, never assumed.
                 val avail = am.availableCommunicationDevices
                 val picked = if (preferredRoute.isNotEmpty()) avail.firstOrNull { routeIdOf(it) == preferredRoute } else null
-                val pick = picked ?: avail.maxByOrNull { pref(it.type) }
+                val earpiece = avail.firstOrNull { it.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE }
+                var routed = false
                 if (picked != null) {
                     val ok = am.setCommunicationDevice(picked)
                     earpieceRouted = ok && picked.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
+                    routed = ok
                     PhotonLog.i(TAG, "waveAudio: start route ${picked.productName} (type ${picked.type}) — the user's pick ${if (ok) "set" else "REFUSED"}")
-                } else if (pick == null || pref(pick.type) == 0) {
-                    PhotonLog.i(TAG, "waveAudio: no headset or earpiece to route — loudspeaker")
+                }
+                if (!routed && earpiece != null) {
+                    val ok = am.setCommunicationDevice(earpiece)
+                    earpieceRouted = ok
+                    routed = ok
+                    PhotonLog.i(TAG, "waveAudio: start route earpiece (the default) ${if (ok) "set" else "REFUSED"}")
+                }
+                if (!routed) {
+                    am.clearCommunicationDevice()
                     earpieceRouted = false
-                } else {
-                    val ok = am.setCommunicationDevice(pick)
-                    earpieceRouted = ok && pick.type == android.media.AudioDeviceInfo.TYPE_BUILTIN_EARPIECE
-                    PhotonLog.i(TAG, "waveAudio: start route ${pick.productName} (type ${pick.type}) ${if (ok) "set" else "REFUSED"}")
+                    PhotonLog.i(TAG, "waveAudio: no earpiece could be routed — loudspeaker")
                 }
             } else {
                 am.clearCommunicationDevice()

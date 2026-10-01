@@ -220,9 +220,6 @@ pub fn last_wave() -> Option<LastWave> {
     LAST_WAVE.lock().unwrap().clone()
 }
 
-/// The Wave page's "plaid off-LAN" preference (`waves.plaid_wan`, default ON): OFF = the raw rung is never tried beyond a LAN-class path, whatever the headroom says — some links are simply happier at 128 kbps and a person may say so once.
-pub static PLAID_WAN_ALLOWED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
-
 /// Eagle osc of the last AUTHENTICATED media packet the engine opened; 0 = none this wave. Written by the engine thread, read by the UI's drought measurement.
 pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Eagle osc at engine start — the drought baseline before the first packet ever arrives (0 = no engine).

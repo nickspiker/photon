@@ -592,7 +592,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::WaveLastReaim { voiced, from, to } => format!("re-aimed on {voiced}: {from}× → {to}×").into(),
         Msg::WaveLastJitter { underruns, trims } => format!("{underruns} buffer gaps, {trims} frames shed").into(),
         Msg::WavePrefsHead => "Preferences".into(),
-        Msg::PlaidOffLan => "Try raw audio (plaid) beyond the local network".into(),
         Msg::DiagInfo { used, cap, pct } => format!("Log na urządzeniu \u{00b7} {used} z {cap} ({}%) \u{00b7} sam wygasa po {}\u{2013}{}h", fmt_num(pct as u32), fmt_num(24), fmt_num(48)).into(),
         Msg::LogTitle => "Log".into(),
         Msg::DiagBack => "Wstecz".into(),

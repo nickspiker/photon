@@ -2133,8 +2133,6 @@ pub struct PhotonApp {
     settings_hardlogs_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page "Hold every wave recording on this device" (`waves.hold`, DEVICE-LOCAL, default ON — Nick 2026-09-10: "fleet replication of waves by default; you can uncheck maybe a smartwatch"): ON = a sibling's kept recording is fetched the moment its row merges here; OFF = fetched on demand only.
     settings_wave_hold_check: Option<fluor::widgets::Checkbox>,
-    /// Wave-page "Try raw audio beyond the local network" (`waves.plaid_wan`, linked, default ON).
-    settings_plaid_wan_check: Option<fluor::widgets::Checkbox>,
     /// The measure-now ritual in flight (the Wave page shows "listening…" while Some) and its last verdict.
     wave_measure_rx: Option<std::sync::mpsc::Receiver<crate::wave::measure::MeasureResult>>,
     wave_measured: Option<crate::wave::measure::MeasureResult>,
@@ -2828,7 +2826,6 @@ impl PhotonApp {
             settings_autoupdate_check: None,
             settings_hardlogs_check: None,
             settings_wave_hold_check: None,
-            settings_plaid_wan_check: None,
             wave_measure_rx: None,
             wave_measured: None,
             wave_profiles: Vec::new(),
@@ -3515,9 +3512,6 @@ impl PhotonApp {
                         f(cb);
                     }
                     if let Some(cb) = self.settings_wave_hold_check.as_mut() {
-                        f(cb);
-                    }
-                    if let Some(cb) = self.settings_plaid_wan_check.as_mut() {
                         f(cb);
                     }
                 }

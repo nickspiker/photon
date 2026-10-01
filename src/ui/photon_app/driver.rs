@@ -498,17 +498,6 @@ impl FluorApp for PhotonApp {
             12.,
             false,
         ));
-        // Plaid beyond the LAN (waves.plaid_wan, linked, default ON) — the Wave page.
-        self.settings_plaid_wan_check = Some(fluor::widgets::Checkbox::new(
-            &mut self.hit_counter,
-            tr(Msg::PlaidOffLan),
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            true,
-        ));
         // Show edit history (chat.history, linked, default OFF): a selected edited bubble's meta lists every prior version.
         self.settings_history_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
