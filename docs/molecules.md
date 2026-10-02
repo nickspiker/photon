@@ -160,6 +160,13 @@ Decisions settled at planning, superseding earlier sections where they differ:
 
 **Still open.**
 - Step 7: the live strand pull. Molecules send anchor-only until the `StrandLedger` is wired to the gap buffer with `strand_pull`/`strand_serve` on the history-page codec.
+- **Join-by-replay and the group weave (scoped 2026-10-01, not built).** A member who joins from-genesis holds the wrap and the roster but NO rows and NO lane state: nothing requests a molecule's history (`drive_history_recovery` walks contacts only, the serve path resolves pairwise tokens only), a sibling's history page carries rows without lane, hash or weave data, and the joiner's lanes materialize at position 0, so every live frame at a later position sits in the gap buffer forever.
+  The fix is one protocol arc, in this order, and nothing in it is partial.
+  (a) A stored row carries what replay needs: its lane label, the author's device, `plaintext_hash` and `msg_hp`, its weave references as `(author party id, eagle_time)`, and its era index; the strand bytes travel raw (the salt-source lesson of braid.md §3.3: a served strand re-encoded as text desyncs the weave).
+  (b) A history request addressed to a molecule token, served by any standing member from genesis when the founder's genesis flag allows it, from join otherwise (D5).
+  (c) The joiner replays each current-era lane in row order: materialize at 0, then per row `set_last_plaintext(ident)`, `advance`, `mark_received`, `update_received_hash(msg_hp)`; the lane's head then matches the writer's and live frames link.
+  (d) Only then the weave: `molecule_transmit` drops `anchor_only`, strands are `(author, time, ident)` and `woven_authors` fills after selection; a receiver resolves a reference by `(author, time)` over every row it holds, whichever direction it travelled; a miss holds thru the strand pull of step 7, never skips.
+  Without (a) to (c) the weave cannot be switched on: a from-join member does not hold the rows an earlier member weaves, and without the pull it would hold every frame forever.
 - Step 5's last piece: a frame from a never-friended member passes the door (token-scoped admission) but the receive commit still resolves the sender thru the contact fold and drops it. The commit path is contact-indexed thruout; the fix is a peer-view resolution there.
 - A molecule control row (offer / join / wrap) is never re-served bare; a lost offer is re-sent by the sponsor on the next roster edge (the `offered` list) — that refresh is not yet wired.
 - The delivered ring on a molecule row fills at full coverage only; a fractional fill from the ledger is a render change.

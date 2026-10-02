@@ -1759,6 +1759,10 @@ pub struct PhotonApp {
     strip_dismissed: Option<(ContactId, i64, bool)>,
     /// Conversation tokens of knocks that arrived from people we had NOT yet added (Jeff's log 2026-10-01: he added first, his knock reached us as a stranger's and was dropped; when we added him later our knock flipped his side but nothing came back, and the ceremony never armed). A token is a few bytes and proves nothing on its own, so remembering it is safe; an add whose token matches one is the mutuality edge in the other order. Session-only, bounded, oldest out.
     stranger_knocks: Vec<[u8; 32]>,
+    /// The lane each signer device wrote to us on most recently, per conversation: (friendship id, signer device key) → lane label.
+    /// Garbage on any OTHER lane from that signer is a straggler on a lane it has rotated away from, never fork evidence (docs/lanes.md: a retired lane is retired, not forked).
+    /// In memory only: the first clean frame after launch seeds it, and until then the detector behaves as before.
+    latest_lane_by_signer: std::collections::HashMap<([u8; 32], [u8; 32]), [u8; 32]>,
     /// Hit id of the filter pill.
     conv_filter_hit: HitId,
     /// The compose digit strip's twelve hit ids (dozenal base only, while the message box is focused).
@@ -2670,6 +2674,7 @@ impl PhotonApp {
             rejected_offers: std::collections::HashSet::new(),
             strip_dismissed: None,
             stranger_knocks: Vec::new(),
+            latest_lane_by_signer: std::collections::HashMap::new(),
             conv_filter_hit: HIT_NONE,
             digit_strip_base: HIT_NONE,
             msg_wave_bands: Vec::new(),

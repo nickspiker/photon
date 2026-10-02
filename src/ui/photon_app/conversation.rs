@@ -1378,11 +1378,23 @@ impl PhotonApp {
                     // FORK DETECTOR — now the SOLE fork evidence (gaps became pure transport; strand-miss holds instead of forking). A frame that passed signature + chain-link verify but decrypted to garbage means the two sides hold different key material at this position. Every non-fork cause is handled upstream, so re-key is the escalation, but CONVERGENCE GETS FIRST CRACK: the commonest real cause is a stale era (the peer re-keyed, we still hold old chains) — collapsing the ping backoff below forces a prompt head exchange, so the owner's chain-sync / era-supersede can adopt the new era before the streak escalates. A genuine fork keeps failing past that; era stragglers and stale-era holders converge and never reach re-key.
                     // Siblings repair via the fleet-key chain_reset at 2; FRIENDS re-key at 3 (no shared key to rebuild from, but a fresh ceremony is always legal: our new-keys offer hits their Complete-rekey path, history rows survive, recovery backfills after the re-weave). A re-key resets chain_woven, so the UI already surfaces it as "establishing the secure channel". Observed live: a woven pair forked mid-conversation — one side decrypted one message as garbage and every later one buffered "ahead" forever, greying every send (2026-07-25).
                     // Fresh-weave grace: LATE relay copies of a superseded era's frames straggle in for a minute after a re-key, and three of them re-keyed a 16-second-old weave (live pair, 2026-08-07). A just-woven chain cannot have forked — one writer per lane — so garbage inside the grace is stragglers, not evidence; a real fork keeps failing past it.
+                    // RETIRED LANE, NOT A FORK: the signer has written to us on a NEWER lane since this one (it rotated: a wedge heal, or a sibling's lane the fleet moved on from), so whatever straggles in on the old label — a relay's late copy, a re-serve from before the rotation — says nothing about the friendship's keys. Logged and dropped; the streak does not move.
+                    let signer_moved_on = self
+                        .latest_lane_by_signer
+                        .get(&(chains.friendship_id.0, sender_pubkey.key))
+                        .map(|latest| *latest != lane)
+                        .unwrap_or(false);
+                    // A MOLECULE's garbage is about the molecule's shared root, not about a pairwise friendship with whichever member signed: a pairwise re-key (or sibling chain reset) with that member cannot repair it and would churn a working friendship. The era owner's refresh is the molecule's repair (docs/molecules.md §6); here it is logged and held.
+                    let is_molecule = chains.molecule;
                     let era_grace_active = chains.genesis_osc > 0
                         // WHY/PROOF: `genesis_osc` can arrive with chains adopted over fleet chain-sync — another device's stamp — so an absurd value reads as long past the grace, not wrapped into it.
                         && vsf::eagle_time_oscillations().saturating_sub(chains.genesis_osc)
                             < 120 * vsf::OSCILLATIONS_PER_SECOND as i64;
-                    if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                    if signer_moved_on {
+                        crate::logf!("LANE: garbage on lane {} from a signer that has moved to a newer lane — a retired lane's straggler, not fork evidence", hex::encode(&lane[..4]));
+                    } else if is_molecule {
+                        crate::logf!("MOLECULE: garbage decrypt past verify on lane {} — held for the era owner's refresh, no pairwise re-key", hex::encode(&lane[..4]));
+                    } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
                         // WHY: a u8 counting garbage decrypts — frames the PEER (or anyone on the wire) sends.
                         // PROOF: a flood passes 255; a wrap would drop the streak under the re-key threshold and the fork would go unanswered.
                         contact.chain_fail_streak = contact.chain_fail_streak.saturating_add(1);
@@ -1414,10 +1426,12 @@ impl PhotonApp {
                     break 'commit;
                 }
             };
-            // A clean decrypt+parse clears the fork detector.
+            // A clean decrypt+parse clears the fork detector, and records this lane as the signer's current one (see `latest_lane_by_signer`).
             if let Some(contact) = self.contacts.get_mut(contact_idx) {
                 contact.chain_fail_streak = 0;
             }
+            self.latest_lane_by_signer
+                .insert((chains.friendship_id.0, sender_pubkey.key), lane);
             // An EMPTY body is legal now (a reaction retract) — the package parse itself is the validity gate.
             let message_text = pkg.body;
             // The frame's typed kind and attachment identity (flag day 2026-09-24) — and the ONE identity both sides salt and advance with: the text for a text row, the canonical fields for a typed row (`ident_typed`, the sender computed the same).

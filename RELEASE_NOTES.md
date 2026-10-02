@@ -7,6 +7,10 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Fixed a friendship being re-keyed over a lane the other device had already rotated away from: a late frame on a retired lane is dropped, not counted as a fork.
+- A molecule's unreadable frame no longer triggers a re-key with whichever member sent it.
+- Fixed a conversation going unreadable after a restart or a fleet sync when the previous message was a typed row: the next message's salt source now rides as exact bytes.
+
 ## v110
 
 - The Base page is now a full lesson: the twelve digits and how their names carry their values, counting and adding in dozenal, how a doubling count works and how to multiply, divide and add with one, how fine four digits are, what "one" is on every scale, and a "let's imagine" section with speed, temperature and mass read off the same hydrogen atom.

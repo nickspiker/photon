@@ -65,6 +65,16 @@ Ordering dependency (plan item 5): a checkpoint can reference strands (woven mes
 - Whole-blob chain replication and its `mutated_osc` race.
 - The compose-anywhere fleet-forward (fallback first, deleted after the weave-window proves out).
 
+### A retired lane is retired, not forked (2026-10-01)
+
+A rotation leaves the old lane behind receive-only, and the receiver learns of it only by seeing the same signer write on a fresh label.
+Whatever straggles in on the old label after that (a relay's late copy, a re-serve queued before the rotation) is not fork evidence: the signer's keys moved on, the straggler is position-N under keys the signer no longer holds pendings for.
+The receiver keeps, in memory, the lane each signer device last wrote cleanly on (`latest_lane_by_signer`); garbage past chain-link verify on any other lane from that signer is logged and dropped, and the fork streak does not move.
+The first clean frame after launch seeds the entry, so until then the detector runs as before.
+The Jeff/Nick "chain fork" of 2026-10-01 was never a fork: a salt-source codec lie (braid.md §3.3) made one lane unreadable, the sender's pendings exhausted and rotated, and the garbage streak then escalated a working friendship into a re-key.
+The codec is fixed; this rule keeps the detector from escalating the next retired lane.
+A molecule's garbage never escalates either: the conversation's keys are the molecule's shared root, and a pairwise re-key with whichever member signed cannot repair it (molecules.md §6).
+
 ## Flag-day
 
 Chains schema **v8**: lanes + `lane_root`. v≤7 blobs read as **absent** → the contact re-CLUTCHes thru the existing re-key flow. Conversation rows are untouched (identity-keyed). This rides the same flag-day as the binary-numeral domain flip (shipped) — one re-clutch per pair covers both. Per standing doctrine: re-clutch always; the only new secret at rest is `lane_root`, which lives and dies with the chains blob it seeds (same custody as the 16KB of chain links beside it — no new exposure class).

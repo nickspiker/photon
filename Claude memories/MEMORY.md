@@ -10,7 +10,7 @@
 - [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits "Built with Claude Fable 5" ([feedback_commit_attribution.md](feedback_commit_attribution.md))
 - [Nick publishes](nick-publishes.md) — Nick INITIATES; when asked, run deploy/publish and push WITH build notes (RELEASE_NOTES.md → Updates panel + site); never unasked
 - [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
-- [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; prose uses petnames; doctrine: [project_humanitys_code.md](project_humanitys_code.md)
+- [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; prose uses petnames; doctrine: [project_humanitys_code.md]
 - [Stage only your own files](feedback_stage_only_own_files.md) — HARD: stage by explicit path; never `git add -u`/`-A` (shared tree; 2026-09-26 vsf sweep)
 - [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
 - [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
@@ -39,36 +39,36 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
-- [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key, different salt; FIXED raw bytes + bridge reader; salt design stands; OPEN: fork loop on a rotated lane, from-genesis join
-- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live, computed fallback takes over with a fresh claim; "waiting for them to add you" status; filter pill hidden pre-link; OPEN: restart re-keys offline friends, one double keygen
-- [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed; fixed, field verify pending; own-notes row now bootable
+- [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
+- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live, computed fallback takes over with a fresh claim; "waiting for them to add you" status
+- [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry; newest row's strip unasked
 - [Ready first paint](project_ready_first_paint.md) — v110: content hit stamps ride the paint decision (stamp BEFORE paint, only where not yet opaque); never re-stamp the orb; a mid-render dirty flag must survive its render
-- [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; open = live strand pull, never-friended receive commit, offer refresh, Withdraw
-- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows → double encap → deterministic proof mismatch → zombie → re-run; fixed (our_party_id); field verify pending; ghost 1be949c1 retire flow still open
+- [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; 2026-10-01 join-by-replay SCOPED (a protocol arc
+- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows → double encap → deterministic proof mismatch → zombie → re-run
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
-- [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent: bare-rect click-thru vs band-inflated region + un-kicked re-entry poll; FIXED in fluor (hittable_rect + entry-edge wake) 2026-09-18, field test PENDING
+- [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent: bare-rect click-thru vs band-inflated region + un-kicked re-entry poll; FIXED in fluor
 - [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows port not built; macOS drag-to-monitor VANISHES (pinned)
 - [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design PINNED (unnotified flag + one-active-clearer)
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted Jennifer's Windows dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — doorbell v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid every divergence older than page one (6h, 288 rows, restart-only heal); catch-up chirped per PAGE → 36 chirps; vault = 2 commits + full catalog re-encode PER ROW (chronic, not the burst) → rarangi put_rows_in; all fixed
+- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid every divergence older than page one (6h, 288 rows, restart-only heal)
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
-- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed; FIXED 2026-09-28, field verify pending
-- [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28 (anti-windup + one-step re-align)
-- [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, first arrival sets it, NO hardcoded timings; l follows ONE sample per zero/sign-change point, uncapped, no jumps, no silence rule (lock.md §7.1 superseded)
+- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed
+- [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28
+- [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, first arrival sets it, NO hardcoded timings; l follows ONE sample per zero/sign-change point
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears waves/all history fleet-wide; relationship × history × reach design; rest unbuilt
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
-- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, age = d²/k no sqrt, card colours, level-coloured rings); mic/speaker pickers (BT incl., concurrently-readable mics live, never rotate) still unbuilt
+- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, age = d²/k no sqrt, card colours, level-coloured rings); mic/speaker pickers
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission; instrumented cron kept bait (unconvicted)
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — party colours placeholder; go perceptual L≈50% via vsf spectral/LMS
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
 - [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — sentinel purge shipped; RELAY_ADDR/RosterEntry/ACK-API remain, convert when touched
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — rekey threat model (docs/rekey-threat-model.md); first-met device un-revocable, revocation unwired
-- [Canonical wave container](project_wave_canonical_container.md) — LOCK decided 2026-09-24: wave = frame set by grid index, rows are SPANS, order = index then handle proof, ONE sig per party at truing-up, no mix at rest; spec unbuilt
+- [Canonical wave container](project_wave_canonical_container.md) — LOCK decided 2026-09-24: wave = frame set by grid index, rows are SPANS, order = index then handle proof, ONE sig per party at truing-up
 - [project_recording_fills.md](project_recording_fills.md) — fills verified; spool RAW mic+verdict; next = offline AEC at keep
 - [Fleet epoch arc design](fleet-epoch-arc-design.md) — B1-B3 shipped; closed at [project_fleet_epoch_arc_closed.md](project_fleet_epoch_arc_closed.md) (hist_page+pong re-seal, row-cadence mint)
 - [Messaging solidity Phase A](messaging-solidity-phase-a.md) — A+B4 done; next B1→B3 fleet chain+eggs arc
@@ -105,9 +105,9 @@
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc consensus IS photon's time base (BOOTTIME anchor); v99: a server window refusal re-anchors + retries, worker logs refusals with device
 - [project_theme_rec2020.md](project_theme_rec2020.md) — theme colours VSF RGB thru vsf_rgb_to_bt2020; Rec.2020 out everywhere
 - [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset mirror + ime_lift)
-- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor; jitter slack 80 ms + setpoint 1/512; session ownership + HANDOVER lock; never `git add -A` (shared tree)
+- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor; jitter slack 80 ms + setpoint 1/512
 - [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC, recorded nowhere
-- [Eagle units](project_eagle_units_first_principles.md) — one atom, floor rule, time Zil = one oscillation, log-form reputation, live clock/age, raised dot + ↑/↓; Base lesson SHIPPED v110 (English only; 15 langs fall back to en)
+- [Eagle units](project_eagle_units_first_principles.md) — one atom, floor rule, time Zil = one oscillation, log-form reputation, live clock/age, raised dot + ↑/↓; Base lesson SHIPPED v110
 - [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction; docs/dozenal.md
 - [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs; Dozenal settings page
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — `year month-glyph day weekday ·share`; time of day = fixed-width share of today; hex = seconds since midnight / raw stamp
@@ -117,7 +117,7 @@
 
 ## Shipped arcs (hooks)
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP phases 1-6 shipped 2026-08-20
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (container then PHCALL7, now PHWAVE9): clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons; PHCALL8 2026-09-17 = verbatim keep (no transcode, holes stay holes)
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (container then PHCALL7, now PHWAVE9): clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons
 - [project_waves.md](project_waves.md) — waves FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/waves.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes
@@ -126,7 +126,7 @@
 - [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; shaping/Cyrillic already free, Hindi cheap, CJK = payload call
 - [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates page + website
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot shipped; off-by-default toggle
-- [project_bridge.md](project_bridge.md) — BRIDGE (canonical: docs/bridge.md) = passless remote shell between siblings over PT; PIGEONS (drop→host cwd via spool) BUILT 2026-09-17 + progress bar (pigeon_ack, ≤65/pigeon) 2026-09-20 + PT send window 13/peer 2026-09-21 (345 MB drop: 62/1383 landed), field test PENDING; stage 4 (PT ReceiveBuffer spool-backed + attach migration) deferred
+- [project_bridge.md](project_bridge.md) — BRIDGE (canonical: docs/bridge.md) = passless remote shell between siblings over PT; PIGEONS (drop→host cwd via spool) BUILT 2026-09-17 + progress bar
 - [project_chain_replication.md](project_chain_replication.md) — chains sync fleet-wide (mutated_osc, adopt-iff-newer)
 - [Per-device lanes](per-device-lanes.md) — every device transmits on its own lane; CRDT merge converges
 - [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 cutover closed; durability = docs/durability.md (FLEET-HOLDS-HISTORY)
@@ -139,22 +139,25 @@
 - [project_lockout_enforcement.md](project_lockout_enforcement.md) — lockout + handle-confirmed UNLOCK, typed tombstone
 - [UI thread snapshot+CAS](ui-thread-snapshot-cas.md) — workers get snapshots, commits CAS, writers fire post-durability
 - [Lane rotation wedge heal](lane-rotation-wedge-heal.md) — exhausted pendings → rotate lane, re-serve at original stamps
-- Smaller: [boot blindness](boot-blindness.md) · [connection-flow ladder](connection-flow-revision.md) · [window geometry](project_window_geometry_shipped.md) · [avatar pin-rotate on shrink](project_avatar_bearer_pin_gap.md) · [first green E2E](project_braid_working_baseline.md)
+- Smaller: [boot blindness](boot-blindness.md) · [connection-flow ladder](connection-flow-revision.md) · [window geometry](project_window_geometry_shipped.md) · [avatar pin-rotate on shrink]
 - [project_fgtw_migration_state.md](project_fgtw_migration_state.md) — fgtw crate extraction thru M3; stays std until ferros ([project_fgtw_nostd_deferred.md](project_fgtw_nostd_deferred.md))
 - [project_manifestus_custodes_split.md](project_manifestus_custodes_split.md) — manifestus = storage engine (was custodes)
 
 ## Closed incidents (conviction hooks)
-- Perf: [ANR-at-launch](project_android_hang_nag.md) (vault open on worker; resume walk = the cost) · [idle-CPU](project_idle_tick_cost.md) (30 Hz idle) · [render lag](project_render_storm_lag.md) + [put latency](project_vault_op_latency.md) (vault mutex + group commit)
-- Vault: [seal failures](project_vault_seal_failures.md) (live-LAP) · [plow refusal](project_manifestus_plow_reloc_refusal.md) (LiveSet::apply order) · [tombstone](project_manifestus_tombstone_bug.md) (fast-delete pointer) · [self-msg vanish](project_self_message_vanish.md) (delta gate + quit drain)
-- CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md) (KEM = 4th job stage) · [token asymmetry](project_clutch_token_asymmetry.md) (competing ceremonies) · [shadow conversations](split-contacts-incident.md) (derive convs from the contact, never chains.participants) · [notes-row wedge](self-pair-sibling-row.md)
-- [project_traversal_relay_gap.md](project_traversal_relay_gap.md) — 2026-09-17: punch pulse for relay-only friends, amber ring, "no direct path" pills; RELAY MEDIA unbuilt; audit of missing punch tricks (port prediction, coordinated open, PCP, desktop reseed)
-- Transport/presence: [no-ring class](project_call_no_ring_incident.md) (relay express + ring lease) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection](relay-asymmetry-ping-reflection.md) · [relay pipe](project_nat_traversal_relay_gap.md) (per-recipient Cloudflare DO)
-- Android/device: [session capsule](project_android_session_capsule.md) (boot-locked de-attest fix) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow damage](project_contacts_glow_damage.md) (likely stale)
+- Perf: [ANR-at-launch](project_android_hang_nag.md) (vault open on worker; resume walk = the cost) · [idle-CPU](project_idle_tick_cost.md) (30 Hz idle) · [render lag](project_render_storm_lag.md) + [put latency]
+- Vault: [seal failures](project_vault_seal_failures.md) (live-LAP) · [plow refusal](project_manifestus_plow_reloc_refusal.md) (LiveSet::apply order) · [tombstone](project_manifestus_tombstone_bug.md)
+- CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md) (KEM = 4th job stage)
+- [project_traversal_relay_gap.md](project_traversal_relay_gap.md) — 2026-09-17: punch pulse for relay-only friends, amber ring, "no direct path" pills; RELAY MEDIA unbuilt; audit of missing punch tricks
+- Transport/presence: [no-ring class](project_call_no_ring_incident.md) (relay express + ring lease) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection]
+- Android/device: [session capsule](project_android_session_capsule.md) (boot-locked de-attest fix) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md)
+
+- More closed: [token asymmetry](project_clutch_token_asymmetry.md) · [shadow conversations](split-contacts-incident.md) (derive convs from the contact) · [notes-row wedge](self-pair-sibling-row.md) · [self-msg vanish](project_self_message_vanish.md) · [put latency](project_vault_op_latency.md)
+- More closed: [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow damage](project_contacts_glow_damage.md) (stale) · [first green E2E](project_braid_working_baseline.md) · [two-machine git](project_two_machine_git_divergence.md)
 
 ## References
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
-- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes (spirix glyph formatter): dozenal test red 3 days, v99 shipped ASCII dozenal digits; ff-only ALL path siblings before any build here
-- [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail with rewritten history: verify vs origin, reset --hard, fast-forward ALL sibling deps together ([project_two_machine_git_divergence.md](project_two_machine_git_divergence.md))
+- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes (spirix glyph formatter): dozenal test red 3 days, v99 shipped ASCII dozenal digits
+- [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail with rewritten history: verify vs origin, reset --hard, fast-forward ALL sibling deps together ([project_two_machine_git_divergence.md]
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; restore untouched, style commit separate
 - [VSF TOC section-name trap](vsf-toc-section-name-trap.md) — section names live in the header TOC; bare parse gives name=""
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — readers MUST use VsfHeader::primary_section

@@ -560,15 +560,22 @@ struct PendingMessage {
 
 `woven_strands` is the load-bearing braid field: it freezes the exact strand bytes this message braided, so the matching `process_ack` advances the sender's chain with the SAME bytes the receiver used — regardless of what messages arrive between send and ACK.
 
-### 10.2 ACK advances the sender's chain
+### 10.2 The sender advances at SEND; the ACK clears the pending
+
+(Corrected 2026-10-01 to what the code does — `prepare_send_commit` in `types/friendship.rs` — since the lanes landed: with one writer per lane there is nothing to wait for.)
 
 ```
+On send (prepare_send_commit):
+  CAS: links[511] still equals the key the off-thread encrypt used
+  advance(our_label, eagle_time, ident, &woven_strands)
+  last_ident[our_lane] = ident            (for the next salt)
+  add_pending(…)                          (sets last_sent_hash = msg_hp)
+
 On ACK(eagle_time, plaintext_hash):
-  find the matching PendingMessage
-  advance(our_handle_hash, eagle_time, pending.plaintext, &pending.woven_strands)
-  update last_plaintext (for the next salt)
-  remove from pending
+  find the matching PendingMessage and remove it — no advance
 ```
+
+`woven_strands` is still frozen on the pending for the retransmit path, so a retransmit carries exactly the strands the receiver will weave.
 
 ### 10.3 Receiver processing
 
