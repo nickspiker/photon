@@ -86,7 +86,8 @@ pub fn fit(cap: &[i16], cap_k0: i64, render_k: i64) -> Option<Fit> {
 pub fn finish(cap: Vec<i16>, cap_k0: i64, render_k: i64, route: String) {
     let _ = std::thread::Builder::new().name("sweep-fit".into()).spawn(move || {
         let t0 = std::time::Instant::now();
-        match fit(&cap, cap_k0, render_k) {
+        let fitted = fit(&cap, cap_k0, render_k);
+        match fitted {
             None => crate::log("WAVE: sweep — the capture did not cover the sweep (mic late or muted); no measurement"),
             Some(f) if !f.coupled => crate::logf!("WAVE: sweep — clean route \"{}\": no speaker→mic coupling above the noise (psr {:.1}), fit {} ms", route, f.psr, t0.elapsed().as_millis()),
             Some(f) => crate::logf!(
@@ -98,6 +99,10 @@ pub fn finish(cap: Vec<i16>, cap_k0: i64, render_k: i64, route: String) {
                 route,
                 t0.elapsed().as_millis()
             ),
+        }
+        // The duck's depth follows the measurement (Nick 2026-10-02: a clean route suppresses nothing): zero for a clean route, the coupling itself otherwise; an unmeasurable sweep leaves the route's prior.
+        if let Some(f) = fitted {
+            crate::platform::audio::set_duck_coupling(if f.coupled { f.gain.max(0.0) } else { 0.0 });
         }
     });
 }

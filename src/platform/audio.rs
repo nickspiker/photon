@@ -468,12 +468,41 @@ pub fn far_level() -> u32 {
 pub fn set_speaker_duck(armed: bool) {
     SPEAKER_DUCK_ARMED.store(armed, Ordering::Relaxed);
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
+    // Until the sweep measures this route, a PRIOR by its kind: a loudspeaker ducks in full, an earpiece a quarter, a headset not at all. The sweep replaces it within two seconds of the route coming up.
+    let prior = match route() {
+        AudioRoute::Headset => 0,
+        AudioRoute::Earpiece | AudioRoute::Builtin => crate::wave::qgain::UNITY / 4,
+        AudioRoute::Speaker | AudioRoute::Unknown => crate::wave::qgain::UNITY,
+    };
+    DUCK_DEPTH_Q32.store(prior, Ordering::Relaxed);
+}
+
+/// THE DUCK'S DEPTH (Nick 2026-10-02: "if the coupling is less than 1% now, not sure why we are even suppressing anything"): how much of the duck law applies, Q32, set from the connect sweep's MEASURED speaker→mic coupling.
+/// Zero below any coupling (a clean earpiece or a headset: nothing comes back, so nothing is suppressed), the full law from `DUCK_COUPLING_FULL` up (a loudspeaker at 0.25 is far past it), linear between.
+static DUCK_DEPTH_Q32: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+/// The coupling at which the whole duck law applies: 1/32 (−30 dB). An earpiece measures ~0.0003, a loudspeaker ~0.25.
+pub const DUCK_COUPLING_FULL: f32 = 1.0 / 32.0;
+
+/// The sweep's verdict for the live route: its measured speaker→mic amplitude coupling (0.0 for a route it found clean).
+pub fn set_duck_coupling(coupling: f32) {
+    // WHY/PROOF: a measured ratio from the sweep fit — finite and non-negative by construction; the division is by a constant, the clamp holds the depth to the unit interval the law multiplies by.
+    let depth = (coupling / DUCK_COUPLING_FULL).clamp(0.0, 1.0);
+    DUCK_DEPTH_Q32.store((depth as f64 * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
+    crate::logf!("WAVE: duck depth {}‰ for coupling {:.4} (full at {:.4})", duck_depth_permille(), coupling, DUCK_COUPLING_FULL);
+}
+
+/// The duck's depth as a per-mille, for the trace line.
+pub fn duck_depth_permille() -> i64 {
+    (DUCK_DEPTH_Q32.load(Ordering::Relaxed) >> 22) * 1000 / 1024
 }
 
 /// The duck law: the FIXED presence slope `UNITY − near·2^20` (full duck at plan-unit mic 4096 = twice the plan level, as 8192 was to the old 4096 plan — the field-passed 0.95.21 shape). k is measured and PRINTED but deliberately out of the gain path (2026-09-13 23:30: the 35× mic makeup sits INSIDE the echo loop, so true plan-unit coupling on a normal earpiece is ~0.3-1.0 — feeding measured k in as the slope silenced the far voice at any k ≈ 0.4; the coupling-aware law needs the margin form, gain ≤ ε·near/(k·far), designed against k telemetry across rocker positions, not another guessed slope).
 pub fn duck_gain_q32(near: i64, _k_q16: i64) -> i64 {
     // WHY/PROOF: a duck only ever TAKES gain away — a loud near end drives UNITY − near past zero, and a negative gain would invert the speaker; the clip to [0, UNITY] is the duck's definition.
-    (crate::wave::qgain::UNITY - (near << 20)).clamp(0, crate::wave::qgain::UNITY)
+    let law = (crate::wave::qgain::UNITY - (near << 20)).clamp(0, crate::wave::qgain::UNITY);
+    // Scaled by the route's measured depth (see DUCK_DEPTH_Q32): the cut the law asks for, times how much of the speaker actually reaches the mic.
+    let depth = DUCK_DEPTH_Q32.load(Ordering::Relaxed);
+    crate::wave::qgain::UNITY - crate::wave::qgain::compose(depth, crate::wave::qgain::UNITY - law)
 }
 
 /// The engine notes the plan-unit mean |sample| of each captured mic frame here; the k estimator and the Q32 duck gain both run HERE (capture cadence) so the render pull only loads. Muted zeros keep k untouched and the gain at unity.
@@ -1369,6 +1398,14 @@ mod tests {
         assert!(take_render_trace().is_empty(), "disarmed: nothing traced");
         clear_queues();
         assert_eq!(reanchors(), 0, "reset with the rest");
+        // THE DEPTH: a clean route ducks nothing however hot the mic; a loudspeaker ducks by the whole law; between, in proportion to the measured coupling.
+        set_duck_coupling(0.0);
+        assert_eq!(duck_gain_q32(1 << 20, 0), crate::wave::qgain::UNITY, "no coupling: no duck at any near level");
+        set_duck_coupling(0.25);
+        assert_eq!(duck_gain_q32(1 << 20, 0), 0, "a loudspeaker: the full law, silent past full near");
+        set_duck_coupling(DUCK_COUPLING_FULL / 2.0);
+        let half = duck_gain_q32(4096, 0); // the law alone says zero here; half depth leaves half
+        assert!((half - crate::wave::qgain::UNITY / 2).abs() < crate::wave::qgain::UNITY / 1000, "half the coupling, half the cut ({half})");
         // THE FOLLOWER: fast up, seven-eighths down — a step settles in frames, not instantly, and the way down is the slower.
         let mut up = 0i64;
         for _ in 0..3 {
@@ -1388,6 +1425,7 @@ mod tests {
         // THE RAMP: a frame whose target gain steps from unity to zero walks there one sample at a time — no staircase edge.
         clear_queues();
         set_speaker_duck(true);
+        set_duck_coupling(1.0); // a loudspeaker's coupling: the full law
         // Armed with k at its neutral seed (1/16) the loss term alone is a quarter: the first frame walks from the unity it inherited down to that, never a step.
         queue_playback(vec![10000i16; FRAME_SAMPLES]);
         let first = next_render_frame();

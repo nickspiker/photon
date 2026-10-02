@@ -135,6 +135,8 @@ const fn tier_window_bytes(tier: usize) -> usize {
 // THE LEVEL PLAN (Nick 2026-09-13 night: "keep the levels fixed if the mic is calibrated and let the user listening do the volume adjustment with the rocker… calibrated mic level goes on the wire and in the archive"). Bell ran the telephone network exactly this way — every link at a defined level, the earpiece knob the only variable — and calibrated capture brings it back: the Unprocessed preset is CDD-calibrated (94 dB SPL ≡ ~520 RMS), so the mic's number MEANS an SPL. TX applies ONE fixed makeup constant (a recording level — deterministic, invertible, not an AGC) and the cubic rail shaper (qgain::cubic_rail: slope 3/2 at the origin, folded in below; slope 0 at the rails; 3rd-order-only distortion; exactly invertible), and that shaped calibrated signal IS the wire and the archive. RX applies NOTHING adaptive: decode → speaker duck → DAC, the rocker is the only adjustment, per wave, thru the OS voice stream. A quiet talker is quiet, like standing next to them. The RX normalizer (one afternoon of life, three field waves) is deleted, not demoted — its whole job was unknown mic levels, and the plan makes them known.
 /// The wire's voiced-speech mean |sample| — the plan level. 2048 ≈ −22 dBFS RMS with speech's 12-15 dB crest factor putting peaks near −8 dBFS: the rail is rarely touched and the rocker has headroom both ways (4096 until 2026-09-14 — "pretty hot": peaks at full scale on every syllable, the rail working constantly). Bell's plan ran speech near −20 dBm0; this is that. The shaper's origin slope is 3/2, so the pre-shaper target is ×⅔ of this.
 const TX_WIRE_TARGET: i64 = 2048;
+/// The most makeup a wave may OPEN with, before its own re-aim; the re-aim's 16x budget is unchanged.
+const TX_MAKEUP_OPENING_CAP: i64 = 4;
 /// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
 const TX_CAL_VOICED: i64 = 78;
 /// The CDD reference: Unprocessed puts 94 dB SPL at ~520 RMS ≈ −36 dBFS; TX_CAL_VOICED (78) is conversation at that reference. A reported per-mic sensitivity S shifts it: voiced_est = 78 · 10^((S+36)/20).
@@ -343,7 +345,8 @@ fn run(
     // Clamped to qgain's 16× budget (field 2026-09-15, the crackling wave: Nick's stored voiced 45 — calibrated on quiet afternoon test waves — minted a 30.3× makeup against real speech at 165, wire ran ~6000 against the 2048 target, and every syllable's peaks sat on the rail; Brittany mirror-imaged it at 16.4× on voiced 83 vs 490). A too-low cap means a quiet wave and a rocker; a too-high makeup means crackle — quiet errs safe.
     let tx_makeup_uncapped: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
     // mut for the ONE-TIME re-aim below — the profile aims the first seconds, this wave's own measurement aims the rest.
-    let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(16 * crate::wave::qgain::UNITY);
+    // THE OPENING CAP (Nick 2026-10-02, after two waves opened 3x and 8x hot on stale calibrations and railed for their first twenty seconds): a stored or vendor figure may aim up to 4x until this wave's own re-aim has evidence; ten quiet seconds beat ten railed ones.
+    let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(TX_MAKEUP_OPENING_CAP * crate::wave::qgain::UNITY);
     crate::logf!(
         "WAVE: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
         format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
@@ -807,7 +810,7 @@ fn run(
                     let (near, far) = crate::platform::audio::envelopes();
                     let permille = |g: i64| (g >> 22) * 1000 / 1024;
                     crate::logf!(
-                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, tier {}, re-anchors {}",
+                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, depth {}‰, tier {}, re-anchors {}",
                         trace_lines,
                         if trace_age_min == i64::MAX { -1 } else { trace_age_min / 48 },
                         if trace_age_max == i64::MIN { -1 } else { trace_age_max / 48 },
@@ -821,6 +824,7 @@ fn run(
                         permille(trace_gain_max),
                         near,
                         far,
+                        crate::platform::audio::duck_depth_permille(),
                         tier,
                         reanchors
                     );
@@ -1502,6 +1506,9 @@ fn run(
                     crate::platform::audio::AudioRoute::Headset
                 );
                 crate::platform::audio::set_speaker_duck(route_ducks);
+                // The new route gets its own sweep: the route-change indicator on the new transducer, and its coupling measured for the duck's depth (the prior set_speaker_duck just installed holds until the fit lands).
+                crate::platform::audio::play_overlay(super::sweep::up());
+                sweep_cap = Some((i64::MIN, Vec::new()));
                 live_route = rid;
             }
         }

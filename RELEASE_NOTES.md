@@ -7,6 +7,9 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The other person's voice is no longer cut down while you talk on an earpiece or headset: the cut now follows how much of your speaker actually reaches your mic, which on those routes is nothing.
+- Switching output mid-wave plays the connect sweep again on the new route and measures it.
+- A wave opens no louder than four times its calibration until it has heard you speak.
 - Fixed the person who answered a wave losing their own voice from the kept recording, and their half of the waveform going blank on the other person's card.
 - Fixed waves warbling and dropping sound whenever the other person's presence pings arrived through the relay: the reply no longer holds up the socket that receives the wave's audio.
 - Fixed a wave racing through the other person's voice at double speed after their clock stepped: playout now re-anchors on the step instead of walking it.

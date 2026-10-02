@@ -262,6 +262,20 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The duck's depth follows the measured coupling (2026-10-02, "why are we even suppressing anything")
+
+The first Verizon wave with the trace lines live (0.110.6) showed the duck as the remaining chop: both phones on earpieces the sweep had measured CLEAN (coupling 0.0003 on one, nothing above the noise on the other), and still Jeff's render gain spent a third of every 100 ms at zero and most of it under half, because his mic sat at the plan level and the law halves the far voice there.
+Nothing was coming back thru either route; the duck was suppressing the conversation.
+Modern stacks cancel first, suppress the residual band by band, and duck full-band only as a last resort keyed to the echo that is there; ours had no canceller and a duck keyed to near speech alone.
+
+- **Depth.** The duck law is unchanged (half at the plan level, silent at twice it); how much of it applies is now the route's DEPTH, set from the connect sweep's measured speaker→mic coupling (`platform::audio::set_duck_coupling`): zero for a route the sweep finds clean, the full law from a coupling of 1/32 up, linear between.
+  A loudspeaker at 0.25 ducks in full; an earpiece at 0.0003 ducks nothing.
+  Until the sweep lands, a prior by route kind: loudspeaker full, earpiece a quarter, headset none.
+- **Every route gets its sweep.** A mid-wave route change plays the sweep again on the new transducer (the route-change indicator) and its fit sets the new depth.
+- **The opening cap.** A wave may open at no more than 4x makeup from a stored or vendor figure; the re-aim's 16x budget is unchanged.
+  Two waves had opened 3x and 8x hot on stale calibrations and railed for their first twenty seconds.
+- The trace line carries the depth.
+
 ## The followers and the ramp (2026-10-02, the fishtank)
 
 The Jeff/Nick wave of 2026-10-02 (both on Verizon, 104 ms round trip, zero loss, zero xruns) sounded underwater at both ends.
