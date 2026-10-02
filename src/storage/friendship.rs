@@ -122,9 +122,9 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         if let Some(Some(h)) = chains.last_received_hashes().get(i) {
             lane.push(f("last_received_hash", VsfType::hp(h.to_vec())));
         }
-        // x-text only (the salt source) — valid UTF-8, lossless as x.
+        // THE SALT SOURCE IS RAW BYTES (convicted 2026-10-01, the Jeff/Nick lane fork): the previous row's IDENT — a typed row's starts 0xFF, never valid UTF-8, and VSF text is NFC-normalized besides — rode here as lossy `x` text, so every vault reload and every chain-sync adoption rewrote it (11 bytes became 13) and the next salt diverged from the sender's with the key intact: "garbage decrypt past verify" on both of a fleet's devices at once. Wrapped bytes, exact, like the chain itself.
         if let Some(pt) = chains.last_plaintexts().get(i) {
-            lane.push(f("last_plaintext", VsfType::x(String::from_utf8_lossy(pt).into_owned())));
+            lane.push(f("last_ident", VsfType::v(b'I', pt.clone())));
         }
         if let Some(Some(t)) = chains.last_received_times().get(i) {
             lane.push(f("last_received_time", e6(*t)));
@@ -132,11 +132,11 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
         doc = doc.add_section(LANE_SECTION, lane);
     }
 
-    // One section per PENDING message. pending.plaintext is the message x-text only (the salt/weave ingredient), valid UTF-8, lossless as x.
+    // One section per PENDING message. pending.plaintext is the row's IDENT bytes (the salt/weave ingredient) — raw, for the same reason as the lane's last ident above.
     for p in chains.pending_messages() {
         let mut rec = vec![
             f("eagle_time", e6(p.eagle_time)),
-            f("plaintext", VsfType::x(String::from_utf8_lossy(&p.plaintext).into_owned())),
+            f("ident", VsfType::v(b'I', p.plaintext.clone())),
             f("plaintext_hash", VsfType::hp(p.plaintext_hash.to_vec())),
             f("prev_msg_hp", VsfType::hp(p.prev_msg_hp.to_vec())),
             f("msg_hp", VsfType::hp(p.msg_hp.to_vec())),
@@ -245,7 +245,8 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
         positions.push(position);
         lane_chains.push(Chain::from_full_bytes(&chain).ok_or_else(|| StorageError::Parse("lane chain malformed".to_string()))?);
         lane_eras.push(era);
-        last_plaintexts.push(l.text("last_plaintext").map(String::into_bytes).unwrap_or_default());
+        // `last_ident` (raw bytes) is the field since 2026-10-01; a blob written before it carries the old lossy `last_plaintext` text, exact only for NFC text rows — read it so an existing lane's next salt still lands, and it dies on this device's next write. Remove the fallback once every device has rewritten its blobs (one write each).
+        last_plaintexts.push(l.wrapped("last_ident", b'I').or_else(|| l.text("last_plaintext").map(String::into_bytes)).unwrap_or_default());
         last_received_hashes.push(l.hp32("last_received_hash"));
         last_received_times.push(l.osc("last_received_time"));
     }
@@ -253,14 +254,16 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
     let split32 = |b: Vec<u8>| -> Vec<[u8; 32]> { b.chunks_exact(32).filter_map(|c| <[u8; 32]>::try_from(c).ok()).collect() };
     let mut pending_messages: Vec<PendingMessage> = Vec::new();
     for p in of(PENDING_SECTION) {
+        // `ident` (raw bytes) since 2026-10-01; the old `plaintext` text is read for a pending written before it (same bridge as the lane's last ident).
+        let plaintext = p.wrapped("ident", b'I').or_else(|| p.text("plaintext").map(String::into_bytes));
         let (Some(eagle_time), Some(plaintext), Some(plaintext_hash), Some(prev_msg_hp), Some(msg_hp), Some(ciphertext), Some(attempts)) =
-            (p.osc("eagle_time"), p.text("plaintext"), p.hp32("plaintext_hash"), p.hp32("prev_msg_hp"), p.hp32("msg_hp"), p.wrapped("ciphertext", b'X'), p.uint("attempts"))
+            (p.osc("eagle_time"), plaintext, p.hp32("plaintext_hash"), p.hp32("prev_msg_hp"), p.hp32("msg_hp"), p.wrapped("ciphertext", b'X'), p.uint("attempts"))
         else {
             return Err(torn("pending"));
         };
         pending_messages.push(PendingMessage {
             eagle_time,
-            plaintext: plaintext.into_bytes(),
+            plaintext,
             plaintext_hash,
             prev_msg_hp,
             msg_hp,
@@ -494,6 +497,27 @@ mod tests {
             attempts_before,
             "a restart must not amnesty a dying lane"
         );
+    }
+
+    /// THE SALT SOURCE SURVIVES THE CODEC BYTE-FOR-BYTE (the 2026-10-01 conviction): a typed row's ident starts 0xFF (never UTF-8) and a decomposed accent is not NFC — both used to come back changed from `x` text, and a changed previous ident is a changed salt with the same key, which is exactly what both of Nick's devices derived against Jeff's lane.
+    #[test]
+    fn typed_and_non_nfc_idents_survive_the_round_trip() {
+        let alice = [1u8; 32];
+        let bob = [2u8; 32];
+        let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
+        let mut chains = FriendshipChains::from_clutch(&[alice, bob], &eggs);
+        // A probe-shaped typed ident, then a decomposed "é" (e + U+0301): the first is not UTF-8 at all, the second changes under NFC.
+        let typed: Vec<u8> = vec![0xFF, 0x02, b'p', b'r', b'o', b'b', b'e', 0x00, 0x01, 0x02, 0x03];
+        let non_nfc: Vec<u8> = "e\u{301}".as_bytes().to_vec();
+        chains.prepare_send(b"first".to_vec(), typed.clone(), 1_000_000, vec![]).expect("send typed");
+        chains.prepare_send(b"second".to_vec(), non_nfc.clone(), 2_000_000, vec![]).expect("send non-nfc");
+        assert_eq!(chains.last_plaintexts().iter().filter(|p| !p.is_empty()).count(), 1, "one lane holds a last ident");
+        let bytes = chains_to_vsf_bytes(&chains).expect("encode");
+        let back = chains_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(back.last_plaintexts(), chains.last_plaintexts(), "the lane's last ident must come back exact — it is the next salt");
+        let idents: Vec<Vec<u8>> = back.pending_messages().iter().map(|p| p.plaintext.clone()).collect();
+        assert_eq!(idents, vec![typed, non_nfc], "pending idents must come back exact — they are the weave ingredient and the ACK-side salt");
+        assert_eq!(back.last_plaintexts().iter().find(|p| !p.is_empty()).map(|p| p.len()), Some(3), "the lane's last ident is the second send's, three bytes of decomposed e-acute");
     }
 
     /// The main section's bytes alone, cut out of a document by its TOC entry — a headerless blob, the shape the strict decoders must refuse.

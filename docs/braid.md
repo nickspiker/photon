@@ -166,7 +166,7 @@ Each message's salt is derived from the **previous message's plaintext**, forcin
 ```rust
 fn derive_salt(prev_plaintext: &[u8], chain: &Chain) -> [u8; 32] {
     let mut hasher = blake3::Hasher::new();
-    hasher.update(b"PHOTON_SALT_v0");
+    hasher.update(b"PHOTON_SALT_v\x01");
     hasher.update(prev_plaintext);                       // empty for first message
     hasher.update(chain.links[500..512].as_flattened()); // last 12 links
     *spaghettify(hasher.finalize().as_bytes()).as_bytes()
@@ -184,6 +184,12 @@ fn derive_salt(prev_plaintext: &[u8], chain: &Chain) -> [u8; 32] {
 ### 3.2 Salt NOT in Wire Format
 
 Both sides derive it independently from `prev_plaintext` + chain links. No salt on the wire — saves 32 bytes per message.
+
+### 3.3 What every holder of a lane position must hold (the 2026-10-01 conviction)
+
+The salt makes a chain step depend on the previous row's IDENT bytes (the x-text, or a typed row's `0xFF`-led canonical bytes — `ident_typed`). That is a dependency on content, so it must survive every path a lane position travels: the vault round trip, the fleet checkpoint a sibling adopts (lanes.md), and the ACK-side pending. The field case: Jeff's second row was a typed probe; the chains-blob codec stored the lane's last ident as VSF `x` text thru `from_utf8_lossy`, and VSF text is NFC-normalized, so one vault reload on Nick's phone and one chain-sync adoption on his desktop turned 11 bytes into 13 — both derived the same wrong salt with the right key, every later row on that lane was "garbage decrypt past verify", and the lane rotated. The design held; the codec lied. The ident now rides the blob as raw wrapped bytes (`last_ident`, pending `ident`), tested byte-for-byte for a typed ident and a non-NFC text.
+
+Audited the same day, and NOT a reason to change the derivation: a sibling adopting a checkpoint gets the exact ident with it; a deleted row keeps its ident copy in the blob (and the row keeps its content); a late molecule joiner under from-join history starts every lane at position 0 (no previous ident to need). The one holder the content dependency does not reach is a from-genesis joiner adopting lanes mid-stream — and that joiner lacks the chain state itself, which is the larger gap (molecules §8 D5).
 
 ---
 

@@ -39,6 +39,7 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
+- [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key, different salt; FIXED raw bytes + bridge reader; salt design stands; OPEN: fork loop on a rotated lane, from-genesis join
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live, computed fallback takes over with a fresh claim; "waiting for them to add you" status; filter pill hidden pre-link; OPEN: restart re-keys offline friends, one double keygen
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed; fixed, field verify pending; own-notes row now bootable
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick

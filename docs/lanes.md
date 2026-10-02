@@ -40,7 +40,7 @@ One rule, enforced in code, testable: **a device advances only the lane whose la
 Today the whole chains blob replicates across the fleet, newest-`mutated_osc`-wins: two devices that both advanced "the" chain race to overwrite each other. With lanes, replication shrinks to **per-lane checkpoints**:
 
 ```
-checkpoint = ( lane_label, position, chain 16KB, last_plaintext, last_received_hash )
+checkpoint = ( lane_label, position, chain 16KB, last ident (raw bytes — never text; braid §3.3), last_received_hash )
 sealed under the fleet key, pushed on advancement EDGES (post-ACK, post-receive-advance) — never timers
 ```
 
