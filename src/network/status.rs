@@ -1139,15 +1139,15 @@ async fn relay_reply(
     bytes: &[u8],
 ) {
     if dst == RELAY_ADDR {
-        if let Err(e) =
-            crate::network::fgtw::relay::send_via_relay(keypair, reply_to_device, bytes).await
-        {
-            crate::logf!(
-                "RELAY: reply to {} failed: {}",
-                hex::encode(&reply_to_device[..4]),
-                e
-            );
-        }
+        // OFF THE RECEIVE LOOP (2026-10-02, the Nick/Emma wave that warbled): this reply used to be awaited HERE, inside the loop that receives every datagram — a relay round trip of 1.3 to 2.8 s per pong, during which no media was received and every frame behind it aged by that much. The send is its own task now; the loop goes straight back to the socket.
+        let kp = keypair.clone();
+        let dev = *reply_to_device;
+        let bytes = bytes.to_vec();
+        tokio::spawn(async move {
+            if let Err(e) = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await {
+                crate::logf!("RELAY: reply to {} failed: {}", hex::encode(&dev[..4]), e);
+            }
+        });
     } else {
         udp::send(socket, bytes, dst).await;
     }
@@ -2368,6 +2368,9 @@ async fn run_checker(
                     }
 
                     // Try to parse as PT VSF packets (SPEC, ACK, NAK, CONTROL, COMPLETE)
+                    if let Some(h) = handling.as_mut() {
+                        h.1 = "vsf"; // refined below if a transfer control packet claims it
+                    }
                     if let Some(pt_handled) = handle_pt_vsf_packet(
                         msg_bytes,
                         src_addr,
@@ -2379,6 +2382,9 @@ async fn run_checker(
                     )
                     .await
                     {
+                        if let Some(h) = handling.as_mut() {
+                            h.1 = "transfer control";
+                        }
                         if pt_handled {
                             continue;
                         }
@@ -3992,9 +3998,14 @@ async fn run_checker(
                                             let bytes = reply.to_vsf_bytes();
                                             if !bytes.is_empty() {
                                                 crate::logf!("PHONEBOOK: answering {}'s address push with our own record", crate::fp(responder_pubkey.as_bytes()));
-                                                if let Err(e) = crate::network::fgtw::relay::send_via_relay(&keypair_recv, responder_pubkey.as_bytes(), &bytes).await {
-                                                    crate::logf!("PHONEBOOK: push answer failed: {}", e);
-                                                }
+                                                // Its own task, never awaited on the receive loop (see relay_reply).
+                                                let kp = keypair_recv.clone();
+                                                let dev = *responder_pubkey.as_bytes();
+                                                tokio::spawn(async move {
+                                                    if let Err(e) = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await {
+                                                        crate::logf!("PHONEBOOK: push answer failed: {}", e);
+                                                    }
+                                                });
                                             }
                                         }
                                     }

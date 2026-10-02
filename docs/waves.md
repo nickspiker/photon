@@ -250,6 +250,11 @@ Three things, built together:
   The 1-in-256 window would have held the old L for seconds while l raced; now the window restarts from that arrival (the first-arrival rule, already doctrine) and playout forgets its cursor (`platform::audio::reanchor_playout`): the next render is the first frame again, exactly on the new L.
   One jump, by the first-arrival rule; ordinary jitter stays a one-sample walk.
   Logged as `WAVE: clock step`, counted on the engine-down line.
+- **CONVICTED the same evening (0.110.5, the wave that warbled): the receive loop was AWAITING RELAY REPLIES.** Fifteen `RECV: the receive loop was away` lines on Nick's phone, 1.3 to 2.8 seconds each, every one right after a `RELAY: delivered for <Emma's device>` line: Emma's pings arrived over the relay pipe, and the pong went back through `relay_reply`, which awaited the relay's HTTP round trip inside the loop that receives every datagram.
+  No media was received for those seconds; every frame behind the stall aged by that much, L chased the bursts, l walked after it at every zero crossing — the speed-up-slow-down.
+  The relay reply (and the phonebook push answer, the other inline relay send) is its own task now; the loop goes straight back to the socket.
+  The timing line keeps watch for whatever stalls it next, and names a transfer control packet apart from the rest.
+  Also found: the Android dev APK is built without the `development` cargo feature, so the profile never armed; `profile_enabled` now reads the version's patch number (a dev line build is never x.y.0).
 - **The receive loop.** Nick's two loss bursts lined up to the second with bursts of transfer packets on the same socket (Emma's anchor fired on six paths, so every SPEC arrived six times, each accepted and logged twice).
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
