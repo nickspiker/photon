@@ -255,6 +255,9 @@ Three things, built together:
   The relay reply (and the phonebook push answer, the other inline relay send) is its own task now; the loop goes straight back to the socket.
   The timing line keeps watch for whatever stalls it next, and names a transfer control packet apart from the rest.
   Also found: the Android dev APK is built without the `development` cargo feature, so the profile never armed; `profile_enabled` now reads the version's patch number (a dev line build is never x.y.0).
+- **The instrument's own first bug (0.110.6, Jeff's keep).** The answering phone renders before any far frame is due, and those frames were traced under the cursor's UNSET name, i64::MIN, which `sample_to_eagle` wrapped into a garbage stamp; the keep took it as its base, every archive slot overflowed to zero, Jeff's own voice folded into one packet, his envelope went silent and the top half of Nick's card went blank.
+  Fixed both ends: nothing is traced before the first named frame, and the keep's base is the wire channels' and the archive's earliest stamp, never a render record's.
+  The keep logs its breakdown now (archive, render and wire records in; channels, slots and packet bytes out; the base).
 - **The receive loop.** Nick's two loss bursts lined up to the second with bursts of transfer packets on the same socket (Emma's anchor fired on six paths, so every SPEC arrived six times, each accepted and logged twice).
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.

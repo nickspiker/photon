@@ -764,7 +764,8 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     // The connect / disconnect sweep rides OVER whatever plays (wave/sweep.rs), after the duck and the trim — it is ours, not the far side's.
     mix_overlay(&mut frame, at_osc);
     // The render trace: the frame exactly as the DAC gets it (see RenderTrace); only a named far frame is traced, and only while profiling.
-    if PROFILE_ON.load(Ordering::Relaxed) && NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) {
+    // A frame rendered before the first far frame was due has no name yet: the cursor is unset (i64::MIN), and tracing it under that name wrapped into a garbage stamp that wrecked the answering phone's keep (2026-10-02, Jeff's one-stream keep). Nothing to trace it under; nothing traced.
+    if PROFILE_ON.load(Ordering::Relaxed) && NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) && NAMED_LAST_P.load(Ordering::Relaxed) != i64::MIN {
         let mut r = PROFILE_RING.lock().unwrap();
         if r.len() >= PROFILE_RING_MAX {
             r.pop_front();

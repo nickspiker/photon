@@ -465,7 +465,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     }
     let nchan = gr_nchan.max(1); // WHY/PROOF: the channel count comes from the recording's header — file data; 0 channels would stride every slot by nothing
     let slots = grid.first().map(|g| g.len()).unwrap_or(0);
-    let base = records.iter().filter(|r| !r.is_fill()).map(|r| r.osc).min().unwrap_or(0);
+    // The base is the WIRE channels' and the archive's earliest stamp — never a render record's: the render is named by the playout cursor, which sits a margin before the far names and would shift every slot (and once carried an unset name that wrapped to garbage — see the breakdown line below).
+    let base = records.iter().filter(|r| !r.is_fill() && !r.is_render()).map(|r| r.osc).min().unwrap_or(0);
     // Archive records land on the 10ms output lattice straight from their stamps.
     let mut arch_by_slot: Vec<Option<&Record>> = Vec::new();
     if has_arch {
@@ -561,6 +562,17 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         return None;
     }
     // The container carries NO envelope since the wave.env exchange (2026-09-12): env_len writes 0 and the envelope lives as a standalone VSF tensor blob per party. The header keeps the field so the layout is unchanged.
+    // THE KEEP'S BREAKDOWN (2026-10-02, Jeff's keep came out the size of one stream while his spool matched Nick's record for record: the answering phone rendered before any far frame was due, so its first render traces carried the cursor's unset name — i64::MIN — which `sample_to_eagle` wrapped into a garbage stamp that became the keep's BASE; every archive slot overflowed to zero and his own voice folded into one packet, his envelope went silent and the top half of Nick's card went blank): what went in and what each channel came out as, logged every keep.
+    crate::logf!(
+        "WAVE: keep — {} archive, {} render, {} wire record(s) → {} channel(s), {} slot(s), {} packet byte(s), base {}",
+        arch.len(),
+        render.len(),
+        rest.len(),
+        nchan,
+        slots_out,
+        container.len(),
+        base
+    );
     // THE RENDER PROFILE (Nick 2026-10-02, the instrument): the far party as the DAC actually played it, one 10 ms Opus packet per output slot with the composed gain and the hole count the render traced, appended to the profile region — every reader before today skips that region whole, so playback and the fleet see the recording they always did.
     append_render_profile(&mut profile, &render, base, slots_out);
     let mut out = Vec::with_capacity(CONTAINER_MAGIC.len() + 22 + nchan + 4 + profile.len() + container.len());
@@ -1085,6 +1097,41 @@ mod tests {
         let plain: Vec<Record> = records.iter().filter(|r| !r.is_render()).cloned().collect();
         let t2 = build_container(&plain).expect("a keep");
         assert!(open_render_profile(&t2.container).is_none(), "an unprofiled keep has no render profile");
+    }
+
+    /// A profiled keep with ALL three streams (our archive, the peer's wire channel, the render trace) mints our envelope and the blob derives a non-empty envelope for BOTH halves of the card.
+    #[test]
+    fn profiled_keep_keeps_both_envelopes() {
+        use crate::wave::spool::{ARCH_CHAN, PROC_FLAG, RAW_FLAG, RENDER_CHAN};
+        let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        let mut aenc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        let mut buf = vec![0u8; 4000];
+        let tone5: Vec<i16> = (0..FRAME_IN).map(|s| ((s as f32 * 0.2).sin() * 3000.0) as i16).collect();
+        let tone10: Vec<i16> = (0..FRAME).map(|s| ((s as f32 * 0.3).sin() * 5000.0) as i16).collect();
+        let mut records = Vec::new();
+        // Two seconds: 200 archive packets (10 ms), 400 peer frames and 400 render frames (5 ms), the render named 30 ms before the peer (the playout's lead).
+        for i in 0..200i64 {
+            let n = aenc.encode(&tone10, &mut buf).unwrap();
+            records.push(Record { chan: ARCH_CHAN | PROC_FLAG, osc: i * (ops / 100), seq: Some((i as u32, 0)), proc: Some((256, 0)), bytes: buf[..n].to_vec() });
+        }
+        for i in 0..400i64 {
+            let n = enc.encode(&tone5, &mut buf).unwrap();
+            records.push(Record { chan: 1, osc: i * (ops / 200), seq: Some((i as u32 / 2, (i % 2) as u8)), proc: None, bytes: buf[..n].to_vec() });
+            let raw: Vec<u8> = tone5.iter().flat_map(|v| v.to_le_bytes()).collect();
+            records.push(Record { chan: RENDER_CHAN | RAW_FLAG, osc: i * (ops / 200) - ops * 3 / 100, seq: None, proc: Some((200, 0)), bytes: raw });
+        }
+        let t = build_container(&records).expect("a keep");
+        assert!(t.env.is_some(), "a two-second profiled wave mints our envelope");
+        let envs = envelopes_from_blob(&t.container).expect("the blob derives envelopes");
+        assert_eq!(envs.len(), 2, "one per card half");
+        for (i, e) in envs.iter().enumerate() {
+            let energy: u64 = e.data.iter().map(|&b| b as u64).sum();
+            assert!(energy > 0, "half {i} carries signal");
+        }
+        let stream = open_blob(&t.container).expect("plays");
+        assert_eq!(stream.nchan, 2);
+        assert!(open_render_profile(&t.container).is_some());
     }
 
     #[test]

@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Fixed the person who answered a wave losing their own voice from the kept recording, and their half of the waveform going blank on the other person's card.
 - Fixed waves warbling and dropping sound whenever the other person's presence pings arrived through the relay: the reply no longer holds up the socket that receives the wave's audio.
 - Fixed a wave racing through the other person's voice at double speed after their clock stepped: playout now re-anchors on the step instead of walking it.
 - A development build records what the speaker actually played beside what arrived, exports it as an extra channel, and logs a timing trace every hundred milliseconds of a wave.
