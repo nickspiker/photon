@@ -39,6 +39,7 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
+- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 ASSESSED: 2% holed frames, zero loss = L rule (1-in-256 + burst-once) sits at the path; amplified = stale cal + re-aim on quiet floor 0; post-wave chirp = kept card via sibling page
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live, computed fallback takes over with a fresh claim; "waiting for them to add you" status
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed
@@ -55,7 +56,7 @@
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted Jennifer's Windows dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — doorbell v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid every divergence older than page one (6h, 288 rows, restart-only heal)
+- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
 - [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28
@@ -117,7 +118,7 @@
 
 ## Shipped arcs (hooks)
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP phases 1-6 shipped 2026-08-20
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (container then PHCALL7, now PHWAVE9): clean archive, plaid nowhere at rest, Q48 wave.env, coverage fold, music pigeons
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (PHWAVE9): clean archive, plaid nowhere at rest, verbatim keep
 - [project_waves.md](project_waves.md) — waves FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/waves.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes
@@ -126,7 +127,7 @@
 - [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; shaping/Cyrillic already free, Hindi cheap, CJK = payload call
 - [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates page + website
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot shipped; off-by-default toggle
-- [project_bridge.md](project_bridge.md) — BRIDGE (canonical: docs/bridge.md) = passless remote shell between siblings over PT; PIGEONS (drop→host cwd via spool) BUILT 2026-09-17 + progress bar
+- [project_bridge.md](project_bridge.md) — BRIDGE (docs/bridge.md) = passless remote shell between siblings over PT; PIGEONS built 2026-09-17; stage 4 deferred
 - [project_chain_replication.md](project_chain_replication.md) — chains sync fleet-wide (mutated_osc, adopt-iff-newer)
 - [Per-device lanes](per-device-lanes.md) — every device transmits on its own lane; CRDT merge converges
 - [project_fleet_braid_plane.md](project_fleet_braid_plane.md) — §14 cutover closed; durability = docs/durability.md (FLEET-HOLDS-HISTORY)
