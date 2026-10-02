@@ -246,6 +246,24 @@ const RX_ECHO_MARGIN_Q16: i64 = 1024;
 const RX_EXPAND_KNEE: i64 = 256;
 /// Mean |sample| of the newest frame handed to the DAC (post-duck — what the room actually receives), the k estimator's denominator. Reuses the FAR_LEVEL sum.
 static EMITTED_LEVEL: AtomicUsize = AtomicUsize::new(0);
+/// THE FOLLOWERS (Nick 2026-10-02, the fishtank: "we're dealing in 5 ms timescales… we should be averaging more"): a 5 ms mean of |sample| on a 100-150 Hz voice spans under one pitch period, so it ripples at the pitch rate and every gain fed by it modulated the far voice at that rate.
+/// Each detector now runs a partial add — Nick's `new = (7·old + target) >> 3` on the way down (≈40 ms at 5 ms frames), `(old + target) >> 1` on the way up (≈10 ms, so a duck still catches an onset) — sitting across two or more pitch periods.
+/// The followed near level (plan units) that the duck gain reads; the k learner keeps the raw frame (a minimum statistic wants the measurement, not its smoothing).
+static NEAR_ENV: AtomicI64 = AtomicI64::new(0);
+/// The followed far level (the frame about to render) that the expander reads.
+static FAR_ENV: AtomicI64 = AtomicI64::new(0);
+/// THE RAMP (same day): a gain computed once per frame used to multiply all 240 samples as one constant — a staircase with a step every 5 ms, each step a discontinuity. The render kernel now walks from the gain the previous frame ENDED on to this frame's target, one Q32 increment per sample; this is where it ended.
+static RENDER_GAIN_LAST: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+
+/// One step of the follower: fast on the way up, Nick's seven-eighths on the way down.
+pub fn follow(env: i64, target: i64) -> i64 {
+    if target > env {
+        (env + target) >> 1
+    } else {
+        (7 * env + target) >> 3
+    }
+}
+
 /// The speaker duck's tally since the last audio reset: render frames pulled, frames at or under half gain (the mic was hot), and the summed gain in 1/1024 (mean gain = sum / frames) — the engine's echo line and teardown readout. A frames-touched count was useless (the room floor alone puts every frame a hair under 1).
 static SPEAKER_FRAMES: AtomicUsize = AtomicUsize::new(0);
 static SPEAKER_HALF: AtomicUsize = AtomicUsize::new(0);
@@ -419,7 +437,10 @@ pub fn note_near_level(mean: u32) {
     // The duck keys on the mic level ABOVE plausible echo (field 2026-09-14 00:15, the echo-ey wave: at 65-76x makeup the far side's own echo inflated `near` while they talked, so each talker was ducked BY their echo — chop with zero loss). k is the min-statistic lower bound, doubled for margin; the subtraction is continuous, no gate: echo-only mic → input ~0 → full duplex; real speech → input ≈ the voice.
     let k = DUCK_K_Q16.load(Ordering::Relaxed);
     let echo_est = (2 * k * emitted) >> 16;
-    let g = duck_gain_q32((near - echo_est).max(0), k); // the algorithm: the echo estimate can exceed the near level, and a negative residual is simply no near talker
+    // The duck keys on the FOLLOWED near level (see NEAR_ENV): the pitch-rate ripple of a 5 ms mean no longer reaches the gain.
+    let env = follow(NEAR_ENV.load(Ordering::Relaxed), near);
+    NEAR_ENV.store(env, Ordering::Relaxed);
+    let g = duck_gain_q32((env - echo_est).max(0), k); // the algorithm: the echo estimate can exceed the near level, and a negative residual is simply no near talker
     SPEAKER_DUCK_GAIN.store(g, Ordering::Relaxed);
 }
 
@@ -648,18 +669,26 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
         let k = DUCK_K_Q16.load(Ordering::Relaxed).max(1); // WHY/PROOF: k is a LEARNED coupling that divides below; a learner that has seen nothing reads 0
         let loss = ((RX_ECHO_MARGIN_Q16 << 32) / k).min(crate::wave::qgain::UNITY);
         // THE DOWNWARD EXPANDER (Nick: "keep the ambient no talking level from screaming"): a continuous linear taper below a knee — the far room's floor and returning echo residue sink, speech above the knee passes at unity. Speaker-side, temporary, never recorded; no gate, no hold.
-        let level = mean_abs(&frame) as i64; // a mean of absolute values — never negative
+        // The expander keys on the FOLLOWED far level (see FAR_ENV): a quiet syllable tail no longer modulates itself at its own pitch rate.
+        let level = follow(FAR_ENV.load(Ordering::Relaxed), mean_abs(&frame) as i64); // a mean of absolute values — never negative
+        FAR_ENV.store(level, Ordering::Relaxed);
         let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::wave::qgain::UNITY);
         let g = crate::wave::qgain::compose(crate::wave::qgain::compose(duck, loss), expand);
-        if g != crate::wave::qgain::UNITY {
+        // THE RAMP: from the gain the previous frame ended on to this frame's target, one Q32 step per sample (see RENDER_GAIN_LAST). The step's integer division leaves the last sample within 240/2^32 of the target; the next frame starts from where this one actually ended, so nothing accumulates.
+        let last = RENDER_GAIN_LAST.load(Ordering::Relaxed);
+        if g != crate::wave::qgain::UNITY || last != crate::wave::qgain::UNITY {
             // Inline kernel (single render thread owns the carry): acc = s·g + carry; out = acc >> 32; carry = the low mask, exactly the residue. No saturation arm — g ≤ unity here, the product can only shrink.
+            let step = (g - last) / FRAME_SAMPLES as i64;
+            let mut gi = last;
             let mut carry = SPEAKER_DUCK_CARRY.load(Ordering::Relaxed);
             for s in frame.iter_mut() {
-                let acc = *s as i64 * g + carry;
+                gi += step;
+                let acc = *s as i64 * gi + carry;
                 *s = (acc >> 32) as i16;
                 carry = acc & 0xFFFF_FFFF;
             }
             SPEAKER_DUCK_CARRY.store(carry, Ordering::Relaxed);
+            RENDER_GAIN_LAST.store(gi, Ordering::Relaxed);
         }
     }
     // THE EARPIECE TRIM (Nick 2026-09-16, the Kalispell↔Southworth wave: a Pixel 3a at max rocker heard the plan level as quiet while a Pixel 8 Pro at its lowest step heard it loud — the earpieces differ by more than Android's narrow STREAM_VOICE_CALL rocker can span, and no vendor number tells us an earpiece's loudness). A per-device static gain in STOPS (one stop = ×2), remembered in `audio.rx.trim`, the pot under the rocker: a power of two, so it is an exact shift with no carry; upward it saturates at the rail. Never on the wire, never in the archive — this device's ear only. Local sources (ringback, previews) skip it: they were built for the rung the wave plays at.
@@ -753,6 +782,9 @@ fn clear_queues() {
     FAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_GAIN.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);
+    NEAR_ENV.store(0, Ordering::Relaxed);
+    FAR_ENV.store(0, Ordering::Relaxed);
+    RENDER_GAIN_LAST.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     EMITTED_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_ARMED.store(false, Ordering::Relaxed);
@@ -1238,6 +1270,41 @@ mod tests {
         // TOO LATE: every name of a frame has had its instant — dropped at the door, never played.
         queue_named(k, vec![5; FRAME_SAMPLES]);
         assert_eq!(jitter_stats().3, 1, "counted as too late");
+        clear_queues();
+        // THE FOLLOWER: fast up, seven-eighths down — a step settles in frames, not instantly, and the way down is the slower.
+        let mut up = 0i64;
+        for _ in 0..3 {
+            up = follow(up, 4096);
+        }
+        assert_eq!(up, 3584, "three frames up from zero reach 7/8 of a 4096 step");
+        let mut down = 4096i64;
+        for _ in 0..3 {
+            down = follow(down, 0);
+        }
+        assert!(down > 2048 && down < 3000, "three frames down from 4096 keep over half of it ({down})");
+        let mut steady = 100i64;
+        for _ in 0..200 {
+            steady = follow(steady, 100);
+        }
+        assert_eq!(steady, 100, "a steady input is passed exactly");
+        // THE RAMP: a frame whose target gain steps from unity to zero walks there one sample at a time — no staircase edge.
+        clear_queues();
+        set_speaker_duck(true);
+        // Armed with k at its neutral seed (1/16) the loss term alone is a quarter: the first frame walks from the unity it inherited down to that, never a step.
+        queue_playback(vec![10000i16; FRAME_SAMPLES]);
+        let first = next_render_frame();
+        assert!(first[0] > 9900, "the first sample is still at the inherited unity ({})", first[0]);
+        assert!((2480..=2520).contains(&first[FRAME_SAMPLES - 1]), "the last sample has reached the quarter loss ({})", first[FRAME_SAMPLES - 1]);
+        assert!(first.windows(2).all(|w| w[0] >= w[1]), "the walk is monotonic — one step per sample, never a jump");
+        note_near_level(1 << 20); // a near level past full duck: the duck's target is zero
+        queue_playback(vec![10000i16; FRAME_SAMPLES]);
+        let ramp = next_render_frame();
+        assert!((2400..=2520).contains(&ramp[0]), "the next frame starts where the last one ended ({})", ramp[0]);
+        assert!(ramp[FRAME_SAMPLES - 1] <= 1, "the last sample has reached the zero target ({})", ramp[FRAME_SAMPLES - 1]);
+        assert!(ramp.windows(2).all(|w| w[0] >= w[1]), "the walk is monotonic — one step per sample, never a jump");
+        queue_playback(vec![10000i16; FRAME_SAMPLES]);
+        let held = next_render_frame();
+        assert!(held.iter().all(|&s| s <= 1), "the next frame starts where the ramp ended");
         clear_queues();
     }
 }

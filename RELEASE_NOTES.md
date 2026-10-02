@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Waves on a long path no longer sound underwater: the level the far voice is scaled by now follows a smoothed reading instead of each five-millisecond slice, and every change in that scale glides across the slice instead of stepping.
 - Fixed a friendship being re-keyed over a lane the other device had already rotated away from: a late frame on a retired lane is dropped, not counted as a fork.
 - A molecule's unreadable frame no longer triggers a re-key with whichever member sent it.
 - Fixed a conversation going unreadable after a restart or a fleet sync when the previous message was a typed row: the next message's salt source now rides as exact bytes.

@@ -235,6 +235,22 @@ Nick's law (2026-09-13): "map a gain based on the speaker output… a nice linea
 Gone: the predictive gate (`PredGate` stays in `learn.rs` for its tests only), the bounded hard run, the reactive fallback, the 0.15 soft floor, the 0.02 near-mute and the "gated" tally. Kept: the canceller's adapt gate (far talks alone), the chirp's delay and floor, and a seed-time warning when `g × volume` exceeds 0.3 (the earpiece driven into the mic is not a linear path; lower the rocker).
 The one constant to tune is `DUCK_FAR_FULL` (800: emitted mean |sample| × linear volume at which the mic is fully ducked, half at half). The subband canceller and a near-aware gain (only once a filter has proven ≥ 6 dB) are the next steps on top of this, not instead of it.
 
+## The followers and the ramp (2026-10-02, the fishtank)
+
+The Jeff/Nick wave of 2026-10-02 (both on Verizon, 104 ms round trip, zero loss, zero xruns) sounded underwater at both ends.
+Two per cent of the 5 ms frames played as holes, but the render path had a second problem that no log line showed: each of its three gains (the duck, the loss, the expander) was computed once per 5 ms frame and multiplied into all 240 samples as one constant, a staircase with a step every 5 ms.
+Worse, the detectors feeding two of them were raw 5 ms means of |sample|: on a 100 to 150 Hz voice that window spans under one pitch period, so the mean ripples at the pitch rate and the gains modulated the far voice at the near voice's pitch (the duck) or at its own (the expander).
+Amplitude modulation at pitch rate with hard 5 ms steps is the recipe for "underwater".
+
+Nick: "we're dealing in 5 ms timescales… we should be averaging more… I personally like doing a partial add, new = (7·old + target) >> 3. And the ramp too."
+
+- **The followers** (`platform::audio::follow`): the duck's near level and the expander's far level each run a partial add, `(old + target) >> 1` on the way up (≈10 ms, a duck still catches an onset) and Nick's `(7·old + target) >> 3` on the way down (≈40 ms), so each detector sits across two or more pitch periods.
+  The k learner keeps the raw frame: a minimum statistic wants the measurement, not its smoothing.
+- **The ramp**: the render kernel walks from the gain the previous frame ended on to this frame's composed target, one Q32 increment per sample, and the next frame starts from where this one actually ended.
+  The gain still updates every 5 ms; it no longer steps.
+- Not changed: the laws themselves (the duck's slope, the loss bound, the expander's knee), the mic path (still untouched), and L.
+  The capture of the rendered channel (what the DAC got, beside what the wire carried) is still the instrument that proves which gain was doing it; this is the fix the ear can judge first.
+
 ## The wave field (2026-09-28)
 
 The active wave screen shows the wave as it happens: a square at the top holds both parties' avatars, theirs a third in from the top-right and ours a third in from the bottom-left, and every 5 ms frame of audio ripples out of the avatar that made it. The square is 24 layout units wide (ru, like the rest of the interface), narrowed only when a screen cannot hold it.
