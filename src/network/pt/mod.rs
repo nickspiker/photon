@@ -360,6 +360,21 @@ impl PTManager {
     }
 
     /// Handle received SPEC (start receiving)
+    /// A SPEC we already hold the transfer for — the same stream and hash from ANY address (a six-path anchor delivers one SPEC six times; a lost SPEC ACK makes the sender repeat it). The ACK still goes back so the sender locks onto whichever path answered, but no second transfer and no second log line (2026-10-02, the Emma wave: 222 transfer lines in one second in front of the media).
+    pub fn spec_known(&self, spec: &PTSpec) -> bool {
+        self.inbound.iter().any(|t| t.stream_id == spec.stream_id && t.receive_buffer.expected_hash() == spec.data_hash)
+    }
+
+    /// The SPEC ACK alone, for a SPEC already known (see `spec_known`).
+    pub fn spec_ack_bytes(&self, spec: &PTSpec) -> Vec<u8> {
+        PTAck {
+            stream_id: spec.stream_id,
+            sequence: u32::MAX,
+            chunk_hash: spec.data_hash,
+        }
+        .to_vsf_bytes(&self.keypair)
+    }
+
     pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec) -> Vec<u8> {
         crate::logf!(
             "PT: Received SPEC from {} - stream '{}', {} packets, {} bytes, hash {}",

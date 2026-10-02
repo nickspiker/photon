@@ -1207,6 +1207,22 @@ async fn run_checker(
     // Raw device pubkey for the LAN-discovery paths: stamped into our outgoing beacon and compared against incoming ones, so a device never learns its own looped-back beacon as a peer address ([u8; 32] is Copy — each spawned listener grabs its own).
     let our_device_pk: [u8; 32] = keypair.public.to_bytes();
 
+    // THE RECEIVE BUFFER (2026-10-02): the kernel's default (a few hundred KB on Android) holds under a second of plaid media; a receive-loop stall past that is dropped frames. Ask for 4 MiB and log what the kernel granted (it caps at its own limit, which is still well past the default).
+    #[cfg(unix)]
+    {
+        use std::os::fd::AsRawFd;
+        let fd = std_socket.as_raw_fd();
+        let want: libc::c_int = 4 << 20;
+        // SAFETY: a plain setsockopt/getsockopt on a socket this process owns, with the integer option values the API defines.
+        unsafe {
+            let _ = libc::setsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &want as *const _ as *const libc::c_void, std::mem::size_of::<libc::c_int>() as libc::socklen_t);
+            let mut got: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>() as libc::socklen_t;
+            if libc::getsockopt(fd, libc::SOL_SOCKET, libc::SO_RCVBUF, &mut got as *mut _ as *mut libc::c_void, &mut len) == 0 {
+                crate::logf!("Status: socket receive buffer {} KB (asked {} KB)", got / 1024, want / 1024);
+            }
+        }
+    }
     let cloned = match std_socket.try_clone() {
         Ok(s) => s,
         Err(e) => {
@@ -1794,9 +1810,17 @@ async fn run_checker(
         let mut unknown_ping_logged: Vec<[u8; 32]> = Vec::new();
         // Probe-REFLECTION rate cap: at most one reverse probe per device per minute. Reflection is how the side with NO working candidates ever validates its own direction (see the PunchProbe arm); the cap keeps two reflecting peers from probe ping-pong, and validation quiets both sides naturally (a validated side probes only its validated remote as keepalive).
         let mut reverse_probed: Vec<([u8; 32], std::time::Instant)> = Vec::new();
+        // THE LOOP'S OWN CLOCK (2026-10-02, the Emma wave: 30% of her media lost on a LAN while this loop handled a burst of transfer packets): media is dispatched first, but a datagram this loop is still handling is one the socket queues the next behind — the time from one receive to the next receive IS the time media waited. Anything past 20 ms is named with what it was handling.
+        let mut handling: Option<(std::time::Instant, &'static str)> = None;
         // RELAY-COORDINATED OPEN rate cap: one burst per device per 10 s (the presence cadence). A ping that reaches us over the relay is the "punch now" nudge the audit found missing (2026-09-17, Jon's Mac ↔ Nick's phone: both sides punched on their own presence cycles, never inside each other's NAT window) — the pinger fired its probes at our candidates the instant before this frame left, so its NAT holds a fresh mapping toward us RIGHT NOW; our probes at its published candidates land inside that window instead of ~10 s later on our own cycle.
         let mut relay_nudged: Vec<([u8; 32], std::time::Instant)> = Vec::new();
         loop {
+            if let Some((since, kind)) = handling.take() {
+                let spent = since.elapsed();
+                if spent.as_millis() >= 20 {
+                    crate::logf!("RECV: the receive loop was away {} ms handling a {} datagram — media behind it waited that long", spent.as_millis(), kind);
+                }
+            }
             // Take the next datagram from EITHER the real UDP socket OR the relay pipe. A pipe frame is handed `RELAY_ADDR` as its source, so everything below this line — the entire ~900-line dispatch — cannot tell a relayed message from a directly-received one, except that RELAY_ADDR tells the app to skip address-learning and mark reached_via_relay. This is the whole reason the pipe is one select! arm and not a parallel dispatch: presence, chat, acks and CLUTCH all reuse the proven receive path.
             // A UDP datagram lands in the fixed 64 KiB `buf`; an injected pipe frame is held in `injected_holder` (owned Vec) because it can be a whole ~548 KB CLUTCH offer — FAR larger than `buf`. Copying it into `buf` truncated it to 64 KiB and the offer never parsed ("Not enough data"), which is why the ceremony stalled over the relay: the offer was injected but chopped to 12% of itself. `msg_bytes` points at whichever holds this iteration's frame.
             let mut injected_holder: Option<Vec<u8>> = None;
@@ -1821,6 +1845,17 @@ async fn run_checker(
                         None => &buf[..len],
                     };
 
+                    handling = Some((
+                        std::time::Instant::now(),
+                        match msg_bytes.first() {
+                            _ if crate::wave::packet::is_media_packet(msg_bytes) => "media",
+                            _ if crate::wave::signal::is_express_frame(msg_bytes) => "express",
+                            Some(b'd') => "transfer data",
+                            Some(b'R') => "vsf",
+                            Some(_) if src_addr == RELAY_ADDR => "relay",
+                            _ => "other",
+                        },
+                    ));
                     // VOICE MEDIA FAST PATH (docs/waves.md): one-byte high-ASCII magic check BEFORE the entire parse ladder (every other frame leads with plain ASCII: VSF 'R', PT lowercase) — 50 packets/second must not pay for trial parsing, PT acks, or StatusUpdates. Matches route raw to the wave engine's sink; with no live wave they silently drop (also the correct fate for post-hangup stragglers). The magic collides with nothing here: VSF opens "RÅ<", PT DATA opens with a lowercase stream id.
                     if crate::wave::packet::is_media_packet(msg_bytes) {
                         crate::wave::deliver_media(msg_bytes, src_addr);
@@ -4997,15 +5032,20 @@ async fn handle_pt_vsf_packet(
                         return Some(true);
                     }
 
-                    crate::logf!(
-                        "PT: SPEC accepted from {} - {} packets, {} bytes",
-                        src_addr,
-                        spec.total_packets,
-                        spec.total_size
-                    );
                     let spec_ack = {
                         let mut pt_mgr = pt.lock().unwrap();
-                        pt_mgr.handle_spec(src_addr, spec)
+                        if pt_mgr.spec_known(&spec) {
+                            // Already ours (another path's copy, or a repeat after a lost ACK): answer it, keep the one transfer, say nothing more.
+                            pt_mgr.spec_ack_bytes(&spec)
+                        } else {
+                            crate::logf!(
+                                "PT: SPEC accepted from {} - {} packets, {} bytes",
+                                src_addr,
+                                spec.total_packets,
+                                spec.total_size
+                            );
+                            pt_mgr.handle_spec(src_addr, spec)
+                        }
                     };
                     udp::send(socket, &spec_ack, src_addr).await;
                     return Some(true);

@@ -39,9 +39,9 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
-- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 ASSESSED: 2% holed frames, zero loss = L rule (1-in-256 + burst-once) sits at the path; amplified = stale cal + re-aim on quiet floor 0; post-wave chirp = kept card via sibling page; followers+ramp BUILT v0.110.4, verify pending
+- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave 2% holes = L rule at the path; Emma wave 2x = future-named backlog → clock-step re-anchor + render-trace instrument + recv-loop guard BUILT
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
-- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live, computed fallback takes over with a fresh claim; "waiting for them to add you" status
+- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; "waiting for them to add you"; OPEN: restart re-keys offline friends
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry; newest row's strip unasked

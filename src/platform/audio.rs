@@ -134,6 +134,7 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     if p == i64::MIN {
         p = dac_k - target;
     }
+    NAMED_LAST_P.store(p, Ordering::Relaxed);
     // The names this frame can reach: the one before the cursor (for the slope), and at most two per output sample (a drop per sample in a silent stretch).
     let lo = p - 1;
     let span = 2 * FRAME_SAMPLES + 3;
@@ -184,6 +185,7 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
         }
     }
     let got = FRAME_SAMPLES - missing;
+    NAMED_LAST_MISSING.store(missing, Ordering::Relaxed);
     if PLAYED_ANY.load(Ordering::Relaxed) && missing > MISS_SLACK {
         JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
     }
@@ -254,6 +256,58 @@ static NEAR_ENV: AtomicI64 = AtomicI64::new(0);
 static FAR_ENV: AtomicI64 = AtomicI64::new(0);
 /// THE RAMP (same day): a gain computed once per frame used to multiply all 240 samples as one constant — a staircase with a step every 5 ms, each step a discontinuity. The render kernel now walks from the gain the previous frame ENDED on to this frame's target, one Q32 increment per sample; this is where it ended.
 static RENDER_GAIN_LAST: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+
+/// THE RENDER TRACE (Nick 2026-10-02, "Go!" on the instrument): what the DAC actually got, frame by frame, with the name it played, the composed gain it was scaled by and how many of its samples were holes.
+/// The engine drains this ring each loop iteration into the spool's render channel (spool.rs RENDER_CHAN) and the 100 ms trace line; nothing is pushed while profiling is off.
+pub struct RenderTrace {
+    /// The grid name the frame started playing (the playout cursor at its first sample).
+    pub name: i64,
+    /// The composed render gain (duck · loss · expander) this frame was walked toward, Q32.
+    pub gain_q32: i64,
+    /// Samples of this frame that had no far audio to play (holes).
+    pub missing: u16,
+    /// The frame as handed to the DAC, after the gains, the trim and the overlay.
+    pub pcm: Vec<i16>,
+}
+static PROFILE_ON: AtomicBool = AtomicBool::new(false);
+static PROFILE_RING: Mutex<VecDeque<RenderTrace>> = Mutex::new(VecDeque::new());
+/// Two seconds of 5 ms frames: the engine drains every loop pass; a ring this deep only ever matters if the engine stalls, and then the newest frames are the ones worth having.
+const PROFILE_RING_MAX: usize = 400;
+/// The name and the hole count of the last named frame — named_frame leaves them for the render pull to trace.
+static NAMED_LAST_P: AtomicI64 = AtomicI64::new(i64::MIN);
+static NAMED_LAST_MISSING: AtomicUsize = AtomicUsize::new(0);
+/// Playout re-anchors this wave (see `reanchor_playout`).
+static REANCHORS: AtomicUsize = AtomicUsize::new(0);
+
+/// Arm or disarm the render trace.
+pub fn set_profile(on: bool) {
+    PROFILE_ON.store(on, Ordering::Relaxed);
+    if !on {
+        PROFILE_RING.lock().unwrap().clear();
+    }
+}
+
+/// Take every traced render frame since the last take, oldest first.
+pub fn take_render_trace() -> Vec<RenderTrace> {
+    PROFILE_RING.lock().unwrap().drain(..).collect()
+}
+
+/// The followed near and far levels, plan units — the trace line prints them.
+pub fn envelopes() -> (i64, i64) {
+    (NEAR_ENV.load(Ordering::Relaxed), FAR_ENV.load(Ordering::Relaxed))
+}
+
+/// A CLOCK STEP RE-ANCHOR (Nick 2026-10-02, the Emma wave that played at 2x): the far party's names can only run ahead of the cursor when the sender's clock stepped against ours, and the doctrine already answers that — the first arrival sets L, whatever it is.
+/// Forgetting the cursor makes the next render the first frame again: it starts exactly on the L the engine just restarted from the stepped arrival. One jump, by the first-arrival rule; ordinary jitter stays a walk.
+pub fn reanchor_playout() {
+    PLAY_NEXT.store(i64::MIN, Ordering::Relaxed);
+    REANCHORS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Playout re-anchors since the last audio reset.
+pub fn reanchors() -> usize {
+    REANCHORS.load(Ordering::Relaxed)
+}
 
 /// One step of the follower: fast on the way up, Nick's seven-eighths on the way down.
 pub fn follow(env: i64, target: i64) -> i64 {
@@ -658,6 +712,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     };
     // The speaker duck: the live render frame scaled by the mic level of the moment, right before the DAC — Q32 with the carried remainder (wave/qgain.rs), the gain pre-shifted at capture time, so this path is load + mul-add-shift-and per sample. The chirp (a local source) plays at full — the probe measures the route, it must not be ducked by the voice that reads it.
     let mut frame = frame;
+    let mut traced_gain = crate::wave::qgain::UNITY;
     if !LOCAL_SOURCE.load(Ordering::Relaxed) && SPEAKER_DUCK_ARMED.load(Ordering::Relaxed) {
         SPEAKER_FRAMES.fetch_add(1, Ordering::Relaxed);
         let duck = SPEAKER_DUCK_GAIN.load(Ordering::Relaxed);
@@ -674,6 +729,7 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
         FAR_ENV.store(level, Ordering::Relaxed);
         let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::wave::qgain::UNITY);
         let g = crate::wave::qgain::compose(crate::wave::qgain::compose(duck, loss), expand);
+        traced_gain = g;
         // THE RAMP: from the gain the previous frame ended on to this frame's target, one Q32 step per sample (see RENDER_GAIN_LAST). The step's integer division leaves the last sample within 240/2^32 of the target; the next frame starts from where this one actually ended, so nothing accumulates.
         let last = RENDER_GAIN_LAST.load(Ordering::Relaxed);
         if g != crate::wave::qgain::UNITY || last != crate::wave::qgain::UNITY {
@@ -707,6 +763,19 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
     }
     // The connect / disconnect sweep rides OVER whatever plays (wave/sweep.rs), after the duck and the trim — it is ours, not the far side's.
     mix_overlay(&mut frame, at_osc);
+    // The render trace: the frame exactly as the DAC gets it (see RenderTrace); only a named far frame is traced, and only while profiling.
+    if PROFILE_ON.load(Ordering::Relaxed) && NAMED.load(Ordering::Relaxed) && !LOCAL_SOURCE.load(Ordering::Relaxed) {
+        let mut r = PROFILE_RING.lock().unwrap();
+        if r.len() >= PROFILE_RING_MAX {
+            r.pop_front();
+        }
+        r.push_back(RenderTrace {
+            name: NAMED_LAST_P.load(Ordering::Relaxed),
+            gain_q32: traced_gain,
+            missing: NAMED_LAST_MISSING.load(Ordering::Relaxed).min(u16::MAX as usize) as u16,
+            pcm: frame.clone(),
+        });
+    }
     // Far-end level for the duck: peak-hold with a per-frame decay (~80ms fall from full at 5ms frames — old/8 per frame; was old/4 at 10ms), so the mic stays attenuated across the device-buffer + acoustic lag rather than only the exact rendered instant.
     let lvl = mean_abs(&frame) as usize;
     let old = FAR_LEVEL.load(Ordering::Relaxed);
@@ -785,6 +854,10 @@ fn clear_queues() {
     NEAR_ENV.store(0, Ordering::Relaxed);
     FAR_ENV.store(0, Ordering::Relaxed);
     RENDER_GAIN_LAST.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
+    NAMED_LAST_P.store(i64::MIN, Ordering::Relaxed);
+    NAMED_LAST_MISSING.store(0, Ordering::Relaxed);
+    REANCHORS.store(0, Ordering::Relaxed);
+    PROFILE_RING.lock().unwrap().clear();
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     EMITTED_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_ARMED.store(false, Ordering::Relaxed);
@@ -1270,7 +1343,31 @@ mod tests {
         // TOO LATE: every name of a frame has had its instant — dropped at the door, never played.
         queue_named(k, vec![5; FRAME_SAMPLES]);
         assert_eq!(jitter_stats().3, 1, "counted as too late");
+        // A CLOCK STEP RE-ANCHOR: the far names jump six seconds ahead; the engine restarts L from the stepped arrival and forgets the cursor, and the next render is the first frame again — exactly on the new L, no walk.
+        let stepped = PLAY_NEXT.load(Ordering::Relaxed) + 6 * 48_000;
+        queue_named(stepped, vec![77; FRAME_SAMPLES]);
+        set_play_target(-6 * 48_000 + f); // the stepped arrival alone sets L (names ahead of our clock read as a negative age)
+        reanchor_playout();
+        assert_eq!(reanchors(), 1);
+        let dac_k = stepped + (-6 * 48_000 + f); // the DAC instant whose first-frame cursor (dac − L) lands exactly on the stepped name
+        let out = next_render_frame_at(dac(dac_k));
+        assert_eq!(out, vec![77i16; FRAME_SAMPLES], "the first frame after a re-anchor starts on the new L and plays the stepped frame whole");
+        assert_eq!(play_latency(), Some(-6 * 48_000 + f), "l is the new L at once — a jump by the first-arrival rule, not a walk");
+        // THE RENDER TRACE: armed, every named far frame lands in the ring as the DAC got it, with its name and holes.
+        set_profile(true);
+        let _ = take_render_trace();
+        let p0 = PLAY_NEXT.load(Ordering::Relaxed);
+        queue_named(p0, vec![31; FRAME_SAMPLES]);
+        let _ = next_render_frame_at(dac(p0 + play_latency().unwrap()));
+        let tr = take_render_trace();
+        assert_eq!(tr.len(), 1, "one traced frame per render");
+        assert_eq!(tr[0].name, p0, "traced under the name it started on");
+        assert_eq!(tr[0].missing, 0);
+        assert_eq!(tr[0].pcm, vec![31i16; FRAME_SAMPLES], "the trace is the DAC's frame");
+        set_profile(false);
+        assert!(take_render_trace().is_empty(), "disarmed: nothing traced");
         clear_queues();
+        assert_eq!(reanchors(), 0, "reset with the rest");
         // THE FOLLOWER: fast up, seven-eighths down — a step settles in frames, not instantly, and the way down is the slower.
         let mut up = 0i64;
         for _ in 0..3 {

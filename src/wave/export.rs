@@ -45,15 +45,20 @@ fn base_osc(bytes: &[u8]) -> Option<i64> {
 /// This module never opens a file: the caller hands it the writer (the user-directed save lives in ui/photon_app/attachments.rs, the one sanctioned Downloads writer — scripts/lib/artifact-gate.sh).
 pub fn export_to<W: std::io::Write + std::io::Seek>(blob: &[u8], fmt: ExportFormat, out: &mut W) -> Result<u64, String> {
     let mut stream = record::open_blob(blob).ok_or("not a kept wave (unknown container)")?;
-    let nchan = stream.nchan;
+    // A profiled wave (development builds, 2026-10-02) carries the far party AS PLAYED beside the wire channels: the WAV gets it as its last channel, the VSF as a "rendered" section.
+    let rendered = record::open_render_profile(blob);
     match fmt {
-        ExportFormat::Wav => write_wav(&mut stream, nchan, out),
-        ExportFormat::Vsf => write_vsf(&mut stream, base_osc(blob), out),
+        ExportFormat::Wav => write_wav(&mut stream, rendered, out),
+        ExportFormat::Vsf => write_vsf(&mut stream, rendered, base_osc(blob), out),
     }
 }
 
-fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream, nchan: usize, f: &mut W) -> Result<u64, String> {
+fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream, rendered: Option<record::RenderProfile>, f: &mut W) -> Result<u64, String> {
     use std::io::{SeekFrom, Write};
+    let wire = stream.nchan;
+    let nchan = wire + usize::from(rendered.is_some());
+    let mut rdec = rendered.as_ref().and_then(|_| opus::Decoder::new(48_000, opus::Channels::Mono).ok());
+    let mut rslot = 0usize;
     let mut w = std::io::BufWriter::new(&mut *f);
     let block = (nchan * 2) as u16;
     // RIFF header with the two sizes patched once the length is known.
@@ -73,13 +78,32 @@ fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream,
     w.write_all(&h).map_err(|e| format!("write: {e}"))?;
     let mut frames: u64 = 0;
     let mut buf = Vec::new();
+    let mut rpcm = vec![0i16; 480];
     while let Some(frame) = stream.next_frame() {
         buf.clear();
-        for s in &frame {
-            buf.extend_from_slice(&s.to_le_bytes());
+        let per = frame.len() / wire.max(1);
+        if let (Some(rp), Some(dec)) = (rendered.as_ref(), rdec.as_mut()) {
+            // The rendered slot in lockstep with the wire slot (both 10 ms); an empty packet or a slot past the profile is silence, the decoder untouched.
+            rpcm.fill(0);
+            if let Some(p) = rp.packets.get(rslot) {
+                if !p.is_empty() {
+                    let _ = dec.decode(p, &mut rpcm, false);
+                }
+            }
+            rslot += 1;
+            for i in 0..per {
+                for ch in 0..wire {
+                    buf.extend_from_slice(&frame[i * wire + ch].to_le_bytes());
+                }
+                buf.extend_from_slice(&rpcm.get(i).copied().unwrap_or(0).to_le_bytes());
+            }
+        } else {
+            for s in &frame {
+                buf.extend_from_slice(&s.to_le_bytes());
+            }
         }
         w.write_all(&buf).map_err(|e| format!("write: {e}"))?;
-        frames += (frame.len() / nchan.max(1)) as u64;
+        frames += per as u64;
     }
     let data = frames * block as u64;
     // WHY/PROOF: a RIFF size is 32 bits — past 4 GiB of samples (~6 h of stereo) the file cannot say its own length; refuse rather than write a lying header.
@@ -92,7 +116,7 @@ fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream,
     Ok(frames)
 }
 
-fn write_vsf<W: std::io::Write>(stream: &mut record::KeptStream, start: Option<i64>, out: &mut W) -> Result<u64, String> {
+fn write_vsf<W: std::io::Write>(stream: &mut record::KeptStream, rendered: Option<record::RenderProfile>, start: Option<i64>, out: &mut W) -> Result<u64, String> {
     use vsf::VsfType;
     // COMPRESSED, not decoded (Nick 2026-09-28: "no need to burn 10x the space when it could just get reframed"): the kept Opus packets exactly as recorded, each one its own `v('o', …)` value, so a VSF reader needs no length-prefix parsing and any audio tool with Opus plays them.
     let (subs, chans) = stream.raw_packets().ok_or("no packets to export")?;
@@ -113,6 +137,15 @@ fn write_vsf<W: std::io::Write>(stream: &mut record::KeptStream, start: Option<i
         let mut sec = vsf::VsfSection::new(if c == 0 { "self" } else { "peer" });
         sec.add_field_multi("packet_ms", vec![VsfType::u((10 / sub) as usize, false)]);
         sec.add_field_multi("opus", packets.into_iter().map(|p| VsfType::v(b'o', p)).collect());
+        builder = builder.add_section_direct(sec);
+    }
+    if let Some(rp) = rendered {
+        // The instrument's channel: the far party as the DAC played it, 10 ms packets, with the composed render gain (8.8) and the hole count per slot.
+        let mut sec = vsf::VsfSection::new("rendered");
+        sec.add_field_multi("packet_ms", vec![VsfType::u(10, false)]);
+        sec.add_field_multi("gain_q8", rp.slots.iter().map(|(g, _)| VsfType::u(*g as usize, false)).collect());
+        sec.add_field_multi("holes", rp.slots.iter().map(|(_, h)| VsfType::u(*h as usize, false)).collect());
+        sec.add_field_multi("opus", rp.packets.into_iter().map(|p| VsfType::v(b'o', p)).collect());
         builder = builder.add_section_direct(sec);
     }
     let bytes = builder.build().map_err(|e| format!("build: {e}"))?;

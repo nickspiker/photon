@@ -306,6 +306,9 @@ enum Cell {
 }
 
 fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>>)> {
+    // The render channel (spool.rs RENDER_CHAN) is the instrument's, never a wire channel: it rides the container's profile region (see build_container), not the grid.
+    let owned: Vec<Record> = records.iter().filter(|r| !r.is_render()).cloned().collect();
+    let records = &owned[..];
     if records.is_empty() {
         return None;
     }
@@ -449,7 +452,8 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
 pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     // THE ORDERING FIX (Nick 2026-09-12): channel 0 is the live ARCHIVE stream verbatim — the clean pre-duck encode made during the wave. THE VERBATIM KEEP (Nick 2026-09-17): every other channel is verbatim too — the wire packets on their 5 ms seq lattice, fills included, holes kept — so the keep encodes nothing and its one decode pass feeds the envelope. A legacy spool with no archive records carries channel 0 as its wire copies (sub 2) the same way.
     let arch: Vec<&Record> = records.iter().filter(|r| r.is_arch()).collect();
-    let rest: Vec<Record> = records.iter().filter(|r| !r.is_arch()).cloned().collect();
+    let render: Vec<&Record> = records.iter().filter(|r| r.is_render()).collect();
+    let rest: Vec<Record> = records.iter().filter(|r| !r.is_arch() && !r.is_render()).cloned().collect();
     let grid_res = grid_from_records(&rest);
     let has_arch = !arch.is_empty();
     let (gr_nchan, grid) = match grid_res {
@@ -557,6 +561,8 @@ pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
         return None;
     }
     // The container carries NO envelope since the wave.env exchange (2026-09-12): env_len writes 0 and the envelope lives as a standalone VSF tensor blob per party. The header keeps the field so the layout is unchanged.
+    // THE RENDER PROFILE (Nick 2026-10-02, the instrument): the far party as the DAC actually played it, one 10 ms Opus packet per output slot with the composed gain and the hole count the render traced, appended to the profile region — every reader before today skips that region whole, so playback and the fleet see the recording they always did.
+    append_render_profile(&mut profile, &render, base, slots_out);
     let mut out = Vec::with_capacity(CONTAINER_MAGIC.len() + 22 + nchan + 4 + profile.len() + container.len());
     out.extend_from_slice(CONTAINER_MAGIC);
     out.push(nchan as u8);
@@ -603,6 +609,107 @@ enum Inner {
         decs: Vec<opus::Decoder>,
         slot: usize,
     },
+}
+
+/// The render profile block's magic; it sits LAST in the container's profile region with its own length as the region's final four bytes, so a reader finds it from the end whatever the ducking profile before it holds.
+pub const RENDER_PROFILE_MAGIC: &[u8; 8] = b"PHPROF1\0";
+
+/// Fold the render records into the profile region: magic ‖ `[nslots u32 LE]` ‖ nslots × `[gain u16 LE (8.8)][holes u8]` ‖ nslots × `[len u16 LE][opus 10 ms]` ‖ `[block_len u32 LE]`. Nothing is written when no render record exists.
+fn append_render_profile(profile: &mut Vec<u8>, render: &[&Record], base: i64, slots_out: usize) {
+    if render.is_empty() {
+        return;
+    }
+    let Ok(mut enc) = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio) else {
+        return;
+    };
+    let _ = enc.set_bitrate(opus::Bitrate::Bits(128_000));
+    // Two 5 ms render frames per 10 ms output slot, placed by the NAME each one played under (the same lattice the wire channels use).
+    let mut halves: Vec<[Option<&Record>; 2]> = vec![[None, None]; slots_out];
+    for r in render {
+        let in_slot = osc_to_slot(r.osc, base);
+        if in_slot < 0 {
+            continue; // WHY/PROOF: a frame named before the recording's base has no slot; the usize cast below would wrap it
+        }
+        let (so, half) = ((in_slot / 2) as usize, (in_slot % 2) as usize);
+        if so < slots_out && halves[so][half].is_none() {
+            halves[so][half] = Some(r);
+        }
+    }
+    let start = profile.len();
+    profile.extend_from_slice(RENDER_PROFILE_MAGIC);
+    profile.extend_from_slice(&(slots_out as u32).to_le_bytes());
+    let mut pcm = vec![0i16; FRAME];
+    let mut packets: Vec<Vec<u8>> = Vec::with_capacity(slots_out);
+    let mut pkt = vec![0u8; 4000];
+    for h in &halves {
+        let (mut gain, mut holes, mut any) = (256u16, 0u16, false);
+        pcm.fill(0);
+        for (i, r) in h.iter().enumerate() {
+            let Some(r) = r else { continue };
+            any = true;
+            if let Some((g, v)) = r.proc {
+                gain = gain.min(g);
+                holes = holes.saturating_add(v as u16);
+            }
+            for (k, c) in r.bytes.chunks_exact(2).take(FRAME / 2).enumerate() {
+                pcm[i * (FRAME / 2) + k] = i16::from_le_bytes([c[0], c[1]]);
+            }
+        }
+        profile.extend_from_slice(&gain.to_le_bytes());
+        profile.push(holes.min(255) as u8);
+        let packet = if any { enc.encode(&pcm, &mut pkt).map(|n| pkt[..n].to_vec()).unwrap_or_default() } else { Vec::new() };
+        packets.push(packet);
+    }
+    for p in &packets {
+        profile.extend_from_slice(&(p.len() as u16).to_le_bytes());
+        profile.extend_from_slice(p);
+    }
+    let block_len = (profile.len() - start) as u32;
+    profile.extend_from_slice(&block_len.to_le_bytes());
+}
+
+/// The render profile of a kept blob, when the wave was profiled: per 10 ms slot the composed render gain (8.8) and hole count, and the far party exactly as played, one Opus packet per slot (empty = nothing rendered there).
+pub struct RenderProfile {
+    pub slots: Vec<(u16, u8)>,
+    pub packets: Vec<Vec<u8>>,
+}
+
+/// Read the render profile out of a kept blob — `None` for a blob kept without one (every wave before 2026-10-02, every release build).
+pub fn open_render_profile(bytes: &[u8]) -> Option<RenderProfile> {
+    if bytes.len() < 8 + 22 || &bytes[..8] != CONTAINER_MAGIC {
+        return None;
+    }
+    let nchan = bytes[8] as usize;
+    let env_len = u32::from_le_bytes(bytes[8 + 18..8 + 22].try_into().ok()?) as usize;
+    let at = 8 + 22 + nchan;
+    let env_end = at + nchan * env_len * ENV_COMPONENTS;
+    if bytes.len() < env_end + 4 {
+        return None;
+    }
+    let prof_len = u32::from_le_bytes(bytes[env_end..env_end + 4].try_into().ok()?) as usize;
+    let region = bytes.get(env_end + 4..env_end + 4 + prof_len)?;
+    if region.len() < 4 {
+        return None;
+    }
+    let block_len = u32::from_le_bytes(region[region.len() - 4..].try_into().ok()?) as usize;
+    let block = region.get(region.len().checked_sub(4 + block_len)?..region.len() - 4)?;
+    if block.len() < 12 || &block[..8] != RENDER_PROFILE_MAGIC {
+        return None;
+    }
+    let n = u32::from_le_bytes(block[8..12].try_into().ok()?) as usize;
+    let mut cur = 12usize;
+    let mut slots = Vec::with_capacity(n);
+    for _ in 0..n {
+        let g = u16::from_le_bytes(block.get(cur..cur + 2)?.try_into().ok()?);
+        let h = *block.get(cur + 2)?;
+        slots.push((g, h));
+        cur += 3;
+    }
+    let mut packets = Vec::with_capacity(n);
+    for _ in 0..n {
+        packets.push(read_pkt(block, &mut cur)?.to_vec());
+    }
+    Some(RenderProfile { slots, packets })
 }
 
 /// Open a kept-wave blob for playback — `PHWAVE9`, the one container that reads. Every PHCALL magic went with the 2026-09-23 flag day, no backwards compat — unknown magic is unknown magic. `None` on unknown magic or codec init failure.
@@ -945,6 +1052,39 @@ mod tests {
         assert!(presence[1] > 2 * (presence[2] + 1) && presence[1] > 20 * (presence[0] + 1), "2.4 kHz should be green-dominant: {presence:?}");
         let air = band_energy(&|i| if (i / 2) % 2 == 0 { a } else { -a });
         assert!(air[2] > 10 * (air[0] + 1) && air[2] > 10 * (air[1] + 1), "12 kHz should be blue-dominant: {air:?}");
+    }
+
+    /// A profiled keep: the render records never become a wire channel, the blob plays exactly as an unprofiled one, and the render profile reads back slot for slot with its gains and holes.
+    #[test]
+    fn render_profile_rides_the_profile_region() {
+        use crate::wave::spool::{RAW_FLAG, RENDER_CHAN};
+        let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        let mut buf = vec![0u8; 4000];
+        let tone: Vec<i16> = (0..FRAME_IN).map(|s| ((s as f32 * 0.2).sin() * 3000.0) as i16).collect();
+        let mut records = Vec::new();
+        // Ten 5 ms peer frames on channel 1 and the matching ten render frames, the render half a slot later in name (the playout's L).
+        for i in 0..10i64 {
+            let n = enc.encode(&tone, &mut buf).unwrap();
+            records.push(Record { chan: 1, osc: i * (ops / 200), seq: Some((i as u32 / 2, (i % 2) as u8)), proc: None, bytes: buf[..n].to_vec() });
+            let raw: Vec<u8> = tone.iter().flat_map(|v| v.to_le_bytes()).collect();
+            records.push(Record { chan: RENDER_CHAN | RAW_FLAG, osc: i * (ops / 200), seq: None, proc: Some((128 + i as u16, i as u8)), bytes: raw });
+        }
+        let t = build_container(&records).expect("a keep");
+        let stream = open_blob(&t.container).expect("plays");
+        assert_eq!(stream.nchan, 2, "the render channel is not a wire channel (ch0 self placeholder, ch1 peer)");
+        let rp = open_render_profile(&t.container).expect("the render profile reads back");
+        assert_eq!(rp.slots.len(), rp.packets.len());
+        assert!(rp.slots.len() >= 5, "ten 5 ms frames fill at least five 10 ms slots ({})", rp.slots.len());
+        assert_eq!(rp.slots[0], (128, 1), "slot 0: the lower gain of its two halves, the holes summed");
+        assert!(!rp.packets[0].is_empty(), "a rendered slot carries a packet");
+        let mut dec = mono_decoder().unwrap();
+        let mut pcm = vec![0i16; FRAME];
+        assert_eq!(dec.decode(&rp.packets[0], &mut pcm, false).unwrap(), FRAME, "and it decodes to one 10 ms frame");
+        // Without render records there is no block, and the reader says so.
+        let plain: Vec<Record> = records.iter().filter(|r| !r.is_render()).cloned().collect();
+        let t2 = build_container(&plain).expect("a keep");
+        assert!(open_render_profile(&t2.container).is_none(), "an unprofiled keep has no render profile");
     }
 
     #[test]

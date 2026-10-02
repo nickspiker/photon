@@ -91,6 +91,11 @@ pub fn take_express_frames() -> Vec<(Vec<u8>, SocketAddr)> {
     std::mem::take(&mut *EXPRESS_RX.lock().unwrap())
 }
 
+/// THE INSTRUMENT (Nick 2026-10-02): development builds profile every wave — the render channel in the spool and the keep, the 100 ms trace line in the log. A release build never traces.
+pub fn profile_enabled() -> bool {
+    cfg!(feature = "development")
+}
+
 /// Media EGRESS: packets must leave from the MAIN UDP socket (the port the peer's NAT knows), so the engine hands them to a dedicated tokio forwarder inside the network runtime — installed once at checker startup.
 static MEDIA_TX: Mutex<Option<tokio::sync::mpsc::UnboundedSender<(Vec<u8>, SocketAddr)>>> =
     Mutex::new(None);

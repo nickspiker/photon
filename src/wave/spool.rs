@@ -108,6 +108,9 @@ pub const SEQ_FLAG: u8 = 0x40;
 pub const FILL_FLAG: u8 = 0x20;
 /// Set on a RAW MIC record (2026-09-10, "mic RAW, per channel"): the frame as captured, before the canceller, the gain and the gate, followed by the verdict the live path applied — `[gain_q8 u16 LE][verdict u8]` (0 full, 1 ducked, 2 gated) between the window identity and the samples. The wire copy of the same frame rides as its own record without this flag; a keep prefers PROC records for the local channel and falls back to the wire copy for spools that predate them.
 pub const PROC_FLAG: u8 = 0x10;
+/// THE RENDER CHANNEL (Nick 2026-10-02, the instrument): what the DAC actually played of the far party — raw i16 PCM per 5 ms render frame (RAW_FLAG), stamped with the grid NAME the frame started on, the composed render gain in the proc field's 8.8 and the frame's hole count in its verdict byte.
+/// Written only while profiling; the keep folds it into the container's profile region as its own Opus channel (record.rs), never into the wire channels, so playback and the fleet see the recording they always did.
+pub const RENDER_CHAN: u8 = 0x0D;
 /// The channel index under the flag bits.
 pub const CHAN_MASK: u8 = 0x0F;
 /// ARCHIVE records ride a RESERVED CHANNEL INDEX (every flag bit is spoken for — 0x40 is SEQ_FLAG): a 10ms high-end Opus encode of the CLEAN mic — pre-canceller, pre-duck, pre-gate — the recording's own stream, spooled beside the wire traffic. Its PROC fields carry the ducking profile (gain + verdict at 10ms resolution), so the wire copy never needs storing twice: plaid wire copies stop spooling entirely (they ate ~5.5MB/min) and compressed-tier wire copies stay only to serve bit-exact fills.
@@ -139,6 +142,9 @@ impl Record {
     }
     pub fn is_arch(&self) -> bool {
         self.chan & CHAN_MASK == ARCH_CHAN
+    }
+    pub fn is_render(&self) -> bool {
+        self.chan & CHAN_MASK == RENDER_CHAN
     }
 }
 
@@ -327,7 +333,7 @@ pub fn finalize(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Option<([u8; 3
     let mut container = Vec::with_capacity(CONTAINER_MAGIC.len() + records.len() * 32);
     container.extend_from_slice(CONTAINER_MAGIC);
     for r in &records {
-        if r.is_raw_mic() {
+        if r.is_raw_mic() || r.is_render() {
             continue; // the flat legacy container carries the wire copies only
         }
         container.push(r.chan & (CHAN_MASK | RAW_FLAG));

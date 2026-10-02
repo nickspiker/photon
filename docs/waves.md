@@ -235,6 +235,25 @@ Nick's law (2026-09-13): "map a gain based on the speaker output… a nice linea
 Gone: the predictive gate (`PredGate` stays in `learn.rs` for its tests only), the bounded hard run, the reactive fallback, the 0.15 soft floor, the 0.02 near-mute and the "gated" tally. Kept: the canceller's adapt gate (far talks alone), the chirp's delay and floor, and a seed-time warning when `g × volume` exceeds 0.3 (the earpiece driven into the mic is not a linear path; lower the rocker).
 The one constant to tune is `DUCK_FAR_FULL` (800: emitted mean |sample| × linear volume at which the mic is fully ducked, half at half). The subband canceller and a near-aware gain (only once a filter has proven ≥ 6 dB) are the next steps on top of this, not instead of it.
 
+## The instrument, the clock-step re-anchor, and the receive loop (2026-10-02, the Emma wave at 2x)
+
+The Nick/Emma LAN wave of 2026-10-02 played Emma at twice speed for fifteen seconds and holed 16% of Nick's render frames, with zero xruns and a 5 ms round trip.
+The log could say that ten seconds in, 1,159 of her frames sat in the playout queue named 5.8 seconds AHEAD of the cursor, and that the uncapped one-sample walk then raced through them at up to two names a sample; it could not say whether her names had stepped or her frames had waited.
+Three things, built together:
+
+- **The instrument.** In a development build (`wave::profile_enabled`) every render frame is traced as the DAC got it (`platform::audio::RenderTrace`: the name it started on, the composed gain, its holes, the PCM).
+  The engine drains the trace each loop pass into the spool's RENDER channel (`spool::RENDER_CHAN`, raw PCM, the gain in the proc field's 8.8 and the holes in its verdict byte) and prints `WAVE: trace #n` every 20 traced frames, a count edge: arrival ages min..max, L, l, frames waiting, misses, late, lost, gain min..max, the followed near and far levels, the tier, re-anchors.
+  The keep folds the render records into the container's PROFILE REGION as their own 10 ms Opus channel with per-slot gain and holes (`record::append_render_profile`, read back by `open_render_profile`), appended after the ducking profile with its length as the region's last four bytes: every reader before today skips the region whole, so playback and the fleet see the recording they always did.
+  Export: the WAV gains a last channel, the far party AS PLAYED beside the far party AS RECEIVED; the VSF gains a `rendered` section with the packets, `gain_q8` and `holes` per slot.
+  Listening to the two far channels against each other is the diagnosis: alike means the fault is upstream of this device, different means it is the playout or the render gains.
+- **A clock step re-anchors.** No path delivers a frame before it was captured, so an arrival age under the window's floor by more than the whole jitter margin (L − floor, never under eight frames; `engine::names_stepped`) means the sender's names jumped ahead of our clock.
+  The 1-in-256 window would have held the old L for seconds while l raced; now the window restarts from that arrival (the first-arrival rule, already doctrine) and playout forgets its cursor (`platform::audio::reanchor_playout`): the next render is the first frame again, exactly on the new L.
+  One jump, by the first-arrival rule; ordinary jitter stays a one-sample walk.
+  Logged as `WAVE: clock step`, counted on the engine-down line.
+- **The receive loop.** Nick's two loss bursts lined up to the second with bursts of transfer packets on the same socket (Emma's anchor fired on six paths, so every SPEC arrived six times, each accepted and logged twice).
+  A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
+  The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
+
 ## The followers and the ramp (2026-10-02, the fishtank)
 
 The Jeff/Nick wave of 2026-10-02 (both on Verizon, 104 ms round trip, zero loss, zero xruns) sounded underwater at both ends.

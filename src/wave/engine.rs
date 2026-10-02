@@ -376,6 +376,17 @@ fn run(
         crate::platform::audio::AudioRoute::Headset
     );
     crate::platform::audio::set_speaker_duck(route_ducks);
+    // THE INSTRUMENT (Nick 2026-10-02): development builds trace every render frame into the spool's render channel and print a trace line every 100 ms of render (see `profile`).
+    let profile = super::profile_enabled();
+    crate::platform::audio::set_profile(profile);
+    // Trace-interval evidence: arrival ages (samples) since the last trace line, the gains the render walked toward, the frames traced.
+    let (mut trace_age_min, mut trace_age_max) = (i64::MAX, i64::MIN);
+    let (mut trace_gain_min, mut trace_gain_max) = (i64::MAX, i64::MIN);
+    let mut trace_frames: u32 = 0;
+    let mut trace_lines: u64 = 0;
+    // The last L handed to playout — the clock-step detector's margin reads it.
+    let mut play_target_last: i64 = i64::MIN;
+    let mut reanchors: u32 = 0;
 
     let start_route = crate::platform::audio::route_id();
     let mut live_route = start_route.clone();
@@ -776,6 +787,50 @@ fn run(
                 stall_mark = (rendered, rx_queued_frames);
             }
         }
+        // ---- The render trace: every frame the DAC got since the last pass → the spool's render channel; a trace line every 20 traced frames (100 ms of render), a COUNT edge, never a timer. ----
+        if profile {
+            for t in crate::platform::audio::take_render_trace() {
+                trace_gain_min = trace_gain_min.min(t.gain_q32);
+                trace_gain_max = trace_gain_max.max(t.gain_q32);
+                trace_frames += 1;
+                if let Some(w) = spool.as_mut() {
+                    let gain_q8 = (t.gain_q32 >> 24).min(u16::MAX as i64) as u16; // Q32 → 8.8: unity 2^32 → 256
+                    let mut le = Vec::with_capacity(t.pcm.len() * 2);
+                    for v in &t.pcm {
+                        le.extend_from_slice(&v.to_le_bytes());
+                    }
+                    w.append_seq_proc(super::spool::RENDER_CHAN | super::spool::RAW_FLAG, vsf::grid::sample_to_eagle(t.name), None, Some((gain_q8, t.missing.min(255) as u8)), &le);
+                }
+                if trace_frames % 20 == 0 {
+                    trace_lines += 1;
+                    let (_, depth, misses, late) = crate::platform::audio::jitter_stats();
+                    let (near, far) = crate::platform::audio::envelopes();
+                    let permille = |g: i64| (g >> 22) * 1000 / 1024;
+                    crate::logf!(
+                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, tier {}, re-anchors {}",
+                        trace_lines,
+                        if trace_age_min == i64::MAX { -1 } else { trace_age_min / 48 },
+                        if trace_age_max == i64::MIN { -1 } else { trace_age_max / 48 },
+                        crate::platform::audio::play_target().map_or(-1, |v| v / 48),
+                        crate::platform::audio::play_latency().map_or(-1, |v| v / 48),
+                        depth,
+                        misses,
+                        late,
+                        windows_lost,
+                        permille(trace_gain_min),
+                        permille(trace_gain_max),
+                        near,
+                        far,
+                        tier,
+                        reanchors
+                    );
+                    trace_age_min = i64::MAX;
+                    trace_age_max = i64::MIN;
+                    trace_gain_min = i64::MAX;
+                    trace_gain_max = i64::MIN;
+                }
+            }
+        }
         // ---- RX: sealed packets → fountain windows → opus → speaker ----
         while let Ok((bytes, src, rx_at)) = sink_rx.try_recv() {
             // DROP-REASON TALLY (docs/waves.md diagnostics): every RX reject below is a silent `continue`, so a dead wave is indistinguishable at engine-down between "packets never reached this device" (addressing/NAT) and "packets arrived but won't decrypt" (basket-secret desync). Count them apart. Field 2026-08-19: a wave went Active but engine-down read "0 in" with zero other signal — this tally is the tripwire that says which half broke. `rx_seen` counts datagrams the recv-worker fast-path actually handed us (magic already matched), so `rx_seen > 0 && pkts_in == 0` = arrived-but-undecryptable = secret mismatch; `rx_seen == 0` = never arrived = look at the target address / relay.
@@ -994,17 +1049,33 @@ fn run(
                     let age = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()) - since_rx - win_k0;
                     // The repair copy rides two windows behind its source (repair_queue): L leaves room for it, or the backup would routinely land just after its slot and save nothing.
                     let repair_slack = 2 * TIER_FRAMES[dtier] as i64 * super::align::FRAME;
+                    // A CLOCK STEP (Nick 2026-10-02, the Emma wave that played at 2x): an age under the floor by more than the whole jitter margin means the sender's names jumped ahead of our clock — no path delivers a frame before it was captured.
+                    // The 1-in-256 window would hold the old L for seconds while l raced at two names a sample; instead the window restarts from THIS arrival (the first-arrival rule) and playout forgets its cursor (platform::audio::reanchor_playout).
+                    if play_target_last != i64::MIN && !recent_ages.is_empty() && names_stepped(budget_floor, play_target_last, age) {
+                        reanchors += 1;
+                        crate::logf!(
+                            "WAVE: clock step — this window's age {} ms sits under the floor {} ms by more than the margin; names jumped ahead, L restarts from this arrival and the cursor re-anchors (#{})",
+                            age / 48,
+                            budget_floor / 48,
+                            reanchors
+                        );
+                        recent_ages.clear();
+                        crate::platform::audio::reanchor_playout();
+                    }
                     if recent_ages.len() == L_WINDOW {
                         recent_ages.pop_front();
                     }
                     recent_ages.push_back(age);
+                    trace_age_min = trace_age_min.min(age);
+                    trace_age_max = trace_age_max.max(age);
                     let l_core = target_latency(&recent_ages);
                     budget_floor = recent_ages.iter().copied().min().unwrap_or(0);
                     budget_core = l_core;
                     budget_slack = repair_slack;
                     // PLUS THE OUTPUT LEAD: a frame is read at its render CALLBACK, which runs the output lead ahead of the DAC instant l is measured at — so L must cover arrival + that lead, or a device with a deep output buffer (Emma's voice path, 220 ms) finds every frame already past (2026-09-29).
                     let ahead = crate::platform::audio::output_ahead().unwrap_or(0);
-                    crate::platform::audio::set_play_target(l_core + repair_slack + ahead);
+                    play_target_last = l_core + repair_slack + ahead;
+                    crate::platform::audio::set_play_target(play_target_last);
                     rx_decoders.remove(&wid);
                     for slot in 0..TIER_FRAMES[dtier] {
                         let base = slot * tier_slot(dtier);
@@ -1440,11 +1511,14 @@ fn run(
     }
     crate::wave::live::stop();
 
+    crate::platform::audio::set_profile(false);
     crate::logf!(
-        "WAVE: engine down — {} pkts out, {} in, {} windows lost",
+        "WAVE: engine down — {} pkts out, {} in, {} windows lost, {} clock-step re-anchor(s), {} trace line(s)",
         pkts_out,
         pkts_in,
-        windows_lost
+        windows_lost,
+        reanchors,
+        trace_lines
     );
     if peer_fills || fills_asked > 0 {
         crate::logf!(
@@ -1625,6 +1699,12 @@ fn unwrap_frame_no(fno: u32) -> i64 {
     let now = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()).div_euclid(super::align::FRAME);
     let d = (fno as i64 - now).rem_euclid(1 << 32);
     now + if d >= 1 << 31 { d - (1 << 32) } else { d }
+}
+
+/// A clock step's signature (see the RX loop): an arrival age under the window's floor by more than the whole jitter margin (L − floor, never under eight frames). Ages only grow with delay; one this far UNDER the floor means the names moved.
+fn names_stepped(floor: i64, target: i64, age: i64) -> bool {
+    let margin = (target - floor).max(8 * super::align::FRAME);
+    age < floor - margin
 }
 
 struct SentFrame {
@@ -1808,6 +1888,18 @@ mod latency_target_tests {
 
     fn window(ages: &[i64]) -> std::collections::VecDeque<i64> {
         ages.iter().copied().collect()
+    }
+
+    /// A clock step is an age UNDER the floor by more than the margin; jitter above the floor, however wild, is not one, and a small negative wobble inside the margin is not one either.
+    #[test]
+    fn clock_step_is_an_age_under_the_floor() {
+        let ms = |v: i64| v * 48;
+        assert!(!names_stepped(ms(50), ms(90), ms(400)), "a straggler is late, not a step");
+        assert!(!names_stepped(ms(50), ms(90), ms(20)), "inside the margin: a wobble");
+        assert!(names_stepped(ms(50), ms(90), ms(-6000)), "six seconds under the floor: the names jumped");
+        assert!(names_stepped(ms(50), ms(90), ms(0)), "just past the margin counts");
+        assert!(!names_stepped(ms(50), ms(55), ms(15)), "the margin never shrinks under eight frames (40 ms)");
+        assert!(names_stepped(ms(50), ms(55), ms(9)), "and past those eight frames it is a step");
     }
 
     /// Nick's 1-in-256 (2026-09-28): a lone 4 s straggler among 5 ms arrivals is the one allowed above L and never moves it; spread below a full window raises L to the slowest; the first arrival alone sets it.
