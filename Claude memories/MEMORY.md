@@ -106,7 +106,7 @@
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc consensus IS photon's time base (BOOTTIME anchor); v99: a server window refusal re-anchors + retries, worker logs refusals with device
 - [project_theme_rec2020.md](project_theme_rec2020.md) — theme colours VSF RGB thru vsf_rgb_to_bt2020; Rec.2020 out everywhere
 - [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset mirror + ime_lift)
-- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor; jitter slack 80 ms + setpoint 1/512
+- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor
 - [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC, recorded nowhere
 - [Eagle units](project_eagle_units_first_principles.md) — one atom, floor rule, time Zil = one oscillation, log-form reputation, live clock/age, raised dot + ↑/↓; Base lesson SHIPPED v110
 - [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction; docs/dozenal.md
