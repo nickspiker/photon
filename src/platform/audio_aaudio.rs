@@ -229,6 +229,7 @@ fn start_input() -> Result<AudioStream, String> {
     let vendor = super::audio::voice_dsp_wanted();
     let s = open_with_fallback(AudioDirection::Input, &input_callback)?;
     super::audio::VOICE_DSP_ACTIVE.store(vendor, Ordering::Relaxed);
+    super::audio::VOICE_DSP_CANCELS.store(vendor, Ordering::Relaxed); // the phone's canceller and gain control come as one
     crate::logf!("AUDIO: input opened {} (route \"{}\")", if vendor { "thru the phone's voice processing" } else { "unprocessed, calibrated" }, super::audio::route_id());
     let _ = s.set_buffer_size_in_frames(s.frames_per_burst() * 2);
     s.request_start().map_err(|e| format!("start: {e:?}"))?;

@@ -2137,7 +2137,7 @@ pub struct PhotonApp {
     settings_hardlogs_check: Option<fluor::widgets::Checkbox>,
     /// Notifications-page "Hold every wave recording on this device" (`waves.hold`, DEVICE-LOCAL, default ON — Nick 2026-09-10: "fleet replication of waves by default; you can uncheck maybe a smartwatch"): ON = a sibling's kept recording is fetched the moment its row merges here; OFF = fetched on demand only.
     settings_wave_hold_check: Option<fluor::widgets::Checkbox>,
-    /// Wave-page "Use this phone's own voice processing" (`waves.voice_dsp`, DEVICE-LOCAL, default OFF): the vendor's canceller in front of the mic, an experiment with numbers (platform::audio::VOICE_DSP).
+    /// Wave-page "Use this device's own voice processing on a headset too" (`waves.voice_dsp`, DEVICE-LOCAL, default OFF; Android and macOS): the vendor's canceller in front of the mic (platform::audio::VOICE_DSP); the speaker route always takes it.
     settings_voice_dsp_check: Option<fluor::widgets::Checkbox>,
     /// The measure-now ritual in flight (the Wave page shows "listening…" while Some) and its last verdict.
     wave_measure_rx: Option<std::sync::mpsc::Receiver<crate::wave::measure::MeasureResult>>,

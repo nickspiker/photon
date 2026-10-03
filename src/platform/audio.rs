@@ -343,10 +343,18 @@ static REANCHORS: AtomicUsize = AtomicUsize::new(0);
 pub static VOICE_DSP: AtomicBool = AtomicBool::new(false);
 /// What the OPEN input stream actually is (set by the Android input open): the level plan, the duck and the loss read this, not the wish, because the preset follows the route — the loudspeaker always takes the phone's processing (ours is unusable there: a measured 0.023 coupling put the duck at three quarters and the loss at two stops on Nick's Pixel, 2026-10-03), the earpiece and a headset take it only on the Wave page's say-so.
 pub static VOICE_DSP_ACTIVE: AtomicBool = AtomicBool::new(false);
+/// Is a vendor canceller in front of the mic right now: then the duck and the receive loss stand down. On the phone this is `VOICE_DSP_ACTIVE` (the canceller and the gain control come bundled); on the Mac the unit's gain control is switched off, so the canceller runs while the level plan keeps its calibration (audio_vpio.rs).
+pub static VOICE_DSP_CANCELS: AtomicBool = AtomicBool::new(false);
 
-/// Should the next input open thru the phone's voice processing: always on the loudspeaker, otherwise the Wave page's choice. Android only; every other platform answers no (no vendor path is wired there).
+/// Should the next input open thru the device's own voice processing: the loudspeaker always (the phone's loudspeaker, the Mac's built-in speakers — anything that is not a headset), a headset only on the Wave page's say-so. Android and macOS; every other platform answers no (no vendor path is wired there).
 pub fn voice_dsp_wanted() -> bool {
-    cfg!(target_os = "android") && (VOICE_DSP.load(Ordering::Relaxed) || matches!(route(), AudioRoute::Speaker))
+    if cfg!(target_os = "android") {
+        VOICE_DSP.load(Ordering::Relaxed) || matches!(route(), AudioRoute::Speaker)
+    } else if cfg!(target_os = "macos") {
+        VOICE_DSP.load(Ordering::Relaxed) || !matches!(route(), AudioRoute::Headset)
+    } else {
+        false
+    }
 }
 
 /// Arm or disarm the render trace.
@@ -545,7 +553,7 @@ pub fn set_speaker_duck(armed: bool) {
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     // Until the sweep measures this route, a PRIOR by its kind: a loudspeaker ducks in full, an earpiece a quarter, a headset not at all. The sweep replaces it within two seconds of the route coming up.
     // Under the phone's voice processing the vendor's canceller owns echo: no duck, no loss, whatever the route.
-    let prior = if VOICE_DSP_ACTIVE.load(Ordering::Relaxed) {
+    let prior = if VOICE_DSP_CANCELS.load(Ordering::Relaxed) {
         0
     } else {
         match route() {
@@ -570,7 +578,7 @@ pub const DUCK_COUPLING_FULL: f32 = 1.0 / 32.0;
 
 /// The sweep's verdict for the live route: its measured speaker→mic amplitude coupling (0.0 for a route it found clean).
 pub fn set_duck_coupling(coupling: f32) {
-    if VOICE_DSP_ACTIVE.load(Ordering::Relaxed) {
+    if VOICE_DSP_CANCELS.load(Ordering::Relaxed) {
         // The sweep still measures (the number says what the vendor's canceller left of the chirp), but the duck and the loss stay down: the canceller is the vendor's.
         DUCK_DEPTH_Q32.store(0, Ordering::Relaxed);
         RX_LOSS_Q32.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
@@ -1090,6 +1098,16 @@ mod desktop {
             return true; // already live
         }
         clear_queues();
+        // The route first (the output device's name), so the backend choice below can read it.
+        if let Some(dev) = cpal::default_host().default_output_device() {
+            let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
+            *ROUTE.lock().unwrap() = sniff_route(&name);
+        }
+        // THE MAC'S VOICE PROCESSING UNIT (audio_vpio.rs): built-in speakers always, a headset on the Wave page's say-so; a unit that refuses hands the wave to the plain path below.
+        #[cfg(target_os = "macos")]
+        if super::voice_dsp_wanted() && crate::platform::audio_vpio::start() {
+            return true;
+        }
         std::thread::Builder::new()
             .name("wave-audio".into())
             .spawn(audio_thread)
@@ -1099,6 +1117,14 @@ mod desktop {
     pub fn stop() {
         if super::end_sweep_holds_stop() {
             return; // the disconnect sweep is playing; its own stop follows the drain
+        }
+        #[cfg(target_os = "macos")]
+        if crate::platform::audio_vpio::live() {
+            crate::platform::audio_vpio::stop();
+            ACTIVE.store(false, Ordering::SeqCst);
+            clear_queues();
+            crate::log("AUDIO: session closed");
+            return;
         }
         ACTIVE.store(false, Ordering::SeqCst);
     }

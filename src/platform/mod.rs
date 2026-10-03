@@ -27,6 +27,9 @@ pub mod stay_awake;
 pub mod audio;
 #[cfg(target_os = "android")]
 pub mod audio_aaudio;
+/// macOS: Apple's Voice Processing I/O unit in front of the mic (echo cancellation with its gain control off), chosen per route by `audio::voice_dsp_wanted`.
+#[cfg(target_os = "macos")]
+pub mod audio_vpio;
 
 /// "Is a human plausibly looking at this app RIGHT NOW" — the platform-appropriate attended check, one name for both worlds (desktop: window visible+focused; Android: Activity foregrounded).
 pub fn attended_here() -> bool {

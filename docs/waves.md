@@ -262,6 +262,19 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The Mac's voice processing unit (2026-10-03, "Go for it!")
+
+`platform/audio_vpio.rs`: Apple's Voice Processing I/O unit, the one FaceTime uses, in front of the mic on macOS.
+One unit owns both directions — our render frames go in on its speaker bus thru a render callback, the mic comes out of its mic bus already cancelled against what it played — which is the shape the Android backend already has: `next_render_frame_at` feeds the DAC, the input callback feeds `push_captured`, every frame stamped from the host time the unit hands each slice, mapped onto the boot clock exactly as the cpal path maps its callback delays.
+Two things the Mac does better than the phone:
+
+- **Its gain control is switched off** (the unit has the property; the phone's preset does not), so the calibrated level plan keeps running and the wave's measurement still posts as this mic's calibration. `VOICE_DSP_CANCELS` (the duck and the loss stand down) is now a separate switch from `VOICE_DSP_ACTIVE` (the level plan stands down): on the phone both come as one, on the Mac only the first is set.
+- **The raw archive can stay raw** — macOS lets several clients read the same mic, so the cpal input could keep running beside the unit for the archive channel. Not built yet; the archive is the cancelled signal for now, as on the phone.
+
+Chosen per route like Android: the built-in speakers always (anything not sniffed as a headset), a headset only on the Wave page's say-so; the choice is made at session start from the output device's name, and a unit that refuses anything hands the wave to the plain cpal path with the reason logged.
+The FFI is hand-declared (a dozen functions, four structs, the constants) because the bindings crate needs the macOS SDK at build time, which the Linux build machine cannot offer — and for the same reason this file's first compile is the MacBook's.
+To test: a Mac-to-phone wave on the Mac's speakers; the log should open with "voice processing unit up", the sweep's coupling says what the unit leaves of the chirp, and the latency budget's capture-to-send says what it costs.
+
 ## The preset follows the route (2026-10-03, three waves in a row)
 
 Nick ran the comparison: earpieces with the phone's processing on, then the loudspeaker on both ends, then everything off.
