@@ -301,6 +301,13 @@ Two causes, two changes:
 
 So: no accumulator on L itself — it is still an order statistic over its window — but the window is long enough that spikes no longer sweep thru it in a second, and whatever L does, l follows it slowly enough not to be heard.
 
+**The dead band (same day, the next wave).** With the pace cap in, the trace showed 400 slips a second with l and L a millisecond apart: L is re-set every window with the output lead's jitter in it, so the cursor sat a sample or two off its target every frame and the walk dropped one and repeated one, forever — a micro time-stretch under every word.
+Within a millisecond of L (`WALK_DEAD_BAND`, 48 samples) the walk rests.
+
+**350 ms over a LAN (same wave).** Emma's phone on its earpiece opens the output on the HAL's slow voice path (Shared, 960-frame bursts, a 40 ms buffer and a lead of ~220 ms from callback to ear: the 2026-09-29 finding), and L covers that lead; her l sat near 290 ms on the earpiece and 60 ms on the loudspeaker.
+The round-trip readout is our l plus theirs, so 75 + 290.
+That is her phone's voice path, not the network or the playout; the loudspeaker (the fast path) or a headset is the way around it on that device.
+
 ## The expander's knee follows the far room, the loss follows the coupling (2026-10-02, the quiet LAN wave)
 
 With the duck at 3% depth on a clean LAN wave (zero loss, 7 ms round trip), both ends still heard underwater.

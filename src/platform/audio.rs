@@ -179,7 +179,7 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
         let eligible = p != slipped_at
             && (d0 == 0 || d1 == 0 || (d0 > 0) != (d1 > 0))
             && (silent || audible_slips < pace);
-        if eligible && l > target {
+        if eligible && l > target + WALK_DEAD_BAND {
             p += 1; // DROP: this sample is skipped, l shortens by one
             drops += 1;
             if !silent {
@@ -190,7 +190,7 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
             missing += 1;
         }
         *o = at(p) as i16;
-        if eligible && l < target {
+        if eligible && l < target - WALK_DEAD_BAND {
             slipped_at = p; // a REPEAT leaves the cursor where it is, lengthening l by one
             repeats += 1;
             if !silent {
@@ -240,6 +240,8 @@ static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 static LATE_DROPPED: AtomicUsize = AtomicUsize::new(0);
 /// THE WALK'S PACE (Nick 2026-10-03, "do we have an accumulator on our latency adjustment? … sounds like the playback speed is oscillating"): l followed every move of L at one slip per zero crossing, and on a jittery LAN L stepped 5 to 10 ms every second or two, so each step was walked inside 100 ms — a 5% speed change, a third of a semitone, every couple of seconds. Over audio the walk now takes at most ONE slip per 5 ms frame (0.4%, seven cents, under the ear's notice); in digital silence, where a dropped or repeated zero costs nothing, it stays uncapped and l meets L at once.
 const SLIPS_PER_FRAME: usize = 1;
+/// THE DEAD BAND (2026-10-03, the Nick/Emma wave after the pace cap: 400 slips a second with l and L a millisecond apart): L is re-set every window with the output lead's jitter in it, so the cursor sat a sample or two off its target every frame and the walk dropped one and repeated one, forever — a micro time-stretch under every word. Within a millisecond of L the walk rests.
+const WALK_DEAD_BAND: i64 = 48;
 /// Past this far from L the walk doubles its pace (two slips a frame, 0.8%, fourteen cents): a 20 ms error walked at the single pace takes four seconds, long enough for the next spike to land on it.
 const WALK_FAR_SAMPLES: i64 = 960;
 /// Past THIS far from L nothing is walked: a 200 ms discrepancy is not jitter but an event (an output stream rebuilt on a route change, a window that collapsed), and the cursor re-anchors by the first-arrival rule (field 2026-10-03: Brittany's l sat 580 ms over L after two route changes, walking down at the single pace for the rest of the wave).
@@ -1441,7 +1443,8 @@ mod tests {
         // L drops by 100 samples: across SILENCE every sample is a zero-slope point, so l walks down one per sample and meets L inside the frame.
         set_play_target(f - 100);
         let _ = next_render_frame_at(dac(k + 3 * f));
-        assert_eq!(play_latency(), Some(f - 100), "silence lets l meet L at once");
+        let met = play_latency().unwrap();
+        assert!((met - (f - 100)).abs() <= WALK_DEAD_BAND, "silence lets l meet L at once, to within the dead band ({met} vs {})", f - 100);
         // Speech-like audio (a 1 kHz tone, two peaks per 48 samples, no flat runs): l moves exactly one sample per peak or trough.
         let tone = |n: i64| (8000.0 * (2.0 * std::f64::consts::PI * n as f64 / 48.0 + 0.3).sin()) as i16;
         let start = PLAY_NEXT.load(Ordering::Relaxed);
@@ -1455,7 +1458,7 @@ mod tests {
         let moved = before - play_latency().unwrap();
         assert_eq!(moved, 1, "over audio the walk takes one slip per frame, however many peaks the frame holds ({moved})");
         // l too SHORT: repeats at the same points, lengthening l one at a time.
-        set_play_target(play_latency().unwrap() + 40);
+        set_play_target(play_latency().unwrap() + 100); // past the dead band
         let before = play_latency().unwrap();
         let _ = next_render_frame_at(dac(k + 5 * f));
         let grew = play_latency().unwrap() - before;

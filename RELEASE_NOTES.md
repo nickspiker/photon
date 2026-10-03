@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- The playout no longer nudges its timing every frame once it has settled; a faint time-stretch under every word is gone.
 - Fixed a wave's delay climbing by half a second after switching between earpiece and speaker, and staying there.
 - Switching to the speaker no longer chops the other person's voice on its own echo.
 - The Wave page has an experimental switch to run the mic through the phone's own voice processing, with its echo canceller; it applies from the next wave.
