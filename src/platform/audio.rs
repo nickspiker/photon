@@ -244,8 +244,15 @@ const DUCK_K_MAX_Q16: i64 = 1 << 15;
 static DUCK_K_Q16: AtomicI64 = AtomicI64::new(DUCK_K_REF_Q16);
 /// The receive loss plan's echo bound, Q16: k·speaker_gain is held at or under this. 1/64 ≈ −36 dB (0.05/−26 dB until 2026-09-14: "still a bit echo-ey and loud" on a wave with k 0.03 — at our ~100 ms acoustic round trip the ear wants echo under −40 dB, the same figure the POTS hybrid standards settled on; the loss this costs is loudness at the ceiling, which was the other complaint).
 const RX_ECHO_MARGIN_Q16: i64 = 1024;
-/// The downward expander's knee in plan units (voiced speech ≈ 2048; 256 is −18 dB under it): frames below taper linearly toward silence.
+/// The downward expander's knee CEILING in plan units (voiced speech ≈ 2048; 256 is −18 dB under it). The live knee sits at a multiple of the far room's measured floor and never above this.
 const RX_EXPAND_KNEE: i64 = 256;
+/// The knee's floor, plan units: under it nothing is ever tapered (a whisper of a far voice over a silent room passes whole).
+const RX_EXPAND_KNEE_MIN: i64 = 16;
+/// The knee is this many times the far room's floor: room noise sinks, speech at four times the room passes at unity.
+const RX_EXPAND_FLOOR_MULT: i64 = 4;
+/// THE FAR FLOOR (2026-10-02, the quiet LAN wave that stayed underwater with the duck idle): the far party's room, tracked as a slow-rise / fast-fall minimum of the followed far level (the mirror of the capture side's room tracker). The expander's knee follows IT, not the plan: a quiet wire (both parties opened at 4x under their calibration) ran its whole voice around a fixed 256 knee and was squashed in proportion to its own level — the underwater.
+/// Kept in 8.8 (plan units × 256) so the slow rise's least step is 1/256 of a plan unit per frame, as the capture side's tracker has it.
+static FAR_FLOOR_Q8: AtomicI64 = AtomicI64::new(0);
 /// Mean |sample| of the newest frame handed to the DAC (post-duck — what the room actually receives), the k estimator's denominator. Reuses the FAR_LEVEL sum.
 static EMITTED_LEVEL: AtomicUsize = AtomicUsize::new(0);
 /// THE FOLLOWERS (Nick 2026-10-02, the fishtank: "we're dealing in 5 ms timescales… we should be averaging more"): a 5 ms mean of |sample| on a 100-150 Hz voice spans under one pitch period, so it ripples at the pitch rate and every gain fed by it modulated the far voice at that rate.
@@ -295,6 +302,11 @@ pub fn take_render_trace() -> Vec<RenderTrace> {
 /// The followed near and far levels, plan units — the trace line prints them.
 pub fn envelopes() -> (i64, i64) {
     (NEAR_ENV.load(Ordering::Relaxed), FAR_ENV.load(Ordering::Relaxed))
+}
+
+/// The expander's live knee, plan units — the trace line prints it beside the far level.
+pub fn expand_knee() -> i64 {
+    ((RX_EXPAND_FLOOR_MULT * FAR_FLOOR_Q8.load(Ordering::Relaxed)) >> 8).clamp(RX_EXPAND_KNEE_MIN, RX_EXPAND_KNEE)
 }
 
 /// A CLOCK STEP RE-ANCHOR (Nick 2026-10-02, the Emma wave that played at 2x): the far party's names can only run ahead of the cursor when the sender's clock stepped against ours, and the doctrine already answers that — the first arrival sets L, whatever it is.
@@ -475,11 +487,16 @@ pub fn set_speaker_duck(armed: bool) {
         AudioRoute::Speaker | AudioRoute::Unknown => crate::wave::qgain::UNITY,
     };
     DUCK_DEPTH_Q32.store(prior, Ordering::Relaxed);
+    RX_LOSS_Q32.store(if prior == crate::wave::qgain::UNITY { RX_LOSS_MIN_Q32 } else { crate::wave::qgain::UNITY }, Ordering::Relaxed);
 }
 
 /// THE DUCK'S DEPTH (Nick 2026-10-02: "if the coupling is less than 1% now, not sure why we are even suppressing anything"): how much of the duck law applies, Q32, set from the connect sweep's MEASURED speaker→mic coupling.
 /// Zero below any coupling (a clean earpiece or a headset: nothing comes back, so nothing is suppressed), the full law from `DUCK_COUPLING_FULL` up (a loudspeaker at 0.25 is far past it), linear between.
 static DUCK_DEPTH_Q32: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+/// THE RECEIVE LOSS, Q32, from the same measurement: `min(1, margin / coupling)`, never under a quarter (two stops: the rocker covers the rest). A clean route loses nothing; a loudspeaker at 0.25 takes the quarter. Until the sweep lands, a prior by route kind.
+/// It used to be derived from the LEARNED k, which only moves on frames emitted above 256 plan units — a quiet wave never gave it one, and the loss sat at its seed's quarter for the whole wave (2026-10-02).
+static RX_LOSS_Q32: AtomicI64 = AtomicI64::new(crate::wave::qgain::UNITY);
+const RX_LOSS_MIN_Q32: i64 = crate::wave::qgain::UNITY / 4;
 /// The coupling at which the whole duck law applies: 1/32 (−30 dB). An earpiece measures ~0.0003, a loudspeaker ~0.25.
 pub const DUCK_COUPLING_FULL: f32 = 1.0 / 32.0;
 
@@ -488,7 +505,11 @@ pub fn set_duck_coupling(coupling: f32) {
     // WHY/PROOF: a measured ratio from the sweep fit — finite and non-negative by construction; the division is by a constant, the clamp holds the depth to the unit interval the law multiplies by.
     let depth = (coupling / DUCK_COUPLING_FULL).clamp(0.0, 1.0);
     DUCK_DEPTH_Q32.store((depth as f64 * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
-    crate::logf!("WAVE: duck depth {}‰ for coupling {:.4} (full at {:.4})", duck_depth_permille(), coupling, DUCK_COUPLING_FULL);
+    // The loss: the echo margin over the coupling, at most unity, at least a quarter (a coupling of zero is a clean route: no loss at all).
+    let margin = RX_ECHO_MARGIN_Q16 as f64 / 65536.0;
+    let loss = if coupling <= 0.0 { 1.0 } else { (margin / coupling as f64).clamp(0.25, 1.0) };
+    RX_LOSS_Q32.store((loss * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
+    crate::logf!("WAVE: duck depth {}‰, receive loss {}‰ for coupling {:.4} (full duck at {:.4})", duck_depth_permille(), (RX_LOSS_Q32.load(Ordering::Relaxed) >> 22) * 1000 / 1024, coupling, DUCK_COUPLING_FULL);
 }
 
 /// The duck's depth as a per-mille, for the trace line.
@@ -750,13 +771,20 @@ pub(crate) fn next_render_frame_at(at_osc: i64) -> Vec<i16> {
             SPEAKER_HALF.fetch_add(1, Ordering::Relaxed);
         }
         // THE RECEIVE LOSS PLAN (2026-09-14, the echo-ey waves at 40-70× makeup: k 0.2 in plan units = a fifth of the earpiece back on the wire, the far talker hearing themselves at −14 dB). POTS bounded echo with static loss per link; ours is `min(1, RX_ECHO_MARGIN / k)` — the speaker is held where k·gain ≤ margin, so echo returns at −26 dB at worst whatever the rocker does (rocker up raises k, which lowers this). Loudness becomes physics-bounded, which is honest.
-        let k = DUCK_K_Q16.load(Ordering::Relaxed).max(1); // WHY/PROOF: k is a LEARNED coupling that divides below; a learner that has seen nothing reads 0
-        let loss = ((RX_ECHO_MARGIN_Q16 << 32) / k).min(crate::wave::qgain::UNITY);
+        let loss = RX_LOSS_Q32.load(Ordering::Relaxed); // from the sweep's measured coupling (see RX_LOSS_Q32), no longer the learned k
         // THE DOWNWARD EXPANDER (Nick: "keep the ambient no talking level from screaming"): a continuous linear taper below a knee — the far room's floor and returning echo residue sink, speech above the knee passes at unity. Speaker-side, temporary, never recorded; no gate, no hold.
         // The expander keys on the FOLLOWED far level (see FAR_ENV): a quiet syllable tail no longer modulates itself at its own pitch rate.
         let level = follow(FAR_ENV.load(Ordering::Relaxed), mean_abs(&frame) as i64); // a mean of absolute values — never negative
         FAR_ENV.store(level, Ordering::Relaxed);
-        let expand = ((level << 32) / RX_EXPAND_KNEE).min(crate::wave::qgain::UNITY);
+        // The far room's floor: rises slowly (>>10 per frame, ~5 s to a louder room), falls fast (>>2, ~50 ms into a quieter one); a hole (zeros) is not a room and leaves it alone.
+        if level > 0 {
+            let level_q8 = level << 8;
+            let floor = FAR_FLOOR_Q8.load(Ordering::Relaxed);
+            let next = if floor == 0 || level_q8 < floor { level_q8 + ((floor - level_q8) >> 2).max(0) } else { floor + ((level_q8 - floor) >> 10).max(1) };
+            FAR_FLOOR_Q8.store(next, Ordering::Relaxed);
+        }
+        let knee = expand_knee();
+        let expand = ((level << 32) / knee).min(crate::wave::qgain::UNITY);
         let g = crate::wave::qgain::compose(crate::wave::qgain::compose(duck, loss), expand);
         traced_gain = g;
         // THE RAMP: from the gain the previous frame ended on to this frame's target, one Q32 step per sample (see RENDER_GAIN_LAST). The step's integer division leaves the last sample within 240/2^32 of the target; the next frame starts from where this one actually ended, so nothing accumulates.
@@ -883,6 +911,8 @@ fn clear_queues() {
     SPEAKER_DUCK_CARRY.store(0, Ordering::Relaxed);
     NEAR_ENV.store(0, Ordering::Relaxed);
     FAR_ENV.store(0, Ordering::Relaxed);
+    FAR_FLOOR_Q8.store(0, Ordering::Relaxed);
+    RX_LOSS_Q32.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     RENDER_GAIN_LAST.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
     NAMED_LAST_P.store(i64::MIN, Ordering::Relaxed);
     NAMED_LAST_MISSING.store(0, Ordering::Relaxed);
@@ -1398,6 +1428,39 @@ mod tests {
         assert!(take_render_trace().is_empty(), "disarmed: nothing traced");
         clear_queues();
         assert_eq!(reanchors(), 0, "reset with the rest");
+        // THE EXPANDER'S KNEE follows the far room: a quiet far voice (150) over a silent room passes whole; the same voice over a room at 100 sits under a knee of 256 and tapers.
+        clear_queues();
+        set_speaker_duck(true);
+        set_duck_coupling(0.0);
+        let far = |v: i16| vec![v; FRAME_SAMPLES];
+        for _ in 0..40 {
+            queue_playback(far(20)); // the room: the floor settles at 20, knee 80
+            let _ = next_render_frame();
+        }
+        assert!(expand_knee() <= 96, "a quiet room keeps the knee low ({})", expand_knee());
+        for _ in 0..20 {
+            queue_playback(far(150));
+            let _ = next_render_frame();
+        }
+        queue_playback(far(150));
+        let heard = next_render_frame();
+        assert!(heard[FRAME_SAMPLES - 1] >= 148, "a far voice four times the room passes at unity ({})", heard[FRAME_SAMPLES - 1]);
+        clear_queues();
+        set_speaker_duck(true);
+        set_duck_coupling(0.0);
+        for _ in 0..1500 {
+            queue_playback(far(100)); // a loud room, held the ~5 s the slow rise takes: the knee tops out at 256
+            let _ = next_render_frame();
+        }
+        assert_eq!(expand_knee(), 256, "the knee never exceeds the plan's ceiling");
+        for _ in 0..20 {
+            queue_playback(far(150));
+            let _ = next_render_frame();
+        }
+        queue_playback(far(150));
+        let heard = next_render_frame();
+        assert!(heard[FRAME_SAMPLES - 1] < 120, "under the knee the voice tapers ({})", heard[FRAME_SAMPLES - 1]);
+        clear_queues();
         // THE DEPTH: a clean route ducks nothing however hot the mic; a loudspeaker ducks by the whole law; between, in proportion to the measured coupling.
         set_duck_coupling(0.0);
         assert_eq!(duck_gain_q32(1 << 20, 0), crate::wave::qgain::UNITY, "no coupling: no duck at any near level");

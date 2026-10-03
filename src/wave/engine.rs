@@ -136,7 +136,7 @@ const fn tier_window_bytes(tier: usize) -> usize {
 /// The wire's voiced-speech mean |sample| — the plan level. 2048 ≈ −22 dBFS RMS with speech's 12-15 dB crest factor putting peaks near −8 dBFS: the rail is rarely touched and the rocker has headroom both ways (4096 until 2026-09-14 — "pretty hot": peaks at full scale on every syllable, the rail working constantly). Bell's plan ran speech near −20 dBm0; this is that. The shaper's origin slope is 3/2, so the pre-shaper target is ×⅔ of this.
 const TX_WIRE_TARGET: i64 = 2048;
 /// The most makeup a wave may OPEN with, before its own re-aim; the re-aim's 16x budget is unchanged.
-const TX_MAKEUP_OPENING_CAP: i64 = 4;
+const TX_MAKEUP_OPENING_CAP: i64 = 8;
 /// Calibrated Unprocessed voiced speech measured on the field phones (Nick 75, Esme 82 — conversation sits ~15 dB under the 94 dB SPL reference).
 const TX_CAL_VOICED: i64 = 78;
 /// The CDD reference: Unprocessed puts 94 dB SPL at ~520 RMS ≈ −36 dBFS; TX_CAL_VOICED (78) is conversation at that reference. A reported per-mic sensitivity S shifts it: voiced_est = 78 · 10^((S+36)/20).
@@ -345,7 +345,7 @@ fn run(
     // Clamped to qgain's 16× budget (field 2026-09-15, the crackling wave: Nick's stored voiced 45 — calibrated on quiet afternoon test waves — minted a 30.3× makeup against real speech at 165, wire ran ~6000 against the 2048 target, and every syllable's peaks sat on the rail; Brittany mirror-imaged it at 16.4× on voiced 83 vs 490). A too-low cap means a quiet wave and a rocker; a too-high makeup means crackle — quiet errs safe.
     let tx_makeup_uncapped: i64 = ((TX_WIRE_TARGET * 2 / 3) << 32) / cal_voiced;
     // mut for the ONE-TIME re-aim below — the profile aims the first seconds, this wave's own measurement aims the rest.
-    // THE OPENING CAP (Nick 2026-10-02, after two waves opened 3x and 8x hot on stale calibrations and railed for their first twenty seconds): a stored or vendor figure may aim up to 4x until this wave's own re-aim has evidence; ten quiet seconds beat ten railed ones.
+    // THE OPENING CAP (Nick 2026-10-02, after two waves opened 3x and 8x hot on stale calibrations and railed for their first twenty seconds): a stored or vendor figure may aim up to 8x until this wave's own re-aim has evidence; ten quiet seconds beat ten railed ones. (4x for one wave: Emma's correct 20x calibration opened 5x under, and the receiver's expander ate the quiet wire.)
     let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(TX_MAKEUP_OPENING_CAP * crate::wave::qgain::UNITY);
     crate::logf!(
         "WAVE: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
@@ -810,7 +810,7 @@ fn run(
                     let (near, far) = crate::platform::audio::envelopes();
                     let permille = |g: i64| (g >> 22) * 1000 / 1024;
                     crate::logf!(
-                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, depth {}‰, tier {}, re-anchors {}",
+                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, knee {}, depth {}‰, tier {}, re-anchors {}",
                         trace_lines,
                         if trace_age_min == i64::MAX { -1 } else { trace_age_min / 48 },
                         if trace_age_max == i64::MIN { -1 } else { trace_age_max / 48 },
@@ -824,6 +824,7 @@ fn run(
                         permille(trace_gain_max),
                         near,
                         far,
+                        crate::platform::audio::expand_knee(),
                         crate::platform::audio::duck_depth_permille(),
                         tier,
                         reanchors

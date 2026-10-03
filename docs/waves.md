@@ -262,6 +262,20 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The expander's knee follows the far room, the loss follows the coupling (2026-10-02, the quiet LAN wave)
+
+With the duck at 3% depth on a clean LAN wave (zero loss, 7 ms round trip), both ends still heard underwater.
+The trace's composed gain said why: the far voice sat around 250 to 350 plan units (both parties had opened 4x under their calibration) and the expander, with its fixed knee at 256, scaled half of every utterance by its own level.
+A gain proportional to level over the speech range is a 2:1 expansion of the voice itself: tails and consonants sink, the result reads as muffled and underwater.
+And the loss term, derived from the learned k, only moves on frames emitted above 256; a quiet wave never gives it one, so it sits at its seed's quarter for the whole wave.
+
+- **The knee follows the far room.** The far level's floor is tracked as a slow-rise, fast-fall minimum (the mirror of the capture side's room tracker, in 8.8 units so the least step is 1/256 of a plan unit per frame); the knee is four times that floor, between 16 and the old 256.
+  A quiet far voice over a silent room passes whole; room noise still sinks; the 256 ceiling still holds for a loud room.
+- **The loss follows the sweep.** `min(1, margin / coupling)`, never under a quarter, from the connect sweep's measured coupling (the same measurement that sets the duck's depth); a clean route loses nothing.
+  The learned k stays for the duck's echo estimate only.
+- **The opening cap is 8x**, not 4x: at 4x Emma's correct 20x calibration opened 5x under, which is what put the wire at the knee.
+- The trace line prints the knee beside the far level.
+
 ## The duck's depth follows the measured coupling (2026-10-02, "why are we even suppressing anything")
 
 The first Verizon wave with the trace lines live (0.110.6) showed the duck as the remaining chop: both phones on earpieces the sweep had measured CLEAN (coupling 0.0003 on one, nothing above the noise on the other), and still Jeff's render gain spent a third of every 100 ms at zero and most of it under half, because his mic sat at the plan level and the law halves the far voice there.
