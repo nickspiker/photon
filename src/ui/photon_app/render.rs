@@ -2,6 +2,10 @@
 
 use super::*;
 
+/// The bracket chords the Diagnostics page offers as pills on an Android dev build (see the DEBUG ROW); their settings-pill slots start at DEBUG_PILL_SLOT0.
+pub(super) const DEBUG_PILL_CHORDS: &[&str] = &["h", "p", "a", "c", "l", "r", "f", "w", "d", "b"];
+pub(super) const DEBUG_PILL_SLOT0: HitId = 10;
+
 /// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10): the row's micro thumb, or the decoded preview blob (twice as tall).
 pub(super) const IMG_PREVIEW_LINES: usize = 4;
 pub(super) const IMG_PREVIEW_LINES_FULL: usize = 8;
@@ -6575,6 +6579,17 @@ impl PhotonApp {
                     if let Some(cb) = self.settings_hardlogs_check.as_mut() {
                         let label = cb.label().to_string();
                         flow_checkbox(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, cb, &label, hspan2);
+                    }
+                    // THE DEBUG ROW (Nick 2026-10-03, "you can't chord on Android"): the bracket-chord toggles as pills, on a dev-line Android build only (a desktop has the keyboard). Slots 10.. of the settings pill block, dispatched on the Diagnostics page; the destructive chords (nuke, un-attest, the x) are left to the keyboard.
+                    if cfg!(target_os = "android") && crate::is_dev_build() && !self.diag_log_view {
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, "[ ] chords", hspan2 * 0.9, *theme::LABEL_COLOUR, 600);
+                        let labels: Vec<String> = DEBUG_PILL_CHORDS.iter().map(|k| {
+                            let hint = super::CHORD_HINTS.iter().find(|(key, _)| key == k).map(|(_, h)| *h).unwrap_or("");
+                            format!("{k} · {hint}")
+                        }).collect();
+                        let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_str(), btn_base + DEBUG_PILL_SLOT0 + i as HitId, true, None)).collect();
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &pills, "Open Sans");
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));

@@ -1026,7 +1026,7 @@ fn wrap_text_lines(
 }
 
 /// Debug chord bindings shown in the hint overlay while `[ + ]` are held. Keep in sync with the dispatch in `on_event`'s KeyboardInput arm — adding a row here without wiring its handler (or vice versa) silently drops the binding.
-const CHORD_HINTS: &[(&str, &str)] = &[
+pub(super) const CHORD_HINTS: &[(&str, &str)] = &[
     ("h", "Hit-mask overlay"),
     ("p", "Skip premultiply"),
     ("a", "Show alpha (cycle)"),
@@ -1973,6 +1973,8 @@ pub struct PhotonApp {
     hover_is_textbox: bool,
     /// Left button currently held. Gates the textbox text-pan in `CursorMoved`.
     pointer_down: bool,
+    /// ANY left press held (a finger on the glass, a mouse button down) — `pointer_down` is the textbox pan's; this one tells a pixel scroll delta it came from a drag, so it records as the list fling (driver.rs pane_scroll).
+    press_held: bool,
     /// The textbox hit id a press engaged for the text-pan (HIT_NONE if the press wasn't on a textbox). Set on press, cleared on release — the ONE bit of state the drag needs, works for every box via `textbox_by_hit_mut`. While live, pane-scroll (wheel / touch-drag synth) is suppressed: the finger owns the TEXT, not the page.
     drag_select_hit: HitId,
     /// Where a single-line textbox press landed vertically, and which axis the drag committed to (0 undecided, 1 horizontal = text pan/select, 2 vertical = the finger is scrolling the PANE and the box lets go). Android only (Nick 2026-09-10: "text select should be left-right and scroll should be up-down").
@@ -2747,6 +2749,7 @@ impl PhotonApp {
             hover_hit: HIT_NONE,
             hover_is_textbox: false,
             pointer_down: false,
+            press_held: false,
             drag_select_hit: HIT_NONE,
             pan_grab_y: 0.0,
             drag_axis: 0,

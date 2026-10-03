@@ -94,7 +94,7 @@ pub fn take_express_frames() -> Vec<(Vec<u8>, SocketAddr)> {
 /// THE INSTRUMENT (Nick 2026-10-02): development builds profile every wave — the render channel in the spool and the keep, the 100 ms trace line in the log. A release build never traces.
 pub fn profile_enabled() -> bool {
     // A DEV LINE BUILD, by its version: shipped versions are x.y.0 and dev builds carry a patch number (RELEASE_NOTES.md), and the Android dev APK is built without the `development` cargo feature (the 0.110.5 field wave traced nothing).
-    env!("CARGO_PKG_VERSION_PATCH") != "0"
+    crate::is_dev_build()
 }
 
 /// Media EGRESS: packets must leave from the MAIN UDP socket (the port the peer's NAT knows), so the engine hands them to a dedicated tokio forwarder inside the network runtime — installed once at checker startup.

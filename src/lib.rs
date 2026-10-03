@@ -93,6 +93,11 @@ pub const MULTICAST_PORT: u16 = 4384;
 /// Eagle Time: oscillations per second (hydrogen hyperfine transition)
 pub const OSC_PER_SEC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
 
+/// A DEV LINE build, by its version: shipped versions are x.y.0 and dev builds carry a patch number (RELEASE_NOTES.md). The Android dev APK is built without the `development` cargo feature, so this — not the feature — is what "development build" means in the field.
+pub fn is_dev_build() -> bool {
+    env!("CARGO_PKG_VERSION_PATCH") != "0"
+}
+
 /// Peer expiry: 7 days
 pub const PEER_EXPIRY_OSC: i64 = 604_800 * OSC_PER_SEC;
 

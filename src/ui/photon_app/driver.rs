@@ -1353,7 +1353,14 @@ impl FluorApp for PhotonApp {
                         ctx.window.request_redraw();
                     }
                 } else if page == SettingsPage::Diagnostics {
-                    if slot == 3 {
+                    if slot >= super::render::DEBUG_PILL_SLOT0 && slot < super::render::DEBUG_PILL_SLOT0 + super::render::DEBUG_PILL_CHORDS.len() as HitId {
+                        // The debug row: a pill IS the chord (see render.rs DEBUG ROW).
+                        let key = super::render::DEBUG_PILL_CHORDS[(slot - super::render::DEBUG_PILL_SLOT0) as usize];
+                        if let Some(ch) = key.chars().next() {
+                            let _ = self.handle_chord_action(ch, ctx);
+                        }
+                        self.scene_dirty = true;
+                    } else if slot == 3 {
                         // "View"/"Back" → in the record inspector, back to the list; else toggle the whole viewer.
                         if self.diag_log_inspect.is_some() {
                             self.diag_log_inspect = None;
@@ -2210,6 +2217,7 @@ impl FluorApp for PhotonApp {
                 EventResponse::Pass
             }
             Event::CursorLeft { .. } => {
+                self.press_held = false;
                 let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(HIT_NONE);
@@ -2360,8 +2368,9 @@ impl FluorApp for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                // A new finger ends any fling (the tick's fling waits on !pointer_down; a tap with no drag must not resume the old one).
+                // A new finger ends any fling (the tick's fling waits on the release; a tap with no drag must not resume the old one).
                 self.list_fling = 0;
+                self.press_held = true;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
                 // Resize edges OUTRANK widget hits — the CSD rule. The edge check used to run only on HIT_NONE, so a contact row reaching the window edge swallowed the press and the bottom edge was ungrabbable wherever content touched it (field report, 2026-08-16). The band is a thin perimeter strip (strip_height/4), so widget interiors are untouched; cursor_for gives the same band the resize cursor, so the grab matches the cue.
@@ -2520,6 +2529,7 @@ impl FluorApp for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                self.press_held = false;
                 // Waveform scrub release = THE seek edge: play from the carried fraction (a release anywhere lands where the playhead was carried to — no timer, no debounce).
                 if let Some(s) = self.wave_scrub.take() {
                     let slot = (s.frac * s.band.total as f32) as usize;
@@ -3577,7 +3587,7 @@ impl FluorApp for PhotonApp {
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
             // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
-            if self.list_fling != 0 && !self.pointer_down {
+            if self.list_fling != 0 && !self.pointer_down && !self.press_held {
                 let v = self.list_fling;
                 let before = self.scroll_signature();
                 let _ = self.pane_scroll(ctx, v as isize, true, true);
@@ -4099,7 +4109,8 @@ impl PhotonApp {
                 chrome.invalidate_chrome();
             }
         if !from_fling {
-            self.list_fling = if is_pixel_delta && self.pointer_down { dy as i32 } else { 0 };
+            // A pixel delta while a press is held is a finger dragging the pane (a trackpad's pixel deltas come with no press and record nothing; the textbox pan's own drag is `pointer_down`).
+            self.list_fling = if is_pixel_delta && (self.press_held || self.pointer_down) { dy as i32 } else { 0 };
         }
         ctx.window.request_redraw();
         EventResponse::Pass
