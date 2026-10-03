@@ -272,7 +272,7 @@ Two things the Mac does better than the phone:
 - **The raw archive can stay raw** — macOS lets several clients read the same mic, so the cpal input could keep running beside the unit for the archive channel. Not built yet; the archive is the cancelled signal for now, as on the phone.
 
 Chosen per route like Android: the built-in speakers always (anything not sniffed as a headset), a headset only on the Wave page's say-so; the choice is made at session start from the output device's name, and a unit that refuses anything hands the wave to the plain cpal path with the reason logged.
-The FFI is hand-declared (a dozen functions, four structs, the constants) because the bindings crate needs the macOS SDK at build time, which the Linux build machine cannot offer — and for the same reason this file's first compile is the MacBook's.
+The FFI is hand-declared (a dozen functions, four structs, the constants) because the bindings crate needs the macOS SDK at build time, which a bare `cargo check` on the Linux build machine cannot offer; the osxcross recipe in scripts/publish/dev-macos-arm64.sh does, and the file cross-built clean under it.
 To test: a Mac-to-phone wave on the Mac's speakers; the log should open with "voice processing unit up", the sweep's coupling says what the unit leaves of the chirp, and the latency budget's capture-to-send says what it costs.
 
 ## The preset follows the route (2026-10-03, three waves in a row)
