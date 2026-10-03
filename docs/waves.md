@@ -269,8 +269,10 @@ The trace's composed gain said why: the far voice sat around 250 to 350 plan uni
 A gain proportional to level over the speech range is a 2:1 expansion of the voice itself: tails and consonants sink, the result reads as muffled and underwater.
 And the loss term, derived from the learned k, only moves on frames emitted above 256; a quiet wave never gives it one, so it sits at its seed's quarter for the whole wave.
 
-- **The knee follows the far room.** The far level's floor is tracked as a slow-rise, fast-fall minimum (the mirror of the capture side's room tracker, in 8.8 units so the least step is 1/256 of a plan unit per frame); the knee is four times that floor, between 16 and the old 256.
-  A quiet far voice over a silent room passes whole; room noise still sinks; the 256 ceiling still holds for a loud room.
+- **The knee follows the far room.** The far level's floor is tracked as a slow-rise, fast-fall minimum (the mirror of the capture side's room tracker, in 8.8 units so the least step is 1/256 of a plan unit per frame); the knee is twice that floor, between 16 and the old 256.
+  The room itself sits a stop down, anything a stop above it passes whole; the 256 ceiling still holds for a loud room.
+  (Four times the floor for one wave: a far voice sent quiet, at three to five times its room, was expanded on every soft syllable — the last smidge of underwater on 0.110.8.)
+- **Misses end with the far side.** The playout summary counted every frame the render named after the hangup as a miss (195 of a wave's 199); the engine's drain edge now freezes the count.
 - **The loss follows the sweep.** `min(1, margin / coupling)`, never under a quarter, from the connect sweep's measured coupling (the same measurement that sets the duck's depth); a clean route loses nothing.
   The learned k stays for the duck's echo estimate only.
 - **The opening cap is 8x**, not 4x: at 4x Emma's correct 20x calibration opened 5x under, which is what put the wire at the knee.

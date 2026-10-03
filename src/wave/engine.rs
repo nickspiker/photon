@@ -516,6 +516,8 @@ fn run(
     loop {
         // STOP → DRAIN (recording fills): audio is over, but a fill-capable peer can still hand us the windows we lost — and wants ours. Both engines stay up on the fill plane until both are satisfied or the deadline passes. A peer that never spoke the fill plane ends the engine at once, exactly as before.
         if stop.load(Ordering::Relaxed) && draining.is_none() {
+            // The far side is done from here: frames the render names and never gets are not this wave's misses (platform::audio::far_done).
+            crate::platform::audio::far_done();
             if peer_fills && spool.is_some() {
                 draining = Some(std::time::Instant::now());
                 crate::logf!("WAVE: draining — {} window(s) wanted so far, peer at {} window(s)", wanted.len(), peer_windows.map_or("?".to_string(), |w| w.to_string()));

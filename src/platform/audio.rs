@@ -186,7 +186,7 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     }
     let got = FRAME_SAMPLES - missing;
     NAMED_LAST_MISSING.store(missing, Ordering::Relaxed);
-    if PLAYED_ANY.load(Ordering::Relaxed) && missing > MISS_SLACK {
+    if PLAYED_ANY.load(Ordering::Relaxed) && missing > MISS_SLACK && !FAR_DONE.load(Ordering::Relaxed) {
         JITTER_UNDERRUNS.fetch_add(1, Ordering::Relaxed);
     }
     if got > 0 {
@@ -211,6 +211,13 @@ pub fn set_rx_trim_stops(stops: i32) {
 static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 /// Far frames that arrived after their instant had passed — never played (the honest "frames shed").
 static LATE_DROPPED: AtomicUsize = AtomicUsize::new(0);
+/// Set when the far side is done (the engine's drain began): the render keeps naming frames that will never come, and those are not misses of the wave (2026-10-02: 195 of a wave's 199 "misses" were the second after the hangup).
+static FAR_DONE: AtomicBool = AtomicBool::new(false);
+
+/// The engine's drain edge: the far side has stopped sending; nothing due from here on is a miss.
+pub fn far_done() {
+    FAR_DONE.store(true, Ordering::Relaxed);
+}
 
 /// Per-wave playout diagnostics: (the loss loop's margin frames — telemetry only now, far frames waiting, misses, frames too late to play).
 pub fn jitter_stats() -> (usize, usize, usize, usize) {
@@ -248,8 +255,8 @@ const RX_ECHO_MARGIN_Q16: i64 = 1024;
 const RX_EXPAND_KNEE: i64 = 256;
 /// The knee's floor, plan units: under it nothing is ever tapered (a whisper of a far voice over a silent room passes whole).
 const RX_EXPAND_KNEE_MIN: i64 = 16;
-/// The knee is this many times the far room's floor: room noise sinks, speech at four times the room passes at unity.
-const RX_EXPAND_FLOOR_MULT: i64 = 4;
+/// The knee is this many times the far room's floor: the room itself sits at half gain (one stop down), anything a stop above it passes at unity. (Four for one wave, 2026-10-02: a far voice sent quiet sat at three to five times its room and was expanded on every soft syllable — the last smidge of underwater.)
+const RX_EXPAND_FLOOR_MULT: i64 = 2;
 /// THE FAR FLOOR (2026-10-02, the quiet LAN wave that stayed underwater with the duck idle): the far party's room, tracked as a slow-rise / fast-fall minimum of the followed far level (the mirror of the capture side's room tracker). The expander's knee follows IT, not the plan: a quiet wire (both parties opened at 4x under their calibration) ran its whole voice around a fixed 256 knee and was squashed in proportion to its own level — the underwater.
 /// Kept in 8.8 (plan units × 256) so the slow rise's least step is 1/256 of a plan unit per frame, as the capture side's tracker has it.
 static FAR_FLOOR_Q8: AtomicI64 = AtomicI64::new(0);
@@ -905,6 +912,7 @@ fn clear_queues() {
     LOCAL_SOURCE.store(false, Ordering::Relaxed);
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
     LATE_DROPPED.store(0, Ordering::Relaxed);
+    FAR_DONE.store(false, Ordering::Relaxed);
     OUT_AHEAD_LAST.store(i64::MIN, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_GAIN.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
@@ -1434,10 +1442,10 @@ mod tests {
         set_duck_coupling(0.0);
         let far = |v: i16| vec![v; FRAME_SAMPLES];
         for _ in 0..40 {
-            queue_playback(far(20)); // the room: the floor settles at 20, knee 80
+            queue_playback(far(20)); // the room: the floor settles at 20, knee 40
             let _ = next_render_frame();
         }
-        assert!(expand_knee() <= 96, "a quiet room keeps the knee low ({})", expand_knee());
+        assert!(expand_knee() <= 48, "a quiet room keeps the knee low ({})", expand_knee());
         for _ in 0..20 {
             queue_playback(far(150));
             let _ = next_render_frame();
@@ -1448,11 +1456,11 @@ mod tests {
         clear_queues();
         set_speaker_duck(true);
         set_duck_coupling(0.0);
-        for _ in 0..1500 {
-            queue_playback(far(100)); // a loud room, held the ~5 s the slow rise takes: the knee tops out at 256
+        for _ in 0..4000 {
+            queue_playback(far(100)); // a loud room, held the twenty seconds the slow rise takes to settle: the knee reaches twice it
             let _ = next_render_frame();
         }
-        assert_eq!(expand_knee(), 256, "the knee never exceeds the plan's ceiling");
+        assert!((190..=256).contains(&expand_knee()), "a loud room lifts the knee to twice itself, never past the plan's ceiling ({})", expand_knee());
         for _ in 0..20 {
             queue_playback(far(150));
             let _ = next_render_frame();
