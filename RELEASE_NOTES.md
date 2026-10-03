@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- On a Mac, waves on the built-in speakers now run through Apple's voice processing for echo cancellation, with its gain control off so the mic stays calibrated; headphones keep the plain path unless the Wave page's box is ticked.
+- On a Mac, waves now run through Apple's voice processing for echo cancellation by default, with its gain control off so the mic stays calibrated; untick the Wave page's box to use the plain path on headphones.
 - On Android the loudspeaker now always runs through the phone's own voice processing, whose echo cancellation is far better than ours on that route; the earpiece keeps the lower-latency raw feed unless you tick the Wave page's box.
 - With the phone's own voice processing switched on, the wave's level and echo controls stand down and leave it to the phone, and its measurements no longer overwrite the mic's calibration.
 - The playout no longer nudges its timing every frame once it has settled; a faint time-stretch under every word is gone.

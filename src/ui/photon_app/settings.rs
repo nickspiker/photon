@@ -500,12 +500,13 @@ impl PhotonApp {
             cb.set_checked(self.wave_hold);
         }
         // The phone's voice processing: device-local, absent = OFF.
+        // Absent = OFF on the phone (the raw earpiece sounds best and runs 50 ms sooner), ON on the Mac (Nick 2026-10-03: a MacBook's mic is next to its speakers; the unit's gain control is off there, so nothing of ours is lost).
         let voice_dsp = self
             .fleet_settings
             .as_ref()
             .and_then(|fs| fs.device_local("waves.voice_dsp"))
             .and_then(crate::storage::fleet_settings::as_bool)
-            .unwrap_or(false);
+            .unwrap_or(cfg!(target_os = "macos"));
         crate::platform::audio::VOICE_DSP.store(voice_dsp, std::sync::atomic::Ordering::Relaxed);
         if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
             cb.set_checked(voice_dsp);

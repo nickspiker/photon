@@ -498,7 +498,7 @@ impl FluorApp for PhotonApp {
                 1.,
                 1.,
                 12.,
-                false,
+                cfg!(target_os = "macos"), // the Mac's default is ON (see settings.rs), the phone's OFF
             ))
         } else {
             None
