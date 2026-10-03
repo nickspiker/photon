@@ -339,7 +339,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             format!("{} {word} \u{00b7} отправлено {} \u{00b7} получено {}", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into()
         }
         Msg::RowsShouldMatch => "эти строки должны совпадать на каждом твоём устройстве".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::VoiceDsp => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "устройство флота уходит по собственному запросу \u{2014} см. Настройки \u{2192} Флот".into(),
         Msg::BootPill { armed } => if armed { "Коснись ещё раз \u{2014} выгнать" } else { "Выгнать" }.into(),
         Msg::BindIntoMolecule => "Связать в молекулу".into(),

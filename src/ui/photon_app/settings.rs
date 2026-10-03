@@ -499,6 +499,17 @@ impl PhotonApp {
         if let Some(cb) = self.settings_wave_hold_check.as_mut() {
             cb.set_checked(self.wave_hold);
         }
+        // The phone's voice processing: device-local, absent = OFF.
+        let voice_dsp = self
+            .fleet_settings
+            .as_ref()
+            .and_then(|fs| fs.device_local("waves.voice_dsp"))
+            .and_then(crate::storage::fleet_settings::as_bool)
+            .unwrap_or(false);
+        crate::platform::audio::VOICE_DSP.store(voice_dsp, std::sync::atomic::Ordering::Relaxed);
+        if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
+            cb.set_checked(voice_dsp);
+        }
         // The earpiece trim (device-local, stops; absent = 0) applied live.
         let trim = self
             .fleet_settings

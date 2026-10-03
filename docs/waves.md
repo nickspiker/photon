@@ -262,6 +262,29 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The echo arithmetic, and what a loudspeaker costs (2026-10-03, the Nick/Brittany wave)
+
+With the warble gone the regular echo stood alone: each party hearing themselves back, a few hundred milliseconds later.
+The trace and the sweeps give the number.
+What you play on your speaker leaks into your mic at the sweep's COUPLING (Nick's earpiece 0.0005, Brittany's 0.0028, a loudspeaker about 0.25), and whatever leaks is then multiplied by your MAKEUP on the way to the wire (Nick 33.9x, Brittany 18.6x).
+The echo return ratio is their product:
+
+- Brittany's earpiece: 0.0028 × 18.6 = 0.052, so Nick hears himself at −26 dB, about four and a half stops under the plan level, roughly 350 ms later (two one-way latencies plus her playout). Clearly audible.
+- Nick's earpiece: 0.0005 × 33.9 = 0.017, −35 dB. Faint.
+- Brittany's loudspeaker: about 0.25 × 18.6 = 4.6. The echo on her wire is LOUDER than her own voice; with Nick's 0.017 the loop gain is 0.08, so no howl, but every word comes back at −6 dB with a 400 ms round trip — "very feedbackey".
+
+The duck cannot touch any of this: it cuts the speaker while the NEAR talker speaks, and the echo returns while the near talker is silent.
+Its depth from the coupling alone is right for its own job (it keeps a loudspeaker from chopping on its own echo now that k starts from the measured coupling); the echo is a separate problem.
+Three ways to make −26 dB inaudible (it needs to reach about −45 dB):
+
+1. A canceller on the mic path: an adaptive filter fed from the render reference ring, seeded with the sweep's delay and coupling, subtracting the predicted echo before the encoder. 20 to 30 dB where the path is linear (an earpiece is), less on a loudspeaker. This TOUCHES THE MIC before the wire, which the 2026-09-13 doctrine forbids ("mic needs untouched before it hits the wire"); the doctrine was written for level and gating, and a canceller is the one thing a mic path cannot do without. Nick's call.
+2. The phone's own voice processing: the VoiceCommunication input preset puts the vendor's canceller, noise suppressor and gain control in front of our mic. Built as the Wave page's "Use this phone's own voice processing" (`waves.voice_dsp`, device-local, default off, next wave). The level plan's calibration means little under a vendor AGC; the re-aim adapts. The sweep's coupling and the latency budget say what it cancels and what it costs. (The AudioRecord loops before 2026-09-09 ran this source; MODE_IN_COMMUNICATION, the vendor voice MODE, was tried on 2026-08-19 and cost an 80 ms floor — this is the preset without the mode.) macOS has the same thing in the Voice Processing I/O unit; not wired.
+3. Receive loss alone: to take Brittany's earpiece echo to −45 dB would mean playing Nick at a tenth; not a conversation.
+
+Also this wave: Brittany's l sat 580 ms over L after two route changes — each rebuilt the output stream, the callback was away for half a second, and the cursor it left behind read as that much latency, which the paced walk then took the rest of the wave to shed.
+A render gap of more than two frames, or a cursor more than 200 ms from L, now re-anchors by the first-arrival rule; between 20 and 200 ms the walk runs at two slips a frame; under 20 ms at one.
+A sweep whose capture missed it (the mic still coming up after a route change) is re-armed once on that edge; her loudspeaker went unmeasured for want of it.
+
 ## The walk's pace, and a five-second window (2026-10-03, "is there an accumulator on the latency adjustment?")
 
 Nick, on 0.110.9: "sounds a bit warbley, like the playback speed is oscillating, not really random… oscillating".

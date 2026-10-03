@@ -725,6 +725,8 @@ pub enum Msg<'a> {
     RingIncomingWave,
     /// Notifications page: hold every wave recording on this device (replication by default).
     HoldWavesOnDevice,
+    /// Wave page: open the mic thru the phone's own voice processing (echo cancel, noise, gain) instead of the calibrated raw feed — an experiment, device-local.
+    VoiceDsp,
     KeepEditHistory,
     VibrateIncomingWave,
     PresenceCheckbox,

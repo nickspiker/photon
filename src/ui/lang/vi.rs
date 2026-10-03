@@ -314,7 +314,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "luôn liên lạc được (đây chính là bạn)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} tin nhắn \u{00b7} {} đã gửi \u{00b7} {} đã nhận", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "những dòng này phải khớp trên mọi thiết bị của bạn".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::VoiceDsp => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "một thiết bị trong đội chỉ rời đi theo yêu cầu của chính nó \u{2014} xem Cài đặt \u{2192} Đội".into(),
         Msg::BootPill { armed } => if armed { "Chạm lần nữa \u{2014} đuổi họ" } else { "Đuổi" }.into(),
         Msg::BindIntoMolecule => "Liên kết vào một phân tử".into(),

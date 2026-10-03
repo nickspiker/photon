@@ -83,12 +83,18 @@ pub fn fit(cap: &[i16], cap_k0: i64, render_k: i64) -> Option<Fit> {
 }
 
 /// Run the fit off the engine thread (a quarter second of lags × a second of template is a few hundred ms of CPU) and log what it found.
+/// Set when a sweep's capture did not cover it (the input stream was still coming up after a route change); the engine re-arms the sweep once on this edge.
+pub static UNCOVERED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn finish(cap: Vec<i16>, cap_k0: i64, render_k: i64, route: String) {
     let _ = std::thread::Builder::new().name("sweep-fit".into()).spawn(move || {
         let t0 = std::time::Instant::now();
         let fitted = fit(&cap, cap_k0, render_k);
         match fitted {
-            None => crate::log("WAVE: sweep — the capture did not cover the sweep (mic late or muted); no measurement"),
+            None => {
+                crate::log("WAVE: sweep — the capture did not cover the sweep (mic late or muted); no measurement");
+                UNCOVERED.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
             Some(f) if !f.coupled => crate::logf!("WAVE: sweep — clean route \"{}\": no speaker→mic coupling above the noise (psr {:.1}), fit {} ms", route, f.psr, t0.elapsed().as_millis()),
             Some(f) => crate::logf!(
                 "WAVE: sweep — speaker→mic {:.2} ms ({} samples), coupling {:.4}, psr {:.1}, route \"{}\", fit {} ms",

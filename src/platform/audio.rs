@@ -130,10 +130,22 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     }
     let dac_k = vsf::grid::eagle_to_sample(at_osc);
     let mut p = PLAY_NEXT.load(Ordering::Relaxed);
+    // A render gap (the callback was away: a stream rebuilt on a route change) or a cursor far from L is an EVENT, not jitter: the cursor re-anchors by the first-arrival rule (see REANCHOR_SAMPLES).
+    let last_dac = LAST_DAC_K.swap(dac_k, Ordering::Relaxed);
+    if p != i64::MIN {
+        let gap = last_dac != i64::MIN && dac_k - last_dac > 2 * FRAME_SAMPLES as i64;
+        let far = (dac_k - p - target).abs() > REANCHOR_SAMPLES;
+        if gap || far {
+            p = i64::MIN;
+            REANCHORS.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     // The first frame starts exactly on L. After that nothing but slips ever moves the cursor — however far L moves, l walks to it (Nick 2026-09-28: no hardcoded timings, no jumps).
     if p == i64::MIN {
         p = dac_k - target;
     }
+    // The walk's pace this frame: one slip over audio, two when far from L (see WALK_FAR_SAMPLES).
+    let pace = if (dac_k - p - target).abs() > WALK_FAR_SAMPLES { 2 * SLIPS_PER_FRAME } else { SLIPS_PER_FRAME };
     NAMED_LAST_P.store(p, Ordering::Relaxed);
     // The names this frame can reach: the one before the cursor (for the slope), and at most two per output sample (a drop per sample in a silent stretch).
     let lo = p - 1;
@@ -166,7 +178,7 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
         let silent = at(p - 1) == 0 && at(p) == 0 && at(p + 1) == 0;
         let eligible = p != slipped_at
             && (d0 == 0 || d1 == 0 || (d0 > 0) != (d1 > 0))
-            && (silent || audible_slips < SLIPS_PER_FRAME);
+            && (silent || audible_slips < pace);
         if eligible && l > target {
             p += 1; // DROP: this sample is skipped, l shortens by one
             drops += 1;
@@ -228,6 +240,12 @@ static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 static LATE_DROPPED: AtomicUsize = AtomicUsize::new(0);
 /// THE WALK'S PACE (Nick 2026-10-03, "do we have an accumulator on our latency adjustment? … sounds like the playback speed is oscillating"): l followed every move of L at one slip per zero crossing, and on a jittery LAN L stepped 5 to 10 ms every second or two, so each step was walked inside 100 ms — a 5% speed change, a third of a semitone, every couple of seconds. Over audio the walk now takes at most ONE slip per 5 ms frame (0.4%, seven cents, under the ear's notice); in digital silence, where a dropped or repeated zero costs nothing, it stays uncapped and l meets L at once.
 const SLIPS_PER_FRAME: usize = 1;
+/// Past this far from L the walk doubles its pace (two slips a frame, 0.8%, fourteen cents): a 20 ms error walked at the single pace takes four seconds, long enough for the next spike to land on it.
+const WALK_FAR_SAMPLES: i64 = 960;
+/// Past THIS far from L nothing is walked: a 200 ms discrepancy is not jitter but an event (an output stream rebuilt on a route change, a window that collapsed), and the cursor re-anchors by the first-arrival rule (field 2026-10-03: Brittany's l sat 580 ms over L after two route changes, walking down at the single pace for the rest of the wave).
+const REANCHOR_SAMPLES: i64 = 9600;
+/// The DAC instant of the previous render: a gap of more than two frames between renders means the callback was away (a stream rebuild), and the cursor it left behind would read as that much latency.
+static LAST_DAC_K: AtomicI64 = AtomicI64::new(i64::MIN);
 /// Playout slips this wave: samples dropped (l shortened) and repeated (l lengthened) — the trace line prints them.
 static SLIP_DROPS: AtomicUsize = AtomicUsize::new(0);
 static SLIP_REPEATS: AtomicUsize = AtomicUsize::new(0);
@@ -318,6 +336,9 @@ static NAMED_LAST_P: AtomicI64 = AtomicI64::new(i64::MIN);
 static NAMED_LAST_MISSING: AtomicUsize = AtomicUsize::new(0);
 /// Playout re-anchors this wave (see `reanchor_playout`).
 static REANCHORS: AtomicUsize = AtomicUsize::new(0);
+
+/// THE PHONE'S VOICE PROCESSING (Nick 2026-10-03, "we never actually tried the voice-call DSP to get real numbers"): on, the input opens with the VoiceCommunication preset — the vendor's echo canceller, noise suppressor and gain control in front of our mic — instead of Unprocessed. Device-local, default off, the Wave page's checkbox; applies at the next stream open. The sweep and the trace then say what it costs and what it cancels.
+pub static VOICE_DSP: AtomicBool = AtomicBool::new(false);
 
 /// Arm or disarm the render trace.
 pub fn set_profile(on: bool) {
@@ -538,6 +559,8 @@ pub fn set_duck_coupling(coupling: f32) {
     // WHY/PROOF: a measured ratio from the sweep fit — finite and non-negative by construction; the division is by a constant, the clamp holds the depth to the unit interval the law multiplies by.
     let depth = (coupling / DUCK_COUPLING_FULL).clamp(0.0, 1.0);
     DUCK_DEPTH_Q32.store((depth as f64 * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
+    // The duck's echo estimate starts from the MEASURED coupling, not the learner's 1/16 seed: on a loudspeaker the learner never climbed from its floor (k 0.0054 against a measured 0.25, 2026-10-03), so the duck read the speaker's own echo as a near talker and chopped the far voice by it. The learner still lowers it on evidence.
+    DUCK_K_Q16.store(((coupling as f64 * 65536.0) as i64).clamp(DUCK_K_MIN_Q16, DUCK_K_MAX_Q16), Ordering::Relaxed);
     // The loss: the echo margin over the coupling, at most unity, at least a quarter (a coupling of zero is a clean route: no loss at all).
     let margin = RX_ECHO_MARGIN_Q16 as f64 / 65536.0;
     let loss = if coupling <= 0.0 { 1.0 } else { (margin / coupling as f64).clamp(0.25, 1.0) };
@@ -953,6 +976,7 @@ fn clear_queues() {
     NAMED_LAST_P.store(i64::MIN, Ordering::Relaxed);
     NAMED_LAST_MISSING.store(0, Ordering::Relaxed);
     REANCHORS.store(0, Ordering::Relaxed);
+    LAST_DAC_K.store(i64::MIN, Ordering::Relaxed);
     PROFILE_RING.lock().unwrap().clear();
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     EMITTED_LEVEL.store(0, Ordering::Relaxed);

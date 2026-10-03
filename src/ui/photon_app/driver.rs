@@ -488,6 +488,17 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
+        // The phone's voice processing (waves.voice_dsp, device-local, default OFF) — the Wave page.
+        self.settings_voice_dsp_check = Some(fluor::widgets::Checkbox::new(
+            &mut self.hit_counter,
+            tr(Msg::VoiceDsp),
+            0.,
+            0.,
+            1.,
+            1.,
+            12.,
+            false,
+        ));
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::HardLogs),

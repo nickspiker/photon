@@ -313,7 +313,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "siempre alcanzable (esta persona eres tú)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} enviados \u{00b7} {} recibidos", fmt_mag(total as u64), if total == 1 { "mensaje" } else { "mensajes" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "estas filas deberían coincidir en cada uno de tus dispositivos".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::VoiceDsp => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "un dispositivo de la flota sale por su propia solicitud \u{2014} ver Ajustes \u{2192} Flota".into(),
         Msg::BootPill { armed } => if armed { "Toca otra vez \u{2014} échalo" } else { "Echar" }.into(),
         Msg::BindIntoMolecule => "Enlazar a una molécula".into(),

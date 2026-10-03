@@ -316,7 +316,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "immer erreichbar (das bist du)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} gesendet \u{00b7} {} empfangen", fmt_mag(total as u64), if total == 1 { "Nachricht" } else { "Nachrichten" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "diese Zeilen sollten auf jedem deiner Geräte gleich sein".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::VoiceDsp => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "ein Gerät der Flotte geht auf eigenen Wunsch \u{2014} siehe Einstellungen \u{2192} Flotte".into(),
         Msg::BootPill { armed } => if armed { "Nochmal tippen \u{2014} rauswerfen" } else { "Rauswerfen" }.into(),
         Msg::BindIntoMolecule => "In ein Molekül binden".into(),

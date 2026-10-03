@@ -514,6 +514,8 @@ fn run(
     crate::platform::audio::play_overlay(super::sweep::up());
     // The mic from the sweep's start: (first grid sample, samples) until it covers the sweep plus the lag scan; then the fit runs off-thread.
     let mut sweep_cap: Option<(i64, Vec<i16>)> = Some((i64::MIN, Vec::new()));
+    // One more try when a sweep's capture missed it (the mic was still coming up after a route change: Brittany's loudspeaker went unmeasured, 2026-10-03).
+    let mut sweep_retry_left: u8 = 1;
 
     loop {
         // STOP → DRAIN (recording fills): audio is over, but a fill-capable peer can still hand us the windows we lost — and wants ours. Both engines stay up on the fill plane until both are satisfied or the deadline passes. A peer that never spoke the fill plane ends the engine at once, exactly as before.
@@ -1518,7 +1520,14 @@ fn run(
                 // The new route gets its own sweep: the route-change indicator on the new transducer, and its coupling measured for the duck's depth (the prior set_speaker_duck just installed holds until the fit lands).
                 crate::platform::audio::play_overlay(super::sweep::up());
                 sweep_cap = Some((i64::MIN, Vec::new()));
+                sweep_retry_left = 1;
                 live_route = rid;
+            }
+            if super::sweep::UNCOVERED.swap(false, Ordering::Relaxed) && sweep_cap.is_none() && sweep_retry_left > 0 {
+                sweep_retry_left -= 1;
+                crate::log("WAVE: sweep — again, now that the mic is up");
+                crate::platform::audio::play_overlay(super::sweep::up());
+                sweep_cap = Some((i64::MIN, Vec::new()));
             }
         }
 

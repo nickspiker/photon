@@ -503,6 +503,26 @@ impl PhotonApp {
             }
             { needs_redraw = true; self.note_redraw(line!()); }
         }
+        // The phone's voice processing: device-local (unlinked) bool, default OFF; the switch flips now and applies at the next stream open (the next wave).
+        let voice_dsp_toggle = self
+            .settings_voice_dsp_check
+            .as_mut()
+            .map(|cb| (cb.take_toggle(), cb.is_checked()));
+        if let Some((true, checked)) = voice_dsp_toggle {
+            crate::platform::audio::VOICE_DSP.store(checked, std::sync::atomic::Ordering::Relaxed);
+            let now = vsf::eagle_time_oscillations();
+            if self.ensure_fleet_settings() {
+                let fs = self.fleet_settings.as_mut().unwrap();
+                if fs.linked("waves.voice_dsp") {
+                    fs.set_link("waves.voice_dsp", false, now);
+                }
+                if fs.set("waves.voice_dsp", vsf::VsfType::u0(checked), now) {
+                    crate::logf!("SETTINGS: waves.voice_dsp = {} (device-local)", checked);
+                    self.persist_and_push_settings();
+                }
+            }
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         let hardlogs_toggle = self
             .settings_hardlogs_check
             .as_mut()
@@ -1169,6 +1189,9 @@ impl PhotonApp {
         }
         if let Some(cb) = self.settings_wave_hold_check.as_mut() {
             cb.set_label(tr(Msg::HoldWavesOnDevice));
+        }
+        if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
+            cb.set_label(tr(Msg::VoiceDsp));
         }
         if let Some(cb) = self.settings_vibrate_msg_check.as_mut() {
             cb.set_label(tr(Msg::VibrateNewMessage));

@@ -59,7 +59,7 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, format: i32, cb: 
         .direction(direction)
         .usage(if matches!(direction, AudioDirection::Output) && OUTPUT_VOICE.load(Ordering::Relaxed) { ndk::audio::AudioUsage::VoiceCommunication } else { ndk::audio::AudioUsage::Media })
         // UNPROCESSED, CALIBRATED INPUT (the level plan, 2026-09-13 night). The default preset's vendor AGC woke at zero and ramped 11→145 over twenty seconds (Brittany's silent first ten); Unprocessed is the CDD-calibrated raw feed — 94 dB SPL ≡ ~520 RMS, no AGC, no effects, deterministic from frame one — and its quiet number is exactly what the engine's fixed TX makeup (TX_MAKEUP_Q32) is precomputed for. VoicePerformance lived one unpublished hour between the two.
-        .input_preset(ndk::audio::AudioInputPreset::Unprocessed)
+        .input_preset(if super::audio::VOICE_DSP.load(Ordering::Relaxed) { ndk::audio::AudioInputPreset::VoiceCommunication } else { ndk::audio::AudioInputPreset::Unprocessed })
         .sharing_mode(sharing)
         .performance_mode(AudioPerformanceMode::LowLatency)
         .sample_rate(SAMPLE_RATE)
