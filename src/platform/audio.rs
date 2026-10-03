@@ -158,12 +158,21 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     let mut missing = 0usize;
     // ONE slip per point: a repeat leaves the cursor on the same sample, and that sample must not qualify again on the next output (it would chain repeats at one peak).
     let mut slipped_at = i64::MIN;
+    let mut audible_slips = 0usize;
+    let (mut drops, mut repeats) = (0usize, 0usize);
     for (i, o) in out.iter_mut().enumerate() {
         let l = dac_k + i as i64 - p;
         let (d0, d1) = (at(p) - at(p - 1), at(p + 1) - at(p));
-        let eligible = p != slipped_at && (d0 == 0 || d1 == 0 || (d0 > 0) != (d1 > 0));
+        let silent = at(p - 1) == 0 && at(p) == 0 && at(p + 1) == 0;
+        let eligible = p != slipped_at
+            && (d0 == 0 || d1 == 0 || (d0 > 0) != (d1 > 0))
+            && (silent || audible_slips < SLIPS_PER_FRAME);
         if eligible && l > target {
             p += 1; // DROP: this sample is skipped, l shortens by one
+            drops += 1;
+            if !silent {
+                audible_slips += 1;
+            }
         }
         if !have[(p - lo) as usize] {
             missing += 1;
@@ -171,10 +180,16 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
         *o = at(p) as i16;
         if eligible && l < target {
             slipped_at = p; // a REPEAT leaves the cursor where it is, lengthening l by one
+            repeats += 1;
+            if !silent {
+                audible_slips += 1;
+            }
         } else {
             p += 1;
         }
     }
+    SLIP_DROPS.fetch_add(drops, Ordering::Relaxed);
+    SLIP_REPEATS.fetch_add(repeats, Ordering::Relaxed);
     PLAY_L.store(dac_k + FRAME_SAMPLES as i64 - p, Ordering::Relaxed); // the lag the next sample will play at
     PLAY_NEXT.store(p, Ordering::Relaxed);
     // Every name before the cursor has had its instant.
@@ -211,6 +226,17 @@ pub fn set_rx_trim_stops(stops: i32) {
 static JITTER_UNDERRUNS: AtomicUsize = AtomicUsize::new(0);
 /// Far frames that arrived after their instant had passed — never played (the honest "frames shed").
 static LATE_DROPPED: AtomicUsize = AtomicUsize::new(0);
+/// THE WALK'S PACE (Nick 2026-10-03, "do we have an accumulator on our latency adjustment? … sounds like the playback speed is oscillating"): l followed every move of L at one slip per zero crossing, and on a jittery LAN L stepped 5 to 10 ms every second or two, so each step was walked inside 100 ms — a 5% speed change, a third of a semitone, every couple of seconds. Over audio the walk now takes at most ONE slip per 5 ms frame (0.4%, seven cents, under the ear's notice); in digital silence, where a dropped or repeated zero costs nothing, it stays uncapped and l meets L at once.
+const SLIPS_PER_FRAME: usize = 1;
+/// Playout slips this wave: samples dropped (l shortened) and repeated (l lengthened) — the trace line prints them.
+static SLIP_DROPS: AtomicUsize = AtomicUsize::new(0);
+static SLIP_REPEATS: AtomicUsize = AtomicUsize::new(0);
+
+/// Samples dropped and repeated by the walk since the last audio reset.
+pub fn slips() -> (usize, usize) {
+    (SLIP_DROPS.load(Ordering::Relaxed), SLIP_REPEATS.load(Ordering::Relaxed))
+}
+
 /// Set when the far side is done (the engine's drain began): the render keeps naming frames that will never come, and those are not misses of the wave (2026-10-02: 195 of a wave's 199 "misses" were the second after the hangup).
 static FAR_DONE: AtomicBool = AtomicBool::new(false);
 
@@ -913,6 +939,8 @@ fn clear_queues() {
     JITTER_UNDERRUNS.store(0, Ordering::Relaxed);
     LATE_DROPPED.store(0, Ordering::Relaxed);
     FAR_DONE.store(false, Ordering::Relaxed);
+    SLIP_DROPS.store(0, Ordering::Relaxed);
+    SLIP_REPEATS.store(0, Ordering::Relaxed);
     OUT_AHEAD_LAST.store(i64::MIN, Ordering::Relaxed);
     FAR_LEVEL.store(0, Ordering::Relaxed);
     SPEAKER_DUCK_GAIN.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
@@ -1401,13 +1429,13 @@ mod tests {
         let before = play_latency().unwrap();
         let _ = next_render_frame_at(dac(k + 4 * f));
         let moved = before - play_latency().unwrap();
-        assert!((8..=12).contains(&moved), "one slip per peak or trough: {moved} in a frame holding ~10 of them");
+        assert_eq!(moved, 1, "over audio the walk takes one slip per frame, however many peaks the frame holds ({moved})");
         // l too SHORT: repeats at the same points, lengthening l one at a time.
         set_play_target(play_latency().unwrap() + 40);
         let before = play_latency().unwrap();
         let _ = next_render_frame_at(dac(k + 5 * f));
         let grew = play_latency().unwrap() - before;
-        assert!((8..=12).contains(&grew), "repeats lengthen l one per point: {grew}");
+        assert_eq!(grew, 1, "repeats lengthen l by one per frame over audio ({grew})");
         // TOO LATE: every name of a frame has had its instant — dropped at the door, never played.
         queue_named(k, vec![5; FRAME_SAMPLES]);
         assert_eq!(jitter_stats().3, 1, "counted as too late");

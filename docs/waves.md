@@ -262,6 +262,22 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The walk's pace, and a five-second window (2026-10-03, "is there an accumulator on the latency adjustment?")
+
+Nick, on 0.110.9: "sounds a bit warbley, like the playback speed is oscillating, not really random… oscillating".
+The trace lines showed it: on a clean LAN wave with four misses, L stepped 5 to 10 ms every second or two (36 to 56 ms on one side, 40 to 51 on the other), and l matched it in every 100 ms line.
+A 5 ms step is 240 samples; walked inside 100 ms at one slip per zero crossing, that is a 5% speed change, a third of a semitone, every couple of seconds — the oscillation.
+Two causes, two changes:
+
+- **L's window spans five seconds at every rung.** The window was 256 WINDOWS, which on plaid (one frame per window) is 1.3 s: every Wi-Fi spike entered L and left it a second later, a sawtooth the walk then performed.
+  The span is now 1024 frames (`L_WINDOW_FRAMES`), 5 s on every rung; the 1-in-256 allowance per arrival is unchanged.
+- **The walk is paced.** Over audio, l takes at most one slip per 5 ms frame (`SLIPS_PER_FRAME`): 0.4%, seven cents, under the ear's notice, so a 10 ms move of L takes two and a half seconds and is inaudible.
+  In digital silence, where a dropped or repeated zero costs nothing, the walk stays uncapped and l meets L at once (the 2026-09-28 rule, kept where it is free).
+  A clock step still re-anchors by the first-arrival rule (one jump), never a walk.
+- The trace line prints the slips.
+
+So: no accumulator on L itself — it is still an order statistic over its window — but the window is long enough that spikes no longer sweep thru it in a second, and whatever L does, l follows it slowly enough not to be heard.
+
 ## The expander's knee follows the far room, the loss follows the coupling (2026-10-02, the quiet LAN wave)
 
 With the duck at 3% depth on a clean LAN wave (zero loss, 7 ms round trip), both ends still heard underwater.

@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Fixed a wave's pitch wobbling on a jittery network: the playout now adjusts its timing slowly enough that you cannot hear it, and judges the network over five seconds instead of one.
 - A softly spoken far voice no longer thins out on its quiet syllables.
 - Fixed a quiet wave sounding muffled and underwater: the far voice is no longer thinned by its own softness, only room noise under it is; and a route with no feedback no longer takes a fixed cut.
 - The other person's voice is no longer cut down while you talk on an earpiece or headset: the cut now follows how much of your speaker actually reaches your mic, which on those routes is nothing.

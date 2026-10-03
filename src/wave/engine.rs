@@ -54,6 +54,8 @@ const JITTER_TARGET_CAP: usize = 24;
 const LINK_TAIL: usize = 10;
 /// L's window, in RECEIVED windows (a count, never a time): the floor and the 1-in-this-many point are taken over the last this-many arrivals — Nick's 1-in-256.
 const L_WINDOW: usize = 256;
+/// The window's SPAN in frames (5 ms each), whatever the rung: 1024 frames is five seconds at every rate. At 256 WINDOWS the span was 1.3 s on plaid (one frame per window) and every Wi-Fi spike sailed thru L in a second — the sawtooth l then walked, audibly (2026-10-03). The 1-in-256 allowance stays per arrival.
+const L_WINDOW_FRAMES: usize = 1024;
 
 /// L before the repair slack, from the recent arrival ages in ARRIVAL order (docs/lock.md §7.1 as amended): the 1-in-L_WINDOW point of the arrival EVENTS — with a full window, the single slowest event may sit above L (Nick's 1-in-256 loss rule), with fewer none may.
 /// A BURST COUNTS ONCE (Nick 2026-09-29): a queue spike delays a run of consecutive windows together, and the queue releases them back to back, each a little younger than the one before — a falling run of ages. The 1-in-256 rule assumed independent arrivals, so one spike spent the whole allowance and L rose to cover the rest of the same burst (a 134 ms jitter margin on an 81 ms WAN). An event starts wherever the age RISES over the previous arrival; the falling run behind it is the same event, and its first (oldest) arrival stands for it. No threshold, no constant — only the order of the arrivals.
@@ -812,12 +814,14 @@ fn run(
                     let (near, far) = crate::platform::audio::envelopes();
                     let permille = |g: i64| (g >> 22) * 1000 / 1024;
                     crate::logf!(
-                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, knee {}, depth {}‰, tier {}, re-anchors {}",
+                        "WAVE: trace #{} — ages {}..{} ms, L {} ms, l {} ms, slips +{} −{}, waiting {}, misses {}, late {}, lost {}, gain {}..{}‰, near {}, far {}, knee {}, depth {}‰, tier {}, re-anchors {}",
                         trace_lines,
                         if trace_age_min == i64::MAX { -1 } else { trace_age_min / 48 },
                         if trace_age_max == i64::MIN { -1 } else { trace_age_max / 48 },
                         crate::platform::audio::play_target().map_or(-1, |v| v / 48),
                         crate::platform::audio::play_latency().map_or(-1, |v| v / 48),
+                        crate::platform::audio::slips().1,
+                        crate::platform::audio::slips().0,
                         depth,
                         misses,
                         late,
@@ -1069,7 +1073,9 @@ fn run(
                         recent_ages.clear();
                         crate::platform::audio::reanchor_playout();
                     }
-                    if recent_ages.len() == L_WINDOW {
+                    // The window holds five seconds of arrivals at this rung (see L_WINDOW_FRAMES); a rung change resizes it at the next arrival.
+                    let window_cap = (L_WINDOW_FRAMES / TIER_FRAMES[dtier].max(1)).max(L_WINDOW);
+                    while recent_ages.len() >= window_cap {
                         recent_ages.pop_front();
                     }
                     recent_ages.push_back(age);
