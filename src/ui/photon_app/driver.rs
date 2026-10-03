@@ -2351,129 +2351,7 @@ impl FluorApp for PhotonApp {
                     MouseScrollDelta::Pixels(_, y) => (*y as isize, true),
                 };
                 if dy != 0 {
-                    // COMPOSE BOX SCROLL (Nick 2026-09-09): a wheel or finger over the multi-line box moves its TEXT when there is more than fits; the pane behind stays put. Wheel down (negative dy) reveals the lines below → the band offset grows. A finger drag (a live press on the box, Android's synthesized pixel deltas) also carries a fling velocity for the release.
-                    if matches!(self.state, AppState::Conversation) {
-                        let compose_id = self.message_textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
-                        let over_compose = compose_id != HIT_NONE
-                            && (self.hover_hit == compose_id || (self.pointer_down && self.drag_select_hit == compose_id))
-                            && self.message_textbox.as_ref().is_some_and(|t| t.max_scroll() > 0.0);
-                        if over_compose {
-                            let px = -(dy as f32) * if is_pixel_delta { 1.0 } else { 8.0 };
-                            if let Some(tb) = self.message_textbox.as_mut() {
-                                tb.scroll_by(px);
-                            }
-                            self.compose_fling = if self.pointer_down && self.drag_select_hit == compose_id { px.round() as i32 } else { 0 };
-                            self.scene_dirty = true;
-                            ctx.window.request_redraw();
-                            return EventResponse::Handled;
-                        }
-                    }
-                    // A live textbox pan owns the gesture: the finger is carrying the TEXT, so the pane must not also scroll under it (Android's touch-drag synthesizes wheel events alongside the CursorMoved the pan rides).
-                    if self.pointer_down && self.drag_select_hit != HIT_NONE {
-                        return EventResponse::Handled;
-                    }
-                    // Rubber-band scrolling on every axis, every platform: past either end the step is asymptotically resisted (never further than `reach` past the bound), and `tick()` eases the overshoot back once the wheel stops. `reach` scales with the window so the give feels the same on a watch and an 8K panel.
-                    let reach = ctx.viewport.height_px as f32 / (1 << 3) as f32;
-                    if matches!(self.state, AppState::Ready) {
-                        // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; render publishes the block extent (`contacts_scroll_extent`) and re-runs `update_widget_layout` so the search box + plus button (whose rects are set off `contacts_scroll`) track the same offset.
-                        self.contacts_scroll = rubber_step(
-                            self.contacts_scroll as f32,
-                            -(dy as f32),
-                            self.contacts_scroll_extent as f32,
-                            reach,
-                        )
-                        .round() as isize;
-                    } else if matches!(
-                        self.state,
-                        AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
-                    ) {
-                        // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
-                        let over_rail = {
-                            let sl = SettingsLayout::compute(&ctx.viewport);
-                            (ctx.cursor_x as f32) < sl.content.x
-                        };
-                        // The foreground panes (rail + content) position rows as `inset.y − scroll`, the OPPOSITE sign to the background texture's `row − scroll` — so with the raw wheel delta they scrolled against the background (the "foreground inverted" report). Negate the delta here so the foreground gesture lands on the OS natural-scroll convention (down-scroll reveals lower rows); the background is handed the negated offsets below so ITS direction is unchanged (it reads correct already). Android touch rides the same `step`, so this one sign serves both.
-                        let step = -(dy as f32);
-                        if over_rail {
-                            self.settings_rail_scroll = rubber_step(
-                                self.settings_rail_scroll,
-                                step,
-                                self.settings_rail_extent,
-                                reach,
-                            );
-                        } else {
-                            self.settings_content_scroll = rubber_step(
-                                self.settings_content_scroll,
-                                step,
-                                self.settings_content_extent,
-                                reach,
-                            );
-                            // Log viewer tail-follow rides where the user LEAVES the scroll: at (or past) the extent = pinned to the newest record; anywhere above = reading history, appends must not yank the view.
-                            if self.diag_log_view
-                                && matches!(
-                                    self.state,
-                                    AppState::Settings(SettingsPage::Diagnostics)
-                                )
-                            {
-                                self.diag_log_follow = self.settings_content_scroll
-                                    >= self.settings_content_extent - 1.0;
-                            }
-                        }
-                    } else if matches!(self.state, AppState::Conversation) {
-                        // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
-                        if self.active_conversation.is_some() {
-                            let can_scroll = self.msg_max_scroll > 0.0;
-                            if let Some(conv) = self.active_conv_mut() {
-                                conv.scroll_offset = rubber_step(
-                                    conv.scroll_offset,
-                                    // Notches get the wheel step-up; pixel sources are already distances.
-                                    dy as f32 * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 },
-                                    f32::INFINITY,
-                                    reach,
-                                );
-                                // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
-                                if dy > 0 {
-                                    if let Some(rec) = conv.history_recovery.as_mut() {
-                                        if !rec.complete {
-                                            rec.urgent = true;
-                                        }
-                                    }
-                                }
-                            }
-                            // Top-bar slide: the strip rides the SAME deltas as the content, sliding off as you scroll one way and back on with the other — position-tied like a browser toolbar, no snap, no timers. Only when the conversation can actually scroll.
-                            if can_scroll {
-                                let unit_b = ReadyLayout::compute(
-                                    ctx.viewport.width_px as usize,
-                                    ctx.viewport.height_px as usize,
-                                    ctx.viewport.ru,
-                                )
-                                .unit_height;
-                                // The blind's full rise (render::conv_blind_extent) — the same number the layout draws with, so the row can never stop short and peek.
-                                let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
-                                let bar_h = super::render::conv_blind_extent(ctx.viewport.height_px as usize, unit_b, strip_floor);
-                                // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
-                                let step = -(dy as f32)
-                                    * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
-                                // The slats' rest bottoms (render::conv_blind_rests), the orb's read from the chrome at rest.
-                                let orb_rest_b = self.chrome.as_ref().and_then(|c| c.orb_geometry().map(|(_, cy, r)| cy as f32 - c.orb_dy + r as f32 + super::ring_thickness(r as f32)));
-                                let rests = super::render::conv_blind_rests(ctx.viewport.height_px as usize, unit_b, strip_floor, orb_rest_b);
-                                super::render::conv_blind_step(&mut self.conv_blind_h, &mut self.conv_blind_edge, rests, bar_h, step);
-                                let off = self.conv_blind_h[2]; // the row's hidden amount — what the rest of the screen (the filter pill, the ‹ Contacts hit gate) reads
-                                if (off - self.conv_topbar_off).abs() > 0.01 || step != 0.0 {
-                                    self.conv_topbar_off = off;
-                                    self.scene_dirty = true;
-                                }
-                            }
-                        }
-                    } else {
-                        self.bg_scroll = self.bg_scroll.wrapping_add(dy);
-                    }
-                    if let Some(chrome) = self.chrome.as_mut() {
-                        chrome.invalidate_bg();
-                        // Scrolling moves the content (and therefore every per-pixel hit zone) but doesn't dirty the chrome layer on its own, so `rasterize_chrome` would early-return and skip its `hit_test_map.fill(HIT_NONE)` — leaving STALE hit stamps at the pre-scroll row/widget positions. Those ghosts make `hit_at` return the wrong id under the cursor after a scroll, so the hover overlay tints the wrong pixels. Invalidate chrome so the map is cleared and re-stamped against this frame's scrolled positions.
-                        chrome.invalidate_chrome();
-                    }
-                    ctx.window.request_redraw();
+                    return self.pane_scroll(ctx, dy, is_pixel_delta, false);
                 }
                 EventResponse::Pass
             }
@@ -2482,6 +2360,8 @@ impl FluorApp for PhotonApp {
                 button: MouseButton::Left,
                 ..
             } => {
+                // A new finger ends any fling (the tick's fling waits on !pointer_down; a tap with no drag must not resume the old one).
+                self.list_fling = 0;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
                 // Resize edges OUTRANK widget hits — the CSD rule. The edge check used to run only on HIT_NONE, so a contact row reaching the window edge swallowed the press and the bottom edge was ungrabbable wherever content touched it (field report, 2026-08-16). The band is a thin perimeter strip (strip_height/4), so widget interiors are untouched; cursor_for gives the same band the resize cursor, so the grab matches the cue.
@@ -3696,6 +3576,17 @@ impl FluorApp for PhotonApp {
                 self.scene_dirty = true;
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
+            // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
+            if self.list_fling != 0 && !self.pointer_down {
+                let v = self.list_fling;
+                let before = self.scroll_signature();
+                let _ = self.pane_scroll(ctx, v as isize, true, true);
+                let moved = self.scroll_signature() != before;
+                let m = v.abs() - 1;
+                self.list_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
+                self.scene_dirty = true;
+                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+            }
             // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
             let panning = if self.pointer_down {
                 self.drag_select_hit
@@ -4081,6 +3972,150 @@ impl PhotonApp {
             _ => String::new(),
         }
     }
+
+    /// THE PANE SCROLL — one body for a wheel notch, a touch drag's pixel delta, and the fling that continues a drag after the finger lifts (Nick 2026-10-03). `dy` is in the wheel's sign convention; `from_fling` keeps the fling from re-recording itself.
+    /// THE FLING (Nick 2026-10-03, Android): on release the list keeps the previous frame's delta and sheds one pixel per frame until it reaches zero — 8, 7, 6 … 0 — drawing each frame and halting the redraws at zero. A pixel delta while the finger is down records itself as the next fling; a notch, a release off a drag, or a new finger records nothing.
+    fn pane_scroll(&mut self, ctx: &mut Context, dy: isize, is_pixel_delta: bool, from_fling: bool) -> EventResponse {
+            // COMPOSE BOX SCROLL (Nick 2026-09-09): a wheel or finger over the multi-line box moves its TEXT when there is more than fits; the pane behind stays put. Wheel down (negative dy) reveals the lines below → the band offset grows. A finger drag (a live press on the box, Android's synthesized pixel deltas) also carries a fling velocity for the release.
+            if matches!(self.state, AppState::Conversation) {
+                let compose_id = self.message_textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
+                let over_compose = compose_id != HIT_NONE
+                    && (self.hover_hit == compose_id || (self.pointer_down && self.drag_select_hit == compose_id))
+                    && self.message_textbox.as_ref().is_some_and(|t| t.max_scroll() > 0.0);
+                if over_compose {
+                    let px = -(dy as f32) * if is_pixel_delta { 1.0 } else { 8.0 };
+                    if let Some(tb) = self.message_textbox.as_mut() {
+                        tb.scroll_by(px);
+                    }
+                    self.compose_fling = if self.pointer_down && self.drag_select_hit == compose_id { px.round() as i32 } else { 0 };
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
+            }
+            // A live textbox pan owns the gesture: the finger is carrying the TEXT, so the pane must not also scroll under it (Android's touch-drag synthesizes wheel events alongside the CursorMoved the pan rides).
+            if self.pointer_down && self.drag_select_hit != HIT_NONE {
+                return EventResponse::Handled;
+            }
+            // Rubber-band scrolling on every axis, every platform: past either end the step is asymptotically resisted (never further than `reach` past the bound), and `tick()` eases the overshoot back once the wheel stops. `reach` scales with the window so the give feels the same on a watch and an 8K panel.
+            let reach = ctx.viewport.height_px as f32 / (1 << 3) as f32;
+            if matches!(self.state, AppState::Ready) {
+                // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; render publishes the block extent (`contacts_scroll_extent`) and re-runs `update_widget_layout` so the search box + plus button (whose rects are set off `contacts_scroll`) track the same offset.
+                self.contacts_scroll = rubber_step(
+                    self.contacts_scroll as f32,
+                    -(dy as f32),
+                    self.contacts_scroll_extent as f32,
+                    reach,
+                )
+                .round() as isize;
+            } else if matches!(
+                self.state,
+                AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
+            ) {
+                // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
+                let over_rail = {
+                    let sl = SettingsLayout::compute(&ctx.viewport);
+                    (ctx.cursor_x as f32) < sl.content.x
+                };
+                // The foreground panes (rail + content) position rows as `inset.y − scroll`, the OPPOSITE sign to the background texture's `row − scroll` — so with the raw wheel delta they scrolled against the background (the "foreground inverted" report). Negate the delta here so the foreground gesture lands on the OS natural-scroll convention (down-scroll reveals lower rows); the background is handed the negated offsets below so ITS direction is unchanged (it reads correct already). Android touch rides the same `step`, so this one sign serves both.
+                let step = -(dy as f32);
+                if over_rail {
+                    self.settings_rail_scroll = rubber_step(
+                        self.settings_rail_scroll,
+                        step,
+                        self.settings_rail_extent,
+                        reach,
+                    );
+                } else {
+                    self.settings_content_scroll = rubber_step(
+                        self.settings_content_scroll,
+                        step,
+                        self.settings_content_extent,
+                        reach,
+                    );
+                    // Log viewer tail-follow rides where the user LEAVES the scroll: at (or past) the extent = pinned to the newest record; anywhere above = reading history, appends must not yank the view.
+                    if self.diag_log_view
+                        && matches!(
+                            self.state,
+                            AppState::Settings(SettingsPage::Diagnostics)
+                        )
+                    {
+                        self.diag_log_follow = self.settings_content_scroll
+                            >= self.settings_content_extent - 1.0;
+                    }
+                }
+            } else if matches!(self.state, AppState::Conversation) {
+                // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
+                if self.active_conversation.is_some() {
+                    let can_scroll = self.msg_max_scroll > 0.0;
+                    if let Some(conv) = self.active_conv_mut() {
+                        conv.scroll_offset = rubber_step(
+                            conv.scroll_offset,
+                            // Notches get the wheel step-up; pixel sources are already distances.
+                            dy as f32 * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 },
+                            f32::INFINITY,
+                            reach,
+                        );
+                        // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
+                        if dy > 0 {
+                            if let Some(rec) = conv.history_recovery.as_mut() {
+                                if !rec.complete {
+                                    rec.urgent = true;
+                                }
+                            }
+                        }
+                    }
+                    // Top-bar slide: the strip rides the SAME deltas as the content, sliding off as you scroll one way and back on with the other — position-tied like a browser toolbar, no snap, no timers. Only when the conversation can actually scroll.
+                    if can_scroll {
+                        let unit_b = ReadyLayout::compute(
+                            ctx.viewport.width_px as usize,
+                            ctx.viewport.height_px as usize,
+                            ctx.viewport.ru,
+                        )
+                        .unit_height;
+                        // The blind's full rise (render::conv_blind_extent) — the same number the layout draws with, so the row can never stop short and peek.
+                        let strip_floor = if cfg!(target_os = "android") { 0.0 } else { fluor::host::chrome::strip_height(ctx.viewport) };
+                        let bar_h = super::render::conv_blind_extent(ctx.viewport.height_px as usize, unit_b, strip_floor);
+                        // Sign: scrolling toward the NEWEST slides the bar off; heading back into history brings it with you (the first mapping shipped inverted — user: "the contacts thing is backwards").
+                        let step = -(dy as f32)
+                            * if is_pixel_delta { 1.0 } else { (1 << 3) as f32 };
+                        // The slats' rest bottoms (render::conv_blind_rests), the orb's read from the chrome at rest.
+                        let orb_rest_b = self.chrome.as_ref().and_then(|c| c.orb_geometry().map(|(_, cy, r)| cy as f32 - c.orb_dy + r as f32 + super::ring_thickness(r as f32)));
+                        let rests = super::render::conv_blind_rests(ctx.viewport.height_px as usize, unit_b, strip_floor, orb_rest_b);
+                        super::render::conv_blind_step(&mut self.conv_blind_h, &mut self.conv_blind_edge, rests, bar_h, step);
+                        let off = self.conv_blind_h[2]; // the row's hidden amount — what the rest of the screen (the filter pill, the ‹ Contacts hit gate) reads
+                        if (off - self.conv_topbar_off).abs() > 0.01 || step != 0.0 {
+                            self.conv_topbar_off = off;
+                            self.scene_dirty = true;
+                        }
+                    }
+                }
+            } else {
+                self.bg_scroll = self.bg_scroll.wrapping_add(dy);
+            }
+            if let Some(chrome) = self.chrome.as_mut() {
+                chrome.invalidate_bg();
+                // Scrolling moves the content (and therefore every per-pixel hit zone) but doesn't dirty the chrome layer on its own, so `rasterize_chrome` would early-return and skip its `hit_test_map.fill(HIT_NONE)` — leaving STALE hit stamps at the pre-scroll row/widget positions. Those ghosts make `hit_at` return the wrong id under the cursor after a scroll, so the hover overlay tints the wrong pixels. Invalidate chrome so the map is cleared and re-stamped against this frame's scrolled positions.
+                chrome.invalidate_chrome();
+            }
+        if !from_fling {
+            self.list_fling = if is_pixel_delta && self.pointer_down { dy as i32 } else { 0 };
+        }
+        ctx.window.request_redraw();
+        EventResponse::Pass
+    }
+
+    /// The scroll positions the fling can move — compared before and after a fling step, so a step that hit a bound ends the fling.
+    fn scroll_signature(&self) -> [f32; 5] {
+        [
+            self.contacts_scroll as f32,
+            self.settings_rail_scroll,
+            self.settings_content_scroll,
+            self.active_conversation.and_then(|id| self.conversations.iter().find(|v| v.id() == id)).map_or(0.0, |c| c.scroll_offset),
+            self.bg_scroll as f32,
+        ]
+    }
+
 
     /// The next instant at which a live reading on screen changes its last digit (see `wake_at`): the Base page's clock (six share digits in dozenal, whole seconds otherwise), its since-opened counter (two fraction digits of a doubling), or the selected message's age. None when nothing live is showing.
     fn live_digit_edge(&self) -> Option<Instant> {

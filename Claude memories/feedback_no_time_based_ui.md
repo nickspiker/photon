@@ -17,3 +17,5 @@ Confirmations and hints are event-SHOWN and interaction-CLEARED — they sit unt
 **Extends to networking (2026-07-03): all PUSH-based, no poll cadences.** The only permitted timers are ones an external protocol/transport forces: the pairing slot's 5-min freshness re-post, reconnect/degraded-transport backoff, NAT keepalive pings. Everything else rides hub push events (`pair_evt` frames: matched/fleet/fstate) — see the join loop and `spawn_fleet_event_sub` for the pattern.
 
 Related: [[feedback_orb_settings_panel]].
+
+**Scroll fling law (Nick 2026-10-03, Android):** on release the list keeps the LAST frame's pixel delta and sheds exactly one pixel per frame until zero (8, 7, 6 … 0), drawing each frame and halting redraws at zero; a bound or a new finger ends it. No timers, no easing curves. Built as `pane_scroll` + `list_fling` in driver.rs; the compose box keeps its own older halving fling.

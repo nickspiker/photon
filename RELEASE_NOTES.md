@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- Flicking a list on a phone now keeps it moving after your finger lifts, one pixel per frame slower each frame until it stops; a new touch stops it at once.
 ## v111
 
 - On a Mac, waves now run through Apple's voice processing for echo cancellation by default, with its gain control off so the mic stays calibrated; untick the Wave page's box to use the plain path on headphones.
