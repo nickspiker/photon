@@ -7,6 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
+- With the phone's own voice processing switched on, the wave's level and echo controls stand down and leave it to the phone, and its measurements no longer overwrite the mic's calibration.
 - The playout no longer nudges its timing every frame once it has settled; a faint time-stretch under every word is gone.
 - Fixed a wave's delay climbing by half a second after switching between earpiece and speaker, and staying there.
 - Switching to the speaker no longer chops the other person's voice on its own echo.

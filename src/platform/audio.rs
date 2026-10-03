@@ -537,10 +537,15 @@ pub fn set_speaker_duck(armed: bool) {
     SPEAKER_DUCK_ARMED.store(armed, Ordering::Relaxed);
     DUCK_K_Q16.store(DUCK_K_REF_Q16, Ordering::Relaxed);
     // Until the sweep measures this route, a PRIOR by its kind: a loudspeaker ducks in full, an earpiece a quarter, a headset not at all. The sweep replaces it within two seconds of the route coming up.
-    let prior = match route() {
-        AudioRoute::Headset => 0,
-        AudioRoute::Earpiece | AudioRoute::Builtin => crate::wave::qgain::UNITY / 4,
-        AudioRoute::Speaker | AudioRoute::Unknown => crate::wave::qgain::UNITY,
+    // Under the phone's voice processing the vendor's canceller owns echo: no duck, no loss, whatever the route.
+    let prior = if VOICE_DSP.load(Ordering::Relaxed) {
+        0
+    } else {
+        match route() {
+            AudioRoute::Headset => 0,
+            AudioRoute::Earpiece | AudioRoute::Builtin => crate::wave::qgain::UNITY / 4,
+            AudioRoute::Speaker | AudioRoute::Unknown => crate::wave::qgain::UNITY,
+        }
     };
     DUCK_DEPTH_Q32.store(prior, Ordering::Relaxed);
     RX_LOSS_Q32.store(if prior == crate::wave::qgain::UNITY { RX_LOSS_MIN_Q32 } else { crate::wave::qgain::UNITY }, Ordering::Relaxed);
@@ -558,6 +563,13 @@ pub const DUCK_COUPLING_FULL: f32 = 1.0 / 32.0;
 
 /// The sweep's verdict for the live route: its measured speaker→mic amplitude coupling (0.0 for a route it found clean).
 pub fn set_duck_coupling(coupling: f32) {
+    if VOICE_DSP.load(Ordering::Relaxed) {
+        // The sweep still measures (the number says what the vendor's canceller left of the chirp), but the duck and the loss stay down: the canceller is the vendor's.
+        DUCK_DEPTH_Q32.store(0, Ordering::Relaxed);
+        RX_LOSS_Q32.store(crate::wave::qgain::UNITY, Ordering::Relaxed);
+        crate::logf!("WAVE: duck depth 0‰, receive loss 1000‰ — the phone's voice processing owns echo (sweep coupling {:.4})", coupling);
+        return;
+    }
     // WHY/PROOF: a measured ratio from the sweep fit — finite and non-negative by construction; the division is by a constant, the clamp holds the depth to the unit interval the law multiplies by.
     let depth = (coupling / DUCK_COUPLING_FULL).clamp(0.0, 1.0);
     DUCK_DEPTH_Q32.store((depth as f64 * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);

@@ -349,6 +349,12 @@ fn run(
     // mut for the ONE-TIME re-aim below — the profile aims the first seconds, this wave's own measurement aims the rest.
     // THE OPENING CAP (Nick 2026-10-02, after two waves opened 3x and 8x hot on stale calibrations and railed for their first twenty seconds): a stored or vendor figure may aim up to 8x until this wave's own re-aim has evidence; ten quiet seconds beat ten railed ones. (4x for one wave: Emma's correct 20x calibration opened 5x under, and the receiver's expander ate the quiet wire.)
     let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(TX_MAKEUP_OPENING_CAP * crate::wave::qgain::UNITY);
+    // UNDER THE PHONE'S VOICE PROCESSING (Nick 2026-10-03, "build it"): the vendor's gain control owns the level, so the plan opens at unity, re-aims to 4x at most, and stores nothing — a level measured thru an AGC is not this mic's calibration (the first try stored 556 against a raw 50 and drove the peaks to three times the plan).
+    let vendor_dsp = crate::platform::audio::VOICE_DSP.load(Ordering::Relaxed);
+    if vendor_dsp {
+        tx_makeup_q32 = crate::wave::qgain::UNITY;
+        crate::log("WAVE: level plan — the phone's voice processing is on: makeup opens at 1.0x, re-aims to 4.0x at most, the calibration is not updated; the duck and the receive loss stand down");
+    }
     crate::logf!(
         "WAVE: level plan — makeup {} toward wire {} (cal voiced {}, {}{})",
         format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64),
@@ -1445,7 +1451,7 @@ fn run(
                             format!("{:.1}x", ideal as f64 / crate::wave::qgain::UNITY as f64)
                         );
                         reaim_history.push(((measured_q8 >> 8) as u32, (tx_makeup_q32 * 10 / crate::wave::qgain::UNITY) as u32, (ideal * 10 / crate::wave::qgain::UNITY) as u32));
-                        tx_makeup_q32 = ideal;
+                        tx_makeup_q32 = if vendor_dsp { ideal.min(4 * crate::wave::qgain::UNITY) } else { ideal };
                     }
                     reaim_steps += 1;
                     reaim_ring.clear();
@@ -1662,7 +1668,7 @@ fn run(
         voiced_frames
     );
     // ≥3 s of voiced speech earns a full profile post; a wave with a measured quiet but no speech still posts its FLOOR alone (voiced 0 = the floor-only sentinel) — the quiet rung of the next wave's seed needs no one to have talked. The blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
-    if voiced_frames >= 600 || (fine_floor.is_some() && tx_frames >= 600) {
+    if !vendor_dsp && (voiced_frames >= 600 || (fine_floor.is_some() && tx_frames >= 600)) {
         crate::wave::calibrate::post_learned(vec![crate::wave::calibrate::LearnedResult {
             result: crate::wave::calibrate::CalResult::Voice(crate::wave::calibrate::VoiceProfile {
                 voiced: if voiced_frames >= 600 { (voiced_sum_q8 / voiced_frames) as f32 / 256.0 } else { 0.0 },

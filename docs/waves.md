@@ -262,6 +262,20 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The phone's voice processing, done properly (2026-10-03, "build it")
+
+Nick on the vendor path after one wave: "the OS one does sound significantly better".
+Its cost, measured from both ends: the input opens Shared with a 60 ms buffer (the exclusive 4 ms one is lost), capture-to-send shows +5 ms and Emma's arrival ages show the other ~45 ms (the HAL stamps after its buffer, so the frames arrive named in her future), the vendor's gain control owns the level, and the archive is the processed signal — there is no raw tap beside it.
+So where it is on, everything of ours that would fight it stands down:
+
+- The level plan opens at 1.0x, re-aims to 4.0x at most, and posts no calibration (the first try stored a 556 measured thru the AGC against this mic's raw 50 and would have aimed the next raw wave 11x under).
+- The duck and the receive loss sit at zero depth and unity whatever the sweep says; the sweep still runs and its coupling line is the number that says what the vendor's canceller left of the chirp on this route.
+- Everything else is unchanged: named playout, the window, the walk, the expander on the far room.
+
+Reliability device to device: the big VoIP stacks use the platform canceller where the hardware has one (Pixel, Samsung, most Qualcomm phones run it in the DSP, tuned per model) and keep their own software canceller for the rest (budget and MediaTek devices report one and may do little).
+Routing to the loudspeaker should select the HAL's speakerphone profile on its own; some HALs only do so in the full communication mode (the 80 ms floor), and the sweep's loudspeaker coupling with the processing on says which kind a phone is.
+macOS has the Voice Processing I/O unit (FaceTime's), Windows the Media Foundation voice capture DSP (software, everywhere), Linux nothing on bare ALSA — a canceller of our own on the wire copy, with the archive still raw, remains the one path that covers all three and the Android phones that only claim one.
+
 ## The echo arithmetic, and what a loudspeaker costs (2026-10-03, the Nick/Brittany wave)
 
 With the warble gone the regular echo stood alone: each party hearing themselves back, a few hundred milliseconds later.
