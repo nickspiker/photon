@@ -350,7 +350,9 @@ fn run(
     // THE OPENING CAP (Nick 2026-10-02, after two waves opened 3x and 8x hot on stale calibrations and railed for their first twenty seconds): a stored or vendor figure may aim up to 8x until this wave's own re-aim has evidence; ten quiet seconds beat ten railed ones. (4x for one wave: Emma's correct 20x calibration opened 5x under, and the receiver's expander ate the quiet wire.)
     let mut tx_makeup_q32: i64 = tx_makeup_uncapped.min(TX_MAKEUP_OPENING_CAP * crate::wave::qgain::UNITY);
     // UNDER THE PHONE'S VOICE PROCESSING (Nick 2026-10-03, "build it"): the vendor's gain control owns the level, so the plan opens at unity, re-aims to 4x at most, and stores nothing — a level measured thru an AGC is not this mic's calibration (the first try stored 556 against a raw 50 and drove the peaks to three times the plan).
-    let vendor_dsp = crate::platform::audio::VOICE_DSP.load(Ordering::Relaxed);
+    let mut vendor_dsp = crate::platform::audio::VOICE_DSP_ACTIVE.load(Ordering::Relaxed);
+    // Was the phone's processing in front of the mic at ANY point of this wave: then nothing it measured is this mic's calibration.
+    let mut vendor_any = vendor_dsp;
     if vendor_dsp {
         tx_makeup_q32 = crate::wave::qgain::UNITY;
         crate::log("WAVE: level plan — the phone's voice processing is on: makeup opens at 1.0x, re-aims to 4.0x at most, the calibration is not updated; the duck and the receive loss stand down");
@@ -1528,6 +1530,20 @@ fn run(
                 sweep_cap = Some((i64::MIN, Vec::new()));
                 sweep_retry_left = 1;
                 live_route = rid;
+                // The input reopened with the route (the loudspeaker always takes the phone's processing): the level plan follows what is now in front of the mic — unity under the vendor's gain control, the stored plan on the raw feed — and the re-aim starts over on the new feed's evidence.
+                let now_vendor = crate::platform::audio::VOICE_DSP_ACTIVE.load(Ordering::Relaxed);
+                if now_vendor != vendor_dsp {
+                    vendor_dsp = now_vendor;
+                    vendor_any |= now_vendor;
+                    tx_makeup_q32 = if now_vendor { crate::wave::qgain::UNITY } else { tx_makeup_uncapped.min(TX_MAKEUP_OPENING_CAP * crate::wave::qgain::UNITY) };
+                    reaim_steps = 0;
+                    reaim_ring.clear();
+                    crate::logf!(
+                        "WAVE: level plan — the mic is now {} with the route: makeup {}, the re-aim starts over",
+                        if now_vendor { "thru the phone's voice processing" } else { "the unprocessed feed" },
+                        format!("{:.1}x", tx_makeup_q32 as f64 / crate::wave::qgain::UNITY as f64)
+                    );
+                }
             }
             if super::sweep::UNCOVERED.swap(false, Ordering::Relaxed) && sweep_cap.is_none() && sweep_retry_left > 0 {
                 sweep_retry_left -= 1;
@@ -1668,7 +1684,7 @@ fn run(
         voiced_frames
     );
     // ≥3 s of voiced speech earns a full profile post; a wave with a measured quiet but no speech still posts its FLOOR alone (voiced 0 = the floor-only sentinel) — the quiet rung of the next wave's seed needs no one to have talked. The blend in settings owns the evidence weighting; the store is device-local in the fleet blob (survives uninstall, follows the device like zoom), keyed by route+input.
-    if !vendor_dsp && (voiced_frames >= 600 || (fine_floor.is_some() && tx_frames >= 600)) {
+    if !vendor_any && (voiced_frames >= 600 || (fine_floor.is_some() && tx_frames >= 600)) {
         crate::wave::calibrate::post_learned(vec![crate::wave::calibrate::LearnedResult {
             result: crate::wave::calibrate::CalResult::Voice(crate::wave::calibrate::VoiceProfile {
                 voiced: if voiced_frames >= 600 { (voiced_sum_q8 / voiced_frames) as f32 / 256.0 } else { 0.0 },

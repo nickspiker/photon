@@ -262,6 +262,23 @@ Three things, built together:
   A SPEC whose stream and hash we already hold a transfer for is now answered with its ACK and nothing else (`PTManager::spec_known`); the loop times itself from one receive to the next and names any gap past 20 ms with the datagram kind it was handling (`RECV: the receive loop was away`); the socket asks the kernel for a 4 MiB receive buffer and logs what it got.
   The loop still handles transfers inline; moving them to their own task is the next step if the timing line convicts them.
 
+## The preset follows the route (2026-10-03, three waves in a row)
+
+Nick ran the comparison: earpieces with the phone's processing on, then the loudspeaker on both ends, then everything off.
+Off "sounded the best and had the lowest latency, a smidge echo-ey but not terrible"; the vendor's echo cancellation "is basically perfect"; our own path on the loudspeaker "is legit unusable".
+The logs agree on each point:
+
+- The 350 → 120 ms was mostly Emma's ROUTE, not the processing: her earpiece is her phone's slow voice path (a 220 ms output lead), her loudspeaker the fast one. The processing itself costs about 50 ms on each phone that has it on.
+- On the raw feed the loudspeaker measured 0.023 coupling on Nick's Pixel, which put the duck at three quarters depth and the loss at two stops: a chopped, echoing conversation. With the processing on, the same loudspeaker measured 0.0039 — the HAL's speakerphone profile engaged without the communication mode, on this phone at least.
+- The calibration pollution from the first try was real and self-healing: the raw wave after opened at 2.5x from a stored 556, re-aimed to 49.8x in four seconds, and stored 26.
+
+So the loudspeaker ALWAYS takes the phone's processing on Android (`platform::audio::voice_dsp_wanted`), and the earpiece and a headset take it only on the Wave page's say-so (the checkbox now reads "on the earpiece too").
+A route change already rebuilds both streams, so the input reopens with the preset the new route wants; the engine reads what actually opened (`VOICE_DSP_ACTIVE`) and the level plan follows it mid-wave: unity under the vendor's gain control, the stored plan on the raw feed, the re-aim starting over on the new feed's evidence.
+A wave that ran thru the processing at any point posts no calibration.
+The checkbox exists on Android only; no other platform has a vendor path wired, and a control that can do nothing is not shown.
+
+Open from the same logs: Emma's output lead read −127 ms after her route changes (the callback-to-DAC estimate went negative on a rebuilt stream), which pulls L under the truth and showed as 336 misses on her side.
+
 ## The phone's voice processing, done properly (2026-10-03, "build it")
 
 Nick on the vendor path after one wave: "the OS one does sound significantly better".

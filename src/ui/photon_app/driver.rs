@@ -488,17 +488,21 @@ impl FluorApp for PhotonApp {
             12.,
             true,
         ));
-        // The phone's voice processing (waves.voice_dsp, device-local, default OFF) — the Wave page.
-        self.settings_voice_dsp_check = Some(fluor::widgets::Checkbox::new(
-            &mut self.hit_counter,
-            tr(Msg::VoiceDsp),
-            0.,
-            0.,
-            1.,
-            1.,
-            12.,
-            false,
-        ));
+        // The phone's voice processing on the earpiece too (waves.voice_dsp, device-local, default OFF) — the Wave page, Android only: the loudspeaker always takes it, and no other platform has a vendor path wired.
+        self.settings_voice_dsp_check = if cfg!(target_os = "android") {
+            Some(fluor::widgets::Checkbox::new(
+                &mut self.hit_counter,
+                tr(Msg::VoiceDsp),
+                0.,
+                0.,
+                1.,
+                1.,
+                12.,
+                false,
+            ))
+        } else {
+            None
+        };
         self.settings_hardlogs_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
             tr(Msg::HardLogs),

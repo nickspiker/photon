@@ -587,7 +587,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VibrateNewMessage => "Vibrate on new message".into(),
         Msg::RingIncomingWave => "Ring on incoming wave".into(),
         Msg::HoldWavesOnDevice => "Hold every wave recording on this device".into(),
-        Msg::VoiceDsp => "Use this phone's own voice processing (echo cancel; experimental, next wave)".into(),
+        Msg::VoiceDsp => "Use this phone's own voice processing on the earpiece too (the loudspeaker always does; applies from the next wave)".into(),
         Msg::KeepEditHistory => "Show edit history".into(),
         Msg::VibrateIncomingWave => "Vibrate on incoming wave".into(),
         Msg::PresenceCheckbox => "Show my presence to contacts".into(),
