@@ -5,6 +5,9 @@ use super::*;
 /// The bracket chords the Diagnostics page offers as pills on an Android dev build (see the DEBUG ROW); their settings-pill slots start at DEBUG_PILL_SLOT0.
 pub(super) const DEBUG_PILL_CHORDS: &[&str] = &["h", "p", "a", "c", "l", "r", "f", "w", "d", "b"];
 pub(super) const DEBUG_PILL_SLOT0: HitId = 10;
+/// The Ideas page's two pills in the settings pill block.
+pub(super) const IDEAS_PILL_IDEA: HitId = 20;
+pub(super) const IDEAS_PILL_FIX: HitId = 21;
 
 /// Lines an image attachment's preview band reserves above its pill (typed attachments 2026-09-10): the row's micro thumb, or the decoded preview blob (twice as tall).
 pub(super) const IMG_PREVIEW_LINES: usize = 4;
@@ -99,6 +102,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Recovery) => "Settings:Recovery",
                 AppState::Settings(SettingsPage::Appearance) => "Settings:Appearance",
                 AppState::Settings(SettingsPage::Notifications) => "Settings:Notifications",
+                AppState::Settings(SettingsPage::Ideas) => "Settings:Ideas",
                 AppState::Settings(SettingsPage::Updates) => "Settings:Updates",
                 AppState::Settings(SettingsPage::Diagnostics) => "Settings:Diagnostics",
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
@@ -6590,6 +6594,46 @@ impl PhotonApp {
                         }).collect();
                         let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_str(), btn_base + DEBUG_PILL_SLOT0 + i as HitId, true, None)).collect();
                         flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &pills, "Open Sans");
+                    }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
+                }
+                SettingsPage::Ideas => {
+                    // IDEAS & FIXES (ideas.rs, docs/ideas.md): the explainer, the box, the two pills, then everything this device sent with its status.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.gap(hspan2 * 0.4);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::IdeasIntro), hspan2, *theme::LABEL_COLOUR, 400);
+                    flow.gap(hspan2 * 0.4);
+                    let tb_band = flow.band(hspan2 * 2.2);
+                    if let Some(tb) = self.ideas_textbox.as_mut() {
+                        tb.set_font_size(hspan2, ctx.text);
+                        tb.set_rect(tb_band.center_x(), tb_band.center_y(), tb_band.w * 0.95, tb_band.h * 0.85);
+                        let id = tb.hit_id();
+                        tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                    }
+                    flow.gap(hspan2 * 0.4);
+                    flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &[
+                        (&tr(Msg::IdeasSendIdea), (btn_base + IDEAS_PILL_IDEA), true, None),
+                        (&tr(Msg::IdeasSendFix), (btn_base + IDEAS_PILL_FIX), true, None),
+                    ], "Open Sans");
+                    flow.gap(hspan2 * 0.8);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::IdeasYours), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    if self.my_gripes.is_empty() {
+                        flow.prose(&mut canvas, ctx.text, &tr(Msg::IdeasNone), hspan2, *theme::LABEL_COLOUR, 400);
+                    }
+                    let rows: Vec<(String, String, String)> = self.my_gripes.iter().map(|g| {
+                        let head = format!("{} · {} · {}{}", hex::encode(&g.id[..4]), g.kind, if g.state.is_empty() { "…" } else { g.state.as_str() }, if g.version.is_empty() { String::new() } else { format!(" {}", g.version) });
+                        (head, g.text.clone(), g.note.clone())
+                    }).collect();
+                    for (head, text, note) in rows {
+                        flow.gap(hspan2 * 0.3);
+                        flow.line(&mut canvas, ctx.text, &head, hspan2 * 0.9, *theme::SEARCH_FOUND_COLOUR, 600);
+                        flow.prose(&mut canvas, ctx.text, &text, hspan2 * 0.95, *theme::LABEL_COLOUR, 400);
+                        if !note.is_empty() {
+                            flow.prose(&mut canvas, ctx.text, &note, hspan2 * 0.9, *theme::CONTACT_NAME_COLOUR, 400);
+                        }
                     }
                     flow.gap(hspan2);
                     measured_extent = Some((flow.used(), inset.h));

@@ -40,6 +40,7 @@
 
 ## Active / open
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave 2% holes = L rule at the path; Emma wave 2x = future-named backlog → clock-step re-anchor + render-trace instrument + recv-loop guard BUILT
+- [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes (id = blake3(text‖nonce)), statuses via photonlog --gripes/--gripe-status, token keys/gripes.token
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; "waiting for them to add you"; OPEN: restart re-keys offline friends
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed
@@ -47,7 +48,7 @@
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry; newest row's strip unasked
 - [Ready first paint](project_ready_first_paint.md) — v110: content hit stamps ride the paint decision (stamp BEFORE paint, only where not yet opaque); never re-stamp the orb; a mid-render dirty flag must survive its render
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; 2026-10-01 join-by-replay SCOPED (a protocol arc
-- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows → double encap → deterministic proof mismatch → zombie → re-run
+- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows; fixed; ghost 1be949c1 retire flow open
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
 - [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent: bare-rect click-thru vs band-inflated region + un-kicked re-entry poll; FIXED in fluor

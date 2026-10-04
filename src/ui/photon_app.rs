@@ -50,6 +50,7 @@ mod conversation;
 mod drafts;
 mod molecules;
 mod devices;
+mod ideas;
 mod driver;
 mod input;
 mod launch;
@@ -1070,6 +1071,8 @@ fn chord_hint_bbox(viewport: Viewport, vw: usize, vh: usize) -> PixelRect {
 enum TextboxRole {
     LaunchHandle,
     ContactsSearch,
+    /// The Ideas page's entry box (ideas.rs).
+    IdeaText,
     /// The Diagnostics optional-note field — in the registry so click-to-focus raises the Android IME + blinkie like every other box.
     SettingsNote,
     /// Any You-page profile field (display name, first, email, a custom one, …) or the add-a-field entry — same registry so click-to-focus raises the IME + blinkie. The form treats them all alike; the `field_id` that distinguishes them lives on [`ProfileField`], not here.
@@ -2203,6 +2206,12 @@ pub struct PhotonApp {
     diag_log_inspect: Option<(usize, Vec<Vec<(String, u32)>>)>,
     /// Diagnostics-page optional-note field — a real fluor `Textbox` (distinct from the launch / contacts / compose boxes so content never bleeds).
     settings_note_textbox: Option<Textbox>,
+    /// The Ideas page's entry box (ideas.rs).
+    ideas_textbox: Option<Textbox>,
+    /// The gripes this device sent, newest first, with the last status heard (ideas.rs).
+    my_gripes: Vec<ideas::Gripe>,
+    gripe_tx: Option<std::sync::mpsc::Sender<ideas::GripeEvent>>,
+    gripe_rx: Option<std::sync::mpsc::Receiver<ideas::GripeEvent>>,
     /// Fleet page inline rename: the device being renamed + its textbox. Some = that card's name band renders the box; Enter commits to the fleet-linked `fleet.name.<pkhex>` setting, Esc cancels.
     fleet_rename: Option<([u8; 32], Textbox)>,
     /// You-page profile editor: one box per field (display name, first, email, custom fields, …), grouped by taxonomy tier and prefilled from the fleet `profile.<id>` settings on page-open. "Save profile" writes every changed field in one batched push. HitId is scarce (u16) so this is built ONCE (lazily, on first open) and never rebuilt — custom fields append.
@@ -2854,6 +2863,10 @@ impl PhotonApp {
             diag_log_next_poll_osc: 0,
             diag_log_inspect: None,
             settings_note_textbox: None,
+            ideas_textbox: None,
+            my_gripes: Vec::new(),
+            gripe_tx: None,
+            gripe_rx: None,
             fleet_rename: None,
             you_fields: Vec::new(),
             you_add_textbox: None,
@@ -3530,6 +3543,11 @@ impl PhotonApp {
                     }
                     if let Some(cb) = self.settings_voice_dsp_check.as_mut() {
                         f(cb);
+                    }
+                }
+                SettingsPage::Ideas => {
+                    if let Some(tb) = self.ideas_textbox.as_mut() {
+                        f(tb);
                     }
                 }
                 SettingsPage::Updates => {

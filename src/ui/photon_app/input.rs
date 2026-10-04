@@ -591,6 +591,9 @@ impl PhotonApp {
             self.settings_note_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::SettingsNote, t)),
+            self.ideas_textbox
+                .as_mut()
+                .map(|t| (TextboxRole::IdeaText, t)),
             self.you_add_textbox
                 .as_mut()
                 .map(|t| (TextboxRole::ProfileField, t)),

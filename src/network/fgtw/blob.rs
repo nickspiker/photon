@@ -740,3 +740,98 @@ mod log_capability_tests {
         );
     }
 }
+
+// ============================================================================ Gripes — anonymous ideas and fixes (ui/photon_app/ideas.rs, docs/ideas.md) ==========
+
+fn gripe_post(section: vsf::file_format::VsfSection, what: &str) -> Result<Vec<u8>, BlobError> {
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| BlobError::Network(format!("Failed to create HTTP client: {}", e)))?;
+    let vsf_bytes = vsf::VsfBuilder::new()
+        .creation_time_oscillations(crate::network::time_base::now_osc())
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| BlobError::Network(format!("Build VSF: {}", e)))?;
+    let response = client
+        .post(FGTW_URL)
+        .header("Content-Type", "application/octet-stream")
+        .body(vsf_bytes)
+        .send()
+        .map_err(|e| BlobError::Network(format!("{what} request failed: {}", e)))?;
+    let bytes = response.bytes().unwrap_or_default().to_vec();
+    if let Some((reason, detail)) = fgtw::client::error_frame(&bytes) {
+        return Err(BlobError::ServerError(format!("{reason}: {detail}")));
+    }
+    Ok(bytes)
+}
+
+/// Schema-validated read of a gripe ack (vsf trust gate: the worker's bytes never meet a hand-rolled parse; `parse_document` runs the whole-document verification first).
+fn gripe_ack(bytes: &[u8], schema: vsf::schema::SectionSchema) -> Result<vsf::schema::SectionBuilder, BlobError> {
+    vsf::schema::SectionBuilder::parse_document(schema, bytes, None).map_err(|e| BlobError::Network(format!("Parse gripe ack: {e}")))
+}
+
+fn ack_text(sec: &vsf::schema::SectionBuilder, name: &str) -> String {
+    if let Ok(s) = sec.get_value::<String>(name) {
+        return s;
+    }
+    sec.get_value::<Vec<u8>>(name).map(|b| String::from_utf8_lossy(&b).into_owned()).unwrap_or_default()
+}
+
+/// Send a gripe: its id (blake3(text ‖ nonce), minted by the caller), the nonce, its kind ("idea" | "fix") and its text. Nothing identifying rides along.
+pub fn gripe_put_blocking(id: &[u8; 32], nonce: &[u8; 32], kind: &str, text: &str) -> Result<(), BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("gripe_put");
+    sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
+    sec.add_field_multi("nonce", vec![VsfType::v(b'n', nonce.to_vec())]);
+    sec.add_field_multi("kind", vec![VsfType::a(kind.to_string())]);
+    sec.add_field_multi("text", vec![VsfType::v(b't', text.as_bytes().to_vec())]);
+    let bytes = gripe_post(sec, "gripe_put")?;
+    let schema = vsf::schema::SectionSchema::new("gripe_put_ack").field("id", vsf::schema::TypeConstraint::Wrapped(b'g'));
+    let ack = gripe_ack(&bytes, schema)?;
+    match ack.get_value::<Vec<u8>>("id") {
+        Ok(b) if b.as_slice() == id => Ok(()),
+        _ => Err(BlobError::ServerError("gripe_put: ack names a different id".into())),
+    }
+}
+
+/// A gripe's status by id: (state, note, version). "received" until the developer sets one, "unknown" for an id the worker never saw.
+pub fn gripe_get_blocking(id: &[u8; 32]) -> Result<(String, String, String), BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("gripe_get");
+    sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
+    let bytes = gripe_post(sec, "gripe_get")?;
+    let schema = vsf::schema::SectionSchema::new("gripe_get_ack")
+        .field("state", vsf::schema::TypeConstraint::AsciiText)
+        .field("note", vsf::schema::TypeConstraint::Wrapped(b't'))
+        .field("version", vsf::schema::TypeConstraint::AsciiText);
+    let ack = gripe_ack(&bytes, schema)?;
+    Ok((ack_text(&ack, "state"), ack_text(&ack, "note"), ack_text(&ack, "version")))
+}
+
+/// The developer's list (token-gated): one row per gripe, `id\tkind\tstate\treceived\ttext`.
+pub fn gripe_list_blocking(token: &[u8]) -> Result<Vec<String>, BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("gripe_list");
+    sec.add_field_multi("token", vec![VsfType::v(b'k', token.to_vec())]);
+    let bytes = gripe_post(sec, "gripe_list")?;
+    let schema = vsf::schema::SectionSchema::new("gripe_list_ack").field("rows", vsf::schema::TypeConstraint::DictKey);
+    let ack = gripe_ack(&bytes, schema)?;
+    Ok(ack
+        .get_values("rows")
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|v| match v { VsfType::d(s) | VsfType::a(s) => Some(s), _ => None })
+        .collect())
+}
+
+/// The developer sets a gripe's status (token-gated).
+pub fn gripe_status_blocking(token: &[u8], id: &[u8; 32], state: &str, note: &str, version: &str) -> Result<(), BlobError> {
+    let mut sec = vsf::file_format::VsfSection::new("gripe_status");
+    sec.add_field_multi("token", vec![VsfType::v(b'k', token.to_vec())]);
+    sec.add_field_multi("id", vec![VsfType::v(b'g', id.to_vec())]);
+    sec.add_field_multi("state", vec![VsfType::a(state.to_string())]);
+    sec.add_field_multi("note", vec![VsfType::v(b't', note.as_bytes().to_vec())]);
+    sec.add_field_multi("version", vec![VsfType::a(version.to_string())]);
+    let bytes = gripe_post(sec, "gripe_status")?;
+    let schema = vsf::schema::SectionSchema::new("gripe_status_ack").field("state", vsf::schema::TypeConstraint::AsciiText);
+    let _ = gripe_ack(&bytes, schema)?;
+    Ok(())
+}

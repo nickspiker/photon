@@ -565,6 +565,7 @@ impl FluorApp for PhotonApp {
             Self::unattended_enabled(),
         ));
         self.settings_note_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
+        self.ideas_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.you_add_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         self.molecule_title_textbox = Some(Textbox::new(&mut self.hit_counter, 0., 0., 1., 1., 12.));
         // Unattended-confirm handle box: built once here so its hit_id is stable (lazy creation at open time bumped hit_counter every open, drifting the id out from under the render's stamp — the box then took no input).
@@ -1037,6 +1038,11 @@ impl FluorApp for PhotonApp {
                         self.request_vault_stats();
                         self.compute_vault_breakdown();
                     }
+                    // Opening the Ideas page reloads the sent list and asks the worker for each one's status.
+                    if *p == SettingsPage::Ideas {
+                        self.load_my_gripes();
+                        self.refresh_gripe_states();
+                    }
                     // Opening the Wave page snapshots the profile list (the render reads a copy).
                     if *p == SettingsPage::Wave {
                         self.wave_profiles = self.voice_profiles();
@@ -1351,6 +1357,12 @@ impl FluorApp for PhotonApp {
                         self.vault_filter = [VaultFilter::All, VaultFilter::Waves, VaultFilter::Pictures, VaultFilter::Songs, VaultFilter::Files, VaultFilter::Kept][(slot - 1) as usize];
                         self.compute_vault_breakdown();
                         ctx.window.request_redraw();
+                    }
+                } else if page == SettingsPage::Ideas {
+                    if slot == super::render::IDEAS_PILL_IDEA {
+                        self.submit_gripe("idea");
+                    } else if slot == super::render::IDEAS_PILL_FIX {
+                        self.submit_gripe("fix");
                     }
                 } else if page == SettingsPage::Diagnostics {
                     if slot >= super::render::DEBUG_PILL_SLOT0 && slot < super::render::DEBUG_PILL_SLOT0 + super::render::DEBUG_PILL_CHORDS.len() as HitId {

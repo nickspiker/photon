@@ -135,11 +135,28 @@ fn main() {
     let mut raw_key: Option<[u8; 32]> = None;
     let mut pull = false;
 
+    let mut gripes_list = false;
+    let mut gripe_status: Option<([u8; 32], String, String, String)> = None;
     let mut args = std::env::args().skip(1);
     while let Some(a) = args.next() {
         match a.as_str() {
             "-f" | "--follow" => follow = true,
             "-p" | "--pull" => pull = true,
+            // The gripes (docs/ideas.md): list them, or set one's status. The token lives in keys/gripes.token (never in a repo).
+            "--gripes" => gripes_list = true,
+            "--gripe-status" => {
+                let id = args.next().as_deref().and_then(parse_hex32);
+                let state = args.next();
+                let note = args.next().unwrap_or_default();
+                let version = args.next().unwrap_or_default();
+                match (id, state) {
+                    (Some(id), Some(state)) => gripe_status = Some((id, state, note, version)),
+                    _ => {
+                        eprintln!("photonlog: --gripe-status <id 64hex> <received|seen|planned|fixed|declined|duplicate> [note] [version]");
+                        std::process::exit(2);
+                    }
+                }
+            }
             "-H" | "--handle" => match args.next() {
                 // The friendly path: derive the identity seed straight from the handle (cheap — ihi::handle_to_hash, NOT the memory-hard proof), using photon's exact canonicalization so it matches the submitter's seed.
                 Some(h) => {
@@ -211,6 +228,44 @@ fn main() {
         }
     }
     let filter = Filter { min_level, grep };
+
+    // The developer's side of the Ideas page (docs/ideas.md).
+    if gripes_list || gripe_status.is_some() {
+        let token = std::fs::read("/mnt/Harbor/Code/keys/gripes.token")
+            .map(|b| b.into_iter().filter(|c| !c.is_ascii_whitespace()).collect::<Vec<u8>>())
+            .unwrap_or_default();
+        if token.is_empty() {
+            eprintln!("photonlog: no token at keys/gripes.token");
+            std::process::exit(2);
+        }
+        if let Some((id, state, note, version)) = gripe_status {
+            match photon_messenger::network::fgtw::gripe_status_blocking(&token, &id, &state, &note, &version) {
+                Ok(()) => println!("{} → {}{}", hex::encode(&id[..8]), state, if note.is_empty() { String::new() } else { format!(" ({note})") }),
+                Err(e) => {
+                    eprintln!("photonlog: gripe_status failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        if gripes_list {
+            match photon_messenger::network::fgtw::gripe_list_blocking(&token) {
+                Ok(rows) => {
+                    for r in &rows {
+                        let mut parts = r.splitn(5, '\t');
+                        let (id, kind, state, received, text) = (parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""), parts.next().unwrap_or(""));
+                        let when = received.parse::<i64>().ok().map(|o| { let (secs, _) = vsf::types::to_unix_ns(o); format!("{}", secs) }).unwrap_or_default();
+                        println!("{}  {:<4} {:<9} {:>12}  {}", id, kind, state, when, text.replace('\n', " / "));
+                    }
+                    eprintln!("photonlog: {} gripe(s)", rows.len());
+                }
+                Err(e) => {
+                    eprintln!("photonlog: gripe_list failed: {e}");
+                    std::process::exit(1);
+                }
+            }
+        }
+        return;
+    }
 
     // Pull mode: fetch this identity's submitted logs straight from FGTW, decrypt, and decode — no manual R2 wrangling. The seed derives the retrieval tag (to find them) and the log key (to open them); knowledge of the seed IS the whole capability.
     if pull {

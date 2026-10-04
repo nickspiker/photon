@@ -839,6 +839,16 @@ pub enum Msg<'a> {
     DiagSnapshot,
     DiagSubmit,
     DiagView,
+    /// Ideas page: the explainer.
+    IdeasIntro,
+    IdeasSendIdea,
+    IdeasSendFix,
+    IdeasYours,
+    IdeasNone,
+    IdeasNothingTyped,
+    IdeasSending,
+    IdeasSent,
+    IdeasSendFailed(&'a str),
     OptionalNote,
     // ---- you / profile ----
     YouAddCustomField,

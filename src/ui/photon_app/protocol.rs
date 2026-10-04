@@ -398,6 +398,10 @@ impl PhotonApp {
             { needs_redraw = true; self.note_redraw(line!()); }
         }
 
+        // Ideas page: acks and statuses from the gripe threads (ideas.rs).
+        if self.drain_gripe_events() {
+            { needs_redraw = true; self.note_redraw(line!()); }
+        }
         // Diagnostics log-submit results (off-thread FGTW upload).
         let log_submit_updates: Vec<Result<(), String>> = self
             .log_submit_rx

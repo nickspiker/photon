@@ -57,6 +57,8 @@ pub enum SettingsPage {
     Updates,
     /// The on-device VSF log: clear / snapshot / submit.
     Diagnostics,
+    /// Ideas & fixes: anonymous feedback to the developer, with the sender's own list and each one's status (docs/ideas.md).
+    Ideas,
     /// The device vault's physique — capacity, odometer, live set, health (read-only, refresh on demand).
     Vault,
     /// THE WAVE PAGE (Nick 2026-09-16, "a wave config screen"): this device's hearing (the earpiece trim in stops, the route, the rocker), its voice (the per-mic calibration profiles, forget / measure now), the last wave's stats, and the wave preferences (ring, vibrate, hold every wave, plaid off-LAN).
@@ -73,7 +75,7 @@ pub enum SettingsPage {
 
 impl SettingsPage {
     /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every wave start, so there is no ritual for a page to hold.
-    pub const ALL: [SettingsPage; 13] = [
+    pub const ALL: [SettingsPage; 14] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
@@ -84,6 +86,7 @@ impl SettingsPage {
         SettingsPage::Notifications,
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
+        SettingsPage::Ideas,
         SettingsPage::Vault,
         SettingsPage::Language,
         SettingsPage::Dozenal,
@@ -101,6 +104,7 @@ impl SettingsPage {
             SettingsPage::Notifications => "Notifications",
             SettingsPage::Updates => "Updates",
             SettingsPage::Diagnostics => "Diagnostics",
+            SettingsPage::Ideas => "Ideas",
             SettingsPage::Vault => "Vault",
             SettingsPage::Wave => "Wave",
             SettingsPage::Language => "Language",

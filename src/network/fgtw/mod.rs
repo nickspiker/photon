@@ -11,8 +11,7 @@ pub mod relay;
 pub use blob::{
     delete_blob, delete_blob_blocking, get_blob, get_blob_blocking, inbox_drain_blocking,
     log_delete_blocking, log_get_blocking, log_list_blocking, put_blob, put_blob_blocking,
-    put_log_blocking, BlobError, FleetInboxEvent,
-};
+    put_log_blocking, BlobError, FleetInboxEvent, gripe_get_blocking, gripe_list_blocking, gripe_put_blocking, gripe_status_blocking};
 pub use bootstrap::load_bootstrap_peers;
 #[cfg(not(target_os = "android"))]
 pub use fingerprint::get_machine_fingerprint;
