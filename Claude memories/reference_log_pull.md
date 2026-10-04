@@ -26,3 +26,5 @@ The desktop's live log is VOLATILE tmpfs: /tmp/photon-<user>/photon.log.vsf (dec
 Submissions are whole-log snapshots split by `── photon-logs/<tag>/<eagle>-dev<id>.vsf ──` boundaries; the log rotates at 16 MiB so a tiny follow-up submission = post-rotation content only.
 
 **PULL TO FILE FIRST (burned 2026-08-15):** submitted logs are ephemeral (24h sweep + can vanish between pulls) — always `photonlog --pull --handle X > /tmp/x.log` immediately, grep the file; piping the pull straight into grep threw away a one-shot storm capture.
+
+**Binary (2026-10-03):** release builds are disabled by build.rs ("RELEASE BUILDS DISABLED"); the fresh tool after a `./scripts/dev.sh` is `target/debug/photonlog` (target/release/photonlog is a stale old build). Gripes: `--gripes` / `--gripe-status` (docs/ideas.md).
