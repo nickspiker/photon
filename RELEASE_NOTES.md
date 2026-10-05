@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 
-- A flick on a list now carries the fastest of its last three moves, so a slow finger-lift no longer kills the glide.
+- A flick on a list now carries the fastest of its last five moves, so a slow finger-lift no longer kills the glide.
 - A new Ideas page under Settings: send an idea or a fix to the developer anonymously, and see what became of each one you sent.
 - On a development build, the Diagnostics page on Android shows the bracket-chord debug toggles as buttons, since a phone cannot hold two keys.
 - Flicking a list on a phone now keeps it moving after your finger lifts, one pixel per frame slower each frame until it stops; a new touch stops it at once.

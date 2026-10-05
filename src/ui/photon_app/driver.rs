@@ -2382,7 +2382,7 @@ impl FluorApp for PhotonApp {
             } => {
                 // A new finger ends any fling (the tick's fling waits on the release; a tap with no drag must not resume the old one).
                 self.list_fling = 0;
-                self.fling_recent = [0; 3];
+                self.fling_recent = [0; 5];
                 self.press_held = true;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
@@ -4123,14 +4123,14 @@ impl PhotonApp {
             }
         if !from_fling {
             // A pixel delta while a press is held is a finger dragging the pane (a trackpad's pixel deltas come with no press and record nothing; the textbox pan's own drag is `pointer_down`).
-            // THE FLING TAKES THE LARGEST OF THE LAST THREE deltas, not the last: the move that ends a flick is usually a slow sub-frame tail, and recording it alone made every flick die early (Nick 2026-10-05, "max of last three").
+            // THE FLING TAKES THE LARGEST OF THE LAST FIVE deltas (by magnitude, sign kept), not the last: the move that ends a flick is usually a slow sub-frame tail, and recording it alone made every flick die early (Nick 2026-10-05, "max of last three" — then five).
             if is_pixel_delta && (self.press_held || self.pointer_down) {
                 self.fling_recent.rotate_right(1);
                 self.fling_recent[0] = dy as i32;
                 self.list_fling = *self.fling_recent.iter().max_by_key(|v| v.abs()).unwrap_or(&0);
             } else {
                 self.list_fling = 0;
-                self.fling_recent = [0; 3];
+                self.fling_recent = [0; 5];
             }
         }
         ctx.window.request_redraw();
