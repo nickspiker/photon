@@ -120,7 +120,7 @@
 
 ## Shipped arcs (hooks)
 - [project_great_cleanup.md](project_great_cleanup.md) — GREAT CLEANUP phases 1-6 shipped 2026-08-20
-- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (PHWAVE9): clean archive, plaid nowhere at rest, verbatim keep
+- [project_wave_card.md](project_wave_card.md) — WAVE CARD arc shipped 2026-09-12 (PHWAVE9): plaid nowhere at rest, verbatim keep
 - [project_waves.md](project_waves.md) — waves FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/waves.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes
@@ -150,7 +150,7 @@
 - Perf: [ANR-at-launch](project_android_hang_nag.md) (vault open on worker; resume walk = the cost) · [idle-CPU](project_idle_tick_cost.md) (30 Hz idle) · [render lag](project_render_storm_lag.md) + [put latency]
 - Vault: [seal failures](project_vault_seal_failures.md) (live-LAP) · [plow refusal](project_manifestus_plow_reloc_refusal.md) (LiveSet::apply order) · [tombstone](project_manifestus_tombstone_bug.md)
 - CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md) (KEM = 4th job stage)
-- [project_traversal_relay_gap.md](project_traversal_relay_gap.md) — 2026-09-17: punch pulse for relay-only friends, amber ring, "no direct path" pills; RELAY MEDIA unbuilt; audit of missing punch tricks
+- [project_traversal_relay_gap.md](project_traversal_relay_gap.md) — 2026-09-17: punch pulse for relay-only friends, amber ring; RELAY MEDIA unbuilt
 - Transport/presence: [no-ring class](project_call_no_ring_incident.md) (relay express + ring lease) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection]
 - Android/device: [session capsule](project_android_session_capsule.md) (boot-locked de-attest fix) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md)
 
