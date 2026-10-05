@@ -63,9 +63,9 @@
 - [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28
 - [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, first arrival sets it, NO hardcoded timings; l follows ONE sample per zero/sign-change point
-- [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears waves/all history fleet-wide; relationship × history × reach design; rest unbuilt
+- [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
-- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, age = d²/k no sqrt, card colours, level-coloured rings); mic/speaker pickers
+- [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, level-coloured rings); mic/speaker pickers
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission; instrumented cron kept bait (unconvicted)
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — party colours placeholder; go perceptual L≈50% via vsf spectral/LMS
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
@@ -108,7 +108,7 @@
 - [project_nunc_clock_check.md](project_nunc_clock_check.md) — nunc consensus IS photon's time base (BOOTTIME anchor); v99: a server window refusal re-anchors + retries, worker logs refusals with device
 - [project_theme_rec2020.md](project_theme_rec2020.md) — theme colours VSF RGB thru vsf_rgb_to_bt2020; Rec.2020 out everywhere
 - [project_android_ime_model.md](project_android_ime_model.md) — Android IME: surface never resizes (adjustNothing + inset mirror + ime_lift)
-- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded in-call re-aim, fine-floor seed over vendor
+- [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded re-aim
 - [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC, recorded nowhere
 - [Eagle units](project_eagle_units_first_principles.md) — one atom, floor rule, time Zil = one oscillation, log-form reputation, live clock/age, raised dot + ↑/↓; Base lesson SHIPPED v110
 - [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction; docs/dozenal.md
@@ -159,7 +159,7 @@
 
 ## References
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
-- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes (spirix glyph formatter): dozenal test red 3 days, v99 shipped ASCII dozenal digits
+- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes (spirix): dozenal test red 3 days
 - [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail with rewritten history: verify vs origin, reset --hard, fast-forward ALL sibling deps together ([project_two_machine_git_divergence.md]
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; restore untouched, style commit separate
 - [VSF TOC section-name trap](vsf-toc-section-name-trap.md) — section names live in the header TOC; bare parse gives name=""
