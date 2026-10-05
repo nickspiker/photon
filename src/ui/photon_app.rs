@@ -717,6 +717,9 @@ struct AttachPrepared {
     blob: Option<Vec<u8>>,
     /// A RAW's temp copy for limbus — removed by the drain.
     raw_tmp: Option<std::path::PathBuf>,
+    /// The original's content hash and its sealed-to-disk result (a chunk manifest for a big file), both done on the job thread: a 25 MB seal on the UI thread was the last hitch in a send (2026-10-05).
+    hash: [u8; 32],
+    manifest: Option<crate::storage::BlobManifest>,
 }
 
 struct AttachInstalled {

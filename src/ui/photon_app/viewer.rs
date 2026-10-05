@@ -16,6 +16,10 @@ pub(super) struct Viewer {
     pub view: Option<opsin::view::View>,
     /// The decode job is out (off the UI thread; `drain_img_view` installs the result).
     pub decoding: bool,
+    /// How far the decode is along, Q16 (opsin reports its stages — the file read + decode, then the linear render); the job thread writes, the render reads, the tick repaints on the edge. Fetch progress is the chunk count, not this.
+    pub decode_frac: std::sync::Arc<std::sync::atomic::AtomicU32>,
+    /// The last Q16 the tick saw, so a moved bar repaints once per move and never on a timer.
+    pub decode_frac_seen: u32,
     /// Nothing could open these bytes (opsin and the image crate both declined) — the preview stays, the log says why.
     pub failed: bool,
 }
@@ -93,7 +97,7 @@ impl PhotonApp {
             return;
         };
         let Some(contact) = self.cid(ci) else { return };
-        self.viewer = Some(Viewer { contact, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false });
+        self.viewer = Some(Viewer { contact, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false, decode_frac: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)), decode_frac_seen: 0 });
         self.reader = None;
         self.selected_msg = None;
         self.scene_dirty = true;
@@ -127,25 +131,31 @@ impl PhotonApp {
             return;
         };
         v.decoding = true;
+        v.decode_frac.store(0, std::sync::atomic::Ordering::Relaxed);
+        let frac = v.decode_frac.clone();
         let tx = self.img_view_tx.clone();
         queue_job(&self.seal_job_tx, move || {
+            let report = |p: f32| frac.store((p.clamp(0., 1.) * 65535.) as u32, std::sync::atomic::Ordering::Relaxed);
             let out: Result<opsin::view::Loaded, String> = (|| {
                 let bytes = crate::storage::blob_load(&seed, &hash).ok_or_else(|| "the blob would not open".to_string())?;
                 let keep_decode = !cfg!(target_os = "android");
                 let edge = Some(crate::ui::attach_preview::LINEAR_VIEW_MAX_EDGE);
                 if !matches!(opsin::sniff::sniff(&bytes), opsin::sniff::Kind::Unknown) {
                     let path = super::attachments::view_temp_path(&name, &hash, &bytes).ok_or_else(|| "no runtime dir for the decode".to_string())?;
-                    let r = opsin::view::load_image_folded(&path, edge, keep_decode);
+                    let r = opsin::view::load_image_folded_with(&path, edge, keep_decode, &report);
                     let _ = std::fs::remove_file(&path);
                     match r {
                         Ok(loaded) => return Ok(loaded),
                         Err(e) => crate::logf!("attach: opsin declined {}: {} — image-crate path", if name.is_empty() { "the bytes" } else { name.as_str() }, e),
                     }
                 }
+                report(0.3);
                 let (w, h, planar) = crate::ui::attach_preview::legacy_linear_planar(&bytes, &name, kind, crate::ui::attach_preview::LINEAR_VIEW_MAX_EDGE).ok_or_else(|| "no decoder opened these bytes".to_string())?;
+                report(0.7);
                 let dec = opsin::convert::ingest_linear_vsf_rgb(w, h, planar, "assumed_srgb (image crate)");
                 opsin::view::Loaded::from_decoded(dec, None, &name, bytes.len() as u64, None, keep_decode)
             })();
+            report(1.0);
             match &out {
                 Ok(l) => crate::logf!("attach: original decoded for the viewer — {}×{}", l.dims().0, l.dims().1),
                 Err(e) => crate::logf!("attach: viewer decode failed: {}", e),
@@ -176,6 +186,14 @@ impl PhotonApp {
         }
         if self.viewer.as_ref().is_some_and(|v| v.view.is_none() && !v.decoding && !v.failed && crate::storage::blob_present(&v.hash)) {
             self.request_view_decode();
+        }
+        // The decode's bar moved: one repaint per reported stage (an edge the job thread raised, not a timer).
+        if let Some(v) = self.viewer.as_mut() {
+            let now = v.decode_frac.load(std::sync::atomic::Ordering::Relaxed);
+            if v.decoding && now != v.decode_frac_seen {
+                v.decode_frac_seen = now;
+                self.scene_dirty = true;
+            }
         }
     }
 

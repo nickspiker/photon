@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Image viewer: a bar while the picture arrives.** Opening a photo that is still on your other device or a friend's showed the preview and nothing else until the original landed, which looked like a hang. The viewer now draws a bar for the fetch (how many pieces have come in) and then for the decode, and a big file is sealed to disk off the drawing thread when you send it.
+- **Android: colours in the image viewer.** The viewer's picture, navigator and histogram packed pixels in desktop byte order, so red and blue traded places on Android. Fixed in opsin, which the viewer is.
+- **opsin: no more frozen window.** Arrowing to the next RAW, dropping a file, pressing V to convert, and the first open all ran their decode on the window's own thread. Each now runs behind a progress bar, and the window comes up before the first file is decoded.
 
 ## v112
 

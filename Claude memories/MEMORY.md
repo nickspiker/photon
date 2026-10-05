@@ -40,6 +40,7 @@
 
 ## Active / open
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave 2% holes = L rule at the path; Emma wave 2x = future-named backlog → clock-step re-anchor + render-trace instrument + recv-loop guard BUILT
+- [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: opsin pixels pack thru fluor::theme::fmt (R↔B Android); loads/convert off-thread; viewer fetch/decode bar
 - [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes (id = blake3(text‖nonce)), statuses via photonlog --gripes/--gripe-status, token keys/gripes.token
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; "waiting for them to add you"; OPEN: restart re-keys offline friends
@@ -123,9 +124,9 @@
 - [project_waves.md](project_waves.md) — waves FIELD-WORKING; Android audio Rust-owned AAudio exclusive; docs/waves.md
 - [project_attachments.md](project_attachments.md) — typed attachments shipped (kinds, previews, chunked transport; docs/attachments.md)
 - [project_viewer_is_opsin.md](project_viewer_is_opsin.md) — 2026-09-17 the image viewer IS opsin's embeddable `view::View` (panel, HUD, keys); host wiring + sync notes
-- [project_pigeon_fetch_fanout.md](project_pigeon_fetch_fanout.md) — 2026-09-17 pigeon re-uploads convicted: fetch fan-out + unconditional relay copies; one device per ask, relay only when unproven
+- [project_pigeon_fetch_fanout.md](project_pigeon_fetch_fanout.md) — 2026-09-17 pigeon re-uploads convicted: one device per ask, relay only when unproven
 - [project_links.md](project_links.md) — message links = typed marks; label editable
-- [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; shaping/Cyrillic already free, Hindi cheap, CJK = payload call
+- [project_languages.md](project_languages.md) — catalog = exhaustive-match enum; 16 LANGUAGES as of 2026-09-15; CJK = payload call
 - [project_update_flow.md](project_update_flow.md) — self-update + release notices; RELEASE_NOTES.md → Updates page + website
 - [project_unattended_reboot.md](project_unattended_reboot.md) — auto-attest-on-reboot shipped; off-by-default toggle
 - [project_bridge.md](project_bridge.md) — BRIDGE (docs/bridge.md) = passless remote shell between siblings over PT; PIGEONS built 2026-09-17; stage 4 deferred

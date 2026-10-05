@@ -88,12 +88,27 @@ impl PhotonApp {
             return;
         };
         // PREPARE OFF-THREAD (typed attachments 2026-09-10): the kind sniff is cheap, but an image's decode for the previews is hundreds of ms on a phone photo and the AV1 encode more — the worker hands back the typed extras and the drain sends the row (re-resolving the contact by handle, the index may have moved). A RAW gets a temp copy for limbus (file-only reader), minted in the worker and removed by the drain.
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
         let tx = self.attach_prepared_tx.clone();
         queue_job(&self.seal_job_tx, move || {
             let kind = crate::types::sniff(&bytes, &name);
-            let raw_tmp = raw_temp_path(kind, blake3::hash(&bytes).as_bytes(), &bytes);
+            let hash = *blake3::hash(&bytes).as_bytes();
+            let raw_tmp = raw_temp_path(kind, &hash, &bytes);
             let p = crate::ui::attach_preview::prepare(&bytes, &name, raw_tmp.as_deref());
-            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp });
+            // Sealed to disk HERE, not in the drain: the row and the push need only the manifest.
+            let manifest = match crate::storage::blob_store_any(&seed, &hash, &bytes) {
+                Ok(m) => m,
+                Err(e) => {
+                    crate::logf!("attach: blob store failed: {}", e);
+                    if let Some(t) = raw_tmp.as_ref() {
+                        let _ = std::fs::remove_file(t);
+                    }
+                    return;
+                }
+            };
+            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest });
         });
     }
 
@@ -123,23 +138,12 @@ impl PhotonApp {
                     meta.preview_hash = None;
                 }
             }
-            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview);
+            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview, p.hash, p.manifest);
         }
     }
 
     /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
-    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>) {
-        let hash = *blake3::hash(&bytes).as_bytes();
-        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
-            return;
-        };
-        let manifest = match crate::storage::blob_store_any(&seed, &hash, &bytes) {
-            Ok(m) => m,
-            Err(e) => {
-                crate::logf!("attach: blob store failed: {}", e);
-                return;
-            }
-        };
+    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>) {
         // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
         let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
         let file = crate::types::AttachRef::file(hash, wire_name, bytes.len() as u64);

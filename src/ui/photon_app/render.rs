@@ -2842,6 +2842,23 @@ impl PhotonApp {
                                     (_, None) => v.name.clone(),
                                 };
                                 ctx.text.draw_text_left(&mut canvas, &caption, pad_x, buf_h as f32 - line_h * 0.4, &small, None, None);
+                                // THE BAR (Nick 2026-10-05, "right now it just looks like a big UI hang"): the fetch's chunk count while the original is still arriving, the decode's reported stage once it is here. Fill first, then the track — fluor is under-blend, first paint wins. Drawn only while something is actually moving; a failed decode leaves the caption alone.
+                                let frac: Option<f32> = if v.failed {
+                                    None
+                                } else if held {
+                                    v.decoding.then(|| v.decode_frac.load(std::sync::atomic::Ordering::Relaxed) as f32 / 65535.0)
+                                } else {
+                                    self.attach_chunk_progress.get(&v.hash).map(|(have, total)| frac_of(*have as u64, *total as u64))
+                                };
+                                if let Some(frac) = frac {
+                                    let bar_x = pad_x as isize;
+                                    let bar_w = (buf_w as f32 - pad_x * 2.0) as isize;
+                                    let bar_y = (buf_h as f32 - line_h * 1.35) as isize;
+                                    let bar_h = (hairline_px(ru) * 3.0).max(2.0) as isize;
+                                    let fill_w = (bar_w as f32 * frac.clamp(0.0, 1.0)) as isize;
+                                    paint::fill_rect(&mut canvas, bar_x, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
+                                    paint::fill_rect(&mut canvas, bar_x, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
+                                }
                                 let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
                                 let msgs: &[crate::types::ChatMessage] = dm_conversation(&self.conversations, &our_hh, &self.contacts[ci]).map(|c| c.messages.as_slice()).unwrap_or(&[]);
                                 if let Some((w, h, px)) = super::viewer::viewer_pixels_of(v, &self.img_cache, msgs) {
