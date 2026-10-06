@@ -73,7 +73,7 @@ impl PhotonApp {
         self.scene_dirty = false;
         // Standing render probe (born in the 2026-08-08 typing-lag hunt, kept for regressions). A Drop guard so it fires on every return path. The bar is a MISSED 60fps FRAME: the phone's healthy full-viewport render is 9-16ms, and the hunt's original 8ms bar logged every one of those — 3,326 lines in a 15-minute field log, the single biggest log-volume source (2026-08-09).
         // Stage marks ride the guard (the render-pass sub-profiler, TICKETS 2026-08-21: 5.8/8.3/8.8s single renders named no stage): each `mark` stamps the elapsed ms at a boundary, and a pass past ONE SECOND logs them — bg+chrome, the screen body, and the tail (overlays, extent, chrome finalize) fall out by subtraction.
-        struct RenderTimer(std::time::Instant, &'static str, Vec<(&'static str, u128)>);
+        struct RenderTimer(std::time::Instant, &'static str, Vec<(&'static str, u128)>, bool);
         impl RenderTimer {
             fn mark(&mut self, stage: &'static str) {
                 self.2.push((stage, self.0.elapsed().as_millis()));
@@ -85,7 +85,8 @@ impl PhotonApp {
                 if ms > 16 {
                     crate::logf!("PERF: render took {}ms on {} (UI thread)", ms, self.1);
                 }
-                if ms > 1000 {
+                // `self.3`: the scroll instrument asked for the stage breakdown on this frame (a memmove frame, dev builds).
+                if ms > 1000 || self.3 {
                     let mut prev = 0u128;
                     let stages: Vec<String> = self.2.iter().map(|(s, t)| {
                         let d = t - prev; // stages are pushed in order off one Instant, so each t ≥ the one before
@@ -125,6 +126,7 @@ impl PhotonApp {
                 AppState::MoleculePanel(_) => "MoleculePanel",
             },
             Vec::new(),
+            false
         );
         // Press-hold-release: sync the "held" visual on every clickable WIDGET (attest / + / send Buttons) to the pointer arbiter's currently-pressed hit id. On desktop the host's overlay pass then paints the held tint from each Button's `tint_delta`; the app's own hit-stamped elements (pills, contact rows, nav rows) read `ctx.pressed_hit` directly further down. Must run before the widget tree is walked for overlay deltas (post-render), so a press lights up the same frame.
         let pressed_hit = ctx.pressed_hit;
@@ -656,10 +658,14 @@ impl PhotonApp {
         let mark_pre = std::time::Instant::now();
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
         let scroll_hint = self.scroll_hint_armed.filter(|_| ctx.damage_clip != fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h));
+        _rt.3 = scroll_hint.is_some() && self.scroll_frames_hinted < 3 && crate::is_dev_build();
         // A scroll this frame that the hint did NOT carry (something else was dirty, the host forced a full repaint, no pane recorded yet): the layers `pane_scroll` left alone must now re-raster the ordinary way — the bg at the new offset, the hit map re-stamped — or the noise stands still under moving rows and taps land one shift behind.
         if scroll_hint.is_none() && self.scroll_shift != 0 {
             chrome.invalidate_bg();
             chrome.invalidate_chrome();
+        }
+        if self.scroll_shift != 0 {
+            if scroll_hint.is_some() { self.scroll_frames_hinted += 1 } else { self.scroll_frames_full += 1 }
         }
         let mut paint_bg = |canvas: &mut Canvas, bg_clip: Option<fluor::paint::Clip>| {
             // LOGO first (an under() layer — first-drawn claims its pixels; the noise then composes beneath). The wave does NOT draw here: pre-noise it lands on α=0 pixels the noise fully replaces — the old both-blocks double-draw burned a full wave AND a full 3-raster logo per bg pass for nothing (Nick 2026-09-02).
@@ -3624,6 +3630,7 @@ impl PhotonApp {
                                 );
                             }
                         }
+                        _rt.mark("pre-rows");
                         for (vi, msg) in visible.iter().enumerate().rev() {
                             if y < list_top - line_h {
                                 reached_oldest = false;
@@ -3677,7 +3684,9 @@ impl PhotonApp {
                             let band_top = ((y - block_extra - line_h * 0.5).max(list_top)) as isize;
                             let band_bot = ((y + line_h * 0.5).min(list_bottom)) as isize;
                             let slot = vi % super::MSG_HIT_SPAN as usize;
-                            if band_bot > band_top {
+                            // On a memmove frame a row outside the damage keeps the stamps the hit-map shift carried; only rows touching the damage re-stamp (the read of every pixel in the band is the cost).
+                            let band_in_damage = scroll_hint.is_none() || (band_bot > ctx.damage_clip.y0 as isize && band_top < ctx.damage_clip.y1 as isize);
+                            if band_bot > band_top && band_in_damage {
                                 stamp_hit_rect_under(&mut chrome.hit_test_map, canvas.pixels, buf_w, buf_h, 0, band_top, buf_w as isize, band_bot, self.msg_hit_base + slot as HitId);
                             }
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
@@ -4729,6 +4738,7 @@ impl PhotonApp {
                             }
                             y -= line_h + block_extra + sel_meta_extra;
                         }
+                        _rt.mark("rows");
                         // Re-asserted after the row walk (see the filter pill above the walk).
                         if let Some((r, hid)) = filter_stamp {
                             restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, (r.x + r.w) as isize, (r.y + r.h) as isize, hid);

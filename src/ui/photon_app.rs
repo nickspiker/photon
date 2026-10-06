@@ -1574,6 +1574,13 @@ pub struct PhotonApp {
     fling_recent: [i32; 5],
     /// This frame's accumulated drag delta, pushed into `fling_recent` by the tick.
     fling_frame_acc: i32,
+    /// SCROLL INSTRUMENT (dev builds, 2026-10-06): per press — frames sampled, wheel events seen, pixels dragged; memmove-hinted vs full render frames; one line at the fling's start and one at its end.
+    drag_frames: u32,
+    drag_events: u32,
+    drag_px: i32,
+    fling_logged: bool,
+    scroll_frames_hinted: u32,
+    scroll_frames_full: u32,
     /// SCROLL AS A MEMMOVE (Nick 2026-10-06, "how do we make it so it's just a mem move like we do with moving the window"): the scrollable pane's rigid shift this frame in viewport pixels (+ = content moved DOWN), accumulated by `pane_scroll` while the offset stays inside its bounds and read by `damage_rect`, which arms the hint below; zero when nothing scrolled rigidly. Cleared at the end of every render.
     scroll_shift: i32,
     /// The hint `damage_rect` armed for THIS frame — (pane rect, dy, the exposed band): `scroll_hint` hands rect + dy to the host (scratch + persistent screen memmove), the render shifts the bg layer and the hit map the same way and paints only the band plus the repainted overlays. `None` = an ordinary repaint.
@@ -2600,6 +2607,12 @@ impl PhotonApp {
             list_fling: 0,
             fling_recent: [0; 5],
             fling_frame_acc: 0,
+            drag_frames: 0,
+            drag_events: 0,
+            drag_px: 0,
+            fling_logged: false,
+            scroll_frames_hinted: 0,
+            scroll_frames_full: 0,
             scroll_shift: 0,
             scroll_hint_armed: None,
             last_pane: None,

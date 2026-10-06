@@ -2379,9 +2379,21 @@ impl FluorApp for PhotonApp {
                 ..
             } => {
                 // A new finger ends any fling (the tick's fling waits on the release; a tap with no drag must not resume the old one).
+                if self.list_fling != 0 {
+                    if crate::is_dev_build() {
+                        crate::logf!("SCROLL: fling cut by a press at {} px/frame — renders since the last press: {} memmove, {} full", self.list_fling, self.scroll_frames_hinted, self.scroll_frames_full);
+                    }
+                    self.scene_dirty = true; // the settle frame the cut fling never reached
+                }
                 self.list_fling = 0;
                 self.fling_recent = [0; 5];
                 self.fling_frame_acc = 0;
+                self.drag_frames = 0;
+                self.drag_events = 0;
+                self.drag_px = 0;
+                self.fling_logged = false;
+                self.scroll_frames_hinted = 0;
+                self.scroll_frames_full = 0;
                 self.press_held = true;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
@@ -2542,6 +2554,10 @@ impl FluorApp for PhotonApp {
                 ..
             } => {
                 self.press_held = false;
+                // A drag that ends with no fling to follow settles now (see the fling's end): one full repaint after memmove frames.
+                if self.drag_px > 0 && self.list_fling == 0 {
+                    self.scene_dirty = true;
+                }
                 // Waveform scrub release = THE seek edge: play from the carried fraction (a release anywhere lands where the playhead was carried to — no timer, no debounce).
                 if let Some(s) = self.wave_scrub.take() {
                     let slot = (s.frac * s.band.total as f32) as usize;
@@ -3605,15 +3621,34 @@ impl FluorApp for PhotonApp {
                 let mut sorted = self.fling_recent;
                 sorted.sort_unstable();
                 self.list_fling = sorted[2];
+                self.drag_frames += 1;
             }
             // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
             if self.list_fling != 0 && !self.pointer_down && !self.press_held {
                 let v = self.list_fling;
+                if !self.fling_logged && crate::is_dev_build() {
+                    self.fling_logged = true;
+                    let samples = format!("{:?}", self.fling_recent);
+                    crate::logf!(
+                        "SCROLL: fling starts at {} px/frame — last five frame samples {}; the drag: {} frames sampled, {} wheel events, {} px; renders so far: {} memmove, {} full",
+                        v, samples, self.drag_frames, self.drag_events, self.drag_px, self.scroll_frames_hinted, self.scroll_frames_full
+                    );
+                }
                 let before = self.scroll_signature();
                 let _ = self.pane_scroll(ctx, v as isize, true, true);
                 let moved = self.scroll_signature() != before;
                 let m = v.abs() - 1;
                 self.list_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
+                if self.list_fling == 0 {
+                    // THE SETTLE FRAME: memmove frames paint only the band, so a row's link tap targets and the like are last-known from its last full paint — one ordinary repaint at rest puts every row's bookkeeping back to truth.
+                    self.scene_dirty = true;
+                    if crate::is_dev_build() {
+                        crate::logf!(
+                            "SCROLL: fling ended ({}) — renders since the press: {} memmove, {} full",
+                            if moved { "ran out" } else { "hit a bound" }, self.scroll_frames_hinted, self.scroll_frames_full
+                        );
+                    }
+                }
                 // `pane_scroll` decided how the frame repaints (a rigid shift, or a dirty scene at a bound).
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
@@ -4205,6 +4240,8 @@ impl PhotonApp {
             // The move's delta joins THIS FRAME's accumulator; the tick pushes one sample per frame (zeros included) and takes the median of the last five — see `fling_recent`. (Nick 2026-10-05, "max of last three" — then five).
             if is_pixel_delta && (self.press_held || self.pointer_down) {
                 self.fling_frame_acc += dy as i32;
+                self.drag_events += 1;
+                self.drag_px += (dy as i32).abs();
             } else {
                 self.list_fling = 0;
                 self.fling_recent = [0; 5];
