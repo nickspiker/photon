@@ -3612,7 +3612,7 @@ impl FluorApp for PhotonApp {
                 let moved = self.scroll_signature() != before;
                 let m = v.abs() - 1;
                 self.list_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
-                self.scene_dirty = true;
+                // `pane_scroll` decided how the frame repaints (a rigid shift, or a dirty scene at a bound).
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
             // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
@@ -3811,6 +3811,44 @@ impl FluorApp for PhotonApp {
         let vh = viewport.height_px as usize;
         // Full viewport whenever immediate-mode content may have moved (`scene_dirty`), and whenever the chord hint is up or just released (stale hint pixels need one covering frame to clear).
         let chord = self.last_chord_held || self.brackets_held(Instant::now());
+        // SCROLL AS A MEMMOVE (Nick 2026-10-06): a frame whose ONLY change is a rigid pane shift repaints just the exposed band plus the fixed overlays (where they sit and where their smeared copy landed); the host memmoves scratch + screen, the render memmoves the bg layer + hit map. Idempotent — the host may ask more than once a frame; the render clears the shift.
+        self.scroll_hint_armed = None;
+        if self.scroll_shift != 0 {
+            let shift = self.scroll_shift;
+            let chrome_dirty = self.chrome.as_ref().is_some_and(|c| c.damage_rect().is_some());
+            let want: u8 = match self.state {
+                AppState::Conversation => 1,
+                AppState::Ready => 2,
+                _ => 0,
+            };
+            let quiet = !self.scene_dirty && !chord && !chrome_dirty && want != 0 && self.viewer.is_none() && self.reader.is_none() && !self.wave_screen();
+            if let (true, Some((tag, rect, overlays))) = (quiet, self.last_pane.as_ref()) {
+                let n = shift.unsigned_abs() as usize;
+                let h = rect.y1.saturating_sub(rect.y0);
+                if *tag == want && n < h && rect.y1 <= vh && rect.x1 <= vw {
+                    let band = if shift > 0 { PixelRect::new(rect.x0, rect.y0, rect.x1, rect.y0 + n) } else { PixelRect::new(rect.x0, rect.y1 - n, rect.x1, rect.y1) };
+                    let mut dmg = band;
+                    for r in overlays {
+                        dmg = dmg.union(*r);
+                        let (y0, y1) = ((r.y0 as i64 + shift as i64).clamp(0, vh as i64) as usize, (r.y1 as i64 + shift as i64).clamp(0, vh as i64) as usize);
+                        if y1 > y0 {
+                            dmg = dmg.union(PixelRect::new(r.x0, y0, r.x1, y1));
+                        }
+                    }
+                    let mut dmg = PixelRect::new(dmg.x0.min(vw), dmg.y0.min(vh), dmg.x1.min(vw), dmg.y1.min(vh));
+                    self.scroll_hint_armed = Some((*rect, shift, band));
+                    // Widgets with their own damage this frame (a caret blink, a drag-select) still repaint — unioned in, not dropped for the frame.
+                    self.visit_app_widgets(&mut |w| {
+                        if let Some(r) = w.damage_rect(vw, vh) {
+                            dmg = dmg.union(r);
+                        }
+                    });
+                    return Some(dmg);
+                }
+            }
+            // A shift the hint cannot carry (no pane recorded yet, a shift past the pane's height, something else changed too) is an ordinary full repaint — never a skipped one.
+            return Some(PixelRect::new(0, 0, vw, vh));
+        }
         if self.scene_dirty || chord {
             let mut combined = PixelRect::new(0, 0, vw, vh);
             if chord {
@@ -3831,6 +3869,10 @@ impl FluorApp for PhotonApp {
             }
         });
         combined
+    }
+
+    fn scroll_hint(&mut self, _viewport: Viewport) -> Option<(PixelRect, i32)> {
+        self.scroll_hint_armed.map(|(rect, dy, _)| (rect, dy))
     }
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
@@ -4006,6 +4048,8 @@ impl PhotonApp {
     /// THE PANE SCROLL — one body for a wheel notch, a touch drag's pixel delta, and the fling that continues a drag after the finger lifts (Nick 2026-10-03). `dy` is in the wheel's sign convention; `from_fling` keeps the fling from re-recording itself.
     /// THE FLING (Nick 2026-10-03, Android): on release the list keeps the previous frame's delta and sheds one pixel per frame until it reaches zero — 8, 7, 6 … 0 — drawing each frame and halting the redraws at zero. A pixel delta while the finger is down records itself as the next fling; a notch, a release off a drag, or a new finger records nothing.
     fn pane_scroll(&mut self, ctx: &mut Context, dy: isize, is_pixel_delta: bool, from_fling: bool) -> EventResponse {
+            // SCROLL AS A MEMMOVE: set when this scroll moved a pane RIGIDLY inside its bounds — the frame then rides `scroll_shift` (band repaint over a memmove) instead of dirtying the scene and the bg/chrome layers.
+            let mut rigid = false;
             // COMPOSE BOX SCROLL (Nick 2026-09-09): a wheel or finger over the multi-line box moves its TEXT when there is more than fits; the pane behind stays put. Wheel down (negative dy) reveals the lines below → the band offset grows. A finger drag (a live press on the box, Android's synthesized pixel deltas) also carries a fling velocity for the release.
             if matches!(self.state, AppState::Conversation) {
                 let compose_id = self.message_textbox.as_ref().map(|t| t.hit_id()).unwrap_or(HIT_NONE);
@@ -4031,6 +4075,7 @@ impl PhotonApp {
             let reach = ctx.viewport.height_px as f32 / (1 << 3) as f32;
             if matches!(self.state, AppState::Ready) {
                 // On the contacts screen the wheel scrolls the WHOLE user section + list as one block. Down-scroll (negative dy) moves the block up (reveals lower contacts), so subtract; render publishes the block extent (`contacts_scroll_extent`) and re-runs `update_widget_layout` so the search box + plus button (whose rects are set off `contacts_scroll`) track the same offset.
+                let old = self.contacts_scroll;
                 self.contacts_scroll = rubber_step(
                     self.contacts_scroll as f32,
                     -(dy as f32),
@@ -4038,6 +4083,12 @@ impl PhotonApp {
                     reach,
                 )
                 .round() as isize;
+                // Inside the bounds the whole block translates rigidly — content moves DOWN as the offset shrinks; the rubber zones repaint in full.
+                let ext = self.contacts_scroll_extent;
+                if (0..=ext).contains(&old) && (0..=ext).contains(&self.contacts_scroll) {
+                    self.scroll_shift += (old - self.contacts_scroll) as i32;
+                    rigid = true;
+                }
             } else if matches!(
                 self.state,
                 AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
@@ -4078,7 +4129,10 @@ impl PhotonApp {
                 // In a conversation the wheel scrolls the message history. The list lays out bottom-up with newest at the bottom; a positive offset pushes messages down (reveals older ones above). Scroll-up (positive dy) shows older → add. Only the 0 end rubber-bands (hi = ∞); the old-history end is backfill-paged, not clamped.
                 if self.active_conversation.is_some() {
                     let can_scroll = self.msg_max_scroll > 0.0;
+                    let max_scroll = self.msg_max_scroll;
+                    let mut shift: Option<i32> = None;
                     if let Some(conv) = self.active_conv_mut() {
+                        let old = conv.scroll_offset.round();
                         conv.scroll_offset = rubber_step(
                             conv.scroll_offset,
                             // Notches get the wheel step-up; pixel sources are already distances.
@@ -4086,6 +4140,11 @@ impl PhotonApp {
                             f32::INFINITY,
                             reach,
                         );
+                        // Inside [0, max] the list translates rigidly — rows sit at `… + scroll`, so content moves DOWN as the offset grows (the render rounds the offset the same way).
+                        let new = conv.scroll_offset.round();
+                        if can_scroll && (0.0..=max_scroll).contains(&old) && (0.0..=max_scroll).contains(&new) {
+                            shift = Some((new - old) as i32);
+                        }
                         // Scrollback jumps the history-backfill queue: the user is heading toward the old edge, so the next page request fires on the next tick instead of waiting out the trickle interval.
                         if dy > 0 {
                             if let Some(rec) = conv.history_recovery.as_mut() {
@@ -4114,19 +4173,30 @@ impl PhotonApp {
                         let rests = super::render::conv_blind_rests(ctx.viewport.height_px as usize, unit_b, strip_floor, orb_rest_b);
                         super::render::conv_blind_step(&mut self.conv_blind_h, &mut self.conv_blind_edge, rests, bar_h, step);
                         let off = self.conv_blind_h[2]; // the row's hidden amount — what the rest of the screen (the filter pill, the ‹ Contacts hit gate) reads
-                        if (off - self.conv_topbar_off).abs() > 0.01 || step != 0.0 {
+                        let blind_moved = (off - self.conv_topbar_off).abs() > 0.01;
+                        if let (Some(s), false) = (shift, blind_moved) {
+                            self.scroll_shift += s;
+                            rigid = true;
+                        }
+                        if blind_moved || step != 0.0 {
                             self.conv_topbar_off = off;
-                            self.scene_dirty = true;
+                            // The blind's slats move with the header, not with the list: a frame where they moved is an ordinary repaint; a frame where only the list moved rides the memmove.
+                            if !rigid {
+                                self.scene_dirty = true;
+                            }
                         }
                     }
                 }
             } else {
                 self.bg_scroll = self.bg_scroll.wrapping_add(dy);
             }
-            if let Some(chrome) = self.chrome.as_mut() {
-                chrome.invalidate_bg();
-                // Scrolling moves the content (and therefore every per-pixel hit zone) but doesn't dirty the chrome layer on its own, so `rasterize_chrome` would early-return and skip its `hit_test_map.fill(HIT_NONE)` — leaving STALE hit stamps at the pre-scroll row/widget positions. Those ghosts make `hit_at` return the wrong id under the cursor after a scroll, so the hover overlay tints the wrong pixels. Invalidate chrome so the map is cleared and re-stamped against this frame's scrolled positions.
-                chrome.invalidate_chrome();
+            // A rigid shift leaves both layers alone: the render memmoves the bg layer and the hit map by the same dy and repaints only the exposed band (SCROLL AS A MEMMOVE).
+            if !rigid {
+                if let Some(chrome) = self.chrome.as_mut() {
+                    chrome.invalidate_bg();
+                    // Scrolling moves the content (and therefore every per-pixel hit zone) but doesn't dirty the chrome layer on its own, so `rasterize_chrome` would early-return and skip its `hit_test_map.fill(HIT_NONE)` — leaving STALE hit stamps at the pre-scroll row/widget positions. Those ghosts make `hit_at` return the wrong id under the cursor after a scroll, so the hover overlay tints the wrong pixels. Invalidate chrome so the map is cleared and re-stamped against this frame's scrolled positions.
+                    chrome.invalidate_chrome();
+                }
             }
         if !from_fling {
             // A pixel delta while a press is held is a finger dragging the pane (a trackpad's pixel deltas come with no press and record nothing; the textbox pan's own drag is `pointer_down`).

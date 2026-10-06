@@ -1574,6 +1574,12 @@ pub struct PhotonApp {
     fling_recent: [i32; 5],
     /// This frame's accumulated drag delta, pushed into `fling_recent` by the tick.
     fling_frame_acc: i32,
+    /// SCROLL AS A MEMMOVE (Nick 2026-10-06, "how do we make it so it's just a mem move like we do with moving the window"): the scrollable pane's rigid shift this frame in viewport pixels (+ = content moved DOWN), accumulated by `pane_scroll` while the offset stays inside its bounds and read by `damage_rect`, which arms the hint below; zero when nothing scrolled rigidly. Cleared at the end of every render.
+    scroll_shift: i32,
+    /// The hint `damage_rect` armed for THIS frame — (pane rect, dy, the exposed band): `scroll_hint` hands rect + dy to the host (scratch + persistent screen memmove), the render shifts the bg layer and the hit map the same way and paints only the band plus the repainted overlays. `None` = an ordinary repaint.
+    scroll_hint_armed: Option<(PixelRect, i32, PixelRect)>,
+    /// What the LAST render drew as the scrollable pane: which screen (1 = conversation list, 2 = the contacts block), its rect, and the FIXED rects drawn over it (a toast, the standing bands, the orb where it reaches in) — a shift must repaint each of those where it sits AND where its smeared copy lands, so the next frame's `damage_rect` reads them here.
+    last_pane: Option<(u8, PixelRect, Vec<PixelRect>)>,
     /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
     message_send_btn: Option<Button>,
     /// The purple chain-link button beside send: turns the detected URL into a tagged link with a trimmed label (messaging::compose_link_click). Shown only while a bare URL sits in the box.
@@ -2594,6 +2600,9 @@ impl PhotonApp {
             list_fling: 0,
             fling_recent: [0; 5],
             fling_frame_acc: 0,
+            scroll_shift: 0,
+            scroll_hint_armed: None,
+            last_pane: None,
             contacts_plus_btn: None,
             message_send_btn: None,
             compose_link_btn: None,

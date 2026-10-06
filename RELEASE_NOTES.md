@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Scrolling is a memory move now.** On the contacts screen and in a conversation, dragging or flicking slides the pixels already on screen and draws only the strip that came into view, instead of redrawing everything every frame. Settings pages still redraw the old way for now.
 - A flick on a list now carries the typical speed of its last five frames, counting frames where the finger held still, so a pause before lifting stops the glide and a clean flick keeps it.
 
 ## v113

@@ -56,6 +56,16 @@ fn flow_checkbox(flow: &mut Flow, canvas: &mut Canvas, text: &mut fluor::text::T
     cb.render_content_into(canvas, text, None, Some(hit_map));
 }
 
+/// SCROLL AS A MEMMOVE: a pane's draw clip narrowed to the frame's damage when the shift path is on — rows outside it arrived by memmove and are already in the buffer (painting them again would only cost); untouched otherwise.
+fn clip_to_damage(clip: fluor::paint::Clip, hinted: bool, damage: fluor::canvas::PixelRect) -> fluor::paint::Clip {
+    if !hinted {
+        return clip;
+    }
+    let x0 = clip.x_start.max(damage.x0);
+    let y0 = clip.y_start.max(damage.y0);
+    fluor::paint::Clip::new(x0, y0, clip.x_end.min(damage.x1).max(x0), clip.y_end.min(damage.y1).max(y0))
+}
+
 impl PhotonApp {
     /// The full frame paint — the body of [`FluorApp::render`], verbatim; the trait method in `driver.rs` delegates here so the paint code can live in its own file.
     pub(super) fn render_frame(&mut self, target: &mut [u32], ctx: &mut Context) {
@@ -644,7 +654,9 @@ impl PhotonApp {
         let mut measured_extent: Option<(f32, f32)> = None;
         // Stage marks for the >1s breakdown at the end of the frame — the flat "render took Nms" line named the SCREEN but not the STAGE, which stalled the 2026-08-21 hang hunt (5.8-8.8s Conversation renders, no idea where inside).
         let mark_pre = std::time::Instant::now();
-        chrome.rasterize_bg(ctx.damage, |canvas| {
+        // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
+        let scroll_hint = self.scroll_hint_armed.filter(|_| ctx.damage_clip != fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h));
+        let mut paint_bg = |canvas: &mut Canvas, bg_clip: Option<fluor::paint::Clip>| {
             // LOGO first (an under() layer — first-drawn claims its pixels; the noise then composes beneath). The wave does NOT draw here: pre-noise it lands on α=0 pixels the noise fully replaces — the old both-blocks double-draw burned a full wave AND a full 3-raster logo per bg pass for nothing (Nick 2026-09-02).
             if on_launch {
                 paint_photon_logo(canvas, text, logo_rect);
@@ -662,7 +674,7 @@ impl PhotonApp {
                     version_x,
                     vy,
                     &TextStyle::new(version_size, theme::VERSION_COLOUR).font("Oxanium"),
-                    None,
+                    bg_clip,
                     None,
                 );
             }
@@ -685,7 +697,7 @@ impl PhotonApp {
                 bg_right_scroll,
                 bg_split_x,
                 bg_left_scroll,
-                None,
+                bg_clip,
                 bg_base,
             );
             // WAVE after the noise — an RMW quadrature-add that reads the now-opaque noise as its base. One call, post-noise, is the whole spectrum band.
@@ -696,7 +708,11 @@ impl PhotonApp {
             if let Some((sx0, sx1, wave_top, wave_h, _, _, clip_y0, clip_y1)) = about_slab_bands {
                 chromatic_wave_clipped(canvas, sx0, sx1, wave_top, wave_h, clip_y0, clip_y1, about_wave_phase, 1.0);
             }
-        });
+        };
+        match scroll_hint {
+            Some((rect, dy, band)) => chrome.scroll_bg(rect, dy, band, ctx.damage, |canvas| paint_bg(canvas, Some(fluor::paint::Clip::new(band.x0, band.y0, band.x1, band.y1)))),
+            None => chrome.rasterize_bg(ctx.damage, |canvas| paint_bg(canvas, None)),
+        }
         // Window-perimeter hairline FIRST — painted straight into `target` (not the chrome group) and carves the window-shape clip_mask. fluor is under-blend only, so whatever lands in `target` first wins at shared edge pixels; drawing the hairline before any content makes it survive over full-bleed screens (Ready/Conversation) whose content reaches the window edge. The chrome group (buttons / orb / strip / title) still composites UNDER content via `flatten_into` below. The clip_mask carve here is the SOLE source of the single window-shape alpha-trim done at the OS boundary in finalize.
         chrome.rasterize_perimeter(target, buf_w, buf_h, ctx.clip_mask);
         // Orb press glow lives IN the chrome layer now (drawn after the orb+ring, so under() blooms it beneath them): feed the pressed state each frame; the setter no-ops when unchanged and re-rasters chrome on the press/release edges.
@@ -710,6 +726,14 @@ impl PhotonApp {
         let conv_blind_now = conv_blind(buf_h, blind_unit, blind_strip_floor, if blind_on { self.conv_blind_h } else { [0.0; 3] }, chrome.orb_geometry().is_some());
         chrome.set_orb_dy(if blind_on { conv_blind_now.orb_dy } else { 0.0 });
         chrome.rasterize_chrome(ctx.damage, ctx.text, ctx.clip_mask);
+        if let Some((rect, dy, _)) = scroll_hint {
+            chrome.scroll_hit_map(rect, dy);
+        }
+        // The orb's bbox (ring included): a fixed thing that may reach into a scrolling pane, so the pane records it as an overlay for the memmove path.
+        let orb_bbox: Option<fluor::canvas::PixelRect> = chrome.orb_geometry().map(|(cx, cy, r)| {
+            let t = super::ring_thickness(r as f32).ceil() as isize + 1;
+            fluor::canvas::PixelRect::new((cx - r - t).max(0) as usize, (cy - r - t).max(0) as usize, (cx + r + t).max(0) as usize, (cy + r + t).max(0) as usize)
+        });
         let mark_chrome = std::time::Instant::now();
 
         // Chord hint — painted INTO `target` FIRST so the hint glyphs sit at the TOP of the under-blend chain (the chrome composes under them).
@@ -1790,6 +1814,20 @@ impl PhotonApp {
             let avatar_r = diam as f32 * 0.5;
             // Rows now scroll up into (and past) where the user section sat, so the clip can no longer stop at `rows.y0`. Clip top = the top of the content area (0); the chrome title bar stays on top because its layer is flattened into `target` BEFORE any content (`flatten_chrome_into`), exactly as it does for the unclipped avatar that already draws high. Keep the x extent at the rows' columns.
             let rows_clip = fluor::paint::Clip::new(rows.x0, 0, rows.x1, buf_h);
+            // SCROLL AS A MEMMOVE: the contacts block is the pane — everything below the chrome strip (the whole surface on a phone) translates with `contacts_scroll`; the standing bands at the bottom and the orb are the fixed overlays. Recorded for the NEXT frame's `damage_rect`; this frame's rows clip to the damage when it rides a shift.
+            {
+                let pane_top = if cfg!(target_os = "android") { 0 } else { fluor::host::chrome::strip_height(ctx.viewport) as usize };
+                let mut pane_overlays: Vec<fluor::canvas::PixelRect> = Vec::new();
+                let bands_h = standing_bands.len() as f32 * ready_layout.unit_height * 1.5 * 2.0;
+                if bands_h > 0.0 {
+                    pane_overlays.push(fluor::canvas::PixelRect::new(0, (buf_h as f32 - bands_h).max(0.0) as usize, buf_w, buf_h));
+                }
+                if let Some(orb) = orb_bbox {
+                    pane_overlays.push(orb);
+                }
+                self.last_pane = Some((2, fluor::canvas::PixelRect::new(0, pane_top.min(buf_h), buf_w, buf_h), pane_overlays));
+            }
+            let rows_clip = clip_to_damage(rows_clip, scroll_hint.is_some(), ctx.damage_clip);
 
             // Filter by the search text (case-insensitive substring on the handle); empty filter = all.
             let filter: String = self
@@ -3274,6 +3312,20 @@ impl PhotonApp {
                             buf_w,
                             list_bottom as usize,
                         );
+                        // SCROLL AS A MEMMOVE: record the pane for the NEXT frame's `damage_rect` — its rect, and the fixed things drawn over it (the toast; the orb where it reaches in) — and, when this frame rides a shift, paint rows only into the damage (the rest arrived by memmove).
+                        {
+                            let pane_rect = fluor::canvas::PixelRect::new(0, list_top as usize, buf_w, list_bottom as usize);
+                            let mut pane_overlays: Vec<fluor::canvas::PixelRect> = Vec::new();
+                            if self.ready_toast.is_some() {
+                                let ts = unit * 0.72;
+                                pane_overlays.push(fluor::canvas::PixelRect::new(0, (list_bottom - ts * 1.4).max(0.0) as usize, buf_w, list_bottom as usize));
+                            }
+                            if let Some(orb) = orb_bbox {
+                                pane_overlays.push(orb);
+                            }
+                            self.last_pane = Some((1, pane_rect, pane_overlays));
+                        }
+                        let list_clip = clip_to_damage(list_clip, scroll_hint.is_some(), ctx.damage_clip);
 
                         // Lay messages out bottom-up so the newest sits at list_bottom. Clamp scroll offset to the actual overscroll range so a stale offset from a previous (larger) window size can't push every message above list_top on resize.
                         // Probe rows (hidden chain-weave records, persisted for re-ACK durability) never render — filter before layout so the scroll height matches what's drawn.
@@ -3479,10 +3531,12 @@ impl PhotonApp {
                         self.msg_max_scroll = max_scroll;
                         self.msg_view_h = view_h;
                         // WHY/PROOF: the stored offset was set against LAST frame's content — rows tombstoned or re-wrapped since can shrink the ceiling under it.
+                        // Whole pixels: the memmove path shifts the buffer by the rounded delta, so the rows must sit where that shift puts them (SCROLL AS A MEMMOVE).
                         let scroll = conv
                             .map(|v| v.scroll_offset)
                             .unwrap_or(0.0)
-                            .clamp(0.0, max_scroll);
+                            .clamp(0.0, max_scroll)
+                            .round();
                         self.msg_hit_rows.clear();
                         self.msg_hit_rows.resize(super::MSG_HIT_SPAN as usize, None);
                         self.msg_wave_bands.clear();
@@ -7242,7 +7296,10 @@ impl PhotonApp {
         }
 
         let mark_content = std::time::Instant::now();
-        chrome.flatten_bg_into(target, buf_w, buf_h, None);
+        // On a memmove frame the bg outside the damage is already composed in the buffer: flatten only the damage.
+        chrome.flatten_bg_into(target, buf_w, buf_h, scroll_hint.map(|_| fluor::paint::Clip::new(ctx.damage_clip.x0, ctx.damage_clip.y0, ctx.damage_clip.x1, ctx.damage_clip.y1)));
+        self.scroll_shift = 0;
+        self.scroll_hint_armed = None;
 
         // Development builds get the amber debug theme (orange bg tint / window hairline / title) via fluor's `amber` feature — pure theme-CONSTANT swaps, zero extra drawing steps. The old post-composite amber wash is gone: it wrote straight-RGB into fluor's α+darkness buffer, which inverted to blue.
 
