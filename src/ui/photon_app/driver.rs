@@ -2394,7 +2394,7 @@ impl FluorApp for PhotonApp {
                 self.fling_logged = false;
                 self.scroll_frames_hinted = 0;
                 self.scroll_frames_full = 0;
-                self.hint_refusal_logged = false;
+                self.hint_refusals_logged = 0;
                 self.press_held = true;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
@@ -3149,6 +3149,16 @@ impl FluorApp for PhotonApp {
     }
 
     fn tick(&mut self, ctx: &mut Context) -> bool {
+        self.dirty_before_tick = self.scene_dirty;
+        // Dev instrument (scroll memmove hunt): the first checkpoint that sees `scene_dirty` newly raised this tick names the block before it.
+        let mut dirty_blame: u32 = 0;
+        macro_rules! dirty_checkpoint {
+            () => {
+                if dirty_blame == 0 && self.scene_dirty && !self.dirty_before_tick {
+                    dirty_blame = line!();
+                }
+            };
+        }
         let now = Instant::now();
         let mut needs_redraw = false;
         if self.poll_resume_vault() {
@@ -3178,6 +3188,7 @@ impl FluorApp for PhotonApp {
         // Frame fence for the deferred send drain: entries queued during THIS tick's input pass wait until the next one, guaranteeing the pending bubble a rendered frame before the wire half runs.
         self.tick_serial += 1; // u64 per tick — centuries at any frame rate
         // Storage-failure latch → the amber banner. Writer threads and open paths can only set a static (no &mut self there); this mirror is how a fence error or a dead vault open reaches the screen — 1,276 of them once ran for hours as log lines while the UI claimed all was well (2026-08-24).
+        dirty_checkpoint!();
         if crate::storage::vault_sick() && !self.vault_degraded {
             self.vault_degraded = true;
             self.vault_degraded_latched = true;
@@ -3435,6 +3446,7 @@ impl FluorApp for PhotonApp {
                 (AppState::Settings(a), AppState::Settings(b)) => a == b,
                 _ => false,
             };
+            dirty_checkpoint!();
             if !same_screen {
                 self.change_focus(None);
                 // A screen swap must also re-raster the CACHED bg layer — it's dirty-gated and nothing else invalidates it on navigation, so the previous screen's backdrop stayed baked beneath the new one (the launch chromatic wave + wordmark showing thru the settings panel; the settings divider-split noise lingering after Back). One noise re-raster per screen change is cheap.
@@ -3587,6 +3599,7 @@ impl FluorApp for PhotonApp {
                 };
                 true
             };
+            dirty_checkpoint!();
             let mut spring = false;
             if matches!(self.state, AppState::Settings(_)) {
                 spring |= relax(&mut self.settings_rail_scroll, self.settings_rail_extent);
@@ -3639,6 +3652,7 @@ impl FluorApp for PhotonApp {
                 self.list_fling = sorted[2];
                 self.drag_frames += 1;
             }
+            dirty_checkpoint!();
             // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
             if self.list_fling != 0 && !self.pointer_down && !self.press_held {
                 let v = self.list_fling;
@@ -3668,9 +3682,11 @@ impl FluorApp for PhotonApp {
                         );
                     }
                 }
-                // `pane_scroll` decided how the frame repaints (a rigid shift, or a dirty scene at a bound).
-                { needs_redraw = true; self.note_redraw(line!() + 100_000); }
+                // `pane_scroll` decided how the frame repaints (a rigid shift, or a dirty scene at a bound) — so the next frame is asked for DIRECTLY, never thru `needs_redraw`: the tick's last line folds that into `scene_dirty`, which is exactly what made every fling frame a full repaint while the drag's frames (asked for by the touch events) rode the memmove (2026-10-06 phone log, checkpoint 3878).
+                ctx.window.request_redraw();
+                self.note_redraw(line!() + 100_000);
             }
+            dirty_checkpoint!();
             // Textbox TEXT-pan spring: any box carried past its scroll bounds eases home the same way. Skip the box still under the finger (the drag owns it until release). Narrow damage — the box's own text_cache_dirty → damage_rect covers the repaint, so no scene_dirty needed.
             let panning = if self.pointer_down {
                 self.drag_select_hit
@@ -3704,6 +3720,7 @@ impl FluorApp for PhotonApp {
         }
 
         // Diagnostics log viewer: drain the off-thread decode / tail-follow the live file (no-op unless the viewer is open on its page). Rows are CONTENT — a change needs the full scene frame, not just a widget-overlay pass.
+        dirty_checkpoint!();
         if self.drive_diag_log() {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
@@ -3711,6 +3728,7 @@ impl FluorApp for PhotonApp {
 
         // Self-update: drain check/apply results, then re-exec if a verified swap landed. The exec MUST happen here on the main thread, outside every borrow — the process image is replaced in place (unix) or handed off (windows), so nothing after it runs.
         // Update events (progress bar, channel states, status lines) are all page CONTENT — without scene_dirty the redraw runs but the dirty-gated content pass skips the page, so the bar painted its empty track once and froze (observed).
+        dirty_checkpoint!();
         if self.drain_update_events() {
             self.scene_dirty = true;
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
@@ -3726,6 +3744,7 @@ impl FluorApp for PhotonApp {
                 self.scene_dirty = true;
             }
         }
+        dirty_checkpoint!();
         if self.drain_vault_stats() {
             ctx.window.request_redraw();
         }
@@ -3810,6 +3829,7 @@ impl FluorApp for PhotonApp {
             .as_ref()
             .map(|t| t.line_count())
             .unwrap_or(1);
+        dirty_checkpoint!();
         if compose_lines != self.painted_compose_lines {
             self.painted_compose_lines = compose_lines;
             self.scene_dirty = true;
@@ -3856,6 +3876,8 @@ impl FluorApp for PhotonApp {
         // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
         self.scene_dirty |= needs_redraw;
         let redraw = needs_redraw || blink_redraw;
+        dirty_checkpoint!();
+        self.dirty_blame_line = dirty_blame;
         if redraw {
             ctx.window.request_redraw();
         }
@@ -3903,12 +3925,13 @@ impl FluorApp for PhotonApp {
                 }
             }
             // A shift the hint cannot carry (no pane recorded yet, a shift past the pane's height, something else changed too) is an ordinary full repaint — never a skipped one.
-            if !self.hint_refusal_logged && crate::is_dev_build() {
-                self.hint_refusal_logged = true;
+            if self.hint_refusals_logged < 6 && crate::is_dev_build() {
+                self.hint_refusals_logged += 1;
                 let pane = self.last_pane.as_ref().map(|(t, r, o)| format!("pane {} {}..{} with {} overlays", t, r.y0, r.y1, o.len())).unwrap_or_else(|| "no pane recorded".to_string());
+                let why = format!("{:?}", self.redraw_why);
                 crate::logf!(
-                    "SCROLL: memmove hint refused for a {} px shift — scene_dirty {}, chord {}, chrome_dirty {}, screen {}, viewer {}, wave {}; {}",
-                    shift, self.scene_dirty, chord, chrome_dirty, want, self.viewer.is_some() || self.reader.is_some(), self.wave_screen(), pane
+                    "SCROLL: memmove hint refused for a {} px shift — scene_dirty {} (already set before the tick: {}, first tick checkpoint to see it: line {}), chord {}, chrome_dirty {}, screen {}, viewer {}, wave {}, fling {}; {}; redraw asks at lines {}",
+                    shift, self.scene_dirty, self.dirty_before_tick, self.dirty_blame_line, chord, chrome_dirty, want, self.viewer.is_some() || self.reader.is_some(), self.wave_screen(), self.list_fling, pane, why
                 );
             }
             return Some(PixelRect::new(0, 0, vw, vh));
