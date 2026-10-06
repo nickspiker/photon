@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v113
 - **Android installs its own updates.** With "Install updates automatically" on, a phone on Wi-Fi now downloads and installs a new release by itself. The very first time, Android asks you to confirm once; after that, updates land silently and Photon comes straight back, signed in. A phone in the middle of a wave or a key ceremony waits, and a phone on mobile data just shows the update and waits for your tap.
 - **Fixed: a pill on the Fleet page could fire the wrong action** (the Lock-out pill). The page's buttons now share one bookkeeping number.
 - **Half-typed messages survive a desktop update.** The compose box is saved before the app swaps itself for the new version.
