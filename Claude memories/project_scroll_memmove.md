@@ -17,3 +17,5 @@ metadata:
 **Not done:** settings content pane (rail fixed beside, split bg per pane); mixed-DPI extra pass may overwrite `last_pane`. Field verify on a phone pending (seams, overlays, PERF lines).
 
 Related: [[feedback_render_never_touches_vault]], [[project_render_storm_lag]], [[project_ready_first_paint]].
+
+**First phone build CONVICTED 2026-10-06 (Nick: "has not been applied… seems more glitchy"; phone log: every scroll frame still 17-23 ms):** the pre-dispatch rule in `on_event` set `scene_dirty` for EVERY event except CursorMoved — the wheel (and Android's synthetic touch wheel) included — so no frame ever qualified for the hint, while `pane_scroll`'s rigid path had already skipped `invalidate_bg/chrome` → the bg noise stood still under moving rows and hit stamps lagged a shift. Fixes: the wheel is exempt from the blanket claim (its consumers mark their own); `row_hover` does not dirty the scene while `press_held`; the render invalidates bg + chrome itself whenever `scroll_shift != 0` but no hint carried the frame (self-protecting — a refused hint can never leave a half-applied scroll again).

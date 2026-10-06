@@ -2118,7 +2118,8 @@ impl FluorApp for PhotonApp {
                 ),
                 _ => false,
             };
-        if !matches!(event, Event::CursorMoved { .. }) && !compose_typing {
+        // THE WHEEL is the third narrow case (SCROLL AS A MEMMOVE, 2026-10-06): its every consumer marks what it moves itself — `pane_scroll` (a rigid shift repaints a band over a memmove; a non-rigid one dirties the scene or the layers), the compose-box scroll, the viewer/reader — so the blanket claim here would only force the full repaint the memmove exists to avoid. The first dev build with the memmove shipped WITH this claim still in place: no frame ever qualified, and the skipped layer invalidations left the bg noise standing still under moving rows.
+        if !matches!(event, Event::CursorMoved { .. } | Event::MouseWheel { .. }) && !compose_typing {
             self.scene_dirty = true;
         }
         // THE IMAGE VIEWER IS OPSIN'S VIEW: while it is open, pointer, wheel and key events go to it first with the hit id under the cursor. Photon keeps what is photon's — its own Back/Save pills (their ids are not the view's, and a press on them must not start a pan under them), the arrow keys (they step between the conversation's images), Shift+Escape (the real exit). `Close` is the view's Escape asking to leave; an export request from its Save pill is photon's save.
@@ -2193,7 +2194,8 @@ impl FluorApp for PhotonApp {
                                 && hit >= self.settings_btn_base
                                 && hit < (self.settings_btn_base + SETTINGS_PILL_SLOTS))
                     };
-                    if row_hover(new_hit) || row_hover(self.hover_hit) {
+                    // Not while a finger (or button) drags the pane: the rows passing under it are not being hovered, and the full repaint would defeat the scroll memmove every frame.
+                    if (row_hover(new_hit) || row_hover(self.hover_hit)) && !self.press_held {
                         self.scene_dirty = true;
                     }
                     self.hover_hit = new_hit;

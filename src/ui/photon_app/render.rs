@@ -656,6 +656,11 @@ impl PhotonApp {
         let mark_pre = std::time::Instant::now();
         // SCROLL AS A MEMMOVE (Nick 2026-10-06): when `damage_rect` armed a rigid shift for this frame (and the host did not override it with a full repaint — then the clip IS the viewport and no memmove happened anywhere), the bg layer shifts by the same dy and only the exposed band re-rasters; the hit map shifts after the chrome pass; the lists clip their rows to the damage; the final bg flatten covers only the damage.
         let scroll_hint = self.scroll_hint_armed.filter(|_| ctx.damage_clip != fluor::canvas::PixelRect::new(0, 0, buf_w, buf_h));
+        // A scroll this frame that the hint did NOT carry (something else was dirty, the host forced a full repaint, no pane recorded yet): the layers `pane_scroll` left alone must now re-raster the ordinary way — the bg at the new offset, the hit map re-stamped — or the noise stands still under moving rows and taps land one shift behind.
+        if scroll_hint.is_none() && self.scroll_shift != 0 {
+            chrome.invalidate_bg();
+            chrome.invalidate_chrome();
+        }
         let mut paint_bg = |canvas: &mut Canvas, bg_clip: Option<fluor::paint::Clip>| {
             // LOGO first (an under() layer — first-drawn claims its pixels; the noise then composes beneath). The wave does NOT draw here: pre-noise it lands on α=0 pixels the noise fully replaces — the old both-blocks double-draw burned a full wave AND a full 3-raster logo per bg pass for nothing (Nick 2026-09-02).
             if on_launch {
