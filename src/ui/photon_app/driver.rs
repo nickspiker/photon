@@ -2394,6 +2394,7 @@ impl FluorApp for PhotonApp {
                 self.fling_logged = false;
                 self.scroll_frames_hinted = 0;
                 self.scroll_frames_full = 0;
+                self.hint_refusal_logged = false;
                 self.press_held = true;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
@@ -2554,6 +2555,21 @@ impl FluorApp for PhotonApp {
                 ..
             } => {
                 self.press_held = false;
+                // THE LIFT (2026-10-06 phone log: a 187 px/frame flick sampled [187, 182, 2, 0, 0] and died at 2 — the finger's last one or two frames before Android reports UP are the lift, not the gesture). Up to two trailing still frames are dropped before the median; three or more is a genuine hold and the fling is zero, as Nick asked.
+                if self.drag_px > 0 {
+                    let oldest_first: Vec<i32> = self.fling_recent.iter().rev().copied().collect();
+                    let mut end = oldest_first.len();
+                    let mut dropped = 0;
+                    while end > 0 && dropped < 2 && oldest_first[end - 1] == 0 {
+                        end -= 1;
+                        dropped += 1;
+                    }
+                    if dropped > 0 && end > 0 && oldest_first[end - 1] != 0 {
+                        let mut kept = oldest_first[..end].to_vec();
+                        kept.sort_unstable();
+                        self.list_fling = kept[kept.len() / 2];
+                    }
+                }
                 // A drag that ends with no fling to follow settles now (see the fling's end): one full repaint after memmove frames.
                 if self.drag_px > 0 && self.list_fling == 0 {
                     self.scene_dirty = true;
@@ -3629,23 +3645,26 @@ impl FluorApp for PhotonApp {
                 if !self.fling_logged && crate::is_dev_build() {
                     self.fling_logged = true;
                     let samples = format!("{:?}", self.fling_recent);
+                    let (off, max) = self.pane_offset_and_max().unwrap_or((0.0, 0.0));
                     crate::logf!(
-                        "SCROLL: fling starts at {} px/frame — last five frame samples {}; the drag: {} frames sampled, {} wheel events, {} px; renders so far: {} memmove, {} full",
-                        v, samples, self.drag_frames, self.drag_events, self.drag_px, self.scroll_frames_hinted, self.scroll_frames_full
+                        "SCROLL: fling starts at {} px/frame — last five frame samples {}; the drag: {} frames sampled, {} wheel events, {} px; offset {} of {}; renders so far: {} memmove, {} full",
+                        v, samples, self.drag_frames, self.drag_events, self.drag_px, off.round() as i64, max.round() as i64, self.scroll_frames_hinted, self.scroll_frames_full
                     );
                 }
                 let before = self.scroll_signature();
                 let _ = self.pane_scroll(ctx, v as isize, true, true);
                 let moved = self.scroll_signature() != before;
+                // A BOUND ENDS THE FLING (2026-10-06 phone log: every fling frame was a full repaint and the list crept at a fraction of the flick — the fling had run into the rubber zone, where each frame moves a resisted sliver, the spring fights it back, and `moved` stays true forever). Past either end the glide is over; the spring eases whatever overshoot the last step left.
+                let in_bounds = self.pane_in_bounds();
                 let m = v.abs() - 1;
-                self.list_fling = if !moved || m <= 0 { 0 } else { m * v.signum() };
+                self.list_fling = if !moved || !in_bounds || m <= 0 { 0 } else { m * v.signum() };
                 if self.list_fling == 0 {
                     // THE SETTLE FRAME: memmove frames paint only the band, so a row's link tap targets and the like are last-known from its last full paint — one ordinary repaint at rest puts every row's bookkeeping back to truth.
                     self.scene_dirty = true;
                     if crate::is_dev_build() {
                         crate::logf!(
                             "SCROLL: fling ended ({}) — renders since the press: {} memmove, {} full",
-                            if moved { "ran out" } else { "hit a bound" }, self.scroll_frames_hinted, self.scroll_frames_full
+                            if !moved || !in_bounds { "hit a bound" } else { "ran out" }, self.scroll_frames_hinted, self.scroll_frames_full
                         );
                     }
                 }
@@ -3884,6 +3903,14 @@ impl FluorApp for PhotonApp {
                 }
             }
             // A shift the hint cannot carry (no pane recorded yet, a shift past the pane's height, something else changed too) is an ordinary full repaint — never a skipped one.
+            if !self.hint_refusal_logged && crate::is_dev_build() {
+                self.hint_refusal_logged = true;
+                let pane = self.last_pane.as_ref().map(|(t, r, o)| format!("pane {} {}..{} with {} overlays", t, r.y0, r.y1, o.len())).unwrap_or_else(|| "no pane recorded".to_string());
+                crate::logf!(
+                    "SCROLL: memmove hint refused for a {} px shift — scene_dirty {}, chord {}, chrome_dirty {}, screen {}, viewer {}, wave {}; {}",
+                    shift, self.scene_dirty, chord, chrome_dirty, want, self.viewer.is_some() || self.reader.is_some(), self.wave_screen(), pane
+                );
+            }
             return Some(PixelRect::new(0, 0, vw, vh));
         }
         if self.scene_dirty || chord {
@@ -4250,6 +4277,24 @@ impl PhotonApp {
         }
         ctx.window.request_redraw();
         EventResponse::Pass
+    }
+
+    /// The active pane's offset and its ceiling — (offset, max) — for the fling's bound test and the scroll instrument; `None` on a screen with no fling pane.
+    fn pane_offset_and_max(&self) -> Option<(f32, f32)> {
+        match self.state {
+            AppState::Ready => Some((self.contacts_scroll as f32, self.contacts_scroll_extent as f32)),
+            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_) => Some((self.settings_content_scroll, self.settings_content_extent)),
+            AppState::Conversation => self
+                .active_conversation
+                .and_then(|id| self.conversations.iter().find(|v| v.id() == id))
+                .map(|c| (c.scroll_offset, self.msg_max_scroll)),
+            _ => None,
+        }
+    }
+
+    /// Inside [0, max] (a hair of slack for the rounding the memmove path does) — the fling lives only here; the rubber zones belong to the spring.
+    fn pane_in_bounds(&self) -> bool {
+        self.pane_offset_and_max().map_or(false, |(o, m)| o >= -0.5 && o <= m + 0.5)
     }
 
     /// The scroll positions the fling can move — compared before and after a fling step, so a step that hit a bound ends the fling.
