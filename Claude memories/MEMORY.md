@@ -44,8 +44,8 @@
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
 - [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes (id = blake3(text‖nonce)), statuses via photonlog --gripes/--gripe-status, token keys/gripes.token
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
-- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; "waiting for them to add you"; OPEN: restart re-keys offline friends
-- [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): keygen queue ignored consent (offer before mutuality) + stranger knock dropped unreplayed
+- [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; OPEN: restart re-keys offline friends
+- [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): offer before mutuality + stranger knock dropped unreplayed
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry; newest row's strip unasked
 - [Ready first paint](project_ready_first_paint.md) — v110: content hit stamps ride the paint decision (stamp BEFORE paint, only where not yet opaque); never re-stamp the orb; a mid-render dirty flag must survive its render
