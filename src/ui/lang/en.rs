@@ -578,7 +578,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Theme => "Theme".into(),
         Msg::DarkChrome => "Dark chrome".into(),
         Msg::LightChrome => "Light chrome".into(),
-        Msg::PartyColours => "Party colours (placeholder → perceptual L≈50%)".into(),
+        Msg::PartyColours => "Party colours".into(),
         Msg::ZoomTextSize => "Zoom / text size".into(),
         Msg::ColourCalibration => "Colour calibration (Android panel)".into(),
         // ---- notifications ----

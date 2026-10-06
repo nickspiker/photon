@@ -488,9 +488,11 @@ fn self_colour() -> u32 {
     vsf_rgb_to_stored([0.5; 3])
 }
 
-/// Deterministic per-party text colour: an iso-luminance hue ray in linear VSF RGB, fed by the relationship digest (`spaghettify(party ‖ other)` — the same digest family as the chime, so ears and eyes derive from one relationship identity).
+/// Deterministic per-party text colour: a point drawn UNIFORMLY from the Y = 0.5 slice of the VSF RGB cube, fed by the relationship digest (`spaghettify(party ‖ other)` — the same digest family as the chime, so ears and eyes derive from one relationship).
 ///
-/// Brightness is locked at photopic Y = 0.5 LINEAR via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC): photopic Y is linear in linear RGB, so the legal colours form a plane slicing the gamut cube thru grey (0.5, 0.5, 0.5). "colour hue" picks a direction in that plane (⊥ the luminance gradient), "colour chroma" (√-biased toward saturated) walks from grey toward the wall. The walk is clipped against BOTH the VSF RGB cube and the preimage of the linear sRGB cube, so the displayed colour is never gamut-clipped — the 50% promise holds on the actual screen. Returns fluor stored α+darkness.
+/// Brightness is locked at photopic Y = 0.5 LINEAR — Nick's definition (2026-10-06): "if 100 watts of illuminant E hit that surface, 50 watts get reflected" — via the spectral pipeline (Stockman & Sharpe 2000 10° cone fundamentals, LMS2PHOTOPIC). Photopic Y is linear in linear RGB, so the legal colours form a plane slicing the cube; its grey point (0.5, 0.5, 0.5) is self.
+/// WITHIN that slice the draw is uniform by AREA (Nick 2026-10-06: "take the VSF RGB triangle and pick any point within uniform at random, not sure why we are clipping some to the edge and skewing away from grey") — the earlier hue-ray scheme walked every colour out toward the gamut wall with a √ chroma bias, so the population hugged the edges and the wall's distance varied by hue. Uniform area needs no bias: most of a 2-D region's area lies away from its centre, so few draws land greyish on their own, and no hue is stretched.
+/// The region is the slice of the VSF cube INTERSECTED with the slice of the Rec.2020 cube (the display gamut every non-mac surface is tagged with; macOS ships raw VSF and the intersection only costs it a sliver), so a drawn colour never clips on the panel and arrives with its hue intact. Sampling is rejection over the slice's bounding square with digest-deterministic draws — the same digest always yields the same colour on every device.
 fn party_colour(digest: &[u8; 32]) -> u32 {
     use vsf::colour::convert::vsf_rgb_to_photopic_f32;
     // Display gamut for the ray clip is Rec.2020 now (colour doctrine: assume wide-gamut, tag BT.2020) — clipping against sRGB needlessly muted saturated party colours a wide panel can actually show. macOS ships raw VSF so its own gamut IS the VSF cube (the first clip already covers it); Rec.2020 is the honest shared display target for the rest.
@@ -514,26 +516,6 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
         w[0] * u[1] - w[1] * u[0],
     ]);
 
-    let theta = aesthetic_channel_unit("colour hue", digest) * core::f32::consts::TAU;
-    let (sin_t, cos_t) = theta.sin_cos();
-    let dir = [
-        u[0] * cos_t + v[0] * sin_t,
-        u[1] * cos_t + v[1] * sin_t,
-        u[2] * cos_t + v[2] * sin_t,
-    ];
-    let grey = [0.5f32; 3];
-
-    // Largest t with origin + t·dir inside [0,1]³ (per-axis wall clip; dir ⊥ w keeps Y at 0.5 for every t).
-    let ray_box_t = |origin: [f32; 3], d: [f32; 3]| -> f32 {
-        let mut t = f32::MAX;
-        for i in 0..3 {
-            if d[i].abs() > 1e-9 {
-                let wall = if d[i] > 0.0 { 1.0 } else { 0.0 };
-                t = t.min((wall - origin[i]) / d[i]);
-            }
-        }
-        t.max(0.0) // the algorithm: a parameter before the curve's start holds at its start
-    };
     // Column-major 3x3 apply (matches vsf's matrix layout).
     let apply = |m: &[f32; 9], p: [f32; 3]| -> [f32; 3] {
         [
@@ -542,23 +524,23 @@ fn party_colour(digest: &[u8; 32]) -> u32 {
             m[2] * p[0] + m[5] * p[1] + m[8] * p[2],
         ]
     };
+    let grey = [0.5f32; 3];
+    // Every point of the unit cube lies within √3/2 of its centre, so a square of that half-width in the (u, v) plane covers the whole slice; a draw outside either cube is rejected and the next pair tried.
+    const HALF: f32 = 0.866_025_4;
+    let inside = |p: [f32; 3]| p.iter().all(|c| (-1e-6..=1.0 + 1e-6).contains(c));
+    let mut rgb_vsf = grey;
+    for i in 0u32..64 {
+        let a = (aesthetic_channel_unit(&format!("colour sample a {i}"), digest) * 2.0 - 1.0) * HALF;
+        let b = (aesthetic_channel_unit(&format!("colour sample b {i}"), digest) * 2.0 - 1.0) * HALF;
+        let cand = [grey[0] + a * u[0] + b * v[0], grey[1] + a * u[1] + b * v[1], grey[2] + a * u[2] + b * v[2]];
+        if inside(cand) && inside(apply(&VSF_RGB2REC2020, cand)) {
+            rgb_vsf = cand;
+            break;
+        }
+        // 64 misses in a row has probability well under 2^-40 for a slice this size; grey is the honest fallback, never a clamp.
+    }
 
-    let t_vsf = ray_box_t(grey, dir);
-    // The same ray expressed in linear Rec.2020 (linear map ⇒ still a ray): clip against the display cube too, so the colour never clips on a wide-gamut panel.
-    let grey_s = apply(&VSF_RGB2REC2020, grey);
-    let dir_s = apply(&VSF_RGB2REC2020, dir);
-    let t_rec = ray_box_t(grey_s, dir_s);
-    let t_max = t_vsf.min(t_rec);
-
-    // √ bias: uniform chroma draws cluster greyish; sqrt pushes the population toward saturated.
-    let chroma = aesthetic_channel_unit("colour chroma", digest).sqrt() * t_max;
-    let rgb_vsf = [
-        grey[0] + chroma * dir[0],
-        grey[1] + chroma * dir[1],
-        grey[2] + chroma * dir[2],
-    ];
-
-    // Display: in-cube by the dual clip; shared encoder does sRGB conversion + OETF + darkness packing.
+    // Display: in both cubes by construction; the shared encoder does the Rec.2020 conversion + OETF + darkness packing.
     vsf_rgb_to_stored(rgb_vsf)
 }
 

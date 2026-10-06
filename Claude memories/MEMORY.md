@@ -67,7 +67,7 @@
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
 - [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, level-coloured rings); mic/speaker pickers
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission; instrumented cron kept bait (unconvicted)
-- [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — party colours placeholder; go perceptual L≈50% via vsf spectral/LMS
+- [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — CLOSED 2026-10-06: 50% = physical Y=0.5; uniform-by-area draw over the slice
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
 - [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — sentinel purge shipped; RELAY_ADDR/RosterEntry/ACK-API remain, convert when touched
 - [project_rekey_attack_surface.md](project_rekey_attack_surface.md) — rekey threat model (docs/rekey-threat-model.md); first-met device un-revocable, revocation unwired
