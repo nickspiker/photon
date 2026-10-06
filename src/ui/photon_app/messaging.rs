@@ -830,7 +830,7 @@ impl PhotonApp {
                     );
                     continue;
                 }
-                crate::log("CHAT: no local chain — fleet-forwarded to the chain-owning sibling (delivered tick follows its ACK)");
+                crate::log("CHAT: no local chain — fleet-forwarded; a lane-capable sibling transmits it on its own lane (delivered tick follows its ACK)");
             }
             // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it. (Same push carries the fleet-forward case.)
             self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);

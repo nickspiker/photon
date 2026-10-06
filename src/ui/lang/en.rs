@@ -598,7 +598,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "Coming in the next release".into(),
         Msg::DevChannelHint => "If you want to beta test features, this one's for you!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "Check for updates automatically".into(),
         Msg::AutoUpdateInstall => "Install updates automatically".into(),
         Msg::UpdateChecking(kind) => format!("Checking {kind}\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("{kind} unavailable").into(),

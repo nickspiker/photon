@@ -512,7 +512,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "Yanayokuja katika toleo lijalo".into(),
         Msg::DevChannelHint => "Kama unataka kujaribu vipengele vya beta, hiki ni chako!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "Tafuta masasisho kiotomatiki".into(),
         Msg::AutoUpdateInstall => "Sakinisha masasisho kiotomatiki".into(),
         Msg::UpdateChecking(kind) => format!("Inatafuta {kind}\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("{kind} haipatikani").into(),

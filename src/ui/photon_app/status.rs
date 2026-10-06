@@ -3852,7 +3852,7 @@ impl PhotonApp {
                     });
                 }
 
-                // A checkpoint minter's root hand-off: open-success under the k−1 ckpt_root key is member-grade authentication (only fleet devices past epoch k−1 hold it); the chain's public commitment reconciles on the next refold as defence-in-depth, never as the liveness gate.
+                // A checkpoint minter's root hand-off: open-success under the k−1 ckpt_root key is member-grade authentication (only fleet devices past epoch k−1 hold it); the chain's public commitment is MEANT to be reconciled at refold (not built — TICKETS, fleet epoch spine residue) as defence-in-depth, never as the liveness gate.
                 StatusUpdate::CkptRootReceived {
                     k,
                     fanout_epoch,

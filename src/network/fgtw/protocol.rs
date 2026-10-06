@@ -1271,7 +1271,7 @@ fn add_pong_sensitive_fields(section: &mut vsf::VsfSection, tail: &PongTail) {
     if let Some(pin) = avatar_pin {
         section.add_field_multi("apin", vec![VsfType::hR(pin.to_vec())]);
     }
-    // REPORTED-STOLEN signal (device-trust-and-recovery.md): our fleet's locked-out devices, so a friend can refuse them too. Sealed like the rest of the tail; the receiver applies its own threshold (two distinct reporters) before refusing anything — one compromised member must not be able to strand its siblings.
+    // REPORTED-STOLEN signal (device-trust-and-recovery.md): our fleet's locked-out devices, so a friend can refuse them too. Sealed like the rest of the tail; the receiver applies its own threshold (one report from a trusted fold member, since 1660a82f) before refusing anything — one compromised member must not be able to strand its siblings.
     for dev in locked {
         section.add_field_multi("lockd", vec![VsfType::hb(dev.to_vec())]);
     }

@@ -106,16 +106,29 @@ impl PhotonApp {
             }
             StampVerdict::Accept => {}
         }
-        // A dev build never hops channels on its own, and Android can't self-install — both announce instead. patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0 (deploy opens the dev line at .1; dev publishes are publish-current-then-bump).
-        let desktop_release = cfg!(not(target_os = "android")) && ours.2 == 0;
-        if desktop_release {
+        // A dev build never hops channels on its own — it announces. patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0.
+        let release_build = ours.2 == 0;
+        // Android (Nick 2026-10-06, "that auto update would be very nice"): the APK is downloaded and staged here and handed to the PackageInstaller SESSION (PhotonActivity.installApk) — silent on Android 12+ once photon is its own installer of record (the first self-update is the one confirm tap that makes it so), the system confirm dialog otherwise. The install kills the process, so never mid-ceremony (a lost completion = era split, the 2026-09-10 lesson) or mid-wave, and never on a metered network; a deferred update is re-evaluated at a short cadence instead of the 6–8 h one.
+        let android_busy = cfg!(target_os = "android")
+            && (self.active_wave.is_some() || self.contacts.iter().any(|c| c.clutch_ceremony_in_progress || c.clutch_keygen_in_progress));
+        let android_metered = cfg!(target_os = "android") && crate::network::wfd::net_metered();
+        if release_build && (cfg!(not(target_os = "android")) || !(android_busy || android_metered)) {
             crate::logf!(
-                "UPDATE: auto-applying release {} (stamp window clear)",
-                row.version_string()
+                "UPDATE: auto-applying release {} (stamp window clear{})",
+                row.version_string(),
+                if cfg!(target_os = "android") { ", unmetered, idle — staging the APK for the installer session" } else { "" }
             );
             self.update_release = ChannelCheck::Ready(Some(row));
             self.spawn_update_apply(crate::network::updates::Channel::Release);
         } else {
+            if release_build {
+                crate::logf!(
+                    "UPDATE: {} available — deferring the install ({}), re-checking soon",
+                    row.version_string(),
+                    if android_busy { "a wave or ceremony is in progress" } else { "metered network" }
+                );
+                self.next_update_check_osc = now_sys + (15 * 60 + crate::jitter(5 * 60)) * crate::OSC_PER_SEC;
+            }
             // A standing band, not a toast (Nick 2026-09-09): it stays until the update is on, and it stacks with the other bands.
             if self.update_toasted != Some(row.version) {
                 self.update_toasted = Some(row.version);

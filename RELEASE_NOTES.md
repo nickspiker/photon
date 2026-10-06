@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Android installs its own updates.** With "Install updates automatically" on, a phone on Wi-Fi now downloads and installs a new release by itself. The very first time, Android asks you to confirm once; after that, updates land silently and Photon comes straight back, signed in. A phone in the middle of a wave or a key ceremony waits, and a phone on mobile data just shows the update and waits for your tap.
+- **Fixed: a pill on the Fleet page could fire the wrong action** (the Lock-out pill). The page's buttons now share one bookkeeping number.
+- **Half-typed messages survive a desktop update.** The compose box is saved before the app swaps itself for the new version.
 - **Contact colours are drawn evenly.** Each contact's text colour is still a fixed half-brightness, but it is now picked evenly from everything that brightness allows, instead of being pushed out to the most saturated edge. Expect gentler, more varied colours; every contact's colour will change once.
 - **Image viewer: a bar while the picture arrives.** Opening a photo that is still on your other device or a friend's showed the preview and nothing else until the original landed, which looked like a hang. The viewer now draws a bar for the fetch (how many pieces have come in) and then for the decode, and a big file is sealed to disk off the drawing thread when you send it.
 - **Android: colours in the image viewer.** The viewer's picture, navigator and histogram packed pixels in desktop byte order, so red and blue traded places on Android. Fixed in opsin, which the viewer is.

@@ -78,11 +78,13 @@ Without this the swap is "transparent aside from unsent typing"; with it there i
 
 ## Android
 
-Android does not let an app overwrite its own installed package — replacing the APK goes thru the system package installer and requires an explicit user action, by OS design.
-So the Android path is: with "notify of updates" on (the default), the client learns from the same signed manifest that a newer version exists and surfaces a notification.
-On tap it **explains what the update is** (version, and what changed) before asking for anything, then **requests the install-other-apps permission** (`REQUEST_INSTALL_PACKAGES`) if it is not already granted, and only then hands the downloaded, signature-verified APK to the system package installer.
-The verify-before-anything invariant still holds — the client checks the APK's signature against the release key before offering to install it — but the final permission grant, install, and restart are the user's taps, not a silent swap.
-The order matters: explain first, request permission second, install third — never lead with a bare permission prompt.
+Android does not let an app overwrite its own installed package — replacing the APK goes thru the system package installer, by OS design.
+Since Android 12 that installer has an unattended path: a `PackageInstaller` session committed with `USER_ACTION_NOT_REQUIRED` installs silently when the committing app is the installed app's installer of record, declares `UPDATE_PACKAGES_WITHOUT_USER_ACTION`, and the update asks for no new permissions.
+Photon updating photon meets all three once photon has installed itself ONCE — so the first self-update after a sideload is the system confirm dialog (that tap makes photon its own installer of record), and every update after it is silent.
+The automatic path (2026-10-06): with "Install updates automatically" on (the default), the signed-manifest poll finds a newer release, the APK is downloaded and hash-verified on an UNMETERED network only, and handed to the session; the install kills the process, the `MY_PACKAGE_REPLACED` receiver relaunches the connection service, and the new build opens the same-boot session capsule — nobody re-attests (only a REBOOT does that, by design).
+A device mid-wave or mid-CLUTCH ceremony defers the install (a lost ceremony completion is an era split) and re-checks on a short cadence; a metered network defers the same way and leaves the standing "update available" band up for a manual tap.
+Android 11 and older have no unattended path: there the session still ends in the system confirm dialog, which the result receiver raises; the explain-first order still holds for that tap.
+The verify-before-anything invariant is unchanged — the client checks the APK's signature against the release key before staging it, and Android's own same-signing-key check sits under that.
 
 ## Gating (when the swap is allowed to happen)
 

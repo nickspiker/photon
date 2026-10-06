@@ -505,7 +505,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "Sắp có ở bản kế tiếp".into(),
         Msg::DevChannelHint => "Nếu bạn muốn thử nghiệm tính năng mới thì kênh này dành cho bạn!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "Tự động tìm bản cập nhật".into(),
         Msg::AutoUpdateInstall => "Tự động cài bản cập nhật".into(),
         Msg::UpdateChecking(kind) => format!("Đang kiểm tra {kind}\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("{kind} không có sẵn").into(),

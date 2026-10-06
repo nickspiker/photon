@@ -10,7 +10,7 @@ pub(super) enum BridgeJob {
     Reset([u8; 32]),
 }
 
-/// One streamed emission from the executor toward the wire: `body` is the FULL accumulated output so far (a snapshot, never a delta — loss/reorder/dedup of any one frame is then a free no-op), `target` is the command row's eagle_time (what the client's replace-in-place keys on), `fin` carries the exit code once the command completed, and the locus names where the shell stands so the operator is never blind to host+cwd again (field 2026-08-23: a pull meant for photon ran in keys/). Partials ride a latest-wins slot (a superseded snapshot is garbage by definition); finals ride the ordered channel because every one must reach the wire.
+/// One streamed emission from the executor toward the wire: `body` is this emission's output bytes (a DELTA since 1358caa8 — the snapshot form this doc once described is gone; docs/bridge.md carries the re-serve rules), `target` is the command row's eagle_time (what the client's replace-in-place keys on), `fin` carries the exit code once the command completed, and the locus names where the shell stands so the operator is never blind to host+cwd again (field 2026-08-23: a pull meant for photon ran in keys/). Partials ride a latest-wins slot (a superseded snapshot is garbage by definition); finals ride the ordered channel because every one must reach the wire.
 #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
 pub(super) struct BridgeEmit {
     /// The sibling conversation, by id — the emit crosses the executor thread and back, and an index would drift after a removal.

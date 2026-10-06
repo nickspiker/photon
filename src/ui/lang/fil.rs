@@ -506,7 +506,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "Darating sa susunod na labas".into(),
         Msg::DevChannelHint => "Kung gusto mong subukan ang mga bagong feature, para sa iyo ito!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "Awtomatikong maghanap ng update".into(),
         Msg::AutoUpdateInstall => "Awtomatikong mag-install ng update".into(),
         Msg::UpdateChecking(kind) => format!("Tinitingnan ang {kind}\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("hindi available ang {kind}").into(),

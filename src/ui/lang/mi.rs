@@ -508,7 +508,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "Kei te haere mai i te putanga e whai ake nei".into(),
         Msg::DevChannelHint => "Mēnā e hiahia ana koe ki te whakamātau i ngā āhuatanga hou, mōu tēnei!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "Tirohia aunoatia ngā whakahōutanga".into(),
         Msg::AutoUpdateInstall => "Tāutaina aunoatia ngā whakahōutanga".into(),
         Msg::UpdateChecking(kind) => format!("E tirotiro ana i te {kind}\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("kāore he {kind} e wātea ana").into(),

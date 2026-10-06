@@ -740,7 +740,6 @@ pub enum Msg<'a> {
     /// Under the dev pill on the Updates page.
     DevChannelHint,
     PhotonVersion(&'a str),
-    AutoUpdateCheck,
     AutoUpdateInstall,
     UpdateChecking(&'a str),
     UpdateUnavailable(&'a str),

@@ -1210,9 +1210,6 @@ impl PhotonApp {
             cb.set_label(tr(Msg::PresenceCheckbox));
         }
         if let Some(cb) = self.settings_autoupdate_check.as_mut() {
-            #[cfg(target_os = "android")]
-            cb.set_label(tr(Msg::AutoUpdateCheck));
-            #[cfg(not(target_os = "android"))]
             cb.set_label(tr(Msg::AutoUpdateInstall));
         }
         if let Some(cb) = self.settings_hardlogs_check.as_mut() {

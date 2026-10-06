@@ -509,7 +509,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "Sonraki sürümde geliyor".into(),
         Msg::DevChannelHint => "Özellikleri beta olarak denemek istiyorsan bu sana göre!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "Güncellemeleri kendiliğinden denetle".into(),
         Msg::AutoUpdateInstall => "Güncellemeleri kendiliğinden kur".into(),
         Msg::UpdateChecking(kind) => format!("{kind} denetleniyor\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("{kind} kullanılamıyor").into(),

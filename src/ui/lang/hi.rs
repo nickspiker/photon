@@ -515,7 +515,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::UpcomingChanges => "अगली रिलीज़ में आ रहा है".into(),
         Msg::DevChannelHint => "अगर नई चीज़ें बीटा में आज़मानी हैं, तो यह तुम्हारे लिए है!".into(),
         Msg::PhotonVersion(v) => format!("Photon {v}").into(),
-        Msg::AutoUpdateCheck => "अपडेट अपने-आप देखो".into(),
         Msg::AutoUpdateInstall => "अपडेट अपने-आप लगाओ".into(),
         Msg::UpdateChecking(kind) => format!("{kind} देखा जा रहा है\u{2026}").into(),
         Msg::UpdateUnavailable(kind) => format!("{kind} उपलब्ध नहीं").into(),

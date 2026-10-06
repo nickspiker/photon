@@ -302,7 +302,7 @@ impl FluorApp for PhotonApp {
         reserve_hits(&mut self.hit_counter, SettingsPage::ALL.len() as HitId); // one rail row per page
         reserve_hits(&mut self.hit_counter, 1);
         self.settings_btn_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 39); // pills 0..=39 — the Fleet page's fourth band (32+ Lock-out) lives at the top of the block
+        reserve_hits(&mut self.hit_counter, SETTINGS_PILL_SLOTS); // the Fleet page's slot map runs to 56 + six rows; the dispatch windows below read the SAME constant (the 2026-10-06 sweep found 39 reserved against pills stamped at 56+ — the Lock-out pill bug)
         reserve_hits(&mut self.hit_counter, 1);
         self.contact_panel_btn_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 3); // contact-panel pills 0..=3 (0 = Boot)
@@ -464,12 +464,8 @@ impl FluorApp for PhotonApp {
         ));
         self.settings_autoupdate_check = Some(fluor::widgets::Checkbox::new(
             &mut self.hit_counter,
-            // Platform-honest: desktop release builds self-apply + re-exec, so "install" is literal. Android auto-CHECKS and notifies but deliberately doesn't auto-DOWNLOAD the APK in the background (metered-data safety — the tap-to-install then rides the unattended session installer, silent after the one-time confirm), so the label there says "check", not "install".
-            if cfg!(target_os = "android") {
-                tr(Msg::AutoUpdateCheck)
-            } else {
-                tr(Msg::AutoUpdateInstall)
-            },
+            // Every platform installs for itself now: desktop release builds self-apply + re-exec; Android (2026-10-06) downloads on an unmetered network and hands the APK to the installer session, silent on 12+ once photon is its own installer of record. (metered-data safety — the tap-to-install then rides the unattended session installer, silent after the one-time confirm), so the label there says "check", not "install".
+            tr(Msg::AutoUpdateInstall),
             0.,
             0.,
             1.,
@@ -1064,7 +1060,7 @@ impl FluorApp for PhotonApp {
             if self.settings_btn_base != HIT_NONE
                 && hit_id >= self.settings_btn_base
                 // 64: the Fleet page's slot map bands — 16+ row tap-copy, 24+ Release, 32+ Lock-out, 40+ Unlock, 48+ Approve-sign-out, 56+ Rename (six rows each). A pill whose id falls outside this window paints its press but never dispatches — bump the cap with every new band.
-                && hit_id < (self.settings_btn_base + 64)
+                && hit_id < (self.settings_btn_base + SETTINGS_PILL_SLOTS)
             {
                 let slot = hit_id - self.settings_btn_base;
                 if page == SettingsPage::Fleet {
@@ -2195,7 +2191,7 @@ impl FluorApp for PhotonApp {
                             // Settings pill band: stub pills brighten and the About passless.org link BOLDS on hover — all CONTENT-pass paint (not overlay deltas), so entering/leaving needs the full frame (the link's bold didn't appear until something else forced a redraw, field 2026-09-02).
                             || (self.settings_btn_base != HIT_NONE
                                 && hit >= self.settings_btn_base
-                                && hit < (self.settings_btn_base + 56))
+                                && hit < (self.settings_btn_base + SETTINGS_PILL_SLOTS))
                     };
                     if row_hover(new_hit) || row_hover(self.hover_hit) {
                         self.scene_dirty = true;
@@ -3706,6 +3702,8 @@ impl FluorApp for PhotonApp {
         }
         if let Some(exe) = self.update_reexec.take() {
             crate::log("UPDATE: re-exec into the new binary");
+            // The open draft first (2026-10-06): drafts persist on blur/leave/quit and a 60 s deadline, so without this up to a minute of typing died with the image.
+            self.flush_draft();
             // exec() replaces the process image (and the Windows arm exits) — drain the durable writers first (same law as the quit edge: a queued row must not die with the image), then flush the soft-mode batch or the update trail (and everything since the last edge) dies here.
             self.drain_durable_writers();
             crate::flush_log_buffer();
@@ -4793,6 +4791,9 @@ impl PhotonApp {
 /// Reserve `n` consecutive hit ids — the SPAN twin of fluor's `next_id`, and like it, fail-loud.
 /// WHY: every `base + i` in the UI indexes inside a span handed out here, and a u16 that wrapped would collide with HIT_NONE (0) and with the first spans, sending one control's clicks to another.
 /// PROOF: `checked_add` catches the one way that can happen — an allocation pattern that leaks spans — and stops loud, so an in-span offset can never wrap and needs no wrapping arithmetic of its own.
+/// The settings pill block: ONE number for its reservation, its click window and its hover window. The Fleet page's slot map is the widest user — bands at 8/16/24/32/40/48/56 plus a row index below six — so 64 covers it with room; a pill stamped past this lands in the next block's ids.
+const SETTINGS_PILL_SLOTS: HitId = 64;
+
 fn reserve_hits(counter: &mut HitId, n: HitId) {
     *counter = counter.checked_add(n).expect("hit-id space exhausted: more than 65 535 ids reserved — a span is leaking, not a real need");
 }
