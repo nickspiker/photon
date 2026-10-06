@@ -2379,6 +2379,7 @@ impl FluorApp for PhotonApp {
                 // A new finger ends any fling (the tick's fling waits on the release; a tap with no drag must not resume the old one).
                 self.list_fling = 0;
                 self.fling_recent = [0; 5];
+                self.fling_frame_acc = 0;
                 self.press_held = true;
                 // Any click dismisses the standing hints (event-driven — never hover or time).
                 self.clear_hints();
@@ -3595,6 +3596,14 @@ impl FluorApp for PhotonApp {
                 self.scene_dirty = true;
                 { needs_redraw = true; self.note_redraw(line!() + 100_000); }
             }
+            // THE LIST FLING'S SAMPLER: one sample per FRAME while the finger is down — this frame's accumulated drag delta, zero when it did not move — and the fling is the median of the last five. Frames keep coming at vsync for as long as the touch is down, so a still finger pushes zeros and a lift after a pause carries no fling.
+            if self.press_held || self.pointer_down {
+                self.fling_recent.rotate_right(1);
+                self.fling_recent[0] = std::mem::take(&mut self.fling_frame_acc);
+                let mut sorted = self.fling_recent;
+                sorted.sort_unstable();
+                self.list_fling = sorted[2];
+            }
             // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
             if self.list_fling != 0 && !self.pointer_down && !self.press_held {
                 let v = self.list_fling;
@@ -4121,14 +4130,13 @@ impl PhotonApp {
             }
         if !from_fling {
             // A pixel delta while a press is held is a finger dragging the pane (a trackpad's pixel deltas come with no press and record nothing; the textbox pan's own drag is `pointer_down`).
-            // THE FLING TAKES THE LARGEST OF THE LAST FIVE deltas (by magnitude, sign kept), not the last: the move that ends a flick is usually a slow sub-frame tail, and recording it alone made every flick die early (Nick 2026-10-05, "max of last three" — then five).
+            // The move's delta joins THIS FRAME's accumulator; the tick pushes one sample per frame (zeros included) and takes the median of the last five — see `fling_recent`. (Nick 2026-10-05, "max of last three" — then five).
             if is_pixel_delta && (self.press_held || self.pointer_down) {
-                self.fling_recent.rotate_right(1);
-                self.fling_recent[0] = dy as i32;
-                self.list_fling = *self.fling_recent.iter().max_by_key(|v| v.abs()).unwrap_or(&0);
+                self.fling_frame_acc += dy as i32;
             } else {
                 self.list_fling = 0;
                 self.fling_recent = [0; 5];
+                self.fling_frame_acc = 0;
             }
         }
         ctx.window.request_redraw();

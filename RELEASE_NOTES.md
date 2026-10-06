@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- A flick on a list now carries the typical speed of its last five frames, counting frames where the finger held still, so a pause before lifting stops the glide and a clean flick keeps it.
 
 ## v113
 - **Android installs its own updates.** With "Install updates automatically" on, a phone on Wi-Fi now downloads and installs a new release by itself. The very first time, Android asks you to confirm once; after that, updates land silently and Photon comes straight back, signed in. A phone in the middle of a wave or a key ceremony waits, and a phone on mobile data just shows the update and waits for your tap.

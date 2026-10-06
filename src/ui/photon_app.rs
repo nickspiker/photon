@@ -1570,8 +1570,10 @@ pub struct PhotonApp {
     compose_fling: i32,
     /// LIST FLING velocity in pixels per frame (Nick 2026-10-03, Android): a touch drag's last pixel delta on a pane; on release the tick keeps scrolling by it and sheds one pixel per frame until zero (driver.rs pane_scroll).
     list_fling: i32,
-    /// The last five drag deltas (pixels per move) a pane saw while the finger was down — the fling takes the LARGEST of them by magnitude, sign kept (Nick 2026-10-05: the lift's own last delta is often a slow sub-frame tail; three felt slow, five it is); zero slots are empty.
+    /// The last five FRAMES' drag deltas (pixels per frame, a still frame = 0) while the finger is down — the fling is their MEDIAN (Nick 2026-10-06: "we actually need the median of the last five samples … of the last five frames … samples != frames, like if we have zero delta, we don't get 60sps, we get 0"). Pointer moves are accumulated per frame in `fling_frame_acc` and pushed by the tick, which runs at vsync for as long as the finger is down (PhotonActivity.scheduleNextFrame), so a held-still finger pushes zeros and a lift after a pause flings nothing.
     fling_recent: [i32; 5],
+    /// This frame's accumulated drag delta, pushed into `fling_recent` by the tick.
+    fling_frame_acc: i32,
     /// Send button overlaid inside `message_textbox`'s right edge — mirrors the contacts-screen search `+` button (same size, same overlay treatment). Clicking it sends the compose box contents, same as pressing Enter.
     message_send_btn: Option<Button>,
     /// The purple chain-link button beside send: turns the detected URL into a tagged link with a trimmed label (messaging::compose_link_click). Shown only while a bare URL sits in the box.
@@ -2591,6 +2593,7 @@ impl PhotonApp {
             compose_fling: 0,
             list_fling: 0,
             fling_recent: [0; 5],
+            fling_frame_acc: 0,
             contacts_plus_btn: None,
             message_send_btn: None,
             compose_link_btn: None,
