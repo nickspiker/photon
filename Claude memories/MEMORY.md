@@ -61,7 +61,7 @@
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
-- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: voice usage lost fast path → media render at 7% while rocker bound to VOICE_CALL + earpiece proximity armed → Emma silent with rocker maxed
+- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: media render at 7% while the rocker bound VOICE_CALL → Emma silent with rocker maxed
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28
 - [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, first arrival sets it, NO hardcoded timings; l follows ONE sample per zero/sign-change point
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
@@ -155,7 +155,7 @@
 - Transport/presence: [no-ring class](project_call_no_ring_incident.md) (relay express + ring lease) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection]
 - Android/device: [session capsule](project_android_session_capsule.md) (boot-locked de-attest fix) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md)
 
-- More closed: [token asymmetry](project_clutch_token_asymmetry.md) · [shadow conversations](split-contacts-incident.md) (derive convs from the contact) · [notes-row wedge](self-pair-sibling-row.md) · [self-msg vanish](project_self_message_vanish.md) · [put latency](project_vault_op_latency.md)
+- More closed: [token asymmetry](project_clutch_token_asymmetry.md) · [shadow conversations](split-contacts-incident.md) · [notes-row wedge](self-pair-sibling-row.md) · [self-msg vanish](project_self_message_vanish.md) · [put latency](project_vault_op_latency.md)
 - More closed: [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow damage](project_contacts_glow_damage.md) (stale) · [first green E2E](project_braid_working_baseline.md) · [two-machine git](project_two_machine_git_divergence.md)
 
 ## References
