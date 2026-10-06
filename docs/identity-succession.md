@@ -152,45 +152,24 @@ done as conversion-to-a-new-chain because an immutable pinned hash cannot be edi
    genesis clean; a fresh identity carries nothing.
 2. **Single-hop** — covers the v1→v2 migration. Multi-hop (walk-the-chain) is a documented future
    extension, not built.
-3. **Manual sunset, enforced by a compile-time tripwire** — the human decides when everyone has
-   migrated; the build refuses to let the v1-verify path be forgotten (below).
+3. **No sunset** (decided 2026-10-06, below) — the v1-verify path is a permanent reader of the
+   signed v1 genesis. A compile-time tripwire tried to force the question four times and was
+   bumped four times; the precondition it guarded was never reachable.
 
-## Sunset tripwire
+## Sunset decision (2026-10-06): the v1 verify path stays
 
-The v1-verify path must not silently live forever. A `const` assertion turns "we forgot to remove
-it" into a build error at a chosen version. Whoever hits it must either delete the v1 path (and
-flip the flag) or consciously extend the deadline — never ignore it. Lives in the photon crate
-(the app-version authority), pointing at the fgtw code to remove:
+The v1 path (`verify_identity_binding`, the fold's genesis arm accepting a present `identity_sig`,
+its encode/parse) folds every chain founded before the v2 cutover. Chains are immutable and
+append-only, so such a chain is v1 for as long as it exists; the only route to v2 is a re-found
+thru the succession re-pin flow, whose emit side has never been wired. The tripwire that lived in
+`src/network/fgtw/fleet.rs` from 0.57 fired at the v70, v82, v94 and v106 deploys and was bumped
+each time with the same unmet precondition — which was never about app versions: with every client
+current, every chain would still be v1 (Nick's own fleet included).
 
-```rust
-// Sunset tripwire for the v1 fleet-op verify path (docs/identity-succession.md).
-// When the app reaches the sunset version, this FAILS THE BUILD unless the v1 path is gone.
-const fn parse_u(s: &str) -> usize {
-    let (b, mut n, mut i) = (s.as_bytes(), 0usize, 0usize);
-    while i < b.len() { n = n * 10 + (b[i] - b'0') as usize; i += 1; }
-    n
-}
-const CURRENT_VERSION: (usize, usize, usize) = (
-    parse_u(env!("CARGO_PKG_VERSION_MAJOR")),
-    parse_u(env!("CARGO_PKG_VERSION_MINOR")),
-    parse_u(env!("CARGO_PKG_VERSION_PATCH")),
-);
-/// ≈ twelve patch releases past 0.57.3. A knob — bump it if migration runs long.
-const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 57, 15);
-/// Flip to `false` when the fgtw v1 fleet-op verify path is deleted.
-const V1_FLEET_VERIFY_PRESENT: bool = true;
-const fn ver_ge(a: (usize, usize, usize), b: (usize, usize, usize)) -> bool {
-    a.0 > b.0 || (a.0 == b.0 && (a.1 > b.1 || (a.1 == b.1 && a.2 >= b.2)))
-}
-const _: () = assert!(
-    !(V1_FLEET_VERIFY_PRESENT && ver_ge(CURRENT_VERSION, V1_FLEET_VERIFY_SUNSET)),
-    "v1 fleet-op verify path reached its sunset version: confirm all peers are on v2 and delete it \
-     (set V1_FLEET_VERIFY_PRESENT = false), or consciously bump V1_FLEET_VERIFY_SUNSET.",
-);
-```
-
-It fires at *or after* the target (so a minor bump like 0.58.0 trips it too — the point is a
-forced conscious decision, never a silent carry). Firing early costs one line to re-bump.
+Ruling: keep it. It is one extra Ed25519 verify over a typed VSF op, fail-closed and strictly
+stricter than v2 — a reader of a signed binary record, not a compat text hatch. The tripwire is
+deleted; the honest criterion, should anyone ever want to delete the path, is a census showing no
+contact anywhere pins a v1 genesis, and that can only follow a re-found flow that does not exist.
 
 ## Deployment ordering (worker first)
 
@@ -234,7 +213,7 @@ founds v2 unconditionally (`ensure_member` → `genesis_v2`), so it hard-depends
      needs a UX decision: when/how a user declares "I re-founded this identity" (the re-founder must
      still hold ≥1 old-chain device to sign a continuity egg via `SuccessorRecord::new`). Until this
      ships, the receive path above is inert in practice — nothing publishes a record for it to find.
-3. **Tripwire** — DONE: the `const` assertion at `V1_FLEET_VERIFY_SUNSET = (0, 70, 0)` in
-   `src/network/fgtw/fleet.rs`.
-4. **Sunset** (a future release, when you call it): delete the v1 path, flip the flag — the tripwire
-   is already green once the flag is false.
+3. **Tripwire** — RETIRED 2026-10-06 (see "Sunset decision"): it fired four times on a precondition
+   no release could meet.
+4. **Sunset** — not planned. The v1 verify path is permanent unless a re-found flow one day makes
+   every pinned genesis v2.

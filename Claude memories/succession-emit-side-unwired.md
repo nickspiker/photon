@@ -12,3 +12,5 @@ Done and committed: the shared-crate primitive (`SuccessorRecord`, `verify_for_p
 **Outstanding ticket — the EMIT side:** nothing BUILDS a `SuccessorRecord` (via `SuccessorRecord::new`) and calls `fgtw::fleet::publish_successor` on a re-found. It is net-new — there is no existing identity-recreation/re-found UX to hook into — and needs a product decision on when/how a user declares "I re-founded this identity." Constraint: the re-founder must still hold ≥1 OLD-chain device to sign a continuity egg. Until this ships, the receive path is inert in practice (nothing publishes a record for contacts to find).
 
 **Why:** deliberately deferred — the receive path is the security-load-bearing half (verify against the pin, can't be forged) and was safe to ship; the emit side changes founding UX and had no natural hook yet.
+
+**2026-10-06:** the v1 fleet-verify sunset tripwire that depended on this emit side is RETIRED — the v1 path is permanent by ruling (docs/identity-succession.md "Sunset decision"). The emit side is now a plain design item for the total-loss / re-found story, with no deadline attached.

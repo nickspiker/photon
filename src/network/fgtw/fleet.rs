@@ -4,36 +4,10 @@
 //! `fgtw::fleet` (the membership chain), `fgtw::fanout` (fan-out crypto), `fgtw::fstate` (roster codec), `fgtw::pair` (pairing words), and `fgtw::client` (the fetch-then-sign oracle).
 //! What's left here is the *binding*: [`PhotonTransport`] (FGTW's HTTP over photon's warm-TLS pool + short error UX) and [`PhotonSealer`] (roster AEAD over `kete`), plus thin same-signature wrappers that inject them — so the crate stays reqwest-free and photon keeps its own network stack.
 
-// ── Sunset tripwire for the v1 fleet-op verify path (docs/identity-succession.md) ──
-// New fleets found under v2 (no identity_sig); the v1 path in fgtw/src/fleet.rs (verify_identity_binding, the fold genesis arm accepting a present identity_sig, and its encode/parse) stays ONLY to fold chains founded before the cutover. A chain is immutable and append-only, so it becomes v2 only by re-founding via the succession re-pin flow, never on its own — once every peer's chain is v2, the v1 path is dead weight. This const FAILS THE BUILD at the sunset version unless someone confirmed all peers are v2 and deleted it (flip V1_FLEET_VERIFY_PRESENT to false), or consciously bumped the deadline. There is no other way to forget it.
-const fn parse_u(s: &str) -> usize {
-    let (b, mut n, mut i) = (s.as_bytes(), 0usize, 0usize);
-    while i < b.len() {
-        n = n * 10 + (b[i] - b'0') as usize;
-        i += 1;
-    }
-    n
-}
-const CURRENT_VERSION: (usize, usize, usize) = (
-    parse_u(env!("CARGO_PKG_VERSION_MAJOR")),
-    parse_u(env!("CARGO_PKG_VERSION_MINOR")),
-    parse_u(env!("CARGO_PKG_VERSION_PATCH")),
-);
-/// Releases bump the MINOR (deploy.sh), so each sunset is ~twelve releases out. A knob — bump it only after a conscious "the fleet's v2 migration isn't done yet" decision.
-/// CONSCIOUS BUMP 2026-08-30 (0,70,0 → 0,82,0), the v70 deploy tripped it: the v2 precondition cannot be met yet — a chain goes v2 only thru the succession re-pin flow, whose EMIT side is still unwired, so no chain anywhere has ever been re-founded; Daniel's device is also still pre-flag-day. Deleting v1 verify today would break folding every real chain. Next firing should find succession emit wired and the re-pin actually run fleet-wide — then delete, don't bump.
-/// CONSCIOUS BUMP 2026-09-03 (0,82,0 → 0,94,0), the v82 deploy tripped it: the succession EMIT side is STILL unwired (the receive path shipped @05f7d27, emit did not), so the precondition is unchanged from the last bump — no chain has ever been re-founded v2, and deleting v1 verify would still break folding every real chain. The tripwire did its second job tho: this firing was the silent-deploy crash Nick hit three times (its message was invisible behind the snapbuild exec-2>/dev/null stderr eater, fixed the same day). Wire succession emit + run the re-pin fleet-wide before 0.94 — then delete, don't bump.
-/// CONSCIOUS BUMP 2026-09-12 (0,94,0 → 0,106,0), the v94 deploy tripped it: the precondition is still unmet — the succession EMIT side remains unwired (receive shipped @05f7d27, nothing has ever emitted), so no chain has been re-founded v2 and deleting v1 verify would still break folding every real fleet; Daniel's device is still pre-flag-day too. The deploy is the night's ask, the deletion is the owner's morning decision; ticket in TICKETS.md NOW.
-/// CONSCIOUS BUMP 2026-09-28 (0,106,0 → 0,118,0), the v106 deploy tripped it (fourth firing): Nick's ruling — bump once more. The precondition is unchanged: succession EMIT is still unwired, so no chain has been re-founded v2 and deleting v1 verify would break folding every real fleet. Before 0.118: wire emit and re-found the live fleets, or retire the tripwire outright.
-const V1_FLEET_VERIFY_SUNSET: (usize, usize, usize) = (0, 118, 0);
-/// Flip to `false` in the SAME change that deletes the v1 fleet-op verify path from fgtw/src/fleet.rs.
-const V1_FLEET_VERIFY_PRESENT: bool = true;
-const fn ver_ge(a: (usize, usize, usize), b: (usize, usize, usize)) -> bool {
-    a.0 > b.0 || (a.0 == b.0 && (a.1 > b.1 || (a.1 == b.1 && a.2 >= b.2)))
-}
-const _: () = assert!(
-    !(V1_FLEET_VERIFY_PRESENT && ver_ge(CURRENT_VERSION, V1_FLEET_VERIFY_SUNSET)),
-    "v1 fleet-op verify path reached its sunset version: confirm every peer's chain is v2 and delete it from fgtw/src/fleet.rs (set V1_FLEET_VERIFY_PRESENT = false), or consciously bump V1_FLEET_VERIFY_SUNSET."
-);
+// ── The v1 fleet-op genesis verify path is PERMANENT (decision 2026-10-06; docs/identity-succession.md "Sunset decision") ──
+// New fleets found under v2 (no identity_sig); fgtw/src/fleet.rs still folds a v1 genesis (verify_identity_binding when the co-signature is present) because a chain is immutable and append-only: every fleet founded before the cutover is a v1 chain for as long as it exists, and the ONLY way it becomes v2 is a re-found thru the succession re-pin flow, whose emit side is unwired.
+// A version tripwire sat here from 0.57 and was bumped four times (0.70, 0.82, 0.94, 0.106, 0.118) with the same unmet precondition each time — the precondition was never about app versions: with 20 of 20 clients current, every chain would still be v1. The honest criterion is "no contact anywhere pins a v1 genesis", a census over pinned genesis ops, and no re-found flow exists to make it true.
+// So the v1 path is kept as a reader of a SIGNED BINARY genesis (one extra Ed25519 verify over typed VSF, fail-closed, strictly stricter than v2) — not a compat text hatch, and not dead weight: Nick's own fleet and every friend's fold thru it. Delete it only in the same change that deletes the last v1 chain, if that day ever comes.
 
 pub use fgtw::fanout::{
     fanout_from_bytes, fanout_needs_rotation, fanout_open, fanout_seal, fanout_to_bytes,

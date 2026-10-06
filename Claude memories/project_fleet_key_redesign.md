@@ -25,4 +25,4 @@ FIELD STATE (superseded): the Aug-23 DANGER — MacBook held the only history co
 STATUS 2026-08-31 — the migration is DONE; the residue (verified against TICKETS + code, Nick wants it sorted before new features stack on the key):
 1. B3 legs 2+3: sibling hist_page pushes + sibling PONG TAILS still seal under identity-seed-derived keys, not the fleet key's k/k−1 epoch shape chain_sync already has. NEXT UP — it also unblocks the sibling-only About disclosure gating (About must not leak to friends; see 2026-08-31 conversation).
 2. Row-cadence mint (every-256-settled-rows) unbuilt; only rotation + bootstrap mint today (trailing-key exposure rotation-bounded, deliberate residue).
-3. The 0.82 sunset debt: succession EMIT unwired → v1 fleet-verify undeletable (Daniel pre-flag-day); at 0.82 firing: wire emit, re-pin fleet-wide, THEN flip V1_FLEET_VERIFY_PRESENT.
+3. The sunset debt is CLOSED 2026-10-06 by ruling: the v1 fleet-verify path is permanent (a signed-binary reader; chains founded pre-cutover are v1 forever, no re-found flow exists); the tripwire is deleted. Succession EMIT stays unwired as its own low-priority design item.
