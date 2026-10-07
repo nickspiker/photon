@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v114
 - **PDFs show their first page.** A PDF in a conversation now shows page one as its picture, on every device, including PDFs sent before this update once the file is on the device. Tap the page to open it larger; Save exports the PDF itself.
 - **Every file says where it is.** A file's details now say "on this device" or "not on this device", separately from whether your friend has received it.
 - **All your devices keep a copy.** Each of your devices now fetches any file it is missing, one source at a time, from your other devices or your friend's. Phones only do this on Wi-Fi.
