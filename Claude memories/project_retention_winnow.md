@@ -12,3 +12,5 @@ SHIPPED 2026-09-14 (v0.97.1/.2 dev line): the sync law "authorship propagates, e
 **Why:** Nick's ask arc — per-chat sizes → allocation budgets ("50 GB to Photon, messages 5 GB or 1 year whichever trims more") → the verbs (keep/loft/discard) → the sync question.
 
 **How to apply:** the winnow's ENFORCEMENT and loft-for-own-uploads wait for the device-sync phase (blob custody must be checkable; row `replicated` flag is NOT blob custody). Decided-not-built: a recipient's keep made BEFORE the author's retraction stands. Graduated eviction (full→preview→thumb→row) is the winnow's mechanism of choice. Related: [[project_vault_roadmap]], [[project_attachments]], [[project_wave_card]].
+
+**2026-10-07 (Nick): eviction keys on RECEIPT, not creation.** Device-local per-hash `first_here` / `last_wanted` (refreshed when a new photon points at a held hash — a re-send keeps a file alive everywhere), evict bytes only, keep the pointer; never on chain. File pointers hash the RAW bytes (time-free → re-sends dedupe); only heads carry a VSF creation time. docs/retention.md "Eviction keys on RECEIPT".

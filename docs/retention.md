@@ -41,3 +41,13 @@ Rows persist regardless — braid weave makes row content key material, so "reme
 ## 6. The Vault page breakdown
 
 Per-conversation totals, largest first, filters everything / waves / pictures / songs / files / ★ kept — a pure in-memory walk over row records (every attachment row carries its size), no disk, recomputed on page entry / Refresh / filter taps. The engine's occupied number stays ground truth for the whole vault; the walk is what the rows claim. A later `VaultOp::Sizes` enumeration (kete's index already holds every length in memory) can add held-here-vs-lofted accounting per key when the winnow needs it.
+
+## Eviction keys on RECEIPT, not creation (Nick 2026-10-07)
+
+*"On the timeline, we need a way to mark when we received the blob, wave, pigeon, whatever and be able to evict based on that rather than creation time."*
+
+- **What is hashed.** A file pointer is BLAKE3 over the raw bytes (no VSF wrapper, no timestamp inside), so the same file sent at any time from any device is the same hash — re-sending never stores a second copy. Only an attachment's HEAD is a timestamped VSF document, and the head is not identity.
+- **The receipt record.** Each device keeps a LOCAL record per content hash: `first_here` (the bytes landed here — push, fetch, replication or our own send) and `last_wanted` (the last time a photon arriving here pointed at it). A re-send of a held file refreshes `last_wanted` on every device that receives the new photon, moving no bytes. Never on the chain, never synced: it is this device's experience, not the conversation's history.
+- **Eviction** (the category horizons above) compares `last_wanted` against the device's window, drops the BYTES only, and leaves the photon's pointer; the file re-fetches by hash from any holder. Re-sending a file is how a person keeps it alive everywhere.
+- **The timeline** shows "here since …" beside "on this device" in the file's details.
+
