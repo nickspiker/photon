@@ -63,3 +63,7 @@ Nick 2026-10-07: *"strip it all down, we can store the pdf or tiff or whatever i
 - Embedded thumbnails (DNG and many TIFFs carry a camera-made preview): fast to extract, but the camera's rendering, not opsin's calibrated one — fine for a thumbnail tier, never for the viewer.
 - It is a FLAG DAY (row format on the wire, at rest and in fleet pages), so time it after Android self-install has spread (3-4 of ~20 clients were current on 2026-10-06).
 
+**Waves too** (Nick 2026-10-07: *"I'd do the same for waves so the convo loads fast and then the thumbnails and content itself dynamically loads after the convo is already up. otherwise the user is waiting 1/2s for large attachments."*): a wave row carries its recording pointer and its envelope thumbnail (the waveform drawn on the card) inline today. In the target the envelope moves into the recording's wrapper with the audio, and the row is a pointer.
+
+**The load order that follows from all of it:** a conversation opens on its text and pointers alone — instantly, whatever it holds — and every thumbnail, envelope and picture fills in afterwards, off the UI thread, as each wrapper's head is read or fetched. No row ever waits on a blob to be laid out; a row whose picture has not arrived reserves its band and draws a placeholder in it, so nothing jumps when the picture lands.
+
