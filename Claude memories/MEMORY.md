@@ -63,10 +63,10 @@
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
-- [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
-- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: media render at 7% while the rocker bound VOICE_CALL → Emma silent with rocker maxed
-- [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip loop's integrator winds up while rate-saturated → Theresa's names drifted to −84 ms and kept going; FIXED 2026-09-28
-- [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, first arrival sets it, NO hardcoded timings; l follows ONE sample per zero/sign-change point
+- [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it
+- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: media render at 7% while the rocker bound VOICE_CALL
+- [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while rate-saturated; FIXED 2026-09-28
+- [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, NO hardcoded timings
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
 - [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, level-coloured rings); mic/speaker pickers
