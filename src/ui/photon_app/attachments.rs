@@ -108,7 +108,19 @@ impl PhotonApp {
                     return;
                 }
             };
-            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest });
+            // THE HEAD (flag day 2026-10-07): name, kind, dims, the micro thumb and the preview, wrapped as one small VSF blob and sealed here too — the row on the chain is the original's hash and this head's hash, nothing else.
+            let head = crate::types::AttachHead { name: name.clone(), kind: p.meta.kind, dims: p.meta.dims, micro: p.preview.clone(), preview: p.blob.clone() };
+            let head_hash = head.encode().and_then(|hb| {
+                let hh = *blake3::hash(&hb).as_bytes();
+                match crate::storage::blob_store(&seed, &hh, &hb) {
+                    Ok(()) => Some(hh),
+                    Err(e) => {
+                        crate::logf!("attach: head store failed: {} — sending without a head", e);
+                        None
+                    }
+                }
+            });
+            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash });
         });
     }
 
@@ -130,32 +142,53 @@ impl PhotonApp {
                 p.preview.len(),
                 p.blob.as_ref().map_or("none".to_string(), |b| format!("{} bytes", b.len()))
             );
-            // The preview blob is stored under its own hash first: the row names it, and it is pushed ahead of the original so the picture lands before the file.
+            // A headed send needs no separate preview blob: the preview's bytes live inside the head. Only a head that failed to store falls back to the pre-flag-day shape (preview blob + inline extras).
             let mut meta = p.meta;
-            if let (Some(blob), Some(ph), Some(seed)) = (p.blob.as_ref(), meta.preview_hash, self.session.as_ref().map(|s| s.identity_seed)) {
-                if let Err(e) = crate::storage::blob_store(&seed, &ph, blob) {
-                    crate::logf!("attach: preview blob store failed: {}", e);
-                    meta.preview_hash = None;
+            if p.head.is_none() {
+                if let (Some(blob), Some(ph), Some(seed)) = (p.blob.as_ref(), meta.preview_hash, self.session.as_ref().map(|s| s.identity_seed)) {
+                    if let Err(e) = crate::storage::blob_store(&seed, &ph, blob) {
+                        crate::logf!("attach: preview blob store failed: {}", e);
+                        meta.preview_hash = None;
+                    }
                 }
             }
-            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview, p.hash, p.manifest);
+            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview, p.hash, p.manifest, p.head);
         }
     }
 
     /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
-    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>) {
+    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>, head: Option<[u8; 32]>) {
         // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
         let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
-        let file = crate::types::AttachRef::file(hash, wire_name, bytes.len() as u64);
+        // HEADED (flag day 2026-10-07): the chain row is two pointers; THIS device's row is hydrated at once from what it just built (runtime fields the writers never carry for a headed row), so the sender sees its picture and name without reading the head back.
+        let (file, meta) = match head {
+            Some(hh) => (
+                crate::types::AttachRef::pointer(hash, bytes.len() as u64, crate::types::AttachRole::File, hh),
+                crate::types::AttachMeta { preview_hash: meta.preview_hash.map(|_| hh), ..meta },
+            ),
+            None => (crate::types::AttachRef::file(hash, wire_name, bytes.len() as u64), meta),
+        };
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview, file));
         if !self.send_chain_message(ci, "", false, None, None) {
             self.attach_stage = None;
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
-        // The preview blob first (small, the picture the friend sees before the file lands), then the original: one frame for a small file, manifest + chunks for a large one. Siblings + offline races fetch on demand (attach_req).
-        if let Some(ph) = meta.preview_hash {
-            self.send_attach_blob(ci, &ph);
+        if head.is_some() {
+            if let Some(conv) = self.conv_mut_of(ci) {
+                if let Some(m) = conv.messages.iter_mut().rev().find(|m| m.is_outgoing && m.file.as_ref().is_some_and(|f| f.hash == hash)) {
+                    m.head_name = name.clone();
+                }
+            }
+        }
+        // The head (or, unheaded, the preview blob) first — small, the name and the picture the friend sees before the file lands — then the original: one frame for a small file, manifest + chunks for a large one.
+        match head {
+            Some(hh) => self.send_attach_blob(ci, &hh),
+            None => {
+                if let Some(ph) = meta.preview_hash {
+                    self.send_attach_blob(ci, &ph);
+                }
+            }
         }
         match manifest {
             Some(m) => self.send_attach_chunks(ci, &hash, m),
@@ -446,7 +479,7 @@ impl PhotonApp {
             self.replicate_metered = metered;
             self.replicate_dirty |= !metered;
         }
-        if !std::mem::take(&mut self.replicate_dirty) || metered || self.session.is_none() {
+        if !std::mem::take(&mut self.replicate_dirty) || self.session.is_none() {
             return;
         }
         let now = std::time::Instant::now();
@@ -456,10 +489,20 @@ impl PhotonApp {
                 continue;
             }
             let cid = self.contacts[ci].id;
+            // Each row's ORIGINAL (unmetered only) and its HEAD (any network — a few KB, the name and the picture). A device that opted out of holding waves (`waves.hold` off — a watch) skips recordings.
             let hashes: Vec<[u8; 32]> = self
                 .conv_of(ci)
-                // A device that opted out of holding waves (`waves.hold` off — a watch) skips recordings; everything else is held.
-                .map(|v| v.messages.iter().filter(|m| !m.deleted && (self.wave_hold || !m.is_wave_recording())).filter_map(|m| m.file_parts().map(|(h, _, _)| h)).collect())
+                .map(|v| {
+                    v.messages
+                        .iter()
+                        .filter(|m| !m.deleted)
+                        .flat_map(|m| {
+                            let original = m.file.as_ref().filter(|_| !metered && (self.wave_hold || !m.is_wave_recording())).map(|f| f.hash);
+                            let head = m.file.as_ref().and_then(|f| f.head);
+                            original.into_iter().chain(head)
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
             for h in hashes {
                 if self.attach_auto_fetched.contains(&h) || self.attach_fetch_inflight.contains_key(&h) {
@@ -637,10 +680,12 @@ impl PhotonApp {
             }
             // RE-SNIFF (the receiver's own verdict): the row's kind is the peer's claim until the bytes are here; a stricter local sniff wins (a program dressed as a picture reads as a program from now on).
             if let Some(local) = r.sniffed {
+                self.attach_sniffed.insert(r.content_hash, local);
                 for conv in self.conversations.iter_mut() {
                     for m in conv.messages.iter_mut() {
                         let is_row = m.file.as_ref().is_some_and(|f| f.hash == r.content_hash);
-                        if !is_row {
+                        // A headed row whose head is not read yet is left alone — a bare kind here would read as hydrated and its head would never load; the verdict applies when the head hydrates it (drain_heads_loaded).
+                        if !is_row || m.head_pending().is_some() {
                             continue;
                         }
                         let claimed = m.attach.map_or(crate::types::AttachKind::Unknown, |a| a.kind);

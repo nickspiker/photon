@@ -47,7 +47,7 @@ A row shows only its visual: a picture row is the preview band and nothing else 
 
 The details strip for an attachment row (2026-09-12): the meta line leads with name, type, size and dims (`Msg::AttachStats`, `Msg::AttachKindName`), then the age and delivery state; the action row is reply, the file verb (fetch / play / save — never open, which is the visual's tap), delete. Every option on the strip is a real pill thru `draw_stub_pill_filled`, tinted by its verb; a stub such as beam back is a greyed pill with no hit. The stream filter pill is drawn before the row walk so fluor's under-blend keeps it above the rows, and its hit rect is re-asserted after the walk.
 
-## Target shape: the chain carries text and pointers, nothing else (decided 2026-10-07, unbuilt)
+## Target shape: the chain carries text and pointers, nothing else (decided 2026-10-07; files BUILT the same day — see "The head" below)
 
 Nick 2026-10-07: *"strip it all down, we can store the pdf or tiff or whatever in a wrapped vsf blob with a thumbnail but I'd keep that off chain. I'd keep the chain simply text, text formatting, links, pointers to waves and beams and pigeons and other blobs and any rich formatting should point to blobs beyond simple toka arrangement bytecode … similar to markdown."*
 
@@ -66,4 +66,15 @@ Nick 2026-10-07: *"strip it all down, we can store the pdf or tiff or whatever i
 **Waves too** (Nick 2026-10-07: *"I'd do the same for waves so the convo loads fast and then the thumbnails and content itself dynamically loads after the convo is already up. otherwise the user is waiting 1/2s for large attachments."*): a wave row carries its recording pointer and its envelope thumbnail (the waveform drawn on the card) inline today. In the target the envelope moves into the recording's wrapper with the audio, and the row is a pointer.
 
 **The load order that follows from all of it:** a conversation opens on its text and pointers alone — instantly, whatever it holds — and every thumbnail, envelope and picture fills in afterwards, off the UI thread, as each wrapper's head is read or fetched. No row ever waits on a blob to be laid out; a row whose picture has not arrived reserves its band and draws a placeholder in it, so nothing jumps when the picture lands.
+
+## The head (flag day 2026-10-07, BUILT for files)
+
+`types/attach_head.rs`. A file photon on the chain is now `AttachRef::pointer(original hash, size, role, head hash)` with an EMPTY name; everything else — the filename, the sniffed kind, dims, the micro thumb and the AV1 preview — lives in the HEAD, a small VSF blob (`AttachHead`, section `attach_head`) built and sealed on the prepare worker beside the original. The sender pushes the head first (it replaces the separate preview blob), then the original.
+
+- **Identity and the braid.** The head is NOT part of a row's identity (`AttachRef::ident_bytes`, `same_identity`): identity bytes feed the key advance, the woven strands, the sync digest and the row key, and a build from before the head drops the unknown `fhd` field — had the head been identity, the two builds would derive different keys after every file photon. The hash chain pointer and ACK proof hash the raw decrypted payload, so they agree too. A copy that lost its head merges with the headed copy and adopts the head.
+- **Hydration.** A headed row's `attach`, `preview` and runtime `head_name` are filled from its head (`ChatMessage::hydrate`), never stored, paged or sent — every writer checks `carries_inline_attach()`. The render asks for heads of rows it lays out (`head_wants`); a held head is read off-thread (`drain_head_wants` → `drain_heads_loaded`, which hydrates every row pointing at it), a missing one is fetched once per session on ANY network. Until then the row shows an ellipsis.
+- **Previews.** A hydrated row's `preview_hash` is the head's own hash; the preview decode reads the preview bytes out of the head.
+- **Replication.** The sweep arms heads on any network and originals on unmetered networks only.
+- **Older builds** ignore `fhd` (VSF's normal parser skips undeclared fields) and see a nameless file row they can still fetch and save. Rows minted before the flag day keep their inline fields and render exactly as before.
+- **Waves** already fit the shape: a recording and its envelope tensor are blobs the rows point at, and their thumbnails derive off-thread. Only the legacy inline `envelope` column remains, written by nothing new.
 

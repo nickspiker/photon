@@ -233,8 +233,14 @@ impl Conversation {
         if let Some(existing) = self
             .messages
             .iter_mut()
-            .find(|m| m.timestamp == msg.timestamp && m.content == msg.content && m.control == msg.control && m.file == msg.file)
+            .find(|m| m.timestamp == msg.timestamp && m.content == msg.content && m.control == msg.control && same_file(&m.file, &msg.file))
         {
+            // The head is metadata, not identity: a copy that came thru a build which dropped it adopts it from one that carries it.
+            if let (Some(ef), Some(nf)) = (existing.file.as_mut(), msg.file.as_ref()) {
+                if ef.head.is_none() && nf.head.is_some() {
+                    ef.head = nf.head;
+                }
+            }
             existing.delivered |= msg.delivered;
             existing.deleted |= msg.deleted;
             // Alert duty is fleet-monotone: once ANY device discharged (or suppressed-as-clearer), every copy stays discharged.
@@ -565,6 +571,34 @@ mod tests {
         c.messages = vec![blank(), file_row(), ChatMessage::new_with_timestamp(String::new(), false, 5000)];
         assert_eq!(c.collapse_bare_twins(), 1, "only the same-direction blank twin goes");
         assert_eq!(c.messages.len(), 2);
+    }
+
+    /// The head is not identity (flag day 2026-10-07): a headed row and the same row from a build that dropped the head are ONE row, the head is adopted, and the identity bytes the braid weaves are equal — an older build derives the same key.
+    #[test]
+    fn a_headless_copy_of_a_headed_row_is_the_same_row() {
+        let headed = crate::types::AttachRef::pointer([3u8; 32], 1234, crate::types::AttachRole::File, [9u8; 32]);
+        let mut headless = headed.clone();
+        headless.head = None;
+        assert_eq!(headed.ident_bytes(), headless.ident_bytes(), "the braid sees the same row on both builds");
+        let row = |f: crate::types::AttachRef| {
+            let mut m = ChatMessage::new_with_timestamp(String::new(), false, 7000);
+            m.file = Some(f);
+            m
+        };
+        let mut c = Conversation::new([[1u8; 32], [2u8; 32]]);
+        c.insert_message_sorted(row(headless.clone()));
+        c.insert_message_sorted(row(headed.clone()));
+        assert_eq!(c.messages.len(), 1, "one row, not a twin");
+        assert_eq!(c.messages[0].file.as_ref().and_then(|f| f.head), Some([9u8; 32]), "the head is adopted");
+    }
+}
+
+/// Two rows' file identities match — the head aside (see `AttachRef::ident_bytes`).
+fn same_file(a: &Option<crate::types::AttachRef>, b: &Option<crate::types::AttachRef>) -> bool {
+    match (a, b) {
+        (Some(x), Some(y)) => x.same_identity(y),
+        (None, None) => true,
+        _ => false,
     }
 }
 

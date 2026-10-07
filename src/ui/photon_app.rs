@@ -702,6 +702,8 @@ struct AttachPrepared {
     /// The original's content hash and its sealed-to-disk result (a chunk manifest for a big file), both done on the job thread: a 25 MB seal on the UI thread was the last hitch in a send (2026-10-05).
     hash: [u8; 32],
     manifest: Option<crate::storage::BlobManifest>,
+    /// The HEAD blob's hash when it was built and stored (flag day 2026-10-07) — `None` sends the pre-flag-day shape.
+    head: Option<[u8; 32]>,
 }
 
 struct AttachInstalled {
@@ -1430,6 +1432,14 @@ pub struct PhotonApp {
     img_view_rx: std::sync::mpsc::Receiver<([u8; 32], Result<opsin::view::Loaded, String>)>,
     /// Preview blobs the last render wanted: (contact handle, hash, held here) — drained into decode jobs / fetches on the tick (the walk cannot borrow &mut self).
     img_wants: Vec<([u8; 32], [u8; 32], bool, bool)>,
+    /// ATTACHMENT HEADS (flag day 2026-10-07): heads the last render needed for rows it laid out — (peer handle hash, head hash) — drained into a read job (held) or a fetch (missing, any network: a head is a few KB). `head_pending` = a read is out; `head_failed` = a held head would not parse (never re-asked this session). The channel carries each read back to hydrate every row that points at it.
+    head_wants: Vec<([u8; 32], [u8; 32])>,
+    head_pending: std::collections::HashSet<[u8; 32]>,
+    head_failed: std::collections::HashSet<[u8; 32]>,
+    /// The receiver's own sniff of each original that landed this session (content hash → kind): a headed row whose head is read AFTER its bytes landed still takes the stricter verdict at hydration.
+    attach_sniffed: std::collections::HashMap<[u8; 32], crate::types::AttachKind>,
+    head_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<crate::types::AttachHead>)>>,
+    head_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<crate::types::AttachHead>)>>,
     /// Preview blobs auto-fetched this session (one ask each).
     attach_auto_fetched: std::collections::HashSet<[u8; 32]>,
     /// The open image viewer / text reader (viewer.rs) and the hit-id base of their pills (back, save, the pane itself); `viewer_view_base` is the block opsin's view widgets are built on (stable across images, so the overlay tables cover them).
@@ -2516,6 +2526,12 @@ impl PhotonApp {
             },
             img_view_rx: std::sync::mpsc::channel().1,
             img_wants: Vec::new(),
+            head_wants: Vec::new(),
+            head_pending: std::collections::HashSet::new(),
+            head_failed: std::collections::HashSet::new(),
+            attach_sniffed: std::collections::HashMap::new(),
+            head_tx: None,
+            head_rx: None,
             attach_auto_fetched: std::collections::HashSet::new(),
             viewer: None,
             reader: None,

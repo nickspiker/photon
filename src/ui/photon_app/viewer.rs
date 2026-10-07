@@ -317,6 +317,76 @@ impl PhotonApp {
         });
     }
 
+    /// HEADS the last render asked for (flag day 2026-10-07): held → read + parse off-thread; missing → one fetch per session from the friend's devices or ours, on ANY network (a head is a few KB — the name and the picture of a file, never the file); presence not known yet → the probe is already queued and the next render asks again.
+    pub(super) fn drain_head_wants(&mut self) {
+        let wants = std::mem::take(&mut self.head_wants);
+        if wants.is_empty() {
+            return;
+        }
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        if self.head_tx.is_none() {
+            let (tx, rx) = std::sync::mpsc::channel();
+            self.head_tx = Some(tx);
+            self.head_rx = Some(rx);
+        }
+        for (peer, hh) in wants {
+            if self.head_pending.contains(&hh) || self.head_failed.contains(&hh) {
+                continue;
+            }
+            match crate::storage::blob_present_known(&hh) {
+                Some(true) => {
+                    self.head_pending.insert(hh);
+                    let tx = self.head_tx.clone().unwrap();
+                    queue_job(&self.seal_job_tx, move || {
+                        let head = crate::storage::blob_load(&seed, &hh).and_then(|b| crate::types::AttachHead::parse(&b));
+                        let _ = tx.send((hh, head));
+                    });
+                }
+                Some(false) => {
+                    if self.attach_auto_fetched.insert(hh) {
+                        if let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == peer) {
+                            crate::logf!("attach: head {}… not on this device — fetching it", hex::encode(&hh[..4]));
+                            self.attach_fetch(ci, &hh);
+                        }
+                    }
+                }
+                None => {}
+            }
+        }
+    }
+
+    /// Heads the read jobs finished: hydrate EVERY row that points at one (a forwarded file can sit in several conversations), then re-measure and repaint.
+    pub(super) fn drain_heads_loaded(&mut self) {
+        let loaded: Vec<([u8; 32], Option<crate::types::AttachHead>)> = self.head_rx.as_ref().map(|rx| rx.try_iter().collect()).unwrap_or_default();
+        if loaded.is_empty() {
+            return;
+        }
+        for (hh, head) in loaded {
+            self.head_pending.remove(&hh);
+            match head {
+                Some(h) => {
+                    for conv in self.conversations.iter_mut() {
+                        for m in conv.messages.iter_mut().filter(|m| m.file.as_ref().and_then(|f| f.head) == Some(hh)) {
+                            m.hydrate(hh, &h);
+                            // Our own sniff of bytes that already landed outranks the head's claim (a program dressed as a picture reads as a program).
+                            if let (Some(local), Some(a)) = (m.file.as_ref().and_then(|f| self.attach_sniffed.get(&f.hash)).copied(), m.attach.as_mut()) {
+                                a.kind = crate::types::AttachKind::reconcile(local, a.kind);
+                            }
+                        }
+                    }
+                }
+                None => {
+                    crate::logf!("attach: head {}… is held but would not read — its rows stay bare this session", hex::encode(&hh[..4]));
+                    self.head_failed.insert(hh);
+                }
+            }
+        }
+        self.msg_wrap = None;
+        self.scene_dirty = true;
+    }
+
     /// Decoded previews the worker finished: into the cache (a failure is remembered as None so the walk stops asking), the wrap re-measures (the band grows to the preview size).
     pub(super) fn drain_img_decoded(&mut self) {
         while let Ok((hash, px)) = self.img_decoded_rx.try_recv() {
@@ -345,7 +415,9 @@ impl PhotonApp {
                         if from_original {
                             crate::ui::attach_preview::preview_from_original(&b, crate::types::sniff(&b, ""))
                         } else {
+                            // A headed row addresses its preview at the HEAD, which carries the preview bytes inside.
                             crate::ui::attach_preview::decode_preview_blob(&b)
+                                .or_else(|| crate::types::AttachHead::parse(&b).and_then(|h| h.preview).and_then(|p| crate::ui::attach_preview::decode_preview_blob(&p)))
                         }
                     });
                     let _ = tx.send((hash, out));

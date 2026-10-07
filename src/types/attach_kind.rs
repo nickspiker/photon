@@ -4,8 +4,9 @@
 
 /// What an attachment is. Wire values are stable (page columns, vault fields, the friend package); `Unknown` is the pre-feature default and the honest answer for bytes nothing recognizes.
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum AttachKind {
+    #[default]
     Unknown = 0,
     /// A display-referred image the `image` crate (or jxl-oxide) decodes: JPEG, PNG, WebP, TIFF, GIF, JXL, BMP.
     Image = 1,

@@ -1056,6 +1056,8 @@ impl PhotonApp {
         // The row's typed attachment extras ride the package the same way (a re-serve rebuilds them from the row too).
         let row_attach: Option<crate::network::message_package::AttachWire> = conv
             .and_then(|c| c.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time))
+            // A headed row's attach / preview are its head's runtime hydration — never on the wire (flag day 2026-10-07).
+            .filter(|m| m.carries_inline_attach())
             .and_then(|m| m.attach.map(|a| crate::network::message_package::AttachWire {
                 kind: a.kind as u8,
                 w: a.dims.map_or(0, |d| d.0),

@@ -983,7 +983,7 @@ impl PhotonApp {
             if row.control.is_some() || crate::types::row_control::is_legacy_prefixed(&row.content) {
                 continue;
             }
-            if let Some(existing) = conv.messages.iter_mut().find(|m| m.timestamp == row.timestamp && m.content == row.content && m.file == row.file) {
+            if let Some(existing) = conv.messages.iter_mut().find(|m| m.timestamp == row.timestamp && m.content == row.content && match (&m.file, &row.file) { (Some(a), Some(b)) => a.same_identity(b), (None, None) => true, _ => false }) {
                 let mut upgraded = false;
                 if row.delivered && !existing.delivered && existing.is_outgoing == row.sender_outgoing {
                     existing.delivered = true;
@@ -2605,6 +2605,7 @@ impl PhotonApp {
                         bridge_exit: None,
                         control: row.control.clone(),
                         file: row.file.clone(),
+                        head_name: String::new(),
                     });
                 }
                 // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.

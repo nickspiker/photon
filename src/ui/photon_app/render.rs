@@ -3380,6 +3380,10 @@ impl PhotonApp {
                             })
                         });
                         let body_of = |m: &crate::types::ChatMessage| -> String {
+                            // A headed file whose head is still on the way: an ellipsis holds its line until the name and picture land.
+                            if m.head_pending().is_some() {
+                                return "\u{2026}".to_string();
+                            }
                             if is_bond_offer_row(m) {
                                 return bond_cards.iter().find(|(ts, out, _, _)| *ts == m.timestamp && *out == m.is_outgoing).map(|(_, _, l, _)| l.clone()).unwrap_or_else(|| tr(Msg::BondExpired).into_owned());
                             }
@@ -3654,6 +3658,12 @@ impl PhotonApp {
                             let audio_lines = super::viewer::audio_band_lines_of(msg);
                             let audio_band_h = audio_lines as f32 * intra;
                             // The decoded preview blob outranks the micro thumb; either way the band's picture is (w, h, pixels).
+                            // A headed row whose head has not been read: ask for it (the render knows which rows are on screen).
+                            if let Some(hh) = msg.head_pending() {
+                                if !self.head_pending.contains(&hh) && !self.head_failed.contains(&hh) && !self.head_wants.iter().any(|(_, h)| *h == hh) {
+                                    self.head_wants.push((peer_handle_hash, hh));
+                                }
+                            }
                             let preview_src = super::viewer::preview_source(msg);
                             let decoded: Option<(usize, usize, &Vec<u32>)> = preview_src.and_then(|(key, _)| match self.img_cache.get(&key) {
                                 Some(Some((w, h, px))) => Some((*w, *h, px)),

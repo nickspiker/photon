@@ -58,8 +58,9 @@ impl HistoryRow {
             marks: m.marks.clone(),
             wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
             envelope: m.envelope.clone(),
-            attach: m.attach.map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
-            preview: m.preview.clone(),
+            // A headed row's attach / preview are its head's runtime hydration — never on a page (flag day 2026-10-07).
+            attach: m.attach.filter(|_| m.carries_inline_attach()).map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
+            preview: if m.carries_inline_attach() { m.preview.clone() } else { Vec::new() },
             control: m.control.clone(),
             file: m.file.clone(),
         }
@@ -161,6 +162,9 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             r.push(f("file_hash", VsfType::hb(fr.hash.to_vec())));
             r.push(f("file_name", VsfType::x(fr.name.clone())));
             r.push(f("file_size", uint(fr.size)));
+            if let Some(h) = fr.head {
+                r.push(f("file_head", VsfType::hb(h.to_vec())));
+            }
         }
         doc = doc.add_section(ROW_SECTION, r);
         for m in &row.marks {
@@ -211,6 +215,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
                 hash: r.h32("file_hash")?,
                 name: r.text("file_name")?,
                 size: r.uint("file_size")?,
+                head: r.h32("file_head"),
             })
         })();
         let attach = (|| {
@@ -351,7 +356,7 @@ mod tests {
             file(3, AttachRef::file([4; 32], "notes.txt", 12)),
             ctl(4, RowControl::Delete { target: 3 }),
             ctl(5, RowControl::Wave(WaveSignal::Hangup { wave_id: [1; 16] })),
-            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio }),
+            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio, head: None }),
             ctl(7, RowControl::Era(crate::crypto::era::EraSignal::Init { era_next: 2, nonce: [6; 32], prior_tag: 7, kem_set: 3 })),
             ctl(8, RowControl::Probe),
             ctl(9, RowControl::Wave(WaveSignal::Answer { wave_id: [8; 16], nonce: [9; 32], device: None })),

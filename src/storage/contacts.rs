@@ -1019,10 +1019,15 @@ fn set_file_fields(rec: Record, msg: &ChatMessage) -> Record {
     let Some(f) = msg.file.as_ref() else {
         return rec;
     };
-    rec.set("file_role", f.role.code() as u64)
+    let rec = rec
+        .set("file_role", f.role.code() as u64)
         .set("file_hash", Value::Bytes(f.hash.to_vec()))
         .set("file_name", f.name.clone())
-        .set("file_size", f.size)
+        .set("file_size", f.size);
+    match f.head {
+        Some(h) => rec.set("file_head", Value::Bytes(h.to_vec())),
+        None => rec,
+    }
 }
 
 fn record_file(rec: &Record) -> Option<crate::types::AttachRef> {
@@ -1031,6 +1036,7 @@ fn record_file(rec: &Record) -> Option<crate::types::AttachRef> {
         hash: <[u8; 32]>::try_from(rec.bytes("file_hash")?).ok()?,
         name: rec.text("file_name")?.to_string(),
         size: rec.uint("file_size")?,
+        head: rec.bytes("file_head").and_then(|b| <[u8; 32]>::try_from(b).ok()),
     })
 }
 
@@ -1064,6 +1070,7 @@ fn record_message(rec: &Record, fallback_ts: i64) -> Option<ChatMessage> {
         bridge_exit: None,
         control: record_control(rec),
         file: record_file(rec),
+        head_name: String::new(),
     })
 }
 
@@ -1302,6 +1309,10 @@ fn record_envelope(rec: &Record) -> Vec<u8> {
 
 /// Typed attachment fields (2026-09-10), written only when present: the sniffed kind, pixel dims, the preview-blob hash, and the row's micro preview bytes. Binary at rest.
 fn set_attach_fields(mut rec: Record, msg: &ChatMessage) -> Record {
+    // A headed row's attach / preview are its head's runtime hydration — never at rest (flag day 2026-10-07): the row stays two pointers, the head re-hydrates it on load.
+    if !msg.carries_inline_attach() {
+        return rec;
+    }
     if let Some(a) = msg.attach {
         rec = rec.set("attach_kind", a.kind as u64);
         if let Some((w, h)) = a.dims {
@@ -1656,7 +1667,7 @@ mod tests {
         att.author = Some([5; 32]);
         att.attach = Some(crate::types::AttachMeta { kind: crate::types::AttachKind::Unknown, dims: Some((3, 4)), preview_hash: Some([6; 32]) });
         att.marks = Vec::new();
-        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio }, true, 30);
+        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio, head: None }, true, 30);
         let ctl = ChatMessage::control(wave.clone(), false, 10);
 
         {
@@ -1704,6 +1715,7 @@ mod tests {
             ChatMessage {
                 control: None,
                 file: None,
+                head_name: String::new(),
                 content: "hi".to_string(),
                 timestamp: 100,
                 is_outgoing: true,
@@ -1727,6 +1739,7 @@ mod tests {
             ChatMessage {
                 control: None,
                 file: None,
+                head_name: String::new(),
                 content: "hey".to_string(),
                 timestamp: 200,
                 is_outgoing: false,
@@ -1750,6 +1763,7 @@ mod tests {
             ChatMessage {
                 control: None,
                 file: None,
+                head_name: String::new(),
                 content: "👋 unicode".to_string(),
                 timestamp: 300,
                 is_outgoing: true,
@@ -2043,6 +2057,7 @@ mod tests {
         let make = |t: i64| ChatMessage {
             control: None,
             file: None,
+            head_name: String::new(),
             content: format!("msg {t}"),
             marks: Vec::new(),
             timestamp: t,

@@ -1,5 +1,6 @@
 pub mod molecule;
 pub use molecule::*;
+pub mod attach_head;
 pub mod attach_kind;
 pub mod contact;
 pub mod conversation;
@@ -12,6 +13,7 @@ pub mod row_control;
 pub mod seed;
 pub mod shard;
 
+pub use attach_head::AttachHead;
 pub use attach_kind::*;
 pub use contact::*;
 pub use conversation::{merge_wave_fields, Conversation, ConversationId, PartyId};

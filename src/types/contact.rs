@@ -289,6 +289,8 @@ pub struct ChatMessage {
     pub control: Option<crate::types::RowControl>,
     /// ATTACHMENT IDENTITY (flag day 2026-09-24): the blob's hash, the sender's name for it, its size and its role. `Some` = an attachment row and `content` is empty. Beside `attach` (kind, dims, preview), which describes the bytes rather than naming them.
     pub file: Option<crate::types::AttachRef>,
+    /// RUNTIME ONLY (flag day 2026-10-07): the filename a headed row's HEAD carried, filled when the head is read — never persisted, never sent (a headed row's chain identity has no name).
+    pub head_name: String,
 }
 
 impl ChatMessage {
@@ -315,6 +317,7 @@ impl ChatMessage {
             bridge_exit: None,
             control: None,
             file: None,
+            head_name: String::new(),
         }
     }
 
@@ -347,6 +350,7 @@ impl ChatMessage {
             bridge_exit: None,
             control: None,
             file: None,
+            head_name: String::new(),
         }
     }
 
@@ -380,7 +384,24 @@ impl ChatMessage {
 
     /// The attachment's (hash, name, size) — the typed identity, the old content-string triple's shape.
     pub fn file_parts(&self) -> Option<([u8; 32], String, u64)> {
-        self.file.as_ref().map(|f| (f.hash, f.name.clone(), f.size))
+        self.file.as_ref().map(|f| (f.hash, if f.name.is_empty() { self.head_name.clone() } else { f.name.clone() }, f.size))
+    }
+
+    /// A headed row whose head has not been read yet: its kind, name and pictures are still on the way.
+    pub fn head_pending(&self) -> Option<[u8; 32]> {
+        self.file.as_ref().and_then(|f| f.head).filter(|_| self.attach.is_none())
+    }
+
+    /// Fill a headed row from its head (runtime only — see `head_name`).
+    pub fn hydrate(&mut self, head_hash: [u8; 32], head: &crate::types::AttachHead) {
+        self.attach = Some(head.meta(head_hash));
+        self.preview = head.micro.clone();
+        self.head_name = head.name.clone();
+    }
+
+    /// True when this row's attach / preview fields are the INLINE pre-flag-day ones a writer must carry — false on a headed row, whose same fields are only its head's runtime hydration.
+    pub fn carries_inline_attach(&self) -> bool {
+        self.file.as_ref().map_or(true, |f| f.head.is_none())
     }
 
     /// A kept WAVE RECORDING plays, never saves — the renderer gives it a ▶ pill and the tap routes to playback.

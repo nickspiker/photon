@@ -218,20 +218,32 @@ pub struct AttachRef {
     pub name: String,
     pub size: u64,
     pub role: AttachRole,
+    /// THE HEAD (flag day 2026-10-07, Nick: "keep the chain simply text, text formatting, links, pointers… store the pdf or tiff or whatever in a wrapped vsf blob with a thumbnail… off chain"): the hash of the attachment's HEAD blob — name, kind, dims, thumbnails, a wave's envelope — so the row on the chain is two pointers and nothing else. `None` on every row minted before the flag day, which still carries those fields inline and reads exactly as it always did.
+    pub head: Option<[u8; 32]>,
 }
 
 impl AttachRef {
     pub fn file(hash: [u8; 32], name: &str, size: u64) -> Self {
-        AttachRef { hash, name: name.to_string(), size, role: AttachRole::File }
+        AttachRef { hash, name: name.to_string(), size, role: AttachRole::File, head: None }
     }
 
-    /// Canonical identity bytes — see [`ident_typed`].
+    /// A post-flag-day pointer: the original's hash and size, its role, its head — no name (the name lives in the head).
+    pub fn pointer(hash: [u8; 32], size: u64, role: AttachRole, head: [u8; 32]) -> Self {
+        AttachRef { hash, name: String::new(), size, role, head: Some(head) }
+    }
+
+    /// Canonical identity bytes — see [`ident_typed`]. The HEAD is deliberately NOT identity: these bytes feed the braid (a photon's key derives from the previous photon's identity), and a build from before the head drops the unknown field — had the head been identity, the two builds would derive different keys for every photon after a file and the lane would stop decrypting. The head is metadata a merge adopts (`same_identity` + `Conversation::insert_message_sorted`).
     pub fn ident_bytes(&self) -> Vec<u8> {
         let mut out = vec![IDENT_TYPED, IDENT_ATTACH, self.role.code()];
         out.extend_from_slice(&self.hash);
         out.extend_from_slice(&self.size.to_le_bytes());
         out.extend_from_slice(self.name.as_bytes());
         out
+    }
+
+    /// Same attachment row identity — everything but the head (see `ident_bytes`).
+    pub fn same_identity(&self, other: &AttachRef) -> bool {
+        self.hash == other.hash && self.size == other.size && self.name == other.name && self.role == other.role
     }
 }
 
@@ -291,6 +303,7 @@ pub fn declare_row_fields(s: SectionSchema) -> SectionSchema {
         .field("fh", TypeConstraint::AnyHash) // hb attachment content hash
         .field("fnm", TypeConstraint::Utf8Text) // attachment filename (may be empty)
         .field("fz", TypeConstraint::AnyUnsigned) // attachment size in bytes
+        .field("fhd", TypeConstraint::AnyHash) // hb the attachment's HEAD blob (flag day 2026-10-07); absent on older rows — an older build ignores it
 }
 
 /// Write a control row's fields.
@@ -333,6 +346,10 @@ pub fn put_file(b: SectionBuilder, f: &AttachRef) -> Result<SectionBuilder, Stri
         .map_err(e)?
         .set("fz", VsfType::u(f.size as usize, false))
         .map_err(e)
+        .and_then(|b| match f.head {
+            Some(h) => b.set("fhd", VsfType::hb(h.to_vec())).map_err(e),
+            None => Ok(b),
+        })
 }
 
 fn first<'a>(section: &'a SectionBuilder, name: &str) -> Option<&'a VsfType> {
@@ -376,7 +393,8 @@ pub fn get_file(section: &SectionBuilder) -> Option<AttachRef> {
         _ => return None,
     };
     let size = first(section, "fz")?.as_u64()?;
-    Some(AttachRef { hash, name, size, role })
+    let head = first(section, "fhd").and_then(bytes_of).and_then(|b| <[u8; 32]>::try_from(b).ok());
+    Some(AttachRef { hash, name, size, role, head })
 }
 
 #[cfg(test)]

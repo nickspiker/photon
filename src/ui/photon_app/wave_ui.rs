@@ -1641,7 +1641,7 @@ impl PhotonApp {
                     crate::wave::spool::drop_register(&r.wave_id8);
                     if let Some(ci) = self.contact_index_by_handle_hash(&r.peer) {
                         // "wave.audio" (a beam will mint "beam.video") — no POTS in Photon, so nothing here is a "phone call": see docs/waves.md on why that word is retired. The row REFERENCES the wave row (offer_osc+1) and carries the envelope thumbnail, so every sibling folds it into the card and draws the shape before it holds the blob.
-                        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio };
+                        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None };
                         let mut row = ChatMessage::attachment(file, true, r.offer_osc + 2)
                             .with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);
                         row.notified = true;
@@ -1650,7 +1650,7 @@ impl PhotonApp {
                         let mut pushed = vec![row.clone()];
                         // OUR wave.env (the 3-channel u8 tensor, docs in wave/wave_env.rs): its own row at +3 referencing the wave row, sent on the FRIEND chain (this is the exchange — their card colours from our clean mic, ours from theirs), blob pushed ahead of the audio. A short wave minted none.
                         if let Some((eh, ebytes)) = kept.env.clone() {
-                            let efile = crate::types::AttachRef { hash: eh, name: String::new(), size: ebytes.len() as u64, role: crate::types::AttachRole::WaveEnv };
+                            let efile = crate::types::AttachRef { hash: eh, name: String::new(), size: ebytes.len() as u64, role: crate::types::AttachRole::WaveEnv, head: None };
                             let ets = r.offer_osc + 3;
                             // The env row lands locally FIRST so the transmit reads its typed file identity off the row (the attachment pattern).
                             let erow_pre = ChatMessage::attachment(efile.clone(), true, ets).with_reference(crate::types::RefKind::Wave, r.offer_osc + 1);

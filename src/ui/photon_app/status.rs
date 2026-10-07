@@ -48,6 +48,8 @@ impl PhotonApp {
         timed_drain!("img_decoded", self.drain_img_decoded());
         timed_drain!("img_view", self.drain_img_view());
         timed_drain!("img_wants", self.drain_img_wants());
+        timed_drain!("heads_loaded", self.drain_heads_loaded());
+        timed_drain!("head_wants", self.drain_head_wants());
         // History pages the decrypt workers finished since last tick — merge before the arm loop so a walk's next request goes out on this tick's sweep, not the next.
         timed_drain!("history_pages", self.drain_history_pages());
         // Chain-sync blobs the open workers finished — adopt before the arm loop so this tick's replication push already carries the adopted heads.
