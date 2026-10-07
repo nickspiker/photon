@@ -3023,23 +3023,105 @@ pub fn parse_attach_chunk_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], 
     Ok(((tok, hash, idx, sealed), sender))
 }
 
-/// Build a `pigeon_chunk` frame: one sealed chunk of a BRIDGE PIGEON (docs/PT.md spooled receive). Byte-identical shape to an attach_chunk — the SEPARATE section name is the whole point: it routes the receiver to the spool-and-land path, never the vault-install path an attach_chunk takes (a pigeon is ephemeral one-device transfer, not fleet content to replicate). The `hash` is the whole-file plaintext hash the spool prelude announced; `idx` is the chunk index into the derived slot table.
+/// One `pigeon_chunk` frame, parsed: the transfer it belongs to, the slot, the sealed slot bytes, and the SELF-DESCRIPTION (2026-10-07) — the whole file's size and its name sealed under the same wire key — so the FIRST chunk to arrive can open the receiver's spool and arrival order stops mattering. `size` / `sealed_name` are None on a frame from a build before that (the receiver then needs the announcement row first).
+pub struct PigeonChunkFrame {
+    pub tok: [u8; 32],
+    pub hash: [u8; 32],
+    pub index: u32,
+    pub sealed: Vec<u8>,
+    pub size: Option<u64>,
+    pub sealed_name: Option<Vec<u8>>,
+}
+
+/// Build a `pigeon_chunk` frame: one sealed chunk of a BRIDGE PIGEON (docs/PT.md "Pigeons, v2"). The SEPARATE section name keeps it off the attachment vault-install router. Every frame self-describes (`sz` = the whole file's plaintext size, `snm` = its name sealed under the wire key — never the name in clear), so a chunk that overtakes its announcement opens the spool instead of being dropped (field 2026-10-07: three of four chunks of a LAN drop beat the announcement and were lost).
 pub fn build_pigeon_chunk_vsf(
     conversation_token: &[u8; 32],
     content_hash: &[u8; 32],
     index: u32,
     sealed_chunk: Vec<u8>,
+    size: u64,
+    sealed_name: Option<&[u8]>,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
-    build_attach_data_frame("pigeon_chunk", conversation_token, content_hash, Some(index), sealed_chunk, device_pubkey, device_secret)
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("pigeon_chunk");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+    section.add_field("idx", VsfType::u(index as usize, false));
+    let len = sealed_chunk.len();
+    section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![len], sealed_chunk)));
+    section.add_field("sz", VsfType::u(size as usize, false));
+    if let Some(n) = sealed_name {
+        section.add_field("snm", VsfType::hR(n.to_vec()));
+    }
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build pigeon_chunk VSF: {}", e))?;
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
-/// Parse + verify a `pigeon_chunk` frame → ((tok, hash, index, sealed_chunk), sender).
-pub fn parse_pigeon_chunk_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], u32, Vec<u8>), [u8; 32]), String> {
+/// Parse + verify a `pigeon_chunk` frame → (frame, sender).
+pub fn parse_pigeon_chunk_vsf(vsf_bytes: &[u8]) -> Result<(PigeonChunkFrame, [u8; 32]), String> {
     let ((tok, hash, idx, sealed), sender) = parse_attach_data_frame("pigeon_chunk", vsf_bytes)?;
-    let idx = idx.ok_or("pigeon_chunk missing idx")?;
-    Ok(((tok, hash, idx, sealed), sender))
+    let index = idx.ok_or("pigeon_chunk missing idx")?;
+    // The self-description rides beside the shared fields; re-read the section for it (the frame verified above).
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None).map_err(|e| format!("pigeon_chunk verification failed: {}", e))?;
+    let (section, _) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    let size = field_u64(&section.fields, "sz");
+    let sealed_name = section.fields.iter().find(|f| f.name == "snm").and_then(|f| f.values.first()).and_then(|v| match v {
+        VsfType::hR(b) | VsfType::hb(b) => Some(b.clone()),
+        _ => None,
+    });
+    Ok((PigeonChunkFrame { tok, hash, index, sealed, size, sealed_name }, sender))
+}
+
+/// Build a `pigeon_want` frame — the bridge host's REPAIR ASK (2026-10-07): the slots of this pigeon its spool still lacks, read off the zero-scan at the moment of asking and never stored anywhere (Nick: "no bitmap is needed since we store it encrypted" — the spool's sealed bytes ARE the receipt record). One `want` value per missing slot index; the sender seals and sends exactly those.
+pub fn build_pigeon_want_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    want: &[u32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+    let mut section = VsfSection::new("pigeon_want");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+    section.add_field_multi("want", want.iter().map(|i| VsfType::u(*i as usize, false)).collect());
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build pigeon_want VSF: {}", e))?;
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `pigeon_want` frame → ((tok, hash, missing slot indices), sender).
+pub fn parse_pigeon_want_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], Vec<u32>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None).map_err(|e| format!("pigeon_want verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "pigeon_want" {
+        return Err(format!("Expected 'pigeon_want' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let tok = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_))).ok_or("pigeon_want missing tok")?;
+    let hash = field_hash32(fields, "hash", |v| matches!(v, VsfType::hb(_))).ok_or("pigeon_want missing hash")?;
+    let want: Vec<u32> = fields
+        .iter()
+        .filter(|f| f.name == "want")
+        .flat_map(|f| f.values.iter())
+        .filter_map(|v| v.as_u64())
+        .filter_map(|n| u32::try_from(n).ok())
+        .collect();
+    Ok(((tok, hash, want), sender_pubkey))
 }
 
 /// Build an `attach_req` frame — "send me the blob for this attachment row". Fired on tapping a pill whose blob hasn't arrived (offline race, or a fleet sibling that only holds the row). Any device holding the blob answers with an `attach_blob`.
@@ -4308,11 +4390,17 @@ mod local_ip_absent_tests {
         let tok = [0x11u8; 32];
         let hash = [0x22u8; 32];
         let sealed = vec![0x5Au8; 4096];
-        let frame = build_pigeon_chunk_vsf(&tok, &hash, 7, sealed.clone(), &pk, &sk).expect("build");
-        let ((rtok, rhash, ridx, rsealed), signer) = parse_pigeon_chunk_vsf(&frame).expect("parse");
-        assert_eq!((rtok, rhash, ridx, rsealed), (tok, hash, 7, sealed));
+        let frame = build_pigeon_chunk_vsf(&tok, &hash, 7, sealed.clone(), 1_000_000, Some(&[0x33u8; 50]), &pk, &sk).expect("build");
+        let (f, signer) = parse_pigeon_chunk_vsf(&frame).expect("parse");
+        assert_eq!((f.tok, f.hash, f.index, f.sealed), (tok, hash, 7, sealed));
+        assert_eq!((f.size, f.sealed_name), (Some(1_000_000), Some(vec![0x33u8; 50])), "the frame self-describes");
         assert_eq!(signer, pk, "the signer is recoverable for the trust gate");
         // The router must not confuse the two: an attach parser rejects a pigeon frame and vice versa.
         assert!(parse_attach_chunk_vsf(&frame).is_err(), "a pigeon_chunk must not parse as attach_chunk — that is what keeps it off the vault-install path");
+        // A repair ask round-trips its slot list, and is no other frame.
+        let want = build_pigeon_want_vsf(&tok, &hash, &[0, 3, 1382], &pk, &sk).expect("want");
+        let ((wtok, whash, slots), wsigner) = parse_pigeon_want_vsf(&want).expect("parse want");
+        assert_eq!((wtok, whash, slots, wsigner), (tok, hash, vec![0, 3, 1382], pk));
+        assert!(parse_pigeon_ack_vsf(&want).is_err() && parse_pigeon_chunk_vsf(&want).is_err());
     }
 }

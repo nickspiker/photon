@@ -323,7 +323,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // "संदेश" सीधे बहुवचन में नहीं बदलता, इसलिए en.rs वाली शाखा यहाँ नहीं चाहिए।
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} संदेश \u{00b7} {} भेजे \u{00b7} {} मिले", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ये पंक्तियाँ तुम्हारे हर डिवाइस पर एक जैसी होनी चाहिए".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "बेड़े का डिवाइस अपनी ही दरख़्वास्त पर जाता है \u{2014} देखो सेटिंग्स \u{2192} बेड़ा".into(),
         Msg::BootPill { armed } => if armed { "दोबारा टैप \u{2014} बाहर करो" } else { "बाहर करो" }.into(),
         Msg::BindIntoMolecule => "किसी अणु में बाँधें".into(),

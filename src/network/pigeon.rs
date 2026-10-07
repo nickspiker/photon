@@ -1,15 +1,18 @@
-//! Bridge-pigeon receive: sealed chunks land in a zero-bitmap spool, and a completed spool decrypts once and lands in the host's shell directory (docs/PT.md "Spooled receive"; the wire is `pigeon_chunk`, distinct from `attach_chunk` so a drop never touches the vault-install path).
+//! Bridge-pigeon receive: sealed chunks land in a zero-bitmap spool, and a completed spool decrypts once and lands in the host's shell directory (docs/PT.md "Pigeons, v2"; the wire is `pigeon_chunk` / `pigeon_want` / `pigeon_ack`, distinct from the attachment frames).
 //!
-//! This is the consolidation's first live tenant: PT moves the packets, `storage::spool` is custody and resume, the five-scalar prelude is the manifest, and verification is one whole-file hash at finalize with per-chunk AEAD tags falling out of the decrypt. A pigeon is ephemeral by construction — the spool lives in the runtime dir, decrypts into the shell's cwd on completion, and both the spool and its bytes are shed. Nothing here persists into the vault, because a dropped file is a one-device transfer, not fleet content to replicate.
+//! PT moves the packets — every chunk its own stream, lettered a..z inside the send window — `storage::spool` is custody and resume, the prelude is the manifest, and verification is one whole-file hash at finalize with per-chunk integrity from the AEAD tags.
 //!
-//! Ordering is arbitrary and restart is free: the spool is the only state, so a chunk that arrives twice is an idempotent rewrite and a chunk that never arrives reads missing from the file itself. The receiver holds only the open spool handle plus what the announcement told it, all of which `spool::resume` can rebuild from disk.
+//! NO BITMAP (Nick 2026-10-07: "no bitmap is needed since we store it encrypted"): a written slot is ciphertext and an unwritten one is zeros, so the spool file is the only record of what has landed. The receiver keeps a COUNT (re-derivable from the file at any moment, so nothing can drift) and computes a repair ask from the zero-scan when it asks, never storing the list.
+//!
+//! v2 (2026-10-07, the LAN drop whose chunks beat their announcement): every chunk SELF-DESCRIBES (size + sealed name), so the first one to arrive opens the spool and order stops mattering; the host REPAIRS what is missing by asking (`pigeon_want`) — on resume, and when a pigeon stops moving — and the sender keeps its copy until the host reports every slot held.
 
 use crate::storage::spool::{self, SpoolDesc, SpoolLayout};
 use std::collections::HashMap;
 use std::fs::File;
 use std::path::PathBuf;
+use std::time::{Duration, Instant};
 
-/// One inbound pigeon mid-flight: the spool file and everything needed to finalize it. Keyed in [`PigeonReceiver`] by the whole-file plaintext hash the announcement named. Detachable (`take`) so the finalize decrypt-walk can run off the UI thread.
+/// One inbound pigeon mid-flight: the spool file and everything needed to finalize it. Keyed in [`PigeonReceiver`] by the whole-file plaintext hash. Detachable (`take_complete`) so the finalize decrypt-walk runs on a worker.
 pub struct Inflight {
     desc: SpoolDesc,
     layout: SpoolLayout,
@@ -17,11 +20,21 @@ pub struct Inflight {
     path: PathBuf,
     /// The wire seal key for this sender (the fleet key for a sibling bridge). Held so finalize can open each chunk.
     wire_key: [u8; 32],
-    /// Which sender device announced it — the trust gate re-checks each chunk's signer against this.
+    /// Which device the slots come from — the trust gate re-checks each chunk's signer against this, and repair asks go to it.
     from_device: [u8; 32],
-    /// Which slots this process has seen land, seeded from the spool's own zero-scan at announce (a resumed spool starts with what the last run left).
-    /// This is the per-chunk answer to "how far along" and the gate on the final disk scan: the scan used to run after EVERY chunk (a 142 MB pigeon read its whole spool 545 times over, on the UI thread); now it runs once, when this bitmap says the spool is whole.
-    present: Vec<bool>,
+    /// Slots held: counted ONCE from the spool's zero-scan at open, then +1 when a frame fills a slot that read empty. Never a list — the file is the list.
+    held: u32,
+    /// The last time a slot filled (or the spool opened) — a pigeon that stops moving is asked to repair.
+    last_progress: Instant,
+    /// Repair asks sent since the last progress.
+    asks: u8,
+}
+
+impl Inflight {
+    /// The device this pigeon came from.
+    pub fn from_device(&self) -> [u8; 32] {
+        self.from_device
+    }
 }
 
 /// What a completed pigeon produced: the file landed at this path in the host's shell directory. The receiver has already shed the spool and forgotten the transfer.
@@ -32,7 +45,7 @@ pub struct Landed {
     pub from_device: [u8; 32],
 }
 
-/// Host-side pigeon receiver. Owns the in-flight spools; the caller feeds it announcements and chunks off the wire and asks it to finalize into a directory once a spool is whole.
+/// Host-side pigeon receiver. Owns the in-flight spools; the caller feeds it announcements and chunks off the wire, asks it what to repair, and asks it to finalize into a directory once a spool is whole.
 #[derive(Default)]
 pub struct PigeonReceiver {
     inflight: HashMap<[u8; 32], Inflight>,
@@ -41,29 +54,80 @@ pub struct PigeonReceiver {
 /// The seal overhead every chunk carries — kete's XChaCha20-Poly1305 nonce (24) + tag (16). Stored in the spool prelude so the primitive stays transport-agnostic, but the pigeon path knows it directly.
 pub const PIGEON_SEAL_OVERHEAD: u32 = 24 + 16;
 
+/// A pigeon with no slot filled for this long is asked to repair; after [`MAX_REPAIR_ASKS`] unanswered asks it is let go (the spool stays on disk — the next session resumes it).
+pub const REPAIR_AFTER: Duration = Duration::from_secs(20);
+pub const MAX_REPAIR_ASKS: u8 = 8;
+
+/// The spool file for a transfer, under the receiver's directory.
+fn spool_path(dir: &std::path::Path, hash: &[u8; 32]) -> PathBuf {
+    dir.join(format!("pigeon-{}.spool", hex::encode(&hash[..8])))
+}
+
 impl PigeonReceiver {
-    /// A drop was announced: open (or resume) the spool for it. `chunk_size` is the sender's plaintext chunk granularity (`storage::BLOB_CHUNK_SIZE` today). Idempotent — a re-announced pigeon already in flight keeps its spool and its arrived chunks.
-    pub fn announce(&mut self, dir: &std::path::Path, hash: [u8; 32], name: String, size: u64, chunk_size: u32, wire_key: [u8; 32], from_device: [u8; 32]) -> std::io::Result<()> {
-        if self.inflight.contains_key(&hash) {
-            return Ok(());
+    /// Open (or resume) the spool for a pigeon — from its announcement row OR from the first self-describing chunk, whichever arrives first. Idempotent: a pigeon already in flight keeps its spool, and only gains a name it did not have. Returns (held, total, resumed) — `resumed` = the spool came off disk holding slots already, so the caller asks for the rest.
+    pub fn open(&mut self, dir: &std::path::Path, hash: [u8; 32], name: String, size: u64, chunk_size: u32, wire_key: [u8; 32], from_device: [u8; 32]) -> std::io::Result<(u32, u32, bool)> {
+        if let Some(inf) = self.inflight.get_mut(&hash) {
+            if inf.desc.name.is_empty() && !name.is_empty() {
+                inf.desc.name = name;
+            }
+            return Ok((inf.held, inf.layout.lens.len() as u32, false));
         }
         let _ = std::fs::create_dir_all(dir);
-        let path = dir.join(format!("pigeon-{}.spool", hex::encode(&hash[..8])));
-        let desc = SpoolDesc { name, hash, size, chunk_size, seal_overhead: PIGEON_SEAL_OVERHEAD };
+        let path = spool_path(dir, &hash);
+        let desc = SpoolDesc { name, hash, size, chunk_size, seal_overhead: PIGEON_SEAL_OVERHEAD, peer: Some(from_device) };
         // Resume if a prior session left a spool for this exact transfer; a mismatched or torn one is replaced.
-        let (file, layout) = match spool::resume(&path)? {
-            Some((d, lay, f)) if d.hash == hash && d.size == size => (f, lay),
-            _ => spool::create(&path, &desc)?,
+        let (file, layout, desc) = match spool::resume(&path)? {
+            Some((d, lay, f)) if d.hash == hash && d.size == size => {
+                let name = if d.name.is_empty() { desc.name.clone() } else { d.name.clone() };
+                (f, lay, SpoolDesc { name, peer: Some(from_device), ..d })
+            }
+            _ => {
+                let (f, lay) = spool::create(&path, &desc)?;
+                (f, lay, desc)
+            }
         };
-        let present: Vec<bool> = spool::missing(&file, &layout)?.iter().map(|m| !m).collect();
-        self.inflight.insert(hash, Inflight { desc, layout, file, path, wire_key, from_device, present });
-        Ok(())
+        Ok(self.insert(hash, desc, layout, file, path, wire_key, from_device))
     }
 
-    /// True once every chunk of this pigeon is present: the RAM bitmap says so AND the spool's own zero-scan agrees (the disk is the truth; the bitmap only spares us reading it per chunk).
+    fn insert(&mut self, hash: [u8; 32], desc: SpoolDesc, layout: SpoolLayout, file: File, path: PathBuf, wire_key: [u8; 32], from_device: [u8; 32]) -> (u32, u32, bool) {
+        let held = spool::missing(&file, &layout).map(|m| m.iter().filter(|x| !**x).count() as u32).unwrap_or(0);
+        let total = layout.lens.len() as u32;
+        self.inflight.insert(hash, Inflight { desc, layout, file, path, wire_key, from_device, held, last_progress: Instant::now(), asks: 0 });
+        (held, total, held > 0)
+    }
+
+    /// RESTART: re-open every spool a previous session left in `dir` that names its sending device, and report each incomplete one with what it lacks — the caller asks that device to repair. A spool with no device on record (written before v2) cannot ask anyone; it waits for its announcement or chunks.
+    pub fn rediscover(&mut self, dir: &std::path::Path, wire_key: [u8; 32]) -> Vec<([u8; 32], [u8; 32])> {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for e in entries.flatten() {
+            let path = e.path();
+            if !path.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("pigeon-") && n.ends_with(".spool")) {
+                continue;
+            }
+            let Ok(Some((desc, layout, file))) = spool::resume(&path) else {
+                continue;
+            };
+            let (hash, Some(peer)) = (desc.hash, desc.peer) else {
+                continue;
+            };
+            if self.inflight.contains_key(&hash) {
+                continue;
+            }
+            let (held, total, _) = self.insert(hash, desc, layout, file, path, wire_key, peer);
+            if held < total {
+                out.push((hash, peer));
+            }
+        }
+        out
+    }
+
+    /// True once every chunk of this pigeon is present: the count says so AND the spool's own zero-scan agrees (one full read, at the end).
     pub fn is_complete(&self, hash: &[u8; 32]) -> std::io::Result<bool> {
         match self.inflight.get(hash) {
-            Some(inf) if inf.present.iter().all(|p| *p) => Ok(spool::missing(&inf.file, &inf.layout)?.iter().all(|m| !m)),
+            Some(inf) if inf.held as usize >= inf.layout.lens.len() => Ok(spool::missing(&inf.file, &inf.layout)?.iter().all(|m| !m)),
             _ => Ok(false),
         }
     }
@@ -71,45 +135,70 @@ impl PigeonReceiver {
     /// How far along one pigeon is: (chunks landed, chunks in all). None for a pigeon this receiver does not hold.
     pub fn progress(&self, hash: &[u8; 32]) -> Option<(u32, u32)> {
         let inf = self.inflight.get(hash)?;
-        Some((inf.present.iter().filter(|p| **p).count() as u32, inf.present.len() as u32))
+        Some((inf.held, inf.layout.lens.len() as u32))
     }
 
-    /// Land one sealed chunk. The signer must match the announcer (the caller has already verified the frame's signature; this rejects a valid frame from the wrong device). A chunk for an unknown or out-of-range slot is dropped, not an error — a late frame after finalize is a natural no-op.
-    /// Returns the pigeon's progress after this chunk — (landed, total) — when the chunk was accepted (a duplicate counts as accepted, it just moves nothing), None when it was refused.
+    /// The name a pigeon will land under — empty until its announcement or a named chunk supplied one.
+    pub fn name(&self, hash: &[u8; 32]) -> Option<&str> {
+        self.inflight.get(hash).map(|i| i.desc.name.as_str())
+    }
+
+    /// True when this receiver holds the pigeon.
+    pub fn holds(&self, hash: &[u8; 32]) -> bool {
+        self.inflight.contains_key(hash)
+    }
+
+    /// Land one sealed chunk. The signer must match the sending device (the caller has already verified the frame's signature; this rejects a valid frame from the wrong device). A chunk for an unknown or out-of-range slot is refused.
+    /// The ONE slot is checked before the write: a slot that already reads present is left alone (a duplicate moves nothing and is never counted twice).
+    /// Returns the pigeon's progress after this chunk — (landed, total) — when the chunk was accepted, None when it was refused.
     pub fn chunk(&mut self, hash: &[u8; 32], idx: u32, sealed: &[u8], signer: &[u8; 32]) -> std::io::Result<Option<(u32, u32)>> {
         let Some(inf) = self.inflight.get_mut(hash) else {
             return Ok(None);
         };
-        if signer != &inf.from_device {
+        if signer != &inf.from_device || (idx as usize) >= inf.layout.lens.len() {
             return Ok(None);
         }
-        if (idx as usize) >= inf.layout.lens.len() {
-            return Ok(None);
+        if spool::slot_missing(&inf.file, &inf.layout, idx as usize)? {
+            spool::write_slot(&inf.file, &inf.layout, idx as usize, sealed)?;
+            inf.held += 1;
+            inf.last_progress = Instant::now();
+            inf.asks = 0;
         }
-        spool::write_slot(&inf.file, &inf.layout, idx as usize, sealed)?;
-        inf.present[idx as usize] = true;
-        Ok(Some((inf.present.iter().filter(|p| **p).count() as u32, inf.present.len() as u32)))
+        Ok(Some((inf.held, inf.layout.lens.len() as u32)))
     }
 
-    /// Finalize a whole spool into `dir`: decrypt each slot in order, verify the reassembled plaintext against the announced hash, land it under a non-overwriting name, and shed the spool. Returns None if the pigeon is unknown, incomplete, a chunk fails to open (a torn slot the zero-scan should have caught, so this is defence in depth), or the whole-file hash mismatches. On any failure the spool is kept for a re-fetch, EXCEPT a hash mismatch, which sheds it — a spool that completed to the wrong bytes is poison, not a resumable state.
-    pub fn finalize(&mut self, hash: &[u8; 32], seed: &[u8; 32], dir: &std::path::Path) -> Option<Landed> {
-        if !self.is_complete(hash).ok()? {
-            return None;
-        }
-        let inf = self.inflight.remove(hash)?;
-        match finalize_inflight(inf, seed, dir) {
-            Ok(landed) => landed,
-            Err(inf) => {
-                // A chunk that would not open: keep the spool for a re-fetch.
-                self.inflight.insert(*hash, inf);
-                None
+    /// THE REPAIR ASK: the slots this pigeon still lacks, read off the spool's zero-scan right now, and the device to ask. Never stored.
+    pub fn want(&self, hash: &[u8; 32]) -> Option<(Vec<u32>, [u8; 32])> {
+        let inf = self.inflight.get(hash)?;
+        let missing = spool::missing(&inf.file, &inf.layout).ok()?;
+        let want: Vec<u32> = missing.iter().enumerate().filter(|(_, m)| **m).map(|(i, _)| i as u32).collect();
+        (!want.is_empty()).then_some((want, inf.from_device))
+    }
+
+    /// Pigeons that stopped moving: incomplete, nothing landed for [`REPAIR_AFTER`]. Each due one counts an ask and is returned to be asked; one past [`MAX_REPAIR_ASKS`] is returned in the second list, let go from RAM (its spool stays on disk for the next session).
+    pub fn stalled(&mut self, now: Instant) -> (Vec<[u8; 32]>, Vec<([u8; 32], String, [u8; 32])>) {
+        let (mut ask, mut gone) = (Vec::new(), Vec::new());
+        for (h, inf) in self.inflight.iter_mut() {
+            if (inf.held as usize) >= inf.layout.lens.len() || now.duration_since(inf.last_progress) < REPAIR_AFTER {
+                continue;
+            }
+            inf.last_progress = now;
+            inf.asks += 1;
+            if inf.asks > MAX_REPAIR_ASKS {
+                gone.push((*h, inf.desc.name.clone(), inf.from_device));
+            } else {
+                ask.push(*h);
             }
         }
+        for (h, _, _) in &gone {
+            self.inflight.remove(h);
+        }
+        (ask, gone)
     }
 
-    /// Detach a COMPLETE pigeon so `finalize_inflight` can run it on a worker thread. None if unknown or not yet whole. The receiver forgets it; a chunk that would not open is a re-announce away from resuming (the spool file itself survives on disk).
+    /// Detach a COMPLETE, NAMED pigeon so `finalize_inflight` can run it on a worker thread. None if unknown, not yet whole, or still nameless (the announcement row has not arrived — the landing waits for it).
     pub fn take_complete(&mut self, hash: &[u8; 32]) -> Option<Inflight> {
-        if !self.is_complete(hash).ok()? {
+        if !self.is_complete(hash).ok()? || self.inflight.get(hash).is_some_and(|i| i.desc.name.is_empty()) {
             return None;
         }
         self.inflight.remove(hash)
@@ -190,7 +279,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&land_dir);
 
         let mut rx = PigeonReceiver::default();
-        rx.announce(&spool_dir, hash, "dropped.bin".into(), plain.len() as u64, chunk_size, wire_key, from).expect("announce");
+        rx.open(&spool_dir, hash, "dropped.bin".into(), plain.len() as u64, chunk_size, wire_key, from).expect("open");
 
         // Out of order, and a duplicate, and a wrong-signer frame that must be ignored.
         for &i in &[2usize, 0, 3] {
@@ -204,14 +293,15 @@ mod tests {
         assert_eq!(rx.chunk(&hash, 1, &chunks[1], &from).expect("chunk"), Some((4, 4)));
         assert!(rx.is_complete(&hash).unwrap(), "all four present now");
 
-        let landed = rx.finalize(&hash, &seed, &land_dir).expect("finalize lands");
+        let inf = rx.take_complete(&hash).expect("complete and named");
+        let landed = finalize_inflight(inf, &seed, &land_dir).ok().flatten().expect("finalize lands");
         assert_eq!(landed.name, "dropped.bin");
         assert!(landed.path.ends_with("dropped.bin"));
         assert_eq!(std::fs::read(&landed.path).unwrap(), plain, "the landed file is the sender's exact bytes");
         // Ephemeral: spool gone, vault copy gone, transfer forgotten.
         assert!(!spool_dir.join(format!("pigeon-{}.spool", hex::encode(&hash[..8]))).exists(), "spool shed");
         assert!(!crate::storage::blob_present(&hash), "vault copy shed");
-        assert!(rx.finalize(&hash, &seed, &land_dir).is_none(), "a finalized pigeon is forgotten");
+        assert!(rx.take_complete(&hash).is_none() && !rx.holds(&hash), "a finalized pigeon is forgotten");
         let _ = std::fs::remove_dir_all(&spool_dir);
         let _ = std::fs::remove_dir_all(&land_dir);
     }
@@ -235,13 +325,72 @@ mod tests {
         let spool_dir = scratch("poison");
         let _ = std::fs::remove_dir_all(&spool_dir);
         let mut rx = PigeonReceiver::default();
-        rx.announce(&spool_dir, announced, "x.bin".into(), plain.len() as u64, chunk_size, wire_key, from).expect("announce");
+        rx.open(&spool_dir, announced, "x.bin".into(), plain.len() as u64, chunk_size, wire_key, from).expect("open");
         for (i, c) in chunks.iter().enumerate() {
             rx.chunk(&announced, i as u32, c, &from).expect("chunk");
         }
         assert!(rx.is_complete(&announced).unwrap(), "all slots non-zero");
-        assert!(rx.finalize(&announced, &seed, &scratch("poisonland")).is_none(), "a hash mismatch refuses to land");
+        let inf = rx.take_complete(&announced).expect("complete");
+        assert!(finalize_inflight(inf, &seed, &scratch("poisonland")).ok().flatten().is_none(), "a hash mismatch refuses to land");
         assert!(!spool_dir.join(format!("pigeon-{}.spool", hex::encode(&announced[..8]))).exists(), "the poisoned spool is shed, never resumed");
         let _ = std::fs::remove_dir_all(&spool_dir);
     }
+
+    /// THE FIELD FAILURE (2026-10-07): chunks that beat their announcement. A self-describing chunk opens a NAMELESS spool, every chunk lands, the whole spool still waits for its name (no landing under an empty name), and the announcement supplies it.
+    #[test]
+    fn chunks_before_the_announcement_open_the_spool_and_wait_for_the_name() {
+        crate::storage::isolate_test_storage();
+        let wire_key = [0x55u8; 32];
+        let from = [0xB2u8; 32];
+        let chunk_size = crate::storage::BLOB_CHUNK_SIZE as u32;
+        let plain: Vec<u8> = (0..(chunk_size as usize + 99)).map(|i| (i * 3 % 241) as u8).collect();
+        let hash = *blake3::hash(&plain).as_bytes();
+        let chunks: Vec<Vec<u8>> = plain.chunks(chunk_size as usize).map(|c| crate::storage::encrypt_bytes(c, &wire_key).expect("seal")).collect();
+        let dir = scratch("early");
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut rx = PigeonReceiver::default();
+        // The first chunk opens the spool from the frame alone — no name yet.
+        rx.open(&dir, hash, String::new(), plain.len() as u64, chunk_size, wire_key, from).expect("open from a chunk");
+        assert_eq!(rx.chunk(&hash, 1, &chunks[1], &from).unwrap(), Some((1, 2)));
+        assert_eq!(rx.want(&hash).map(|(w, d)| (w, d)), Some((vec![0], from)), "the repair ask names exactly the slot still empty, and whom to ask");
+        assert_eq!(rx.chunk(&hash, 0, &chunks[0], &from).unwrap(), Some((2, 2)));
+        assert!(rx.is_complete(&hash).unwrap());
+        assert!(rx.want(&hash).is_none(), "nothing to ask for once whole");
+        assert!(rx.take_complete(&hash).is_none(), "a nameless spool never lands");
+        // The announcement arrives late: same spool, now named.
+        assert_eq!(rx.open(&dir, hash, "late.bin".into(), plain.len() as u64, chunk_size, wire_key, from).unwrap(), (2, 2, false));
+        assert_eq!(rx.name(&hash), Some("late.bin"));
+        assert!(rx.take_complete(&hash).is_some(), "named and whole — it lands");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// RESTART: a half-filled spool survives the process; a fresh receiver rediscovers it from the directory alone, knows whom to ask (the device rides the prelude), and asks for exactly what is missing — the count comes back from the file, there is no list to lose.
+    #[test]
+    fn a_restarted_host_rediscovers_and_asks_for_the_rest() {
+        crate::storage::isolate_test_storage();
+        let wire_key = [0x66u8; 32];
+        let from = [0xC3u8; 32];
+        let chunk_size = crate::storage::BLOB_CHUNK_SIZE as u32;
+        let plain: Vec<u8> = (0..(chunk_size as usize * 3 + 5)).map(|i| (i * 11 % 239) as u8).collect();
+        let hash = *blake3::hash(&plain).as_bytes();
+        let chunks: Vec<Vec<u8>> = plain.chunks(chunk_size as usize).map(|c| crate::storage::encrypt_bytes(c, &wire_key).expect("seal")).collect();
+        let dir = scratch("restart");
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let mut rx = PigeonReceiver::default();
+            rx.open(&dir, hash, "kept.bin".into(), plain.len() as u64, chunk_size, wire_key, from).unwrap();
+            rx.chunk(&hash, 1, &chunks[1], &from).unwrap();
+            rx.chunk(&hash, 3, &chunks[3], &from).unwrap();
+        } // the process dies
+        let mut rx = PigeonReceiver::default();
+        let asks = rx.rediscover(&dir, wire_key);
+        assert_eq!(asks, vec![(hash, from)], "the spool is found, with its device");
+        assert_eq!(rx.progress(&hash), Some((2, 4)), "the count comes back from the file");
+        assert_eq!(rx.want(&hash).map(|(w, _)| w), Some(vec![0, 2]));
+        assert_eq!(rx.name(&hash), Some("kept.bin"));
+        // A duplicate of a held slot moves nothing.
+        assert_eq!(rx.chunk(&hash, 1, &chunks[1], &from).unwrap(), Some((2, 4)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
 }

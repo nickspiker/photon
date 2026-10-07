@@ -4443,6 +4443,9 @@ impl PhotonApp {
             let (pltx, plrx) = std::sync::mpsc::channel();
             self.pigeon_landed_tx = pltx;
             self.pigeon_landed_rx = plrx;
+            let (pptx, pprx) = std::sync::mpsc::channel();
+            self.pigeon_prepared_tx = pptx;
+            self.pigeon_prepared_rx = pprx;
             let (aptx, aprx) = std::sync::mpsc::channel();
             self.attach_prepared_tx = aptx;
             self.attach_prepared_rx = aprx;

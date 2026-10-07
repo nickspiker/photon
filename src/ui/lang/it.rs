@@ -319,7 +319,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "sempre raggiungibile (questa persona sei tu)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} inviati \u{00b7} {} ricevuti", fmt_mag(total as u64), if total == 1 { "messaggio" } else { "messaggi" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "queste righe dovrebbero coincidere su ognuno dei tuoi dispositivi".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "un dispositivo della flotta esce su sua richiesta \u{2014} vedi Impostazioni \u{2192} Flotta".into(),
         // L’inglese dice "boot them": il pronome oggetto italiano (lo/la) dovrebbe concordare con una persona di genere ignoto, quindi l’imperativo resta senza oggetto e ripete l’etichetta della pillola a riposo.
         Msg::BootPill { armed } => if armed { "Tocca di nuovo \u{2014} caccia" } else { "Caccia" }.into(),

@@ -871,6 +871,28 @@ impl ChatFilter {
 }
 
 /// One bridge pigeon's progress as the row draws it: which sibling device it is with, the name the row carries (the row holds the name, not the hash — so the row finds its bar by device + name, newest first), and chunks got of chunks in all.
+/// CLIENT: a pigeon this device dropped and keeps serving until the host reports every slot held (pigeons v2, 2026-10-07 — the copy used to be shed the moment the chunks left, so a lost chunk could never be re-sent).
+pub(crate) struct PigeonOutbound {
+    pub(crate) device: [u8; 32],
+    pub(crate) name: String,
+    pub(crate) size: u64,
+    pub(crate) chunks: Vec<[u8; 32]>,
+    pub(crate) single: bool,
+    /// The vault held these bytes before the drop (they are also an attachment somewhere): never shed them.
+    pub(crate) was_held: bool,
+}
+
+/// A drop the seal worker read, hashed and stored — handed to the tick to announce and send.
+pub(crate) struct PigeonPrepared {
+    pub(crate) contact: ContactId,
+    pub(crate) name: String,
+    pub(crate) hash: [u8; 32],
+    pub(crate) size: u64,
+    pub(crate) chunks: Vec<[u8; 32]>,
+    pub(crate) single: bool,
+    pub(crate) was_held: bool,
+}
+
 pub(crate) struct PigeonProgress {
     pub(crate) device: [u8; 32],
     pub(crate) name: String,
@@ -2147,6 +2169,12 @@ pub struct PhotonApp {
     pigeon_landed_rx: std::sync::mpsc::Receiver<(ContactId, Option<crate::network::pigeon::Landed>, String)>,
     /// BOTH ENDS: how far each bridge pigeon has got, keyed by its whole-file hash — the sender learns it from the host's pigeon_ack frames, the host from its own spool. Draws the bar on the pigeon row; RAM-only like the rows themselves.
     pigeon_progress: std::collections::HashMap<[u8; 32], PigeonProgress>,
+    /// CLIENT: pigeons dropped here and still being served (repair asks answered) until the host holds them whole.
+    pigeon_outbound: std::collections::HashMap<[u8; 32], PigeonOutbound>,
+    pigeon_prepared_tx: std::sync::mpsc::Sender<PigeonPrepared>,
+    pigeon_prepared_rx: std::sync::mpsc::Receiver<PigeonPrepared>,
+    /// HOST: this session has resumed the spools a previous run left (once, when the fleet key is in hand).
+    pigeon_rediscovered: bool,
     /// CLIENT side, any platform: the latest locus the bridge host reported — (device, host name, cwd) — rendered as the strip above the compose box so the operator is never blind to where commands land (field 2026-08-23: a pull meant for photon ran in keys/).
     bridge_locus: Option<([u8; 32], String, String)>,
     /// CLIENT side: Stop-press escalation for the in-flight command — (command eagle_time, presses so far); each press walks SIGINT → SIGTERM → SIGKILL, reset when a new command starts.
@@ -2884,6 +2912,10 @@ impl PhotonApp {
             pigeon_landed_tx: std::sync::mpsc::channel().0,
             pigeon_landed_rx: std::sync::mpsc::channel().1,
             pigeon_progress: std::collections::HashMap::new(),
+            pigeon_outbound: std::collections::HashMap::new(),
+            pigeon_prepared_tx: std::sync::mpsc::channel().0,
+            pigeon_prepared_rx: std::sync::mpsc::channel().1,
+            pigeon_rediscovered: false,
             bridge_locus: None,
             bridge_int: None,
             settings_custodian_check: None,

@@ -42,6 +42,8 @@ pub struct SpoolDesc {
     pub chunk_size: u32,
     /// Sealed-minus-plaintext per chunk (nonce + tag; 40 for XChaCha20-Poly1305). Stored rather than assumed so the spool stays transport-agnostic.
     pub seal_overhead: u32,
+    /// The device the slots come from (2026-10-07): who a resumed spool asks for its missing slots after a restart. Optional in the prelude — a spool written before it resumes without one.
+    pub peer: Option<[u8; 32]>,
 }
 
 impl SpoolDesc {
@@ -90,6 +92,7 @@ fn spool_schema() -> SectionSchema {
         .field("size", TypeConstraint::AnyUnsigned)
         .field("csz", TypeConstraint::AnyUnsigned) // plaintext chunk size — the slot table derives from these two scalars
         .field("ovh", TypeConstraint::AnyUnsigned) // seal overhead per chunk
+        .field("from", TypeConstraint::AnyHash) // the sending device, for a resumed spool's repair ask (optional)
 }
 
 /// The prelude document: a COMPLETE VSF file (header, TOC, provenance hash), which is what lets it verify itself.
@@ -108,6 +111,10 @@ fn prelude_doc(desc: &SpoolDesc) -> Result<Vec<u8>, String> {
         .map_err(|e| e.to_string())?
         .set("ovh", VsfType::u(desc.seal_overhead as usize, false))
         .map_err(|e| e.to_string())?;
+    let b = match desc.peer {
+        Some(p) => b.set("from", VsfType::hb(p.to_vec())).map_err(|e| e.to_string())?,
+        None => b,
+    };
     let section = b.encode().map_err(|e| e.to_string())?;
     vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -170,7 +177,8 @@ pub fn resume(path: &Path) -> io::Result<Option<(SpoolDesc, SpoolLayout, File)>>
     let (Ok(chunk_size), Ok(seal_overhead)) = (u32::try_from(csz), u32::try_from(ovh)) else {
         return Ok(None);
     };
-    let desc = SpoolDesc { name, hash, size, chunk_size, seal_overhead };
+    let peer = section.get_value::<[u8; 32]>("from").ok();
+    let desc = SpoolDesc { name, hash, size, chunk_size, seal_overhead, peer };
     let lens = desc.sealed_lens();
     if lens.is_empty() {
         return Ok(None);
@@ -263,6 +271,16 @@ fn slot_present(bytes: &[u8]) -> bool {
     true
 }
 
+/// One slot's presence from its bytes alone — the per-chunk form of [`missing`] (a receiver checks the ONE slot a frame names before writing it, so a duplicate is never counted twice and the whole file is never rescanned per chunk).
+pub fn slot_missing(f: &File, layout: &SpoolLayout, idx: usize) -> io::Result<bool> {
+    let Some(&len) = layout.lens.get(idx) else {
+        return Err(io::Error::new(io::ErrorKind::InvalidInput, "spool slot out of range"));
+    };
+    let mut buf = vec![0u8; len as usize];
+    pread_exact(f, &mut buf, layout.offsets[idx])?;
+    Ok(!slot_present(&buf))
+}
+
 /// THE BITMAP READ: which slots are still wanted, reconstructed from the file alone. This is the whole point — after any crash, restart, or handoff, the spool plus the manifest is a complete resume, and there was never a side file to fsync in the right order.
 pub fn missing(f: &File, layout: &SpoolLayout) -> io::Result<Vec<bool>> {
     let mut out = Vec::with_capacity(layout.lens.len());
@@ -294,7 +312,7 @@ mod tests {
     }
 
     fn desc_of(size: u64, chunk: u32) -> SpoolDesc {
-        SpoolDesc { name: "pigeon.bin".into(), hash: [0xAB; 32], size, chunk_size: chunk, seal_overhead: 40 }
+        SpoolDesc { name: "pigeon.bin".into(), hash: [0xAB; 32], size, chunk_size: chunk, seal_overhead: 40, peer: Some([0xCD; 32]) }
     }
 
     fn scratch(name: &str) -> std::path::PathBuf {

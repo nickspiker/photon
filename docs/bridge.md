@@ -51,13 +51,14 @@ Opening a session starts fresh at both ends:
 
 ### Pigeons (files into the host)
 
-Drop a file on an open bridge and it lands in the directory the host's shell is standing in (docs/PT.md, "Built 2026-09-17"):
+Drop a file on an open bridge and it lands in the directory the host's shell is standing in (docs/PT.md, "Pigeons, v2"):
 
 - The operator stores the file in the vault and announces it with a typed `BridgePigeon` row. The row's text is the file name; `BridgeWire.pigeon` carries the name, the hash of the whole file and its size, and **never a path**. Only the host knows where its shell actually stands, and a wire that cannot name a destination cannot write outside the directory you are looking at.
-- The bytes travel as `pigeon_chunk` PT frames sealed under the fleet key, with at most thirteen in flight to one peer at a time. The host writes them into a spool on disk with a zero bitmap, where a zeroed window marks a missing chunk. That lets a partial transfer resume after a restart and keeps it out of RAM.
+- The bytes travel as `pigeon_chunk` PT frames sealed under the fleet key, each its own lettered stream with at most thirteen in flight to one peer at a time. Every frame carries the file's size and its name sealed under the fleet key, so whichever frame arrives first opens the host's spool — the announcement row and the chunks may land in any order. The host writes them into a spool on disk that is its own receipt record (a zeroed window marks a missing chunk), so a partial transfer resumes after a restart and stays out of RAM.
+- The host repairs: when a pigeon resumes, and whenever one stops moving for twenty seconds, it asks the operator's device for exactly the chunks its spool lacks (`pigeon_want`, read off the spool at the moment of asking). After eight unanswered asks it says so in the transcript and keeps the spool for the next session.
 - When the spool is complete, the host decrypts it, checks the hash of the whole file and lands it with `land_blob`, **replacing** any file with the same name. It adds no `(2)` suffix and no backup copy. Undo is the host's filesystem snapshots. The host then answers with a `BridgeOut` row naming the path.
 - The host acks landed chunks in a thinned way (`pigeon_ack`, at most about 65 per pigeon), and those acks drive a progress bar on the operator's row.
-- Both ends shed their copies once the file has landed.
+- The operator keeps its copy until the host reports every chunk held, so a lost chunk can always be re-sent; then it sheds it (unless the vault held those bytes before the drop). The host sheds the spool once the file has landed.
 
 ### Headless lifeline
 

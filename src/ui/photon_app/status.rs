@@ -41,6 +41,7 @@ impl PhotonApp {
         timed_drain!("avatar", self.drain_avatar_downloads());
         timed_drain!("attach", self.drain_attach_installed());
         timed_drain!("pigeon", self.drain_pigeon_landed());
+        timed_drain!("pigeon_prep", self.drain_pigeon_prepared());
         // Picked files the preparation worker finished (kind, dims, micro preview) → row + blob send.
         timed_drain!("attach_prep", self.drain_attach_prepared());
         // Decoded attachment pictures → the cache; preview wants → decode jobs / fetches.
@@ -334,6 +335,7 @@ impl PhotonApp {
                 StatusUpdate::AttachChunkReceived { .. } => "AttachChunkReceived",
                 StatusUpdate::PigeonChunkReceived { .. } => "PigeonChunkReceived",
                 StatusUpdate::PigeonAckReceived { .. } => "PigeonAckReceived",
+                StatusUpdate::PigeonWantReceived { .. } => "PigeonWantReceived",
                 StatusUpdate::AttachReqReceived { .. } => "AttachReqReceived",
                 StatusUpdate::MessageAck { .. } => "MessageAck",
                 StatusUpdate::AvatarRequestReceived { .. } => "AvatarRequestReceived",
@@ -410,6 +412,9 @@ impl PhotonApp {
         let mut era_triggers_after: Vec<(crate::types::friendship::FriendshipId, super::era::RepairTrigger)> = Vec::new();
         // Pigeon progress words, applied after the drain (on_pigeon_ack takes &mut self).
         let mut pigeon_acks_after: Vec<([u8; 32], u32, u32, [u8; 32])> = Vec::new();
+        // Pigeon chunks and repair asks likewise (both take &mut self: the spool, the bar, the outbound record).
+        let mut pigeon_chunks_after: Vec<([u8; 32], u32, Vec<u8>, Option<u64>, Option<Vec<u8>>, [u8; 32])> = Vec::new();
+        let mut pigeon_wants_after: Vec<([u8; 32], Vec<u32>, [u8; 32])> = Vec::new();
         // A sibling's presence VERDICT changed (first probe, or online↔offline): the computed ceremony owner may have moved — recomputed after the drain (era.rs).
         let mut owner_edge = false;
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
@@ -3486,6 +3491,12 @@ impl PhotonApp {
                         // OFF THE UI THREAD (2026-09-14, Nick's desktop launch hang: 128 manifests arrived in a burst and every store waited on the vault mutex behind the chunk worker's 200-5000 ms fsyncs — 49 s of UI stalls). The seal open, the store and the held-count all ride the seal worker; the drain seeds the progress bar.
                         let tx = self.attach_installed_tx.clone();
                         let sender_addr = raw_sender_addr;
+                        let sniff_name: String = self
+                            .conversations
+                            .iter()
+                            .flat_map(|c| c.messages.iter())
+                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash).map(|f| f.name.clone()))
+                            .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key).ok().and_then(|p| crate::storage::BlobManifest::from_bytes(&p)) {
                                 Some(m) if m.size <= super::attachments::MAX_ATTACH as u64 && m.chunk_size as usize == crate::storage::BLOB_CHUNK_SIZE => {
@@ -3494,6 +3505,24 @@ impl PhotonApp {
                                         Ok(()) => {
                                             let held = crate::storage::blob_chunks_held(&content_hash).map_or(0, |h| h.iter().filter(|x| **x).count()) as u32;
                                             crate::logf!("ATTACH: manifest stored — {} chunk(s), {} bytes, {} already held", total, m.size, held);
+                                            // Every chunk overtook the manifest (all stored at their own hashes): the blob is whole the moment the manifest lands — install it now, there is no last chunk left to do it.
+                                            if held >= total && total > 0 {
+                                                crate::storage::blob_presence_forget(&content_hash);
+                                                if crate::storage::blob_present_probe_now(&content_hash) {
+                                                    let sniffed = crate::storage::blob_chunk_load(&m.chunks[0]).map(|first| crate::types::sniff(&first, &sniff_name));
+                                                    let _ = tx.send(AttachInstalled {
+                                                        sniffed,
+                                                        manifest: None,
+                                                        chunk: Some((total - 1, total, true)),
+                                                        conversation_token,
+                                                        content_hash,
+                                                        sender_pubkey,
+                                                        sender_addr,
+                                                        len: m.size as usize,
+                                                    });
+                                                    return;
+                                                }
+                                            }
                                             let _ = tx.send(AttachInstalled {
                                                 sniffed: None,
                                                 manifest: Some((held, total)),
@@ -3541,7 +3570,18 @@ impl PhotonApp {
                             .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             let Some(m) = crate::storage::blob_manifest(&content_hash) else {
-                                crate::log("ATTACH: chunk before its manifest — dropped (the fetch re-asks)");
+                                // EARLY CHUNK (2026-10-07): chunks are content-addressed and authenticated, so one that overtakes its manifest is stored at its OWN hash — no bookkeeping, nothing to park; the manifest finds it held when it lands (it used to be dropped and cost a 20 s re-ask).
+                                match kete::decrypt_bytes(&sealed, &wire_key) {
+                                    Ok(plain) if plain.len() <= crate::storage::BLOB_CHUNK_SIZE => {
+                                        let own = *blake3::hash(&plain).as_bytes();
+                                        match crate::storage::blob_store(&seed, &own, &plain) {
+                                            Ok(()) => crate::logf!("ATTACH: chunk {} before its manifest — stored at its own hash, the manifest will find it", index),
+                                            Err(e) => crate::logf!("ATTACH: early chunk store failed: {}", e),
+                                        }
+                                    }
+                                    Ok(_) => crate::log("ATTACH: early chunk larger than a chunk — dropped"),
+                                    Err(e) => crate::logf!("ATTACH: early chunk seal open failed: {}", e),
+                                }
                                 return;
                             };
                             let Some(expect) = m.chunks.get(index as usize).copied() else {
@@ -3579,60 +3619,11 @@ impl PhotonApp {
                 }
                 // A bridge pigeon chunk: into its spool (a 256 KB pwrite — brief), and once the spool is whole, the decrypt-walk + landing run on the seal worker.
                 // Field-level borrows only (this handler holds `checker` borrowed from status_checker throughout), which is why this is inline rather than a &mut self method.
-                StatusUpdate::PigeonChunkReceived { content_hash, index, sealed, sender_pubkey } => {
-                    let signer = sender_pubkey.key;
-                    let landed = match self.pigeon_rx.chunk(&content_hash, index, &sealed, &signer) {
-                        Err(e) => {
-                            crate::logf!("PIGEON: chunk {} write failed: {}", index, e);
-                            None
-                        }
-                        Ok(v) => v,
-                    };
-                    // The host's running word back to the sender (pigeon_ack): on the landing EDGE, thinned by pigeon_ack_due so a 545-chunk pigeon costs ~65 tiny frames on the small-packet lane, not 545 queued ahead of the next chat line. The same count moves this end's own bar.
-                    if let Some((got, of)) = landed {
-                        let prev = self.pigeon_progress.get(&content_hash).map_or(0, |pp| pp.got);
-                        if let Some(pp) = self.pigeon_progress.get_mut(&content_hash) {
-                            pp.got = got;
-                            pp.of = of;
-                            pp.at = std::time::Instant::now();
-                            self.scene_dirty = true;
-                        }
-                        if super::bridge::pigeon_ack_due(prev, got, of) {
-                            let ci = self.contacts.iter().position(|c| c.is_sibling && c.device_key() == Some(signer));
-                            if let (Some(ci), Some(kp)) = (ci, self.device_keypair.as_ref()) {
-                                let c = &self.contacts[ci];
-                                let tok = c.handle_hash;
-                                let addrs = c.race_addrs();
-                                let relay_to = super::relay_unless_direct_trusted(c, crate::network::udp::get_local_ip());
-                                match crate::network::fgtw::protocol::build_pigeon_ack_vsf(&tok, &content_hash, got, of, kp.public.as_bytes(), kp.secret.as_bytes()) {
-                                    Ok(vsf_bytes) => {
-                                        let (peer_addr, alt_addr) = addrs.unwrap_or((crate::network::status::RELAY_ADDR, None));
-                                        checker.send_history(crate::network::status::HistorySendRequest { peer_addr, alt_addr, recipient_pubkey: signer, vsf_bytes, relay_to, tag: None });
-                                    }
-                                    Err(e) => crate::logf!("PIGEON: ack frame build failed: {}", e),
-                                }
-                            }
-                        }
-                    }
-                    if landed.is_some_and(|(got, of)| got >= of) {
-                        if let Some(inf) = self.pigeon_rx.take_complete(&content_hash) {
-                        let seed = self.session.as_ref().map(|s| s.identity_seed);
-                        let contact = self.contacts.iter().find(|c| c.device_key() == Some(signer)).map(|c| c.id);
-                        if let (Some(seed), Some(contact)) = (seed, contact) {
-                            // The landing directory: the sibling's shell cwd as of its last command, else the shell's starting directory (home).
-                            let cwd = self.bridge_cwds.as_ref().and_then(|m| m.lock().ok()).and_then(|m| m.get(&signer).cloned()).filter(|c| !c.is_empty());
-                            let dir = cwd.map(std::path::PathBuf::from).or_else(dirs::home_dir).unwrap_or_else(|| std::path::PathBuf::from("."));
-                            let tx = self.pigeon_landed_tx.clone();
-                            let wake = self.event_proxy.clone();
-                            queue_job(&self.seal_job_tx, move || {
-                                let dir_s = dir.to_string_lossy().into_owned();
-                                let landed = crate::network::pigeon::finalize_inflight(inf, &seed, &dir).unwrap_or(None);
-                                let _ = tx.send((contact, landed, dir_s));
-                                super::bridge::bridge_wake(&wake);
-                            });
-                        }
-                        }
-                    }
+                StatusUpdate::PigeonChunkReceived { content_hash, index, sealed, size, sealed_name, sender_pubkey } => {
+                    pigeon_chunks_after.push((content_hash, index, sealed, size, sealed_name, sender_pubkey.key));
+                }
+                StatusUpdate::PigeonWantReceived { content_hash, want, sender_pubkey } => {
+                    pigeon_wants_after.push((content_hash, want, sender_pubkey.key));
                 }
                 // Throttled PT transfer progress — drives the pill progress bars.
                 StatusUpdate::AttachProgress(snap) => {
@@ -5274,6 +5265,12 @@ impl PhotonApp {
         }
         for (hash, got, of, from) in pigeon_acks_after {
             self.on_pigeon_ack(hash, got, of, from);
+        }
+        for (hash, index, sealed, size, sealed_name, from) in pigeon_chunks_after {
+            self.on_pigeon_chunk(hash, index, sealed, size, sealed_name, from);
+        }
+        for (hash, want, from) in pigeon_wants_after {
+            self.on_pigeon_want(hash, want, from);
         }
         for (token, sender_key) in chain_pull_misses_after {
             // A miss answering an era_pull means "no sibling holds a newer era" — a repair-decision input, never the wipe-debris re-key below.

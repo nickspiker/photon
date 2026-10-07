@@ -508,6 +508,15 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         index: u32,
         sealed: Vec<u8>,
+        /// The frame's self-description (2026-10-07): the whole file's size and its sealed name — enough to open the spool from any chunk. None from an older sender.
+        size: Option<u64>,
+        sealed_name: Option<Vec<u8>>,
+        sender_pubkey: DevicePubkey,
+    },
+    /// A bridge host's REPAIR ASK for a pigeon we dropped: the slot indices its spool still lacks (read off its zero-scan when it asked). The client seals and sends exactly those.
+    PigeonWantReceived {
+        content_hash: [u8; 32],
+        want: Vec<u32>,
         sender_pubkey: DevicePubkey,
     },
     /// A peer wants the blob for an attachment row it holds (offline race, or a fleet sibling with row-but-no-blob). The UI answers with an attach_blob if the blob is held.
@@ -681,6 +690,7 @@ impl StatusUpdate {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::PigeonAckReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
+            StatusUpdate::PigeonWantReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AttachReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AvatarRequestReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
@@ -2216,7 +2226,7 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
-                                    } else if let Ok(((_tok, content_hash, index, sealed), sender_pubkey)) =
+                                    } else if let Ok((f, sender_pubkey)) =
                                         crate::network::fgtw::protocol::parse_pigeon_chunk_vsf(&data)
                                     {
                                         if !is_known_sender_pt(&sender_pubkey) {
@@ -2226,11 +2236,26 @@ async fn run_checker(
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::PigeonChunkReceived {
-                                                content_hash,
-                                                index,
-                                                sealed,
+                                                content_hash: f.hash,
+                                                index: f.index,
+                                                sealed: f.sealed,
+                                                size: f.size,
+                                                sealed_name: f.sealed_name,
                                                 sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                             },
+                                            &event_proxy_recv,
+                                        );
+                                    } else if let Ok(((_tok, content_hash, want), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_pigeon_want_vsf(&data)
+                                    {
+                                        // A repair ask for a big pigeon outgrows one datagram and arrives as a whole PT transfer — the same verdict as on the small-frame path.
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: pigeon_want REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::PigeonWantReceived { content_hash, want, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
                                             &event_proxy_recv,
                                         );
                                     } else if let Ok(((conversation_token, content_hash, index, sealed), sender_pubkey)) =
@@ -2786,7 +2811,7 @@ async fn run_checker(
                                 );
                                 continue;
                             }
-                            if let Ok(((_tok, content_hash, index, sealed), sender_pubkey)) =
+                            if let Ok((f, sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_pigeon_chunk_vsf(msg_bytes)
                             {
                                 {
@@ -2799,11 +2824,31 @@ async fn run_checker(
                                 send_status_update(
                                     &status_tx_recv,
                                     StatusUpdate::PigeonChunkReceived {
-                                        content_hash,
-                                        index,
-                                        sealed,
+                                        content_hash: f.hash,
+                                        index: f.index,
+                                        sealed: f.sealed,
+                                        size: f.size,
+                                        sealed_name: f.sealed_name,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // A bridge host's repair ask — small, signed, same mandatory packet-ack.
+                            if let Ok(((_tok, content_hash, want), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_pigeon_want_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::PigeonWantReceived { content_hash, want, sender_pubkey: DevicePubkey::from_bytes(sender_pubkey) },
                                     &event_proxy_recv,
                                 );
                                 continue;
