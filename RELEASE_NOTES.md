@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v115
 - **Files no longer ride inside the conversation.** A file photon is now just a pointer; its name, type and pictures travel in a small separate record that loads after the conversation is already on screen, so long conversations full of files open instantly. Until a file's details arrive, its line shows an ellipsis. Older versions of Photon still receive these files and can fetch and save them, but show them without a name or picture until they update.
 - **Fixed: a file sent from one of your devices showed up on your other devices as two photons, a blank one and the file.** The blank copies already stored disappear the next time the conversation loads.
 - **A finished transfer turns green.** When a file you are sending is delivered, or one you are receiving lands, its row turns green and its progress bar runs edge to edge.
