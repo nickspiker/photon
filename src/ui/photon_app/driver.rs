@@ -2555,12 +2555,12 @@ impl FluorApp for PhotonApp {
                 ..
             } => {
                 self.press_held = false;
-                // THE LIFT (2026-10-06 phone log: a 187 px/frame flick sampled [187, 182, 2, 0, 0] and died at 2 — the finger's last one or two frames before Android reports UP are the lift, not the gesture). Up to two trailing still frames are dropped before the median; three or more is a genuine hold and the fling is zero, as Nick asked.
+                // THE LIFT (2026-10-06 phone log: a 187 px/frame flick sampled [187, 182, 2, 0, 0] and died at 2; 2026-10-07: the fastest flicks moved everything in one or two frames and then showed three or four still frames before Android reported UP — the finger was already off the glass). Up to FOUR trailing still frames (≈ 67 ms, the UP's latency) are dropped before the median; five or more (≈ 83 ms+) is a genuine hold and the fling is zero, as Nick asked.
                 if self.drag_px > 0 {
                     let oldest_first: Vec<i32> = self.fling_recent.iter().rev().copied().collect();
                     let mut end = oldest_first.len();
                     let mut dropped = 0;
-                    while end > 0 && dropped < 2 && oldest_first[end - 1] == 0 {
+                    while end > 0 && dropped < 4 && oldest_first[end - 1] == 0 {
                         end -= 1;
                         dropped += 1;
                     }
@@ -3645,12 +3645,19 @@ impl FluorApp for PhotonApp {
             }
             // THE LIST FLING'S SAMPLER: one sample per FRAME while the finger is down — this frame's accumulated drag delta, zero when it did not move — and the fling is the median of the last five. Frames keep coming at vsync for as long as the touch is down, so a still finger pushes zeros and a lift after a pause carries no fling.
             if self.press_held || self.pointer_down {
-                self.fling_recent.rotate_right(1);
-                self.fling_recent[0] = std::mem::take(&mut self.fling_frame_acc);
+                // A FRAME IS A NOMINAL FRAME (2026-10-07 phone log: a flick sampled 523 px in ONE tick — a slow, full-repaint tick had swallowed two or three frames' worth of finger, and the glide then replayed that whole lump every real frame). A tick that spanned n nominal frames contributes n samples of acc/n, so the window counts frames whatever the render cost.
+                let nominal = ((delta_time / (1.0 / 60.0)).round() as i32).clamp(1, 8);
+                let acc = std::mem::take(&mut self.fling_frame_acc);
+                let per = acc / nominal;
+                for i in 0..nominal {
+                    self.fling_recent.rotate_right(1);
+                    // The division's remainder rides the oldest of the n samples so the sum stays exact.
+                    self.fling_recent[0] = if i == nominal - 1 { acc - per * (nominal - 1) } else { per };
+                }
                 let mut sorted = self.fling_recent;
                 sorted.sort_unstable();
                 self.list_fling = sorted[2];
-                self.drag_frames += 1;
+                self.drag_frames += nominal as u32;
             }
             dirty_checkpoint!();
             // THE LIST FLING (see pane_scroll): the previous frame's delta, one pixel less each frame, until zero or a bound.
