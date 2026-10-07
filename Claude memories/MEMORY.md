@@ -11,7 +11,7 @@
 - [Nick publishes](nick-publishes.md) — Nick INITIATES; when asked, run deploy/publish and push WITH build notes (RELEASE_NOTES.md → Updates panel + site); never unasked
 - [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
 - [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; prose uses petnames; doctrine: [project_humanitys_code.md]
-- [Photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project (mahere…); a request naming one was probably meant for its own thread
+- [Photon + deps only](feedback_scope_photon_and_deps.md) — HARD: never edit another project (mahere…); likely a wrong-thread request
 - [Stage only your own files](feedback_stage_only_own_files.md) — HARD: stage by explicit path; never `git add -u`/`-A` (shared tree; 2026-09-26 vsf sweep)
 - [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
 - [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
@@ -28,7 +28,7 @@
 - [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log)
 - [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify grep-derived line numbers non-empty before sed address ops
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org + toka.wasm freely, no confirmation
-- [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev-log output
+- [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev logs
 - [feedback_script_timestamps.md](feedback_script_timestamps.md) — build/deploy scripts end with `completed $(date)`
 - [feedback_voca_camelcase.md](feedback_voca_camelcase.md) — voca values camelCase; spaces opt-in for read-aloud
 - [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — safety copy = reflink, never literal; batch repo scans
@@ -37,7 +37,7 @@
 - [Persist findings early](persist-findings-early.md) — Nick undoes via message edits: write load-bearing findings to memory/docs as they land
 - [Epoch is fixed](feedback_epoch_fixed.md) — HARD: never move the epoch; fleet mints on legacy 20:17:40 UTC, TAI def 20:17:48 is +29 s; NO flip (decided 2026-09-26)
 - [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding: every string parser is an attacker's lever; drop-and-purge legacy forms the same day
-- [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only when required
+- [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only if required
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
@@ -47,7 +47,7 @@
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 Jeff's PDF: fetch asked one friend device (fixed); push one-shot, auto-fetch policy open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
-- [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes (id = blake3(text‖nonce)), statuses via photonlog --gripes/--gripe-status, token keys/gripes.token
+- [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes, photonlog --gripes/--gripe-status, token keys/gripes.token
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; OPEN: restart re-keys offline friends
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): offer before mutuality + dropped knock
