@@ -46,3 +46,20 @@ RAW stays CFA-binned (no demosaic — Nick: skip it); what opsin declines falls 
 A row shows only its visual: a picture row is the preview band and nothing else (no body line is reserved), a code or text row shows the first three non-blank lines of its micro preview, a wave row is its card, and a kind with no visual shows its bare filename. The kind glyph, the size and the "tap for actions" hint are gone from the row; the size and the actions live in the details strip. Each visual is recorded per visible slot (`msg_attach_visuals`, like the wave bands): a tap inside it opens the viewer or the reader directly (or fetches, when the blob is not held), a tap on the rest of the row opens the actions strip as before.
 
 The details strip for an attachment row (2026-09-12): the meta line leads with name, type, size and dims (`Msg::AttachStats`, `Msg::AttachKindName`), then the age and delivery state; the action row is reply, the file verb (fetch / play / save — never open, which is the visual's tap), delete. Every option on the strip is a real pill thru `draw_stub_pill_filled`, tinted by its verb; a stub such as beam back is a greyed pill with no hit. The stream filter pill is drawn before the row walk so fluor's under-blend keeps it above the rows, and its hit rect is re-asserted after the walk.
+
+## Target shape: the chain carries text and pointers, nothing else (decided 2026-10-07, unbuilt)
+
+Nick 2026-10-07: *"strip it all down, we can store the pdf or tiff or whatever in a wrapped vsf blob with a thumbnail but I'd keep that off chain. I'd keep the chain simply text, text formatting, links, pointers to waves and beams and pigeons and other blobs and any rich formatting should point to blobs beyond simple toka arrangement bytecode … similar to markdown."*
+
+**On chain, a photon is only:** text; its formatting (toka arrangement bytecode, markdown-like, when it lands); link marks; and typed POINTERS — to a wave, a beam, a pigeon, or any other blob. Rich content beyond simple arrangement is itself a blob the bytecode points at.
+
+**Off chain, an attachment is one wrapped VSF blob:** the file's metadata (name, kind, dims, size, the original's hash), its thumbnail tiers (the AV1 preview and the micro thumb), and the original bytes, byte-exact, chunked as today. Export unwraps; nothing is ever re-encoded.
+
+**What moves off the row compared with today:** the sender's filename, `AttachMeta` (kind, dims, preview hash) and the ≤1730-byte micro thumb all ride the row now (vault fields, fleet page columns, friend wire fields). In the target they live in the wrapper.
+
+**Decisions still open when this is built:**
+- The instant picture. Today the micro thumb draws before any blob exists because it rides the row. Off chain, the wrapper's head (metadata + thumbnails) must be fetchable on its own and first — the manifest's companion — or the row shows a placeholder until it lands.
+- What the pointer names. Naming the ORIGINAL's hash keeps de-duplication, byte-exact export and arrival verification; the wrapper then sits at an address derived from it. Naming the wrapper's hash instead ties identity to how it was wrapped (a re-made thumbnail would mint a new pointer).
+- Embedded thumbnails (DNG and many TIFFs carry a camera-made preview): fast to extract, but the camera's rendering, not opsin's calibrated one — fine for a thumbnail tier, never for the viewer.
+- It is a FLAG DAY (row format on the wire, at rest and in fleet pages), so time it after Android self-install has spread (3-4 of ~20 clients were current on 2026-10-06).
+

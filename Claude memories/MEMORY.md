@@ -42,6 +42,7 @@
 ## Active / open
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave holes = L rule; Emma 2x = future-named backlog → re-anchor + render-trace + recv-loop guard BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: opsin pixels pack thru fluor::theme::fmt (R↔B Android); loads/convert off-thread; viewer fetch/decode bar
+- [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE 2026-10-07: attachments are off-chain wrapped VSF blobs; unbuilt flag day
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 Jeff's PDF: fetch asked one friend device (fixed); push one-shot, auto-fetch policy open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
@@ -115,8 +116,8 @@
 - [project_level_plan_reaim.md](project_level_plan_reaim.md) — LEVEL PLAN tuning ledger 2026-09-15: quiet-anchored gate, bounded re-aim
 - [project_incall_learner.md](project_incall_learner.md) — ECHO DOCTRINE: mic untouched on TX; speaker ducks pre-DAC, recorded nowhere
 - [Eagle units](project_eagle_units_first_principles.md) — one atom, floor rule, time Zil = one oscillation, log-form reputation, live clock/age, raised dot + ↑/↓; Base lesson SHIPPED v110
-- [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction; docs/dozenal.md
-- [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs; Dozenal settings page
+- [project_numeral_forms.md](project_numeral_forms.md) — counts linear, magnitudes DMS dozenal, proportions dot-fraction
+- [project_dms_age.md](project_dms_age.md) — DMS age = bit length of seconds-ago in dozenal glyphs
 - [project_dozenal_datetime.md](project_dozenal_datetime.md) — `year month-glyph day weekday ·share`; time of day = fixed-width share of today; hex = seconds since midnight / raw stamp
 - [project_button_one_renderer.md](project_button_one_renderer.md) — ONE pill/button renderer in fluor; never hand-roll squircles
 - [project_textbox_one_registry.md](project_textbox_one_registry.md) — new textbox = register in visit_app_widgets + textboxes_mut only
