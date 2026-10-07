@@ -44,11 +44,11 @@
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 Jeff's PDF: fetch asked one friend device (fixed); push one-shot, auto-fetch policy open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
 - [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes (id = blake3(text‖nonce)), statuses via photonlog --gripes/--gripe-status, token keys/gripes.token
-- [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text (typed-row 0xFF ident → 13 bytes) → same key
+- [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device's roster claim while live; OPEN: restart re-keys offline friends
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): offer before mutuality + stranger knock dropped unreplayed
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
-- [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry; newest row's strip unasked
+- [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry
 - [Ready first paint](project_ready_first_paint.md) — v110: hit stamps ride the paint decision; never re-stamp the orb; a mid-render dirty flag survives its render
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; 2026-10-01 join-by-replay SCOPED (a protocol arc
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows; fixed; ghost 1be949c1 retire flow open
