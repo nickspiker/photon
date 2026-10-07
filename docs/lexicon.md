@@ -14,6 +14,14 @@ The senses that carry the word: a wave is a *signal made with what you hold* and
 
 A beam is something that grew, was cut true, and now carries load — or light — in one straight line. Photon's beams are video: the beam of light, aimed at one person, carrying what it was cut to carry. The Beam surface inherits the whole migration: trunk → timber → directed light. Designed, not built.
 
+## photon — adopted 2026-10-06
+
+A **photon** is a message: the thing you write and send in Photon. Nick 2026-10-06: *"I've officially decided to call messages on photon, Photons."*
+
+The physics sense carries it. A photon is the quantum of light — the smallest unit a beam is made of, named by G. N. Lewis in 1926. Light is the one carrier that cannot be partly delivered: a photon arrives whole or not at all, and once absorbed it has done its work. A message here is the same kind of thing: one sealed, signed, indivisible unit in a lane, woven into the braid, that either lands whole or is resent whole. The app is the medium; a photon is what travels thru it, beside waves (sound) and beams (directed light).
+
+*(The 1960 dictionary page for the entry is not yet captured; the quotation goes here when it is shot.)*
+
 ## call — retired 2026-09-23
 
 > **call** … senses spanning: to summon; to ring; to make a visit; to name; *call in question*; *call to mind*.

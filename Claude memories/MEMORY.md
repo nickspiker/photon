@@ -18,6 +18,7 @@
 - [Edges, not timers](edges-not-timers.md) — react on event edges, never timers/debounces; UI too: [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md)
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is direct pixel access only; no GPU shaders/float pipeline
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho; colour British; rest US
+- [Photons are messages](feedback_photons_are_messages.md) — official 2026-10-06: a message is a photon (docs/lexicon.md); no rename sweep unasked
 - [Wave, never call](project_wave_beam_transition.md) — HARD: wave = audio (sound wave), beam = video (beam of light); the word "call" only in the docs/waves.md + lexicon passage that retires it
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — STOPS not dB: 1 stop = ×2 amplitude
 - [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD: self and bob are both people
@@ -41,6 +42,7 @@
 ## Active / open
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave holes = L rule; Emma 2x = future-named backlog → re-anchor + render-trace + recv-loop guard BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: opsin pixels pack thru fluor::theme::fmt (R↔B Android); loads/convert off-thread; viewer fetch/decode bar
+- [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 Jeff's PDF: fetch asked one friend device (fixed); push one-shot, auto-fetch policy open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
 - [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes (id = blake3(text‖nonce)), statuses via photonlog --gripes/--gripe-status, token keys/gripes.token
@@ -51,14 +53,14 @@
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry
 - [Ready first paint](project_ready_first_paint.md) — v110: hit stamps ride the paint decision; never re-stamp the orb; a mid-render dirty flag survives its render
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES (was groups; atom = one, bind = join) PHASE 1 BUILT 2026-09-15; 2026-10-01 join-by-replay SCOPED (a protocol arc
-- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED: decap drain read the identity slot for sibling rows; fixed; ghost 1be949c1 retire flow open
+- [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1 retire open
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
-- [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent: bare-rect click-thru vs band-inflated region + un-kicked re-entry poll; FIXED in fluor
-- [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows port not built; macOS drag-to-monitor VANISHES (pinned)
+- [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent; FIXED in fluor
+- [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows not built; macOS drag VANISHES
 - [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design PINNED (unnotified flag + one-active-clearer)
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted Jennifer's Windows dark-theme search text
-- [project_doorbell.md](project_doorbell.md) — doorbell v1 BUILT; OPEN: sibling bell overwrite
+- [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — 2026-09-26: Pixel HALs stamp on MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it (v104 silent waves)
