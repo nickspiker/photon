@@ -13,7 +13,7 @@ pub const LINEAR_VIEW_MAX_EDGE: usize = if cfg!(target_os = "android") { 2048 } 
 
 /// The viewer's path for what opsin has no decoder for (PNG, GIF, BMP — anything its sniff calls Unknown): the image crate's decode, sRGB assumed, linearised into VSF RGB and folded to `max_edge`, handed back as LINEAR PLANAR u16 (white = 65535) for `opsin::convert::ingest_linear_vsf_rgb`, so opsin's view shows it thru the same pipe as everything else.
 pub fn legacy_linear_planar(bytes: &[u8], name: &str, kind: AttachKind, max_edge: usize) -> Option<(usize, usize, Vec<u16>)> {
-    if !kind.is_image() {
+    if !kind.is_image() && !is_pdf(kind, bytes) {
         return None;
     }
     let f = decode_folded(bytes, name, kind, None, max_edge)?;
@@ -56,7 +56,7 @@ pub fn prepare(bytes: &[u8], name: &str, raw_path: Option<&std::path::Path>) -> 
     let mut preview = Vec::new();
     let mut blob = None;
     match kind {
-        AttachKind::Image | AttachKind::RawImage => {
+        _ if kind.is_image() || is_pdf(kind, bytes) => {
             if let Some(f) = decode_folded(bytes, name, kind, raw_path, PREVIEW_MAX_EDGE) {
                 meta.dims = Some((f.src_w, f.src_h));
                 // Micro tier from the same decode (a second fold, linear).
@@ -83,6 +83,42 @@ pub fn prepare(bytes: &[u8], name: &str, raw_path: Option<&std::path::Path>) -> 
     Prepared { meta, preview, blob }
 }
 
+/// A document whose bytes are a PDF (the magic, not the name — the sniff already decided the kind on the bytes).
+pub fn is_pdf(kind: AttachKind, bytes: &[u8]) -> bool {
+    kind == AttachKind::Document && bytes.starts_with(b"%PDF")
+}
+
+/// PDF PAGE ONE (Nick 2026-10-07, "I'd like to be able to preview it on each device and export"): rasterised by hayro (pure Rust, CPU only) onto white at a scale that puts the long edge at `max_edge`, then the image pipeline from there — sRGB assumed (what a PDF's DeviceRGB means on paper), linearised into VSF RGB, gamma-2 for the fold. `src_w`/`src_h` carry the page in points, so the row's dims read as the page size. An encrypted, empty or unreadable PDF is None and the row simply has no picture.
+fn decode_pdf(bytes: &[u8], max_edge: usize) -> Option<Folded> {
+    let pdf = hayro::hayro_syntax::Pdf::new(bytes.to_vec()).ok()?;
+    let page = pdf.pages().first()?;
+    let (pw, ph) = page.render_dimensions();
+    if !(pw > 0.0 && ph > 0.0) {
+        return None;
+    }
+    // WHY/PROOF: the pixmap is u16-sized and a tiny page must not be blown up into a giant one — the scale reaches max_edge on the long side and never past 4× the page's own points.
+    let scale = (max_edge as f32 / pw.max(ph)).min(4.0);
+    let settings = hayro::PixmapSettings { x_scale: scale, y_scale: scale, bg_color: hayro::vello_cpu::color::palette::css::WHITE };
+    let pixmap = hayro::render(page, &hayro::RenderCache::new(), &hayro::hayro_interpret::InterpreterSettings::default(), &hayro::RenderSettings::default(), &settings);
+    let (w, h) = (pixmap.width() as usize, pixmap.height() as usize);
+    if w == 0 || h == 0 {
+        return None;
+    }
+    // Opaque on white, so premultiplied RGBA is plain RGB here.
+    let rgb: Vec<u8> = pixmap.data_as_u8_slice().chunks_exact(4).flat_map(|p| [p[0], p[1], p[2]]).collect();
+    let lin = srgb8_to_linear_vsf(&rgb, w, h);
+    let (tw, th) = fit_dims(w, h, max_edge);
+    let px = fold_linear(&lin, w, h, tw, th);
+    Some(Folded { src_w: pw.round() as u32, src_h: ph.round() as u32, w: tw, h: th, px: gamma2(&px) })
+}
+
+/// A preview built HERE from the original bytes, for a document row that travelled without a preview blob (sent before previews existed for its kind): same tier as the blob would have been, as display pixels.
+pub fn preview_from_original(bytes: &[u8], kind: AttachKind) -> Option<(usize, usize, Vec<u32>)> {
+    let f = decode_folded(bytes, "", kind, None, PREVIEW_MAX_EDGE)?;
+    let rgb: Vec<u8> = f.px.iter().map(|v| (v * 255.0 + 0.5) as u8).collect(); // the `as` cast saturates on its own
+    Some((f.w, f.h, micro_to_display(&rgb)))
+}
+
 /// Decode a held preview blob (AV1-in-VSF) → (w, h, fluor packed α + darkness pixels) for the card and the viewer.
 pub fn decode_preview_blob(vsf_bytes: &[u8]) -> Option<(usize, usize, Vec<u32>)> {
     let parsed = vsf::builders::parse_compressed_image(vsf_bytes).ok()?;
@@ -103,6 +139,7 @@ pub fn full_image(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&
 fn decode_folded(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>, max_edge: usize) -> Option<Folded> {
     let ext = name.rsplit_once('.').map(|(_, e)| e.to_ascii_lowercase()).unwrap_or_default();
     match kind {
+        _ if is_pdf(kind, bytes) => decode_pdf(bytes, max_edge),
         AttachKind::RawImage => decode_raw(raw_path?, max_edge),
         AttachKind::Image if ext == "jxl" || bytes.starts_with(&[0xFF, 0x0A]) || bytes.starts_with(b"\0\0\0\x0cJXL ") => decode_jxl(bytes, max_edge),
         AttachKind::Image => decode_legacy(bytes, max_edge),
@@ -456,4 +493,21 @@ mod colour_order_tests {
         // Darkness convention: the RED byte is the LEAST dark.
         assert!(dr < dg && dr < db, "display darkness R {dr} G {dg} B {db}");
     }
+
+    /// A PDF row gets a page-one preview like a picture (Nick 2026-10-07): a one-page PDF with a blue box on white prepares as a Document with the page's size as its dims, a preview blob that decodes, and a micro thumb.
+    #[test]
+    fn a_pdf_prepares_a_page_one_preview() {
+        let pdf: &[u8] = b"%PDF-1.4\n1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 200 100]/Contents 4 0 R>>endobj\n4 0 obj<</Length 26>>stream\n0 0 1 rg 10 10 100 50 re f\nendstream endobj\ntrailer<</Root 1 0 R>>\n%%EOF\n";
+        let p = prepare(pdf, "box.pdf", None);
+        assert_eq!(p.meta.kind, AttachKind::Document);
+        assert_eq!(p.meta.dims, Some((200, 100)), "dims carry the page size in points");
+        let blob = p.blob.expect("a preview blob");
+        assert_eq!(p.meta.preview_hash, Some(*blake3::hash(&blob).as_bytes()));
+        let (w, h, px) = decode_preview_blob(&blob).expect("the preview decodes");
+        assert!(w > h && !px.is_empty(), "landscape page, {w}x{h}");
+        assert!(!p.preview.is_empty(), "a micro thumb rides the row");
+        // The same page renders locally from the original (a row that travelled without a preview).
+        assert!(preview_from_original(pdf, AttachKind::Document).is_some());
+    }
+
 }

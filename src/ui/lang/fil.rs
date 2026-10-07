@@ -316,7 +316,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "laging maaabot (ikaw ito)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} mensahe \u{00b7} {} ipinadala \u{00b7} {} natanggap", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "dapat magkatugma ang mga hanay na ito sa bawat isa sa mga device mo".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "ang device ng armada ay umaalis sa sarili nitong kahilingan \u{2014} tingnan ang Mga Setting \u{2192} Armada".into(),
         Msg::BootPill { armed } => if armed { "Pindutin ulit \u{2014} itaboy sila" } else { "Itaboy" }.into(),
         Msg::BindIntoMolecule => "Ibigkis sa isang molekula".into(),

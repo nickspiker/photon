@@ -453,6 +453,7 @@ pub enum Msg<'a> {
     BlobDeliveredSuffix,
     BlobSendingSuffix,
     BlobNotHereSuffix,
+    BlobHereSuffix,
     // The param is a reaction emoji glyph, never translated.
     ReactTheySuffix(&'a str),
     ReactYouSuffix(&'a str),

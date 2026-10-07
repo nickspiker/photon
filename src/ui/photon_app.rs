@@ -1429,7 +1429,7 @@ pub struct PhotonApp {
     img_view_tx: std::sync::mpsc::Sender<([u8; 32], Result<opsin::view::Loaded, String>)>,
     img_view_rx: std::sync::mpsc::Receiver<([u8; 32], Result<opsin::view::Loaded, String>)>,
     /// Preview blobs the last render wanted: (contact handle, hash, held here) — drained into decode jobs / fetches on the tick (the walk cannot borrow &mut self).
-    img_wants: Vec<([u8; 32], [u8; 32], bool)>,
+    img_wants: Vec<([u8; 32], [u8; 32], bool, bool)>,
     /// Preview blobs auto-fetched this session (one ask each).
     attach_auto_fetched: std::collections::HashSet<[u8; 32]>,
     /// The open image viewer / text reader (viewer.rs) and the hit-id base of their pills (back, save, the pane itself); `viewer_view_base` is the block opsin's view widgets are built on (stable across images, so the overlay tables cover them).
@@ -1617,6 +1617,10 @@ pub struct PhotonApp {
     last_wave_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight: content hash → (conversation contact id, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
     attach_fetch_inflight: std::collections::HashMap<[u8; 32], (ContactId, std::time::Instant, u8)>,
+    /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07): the replication sweep's edges — rows arrived (the total row count moved), presence probes landed, the network went unmetered — each sets this, and one sweep runs per edge. `replicate_rows_seen` / `replicate_metered` are the remembered sides of the first and last edge.
+    replicate_dirty: bool,
+    replicate_rows_seen: usize,
+    replicate_metered: bool,
     /// Blob requests served lately, by (requesting device, hash) — a second copy of the same ask within ten seconds is not served again (status.rs AttachReqReceived).
     attach_served_recent: std::collections::HashMap<([u8; 32], [u8; 32]), std::time::Instant>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
@@ -2639,6 +2643,9 @@ impl PhotonApp {
             resume_vault_rx: None,
             last_wave_redraw: None,
             attach_fetch_inflight: std::collections::HashMap::new(),
+            replicate_dirty: true,
+            replicate_rows_seen: 0,
+            replicate_metered: false,
             attach_served_recent: std::collections::HashMap::new(),
             express_seen: Vec::new(),
             identity_pid_cache: std::cell::Cell::new(None),

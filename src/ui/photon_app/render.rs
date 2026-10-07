@@ -3654,20 +3654,18 @@ impl PhotonApp {
                             let audio_lines = super::viewer::audio_band_lines_of(msg);
                             let audio_band_h = audio_lines as f32 * intra;
                             // The decoded preview blob outranks the micro thumb; either way the band's picture is (w, h, pixels).
-                            let decoded: Option<(usize, usize, &Vec<u32>)> = msg.attach.and_then(|a| a.preview_hash).and_then(|ph| match self.img_cache.get(&ph) {
+                            let preview_src = super::viewer::preview_source(msg);
+                            let decoded: Option<(usize, usize, &Vec<u32>)> = preview_src.and_then(|(key, _)| match self.img_cache.get(&key) {
                                 Some(Some((w, h, px))) => Some((*w, *h, px)),
                                 _ => None,
                             });
-                            // Ask for the preview blob once: held → decode; missing → fetch (drained on the tick).
-                            if let Some(a) = msg.attach {
-                                if a.kind.is_image() {
-                                    if let Some(ph) = a.preview_hash {
-                                        if !self.img_cache.contains_key(&ph) && !self.img_pending.contains(&ph) && !self.img_wants.iter().any(|(_, h, _)| *h == ph) {
-                                            let held = crate::storage::blob_present_or_pending(&ph);
-                                            if held || !self.attach_auto_fetched.contains(&ph) {
-                                                self.img_wants.push((peer_handle_hash, ph, held));
-                                            }
-                                        }
+                            // Ask for the picture once: held → decode (a preview blob, or a document's page one rendered from its original); a missing preview blob → fetch (drained on the tick).
+                            if let Some((key, from_original)) = preview_src {
+                                if !self.img_cache.contains_key(&key) && !self.img_pending.contains(&key) && !self.img_wants.iter().any(|(_, h, _, _)| *h == key) {
+                                    // An original's presence must be KNOWN held before a render is asked for (an optimistic read would queue a decode of bytes that are not here).
+                                    let held = if from_original { crate::storage::blob_present_known(&key) == Some(true) } else { crate::storage::blob_present_or_pending(&key) };
+                                    if held || (!from_original && !self.attach_auto_fetched.contains(&key)) {
+                                        self.img_wants.push((peer_handle_hash, key, held, from_original));
                                     }
                                 }
                             }
@@ -3841,8 +3839,12 @@ impl PhotonApp {
                                                 Msg::BlobSendingSuffix
                                             },
                                         ));
-                                    } else if !crate::storage::blob_present_or_pending(&hash) {
-                                        detail.push_str(&tr(Msg::BlobNotHereSuffix));
+                                    }
+                                    // WHERE THE BYTES ARE (Nick 2026-10-07, "it shows it's sending but that doesn't tell me if it exists local or not"): every file row says whether THIS device holds the file — sending/delivered is about the friend, this is about here. Nothing while the probe is still out.
+                                    match crate::storage::blob_present_known(&hash) {
+                                        Some(true) => detail.push_str(&tr(Msg::BlobHereSuffix)),
+                                        Some(false) => detail.push_str(&tr(Msg::BlobNotHereSuffix)),
+                                        None => {}
                                     }
                                 }
                                 // STATS UP TOP (Nick 2026-09-12): an attachment row's meta line leads with name, type, size and dims; the age and delivery state follow.

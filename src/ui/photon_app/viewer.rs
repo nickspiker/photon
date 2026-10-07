@@ -47,16 +47,34 @@ pub(super) fn img_band_lines_of(cache: &ImgCache, m: &crate::types::ChatMessage)
     let Some(a) = m.attach else {
         return 0;
     };
+    let Some((key, _)) = preview_source(m) else {
+        return 0;
+    };
+    if matches!(cache.get(&key), Some(Some(_))) {
+        return super::render::IMG_PREVIEW_LINES_FULL;
+    }
     if !a.kind.is_image() {
         return 0;
-    }
-    if a.preview_hash.is_some_and(|ph| matches!(cache.get(&ph), Some(Some(_)))) {
-        return super::render::IMG_PREVIEW_LINES_FULL;
     }
     if crate::types::parse_micro_image(&m.preview).is_some() {
         return super::render::IMG_PREVIEW_LINES;
     }
     0
+}
+
+/// Where a row's picture comes from: `(cache key, from_original)`. An image's preview blob; a document's preview blob when it travelled with one, else its ORIGINAL rendered here once held (a PDF sent before previews existed — page one, the same tier). `None` = a row with no picture.
+pub(super) fn preview_source(m: &crate::types::ChatMessage) -> Option<([u8; 32], bool)> {
+    let a = m.attach?;
+    if a.kind.is_image() {
+        return a.preview_hash.map(|ph| (ph, false));
+    }
+    if a.kind == crate::types::AttachKind::Document {
+        return match a.preview_hash {
+            Some(ph) => Some((ph, false)),
+            None => m.file_parts().map(|(h, _, _)| (h, true)),
+        };
+    }
+    None
 }
 
 /// Lines an AUDIO row's waveform band reserves — a pigeon carrying a wave (Nick 2026-09-12): the band derives from the audio itself, so it exists once the blob is held. Wave recordings fold into their wave card instead.
@@ -279,6 +297,8 @@ impl PhotonApp {
         if landed {
             self.msg_wrap = None;
             self.scene_dirty = true;
+            // New presence answers can name files this device lacks: the replication sweep looks again.
+            self.replicate_dirty = true;
         }
         let wanted = crate::storage::take_presence_wanted();
         if wanted.is_empty() {
@@ -313,7 +333,7 @@ impl PhotonApp {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
-        for (peer, hash, held) in wants {
+        for (peer, hash, held, from_original) in wants {
             if self.img_cache.contains_key(&hash) || self.img_pending.contains(&hash) {
                 continue;
             }
@@ -321,9 +341,18 @@ impl PhotonApp {
                 self.img_pending.insert(hash);
                 let tx = self.img_decoded_tx.clone();
                 queue_job(&self.seal_job_tx, move || {
-                    let out = crate::storage::blob_load(&seed, &hash).and_then(|b| crate::ui::attach_preview::decode_preview_blob(&b));
+                    let out = crate::storage::blob_load(&seed, &hash).and_then(|b| {
+                        if from_original {
+                            crate::ui::attach_preview::preview_from_original(&b, crate::types::sniff(&b, ""))
+                        } else {
+                            crate::ui::attach_preview::decode_preview_blob(&b)
+                        }
+                    });
                     let _ = tx.send((hash, out));
                 });
+            } else if from_original {
+                // The original itself is missing: the fleet replication sweep fetches it; the picture follows once it lands.
+                continue;
             } else if self.attach_auto_fetched.insert(hash) {
                 if let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == peer) {
                     self.attach_fetch(ci, &hash);

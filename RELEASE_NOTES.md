@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **PDFs show their first page.** A PDF in a conversation now shows page one as its picture, on every device, including PDFs sent before this update once the file is on the device. Tap the page to open it larger; Save exports the PDF itself.
+- **Every file says where it is.** A file's details now say "on this device" or "not on this device", separately from whether your friend has received it.
+- **All your devices keep a copy.** Each of your devices now fetches any file it is missing, one source at a time, from your other devices or your friend's. Phones only do this on Wi-Fi.
 - **Fetching a file now asks all of the sender's devices.** If a friend sent you a file from their computer and their phone is the device you usually talk to, tapping Fetch used to ask only the phone, which might not have it. It now works through each of their devices in turn until one answers.
 - **Scrolling is a memory move now.** On the contacts screen and in a conversation, dragging or flicking slides the pixels already on screen and draws only the strip that came into view, instead of redrawing everything every frame. Settings pages still redraw the old way for now.
 - A flick on a list now glides at the speed your finger actually had in its last few frames, measured per frame so a slow frame cannot inflate it. A short pause before lifting stops the glide; the brief moment the finger leaves the glass does not.

@@ -318,7 +318,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "her zaman ulaşılabilir (bu sensin)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} mesaj \u{00b7} {} gönderildi \u{00b7} {} alındı", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "bu satırlar bütün cihazlarında aynı olmalı".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "bir filo cihazı kendi isteğiyle ayrılır \u{2014} Ayarlar \u{2192} Filo sayfasına bak".into(),
         Msg::BootPill { armed } => if armed { "Tekrar dokun \u{2014} kov" } else { "Kov" }.into(),
         Msg::BindIntoMolecule => "Bir moleküle bağla".into(),

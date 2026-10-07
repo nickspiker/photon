@@ -636,6 +636,7 @@ impl PhotonApp {
     }
 
     pub(super) fn wave_drought_tick(&mut self) {
+        self.replicate_sweep();
         self.attach_fetch_retry_tick();
         #[cfg(target_os = "android")]
         if crate::platform::jni_android::take_network_changed() {

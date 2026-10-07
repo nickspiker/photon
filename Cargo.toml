@@ -133,6 +133,8 @@ num-bigint = "0.4"
 rav1e = { version = "0.7", default-features = false }
 rav1d = { version = "1.1", default-features = false, features = ["bitdepth_8"] }
 icc-profile = "0.0.2"
+# PDF first-page previews (pure Rust, CPU only, MIT/Apache) — 2026-10-07, Nick: "I'd like to be able to preview it on each device and export".
+hayro = { version = "0.8", default-features = false, features = ["embed-fonts", "embed-cmaps"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "tiff", "gif", "bmp"] }
 # Camera RAW / DNG intake for attachment previews (typed attachments 2026-09-10): native-depth counts + both DNG ColorMatrices, decode ONLY — VSF-Image out is the only write it will ever learn.
 limbus = { path = "../limbus" }

@@ -19,7 +19,8 @@ arch_gate() {
     # BASELINE ALLOWLIST — the ratchet, same shape as the vsf gate: these crates already carry an arch feature AND have demonstrably run for weeks on the OLDEST device in the fleet (the Snapdragon 855 that SIGILLs on unsupported opcodes). That is empirical proof, not an assumption, and it is the only evidence that counts here.
     # Most are safe for one of two reasons: the feature names Rust's PORTABLE simd (a type-level choice, not an instruction set — zeroize, zerocopy, ppv-lite86, wasmparser, miniz_oxide, tiny-skia, fluor), or the crate DISPATCHES AT RUNTIME after checking (blake3, moxcms, zune-jpeg). keccak/sha3 gate their `asm` to x86_64.
     # The gate's job is to catch the NEXT arrival — a crate added tomorrow that quietly opts us into instructions an older phone lacks. Adding a name here means you checked; it is not a place to silence a failure.
-    local allow="blake3|fluor|keccak|miniz_oxide|moxcms|ppv-lite86|sha3|tiny-skia|wasmparser|zerocopy|zeroize|zune-jpeg"
+    # hayro-jbig2 / hayro-jpeg2000 (2026-10-07, PDF previews): their `simd` rides fearless_simd's `dispatch!(Level::new())` — runtime cpuid detection on x86, the architecture baseline elsewhere (NEON is mandatory on aarch64), so a device without AVX takes the SSE2/scalar path instead of SIGILLing.
+    local allow="blake3|fluor|hayro-jbig2|hayro-jpeg2000|keccak|miniz_oxide|moxcms|ppv-lite86|sha3|tiny-skia|wasmparser|zerocopy|zeroize|zune-jpeg"
 
     local meta
     meta="$(cargo metadata --format-version 1 --manifest-path "$manifest" 2>/dev/null)"

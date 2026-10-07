@@ -1992,8 +1992,8 @@ impl FluorApp for PhotonApp {
                         }
                         if let Some(ci) = self.active_contact() {
                             let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| m.file_parts().filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
-                            if v.kind.is_image() {
-                                // The in-app viewer IS opsin's view now — no separate window, on any platform.
+                            if v.kind.is_image() || v.kind == crate::types::AttachKind::Document {
+                                // The in-app viewer IS opsin's view now — no separate window, on any platform. A document opens on its page one (the viewer's fallback decoder renders a PDF), Save exports the file itself.
                                 let _ = &name;
                                 self.open_viewer(ci, v.hash);
                             } else if v.held {

@@ -434,6 +434,49 @@ impl PhotonApp {
         self.attach_fetch_inflight.insert(*content_hash, (conv_id, std::time::Instant::now(), tries.saturating_add(1))); // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
     }
 
+    /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07: "if I have five devices, all five should get copies of waves, pigeons, beams, photons, all of it… be sane"). One pass per edge (`replicate_dirty`: rows arrived, presence answers landed, the network went unmetered): every live file row in every conversation whose bytes this device is KNOWN not to hold — pigeons, wave recordings, wave envelopes, previews' originals — is armed ONCE per session in the fetch map, and the retry tick asks one device at a time (friend's devices and our siblings, easiest first) until it lands. Arming instead of asking at once leaves a fresh row's own push its window. A row whose presence is not known yet queues its probe here and is picked up on the edge its answer raises. Sane: a metered network arms nothing (Android reports it; desktops are never metered here).
+    pub(super) fn replicate_sweep(&mut self) {
+        let rows: usize = self.conversations.iter().map(|c| c.messages.len()).sum();
+        if rows != self.replicate_rows_seen {
+            self.replicate_rows_seen = rows;
+            self.replicate_dirty = true;
+        }
+        let metered = crate::network::wfd::net_metered();
+        if metered != self.replicate_metered {
+            self.replicate_metered = metered;
+            self.replicate_dirty |= !metered;
+        }
+        if !std::mem::take(&mut self.replicate_dirty) || metered || self.session.is_none() {
+            return;
+        }
+        let now = std::time::Instant::now();
+        let mut armed = 0usize;
+        for ci in 0..self.contacts.len() {
+            if self.contacts[ci].is_sibling {
+                continue;
+            }
+            let cid = self.contacts[ci].id;
+            let hashes: Vec<[u8; 32]> = self
+                .conv_of(ci)
+                // A device that opted out of holding waves (`waves.hold` off — a watch) skips recordings; everything else is held.
+                .map(|v| v.messages.iter().filter(|m| !m.deleted && (self.wave_hold || !m.is_wave_recording())).filter_map(|m| m.file_parts().map(|(h, _, _)| h)).collect())
+                .unwrap_or_default();
+            for h in hashes {
+                if self.attach_auto_fetched.contains(&h) || self.attach_fetch_inflight.contains_key(&h) {
+                    continue;
+                }
+                if crate::storage::blob_present_known(&h) == Some(false) {
+                    self.attach_auto_fetched.insert(h);
+                    self.attach_fetch_inflight.insert(h, (cid, now, 0));
+                    armed += 1;
+                }
+            }
+        }
+        if armed > 0 {
+            crate::logf!("REPLICATE: {} file(s) not on this device — fetching each from the fleet, one device at a time", armed);
+        }
+    }
+
     /// Re-ask for fetches nobody answered: every 20 s while nothing has landed (no blob, no manifest), up to eight times, then let go. Landed fetches leave the map at once.
     pub(super) fn attach_fetch_retry_tick(&mut self) {
         const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
@@ -456,7 +499,11 @@ impl PhotonApp {
                 self.attach_fetch_inflight.remove(&hash);
                 continue;
             };
-            crate::logf!("attach: fetch of {}… unanswered for {}s — asking again ({} of {})", hex::encode(&hash[..4]), RETRY_AFTER.as_secs(), tries + 1, MAX_TRIES);
+            if tries == 0 {
+                crate::logf!("attach: replicating {}… — first ask", hex::encode(&hash[..4]));
+            } else {
+                crate::logf!("attach: fetch of {}… unanswered for {}s — asking again ({} of {})", hex::encode(&hash[..4]), RETRY_AFTER.as_secs(), tries + 1, MAX_TRIES);
+            }
             self.attach_fetch(sci, &hash);
         }
     }
