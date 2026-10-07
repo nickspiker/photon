@@ -197,10 +197,38 @@ impl Conversation {
         self.participants.binary_search(party).ok()
     }
 
+    /// Drop every blank twin of a file row (see `insert_message_sorted`) — the stored ones from before the fix, which a plain load brings back. Returns how many went.
+    pub fn collapse_bare_twins(&mut self) -> usize {
+        let files: std::collections::HashSet<(i64, bool)> = self.messages.iter().filter(|m| m.file.is_some()).map(|m| (m.timestamp, m.is_outgoing)).collect();
+        let before = self.messages.len();
+        self.messages.retain(|m| !(m.is_bare() && files.contains(&(m.timestamp, m.is_outgoing))));
+        let gone = before - self.messages.len();
+        if gone > 0 {
+            self.digest_cache = None;
+        }
+        gone
+    }
+
     /// Insert preserving timestamp order, upgrading a friend-recovered copy in place when the same row arrives over the wire. Mirrors `Contact::insert_message_sorted`, which this replaces.
     pub fn insert_message_sorted(&mut self, msg: ChatMessage) {
         // Any insert or in-place upgrade can change the syncable set (a new row, or a deleted-flag flip below), so drop the cached anti-entropy digest — recomputed lazily on the next request.
         self.digest_cache = None;
+        // A BLANK TWIN folds into its file row (field 2026-10-07: the send queue pushed attachment rows to siblings without their file, and every sibling showed a blank photon beside the PDF). A blank copy arriving after the file row merges its flags and is gone; a file row arriving after a blank copy takes the blank's place.
+        if msg.is_bare() {
+            if let Some(existing) = self.messages.iter_mut().find(|m| m.timestamp == msg.timestamp && m.is_outgoing == msg.is_outgoing && m.file.is_some()) {
+                existing.delivered |= msg.delivered;
+                existing.notified |= msg.notified;
+                return;
+            }
+        } else if msg.file.is_some() {
+            if let Some(i) = self.messages.iter().position(|m| m.timestamp == msg.timestamp && m.is_outgoing == msg.is_outgoing && m.is_bare()) {
+                let blank = self.messages.remove(i);
+                let mut msg = msg;
+                msg.delivered |= blank.delivered;
+                msg.notified |= blank.notified;
+                return self.insert_message_sorted(msg);
+            }
+        }
         // IDENTITY = (timestamp, ident_bytes): the eagle_time and the row's payload identity (its text, or a typed row's canonical fields), never the metadata. One message reaches a device by several routes — the live wire frame, a sibling fleet-forward, a history-recovery page — and those copies differ ONLY in metadata (delivered / recovered / ack_hash; the live frame carries a real ack_hash a forward lacks). Keying dedup on anything else let two copies of one message coexist: the mac's duplicated message (2026-08-08) was a sibling fleet-forward (stored recovered=false) plus the live frame, which the old recovered-only collapse never merged. On a match, upgrade the surviving row's metadata monotonically and drop the duplicate.
         if let Some(existing) = self
             .messages
@@ -513,6 +541,31 @@ mod tests {
         );
         assert_eq!(a.anti_entropy_digest().0, 4);
     }
+
+    /// A blank twin of a file row folds into it in either arrival order, and a stored twin collapses at load (field 2026-10-07, the PDF that showed as a blank photon plus the PDF).
+    #[test]
+    fn a_blank_twin_folds_into_its_file_row() {
+        let file_row = || {
+            let mut m = ChatMessage::new_with_timestamp(String::new(), true, 5000);
+            m.file = Some(crate::types::AttachRef::file([3u8; 32], "provisional.pdf", 1234));
+            m
+        };
+        let blank = || ChatMessage::new_with_timestamp(String::new(), true, 5000);
+        let mut a = Conversation::new([[1u8; 32], [2u8; 32]]);
+        a.insert_message_sorted(file_row());
+        a.insert_message_sorted(blank());
+        assert_eq!(a.messages.len(), 1, "a blank arriving after the file row folds in");
+        assert!(a.messages[0].file.is_some());
+        let mut b = Conversation::new([[1u8; 32], [2u8; 32]]);
+        b.insert_message_sorted(blank());
+        b.insert_message_sorted(file_row());
+        assert_eq!(b.messages.len(), 1, "a file row arriving after a blank takes its place");
+        assert!(b.messages[0].file.is_some());
+        let mut c = Conversation::new([[1u8; 32], [2u8; 32]]);
+        c.messages = vec![blank(), file_row(), ChatMessage::new_with_timestamp(String::new(), false, 5000)];
+        assert_eq!(c.collapse_bare_twins(), 1, "only the same-direction blank twin goes");
+        assert_eq!(c.messages.len(), 2);
+    }
 }
 
 /// Fold a wave row / recording row's typed fields into an existing copy of the same row (same stamp + content): outcome by rank (a still-ringing sibling's Missed yields to the answerer's Answered), seconds by max (the keep's slot count refines the hangup estimate), envelope adopted when ours is empty. Monotone — nothing here ever un-sets.
@@ -526,4 +579,5 @@ pub fn merge_wave_fields(existing: &mut ChatMessage, wave: Option<crate::types::
     if existing.envelope.is_empty() && !envelope.is_empty() {
         existing.envelope = envelope.to_vec();
     }
+
 }

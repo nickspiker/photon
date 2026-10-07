@@ -833,7 +833,9 @@ impl PhotonApp {
                 crate::log("CHAT: no local chain — fleet-forwarded; a lane-capable sibling transmits it on its own lane (delivered tick follows its ACK)");
             }
             // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it. (Same push carries the fleet-forward case.)
-            self.push_rows_to_siblings(ci, std::slice::from_ref(&msg), None);
+            // THE STORED ROW, not the rebuild (field 2026-10-07, "the pdf shows as two messages even tho it's one, like one blank one, then the pdf"): `msg` is rebuilt from (text, stamp, reference) alone, so for an attachment — empty text, the file in typed fields — the siblings received a BLANK copy at the PDF's own stamp, which their insert keeps as a separate row (identity includes the file). The row the send path stored carries the attach meta, the file and the micro preview.
+            let stored = self.conv_of(ci).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time && m.content == text).cloned());
+            self.push_rows_to_siblings(ci, std::slice::from_ref(stored.as_ref().unwrap_or(&msg)), None);
         }
         true
     }

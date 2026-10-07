@@ -2109,6 +2109,8 @@ pub struct PhotonApp {
     attach_send_total: crate::linear_map::LinearMap<[u8; 32], u32>,
     /// Blob pushes confirmed landed (attach_have), this session.
     attach_confirmed: std::collections::HashSet<[u8; 32]>,
+    /// Files whose transfer bar showed this session — when the transfer completes, the row turns green and the bar runs edge to edge (Nick 2026-10-07, "when the progress completes, turn the entire row green, remove the margin trim on the progress bar to indicate it's done"). Session-scoped: a file that was already whole before this session never had a bar, so it shows no finish.
+    attach_bar_shown: std::collections::HashSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
     /// Bridge executor channels (host side): commands go to the off-thread dispatcher that routes to one worker+shell per sibling device; FINAL outputs come back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
@@ -2849,6 +2851,7 @@ impl PhotonApp {
             attach_chunk_progress: std::collections::HashMap::new(),
             attach_send_total: crate::linear_map::LinearMap::new(),
             attach_confirmed: std::collections::HashSet::new(),
+            attach_bar_shown: std::collections::HashSet::new(),
             pending_attach_picker: false,
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
             bridge_cmd_tx: None,

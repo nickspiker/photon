@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Fixed: a file sent from one of your devices showed up on your other devices as two photons, a blank one and the file.** The blank copies already stored disappear the next time the conversation loads.
+- **A finished transfer turns green.** When a file you are sending is delivered, or one you are receiving lands, its row turns green and its progress bar runs edge to edge.
 
 ## v114
 - **PDFs show their first page.** A PDF in a conversation now shows page one as its picture, on every device, including PDFs sent before this update once the file is on the device. Tap the page to open it larger; Save exports the PDF itself.

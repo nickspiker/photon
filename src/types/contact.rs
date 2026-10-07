@@ -319,6 +319,11 @@ impl ChatMessage {
     }
 
     /// Create a message with a specific timestamp (for received messages with known eagle_time)
+    /// A row with nothing in it: no text, no typed control, no file. Never a real photon — the blank twin an attachment row's lossy rebuild minted (see `Conversation::insert_message_sorted`).
+    pub fn is_bare(&self) -> bool {
+        self.content.is_empty() && self.control.is_none() && self.file.is_none() && self.reference.is_none() && self.wave.is_none()
+    }
+
     pub fn new_with_timestamp(content: String, is_outgoing: bool, timestamp: i64) -> Self {
         Self {
             content,

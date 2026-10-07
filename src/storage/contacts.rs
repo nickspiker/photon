@@ -1220,6 +1220,11 @@ pub fn load_messages(
 
     // RAM now reflects disk (an empty table included) — this is what licenses a later persist. Every failure path above returned Err, so a load that couldn't read leaves the conversation un-hydrated and the persist gate refuses it.
     conv.hydrated = true;
+    // Blank twins stored before 2026-10-07 (the send queue's lossy sibling push) fold away on every load.
+    let twins = conv.collapse_bare_twins();
+    if twins > 0 {
+        crate::logf!("STORAGE: {} blank twin row(s) of file photons folded away for conversation {}", twins, hex::encode(&conv.id().as_bytes()[..4]));
+    }
 
     #[cfg(feature = "development")]
     crate::logf!(

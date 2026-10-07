@@ -3689,6 +3689,8 @@ impl PhotonApp {
                             }
                             // Attachment transfer progress: a thin fill under the pill while a matching PT transfer runs (outbound for our un-confirmed sends, inbound for blobs we're missing). Matched loosely by direction — the throttled snapshot only ever contains big sharded transfers.
                             let mut bar_frac: Option<f32> = None;
+                            // THE FINISH: a file whose bar showed this session and whose transfer is now complete (delivered outbound, held here inbound) — its row goes green, painted at the end of this row, and its bar spans the whole width.
+                            let mut finished = false;
                             if let Some((hash, _, _)) =
                                 msg.file_parts()
                             {
@@ -3698,6 +3700,8 @@ impl PhotonApp {
                                 } else {
                                     !crate::storage::blob_present_or_pending(&hash)
                                 };
+                                let complete = if want_outbound { self.attach_confirmed.contains(&hash) } else { crate::storage::blob_present_known(&hash) == Some(true) };
+                                finished = complete && self.attach_bar_shown.contains(&hash);
                                 // Chunk progress by HASH first (a chunked blob's own count), the direction-matched PT snapshot as the whole-value fallback. OUTBOUND chunked: (total − in flight) done, plus the in-flight transfers' own fractions, over the total we dispatched.
                                 // Progress of THIS blob only: its own chunk count by hash first, then — outbound — the PT transfers tagged with its hash. A transfer nobody tagged is never guessed onto a bar (2026-09-25: the old direction-matched guess drew any concurrent send's progress onto every bar).
                                 let chunk_frac = self.attach_chunk_progress.get(&hash).map(|(have, total)| frac_of(*have as u64, *total as u64)).or_else(|| {
@@ -3705,6 +3709,9 @@ impl PhotonApp {
                                 });
                                 if relevant {
                                     bar_frac = chunk_frac;
+                                    if chunk_frac.is_some() {
+                                        self.attach_bar_shown.insert(hash);
+                                    }
                                 }
                             }
                             // A BRIDGE PIGEON'S BAR (Nick 2026-09-20: "we definitely need a progress bar when sending shit thru the bridge"): the row carries the file's name, the progress map carries the host's word (or, on the host, its own spool count) keyed by hash — matched by sibling device + name, the newest entry when a name was dropped twice. Drawn while chunks are still landing; a whole pigeon drops its bar and the host's "landed at …" row follows.
@@ -3718,6 +3725,11 @@ impl PhotonApp {
                                         .map(|pp| frac_of(pp.got as u64, pp.of as u64));
                                 }
                             }
+                            if finished {
+                                // Done: the bar loses its margins — edge to edge, full.
+                                paint::fill_rect(&mut canvas, 0, (y + msg_size * 0.55) as isize, buf_w as isize, (hairline_px(ru) * 2.0) as isize, *theme::PROGRESS_FILL, Some(list_clip), None);
+                            }
+                            let finished_band = finished.then_some((band_top, band_bot));
                             if let Some(frac) = bar_frac {
                                 // WHY/PROOF: the fraction is built from TRANSFER COUNTERS the far side reports (acks, pigeon receipts), which can momentarily lead the local total; the bar never draws past its track.
                                 let frac = frac.clamp(0.0, 1.0);
@@ -4737,6 +4749,12 @@ impl PhotonApp {
                                 });
                                 self.msg_hit_rows[slot] =
                                     Some((msg.timestamp, msg.is_outgoing, ref_band));
+                            }
+                            // The finished row's green, painted LAST for this row so it sits under everything the row drew (fluor composes front to back: the first paint wins a pixel).
+                            if let Some((t, b)) = finished_band {
+                                if b > t {
+                                    paint::fill_rect(&mut canvas, 0, t, buf_w as isize, b - t, *theme::ATTACH_DONE_TINT, Some(list_clip), None);
+                                }
                             }
                             y -= line_h + block_extra + sel_meta_extra;
                         }
