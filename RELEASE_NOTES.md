@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Fetching a file now asks all of the sender's devices.** If a friend sent you a file from their computer and their phone is the device you usually talk to, tapping Fetch used to ask only the phone, which might not have it. It now works through each of their devices in turn until one answers.
 - **Scrolling is a memory move now.** On the contacts screen and in a conversation, dragging or flicking slides the pixels already on screen and draws only the strip that came into view, instead of redrawing everything every frame. Settings pages still redraw the old way for now.
 - A flick on a list now glides at the speed your finger actually had in its last few frames, measured per frame so a slow frame cannot inflate it. A short pause before lifting stops the glide; the brief moment the finger leaves the glass does not.
 

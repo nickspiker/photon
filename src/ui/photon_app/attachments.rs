@@ -389,9 +389,10 @@ impl PhotonApp {
             if !is_target {
                 continue;
             }
+            let primary = c.device_key();
             if let Some((a, alt)) = c.race_addrs() {
                 let relay = relay_unless_direct_trusted(&c, crate::network::udp::get_local_ip());
-                if let Some(k) = c.device_key() {
+                if let Some(k) = primary {
                     let rank = match (is_friend, c.is_online, c.validated_path.is_some()) {
                         (true, true, true) => 0,
                         (true, true, false) => 1,
@@ -400,6 +401,17 @@ impl PhotonApp {
                         (false, false, _) => 4,
                     };
                     targets.push((rank, a, alt, k, relay));
+                }
+            }
+            // EVERY DEVICE OF THE FRIEND (field 2026-10-07, Jeff's PDF): the contact row carries ONE device's addresses — the one in their hand — so a file whose only copy sits on the sender's OTHER device (the desktop it was sent from) was never asked for; every retry went to the same phone. Each other known device of the friend joins the list at its own address with its own relay leg; the retry tick still asks ONE device per round, rotating, so this widens the reach without fanning out.
+            if is_friend {
+                for ep in &c.device_endpoints {
+                    if Some(ep.pubkey) == primary || c.refused_devices.contains(&ep.pubkey) {
+                        continue;
+                    }
+                    let Some(addr) = ep.lan.or(ep.public) else { continue };
+                    let alt = if ep.lan.is_some() { ep.public } else { None };
+                    targets.push((if ep.online { 1 } else { 3 }, addr, alt, ep.pubkey, vec![ep.pubkey]));
                 }
             }
         }

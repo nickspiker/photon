@@ -1823,6 +1823,8 @@ impl FluorApp for PhotonApp {
                                             crate::logf!("attach: saved to {}", dest);
                                         }
                                         None => {
+                                            // Named in the log (2026-10-07): a held-looking file that will not save was a toast and nothing else, so a report of "it won't fetch" left no trace to read.
+                                            crate::logf!("attach: save of {}… failed — the blob reads as held but did not land", hex::encode(&hash[..4]));
                                             self.ready_toast = Some(tr(Msg::SaveFailed).into_owned());
                                         }
                                     }
