@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 - **Scrolling is a memory move now.** On the contacts screen and in a conversation, dragging or flicking slides the pixels already on screen and draws only the strip that came into view, instead of redrawing everything every frame. Settings pages still redraw the old way for now.
-- A flick on a list now carries the typical speed of its last five frames, counting frames where the finger held still, so a pause before lifting stops the glide and a clean flick keeps it.
+- A flick on a list now glides at the speed your finger actually had in its last few frames, measured per frame so a slow frame cannot inflate it. A short pause before lifting stops the glide; the brief moment the finger leaves the glass does not.
 
 ## v113
 - **Android installs its own updates.** With "Install updates automatically" on, a phone on Wi-Fi now downloads and installs a new release by itself. The very first time, Android asks you to confirm once; after that, updates land silently and Photon comes straight back, signed in. A phone in the middle of a wave or a key ceremony waits, and a phone on mobile data just shows the update and waits for your tap.
