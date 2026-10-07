@@ -2565,9 +2565,8 @@ impl FluorApp for PhotonApp {
                         dropped += 1;
                     }
                     if dropped > 0 && end > 0 && oldest_first[end - 1] != 0 {
-                        let mut kept = oldest_first[..end].to_vec();
-                        kept.sort_unstable();
-                        self.list_fling = kept[kept.len() / 2];
+                        let newest_three: Vec<i32> = oldest_first[..end].iter().rev().take(3).copied().collect();
+                        self.list_fling = fling_pick(&newest_three);
                     }
                 }
                 // A drag that ends with no fling to follow settles now (see the fling's end): one full repaint after memmove frames.
@@ -3654,9 +3653,8 @@ impl FluorApp for PhotonApp {
                     // The division's remainder rides the oldest of the n samples so the sum stays exact.
                     self.fling_recent[0] = if i == nominal - 1 { acc - per * (nominal - 1) } else { per };
                 }
-                let mut sorted = self.fling_recent;
-                sorted.sort_unstable();
-                self.list_fling = sorted[2];
+                // THE FLING SPEED: the largest by magnitude of the newest three nominal-frame samples, sign kept (Nick 2026-10-07, "I honestly thought max of three was a touch better" — with samples normalised per frame and the lift frames handled at release, the two faults that made max-of-three over-eager are gone). The window keeps five for the lift logic below.
+                self.list_fling = fling_pick(&self.fling_recent[..3]);
                 self.drag_frames += nominal as u32;
             }
             dirty_checkpoint!();
@@ -4983,6 +4981,11 @@ impl PhotonApp {
 /// Reserve `n` consecutive hit ids — the SPAN twin of fluor's `next_id`, and like it, fail-loud.
 /// WHY: every `base + i` in the UI indexes inside a span handed out here, and a u16 that wrapped would collide with HIT_NONE (0) and with the first spans, sending one control's clicks to another.
 /// PROOF: `checked_add` catches the one way that can happen — an allocation pattern that leaks spans — and stops loud, so an in-span offset can never wrap and needs no wrapping arithmetic of its own.
+/// The fling's speed from its newest frame samples: the largest by magnitude, sign kept (the max of a flick up, the min of a flick down). The one knob of the fling's feel — the median of five sat here 2026-10-06 and read a touch slow (Nick).
+fn fling_pick(samples: &[i32]) -> i32 {
+    samples.iter().copied().max_by_key(|v| v.abs()).unwrap_or(0)
+}
+
 /// The settings pill block: ONE number for its reservation, its click window and its hover window. The Fleet page's slot map is the widest user — bands at 8/16/24/32/40/48/56 plus a row index below six — so 64 covers it with room; a pill stamped past this lands in the next block's ids.
 const SETTINGS_PILL_SLOTS: HitId = 64;
 
