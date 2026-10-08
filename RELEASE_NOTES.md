@@ -8,6 +8,7 @@ One sentence per line, however long; plain language for the person who installs 
 ## Upcoming
 - **Fixed: files dropped onto the bridge could vanish.** On a fast network the file's pieces could arrive before the host knew a file was coming, and were thrown away. Now every piece introduces itself, so they can arrive in any order. The host asks again for anything missing, picks up where it left off after a restart, and the sending device keeps its copy until the host has every piece. A drop of a large file also no longer freezes the window while it is read.
 - **Files in conversations finish sooner on fast networks.** A piece that arrives ahead of the file's outline is now kept instead of being re-requested twenty seconds later.
+- The release notes on the Updates page and on the website no longer show stray asterisks around the first sentence of each note.
 
 ## v115
 - **Files no longer ride inside the conversation.** A file photon is now just a pointer; its name, type and pictures travel in a small separate record that loads after the conversation is already on screen, so long conversations full of files open instantly. Until a file's details arrive, its line shows an ellipsis. Older versions of Photon still receive these files and can fetch and save them, but show them without a name or picture until they update.

@@ -22,7 +22,8 @@ fn section_in(text: &str, name: &str) -> Vec<String> {
         }
         if inside {
             if let Some(item) = line.trim_start().strip_prefix("- ") {
-                out.push(item.trim().to_string());
+                // The bullets are written as Markdown for the website (a `**lead sentence**` renders as <strong> there); the Updates page draws plain prose, so the markers come off here.
+                out.push(item.trim().replace("**", ""));
             }
         }
     }
@@ -43,12 +44,12 @@ pub fn shipped_versions() -> Vec<String> {
 mod tests {
     use super::*;
 
-    const SAMPLE: &str = "# Release notes\n\nprose\n\n## Upcoming\n\n- soon\n\n## v87\n\n- one\n- two\n\n## v86\n\n- old\n";
+    const SAMPLE: &str = "# Release notes\n\nprose\n\n## Upcoming\n\n- **soon.** really\n\n## v87\n\n- one\n- two\n\n## v86\n\n- old\n";
 
     #[test]
     fn sections_are_read_by_heading_and_bullets_only() {
         assert_eq!(section_in(SAMPLE, "v87"), vec!["one", "two"]);
-        assert_eq!(section_in(SAMPLE, "Upcoming"), vec!["soon"]);
+        assert_eq!(section_in(SAMPLE, "Upcoming"), vec!["soon. really"]);
         assert_eq!(section_in(SAMPLE, "v1"), Vec::<String>::new());
     }
 

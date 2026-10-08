@@ -31,7 +31,7 @@
 //   tcp.rs          — TCP fallback for large payloads: send, recv.
 //   traverse/       — NAT traversal (reflexive discovery so far): reflexive.rs (ReflexiveState, quorum-adopted public addr from pong observed_addr + ReflectResponse); portmap.rs (NAT-PMP / PCP / UPnP mapping of our UDP port on the home gateway, posted as the reflexive seed).
 //   udp.rs          — UDP socket utilities: send/send_sync, canon_socketaddr (::ffff:→v4), get_local_ip, get_broadcast_addr.
-//   wfd.rs          — Wi-Fi Direct bearer (docs/offgrid.md): WfdCred mint/seal/open (per-pair pre-provisioned group credential, elect_go lower-pubkey tie-break), rotating DNS-SD friend tokens (wfd_token/build_txt_tokens/match_txt_tokens), WfdBearer state machine (Idle→Stranded→Forming→Up) + WfdPlatform trait (AndroidWfd via JNI, NullWfd elsewhere), platform event queue (push_event/drain_events), RELAY_REACHABLE flag fed by the pipe task. Frames ride the main UDP socket — this module is discovery + group bring-up only.
+//   wfd.rs          — Wi-Fi Direct bearer (docs/offgrid.md): universal_token (one static token names the app; the per-pair WfdCred credential is RETIRED since a398de44 — still parsed from a `wfd_cred` frame and kept in contact state, never minted), elect_go lower-pubkey tie-break, DNS-SD TXT tokens (wfd_token/build_txt_tokens/match_txt_tokens), WfdBearer state machine (Idle→Stranded→Forming→Up) + WfdPlatform trait (AndroidWfd via JNI, NullWfd elsewhere), platform event queue (push_event/drain_events), RELAY_REACHABLE flag fed by the pipe task. Frames ride the main UDP socket — this module is discovery + group bring-up only.
 //
 // wave/ — waves: voice, 1:1, fleet-native (docs/waves.md + docs/audio-paths.md): mod.rs (WavePhase, ActiveWave, media sink install/clear, OUTPUT_PAD_STOPS, media-liveness statics + peer redirect), qgain.rs (Q32 integer gain with a carried remainder — THE one sample-scaling primitive), engine.rs (per-wave media thread: 5ms Opus CELT CBR ladder → RaptorQ piggyback windows (8/4/2/2 frames per rung) → sealed datagrams; inline PID duck + side-aware gate; v-chirp probe phase holds both directions at start; mute transmits zeros), vchirp.rs (V-chirp connect probe: template/frames, matched-filter fit + skew split + IR-tap export, Verdict mailbox, finish fit thread), nlms.rs (chirp-seeded NLMS echo canceller: RefRing + Nlms::cancel_frame, zero added latency, gated adaptation), learn.rs (in-wave passive learner: Learner, PredGate, blend_g), calibrate.rs (profile types + learned-result mailbox + env/quietest_run), ringback.rs (origin-side ring cadence + probe), measure.rs (the Wave page's "measure now" ritual — the engine's voiced/quiet measurement on a few seconds of speech, posted as a profile), keys.rs (StepChain), packet.rs (seal/open/parse_header), signal.rs (WaveSignal offer/answer/decline/busy/hangup/taken/anchor + device-named offer/answer + express seal/open), spool.rs/record.rs/playback.rs (sealed wave recording + ended-screen preview), export.rs (a kept wave decoded to WAV or a VSF i16 tensor for Export), live.rs (the wave field's per-frame envelope rings).
 //   align.rs — sender-side alignment to true time (docs/lock.md §5): RateFit (10 s ADC regression, adc_ppm, residual), apply_slip (flat-spot insert/delete, scored against the previous buffer's last sample), Aligner (PI rate loop realized as whole slips with anti-windup, one-step re-align past a frame, frames cut on the absolute 5 ms grid, first frame zero-padded); AlignStats for telemetry.
@@ -1062,6 +1062,14 @@ pub fn set_android_log_dir(dir: String) {
 /// Directory the VSF log file lives in. Android prefers the JNI-set external dir (pullable); everything else uses `photon_config_dir`.
 #[cfg(feature = "logging")]
 pub(crate) fn log_dir() -> Option<std::path::PathBuf> {
+    // Under `cargo test` the unit-test binary logs into a per-process scratch dir, never the live desktop sink: the loopback PT traffic and the failures a test provokes on purpose ("PIGEON: reassembled bytes do not match the announced hash") read exactly like field failures in the desktop day (2026-10-06/07).
+    #[cfg(test)]
+    {
+        let dir = std::env::temp_dir().join(format!("photon-test-{}", std::process::id()));
+        if std::fs::create_dir_all(&dir).is_ok() {
+            return Some(dir);
+        }
+    }
     // Android stays on the external files dir: apps get no tmpfs (cacheDir is the SAME flash, so zero wear saved) and adb-readability on release APKs is load-bearing for diagnostics.
     #[cfg(target_os = "android")]
     if let Some(d) = ANDROID_LOG_DIR.get() {

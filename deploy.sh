@@ -418,7 +418,7 @@ render_release_notes_html() {
         }
         /^## Upcoming$/ { skip=1; next }
         /^## v[0-9]+$/ { if (open) print "</ul>"; open=0; n++; if (n>max) { exit } skip=0; open=1; sub(/^## v/, ""); print "<h3 class=\"notes-version\">" dozenal($0 + 0) "</h3>"; print "<ul class=\"notes-list\">"; next }
-        /^- / { if (!skip && open) { sub(/^- /, ""); gsub(/&/, "\\&amp;"); gsub(/</, "\\&lt;"); print "<li>" $0 "</li>" } }
+        /^- / { if (!skip && open) { sub(/^- /, ""); gsub(/&/, "\\&amp;"); gsub(/</, "\\&lt;"); while (match($0, /\*\*[^*]+\*\*/)) { $0 = substr($0, 1, RSTART-1) "<strong>" substr($0, RSTART+2, RLENGTH-4) "</strong>" substr($0, RSTART+RLENGTH) } print "<li>" $0 "</li>" } }
         END { if (open) print "</ul>" }
     ' "$SNAP_DIR/RELEASE_NOTES.md"
 }

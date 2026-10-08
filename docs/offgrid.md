@@ -5,7 +5,7 @@
 Link-layer pairing exists to bootstrap trust between strangers; photon already carries its own trust (CLUTCH, sealed frames, keyed tokens).
 So every radio below is used with pre-shared or zero link-layer trust — the radio is just a byte pipe, and the sealed frames ride it unchanged.
 iOS is OUT OF SCOPE by decision (2026-08-30): sideloading requires a tethered developer identity, and this app doesn't do gatekeepers.
-BLE is DEMOTED to device pairing only (decision 2026-08-30): the friend channel pre-provisions everything a Wi-Fi Direct meetup needs, so no bootstrap radio is required.
+BLE is DEMOTED to device pairing only (decision 2026-08-30): a Wi-Fi Direct meetup needs no bootstrap radio — the universal token (below) finds any photon, and the chain layer authenticates.
 
 ## The tier ladder (decision 2026-08-30)
 
@@ -24,7 +24,8 @@ The bearer is only: discovery, group bring-up, address registration.
 Multicast on the p2p iface is OEM-flaky and unnecessary: after group-up the joiner sends the existing pt_disc beacon UNICAST to the GO (LanBroadcastRequest::unicast); the GO learns the joiner from the frame source and beacons back on the learn edge (self-quenching).
 The 192.168.49.x address lands in `Contact.p2p_addr` (never `local_ip` — it must not hit the foreign-/24 gate or survive teardown), enters candidate gathering as `HostV4P2p` (priority 50: below infra LAN 60, above punched WAN 40), and normal punch validation adopts the path.
 
-### Credentials: pre-provisioned per-pair over the normal sealed channel
+### Credentials: pre-provisioned per-pair — RETIRED 2026-09-01 (a398de44)
+SUPERSEDED by the universal token + open-house groups for both the bearer and the add (user ruling 2026-09-01: "always use blake3('Photon WiFi direct v0'), further auth once we know it's photon-capable"). The per-pair layer's distribution dependency kept the whole bearer dark in the field — nothing ever minted the pairwise seed. `WfdCred` is still parsed and kept so a frame from an older build stays harmless; nothing mints one. What follows is the retired design, kept for the record.
 `wfd_cred` record per friend pair: `go` (designated group owner = lexicographically-LOWER device pubkey — deterministic, zero negotiation), `ssid` (DIRECT-ph-…), `psk`, `epoch` (monotonic, newer replaces older).
 Minted by the elected-GO side on the friend's came-online edge (once per session — a lost frame self-heals next session; receiver adopts idempotently by epoch), sealed under `wfd_seal_key = keyed_hash(relationship_seed, domain)`, carried in a signed `wfd_cred` frame, persisted in contact state.
 So an offline meetup needs ZERO bootstrap radio — both phones already hold the group credentials.
@@ -35,7 +36,7 @@ Connect is dialog-free both directions on API 29+ (pre-shared WifiP2pConfig skip
 Fully dialog-free; NEARBY_WIFI_DEVICES (33+) / fine-location (older) runtime permission with the pending-grant re-run pattern.
 
 ### Open house — adding a NEW friend in the woods (BUILT 2026-08-30)
-The per-pair tokens/credentials only serve EXISTING friends; two strangers meeting off-grid have neither.
+The retired per-pair tokens/credentials only ever served EXISTING friends; two strangers meeting off-grid have neither — which is why the universal token now serves both cases.
 The magic ID insight: the `_photon._udp` service type already is the universal marker — so the add flow uses it directly.
 Submitting an add while the registry is unreachable (relay-pipe-down proxy) arms OPEN HOUSE: mint an ephemeral group, createGroup, and publish the SSID+PSK IN THE CLEAR in the TXT record (`ss`/`pk` keys).
 Cleartext creds are coffee-shop-WiFi exposure — the group is a byte pipe, trust is CLUTCH, a hostile joiner sees only ciphertext and unresolvable knocks — and the trackable "photon user here" beacon exists only during the deliberate add flow.

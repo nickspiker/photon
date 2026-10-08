@@ -94,48 +94,49 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 **🟢 Mainnet is live.** The network is open and permissionless — [install](#installation), pick a handle, and you're on. No invite, no waitlist, no approval. It's early and rough in places (see below), but it's real and running.
 
 ### What Works
-- ✅ Cross-platform GUI (Windows, Linux, macOS, Android)
-- ✅ Text input, selection, editing with cosmic-text rendering
-- ✅ Window management and compositing pipeline
+- ✅ Cross-platform GUI (Windows, Linux, macOS, Android; Redox builds every release) on fluor, a direct-pixel renderer — no GPU pipeline
+- ✅ Text input, selection, editing; every font bundled; sixteen languages, switched in-app
 - ✅ Handle attestation with memory-hard proof-of-work (~1s computation)
-- ✅ Peer discovery via FGTW DHT (handle → IP lookup)
-- ✅ P2P status detection (online/offline via UDP ping/pong)
-- ✅ NAT hole punching (broadcast ping to all peers on registration)
-- ✅ Avatar upload/download to FGTW storage with rate limiting
-- ✅ Contact storage (local encrypted + cloud backup to FGTW)
-- ✅ Deterministic device identity (keys derived from hardware)
+- ✅ Peer discovery via FGTW DHT (handle → IP lookup), LAN discovery, NAT hole punching, port mapping, relay as the last resort
+- ✅ P2P status detection (online/offline via UDP ping/pong); presence broadcast off by default
+- ✅ Deterministic device identity (keys derived from hardware, stored nowhere)
 - ✅ CLUTCH key exchange (8-algorithm parallel ceremony across four mathematical families, quantum-resistant by construction)
-- ✅ Rolling-chain encryption (256-link chains, forward-secret, tamper-evident)
-- ✅ Encrypted P2P messaging over the chain, verified device-to-device
+- ✅ Rolling-chain encryption (forward-secret, tamper-evident), re-keyed per era
+- ✅ Encrypted P2P messaging over the chain, verified device-to-device; history backfills from a friend's fleet after a wipe
 - ✅ Multi-device fleet: add a device (near-tap or pairing phrase), remove/revoke, and rejoin after a wipe via the surviving device secret
-- ✅ Fleet sync: contacts and settings converge across your devices under the fleet key
-- ✅ LAN peer discovery (NAT hairpinning workaround via broadcast)
-- ✅ Android build pipeline (tested on device)
-- ✅ Signed binary distribution with self-verification
-- ✅ Waves: end-to-end encrypted voice, direct peer to peer, single-digit-millisecond round trips on a LAN, lossless PCM on a clean path and an Opus ladder elsewhere; lost windows filled from the other side's recording; every wave kept as a per-party archive with a waveform card
-- ✅ Attachments: any file, byte-exact, chunked and resumable; pictures and code previewed in the row, images colour-managed thru opsin with live exposure on the desktop
-- ✅ The bridge: work one of your devices from another — a persistent shell with streamed output and Stop, and files dropped straight into the host's working directory — passless, because being in your fleet is the credential (docs/bridge.md)
+- ✅ Fleet sync: contacts, settings, conversations and files converge across your devices under the fleet key; compose on any device
+- ✅ Avatar upload/download to FGTW storage with rate limiting; contact storage (local encrypted + cloud backup to FGTW)
+- ✅ Waves: end-to-end encrypted voice, direct peer to peer, single-digit-millisecond round trips on a LAN, lossless PCM on a clean path and an Opus ladder elsewhere; lost windows filled from the other side's recording; every wave kept as a per-party archive with a waveform card, exportable as WAV or VSF
+- ✅ Files: any type, byte-exact, chunked and resumable, content-addressed and deduplicated; pictures, code and PDFs previewed in the row; images colour-managed thru opsin; every device of the fleet fetches a copy, one source at a time, on Wi-Fi only for phones
+- ✅ The bridge: work one of your devices from another — a persistent shell with streamed output and Stop, and files dropped straight into the host's working directory, repaired and resumed across a restart — passless, because being in your fleet is the credential (docs/bridge.md)
+- ✅ Self-update: signed release manifests, verified before exec; desktop hot-swaps and re-execs, Android installs automatically on Wi-Fi; release notes shown in the app
+- ✅ Notifications on every platform, cleared fleet-wide once read anywhere; a doorbell to reach a friend whose devices are asleep
 - ✅ Dozenal by default, hexadecimal for coders, arabic if you insist — every number on screen thru one base switch, magnitudes on a doubling scale (docs/dozenal.md)
+- ✅ Signed binary distribution with self-verification; Linux, Windows, macOS (Intel + ARM), Android and Redox built from one deploy
 
 ### What Doesn't Work Yet
 - ⚠️ Custodian recovery (all-devices-lost): threshold reconstruction is designed and partially built — **not yet a backstop you can rely on.** Keep more than one device.
-- ⚠️ NFC device-add and physical invite cards (designed; typing/near-tap is the path today)
+- ⚠️ Molecules (group conversations): the first phase is built — an atom (a conversation with you alone) binds a second person in — joining by replay and the live strand pull are not (docs/molecules.md)
+- ⚠️ NFC invite cards (designed; near-tap and typing are the paths today)
 - ⚠️ The wider TOKEN surface — billing you alone authorize, portable reputation, physics-anchored time — is specified in the patent and not yet in Photon
 - ⚠️ Waves have no relay carriage: two phones that cannot reach each other directly (both behind carrier NAT) signal fine but carry no audio yet
 - ⚠️ Video (beams) is on the way; the button is a stub
+- ⚠️ Off-grid Wi-Fi Direct (Android to Android, no infrastructure) is built and not yet field-proven (docs/offgrid.md)
+- ⚠️ Retention: every device keeps everything; per-device horizons and eviction are designed, not built (docs/retention.md)
 - ⚠️ The bridge hosts only on Linux and macOS, sends files one way only (into the host), and has no screen, sensor or interactive-terminal support yet — designed in docs/bridge.md
+- ⚠️ Tapping a notification opens nothing yet, on any platform
 
 ### Platform Support
 
 | Platform | Status | Notes |
 |----------|--------|-------|
-| Linux x86_64 | ✅ Working | wgpu/Vulkan, X11/Wayland |
-| Linux ARM64 | ✅ Working | wgpu/Vulkan (Asahi etc.) |
-| Windows | ✅ Working | GDI |
-| macOS x86_64 | ✅ Working | wgpu/Metal |
-| macOS Apple Silicon | ✅ Working | wgpu/Metal |
-| Android | ✅ Working | ARM64, tested on device |
-| Redox | 🟡 Compiles | Orbital, untested |
+| Linux x86_64 | ✅ Working | fluor direct-pixel renderer, X11/Wayland |
+| Linux ARM64 | ✅ Working | fluor direct-pixel renderer (Asahi etc.) |
+| Windows | ✅ Working | GDI blit |
+| macOS x86_64 | ✅ Working | fluor direct-pixel renderer |
+| macOS Apple Silicon | ✅ Working | fluor direct-pixel renderer |
+| Android | ✅ Working | ARM64, tested on device; automatic updates |
+| Redox | 🟡 Builds every release | Orbital, untested in use |
 | iOS | ❌ Blocked | See "Why No iOS?" below |
 | ferros | ✅ Future | waiting on ferros components |
 
@@ -543,22 +544,27 @@ src/
 
 | Component | Status | Notes |
 |-----------|--------|-------|
-| UI Framework | ✅ Complete | Custom winit-based GUI, differential rendering |
-| Text Rendering | ✅ Complete | cosmic-text, selection, editing |
+| UI Framework | ✅ Complete | fluor: direct pixel access, damage-band repaints, scroll as a memmove |
+| Text Rendering | ✅ Complete | cosmic-text shaping, bundled fonts, selection, editing |
 | Device Identity | ✅ Complete | Deterministic keys from hardware (never stored) |
 | Crypto Types | ✅ Complete | Identity, seed, shard, message structures |
-| CLUTCH Key Exchange | ✅ Working | 8-algorithm ceremony, deterministic ceremony_id |
-| Friendship Chains | ✅ Working | 256-link chains (8KB), per-participant advancement |
+| CLUTCH Key Exchange | ✅ Working | 8-algorithm ceremony, deterministic ceremony_id, re-keyed per era |
+| Friendship Chains | ✅ Working | Per-device lanes, braid v2, CRDT merge across the fleet |
 | Handle Attestation | ✅ Working | Memory-hard PoW (~1s), DHT storage |
-| Peer Discovery | ✅ Working | FGTW DHT + LAN broadcast (hairpin NAT workaround) |
+| Peer Discovery | ✅ Working | FGTW DHT + LAN broadcast + port mapping + relay fallback |
 | P2P Status | ✅ Working | UDP ping/pong with Ed25519 signatures, hysteresis |
 | Avatar System | ✅ Working | VSF-encoded, FGTW storage, rate-limited uploads |
 | Contact Storage | ✅ Working | Local encrypted + cloud backup to FGTW |
-| Binary Signing | ✅ Working | Ed25519 signatures, self-verification on startup |
-| Network Transport | ✅ Working | UDP + TCP fallback + PT for large payloads |
-| Message Persistence | ❌ Empty | VSF storage layer not implemented |
-| Social Recovery | ❌ Stubbed | Shard distribution/reconstruction TODO |
-| Peer Messaging | ⚠️ Partial | Chains derived, encrypted message flow pending |
+| Binary Signing | ✅ Working | Ed25519 signatures, self-verification on startup, self-update |
+| Network Transport | ✅ Working | UDP + Photon Transport (lettered streams) for large payloads; TCP and relay fallbacks |
+| Message Persistence | ✅ Working | manifestus VSF vault; content-addressed blobs for files and recordings |
+| Peer Messaging | ✅ Working | Sealed photons over the chain, fleet-replicated, friend backfill after a wipe |
+| Waves (voice) | ✅ Working | Direct, forward-error-corrected, recorded per party |
+| Files | ✅ Working | Chunked, resumable, previewed, replicated fleet-wide |
+| Bridge | ✅ Working | Unix hosts; remote shell + file drops over PT |
+| Molecules (groups) | ⚠️ Partial | Phase 1 built; join-by-replay scoped |
+| Social Recovery | ⚠️ Partial | Custodian recovery designed, not yet a reliable backstop |
+| Beams (video) | ❌ Stub | Button only |
 
 ### Technology Stack
 

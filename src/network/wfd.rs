@@ -2,7 +2,7 @@
 //!
 //! Tier ladder, all ciphertext so ordering is pure cost/availability: LAN → WAN (punched) → Wi-Fi Direct → relay last resort.
 //! This module is deliberately NOT a transport: once a P2P group forms, both sides hold real IPs on the p2p interface and frames ride the EXISTING wildcard-bound UDP socket — no new select! arm, no sentinel, no inject channel.
-//! What lives here: the credential record friends pre-provision to each other over the normal sealed channel, the rotating discovery tokens that let friends recognise each other in DNS-SD service frames without leaking identity, the deterministic group-owner tie-break, the edge-driven bearer state machine, and the platform trait the Android/Linux radio bridges implement.
+//! What lives here: the universal discovery token (one static token names the APP in DNS-SD service frames; real authentication happens at the chain layer the moment frames flow), the deterministic group-owner tie-break, the edge-driven bearer state machine, and the platform trait the Android/Linux radio bridges implement.
 //! Hard constraint (user mandate): bringing up a group must NEVER disconnect the device's infrastructure WiFi — the platform layers rely on STA+P2P concurrency and never touch the infra connection.
 
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -100,10 +100,10 @@ pub fn match_txt_tokens(
 }
 
 // ---------------------------------------------------------------------------
-// The pre-provisioned per-pair credential.
+// The per-pair credential — RETIRED 2026-09-01 (a398de44): nothing mints or sends one any more (the universal token below replaced it); the record is still parsed and kept so a frame from an older build stays harmless.
 // ---------------------------------------------------------------------------
 
-/// The Wi-Fi Direct group credential a friend pair shares, minted by the lexicographically-LOWER device pubkey and sent sealed over the normal channel while online — so an offline meetup needs zero bootstrap radio.
+/// The Wi-Fi Direct group credential a friend pair once shared, minted by the lexicographically-LOWER device pubkey and sent sealed over the normal channel while online. RETIRED — see the section header; kept only as a parsed record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WfdCred {
     /// The designated group owner's device pubkey — deterministic tie-break, both sides agree with zero negotiation.
