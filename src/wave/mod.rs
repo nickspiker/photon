@@ -23,6 +23,9 @@ pub mod music;
 pub mod playback;
 pub mod keys;
 pub mod packet;
+pub mod beam;
+pub mod beam_colour;
+pub mod h264;
 pub mod signal;
 
 use std::net::SocketAddr;
@@ -65,6 +68,11 @@ pub fn clear_media_sink() {
 
 /// Called from the recv worker for every magic-matched datagram. Cheap when idle (one mutex + None).
 pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
+    // BEAM datagrams (docs/beams.md) take their own door: the video receiver's sink, never the audio engine's channel — one byte decides, before any lock the engine shares.
+    if bytes.first() == Some(&packet::BEAM_MAGIC) {
+        beam::deliver(bytes);
+        return;
+    }
     let at = std::time::Instant::now(); // straight after recv returned: the socket's arrival instant
     let sink = MEDIA_SINK.lock().unwrap();
     if let Some(tx) = sink.as_ref() {
