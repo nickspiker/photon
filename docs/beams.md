@@ -2,7 +2,7 @@
 
 A **beam** is video: the beam of light, aimed at one person (docs/lexicon.md). A **wave** is voice. A beam is a wave with a second track; everything a wave already does — the ceremony, the ring, the key ratchet, the sealed datagrams, the fountain-code repair, the loss loop, the fleet lifecycle (docs/waves.md) — carries the picture unchanged. This document pins what is specific to the picture.
 
-**Status:** DECIDED 2026-10-10 (Nick + Claude, the evening's design pass). BUILT the same night: stage 1 (OpenH264 on x86_64 Linux + macOS, `wave/h264.rs`), stage 2 (the transport, `wave/beam.rs`), the receive chain of §4 (`wave/beam_colour.rs`, integer, blue-noise truncation), and the LINUX DESKTOP SLICE: `wave/beam_session.rs` (receiver up with every wave engine; sender from a camera), `platform/camera_v4l2.rs`, the Beam button live on the desktop wave screen, the peer's picture painted in the wave square. Stage list at the end.
+**Status:** DECIDED 2026-10-10 (Nick + Claude, the evening's design pass). BUILT the same night: stage 1 (OpenH264 on x86_64 Linux + macOS, `wave/h264.rs`), stage 2 (the transport, `wave/beam.rs`), the receive chain of §4 (`wave/beam_colour.rs`, integer, blue-noise truncation), and the LINUX DESKTOP SLICE: `wave/beam_session.rs` (receiver up with every wave engine; sender from a camera), `platform/camera_v4l2.rs`, the Beam button live on the desktop wave screen, the peer's picture painted in the wave square; and stage 3's SENDING half on the phone (`PhotonBeam.kt`: the straight-thru Camera2 request, MediaCodec with intra refresh and no periodic keyframes, access units into the track; the phone does not decode yet). Stage list at the end.
 
 ## 1. The decisions, in one place
 
