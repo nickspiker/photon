@@ -374,6 +374,10 @@ class PhotonConnectionService : Service() {
                 if (withMic && Build.VERSION.SDK_INT >= 30) {
                     types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
+                // A beam adds the camera type for exactly as long as the camera is open (docs/beams.md).
+                if (beamRunning && Build.VERSION.SDK_INT >= 30) {
+                    types = types or ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA
+                }
                 startForeground(NOTIFICATION_ID, notification, types)
             } else {
                 startForeground(NOTIFICATION_ID, notification)
@@ -388,6 +392,7 @@ class PhotonConnectionService : Service() {
     override fun onDestroy() {
         live = null
         PhotonLog.d(TAG, "Service destroying")
+        stopBeamCapture()
         multicastLock?.release()
         multicastLock = null
         stopNetworkPolling()
@@ -934,6 +939,40 @@ class PhotonConnectionService : Service() {
     // ------------------------------------------------------------------
 
     private external fun nativeMicGranted()  // RECORD_AUDIO landed mid-wave: Rust opens the AAudio input leg it could not open at start.
+    // BEAMS (docs/beams.md): one encoded H.264 access unit + the ISP's gains (Q12), and the pipeline-up edge with the camera's geometry, the maker's XYZ→camera matrix (or null) and whether the straight-thru request took.
+    private external fun nativeBeamFrame(au: ByteArray, g0: Int, g1: Int, g2: Int, g3: Int)
+    private external fun nativeBeamStarted(w: Int, h: Int, fps: Int, matrix: FloatArray?, straight: Boolean)
+
+    @Volatile private var beamRunning = false
+    private var beam: PhotonBeam? = null
+
+    /** Called from Rust when the Beam button is pressed on an active wave: the camera + encoder pipeline, if CAMERA is granted — else the prompt, and Rust tries again on the grant edge. */
+    fun startBeamCapture() {
+        if (beamRunning) return
+        val granted = checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
+        if (!granted) {
+            PhotonLog.w(TAG, "beam: CAMERA not granted — prompting")
+            PhotonActivity.live?.requestCameraPermission()
+            return
+        }
+        beamRunning = true
+        promoteForeground(waveAudioRunning)
+        val b = PhotonBeam(this,
+            onFrame = { au, g -> try { nativeBeamFrame(au, g[0], g[1], g[2], g[3]) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamFrame", e) } },
+            onStarted = { w, h, fps, m, straight -> try { nativeBeamStarted(w, h, fps, m, straight) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamStarted", e) } })
+        beam = b
+        b.start()
+        PhotonLog.i(TAG, "beam: capture started")
+    }
+
+    fun stopBeamCapture() {
+        if (!beamRunning) return
+        beamRunning = false
+        beam?.stop()
+        beam = null
+        promoteForeground(waveAudioRunning)
+        PhotonLog.i(TAG, "beam: capture stopped")
+    }
 
     @Volatile private var waveAudioRunning = false
 

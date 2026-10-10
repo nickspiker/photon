@@ -1450,6 +1450,7 @@ impl PhotonApp {
             w.beam_tx = None;
             w.beam_rx = None;
         }
+        crate::wave::beam_session::android_stop();
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {
             let e = wave.engine.as_ref()?;
             e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio
@@ -1734,20 +1735,36 @@ impl PhotonApp {
             crate::log("BEAM: no wave secret — cannot beam");
             return;
         };
-        let source = match crate::wave::beam_session::open_desktop_camera() {
-            Ok(s) => s,
-            Err(e) => {
-                crate::logf!("BEAM: {}", e);
-                return;
+        // The phone: arm, and Kotlin's pipeline-up edge starts the encoded sender (beam_session::android_started).
+        #[cfg(target_os = "android")]
+        {
+            if crate::wave::beam_session::android_sending() {
+                crate::wave::beam_session::android_stop();
+                crate::log("BEAM: stopped sending");
+            } else if crate::wave::beam_session::android_arm(secret, wave.we_are_origin) {
+                crate::log("BEAM: armed — camera opening");
+            } else {
+                crate::log("BEAM: service bridge down — cannot beam");
             }
-        };
-        let (w, h) = source.dimensions();
-        match crate::wave::beam_session::start_sender(&secret, wave.we_are_origin, source, crate::wave::beam_session::bitrate_for(w, h)) {
-            Ok(tx) => {
-                crate::logf!("BEAM: sending {}×{}", w, h);
-                wave.beam_tx = Some(tx);
+            return;
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let source = match crate::wave::beam_session::open_desktop_camera() {
+                Ok(s) => s,
+                Err(e) => {
+                    crate::logf!("BEAM: {}", e);
+                    return;
+                }
+            };
+            let (w, h) = source.dimensions();
+            match crate::wave::beam_session::start_sender(&secret, wave.we_are_origin, source, crate::wave::beam_session::bitrate_for(w, h)) {
+                Ok(tx) => {
+                    crate::logf!("BEAM: sending {}×{}", w, h);
+                    wave.beam_tx = Some(tx);
+                }
+                Err(e) => crate::logf!("BEAM: {}", e),
             }
-            Err(e) => crate::logf!("BEAM: {}", e),
         }
     }
 

@@ -230,6 +230,96 @@ pub fn encoded_sender_live() -> bool {
     ENCODED_TX.lock().unwrap().is_some()
 }
 
+// ───────────────────────── the phone ─────────────────────────
+
+/// The Beam button armed a send on the phone: the wave secret and our side, waiting for Kotlin's pipeline-up edge (`android_started`). Cleared by `android_stop`.
+static ANDROID_ARMED: Mutex<Option<([u8; 32], bool)>> = Mutex::new(None);
+/// The phone's encoded sender handle (the UI thread cannot own it: the pipeline-up edge arrives on the service thread).
+static ANDROID_SENDER: Mutex<Option<Sender>> = Mutex::new(None);
+
+/// Arm a phone send for the active wave and ask Kotlin to open the camera + encoder. Returns false when the service bridge is down.
+#[cfg(target_os = "android")]
+pub fn android_arm(wave_secret: [u8; 32], we_are_origin: bool) -> bool {
+    *ANDROID_ARMED.lock().unwrap() = Some((wave_secret, we_are_origin));
+    crate::platform::jni_android::wave_service_void("startBeamCapture")
+}
+
+/// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed.
+pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool) -> Result<(), String> {
+    let Some((secret, origin)) = *ANDROID_ARMED.lock().unwrap() else {
+        return Err("BEAM: pipeline up with nothing armed".into());
+    };
+    let entry = phone_entry(maker, straight);
+    let info = Info { width: w as u16, height: h as u16, fps: fps as u8, codec: Codec::H264, colour: colour_bytes(&entry) };
+    let s = start_encoded_sender(&secret, origin, info)?;
+    *ANDROID_SENDER.lock().unwrap() = Some(s);
+    Ok(())
+}
+
+/// Stop a phone send: the sender handle, the arm, and Kotlin's pipeline.
+pub fn android_stop() {
+    *ANDROID_SENDER.lock().unwrap() = None;
+    *ANDROID_ARMED.lock().unwrap() = None;
+    #[cfg(target_os = "android")]
+    crate::platform::jni_android::wave_service_void("stopBeamCapture");
+}
+
+pub fn android_sending() -> bool {
+    ANDROID_ARMED.lock().unwrap().is_some()
+}
+
+/// The phone's characterization (docs/beams.md): with the maker's XYZ→camera matrix AND the straight-thru request in force, `absolute` / `model` / `gamma2` with camera→VSF-RGB = XYZ→VSF-RGB × inv(XYZ→camera); otherwise `creative` / `assumed` / `gamma2` (the HAL white-balanced and matrixed toward sRGB under our γ2 curve), the sRGB→VSF-RGB matrix.
+pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool) -> vsf::spectral_image::ProfileEntry {
+    if let (Some(m), true) = (maker, straight) {
+        if let Some(inv) = invert3(&m) {
+            return vsf::spectral_image::ProfileEntry {
+                matrix: mat_mul3(&vsf::colour::XYZ2VSF_RGB, &inv),
+                source: "dng_colormatrix2".into(),
+                class: vsf::spectral_image::IdtClass::Absolute,
+                tier: vsf::spectral_image::ProfileTier::Model,
+                illuminant: 21, // D65 (EXIF LightSource), the daylight set
+                transfer: vsf::spectral_image::Transfer::Gamma2,
+            };
+        }
+    }
+    vsf::spectral_image::ProfileEntry {
+        matrix: vsf::colour::SRGB2VSF_RGB,
+        source: "assumed_srgb".into(),
+        class: vsf::spectral_image::IdtClass::Creative,
+        tier: vsf::spectral_image::ProfileTier::Assumed,
+        illuminant: 0,
+        transfer: vsf::spectral_image::Transfer::Gamma2,
+    }
+}
+
+fn invert3(m: &[f32; 9]) -> Option<[f32; 9]> {
+    let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
+    if !det.is_finite() || det.abs() < 1e-9 {
+        return None;
+    }
+    Some([
+        (m[4] * m[8] - m[5] * m[7]) / det,
+        (m[2] * m[7] - m[1] * m[8]) / det,
+        (m[1] * m[5] - m[2] * m[4]) / det,
+        (m[5] * m[6] - m[3] * m[8]) / det,
+        (m[0] * m[8] - m[2] * m[6]) / det,
+        (m[2] * m[3] - m[0] * m[5]) / det,
+        (m[3] * m[7] - m[4] * m[6]) / det,
+        (m[1] * m[6] - m[0] * m[7]) / det,
+        (m[0] * m[4] - m[1] * m[3]) / det,
+    ])
+}
+
+fn mat_mul3(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+    let mut o = [0f32; 9];
+    for r in 0..3 {
+        for c in 0..3 {
+            o[r * 3 + c] = (0..3).map(|k| a[r * 3 + k] * b[k * 3 + c]).sum();
+        }
+    }
+    o
+}
+
 // ───────────────────────── the colour entry on the wire ─────────────────────────
 
 const COLOUR_SECTION: &str = "colour_profile";
@@ -256,10 +346,25 @@ pub fn colour_from_bytes(bytes: &[u8]) -> Option<Characterization> {
     if bytes.is_empty() {
         return None;
     }
-    // `decode` + `primary_section`, never a bare section parse: the section NAME lives in the header TOC (vsf-toc-section-name-trap).
-    let (header, header_end) = vsf::file_format::VsfHeader::decode(bytes).ok()?;
-    let section = header.primary_section(bytes, header_end).ok()?;
-    let profile = vsf::spectral_image::profile_from_fields(&section.fields).ok()?;
+    // The un-skippable front door (docs/vsf-trust-remediation.md): the whole document verified, the section located by its TOC name, the fields parsed against a schema. Non-strict, so a profile that grows a field still reads.
+    use vsf::schema::TypeConstraint::Any;
+    let schema = vsf::schema::SectionSchema::new(COLOUR_SECTION)
+        .field("count", Any)
+        .field("target", Any)
+        .field("matrices", Any)
+        .field("sources", Any)
+        .field("classes", Any)
+        .field("tiers", Any)
+        .field("illuminants", Any)
+        .field("transfers", Any);
+    let section = vsf::schema::SectionBuilder::parse_document(schema, bytes, None).ok()?;
+    let mut fields: Vec<vsf::file_format::VsfField> = Vec::new();
+    for name in ["count", "target", "matrices", "sources", "classes", "tiers", "illuminants", "transfers"] {
+        for f in section.get_fields(name) {
+            fields.push(vsf::file_format::VsfField { name: f.name.clone(), values: f.values.clone() });
+        }
+    }
+    let profile = vsf::spectral_image::profile_from_fields(&fields).ok()?;
     profile.entries.first().map(Characterization::from_entry)
 }
 
@@ -315,6 +420,21 @@ mod tests {
         assert_eq!(chr.matrix, vsf::colour::SRGB2VSF_RGB);
         assert!(colour_from_bytes(&[]).is_none());
         assert!(colour_from_bytes(b"not a vsf document").is_none());
+    }
+
+    #[test]
+    fn the_phone_entry_is_absolute_only_with_a_matrix_and_a_straight_request() {
+        let e = phone_entry(None, true);
+        assert_eq!(e.class, vsf::spectral_image::IdtClass::Creative);
+        let e = phone_entry(Some([1., 0., 0., 0., 1., 0., 0., 0., 1.]), false);
+        assert_eq!(e.class, vsf::spectral_image::IdtClass::Creative);
+        let e = phone_entry(Some([2., 0., 0., 0., 2., 0., 0., 0., 2.]), true);
+        assert_eq!(e.class, vsf::spectral_image::IdtClass::Absolute);
+        // XYZ→camera = 2·I, so camera→VSF = XYZ2VSF × ½·I.
+        for i in 0..9 {
+            assert!((e.matrix[i] - vsf::colour::XYZ2VSF_RGB[i] * 0.5).abs() < 1e-6);
+        }
+        assert!(invert3(&[0.; 9]).is_none());
     }
 
     #[test]

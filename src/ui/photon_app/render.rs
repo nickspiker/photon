@@ -992,6 +992,17 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
+                        // The BEAM toggle on the phone (docs/beams.md): above the end button, the route button keeping the right slot.
+                        #[cfg(target_os = "android")]
+                        if let Some(b) = self.beam_btn.as_mut() {
+                            b.set_rect(cx, by - bh * 1.3, bw, bh);
+                            b.set_font_size(bfont * 0.8);
+                            let sending = crate::wave::beam_session::android_sending();
+                            b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
+                            b.set_enabled(true);
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
                         // The route (Android, field 2026-09-14): labelled with the device the wave plays on (the Kotlin route mirror); a tap cycles to the next available output.
                         #[cfg(target_os = "android")]
                         if let Some(b) = self.wave_speaker_btn.as_mut() {

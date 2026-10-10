@@ -282,6 +282,29 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeRouteP
     crate::platform::audio_aaudio::rebuild();
 }
 
+/// BEAMS (docs/beams.md): one encoded H.264 access unit from MediaCodec, with the ISP's gains (Q12) — straight into the beam track if a sender is armed.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamFrame(env: JNIEnv<'_>, _class: JClass<'_>, au: JByteArray<'_>, g0: jint, g1: jint, g2: jint, g3: jint) {
+    let Ok(bytes) = env.convert_byte_array(&au) else { return };
+    let g = crate::wave::beam::Gains([g0.clamp(1, 65535) as u16, g1.clamp(1, 65535) as u16, g2.clamp(1, 65535) as u16, g3.clamp(1, 65535) as u16]);
+    crate::wave::beam_session::push_encoded(g, &bytes);
+}
+
+/// BEAMS: the phone's pipeline is up — geometry, fps, the maker's XYZ→camera matrix (9 floats row-major, or null) and whether the straight-thru request took in full. Starts the encoded sender armed by the Beam button.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean) {
+    let maker = if matrix.is_null() {
+        None
+    } else {
+        let mut m = [0f32; 9];
+        env.get_float_array_region(&matrix, 0, &mut m).ok().map(|_| m)
+    };
+    match crate::wave::beam_session::android_started(w.max(2) as usize, h.max(2) as usize, fps.clamp(1, 120) as u32, maker, straight != 0) {
+        Ok(()) => info!("BEAM: phone sender up {}x{} @ {} fps (maker matrix {}, straight {})", w, h, fps, maker.is_some(), straight != 0),
+        Err(e) => error!("BEAM: {}", e),
+    }
+}
+
 /// JNI ingress: the wave's volume changed on this route + usage.
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeWaveVolume(mut env: JNIEnv<'_>, _class: JClass<'_>, route: JString<'_>, voice: jni::sys::jboolean, index: jint) {

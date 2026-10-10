@@ -5,6 +5,10 @@
     <!-- Network access for messaging -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28" />
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- BEAMS (docs/beams.md): the camera, asked for at the Beam button; the camera foreground-service type for as long as a beam runs. -->
+    <uses-permission android:name="android.permission.CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <!-- MulticastLock (PhotonConnectionService): without it Android's radio firmware drops WiFi multicast, killing same-network LAN discovery. -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
@@ -99,7 +103,7 @@
              capture keeps running when the Activity backgrounds mid-wave. -->
         <service
             android:name=".PhotonConnectionService"
-            android:foregroundServiceType="dataSync|microphone"
+            android:foregroundServiceType="dataSync|microphone|camera"
             android:exported="false" />
 
         <!-- NFC instant device add: the joiner's HCE service serving the pairing secret under photon's private AID (res/xml/apduservice.xml). -->

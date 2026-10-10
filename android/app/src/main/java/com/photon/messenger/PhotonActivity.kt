@@ -300,6 +300,25 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
     }
 
+    // BEAMS: the camera, asked for at the Beam button like the mic at the wave; on grant the capture the missing permission skipped starts.
+    private val cameraPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { isGranted ->
+        if (isGranted) {
+            connectionService?.startBeamCapture()
+        } else {
+            PhotonLog.w(TAG, "CAMERA denied — no beam from this device")
+        }
+    }
+
+    fun requestCameraPermission() {
+        runOnUiThread {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA) != PackageManager.PERMISSION_GRANTED) {
+                cameraPermissionLauncher.launch(Manifest.permission.CAMERA)
+            }
+        }
+    }
+
     // BLE beacon permissions (Android 12+): requested lazily by PhotonBeacon when a start request
     // finds them missing; on grant the pending advertise/scan re-runs so the pairing screen
     // doesn't need re-entering.
