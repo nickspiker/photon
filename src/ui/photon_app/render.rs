@@ -1127,11 +1127,12 @@ impl PhotonApp {
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
-                // Beam (video) stub — the slat above Wave, a third of a pill left of it so the two read as a stack; disabled until video lands.
+                // Beam (video) — the slat above Wave, a third of a pill left of it so the two read as a stack: live when a wave could start and this device can send a beam (a codec + a camera path; docs/beams.md); a tap starts the wave with the beam armed.
                 if let Some(b) = self.beam_btn.as_mut() {
                     b.set_rect(wave_cx - pill_w * 0.35, beam_cy, pill_w, pill_h);
                     b.set_font_size(pill_font);
-                    b.set_enabled(false);
+                    b.set_label(tr(Msg::BeamStart));
+                    b.set_enabled(wave_pill_enabled && crate::wave::beam_session::can_send());
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }

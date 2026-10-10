@@ -85,9 +85,25 @@ impl PhotonApp {
     pub(super) fn dispatch_wave_button_clicks(&mut self, ctx: &mut Context) -> bool {
         let phase = self.active_wave.as_ref().map(|c| c.phase);
         let mut any = false;
-        if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && phase == Some(WavePhase::Active) {
-            self.toggle_beam();
-            any = true;
+        if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
+            match phase {
+                Some(WavePhase::Active) => {
+                    self.toggle_beam();
+                    any = true;
+                }
+                // The conversation screen's Beam slat: a wave with the beam armed — the camera goes out the moment the wave is live (the drought tick's edge).
+                None => {
+                    if let Some(ci) = self.active_contact() {
+                        if crate::wave::beam_session::can_send() {
+                            self.beam_armed = true;
+                            self.start_wave(ci);
+                            crate::log("BEAM: wave started from the Beam button — the camera follows the engine");
+                            any = true;
+                        }
+                    }
+                }
+                _ => {}
+            }
         }
         if self
             .wave_action_btn
@@ -642,6 +658,20 @@ impl PhotonApp {
             .is_ok()
         {
             self.portmap_stop = Some(stop);
+        }
+    }
+
+    /// The armed beam's edge: the wave is live with its engine up and nothing is sending yet — start the camera. A state edge read on the wave tick, never a timer.
+    pub(super) fn beam_armed_tick(&mut self) {
+        if !self.beam_armed {
+            return;
+        }
+        let live = self.active_wave.as_ref().map_or(false, |w| w.phase == WavePhase::Active && w.engine.is_some() && w.beam_tx.is_none());
+        if live {
+            self.beam_armed = false;
+            self.toggle_beam();
+        } else if self.active_wave.is_none() {
+            self.beam_armed = false;
         }
     }
 
@@ -1450,6 +1480,7 @@ impl PhotonApp {
             w.beam_tx = None;
             w.beam_rx = None;
         }
+        self.beam_armed = false;
         crate::wave::beam_session::android_stop();
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {
             let e = wave.engine.as_ref()?;

@@ -149,28 +149,43 @@ pub fn fit(window: &[Exchange], source: LockSource) -> Option<(Model, FitReport)
     let newest = kept.iter().map(|e| e.boot).max()?;
     let oldest = kept.iter().map(|e| e.boot).min()?;
 
-    // Centre on the means so the regression works on small numbers (f64 keeps ~15 digits; raw oscillation counts have 19).
-    let n = kept.len() as f64;
-    let mb = kept.iter().map(|e| (e.boot - kept[0].boot) as f64).sum::<f64>() / n;
-    let mo = kept.iter().map(|e| (e.offset - kept[0].offset) as f64).sum::<f64>() / n;
+    // PRECISION WEIGHTS (field 2026-10-10, Nick's MacBook): the quartile filter works WITHIN a bin, but a bin holding one loose reading — a server verdict that rode a 237 s request, ±118 s — keeps it as "its best", and an unweighted line through it and a ±14 ms consensus 54 minutes away read a rate of −3.6 %: the wave's aligner re-aligned four thousand times and the playout latency went negative by megasamples. Every exchange weighs by the inverse square of its delay, relative to the tightest kept, so that loose reading counts for a hundred-millionth and the line is the tight ones'. A rate needs a SPAN of exchanges that actually carry weight, not a tight burst plus one far point that weighs nothing.
+    // Centre on the weighted means so the regression works on small numbers (f64 keeps ~15 digits; raw oscillation counts have 19).
+    let min_d = min_delay.max(1) as f64;
+    let weight = |e: &Exchange| {
+        let d = e.delay.max(1) as f64;
+        (min_d / d) * (min_d / d)
+    };
+    let sw = kept.iter().map(weight).sum::<f64>();
+    let mb = kept.iter().map(|e| weight(e) * (e.boot - kept[0].boot) as f64).sum::<f64>() / sw;
+    let mo = kept.iter().map(|e| weight(e) * (e.offset - kept[0].offset) as f64).sum::<f64>() / sw;
     let (mut sxx, mut sxy) = (0.0f64, 0.0f64);
     for e in kept {
+        let w = weight(e);
         let x = (e.boot - kept[0].boot) as f64 - mb;
         let y = (e.offset - kept[0].offset) as f64 - mo;
-        sxx += x * x;
-        sxy += x * y;
+        sxx += w * x * x;
+        sxy += w * x * y;
     }
-    let rated = newest - oldest >= MIN_RATE_SPAN_OSC && sxx > 0.0;
+    let weighty_span = {
+        let (mut lo, mut hi) = (i64::MAX, i64::MIN);
+        for e in kept.iter().filter(|e| weight(e) >= 0.01) {
+            lo = lo.min(e.boot);
+            hi = hi.max(e.boot);
+        }
+        hi.saturating_sub(lo)
+    };
+    let rated = weighty_span >= MIN_RATE_SPAN_OSC && sxx > 0.0;
     let slope = if rated { sxy / sxx } else { 0.0 };
     let resid_var = kept
         .iter()
         .map(|e| {
             let x = (e.boot - kept[0].boot) as f64 - mb;
             let y = (e.offset - kept[0].offset) as f64 - mo;
-            (y - slope * x).powi(2)
+            weight(e) * (y - slope * x).powi(2)
         })
         .sum::<f64>()
-        / n;
+        / sw;
     let resid_osc = resid_var.sqrt();
     // Rate uncertainty: the slope's standard error when there is a slope, else the spec's default.
     let rate_unc_ppb = if rated { ((resid_osc / sxx.sqrt()) * 1e9).ceil() as i64 + 1 } else { DEFAULT_RATE_UNC_PPB };
@@ -352,6 +367,25 @@ mod tests {
         let (m, _) = fit(&[tight, loose], LockSource::Ntp).unwrap();
         assert_eq!(m.eagle_at(10 * S), 10 * S + S / 2);
         assert!(m.unc_ns.abs_diff(1_000_000) <= 1, "half the tight exchange's 2 ms delay, got {}", m.unc_ns);
+    }
+
+    /// Nick's MacBook, 2026-10-10: a loose reading alone in its bin (a server verdict that rode a 237 s request, 116 s off) and a tight nunc burst 54 minutes later must not tilt the rate — the loose one weighs nothing, the offset is the burst's, and a burst alone fits NO rate. With a second tight burst an hour on, the rate is the tight line's and the loose point still cannot bend it.
+    #[test]
+    fn a_loose_reading_in_its_own_bin_never_tilts_the_rate() {
+        let loose = Exchange { boot: 0, offset: 116 * S, delay: 237 * S };
+        let start = 54 * 60 * S;
+        let mut ex = exchanges(0, 0, start, 6, S / 2, S / 36);
+        ex.push(loose);
+        let (m, r) = fit(&ex, LockSource::Ntp).unwrap();
+        assert_eq!(r.kept, 2, "the loose reading is its bin's only exchange, so the quartile keeps it");
+        assert_eq!(m.rate_ppb, 0, "one tight burst plus a point that weighs nothing fits no rate");
+        assert!((m.eagle_at(start) - start).abs() <= S / 1000, "the offset is the tight burst's, got {} ms off", (m.eagle_at(start) - start) * 1000 / S);
+        let mut ex2 = exchanges(0, 80_000, start, 40, 90 * S, S / 100);
+        ex2.push(loose);
+        let (m2, _) = fit(&ex2, LockSource::Ntp).unwrap();
+        assert!((m2.rate_ppb - 80_000).abs() <= 2, "the rate is the tight line's, got {} ppb", m2.rate_ppb);
+        let last = ex2[ex2.len() - 2];
+        assert!((m2.eagle_at(last.boot) - (last.boot + last.offset)).abs() <= S / 1000, "offset at the newest tight exchange");
     }
 
     /// One burst of queries fits an offset but no rate: the rate is unknown, the uncertainty grows at the spec's 2 ppm.

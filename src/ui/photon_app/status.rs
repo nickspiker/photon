@@ -30,6 +30,7 @@ impl PhotonApp {
         timed_drain!("wave_express", self.drain_express_signals());
         // Media-liveness measurement on the live wave (two atomic loads when idle).
         timed_drain!("wave_drought", self.wave_drought_tick());
+        timed_drain!("beam_armed", self.beam_armed_tick());
         // Ring-lease heartbeat: caller beats the offer ~1s, the answering side lapses a stale ring ~3s (two atomics + a compare when idle).
         timed_drain!("wave_ring", self.wave_ring_tick());
         // Preview worker finished → flip the Play/Stop pill back (one atomic read when idle).
