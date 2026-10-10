@@ -2286,6 +2286,7 @@ impl FluorApp for PhotonApp {
                     self.wave_start_btn.as_mut(),
                     self.wave_action_btn.as_mut(),
                     self.wave_decline_btn.as_mut(),
+                    self.beam_btn.as_mut(),
                 ]
                 .into_iter()
                 .flatten()
@@ -4057,6 +4058,7 @@ impl FluorApp for PhotonApp {
             self.wave_start_btn.as_ref(),
             self.wave_action_btn.as_ref(),
             self.wave_decline_btn.as_ref(),
+            self.beam_btn.as_ref(),
         ]
         .into_iter()
         .flatten()

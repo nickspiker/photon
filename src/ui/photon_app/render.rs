@@ -7351,6 +7351,12 @@ impl PhotonApp {
                         if let Some(b) = self.wave_back_btn.as_ref() {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                         }
+                        // The Beam toggle (field 2026-10-10: "Tapping on beam doesn't do anything" — it painted but was never re-stamped after the modal wipe, so a tap hit nothing). Live wave only, and only where it can act.
+                        if wave_overlay.as_ref().map(|t| t.0) == Some(crate::wave::WavePhase::Active) && crate::wave::beam_session::can_send() {
+                            if let Some(b) = self.beam_btn.as_ref() {
+                                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                            }
+                        }
                     }
                     // Reject was painted but never re-stamped after the modal wipe — a tap on it hit nothing.
                     Some(crate::wave::WavePhase::Ringing) => {
@@ -7367,6 +7373,12 @@ impl PhotonApp {
         {
             if let Some(b) = self.wave_start_btn.as_ref() {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+            }
+            // The Beam slat above Wave, the same re-assert (it was painted live but owned no pixels — the 2026-10-10 dead tap).
+            if crate::wave::beam_session::can_send() {
+                if let Some(b) = self.beam_btn.as_ref() {
+                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                }
             }
         }
 

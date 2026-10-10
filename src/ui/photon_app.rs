@@ -3484,6 +3484,12 @@ impl PhotonApp {
                     if let Some(b) = self.wave_back_btn.as_mut() {
                         f(b);
                     }
+                    // The Beam toggle (docs/beams.md) — in the walk so a press + release becomes a click (field 2026-10-10: it was painted and stamped nowhere).
+                    if crate::wave::beam_session::can_send() {
+                        if let Some(b) = self.beam_btn.as_mut() {
+                            f(b);
+                        }
+                    }
                 }
                 _ => {}
             }
@@ -3498,7 +3504,7 @@ impl PhotonApp {
                 if let Some(b) = self.wave_start_btn.as_mut() {
                     f(b);
                 }
-                // The Beam stub joins the walk for hover/disabled tint only — it's permanently disabled, so it never dispatches.
+                // The Beam slat (docs/beams.md): live when this device can send a beam; a tap starts the wave with the beam armed.
                 if let Some(b) = self.beam_btn.as_mut() {
                     f(b);
                 }
