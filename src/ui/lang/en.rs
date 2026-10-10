@@ -793,6 +793,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BridgeOutputExit { output, code } => format!("{output}\n[exit {}]", fmt_i(code as i64)).into(),
         Msg::BridgeShellDied(e) => format!("(shell died: {e} — fresh session on the next command)").into(),
         Msg::PigeonLandFailed(d) => format!("(the dropped file could not land in {d})").into(),
+        Msg::MicSilent => "\u{26A0} your microphone is silent \u{2014} the other side hears nothing".into(),
+        Msg::MicDenied => "\u{26A0} Photon can't hear you: the microphone is off for Photon \u{2014} System Settings \u{203A} Privacy & Security \u{203A} Microphone, switch Photon on".into(),
         Msg::PigeonStalled(n) => format!("({n} stopped arriving — the part that landed is kept; drop it again to finish)").into(),
         Msg::EarlierOutputDropped(output) => format!("\u{2026}(earlier output dropped)\n{output}").into(),
         Msg::DeviceNotSibling => "That device isn't bound in as a sibling yet.".into(),

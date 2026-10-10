@@ -41,6 +41,11 @@ pub type MediaIn = (Vec<u8>, SocketAddr, std::time::Instant);
 /// True exactly while a wave engine is up (sink installed → cleared) — the "be quiet, media is flowing" signal for background chatter (discovery beacons, history walks) that shares the socket/recv path with the 50pps media stream. Engine lifecycle, not audio-session: recording playback never sets it.
 pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// THE MIC IS SILENT (field 2026-10-10, Jon's MacBook: 5627 captured frames, every one zero, and nothing on either end said so): set by the engine once the first [`engine::MIC_SILENT_FRAMES`] unmuted captured frames all measured zero, cleared on the first non-zero frame; the wave screen reads it. A silent capture with no error is the one failure a user cannot diagnose, so the screen names which end is broken.
+pub static MIC_SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// macOS: the Microphone grant is DENIED for Photon (platform/mic_permission.rs sets it at wave start); the wave screen says so and where the switch is.
+pub static MIC_DENIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Sink generation: each install bumps it; an engine clears only the generation it installed (a drained engine exiting seconds after hangup must not tear down the next wave's sink).
 static MEDIA_SINK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 

@@ -941,6 +941,10 @@ pub enum Msg<'a> {
     /// A bridge pigeon (dropped file) could not land in the host's shell directory — the host's transcript reply.
     PigeonLandFailed(&'a str),
     PigeonStalled(&'a str),
+    /// The wave's status line: the capture is delivering zeros (wave/mod.rs MIC_SILENT).
+    MicSilent,
+    /// macOS: the Microphone grant is off for Photon — and where the switch is.
+    MicDenied,
     EarlierOutputDropped(&'a str),
     DeviceNotSibling,
     ShellExited,

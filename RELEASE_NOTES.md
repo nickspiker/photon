@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **On a Mac, Photon now asks for the microphone.** The first wave raises the system's "Photon would like to access the microphone" prompt. If the microphone is switched off for Photon, the wave screen says so and System Settings opens on the Microphone page, where one switch fixes it. Before this, a Mac with no grant captured silence and nobody was told.
+- **A silent microphone is named.** If your microphone delivers nothing for three seconds during a wave, the wave screen says "your microphone is silent", so you know which end is broken.
+- **Fixed: a slow log submission could knock your clock minutes into the future,** which put your messages out of order and made the other side ignore your wave answers. The server's refusal of a stale upload is no longer mistaken for a wrong clock, and log uploads are given the time they take.
 - **Beams begin: video in a wave, computer to computer.** On a Linux computer with a camera, the Beam button on a live wave sends your picture to the other side, and a picture coming in shows in the wave's square. The video is encoded once, carried on the wave's own encrypted path, and never passes through a server. Phones receive nothing yet and cannot send; Windows and Mac computers can receive once their builds carry the codec.
 - **Fixed: your phone stayed quiet when the mouse merely crossed Photon on your computer.** Moving the mouse over a focused window counted as using it, so the computer took the notification and the phone never buzzed. Now only an actual click, tap, key press or typed text counts as using a device; hovering and scrolling do not.
 

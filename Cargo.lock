@@ -5155,6 +5155,7 @@ dependencies = [
  "bincode",
  "bitvec",
  "blake3",
+ "block2 0.6.2",
  "bluer",
  "btleplug",
  "cc",

@@ -19,6 +19,8 @@ const FRAME_SAMPLES: usize = crate::platform::audio::FRAME_SAMPLES;
 const TIER_FRAMES: [usize; 5] = [8, 4, 2, 2, 1];
 // Repair symbols per window — with the symbol spanning the WHOLE window (see `oti`), 1 repair = 2 packets per window and the window survives EITHER packet lost. This beats the old 3-source+2-repair spread on both axes: fewer bytes (2 packets not 5) AND better loss odds (window dies only when BOTH packets drop, p² vs the old ≥3-of-5 tail).
 const REPAIR_PACKETS: u32 = 1;
+/// Unmuted captured frames that must all measure zero before the mic is called silent: 3 s at the 5 ms cadence.
+pub const MIC_SILENT_FRAMES: u32 = 600;
 
 // CHANNEL-AWARE CBR LADDER (Nick's ruling 2026-08-19, flag day #2): four rungs 16k → 128k, every wave starts at rung 0 and climbs on evidence — TCP-slow-start for voice.
 // The rate is CHANNEL-driven, never content-driven: within a rung everything is constant-size CBR (the VBR phoneme side channel stays closed), and a rung switch only tells an observer what the network already shows them.
@@ -486,6 +488,9 @@ fn run(
     let (mut fills_asked, mut fills_got_live, mut fills_got_drain, mut fills_nacked, mut fills_served, mut fills_served_drain) = (0u64, 0u64, 0u64, 0u64, 0u64, 0u64);
     // Audio ENERGY readout — mean |sample| of what we CAPTURED (tx) and what we DECODED for playback (rx). A silent direction shows as ~0 here: near-zero tx = our mic content is dead (route/gain/AEC over-duck, NOT a permission miss — that path never reaches capture); non-zero rx that the user still didn't hear = a playback/route problem downstream. Separates "one side heard" into capture-silent vs playback-silent without guessing (field 2026-08-19).
     let (mut tx_energy, mut tx_frames, mut rx_energy, mut rx_frames) = (0u64, 0u64, 0u64, 0u64);
+    // The silent-mic edge (mod.rs MIC_SILENT): consecutive unmuted captured frames that measured zero.
+    let mut silent_run: u32 = 0;
+    super::MIC_SILENT.store(false, Ordering::Relaxed);
     // Capture cadence forensics (2026-09-09: both phones, both waves, 191-194 of 200 frames a second, priority made no difference): the HAL-stamped span of captured frames against the count splits "the input delivers short" from "frames go missing on the way".
     let (mut cap_first_osc, mut cap_last_osc): (Option<i64>, i64) = (None, 0);
     // The wave screen's field reads what this engine sends and hears, frame by frame (wave::live).
@@ -664,6 +669,22 @@ fn run(
             crate::wave::live::push_tx(k0, &frame);
             tx_energy += frame_sum;
             tx_frames += 1;
+            // SILENT MIC (field 2026-10-10): three seconds of unmuted zeros is a capture that is not capturing — a denied grant on a Mac hands silence with no error. An edge both ways, never a timer: the count is of frames.
+            if muted.load(Ordering::Relaxed) {
+                silent_run = 0;
+            } else if frame_sum == 0 {
+                silent_run = silent_run.saturating_add(1);
+                if silent_run == MIC_SILENT_FRAMES {
+                    super::MIC_SILENT.store(true, Ordering::Relaxed);
+                    crate::logf!("WAVE: the microphone is SILENT — {} unmuted frames in a row measured zero (a denied grant hands silence with no error); the wave screen says so", MIC_SILENT_FRAMES);
+                }
+            } else {
+                if silent_run >= MIC_SILENT_FRAMES {
+                    super::MIC_SILENT.store(false, Ordering::Relaxed);
+                    crate::log("WAVE: the microphone is live again");
+                }
+                silent_run = 0;
+            }
             crate::platform::audio::note_near_level(crate::platform::audio::mean_abs(&frame) as u32);
             let (enc, n) = if tier == RAW_TIER {
                 // Plaid: the frame IS the payload — little-endian i16, no codec in the path.

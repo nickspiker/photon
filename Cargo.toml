@@ -176,6 +176,8 @@ openh264 = { version = "0.9.8", default-features = false, features = ["source"] 
 wgpu = { version = "28", default-features = false, features = ["metal", "wgsl"] }
 # Tray orb (NSStatusItem) — objc2 bindings matching fluor's versions so the two crates share one objc2 graph.
 objc2 = "0.6"
+# The microphone grant (platform/mic_permission.rs): AVCaptureDevice's request-access takes a completion block.
+block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSThread", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSMenu", "NSMenuItem", "NSImage", "NSButton", "NSControl", "NSCell", "NSResponder", "NSView", "NSApplication", "NSRunningApplication"] }
 

@@ -139,6 +139,20 @@ pub fn adopt_from_server(server_now_osc: i64, rtt_osc: i64) {
     let boot = boot_osc();
     let before = now_osc();
     let true_now = server_now_osc + rtt / 2;
+    // THE REFUSAL IS NOT ALWAYS A CLOCK (field 2026-10-10, Nick's phone: a 6.5 MB log submit crawled up a saturated uplink for minutes, the server's 60 s window read the stale stamp as "107 s behind", and this reset moved photon time 107 s into the future over a nunc consensus of ±13 ms from 38 sources — every message the phone stamped after that sorted after its replies, and every express answer it sent was dropped as stale on the far side, three silent waves). The tell is not how tight the standing lock claims to be (a tight anchor can be WRONG — Theresa's phone, the test below) but whether the DISAGREEMENT fits inside the request's own span: a verdict that differs from us by less than the round trip it rode measured the request, not the clock. Such a verdict is fed as one loose exchange the fit weighs against the tight ones, and nothing moves; a disagreement the round trip cannot explain still re-anchors, however tight the old lock claimed to be.
+    let st = now_stamp();
+    let disagreement = (true_now - before).abs();
+    if st.source != crate::network::true_clock::LockSource::Free && disagreement <= delay {
+        feed(&[crate::network::true_clock::Exchange { boot, offset: true_now - boot, delay }], false);
+        crate::logf!(
+            "Clock: FGTW refused our stamp as {} ms {}, but the request's round trip was {} ms — a slow request, not a wrong clock (lock ±{} ms); fed as one loose exchange, no reset",
+            disagreement * 1000 / crate::OSC_PER_SEC,
+            if true_now > before { "behind" } else { "ahead" },
+            rtt * 1000 / crate::OSC_PER_SEC,
+            st.uncertainty_ns / 1_000_000
+        );
+        return;
+    }
     {
         let mut c = CLOCK.lock().unwrap();
         c.reset_to(crate::network::true_clock::Exchange { boot, offset: true_now - boot, delay }, crate::network::true_clock::LockSource::Ntp);
@@ -277,6 +291,19 @@ mod tests {
         // The refusal detail parses; anything else does not.
         assert_eq!(server_now_from_detail("Timestamp outside valid window: client is 1821s behind the server (server_now=123456789)"), Some(123456789));
         assert_eq!(server_now_from_detail("bad_signature: nope"), None);
+    }
+
+    /// Nick's phone, 2026-10-10: a refusal that rode a 216 s request and disagreed by 107 s is the request's own latency — a ±13 ms nunc lock stands and nothing moves.
+    #[test]
+    fn a_refusal_within_its_own_round_trip_never_moves_a_standing_lock() {
+        let _g = hold_clean();
+        adopt(0, crate::OSC_PER_SEC * 13 / 1000, vsf::eagle_time_oscillations());
+        let before = now_osc();
+        // The server's "now" sits 107 s AHEAD of us, and the request took 216 s: the stale stamp explains it all.
+        adopt_from_server(vsf::eagle_time_oscillations() + crate::OSC_PER_SEC * 107, crate::OSC_PER_SEC * 216);
+        let moved = (now_osc() - before).abs();
+        assert!(moved < crate::OSC_PER_SEC, "the lock must not move; moved {} ms", moved * 1000 / crate::OSC_PER_SEC);
+        assert!(offset_now().is_some_and(|(_, c)| c < crate::OSC_PER_SEC / 10), "the tight consensus still holds the lock");
     }
 
     /// The lock-free reader the audio callbacks use agrees with the locked clock, before and after a fit.

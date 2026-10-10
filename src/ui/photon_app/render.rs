@@ -881,7 +881,12 @@ impl PhotonApp {
                         }
                     }
                     crate::wave::WavePhase::Active => {
-                        if wave_reconnecting {
+                        // THE MIC, named (field 2026-10-10): a denied grant or a capture of zeros is said on the status line, so the one end that is broken knows it is this one.
+                        if crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed) {
+                            tr(Msg::MicDenied).into_owned()
+                        } else if crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed) {
+                            format!("{} \u{00B7} {}", wave_dur_str, tr(Msg::MicSilent))
+                        } else if wave_reconnecting {
                             tr(Msg::WaveReconnecting).into_owned()
                         } else if direct {
                             // Glyph + duration only (no words) — nothing to translate, stays a raw format.

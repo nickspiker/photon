@@ -315,7 +315,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "selalu terjangkau (ini kamu sendiri)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} pesan \u{00b7} {} terkirim \u{00b7} {} diterima", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "baris ini seharusnya sama di setiap perangkatmu".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "perangkat armada keluar atas permintaannya sendiri \u{2014} lihat Pengaturan \u{2192} Armada".into(),
         Msg::BootPill { armed } => if armed { "Ketuk lagi \u{2014} usir dia" } else { "Usir" }.into(),
         Msg::BindIntoMolecule => "Ikat ke molekul".into(),
