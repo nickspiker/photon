@@ -184,6 +184,8 @@ objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusBarButton
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
+# BEAMS (docs/beams.md stage 5): the desktop camera on Linux — V4L2, YUYV frames converted to I420 in integer (platform/camera_v4l2.rs); the same crate opsin's live path uses.
+v4l = "0.14"
 x11 = { version = "2.21.0", features = ["xlib"] }
 # Pairing v2 beacon scanner (BlueZ over D-Bus) — docs/pairing-v2.md. Rides the existing tokio runtime.
 bluer = { version = "0.17", features = ["bluetoothd"] }

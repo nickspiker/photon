@@ -217,6 +217,43 @@ fn under_premult(top: u32, bot: u32) -> u32 {
     (ch(24) << 24) | (ch(16) << 16) | (ch(8) << 8) | ch(0)
 }
 
+/// Paint a beam picture (γ2 Rec.2020 RGB triples) letterboxed in the square, under whatever is already on the canvas — the same under-compositing the field uses, so avatars and buttons drawn before it stay in front. Nearest-neighbour scaling, integer: the picture is already the display's transfer, so the only work per pixel is the pack.
+pub(super) fn paint_picture(canvas: &mut Canvas, g: &FieldGeom, pic: &crate::wave::beam_session::Picture) {
+    if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || g.side == 0 {
+        return;
+    }
+    let (cw, ch) = (canvas.width, canvas.height);
+    let side = g.side;
+    let x0 = cw.saturating_sub(side) / 2;
+    // Fit: the larger picture axis spans the side.
+    let (dw, dh) = if pic.w * side >= pic.h * side {
+        (side, (pic.h * side / pic.w).max(1))
+    } else {
+        ((pic.w * side / pic.h).max(1), side)
+    };
+    let (dx0, dy0) = (x0 + (side - dw) / 2, g.y0 + (side - dh) / 2);
+    let y_end = (dy0 + dh).min(ch);
+    let x_end = (dx0 + dw).min(cw);
+    for y in dy0..y_end {
+        let sy = (y - dy0) * pic.h / dh;
+        let srow = sy * pic.w;
+        let line = &mut canvas.pixels[y * cw..(y + 1) * cw];
+        for x in dx0..x_end {
+            let d = line[x];
+            if d >= 0xFF00_0000 {
+                continue;
+            }
+            let sx = (x - dx0) * pic.w / dw;
+            let o = (srow + sx) * 3;
+            let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
+            // Opaque: α = 255, the channels stored as darkness (fluor's layer convention, see `field_pixel`).
+            let src = 0xFF00_0000 | (fluor::theme::fmt(rgb ^ 0x00FF_FFFF) & 0x00FF_FFFF);
+            line[x] = if d == 0 { src } else { under_premult(d, src) };
+        }
+    }
+    canvas.damage.add_bounds(dx0, dy0, x_end, y_end);
+}
+
 /// Field paint timing, logged every PAINT_LOG_EVERY paints (a count of paints, not a clock): what the field costs on this device.
 static PAINT_NS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static PAINTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

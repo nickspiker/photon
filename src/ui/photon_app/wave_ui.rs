@@ -85,6 +85,10 @@ impl PhotonApp {
     pub(super) fn dispatch_wave_button_clicks(&mut self, ctx: &mut Context) -> bool {
         let phase = self.active_wave.as_ref().map(|c| c.phase);
         let mut any = false;
+        if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && phase == Some(WavePhase::Active) {
+            self.toggle_beam();
+            any = true;
+        }
         if self
             .wave_action_btn
             .as_mut()
@@ -327,6 +331,8 @@ impl PhotonApp {
             express_key: None,
             express_beats: 0,
             reconnect_probe: 0,
+            beam_rx: None,
+            beam_tx: None,
         });
         if !self.send_wave_signal(ci, sig, now) {
             crate::log("WAVE: offer send failed (no lane) — not dialing");
@@ -398,6 +404,10 @@ impl PhotonApp {
             wave.phase = WavePhase::Active;
             wave.phase_osc = vsf::eagle_time_oscillations();
             wave.engine = engine;
+
+            // The beam receiver rides with the engine (docs/beams.md): nothing until a beam datagram arrives, then the peer's picture with no signalling.
+
+            wave.beam_rx = wave.secret.map(|s| crate::wave::beam_session::start_receiver(&s, wave.we_are_origin));
             wave.spool = spool;
             wave.ring = None; // Ringing → Active keeps the ActiveWave, so the guard needs an explicit stop here
         }
@@ -842,6 +852,8 @@ impl PhotonApp {
                             express_key: None,
             express_beats: 0,
             reconnect_probe: 0,
+                                beam_rx: None,
+                                beam_tx: None,
                             });
                             // Both users already pressed Wave — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the wave stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_wave();
@@ -908,6 +920,8 @@ impl PhotonApp {
                             express_key: None,
             express_beats: 0,
             reconnect_probe: 0,
+                            beam_rx: None,
+                            beam_tx: None,
                         });
                         self.ring_alert(ci);
                         // The keyboard has no business over a ring (Nick 2026-09-14): drop focus, which also posts the one-shot IME hide the Android shell polls.
@@ -997,6 +1011,10 @@ impl PhotonApp {
                         if let Some(wave) = self.active_wave.as_mut() {
                             wave.secret = secret;
                             wave.engine = engine;
+
+                            // The beam receiver rides with the engine (docs/beams.md): nothing until a beam datagram arrives, then the peer's picture with no signalling.
+
+                            wave.beam_rx = wave.secret.map(|s| crate::wave::beam_session::start_receiver(&s, wave.we_are_origin));
                             wave.spool = spool;
                         }
                         #[cfg(target_os = "android")]
@@ -1428,6 +1446,10 @@ impl PhotonApp {
             crate::platform::audio::play_end_sweep();
         }
         // The engine thread outlives `stop()` by the fill drain (engine.rs: the peer hands back the windows we lost); the keep joins it before reading the spool.
+        if let Some(w) = self.active_wave.as_mut() {
+            w.beam_tx = None;
+            w.beam_rx = None;
+        }
         let engine_thread = self.active_wave.as_ref().and_then(|wave| {
             let e = wave.engine.as_ref()?;
             e.stop(); // the engine thread zeroizes its chains, clears the sink, and releases audio
@@ -1700,6 +1722,35 @@ impl PhotonApp {
     }
 
     /// Spin up the media engine for an Active wave. None (the wave stays signaling-only + silent) when the basket never completed or the contact has no direct address — media-over-the-relay-pipe is explicitly deferred (docs/waves.md), and the transport dot already tells the human they're on relay.
+    /// The Beam button on an active wave: start sending this device's camera, or stop. Receiving is always up (it started with the engine), so the peer's picture needs no action here.
+    pub(super) fn toggle_beam(&mut self) {
+        let Some(wave) = self.active_wave.as_mut() else { return };
+        if wave.beam_tx.is_some() {
+            wave.beam_tx = None;
+            crate::log("BEAM: stopped sending");
+            return;
+        }
+        let Some(secret) = wave.secret else {
+            crate::log("BEAM: no wave secret — cannot beam");
+            return;
+        };
+        let source = match crate::wave::beam_session::open_desktop_camera() {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logf!("BEAM: {}", e);
+                return;
+            }
+        };
+        let (w, h) = source.dimensions();
+        match crate::wave::beam_session::start_sender(&secret, wave.we_are_origin, source, crate::wave::beam_session::bitrate_for(w, h)) {
+            Ok(tx) => {
+                crate::logf!("BEAM: sending {}×{}", w, h);
+                wave.beam_tx = Some(tx);
+            }
+            Err(e) => crate::logf!("BEAM: {}", e),
+        }
+    }
+
     fn spawn_wave_engine(
         &self,
         ci: usize,

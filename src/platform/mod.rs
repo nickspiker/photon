@@ -30,6 +30,9 @@ pub mod audio_aaudio;
 /// macOS: Apple's Voice Processing I/O unit in front of the mic (echo cancellation with its gain control off), chosen per route by `audio::voice_dsp_wanted`.
 #[cfg(target_os = "macos")]
 pub mod audio_vpio;
+/// Linux: the desktop camera for beams (V4L2, YUYV → I420) — docs/beams.md stage 5.
+#[cfg(target_os = "linux")]
+pub mod camera_v4l2;
 
 /// "Is a human plausibly looking at this app RIGHT NOW" — the platform-appropriate attended check, one name for both worlds (desktop: window visible+focused; Android: Activity foregrounded).
 pub fn attended_here() -> bool {

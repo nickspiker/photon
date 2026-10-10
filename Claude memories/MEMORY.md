@@ -41,6 +41,7 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
+- [Beams](project_beams.md) — 2026-10-10 DECIDED + Linux desktop slice BUILT: H.264 (hardware phones / OpenH264 desktops), intra refresh, ISP stood aside, gains as pre-emphasis, VSF labels, integer chain + blue noise; phone capture next
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave holes = L rule; Emma 2x = future-named backlog → re-anchor + render-trace + recv-loop guard BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: opsin pixels pack thru fluor::theme::fmt (R↔B Android); loads/convert off-thread; viewer fetch/decode bar
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE 2026-10-07: attachments are off-chain wrapped VSF blobs; unbuilt flag day

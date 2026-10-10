@@ -47,6 +47,14 @@ pub enum Codec {
     H264 = 1,
 }
 
+impl Codec {
+    pub fn name(self) -> &'static str {
+        match self {
+            Codec::H264 => "H.264",
+        }
+    }
+}
+
 /// The beam's in-band self-description. `colour` is the VSF characterization entry's bytes (docs/beams.md §1: the camera→VSF-RGB matrix, `IdtClass`, `ProfileTier`, `Transfer`, provenance), opaque to the transport.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Info {
@@ -349,6 +357,8 @@ impl BeamRx {
 static BEAM_SINK: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 /// Completed encoded frames for the decoder stage, newest last. Bounded: a stalled decoder drops the OLDEST (a late frame is worthless; the newest is the picture).
 static BEAM_FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
+/// Signalled on every completed frame, so the decoder stage blocks instead of polling.
+static BEAM_FRAMES_CV: std::sync::Condvar = std::sync::Condvar::new();
 const FRAMES_CAP: usize = 4;
 /// The latest self-description the receiver heard (for the decoder stage's reconfigure edge and the UI's "what is this beam" line).
 static BEAM_INFO: Mutex<Option<Info>> = Mutex::new(None);
@@ -369,6 +379,13 @@ pub fn deliver(bytes: &[u8]) {
 /// Decoder-stage side: every frame completed since the last take, oldest first.
 pub fn take_frames() -> Vec<Frame> {
     std::mem::take(&mut *BEAM_FRAMES.lock().unwrap())
+}
+
+/// The blocking form: waits up to `timeout` for a frame to complete (the frame is the edge; the timeout only lets a stop flag be seen), then takes everything queued.
+pub fn take_frames_wait(timeout: std::time::Duration) -> Vec<Frame> {
+    let guard = BEAM_FRAMES.lock().unwrap();
+    let (mut guard, _) = BEAM_FRAMES_CV.wait_timeout_while(guard, timeout, |q| q.is_empty()).unwrap();
+    std::mem::take(&mut *guard)
 }
 
 pub fn current_info() -> Option<Info> {
@@ -413,6 +430,7 @@ pub fn start_rx(wave_secret: &[u8; 32], dir: Direction) -> RxHandle {
                                 q.remove(0);
                             }
                             q.push(frame);
+                            BEAM_FRAMES_CV.notify_one();
                         }
                         if let Some(info) = brx.take_info_change() {
                             *BEAM_INFO.lock().unwrap() = Some(info);

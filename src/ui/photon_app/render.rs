@@ -1009,11 +1009,24 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
+                        // The BEAM toggle (docs/beams.md), in the right slot the route button holds on Android: live when this device has a codec and a camera path.
                         #[cfg(not(target_os = "android"))]
-                        let _ = rx;
+                        if let Some(b) = self.beam_btn.as_mut() {
+                            b.set_rect(rx, ry, bw, bh);
+                            b.set_font_size(bfont * 0.8);
+                            let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some());
+                            b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
+                            b.set_enabled(crate::wave::beam_session::can_send());
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
                     }
                 }
                 // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — the per-screen bodies are skipped while it shows, so what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
+                // The peer's BEAM, if one is flowing: under the avatars and buttons, over the field — the newest decoded picture, letterboxed in the square.
+                if let (Some(g), Some(pic)) = (field_geom, crate::wave::beam_session::picture()) {
+                    super::wave_field::paint_picture(&mut canvas, &g, &pic);
+                }
                 if let (Some(g), Some(m)) = (field_geom, self.wave_field_map.as_ref()) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }

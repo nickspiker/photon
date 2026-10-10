@@ -25,6 +25,7 @@ pub mod keys;
 pub mod packet;
 pub mod beam;
 pub mod beam_colour;
+pub mod beam_session;
 pub mod h264;
 pub mod signal;
 
@@ -166,6 +167,10 @@ pub struct ActiveWave {
     pub secret: Option<[u8; 32]>,
     /// The running media engine (Active phase). Teardown = explicit `stop()` — the thread zeroizes its chains and releases audio on exit.
     pub engine: Option<engine::EngineHandle>,
+    /// The beam's receiving half — up with the engine, so a peer's beam shows with no signalling (docs/beams.md).
+    pub beam_rx: Option<beam_session::Receiver>,
+    /// The beam's sending half — up while this device beams.
+    pub beam_tx: Option<beam_session::Sender>,
     /// The recording's keep/delete material (Active → Ended). Dropping it undecided IS the shred — the key lives nowhere else.
     pub spool: Option<spool::SpoolTicket>,
     /// Desktop ring-loop stopper (Ringing phase only; `None` on Android — Kotlin owns playback there). Dropped or cleared = ring stops at the next cadence boundary.
