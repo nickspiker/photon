@@ -2,7 +2,7 @@
 
 use super::*;
 
-/// The recency window behind the walk-away-gap fix (2026-08-18, Nick-approved): silent alert-duty discharge requires human input on this device within this span, checked ONLY at the message-arrival edge (an Instant comparison — never a scheduled timer). The cost side, accepted: passively watching a conversation past this span without touching anything means an arriving message dings the fleet (the watcher's own banner stays suppressed by the attended+attention gate).
+/// The recency window behind the walk-away-gap fix (2026-08-18, Nick-approved): silent alert-duty discharge requires a POKE on this device (a press, a key press or a text commit — `last_poke`; never a hover, a scroll or a focus gain, Nick 2026-10-10) within this span, checked ONLY at the message-arrival edge (an Instant comparison — never a scheduled timer). The cost side, accepted: passively watching a conversation past this span without touching anything means an arriving message dings the fleet (the watcher's own banner stays suppressed by the attended+attention gate).
 const ATTENTION_RECENCY: std::time::Duration = std::time::Duration::from_secs(120);
 
 impl PhotonApp {
@@ -1815,8 +1815,9 @@ impl PhotonApp {
                 // A MUTED group (docs/molecules.md D12, this device only) never dings and never bumps the unread ring.
                 let molecule_muted = persist_molecule_conv.map_or(false, |id| self.molecule_muted(&crate::types::molecule::MoleculeId(*id.as_bytes())));
                 // RECENCY GUARD (2026-08-18, Nick-approved): silent discharge additionally requires the human to have TOUCHED this device recently. The walk-away gap — leaving a screen parked on a conversation — produces no input edge anywhere in the fleet, so a parked-but-attended window would otherwise silently swallow every arriving message (monotone notified=true rides the sibling push; unrecoverable). NOT a scheduled timer: an Instant comparison evaluated only at this message-arrival edge — the arriving message is the clock.
+                // The clock is `last_poke`, not `last_interaction` (Nick 2026-10-10): the mouse crossing a still-focused window renewed the old clock, so the desktop counted itself as looking for two minutes after every hover and the phone stayed silent. Only a press, a key press or a text commit counts.
                 let fresh = self
-                    .last_interaction
+                    .last_poke
                     .map_or(false, |t| t.elapsed() <= ATTENTION_RECENCY);
                 // "Looking" = this conversation is the active view, the platform says a human plausibly sees it (desktop: window visible+focused; Android: Activity foregrounded — either alone is not looking), we hold FLEET ATTENTION, and the touch is recent. Attention: the human's newest input is the only trustworthy evidence of which device they're at — a focused-but-abandoned screen must not discharge alert duty while they're demonstrably elsewhere.
                 let looking = conversation_open

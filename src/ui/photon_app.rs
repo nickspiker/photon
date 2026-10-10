@@ -1400,6 +1400,8 @@ pub struct PhotonApp {
     presence_probe: Option<(ContactId, Instant)>,
     /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
     last_interaction: Option<Instant>,
+    /// Last time the user actually POKED this device — a press, a key press or a text commit; never a hover, a scroll or a focus gain (Nick 2026-10-10: "has to be an actual tap or click; scrolling doesn't count, hovering doesn't count"). This is the clock the notification recency guard reads: `last_interaction` kept being renewed by the mouse crossing a still-focused window, so the desktop counted itself as looking and the phone stayed silent.
+    last_poke: Option<Instant>,
     /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
     last_fleet_refold: Option<Instant>,
     /// Last time we pulsed a background resume to re-fetch a stalled contact's address. Address discovery (`contact.ip`) only refreshes on attest echo / roster / search — there is no periodic re-fetch — so a contact whose initial fetch failed (flaky cellular fgtw) is stuck with no address: its CLUTCH offer can't send, name/avatar (which ride the pong) never arrive, and it loops keygen forever. While any contact is blocked this way we pulse a lightweight background resume on a fast cadence; one success learns the address and fire-on-learn punches + the offer sends. `None` until the first pulse. (Stopgap for the peer-gossip fix, TICKETS T0.)
@@ -2489,6 +2491,7 @@ impl PhotonApp {
             presence_surface: None,
             last_lan_beacon: None,
             last_interaction: None,
+            last_poke: None,
             last_fleet_refold: None,
             last_stalled_refetch: None,
             stalled_refetch_streak: 0,

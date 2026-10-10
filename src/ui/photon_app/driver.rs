@@ -2078,16 +2078,15 @@ impl FluorApp for PhotonApp {
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
         // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
         self.last_interaction = Some(Instant::now());
-        // FLEET ATTENTION transition edge (2026-08-18): qualifying human input on a NON-holder takes the ball — one frame, only when the human actually moves between devices (take_fleet_attention early-outs while we hold it, so typing here is free). Presses/wheel/keys/IME only: CursorMoved is bump-and-jitter-prone and Focused has its own edge in on_focus_changed. Android touches arrive as these same variants via fluor's shell.
-        if matches!(
-            event,
-            Event::MouseInput {
-                state: ElementState::Pressed,
-                ..
-            } | Event::MouseWheel { .. }
-                | Event::KeyboardInput { .. }
-                | Event::Ime(Ime::Commit(_))
-        ) {
+        // FLEET ATTENTION transition edge (2026-08-18): qualifying human input on a NON-holder takes the ball — one frame, only when the human actually moves between devices (take_fleet_attention early-outs while we hold it, so typing here is free). A POKE only (Nick 2026-10-10): a press, a key press or a text commit. The wheel is out — X11 delivers a scroll to whatever window sits under the pointer, focused or not, so a scroll over this window was taking the ball with no click; CursorMoved is bump-and-jitter-prone; Focused has its own edge in on_focus_changed. The same set stamps `last_poke`, the clock the notification recency guard reads. Android touches arrive as these same variants via fluor's shell.
+        let poke = match event {
+            Event::MouseInput { state: ElementState::Pressed, .. } => true,
+            Event::KeyboardInput { event: k, .. } => k.state == ElementState::Pressed,
+            Event::Ime(Ime::Commit(_)) => true,
+            _ => false,
+        };
+        if poke {
+            self.last_poke = Some(Instant::now());
             self.take_fleet_attention();
         }
         // Live shift mirror for `on_close_requested` (which has no Context): a shift-held close — the chrome ✕, Alt-F4, anything — means the REAL exit, not the resident hide. Refreshed on every event so the click that lands on the close button has already stamped it.

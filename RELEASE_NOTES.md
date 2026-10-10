@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Fixed: your phone stayed quiet when the mouse merely crossed Photon on your computer.** Moving the mouse over a focused window counted as using it, so the computer took the notification and the phone never buzzed. Now only an actual click, tap, key press or typed text counts as using a device; hovering and scrolling do not.
 
 ## v116
 - **Fixed: files dropped onto the bridge could vanish.** On a fast network the file's pieces could arrive before the host knew a file was coming, and were thrown away. Now every piece introduces itself, so they can arrive in any order. The host asks again for anything missing, picks up where it left off after a restart, and the sending device keeps its copy until the host has every piece. A drop of a large file also no longer freezes the window while it is read.
