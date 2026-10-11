@@ -38,6 +38,10 @@ ln -sf "aarch64-linux-android${ANDROID_API}-clang++" "$NDK_BIN/aarch64-linux-and
 
 # Android ARM64 target (the only Android target).
 export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android${ANDROID_API}-clang"
+# BEAMS (docs/beams.md): OpenH264 is C++. The API-level clang++ explicitly (an unprefixed CXX would compile without the API wrapper); the C++ runtime STATIC — cc defaults Android to c++_shared, which would need libc++_shared.so packaged — and c++abi after it, because libc++_static.a lacks the __cxa_* symbols and a cdylib link would leave them undefined until the phone loads the library.
+export CXX_aarch64_linux_android="$NDK_BIN/aarch64-linux-android${ANDROID_API}-clang++"
+export CXXSTDLIB_aarch64_linux_android="c++_static"
+export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="-C link-arg=-lc++abi"
 export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android${ANDROID_API}-clang"
 
 # Host build flags so the build.rs / proc-macro compiles use the fast local toolchain.

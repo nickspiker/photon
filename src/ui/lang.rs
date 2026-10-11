@@ -943,6 +943,8 @@ pub enum Msg<'a> {
     PigeonStalled(&'a str),
     /// The wave's status line: the capture is delivering zeros (wave/mod.rs MIC_SILENT).
     MicSilent,
+    /// The ring screen's status when the offer carries a beam.
+    IncomingBeam,
     /// macOS: the Microphone grant is off for Photon — and where the switch is.
     MicDenied,
     EarlierOutputDropped(&'a str),

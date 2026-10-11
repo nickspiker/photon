@@ -874,7 +874,9 @@ impl PhotonApp {
                 // Status / timer line beneath the name. Active shows the LIVE wave timer (per-frame recompute from phase_osc); Ended a frozen wave summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
                 let status_line = match phase {
                     crate::wave::WavePhase::Ringing => {
-                        if direct {
+                        if self.active_wave.as_ref().is_some_and(|w| w.beam) {
+                            tr(Msg::IncomingBeam).into_owned()
+                        } else if direct {
                             tr(Msg::IncomingWave).into_owned()
                         } else {
                             tr(Msg::IncomingWaveNoPath).into_owned()
@@ -967,6 +969,20 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
+                        // BEAM BACK (docs/beams.md): above Wave back, when the offer carries a beam and this device can send one — answering with the camera on.
+                        if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                            if let Some(b) = self.beam_back_btn.as_mut() {
+                                b.set_rect(cx, by - bh * 1.3, bw, bh);
+                                b.set_font_size(bfont * 0.9);
+                                b.set_label(tr(Msg::BeamBack));
+                                b.set_enabled(true);
+                                b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
+                                b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
+                                b.set_held_fill(Some(*theme::WAVE_ACCEPT_HOVER));
+                                let id = b.hit_id();
+                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            }
+                        }
                         if let Some(b) = self.wave_decline_btn.as_mut() {
                             b.set_rect(rx, ry, bw, bh);
                             b.set_font_size(bfont);
@@ -1039,6 +1055,13 @@ impl PhotonApp {
                     }
                 }
                 // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — the per-screen bodies are skipped while it shows, so what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
+                // OUR camera, the self-view inset (bottom-right of the square), FIRST: fluor composites front to back, so it lands under the avatars and buttons and over the peer's picture painted next.
+                if let (Some(g), Some(pic)) = (field_geom, crate::wave::beam_session::self_picture()) {
+                    let s = g.side / 4;
+                    let m = g.side / 32;
+                    let x0 = buf_w.saturating_sub(g.side) / 2 + g.side - s - m;
+                    super::wave_field::paint_picture_in(&mut canvas, x0, g.y0 + g.side - s - m, s, &pic);
+                }
                 // The peer's BEAM, if one is flowing: under the avatars and buttons, over the field — the newest decoded picture, letterboxed in the square.
                 if let (Some(g), Some(pic)) = (field_geom, crate::wave::beam_session::picture()) {
                     super::wave_field::paint_picture(&mut canvas, &g, &pic);
@@ -7362,6 +7385,11 @@ impl PhotonApp {
                     Some(crate::wave::WavePhase::Ringing) => {
                         if let Some(b) = self.wave_reject_btn.as_ref() {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                        }
+                        if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                            if let Some(b) = self.beam_back_btn.as_ref() {
+                                b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                            }
                         }
                     }
                     _ => {}

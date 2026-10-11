@@ -322,7 +322,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // Wiadomość ma dwie formy po liczbie (1 wiadomość, od dwóch w górę wiadomości), a "wysłane/odebrane" schodzi do etykiety z dwukropkiem, żeby nie odmieniać imiesłowu przy każdej liczbie.
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} wysłane: {} \u{00b7} odebrane: {}", fmt_mag(total as u64), if total == 1 { "wiadomość" } else { "wiadomości" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "te wiersze powinny się zgadzać na każdym twoim urządzeniu".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "urządzenie floty odchodzi na własną prośbę \u{2014} zobacz Ustawienia \u{2192} Flota".into(),
         Msg::BootPill { armed } => if armed { "Dotknij ponownie \u{2014} wyrzuć" } else { "Wyrzuć" }.into(),
         Msg::BindIntoMolecule => "Zwiąż w cząsteczkę".into(),

@@ -1,6 +1,6 @@
 //! The desktop H.264 codec for beams (docs/beams.md): Cisco OpenH264, C++ built from source by cc, desktop-only — the phones encode and decode in hardware through MediaCodec and never link this.
 //!
-//! Where the toolchain can build its C++ today: x86_64 Linux and macOS. Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link, Redox never (the build script has no redox arm). The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
+//! Where the toolchain can build its C++ today: x86_64 Linux, macOS, and Android (decode; the phone encodes thru MediaCodec). Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link, Redox never (the build script has no redox arm). The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
 //!
 //! What OpenH264 lacks against the design: a rolling intra refresh (it has only whole IDR frames, periodic or on demand) and a per-frame byte cap (only per-NAL slicing). So the DESKTOP sends a keyframe every [`KEYFRAME_EVERY`] frames and on request, which docs/beams.md allows — the desktop is never the constrained end — and the phone side keeps the no-keyframes rule.
 //!
@@ -23,10 +23,41 @@ impl I420 {
     }
 }
 
+/// NV12 → I420, integer. Video-range input (16..235 luma, 16..240 chroma) is expanded to full range in Q12, truncating — the receive chain is 601 full range.
+pub fn nv12_to_i420(y: &[u8], ys: usize, c: &[u8], cs: usize, w: usize, h: usize, video_range: bool, out: &mut I420) {
+    let cw = w / 2;
+    for row in 0..h {
+        let src = &y[row * ys..row * ys + w];
+        let dst = &mut out.y[row * w..row * w + w];
+        if video_range {
+            // (Y − 16) × 255/219 in Q16, the constant rounded UP so video white (235) truncates to exactly 255 (Q12's 4769 landed it on 254).
+            for (d, &s) in dst.iter_mut().zip(src) {
+                *d = (((s as i32 - 16).max(0) * 76310) >> 16).min(255) as u8;
+            }
+        } else {
+            dst.copy_from_slice(src);
+        }
+    }
+    for row in 0..h / 2 {
+        let src = &c[row * cs..row * cs + w];
+        for x in 0..cw {
+            let (cb, cr) = (src[x * 2] as i32, src[x * 2 + 1] as i32);
+            let (cb, cr) = if video_range {
+                // (C − 128) × 255/224 + 128 in Q16, the constant rounded up as for luma.
+                (((cb - 128) * 74606 >> 16) + 128, ((cr - 128) * 74606 >> 16) + 128)
+            } else {
+                (cb, cr)
+            };
+            out.u[row * cw + x] = cb.clamp(0, 255) as u8;
+            out.v[row * cw + x] = cr.clamp(0, 255) as u8;
+        }
+    }
+}
+
 /// Keyframe cadence on the desktop encoder, in frames: the one place a burst is tolerated (docs/beams.md stage 1). At 30 fps this is once every 20 s.
 pub const KEYFRAME_EVERY: u32 = 600;
 
-#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos"))]
+#[cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android"))]
 mod real {
     use super::I420;
     use openh264::decoder::{Decoder as Dec, DecoderConfig, Flush};
@@ -122,7 +153,7 @@ mod real {
     }
 }
 
-#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
+#[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android")))]
 mod real {
     use super::I420;
 
@@ -155,7 +186,27 @@ mod real {
 
 pub use real::{Decoder, Encoder, AVAILABLE};
 
-#[cfg(all(test, any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
+#[cfg(test)]
+mod conv_tests {
+    use super::*;
+
+    #[test]
+    fn nv12_deinterleaves_and_expands_video_range() {
+        let (w, h) = (4, 2);
+        let y = [16u8, 235, 16, 235, 128, 128, 128, 128];
+        let c = [128u8, 128, 16, 240];
+        let mut f = I420::new(w, h);
+        nv12_to_i420(&y, 4, &c, 4, w, h, false, &mut f);
+        assert_eq!(f.y, y.to_vec());
+        assert_eq!(f.u, vec![128, 16]);
+        assert_eq!(f.v, vec![128, 240]);
+        nv12_to_i420(&y, 4, &c, 4, w, h, true, &mut f);
+        assert_eq!(&f.y[..2], &[0, 255]);
+        assert_eq!(f.u[0], 128);
+    }
+}
+
+#[cfg(all(test, any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos", target_os = "android")))]
 mod tests {
     use super::*;
 

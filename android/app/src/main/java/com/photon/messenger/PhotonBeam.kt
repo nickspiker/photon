@@ -42,6 +42,8 @@ class PhotonBeam(
     private val onFrame: (ByteArray, IntArray) -> Unit,
     /** The pipeline is up: width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, and whether the straight-thru request took in full. */
     private val onStarted: (Int, Int, Int, FloatArray?, Boolean) -> Unit,
+    /** The self-view: a 4× subsampled I420 frame (y‖u‖v), every other camera frame. */
+    private val onSelf: (ByteArray, Int, Int) -> Unit,
 ) {
     companion object {
         private const val TAG = "PhotonBeam"
@@ -234,7 +236,29 @@ class PhotonBeam(
     }
 
     /** One camera frame into the encoder, if an input buffer is free; else dropped (never block the camera). Planes copied honouring row and pixel strides. */
+    private var selfTick = 0L
+
+    /** The self-view inset: every other frame, the camera subsampled 4× in each direction (160×120 at 640×480), straight from the camera planes. */
+    private fun sendSelf(img: Image) {
+        selfTick++
+        if (selfTick % 2L != 0L) return
+        val sw = (w / 4) and 1.inv()
+        val sh = (h / 4) and 1.inv()
+        if (sw < 2 || sh < 2) return
+        val cw = sw / 2
+        val ch = sh / 2
+        val out = ByteArray(sw * sh + 2 * cw * ch)
+        val yp = img.planes[0]; val up = img.planes[1]; val vp = img.planes[2]
+        val yb = yp.buffer; val ub = up.buffer; val vb = vp.buffer
+        for (y in 0 until sh) for (x in 0 until sw) out[y * sw + x] = yb.get((y * 4) * yp.rowStride + (x * 4) * yp.pixelStride)
+        var o = sw * sh
+        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = ub.get((y * 4) * up.rowStride + (x * 4) * up.pixelStride) }
+        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = vb.get((y * 4) * vp.rowStride + (x * 4) * vp.pixelStride) }
+        onSelf(out, sw, sh)
+    }
+
     private fun feed(img: Image) {
+        try { sendSelf(img) } catch (_: Throwable) {}
         val mc = codec ?: return
         val idx = freeInputs.poll() ?: run { dropped++; return }
         val dst = try { mc.getInputImage(idx) } catch (e: Throwable) { null }

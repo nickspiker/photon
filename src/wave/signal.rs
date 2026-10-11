@@ -39,8 +39,19 @@ pub fn seal_express(
     lane_key: Option<&[u8; 32]>,
     sig: &WaveSignal,
 ) -> Option<Vec<u8>> {
+    seal_express_beam(key, ts, lane_key, sig, false)
+}
+
+/// The same, with the BEAM flag (docs/beams.md, 2026-10-10): an offer that carries a beam says so, so the ringing side shows "incoming beam" and offers Beam back. An optional field every reader ignores when it does not know it; lane-only rings miss it, and the beam still describes itself in-band once media flows.
+pub fn seal_express_beam(
+    key: &[u8; 32],
+    ts: i64,
+    lane_key: Option<&[u8; 32]>,
+    sig: &WaveSignal,
+    beam: bool,
+) -> Option<Vec<u8>> {
     use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
-    let payload = express_payload(ts, lane_key, sig)?;
+    let payload = express_payload(ts, lane_key, sig, beam)?;
     let nonce_bytes: [u8; EXPRESS_NONCE_LEN] = rand::random();
     let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
     let sealed = cipher.encrypt(&XNonce::from(nonce_bytes), payload.as_slice()).ok()?;
@@ -61,6 +72,11 @@ pub fn express_nonce(bytes: &[u8]) -> Option<[u8; EXPRESS_NONCE_LEN]> {
 
 /// Open an express frame with one friendship's key. `None` = not ours (the receiver trial-opens across friendships — a wrong key fails the tag, never a panic).
 pub fn open_express(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSignal)> {
+    open_express_beam(key, bytes).map(|(ts, lk, sig, _)| (ts, lk, sig))
+}
+
+/// The same, with the beam flag.
+pub fn open_express_beam(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSignal, bool)> {
     use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
     if !is_express_frame(bytes) {
         return None;
@@ -77,23 +93,27 @@ fn express_schema() -> vsf::schema::SectionSchema {
     crate::types::row_control::declare_row_fields(
         vsf::schema::SectionSchema::new(EXPRESS_SECTION)
             .field("ts", vsf::schema::TypeConstraint::Any) // e6 the signal's stamp
-            .field("lk", vsf::schema::TypeConstraint::Any), // hR the offer's lane key (the doomed egg), offers only
+            .field("lk", vsf::schema::TypeConstraint::Any) // hR the offer's lane key (the doomed egg), offers only
+            .field("bm", vsf::schema::TypeConstraint::Any), // u: present = this offer carries a BEAM (docs/beams.md)
     )
 }
 
 /// The sealed plaintext: a complete VSF document, the signal as typed fields.
-fn express_payload(ts: i64, lane_key: Option<&[u8; 32]>, sig: &WaveSignal) -> Option<Vec<u8>> {
+fn express_payload(ts: i64, lane_key: Option<&[u8; 32]>, sig: &WaveSignal, beam: bool) -> Option<Vec<u8>> {
     use vsf::VsfType;
     let mut b = express_schema().build().set("ts", VsfType::e(vsf::types::EtType::e6(ts))).ok()?;
     if let Some(k) = lane_key {
         b = b.set("lk", VsfType::hR(k.to_vec())).ok()?;
+    }
+    if beam && matches!(sig, WaveSignal::Offer { .. }) {
+        b = b.set("bm", VsfType::u3(1)).ok()?;
     }
     b = crate::types::row_control::put_control(b, &crate::types::RowControl::Wave(*sig)).ok()?;
     let section = b.encode().ok()?;
     vsf::VsfBuilder::new().creation_time_oscillations(ts).provenance_only().add_unboxed(EXPRESS_SECTION, section).build().ok()
 }
 
-fn read_express_payload(payload: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSignal)> {
+fn read_express_payload(payload: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSignal, bool)> {
     use vsf::VsfType;
     let section = vsf::schema::SectionBuilder::parse_document(express_schema(), payload, None).ok()?;
     let ts = match section.get_fields("ts").first().and_then(|f| f.values.first())? {
@@ -104,8 +124,9 @@ fn read_express_payload(payload: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSi
         VsfType::hR(b) => <[u8; 32]>::try_from(b.as_slice()).ok(),
         _ => None,
     });
+    let beam = !section.get_fields("bm").is_empty();
     match crate::types::row_control::get_control(&section)? {
-        crate::types::RowControl::Wave(w) => Some((ts, lane_key, w)),
+        crate::types::RowControl::Wave(w) => Some((ts, lane_key, w, beam)),
         _ => None,
     }
 }
@@ -182,6 +203,10 @@ mod tests {
         assert!(is_express_frame(&wire));
         assert!(!crate::wave::packet::is_media_packet(&wire), "express and media magics must not collide");
         let (ts, lane_key, got) = open_express(&key, &wire).unwrap();
+        // The beam flag rides offers only, and a plain seal carries none.
+        let beamed = seal_express_beam(&key, 42, None, &sig, true).unwrap();
+        assert!(open_express_beam(&key, &beamed).unwrap().3, "a beam offer says so");
+        assert!(!open_express_beam(&key, &wire).unwrap().3, "a plain offer does not");
         assert_eq!((ts, lane_key, got), (42, Some([9u8; 32]), sig));
         // A wrong friendship key fails the AEAD tag — trial-open across friendships is safe.
         assert!(open_express(&[8u8; 32], &wire).is_none());

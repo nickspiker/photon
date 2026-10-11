@@ -31,6 +31,7 @@
 //   tcp.rs          — TCP fallback for large payloads: send, recv.
 //   traverse/       — NAT traversal (reflexive discovery so far): reflexive.rs (ReflexiveState, quorum-adopted public addr from pong observed_addr + ReflectResponse); portmap.rs (NAT-PMP / PCP / UPnP mapping of our UDP port on the home gateway, posted as the reflexive seed).
 //   udp.rs          — UDP socket utilities: send/send_sync, canon_socketaddr (::ffff:→v4), get_local_ip, get_broadcast_addr.
+//   camera_avf.rs   — the Mac camera for beams: AVFoundation session + sample-buffer delegate (objc2 define_class) on its own dispatch queue, NV12 → I420 (h264::nv12_to_i420), labelled creative/assumed/srgb; the camera grant via mic_permission.
 //   mic_permission.rs — the microphone grant on macOS (AVCaptureDevice status + request thru objc2/block2, System Settings deep link, at_wave_start sets wave::MIC_DENIED); a stub elsewhere.
 //   wfd.rs          — Wi-Fi Direct bearer (docs/offgrid.md): universal_token (one static token names the app; the per-pair WfdCred credential is RETIRED since a398de44 — still parsed from a `wfd_cred` frame and kept in contact state, never minted), elect_go lower-pubkey tie-break, DNS-SD TXT tokens (wfd_token/build_txt_tokens/match_txt_tokens), WfdBearer state machine (Idle→Stranded→Forming→Up) + WfdPlatform trait (AndroidWfd via JNI, NullWfd elsewhere), platform event queue (push_event/drain_events), RELAY_REACHABLE flag fed by the pipe task. Frames ride the main UDP socket — this module is discovery + group bring-up only.
 //

@@ -181,8 +181,8 @@ block2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSData", "NSString", "NSThread", "NSGeometry"] }
 objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSMenu", "NSMenuItem", "NSImage", "NSButton", "NSControl", "NSCell", "NSResponder", "NSView", "NSApplication", "NSRunningApplication"] }
 
-[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
-# BEAMS (docs/beams.md): the desktop H.264 codec on x86_64 Linux. aarch64 Linux joins once its cross sysroot carries libstdc++; Windows once the builder has a C++ cross-compiler (mingw64-gcc-c++, CXXSTDLIB=c++ for gnullvm) and a static C++ runtime link; Redox never (openh264-sys2's build script has no redox arm).
+[target.'cfg(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "android"))'.dependencies]
+# BEAMS (docs/beams.md): the H.264 codec on x86_64 Linux AND Android (the phone DECODES with it — one decoder everywhere; it still ENCODES in hardware thru MediaCodec). On Android the C++ runtime links statically (scripts/lib/android-env.sh: CXXSTDLIB=c++_static + -lc++abi), so no libc++_shared.so ships. aarch64 Linux joins once its cross sysroot carries libstdc++; Windows once the builder has a C++ cross-compiler (mingw64-gcc-c++, CXXSTDLIB=c++ for gnullvm) and a static C++ runtime link; Redox never (openh264-sys2's build script has no redox arm).
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]

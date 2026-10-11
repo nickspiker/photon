@@ -85,6 +85,13 @@ impl PhotonApp {
     pub(super) fn dispatch_wave_button_clicks(&mut self, ctx: &mut Context) -> bool {
         let phase = self.active_wave.as_ref().map(|c| c.phase);
         let mut any = false;
+        // BEAM BACK on the ring screen: answer, with this device's camera armed — it goes out on the engine-up edge (beam_armed_tick).
+        if self.beam_back_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && phase == Some(WavePhase::Ringing) {
+            self.beam_armed = true;
+            self.answer_wave();
+            crate::log("BEAM: answered with Beam back — the camera follows the engine");
+            any = true;
+        }
         if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
             match phase {
                 Some(WavePhase::Active) => {
@@ -349,6 +356,7 @@ impl PhotonApp {
             reconnect_probe: 0,
             beam_rx: None,
             beam_tx: None,
+            beam: self.beam_armed,
         });
         if !self.send_wave_signal(ci, sig, now) {
             crate::log("WAVE: offer send failed (no lane) — not dialing");
@@ -667,6 +675,10 @@ impl PhotonApp {
             return;
         }
         let live = self.active_wave.as_ref().map_or(false, |w| w.phase == WavePhase::Active && w.engine.is_some() && w.beam_tx.is_none());
+        // A Mac waiting on the camera prompt: hold the arm until the user answers, rather than re-asking every tick.
+        if live && !crate::wave::beam_session::camera_ready() {
+            return;
+        }
         if live {
             self.beam_armed = false;
             self.toggle_beam();
@@ -884,6 +896,7 @@ impl PhotonApp {
             reconnect_probe: 0,
                                 beam_rx: None,
                                 beam_tx: None,
+                                beam: false,
                             });
                             // Both users already pressed Wave — consent is mutual, connect NOW (a fold that merely rings would ask one of them to press the button twice). If the answer guard refuses (uncalibrated route), the wave stays Ringing and the panel says why — still strictly better than BUSY.
                             self.answer_wave();
@@ -952,6 +965,7 @@ impl PhotonApp {
             reconnect_probe: 0,
                             beam_rx: None,
                             beam_tx: None,
+                            beam: false,
                         });
                         self.ring_alert(ci);
                         // The keyboard has no business over a ring (Nick 2026-09-14): drop focus, which also posts the one-shot IME hide the Android shell polls.
@@ -1200,9 +1214,11 @@ impl PhotonApp {
                 keys.push(current);
             }
         }
+        // A beam wave's offers say so (docs/beams.md).
+        let beam_offer = matches!(sig, WaveSignal::Offer { .. }) && self.active_wave.as_ref().is_some_and(|w| w.wave_id == *sig.wave_id() && w.beam);
         let frames: Vec<Vec<u8>> = keys
             .iter()
-            .filter_map(|k| crate::wave::signal::seal_express(k, ts, lane_key.as_ref(), sig))
+            .filter_map(|k| crate::wave::signal::seal_express_beam(k, ts, lane_key.as_ref(), sig, beam_offer))
             .collect();
         if frames.is_empty() {
             return;
@@ -1327,7 +1343,7 @@ impl PhotonApp {
                 crate::log("WAVE: express frame replayed (nonce already opened) — dropped");
                 continue;
             }
-            let mut opened: Option<(usize, i64, Option<[u8; 32]>, WaveSignal, [u8; 32])> = None;
+            let mut opened: Option<(usize, i64, Option<[u8; 32]>, WaveSignal, [u8; 32], bool)> = None;
             for (fid, chains) in &self.friendship_chains {
                 // Current era first, then the retired one: a wave offer minted on the old era that lands after our cutover must still open (it used to read as "opened by no friendship").
                 let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
@@ -1342,21 +1358,21 @@ impl PhotonApp {
                 if keys.is_empty() {
                     continue;
                 }
-                if let Some((key, (ts, lane_key, sig))) = keys
+                if let Some((key, (ts, lane_key, sig, beam_flag))) = keys
                     .iter()
-                    .find_map(|key| crate::wave::signal::open_express(key, &bytes).map(|r| (*key, r)))
+                    .find_map(|key| crate::wave::signal::open_express_beam(key, &bytes).map(|r| (*key, r)))
                 {
                     if let Some(ci) = self
                         .contacts
                         .iter()
                         .position(|c| c.friendship_id == Some(*fid) && !c.is_sibling)
                     {
-                        opened = Some((ci, ts, lane_key, sig, key));
+                        opened = Some((ci, ts, lane_key, sig, key, beam_flag));
                     }
                     break;
                 }
             }
-            let Some((ci, ts, lane_key, sig, opened_key)) = opened else {
+            let Some((ci, ts, lane_key, sig, opened_key, beam_flag)) = opened else {
                 crate::log("WAVE: express frame opened by no friendship — dropped (an era we do not hold: neither current nor retired)");
                 continue;
             };
@@ -1383,6 +1399,11 @@ impl PhotonApp {
             if matches!(sig, WaveSignal::Offer { .. }) {
                 if let Some(wave) = self.active_wave.as_mut() {
                     if wave.wave_id == *sig.wave_id() && wave.phase == WavePhase::Ringing {
+                        // A BEAM offer: the ring screen says so and offers Beam back.
+                        if beam_flag && !wave.beam {
+                            wave.beam = true;
+                            crate::log("BEAM: the incoming wave carries a beam");
+                        }
                         wave.express_beats += 1; // u32 per express frame during one ring
                     }
                 }
@@ -1785,6 +1806,11 @@ impl PhotonApp {
                 Ok(s) => s,
                 Err(e) => {
                     crate::logf!("BEAM: {}", e);
+                    // The system's camera prompt is up (a Mac's first beam): stay armed, and the answer's edge opens the camera.
+                    #[cfg(target_os = "macos")]
+                    if e == crate::platform::camera_avf::ASKING {
+                        self.beam_armed = true;
+                    }
                     return;
                 }
             };

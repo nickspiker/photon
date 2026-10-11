@@ -3470,6 +3470,11 @@ impl PhotonApp {
                     if let Some(b) = self.wave_reject_btn.as_mut() {
                         f(b);
                     }
+                    if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                        if let Some(b) = self.beam_back_btn.as_mut() {
+                            f(b);
+                        }
+                    }
                 }
                 // Active full-screen in-wave controls; a minimized Active wave yields only the action (the strip / compact bar's End).
                 WavePhase::Active if !self.wave_minimized => {

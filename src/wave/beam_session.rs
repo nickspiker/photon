@@ -31,6 +31,44 @@ pub fn picture() -> Option<Picture> {
     PICTURE.lock().unwrap().clone()
 }
 
+/// THE SELF-VIEW (2026-10-10, Nick: "when you choose beam, still no video shows"): what this device's camera is sending, converted thru the same chain the receiver runs — so the inset shows the colour the far side gets, tungsten-yellow included.
+static SELF_PICTURE: Mutex<Option<Picture>> = Mutex::new(None);
+
+pub fn self_picture() -> Option<Picture> {
+    SELF_PICTURE.lock().unwrap().clone()
+}
+
+fn post_self(conv: &Converter, frame: &h264::I420, gains: Gains, n: u32, rgb: &mut Vec<u8>) {
+    conv.convert(frame, gains, n, rgb);
+    *SELF_PICTURE.lock().unwrap() = Some(Picture { w: frame.w, h: frame.h, frame_no: n, rgb: rgb.clone() });
+    PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
+}
+
+fn clear_self() {
+    *SELF_PICTURE.lock().unwrap() = None;
+    PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
+}
+
+/// The phone's self-view converter (its characterization arrives on the pipeline-up edge).
+static ANDROID_SELF_CONV: Mutex<Option<Converter>> = Mutex::new(None);
+
+/// One downscaled camera frame from the phone (I420 planes packed y‖u‖v) for the self-view — not the wire, just the inset.
+pub fn android_self_frame(w: usize, h: usize, planes: &[u8]) {
+    if w < 2 || h < 2 || planes.len() < w * h + 2 * (w / 2) * (h / 2) {
+        return;
+    }
+    let mut f = h264::I420::new(w, h);
+    let (cw, ch) = (w / 2, h / 2);
+    f.y.copy_from_slice(&planes[..w * h]);
+    f.u.copy_from_slice(&planes[w * h..w * h + cw * ch]);
+    f.v.copy_from_slice(&planes[w * h + cw * ch..w * h + 2 * cw * ch]);
+    let g = ANDROID_SELF_CONV.lock().unwrap();
+    if let Some(conv) = g.as_ref() {
+        let mut rgb = Vec::new();
+        post_self(conv, &f, Gains::NONE, 0, &mut rgb);
+    }
+}
+
 /// A camera frame source for the desktop sender: blocks for the next frame.
 pub trait FrameSource: Send {
     /// The frame geometry (even width and height).
@@ -153,6 +191,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
         return Err("BEAM: no peer address yet — the wave's first authenticated packet sets it".into());
     };
     let mut tx = BeamTx::new(wave_secret, dir, peer);
+    let self_conv = Converter::new(Characterization::from_entry(&source.characterization()));
     let colour = colour_bytes(&source.characterization());
     let info = Info { width: w as u16, height: h as u16, fps: fps as u8, codec: Codec::H264, colour };
     let stop = Arc::new(AtomicBool::new(false));
@@ -162,6 +201,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
         .spawn(move || {
             let mut frame_no = 0u32;
             let mut sent_bytes = 0u64;
+            let mut self_rgb = Vec::new();
             while !stop2.load(Ordering::Relaxed) {
                 let Some((frame, gains)) = source.next() else {
                     crate::log("BEAM: camera gone — sender stops");
@@ -174,6 +214,10 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                 }
                 if frame_no % beam::INFO_EVERY_FRAMES == 0 {
                     tx.send_info(&info);
+                }
+                // The self-view, every other frame: the camera thru the receiver's own chain.
+                if frame_no % 2 == 0 {
+                    post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb);
                 }
                 match enc.encode(&frame) {
                     Ok(au) if !au.is_empty() => {
@@ -188,6 +232,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                     crate::logf!("BEAM: sent {} frames, {} KB, {} datagrams ({} refused)", frame_no, sent_bytes / 1024, tx.sent, tx.send_fail);
                 }
             }
+            clear_self();
         })
         .map_err(|e| format!("beam-send thread: {e}"))?;
     Ok(Sender { stop, thread: Some(thread) })
@@ -250,6 +295,7 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
         return Err("BEAM: pipeline up with nothing armed".into());
     };
     let entry = phone_entry(maker, straight);
+    *ANDROID_SELF_CONV.lock().unwrap() = Some(Converter::new(Characterization::from_entry(&entry)));
     let info = Info { width: w as u16, height: h as u16, fps: fps as u8, codec: Codec::H264, colour: colour_bytes(&entry) };
     let s = start_encoded_sender(&secret, origin, info)?;
     *ANDROID_SENDER.lock().unwrap() = Some(s);
@@ -260,6 +306,8 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
 pub fn android_stop() {
     *ANDROID_SENDER.lock().unwrap() = None;
     *ANDROID_ARMED.lock().unwrap() = None;
+    *ANDROID_SELF_CONV.lock().unwrap() = None;
+    clear_self();
     #[cfg(target_os = "android")]
     crate::platform::jni_android::wave_service_void("stopBeamCapture");
 }
@@ -386,7 +434,11 @@ pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
     {
         crate::platform::camera_v4l2::open().map(|c| Box::new(c) as Box<dyn FrameSource>)
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::camera_avf::open().map(|c| Box::new(c) as Box<dyn FrameSource>)
+    }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     {
         Err("BEAM: no camera path on this platform yet (docs/beams.md stage 5)".into())
     }
@@ -397,7 +449,12 @@ pub fn can_send() -> bool {
     if cfg!(target_os = "android") {
         return true;
     }
-    h264::AVAILABLE && cfg!(target_os = "linux")
+    h264::AVAILABLE && (cfg!(target_os = "linux") || cfg!(target_os = "macos"))
+}
+
+/// Is the camera ready to open now (not waiting on the system prompt)? The armed-beam edge waits for the user's answer instead of re-asking every tick.
+pub fn camera_ready() -> bool {
+    crate::platform::mic_permission::camera_status() != crate::platform::mic_permission::MicAccess::Undetermined
 }
 
 /// The sender's bitrate for a frame size, from the ladder in docs/beams.md: ~600 kbit/s at 640×480, scaled by area.

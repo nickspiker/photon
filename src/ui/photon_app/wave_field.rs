@@ -219,19 +219,23 @@ fn under_premult(top: u32, bot: u32) -> u32 {
 
 /// Paint a beam picture (γ2 Rec.2020 RGB triples) letterboxed in the square, under whatever is already on the canvas — the same under-compositing the field uses, so avatars and buttons drawn before it stay in front. Nearest-neighbour scaling, integer: the picture is already the display's transfer, so the only work per pixel is the pack.
 pub(super) fn paint_picture(canvas: &mut Canvas, g: &FieldGeom, pic: &crate::wave::beam_session::Picture) {
-    if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || g.side == 0 {
+    let x0 = canvas.width.saturating_sub(g.side) / 2;
+    paint_picture_in(canvas, x0, g.y0, g.side, pic);
+}
+
+/// The same blit into any square: `x0`,`y0` its top-left, `side` its edge — the self-view inset uses it.
+pub(super) fn paint_picture_in(canvas: &mut Canvas, x0: usize, y0: usize, side: usize, pic: &crate::wave::beam_session::Picture) {
+    if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || side == 0 {
         return;
     }
     let (cw, ch) = (canvas.width, canvas.height);
-    let side = g.side;
-    let x0 = cw.saturating_sub(side) / 2;
     // Fit: the larger picture axis spans the side.
     let (dw, dh) = if pic.w * side >= pic.h * side {
         (side, (pic.h * side / pic.w).max(1))
     } else {
         ((pic.w * side / pic.h).max(1), side)
     };
-    let (dx0, dy0) = (x0 + (side - dw) / 2, g.y0 + (side - dh) / 2);
+    let (dx0, dy0) = (x0 + (side - dw) / 2, y0 + (side - dh) / 2);
     let y_end = (dy0 + dh).min(ch);
     let x_end = (dx0 + dw).min(cw);
     for y in dy0..y_end {

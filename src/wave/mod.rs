@@ -172,6 +172,8 @@ pub struct ActiveWave {
     pub secret: Option<[u8; 32]>,
     /// The running media engine (Active phase). Teardown = explicit `stop()` — the thread zeroizes its chains and releases audio on exit.
     pub engine: Option<engine::EngineHandle>,
+    /// This wave was offered as a BEAM (docs/beams.md): set on the origin by the Beam slat, on the ringing side by the express offer's flag. The ring screen reads it.
+    pub beam: bool,
     /// The beam's receiving half — up with the engine, so a peer's beam shows with no signalling (docs/beams.md).
     pub beam_rx: Option<beam_session::Receiver>,
     /// The beam's sending half — up while this device beams.

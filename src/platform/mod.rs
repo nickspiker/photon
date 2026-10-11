@@ -32,6 +32,9 @@ pub mod audio_aaudio;
 pub mod audio_vpio;
 /// The microphone grant on macOS: ask, say, open Settings (field 2026-10-10, Jon's silent Mac); a stub elsewhere.
 pub mod mic_permission;
+/// macOS: the desktop camera for beams (AVFoundation, NV12 → I420) — docs/beams.md stage 5.
+#[cfg(target_os = "macos")]
+pub mod camera_avf;
 /// Linux: the desktop camera for beams (V4L2, YUYV → I420) — docs/beams.md stage 5.
 #[cfg(target_os = "linux")]
 pub mod camera_v4l2;

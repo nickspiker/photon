@@ -165,6 +165,8 @@ if [ "$OS" = "Darwin" ]; then
     <string>Photon uses Bluetooth to discover your other devices nearby when adding a device to your fleet.</string>
     <key>NSMicrophoneUsageDescription</key>
     <string>Photon uses the microphone for waves — voice, between your devices and your friends'. Audio is end-to-end encrypted and never touches a server.</string>
+    <key>NSCameraUsageDescription</key>
+    <string>Photon uses the camera for beams — video, between your devices and your friends'. Video is end-to-end encrypted and never touches a server.</string>
 </dict>
 </plist>
 PLIST

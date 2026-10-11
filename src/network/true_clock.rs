@@ -147,7 +147,6 @@ pub fn fit(window: &[Exchange], source: LockSource) -> Option<(Model, FitReport)
     let kept = &kept[..];
     let min_delay = kept.iter().map(|e| e.delay).min()?.max(0); // WHY/PROOF: a delay is round trip minus hold, which clock quantization can leave a hair negative — no path is shorter than instant
     let newest = kept.iter().map(|e| e.boot).max()?;
-    let oldest = kept.iter().map(|e| e.boot).min()?;
 
     // PRECISION WEIGHTS (field 2026-10-10, Nick's MacBook): the quartile filter works WITHIN a bin, but a bin holding one loose reading — a server verdict that rode a 237 s request, ±118 s — keeps it as "its best", and an unweighted line through it and a ±14 ms consensus 54 minutes away read a rate of −3.6 %: the wave's aligner re-aligned four thousand times and the playout latency went negative by megasamples. Every exchange weighs by the inverse square of its delay, relative to the tightest kept, so that loose reading counts for a hundred-millionth and the line is the tight ones'. A rate needs a SPAN of exchanges that actually carry weight, not a tight burst plus one far point that weighs nothing.
     // Centre on the weighted means so the regression works on small numbers (f64 keeps ~15 digits; raw oscillation counts have 19).

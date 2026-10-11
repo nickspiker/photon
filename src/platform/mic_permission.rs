@@ -51,6 +51,37 @@ mod mac {
         }
     }
 
+    /// The CAMERA grant (beams, docs/beams.md stage 5) — the same calls with AVMediaTypeVideo ("vide").
+    pub fn camera_status() -> MicAccess {
+        let media = NSString::from_str("vide");
+        let st: isize = unsafe { msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: &*media] };
+        match st {
+            0 => MicAccess::Undetermined,
+            1 | 2 => MicAccess::Denied,
+            3 => MicAccess::Granted,
+            _ => MicAccess::Unknown,
+        }
+    }
+
+    pub fn request_camera() {
+        let media = NSString::from_str("vide");
+        let block = block2::RcBlock::new(|granted: objc2::runtime::Bool| {
+            crate::logf!("BEAM: camera access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
+        });
+        unsafe {
+            let _: () = msg_send![class!(AVCaptureDevice), requestAccessForMediaType: &*media, completionHandler: &*block];
+        }
+    }
+
+    static CAMERA_SETTINGS_OPENED: AtomicBool = AtomicBool::new(false);
+
+    pub fn open_camera_settings_once() -> bool {
+        if CAMERA_SETTINGS_OPENED.swap(true, Ordering::Relaxed) {
+            return false;
+        }
+        std::process::Command::new("open").arg("x-apple.systempreferences:com.apple.preference.security?Privacy_Camera").spawn().is_ok()
+    }
+
     static SETTINGS_OPENED: AtomicBool = AtomicBool::new(false);
 
     /// Open System Settings on the Microphone privacy pane, once per session — the pane where Photon's switch is.
@@ -77,9 +108,16 @@ mod mac {
     pub fn open_settings_once() -> bool {
         false
     }
+    pub fn camera_status() -> MicAccess {
+        MicAccess::Unknown
+    }
+    pub fn request_camera() {}
+    pub fn open_camera_settings_once() -> bool {
+        false
+    }
 }
 
-pub use mac::{open_settings_once, request, status};
+pub use mac::{camera_status, open_camera_settings_once, open_settings_once, request, request_camera, status};
 
 /// The wave-start edge: ask when undetermined, say and open Settings when denied. Returns the status seen, and sets [`crate::wave::MIC_DENIED`] for the wave screen.
 pub fn at_wave_start() -> MicAccess {
