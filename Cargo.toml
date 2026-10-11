@@ -185,9 +185,11 @@ objc2-app-kit = { version = "0.3", features = ["NSStatusBar", "NSStatusBarButton
 # BEAMS (docs/beams.md): the H.264 codec on x86_64 Linux AND Android (the phone DECODES with it — one decoder everywhere; it still ENCODES in hardware thru MediaCodec). On Android the C++ runtime links statically (scripts/lib/android-env.sh: CXXSTDLIB=c++_static + -lc++abi), so no libc++_shared.so ships. aarch64 Linux joins once its cross sysroot carries libstdc++; Windows once the builder has a C++ cross-compiler (mingw64-gcc-c++, CXXSTDLIB=c++ for gnullvm) and a static C++ runtime link; Redox never (openh264-sys2's build script has no redox arm).
 openh264 = { version = "0.9.8", default-features = false, features = ["source"] }
 
-[target.'cfg(target_os = "linux")'.dependencies]
-# BEAMS (docs/beams.md stage 5): the desktop camera on Linux — V4L2, YUYV frames converted to I420 in integer (platform/camera_v4l2.rs); the same crate opsin's live path uses.
+[target.'cfg(all(target_os = "linux", target_arch = "x86_64"))'.dependencies]
+# BEAMS (docs/beams.md stage 5): the desktop camera on x86_64 Linux — V4L2, YUYV frames converted to I420 in integer (platform/camera_v4l2.rs); the same crate opsin's live path uses. x86_64 only, like the codec: v4l2-sys generates bindings from the host's kernel headers with bindgen, which fails for the aarch64 cross build (the v117 deploy, 2026-10-10), and ARM Linux has no codec to beam with yet.
 v4l = "0.14"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 x11 = { version = "2.21.0", features = ["xlib"] }
 # Pairing v2 beacon scanner (BlueZ over D-Bus) — docs/pairing-v2.md. Rides the existing tokio runtime.
 bluer = { version = "0.17", features = ["bluetoothd"] }

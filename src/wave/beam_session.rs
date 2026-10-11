@@ -430,7 +430,7 @@ pub fn assumed_srgb_entry() -> vsf::spectral_image::ProfileEntry {
 
 /// The desktop's camera, if the platform has one we can open: Linux V4L2 today.
 pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
-    #[cfg(target_os = "linux")]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
         crate::platform::camera_v4l2::open().map(|c| Box::new(c) as Box<dyn FrameSource>)
     }
@@ -438,7 +438,7 @@ pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
     {
         crate::platform::camera_avf::open().map(|c| Box::new(c) as Box<dyn FrameSource>)
     }
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
     {
         Err("BEAM: no camera path on this platform yet (docs/beams.md stage 5)".into())
     }

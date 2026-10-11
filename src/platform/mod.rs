@@ -36,7 +36,7 @@ pub mod mic_permission;
 #[cfg(target_os = "macos")]
 pub mod camera_avf;
 /// Linux: the desktop camera for beams (V4L2, YUYV → I420) — docs/beams.md stage 5.
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod camera_v4l2;
 
 /// "Is a human plausibly looking at this app RIGHT NOW" — the platform-appropriate attended check, one name for both worlds (desktop: window visible+focused; Android: Activity foregrounded).
