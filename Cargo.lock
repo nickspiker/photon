@@ -5146,7 +5146,7 @@ dependencies = [
 
 [[package]]
 name = "photon-messenger"
-version = "0.116.6"
+version = "0.116.7"
 dependencies = [
  "aes-gcm 0.11.0-rc.3",
  "anyhow",
