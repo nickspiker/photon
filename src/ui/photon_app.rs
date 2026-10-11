@@ -3470,7 +3470,8 @@ impl PhotonApp {
                     if let Some(b) = self.wave_reject_btn.as_mut() {
                         f(b);
                     }
-                    if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                    // The ring's second answer (Wave back / Beam back) — present wherever this device can send a beam.
+                    if crate::wave::beam_session::can_send() {
                         if let Some(b) = self.beam_back_btn.as_mut() {
                             f(b);
                         }

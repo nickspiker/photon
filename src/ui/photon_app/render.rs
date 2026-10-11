@@ -960,8 +960,9 @@ impl PhotonApp {
                         if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(cx, by, bw, bh);
                             b.set_font_size(bfont);
-                            // "Wave back" (Nick 2026-09-09): answering is choosing AUDIO.
-                            b.set_label(tr(Msg::WaveBack));
+                            // The big button answers in KIND (Nick 2026-10-10): what is coming at us — Beam back on an incoming beam this device can return, Wave back otherwise ("Wave back" = answering is choosing AUDIO, 2026-09-09).
+                            let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send();
+                            b.set_label(tr(if beam_in { Msg::BeamBack } else { Msg::WaveBack }));
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
@@ -969,12 +970,14 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
-                        // BEAM BACK (docs/beams.md): above Wave back, when the offer carries a beam and this device can send one — answering with the camera on.
-                        if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                        // THE OTHER ANSWER, smaller, above the big one: Wave back on an incoming beam, Beam back on an incoming wave (only where this device can send a beam).
+                        let beam_in = self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send();
+                        if beam_in || crate::wave::beam_session::can_send() {
                             if let Some(b) = self.beam_back_btn.as_mut() {
-                                b.set_rect(cx, by - bh * 1.3, bw, bh);
-                                b.set_font_size(bfont * 0.9);
-                                b.set_label(tr(Msg::BeamBack));
+                                let (sw, sh) = (bw * 0.78, bh * 0.78);
+                                b.set_rect(cx + (bw - sw) / 2., by - sh * 1.35, sw, sh);
+                                b.set_font_size(bfont * 0.8);
+                                b.set_label(tr(if beam_in { Msg::WaveBack } else { Msg::BeamBack }));
                                 b.set_enabled(true);
                                 b.set_fill(Some(*theme::WAVE_ACCEPT_FILL));
                                 b.set_hover_fill(Some(*theme::WAVE_ACCEPT_HOVER));
@@ -7386,7 +7389,7 @@ impl PhotonApp {
                         if let Some(b) = self.wave_reject_btn.as_ref() {
                             b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                         }
-                        if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                        if crate::wave::beam_session::can_send() {
                             if let Some(b) = self.beam_back_btn.as_ref() {
                                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                             }

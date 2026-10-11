@@ -85,11 +85,16 @@ impl PhotonApp {
     pub(super) fn dispatch_wave_button_clicks(&mut self, ctx: &mut Context) -> bool {
         let phase = self.active_wave.as_ref().map(|c| c.phase);
         let mut any = false;
-        // BEAM BACK on the ring screen: answer, with this device's camera armed — it goes out on the engine-up edge (beam_armed_tick).
+        // THE RING'S SECOND OPTION (Nick 2026-10-10: "the default/largest button would be what's coming at us… we can beam back or wave back"): the smaller button above the big one is the OTHER answer — Wave back on an incoming beam, Beam back on an incoming wave.
         if self.beam_back_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && phase == Some(WavePhase::Ringing) {
-            self.beam_armed = true;
+            let incoming_beam = self.active_wave.as_ref().is_some_and(|w| w.beam);
+            if incoming_beam {
+                crate::log("WAVE: answered with Wave back on an incoming beam — voice only from here");
+            } else {
+                self.beam_armed = true;
+                crate::log("BEAM: answered a wave with Beam back — the camera follows the engine");
+            }
             self.answer_wave();
-            crate::log("BEAM: answered with Beam back — the camera follows the engine");
             any = true;
         }
         if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
@@ -121,7 +126,14 @@ impl PhotonApp {
             // Name the tap (field 2026-09-02): the SHARED action button means Answer/Keep/Hang-up by phase — a spurious click just after Ringing→Active would read as a hangup. Logging the phase at click catches a double-fire race.
             crate::logf!("WAVE: action button clicked (phase {})", format!("{:?}", phase));
             match phase {
-                Some(WavePhase::Ringing) => self.answer_wave(),
+                // The big button answers in KIND: an incoming beam is beamed back (when this device can send one), an incoming wave is waved back.
+                Some(WavePhase::Ringing) => {
+                    if self.active_wave.as_ref().is_some_and(|w| w.beam) && crate::wave::beam_session::can_send() {
+                        self.beam_armed = true;
+                        crate::log("BEAM: answered a beam with Beam back — the camera follows the engine");
+                    }
+                    self.answer_wave();
+                }
                 Some(_) => self.hangup_wave(),
                 None => {}
             }
