@@ -7,7 +7,7 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 - **Beams: video in a wave.** Tap Beam on a conversation to start a wave with your camera on, or tap Beam during a wave to turn your camera on or off. The picture is encoded once on your device, carried on the wave's own encrypted path, and never passes through a server.
-- **Beams work on phones, Macs and Linux computers.** Phones send with their own video hardware and show incoming beams; Macs and Linux computers with a camera send and receive. Windows computers show the Beam button greyed for now.
+- **Beams work on phones, Macs and Linux computers.** Phones send with their own video hardware and show incoming beams; Macs and Intel or AMD Linux computers with a camera send and receive. Windows and ARM Linux computers can't send or show beams yet, so their Beam button stays greyed.
 - **Your camera's true colour.** On a phone, the camera's automatic colour adjustments are switched off and the camera maker's own colour data travels with the picture, so a room lit by warm bulbs looks warm, as it really is.
 - **See what you're sending.** While you beam, a small picture in the corner of the wave shows your own camera, in the colour the other side sees.
 - **Answer in kind, or the other way.** Every incoming ring offers Wave back and Beam back, plus Decline. The big button is whatever is coming at you: a wave is waved back, and a beam is beamed back with your camera on. The smaller button above it answers the other way. When someone beams you, the ring screen says "incoming beam".
