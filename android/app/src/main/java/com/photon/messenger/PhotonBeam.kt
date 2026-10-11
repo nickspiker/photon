@@ -68,6 +68,7 @@ class PhotonBeam(
     private var config: ByteArray? = null
     private var frames = 0L
     private var dropped = 0L
+    private var fed = 0L
     @Volatile private var running = false
     private var w = WANT_W
     private var h = WANT_H
@@ -148,9 +149,10 @@ class PhotonBeam(
         config = null
         cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
         codecThread?.quitSafely(); codecThread = null; codecHandler = null
-        PhotonLog.i(TAG, "stopped after $frames frames ($dropped dropped)")
+        PhotonLog.i(TAG, "stopped after $frames encoded frames, $fed fed, $dropped dropped")
         frames = 0
         dropped = 0
+        fed = 0
     }
 
     /** The front camera — a beam is aimed at a person, and the person is behind the screen — else the first camera there is. */
@@ -213,6 +215,7 @@ class PhotonBeam(
                         val withConfig = config != null && (frames % CONFIG_EVERY == 0L)
                         val au = if (withConfig) config!! + bytes else bytes
                         frames++
+                        if (frames == 1L) PhotonLog.i(TAG, "first access unit out of the encoder: ${au.size} B (config prepended ${withConfig})")
                         onFrame(au, gains)
                         if (frames % (FPS * 10L) == 0L) PhotonLog.i(TAG, "encoded $frames frames, last ${bytes.size} B, $dropped dropped")
                     }
@@ -242,13 +245,20 @@ class PhotonBeam(
         for (p in 0 until 3) {
             copyPlane(img.planes[p], dst.planes[p], if (p == 0) w else w / 2, if (p == 0) h else h / 2)
         }
-        val size = dst.planes.sumOf { it.buffer.remaining() }
+        // THE LENGTH (field 2026-10-10, "stopped after 0 frames"): the frame was written thru the Image view, so the byte count to submit is the whole input buffer — the encoder reads it by the layout it chose. Submitting 0 handed it an empty buffer every frame, and it encoded nothing.
+        val size = try { mc.getInputBuffer(idx)?.capacity() ?: 0 } catch (e: Throwable) { 0 }
+        if (size <= 0) {
+            PhotonLog.w(TAG, "input buffer $idx has no capacity — frame skipped")
+            try { mc.queueInputBuffer(idx, 0, 0, 0, 0) } catch (_: Throwable) {}
+            return
+        }
         try {
-            mc.queueInputBuffer(idx, 0, 0, img.timestamp / 1000, 0)
+            mc.queueInputBuffer(idx, 0, size, img.timestamp / 1000, 0)
+            fed++
+            if (fed == 1L) PhotonLog.i(TAG, "first frame into the encoder: ${img.width}x${img.height}, planes y ${img.planes[0].rowStride}/${img.planes[0].pixelStride} u ${img.planes[1].rowStride}/${img.planes[1].pixelStride} → input ${dst.planes[0].rowStride}/${dst.planes[0].pixelStride} u ${dst.planes[1].rowStride}/${dst.planes[1].pixelStride}, $size B")
         } catch (e: Throwable) {
             PhotonLog.w(TAG, "queueInputBuffer", e)
         }
-        if (size < 0) return
     }
 
     private fun copyPlane(src: Image.Plane, dst: Image.Plane, pw: Int, ph: Int) {
