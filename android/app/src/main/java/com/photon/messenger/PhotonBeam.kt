@@ -281,6 +281,10 @@ class PhotonBeam(
 
     /** One camera frame into the encoder, if an input buffer is free; else dropped (never block the camera). Planes copied honouring row and pixel strides. */
     private var selfTick = 0L
+    /** What the focus request chose (logged with the readback). */
+    private var focusPlan = "unset"
+    /** AF_MODE_AUTO needs one trigger after the repeating request starts. */
+    private var oneShotAf = false
     private var sensorOrientation = 0
     private var frontFacing = true
     private var lastQuarter = -1
@@ -463,6 +467,21 @@ class PhotonBeam(
             val dist = chars.get(CameraCharacteristics.DISTORTION_CORRECTION_AVAILABLE_MODES) ?: intArrayOf()
             want(CaptureRequest.DISTORTION_CORRECTION_MODE, CameraMetadata.DISTORTION_CORRECTION_MODE_OFF, dist.contains(CameraMetadata.DISTORTION_CORRECTION_MODE_OFF))
         }
+        // FOCUS, explicitly (field 2026-10-13, Nick: "It's focused at infinity and my face is noticeably blurry… the front cam DOES have autofocus"): the template's default is not to be trusted. CONTROL_MODE AUTO (AF modes only take effect under it), then the best autofocus the camera lists — continuous video, continuous picture, a one-shot trigger — else, for a movable lens with no autofocus, a fixed arm's length (2 diopters = 0.5 m). Focus is not colour: the straight-thru promise is untouched.
+        req.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+        val afModes = chars.get(CameraCharacteristics.CONTROL_AF_AVAILABLE_MODES) ?: intArrayOf()
+        val minFocus = chars.get(CameraCharacteristics.LENS_INFO_MINIMUM_FOCUS_DISTANCE) ?: 0f
+        focusPlan = when {
+            afModes.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO) -> { req.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_VIDEO); "continuous-video" }
+            afModes.contains(CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE) -> { req.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_CONTINUOUS_PICTURE); "continuous-picture" }
+            afModes.contains(CameraMetadata.CONTROL_AF_MODE_AUTO) -> { req.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO); oneShotAf = true; "auto (one-shot trigger)" }
+            minFocus > 0f -> {
+                req.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_OFF)
+                req.set(CaptureRequest.LENS_FOCUS_DISTANCE, minOf(2f, minFocus))
+                "fixed at arm's length (${minOf(2f, minFocus)} diopters)"
+            }
+            else -> "fixed-focus lens"
+        }
         req.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE, CameraMetadata.CONTROL_VIDEO_STABILIZATION_MODE_OFF)
         req.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
         req.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
@@ -474,6 +493,17 @@ class PhotonBeam(
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
                 try {
+                    // The one-shot focus (a camera with only AF_MODE_AUTO): one trigger, on the session's start edge.
+                    if (oneShotAf) {
+                        try {
+                            val trig = dev.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+                            trig.addTarget(surface)
+                            trig.set(CaptureRequest.CONTROL_MODE, CameraMetadata.CONTROL_MODE_AUTO)
+                            trig.set(CaptureRequest.CONTROL_AF_MODE, CameraMetadata.CONTROL_AF_MODE_AUTO)
+                            trig.set(CaptureRequest.CONTROL_AF_TRIGGER, CameraMetadata.CONTROL_AF_TRIGGER_START)
+                            s.capture(trig.build(), null, cameraHandler)
+                        } catch (e: Throwable) { PhotonLog.w(TAG, "one-shot focus trigger", e) }
+                    }
                     s.setRepeatingRequest(req.build(), object : CameraCaptureSession.CaptureCallback() {
                         private var logged = false
                         override fun onCaptureCompleted(sess: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
@@ -489,7 +519,10 @@ class PhotonBeam(
                                 val tm = result.get(CaptureResult.TONEMAP_MODE)
                                 val sh = result.get(CaptureResult.SHADING_MODE)
                                 val nrm = result.get(CaptureResult.NOISE_REDUCTION_MODE)
-                                PhotonLog.i(TAG, "applied: awb=$awb ccm=$ccm tonemap=$tm shading=$sh nr=$nrm gains=${g?.red},${g?.greenEven},${g?.greenOdd},${g?.blue} straightAsked=$straightNow")
+                                val afm = result.get(CaptureResult.CONTROL_AF_MODE)
+                                val afs = result.get(CaptureResult.CONTROL_AF_STATE)
+                                val dist = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
+                                PhotonLog.i(TAG, "applied: awb=$awb ccm=$ccm tonemap=$tm shading=$sh nr=$nrm gains=${g?.red},${g?.greenEven},${g?.greenOdd},${g?.blue} straightAsked=$straightNow; focus asked $focusPlan, running af=$afm state=$afs at $dist diopters")
                             }
                         }
                     }, cameraHandler)
