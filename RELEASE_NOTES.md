@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Fixed: a phone could look offline for days while Photon was still running.** If Android closed Photon's screen in the background, or restarted it on its own, Photon stopped talking to anyone until you opened it again. It now keeps running without its screen, comes back by itself after Android restarts it, and a watchdog revives it if it ever stalls.
 
 ## v117
 - **Beams: video in a wave.** Tap Beam on a conversation to start a wave with your camera on, or tap Beam during a wave to turn your camera on or off. The picture is encoded once on your device, carried on the wave's own encrypted path, and never passes through a server.

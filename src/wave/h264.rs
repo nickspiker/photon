@@ -64,7 +64,7 @@ mod real {
     use openh264::encoder::{
         BitRate, Encoder as Enc, EncoderConfig, FrameRate, IntraFramePeriod, Profile, RateControlMode, UsageType,
     };
-    use openh264::formats::{YUVSlices, YUVSource};
+    use openh264::formats::YUVSlices;
     use openh264::{OpenH264API, Timestamp};
 
     pub const AVAILABLE: bool = true;

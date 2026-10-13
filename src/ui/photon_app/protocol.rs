@@ -3,6 +3,12 @@
 use super::*;
 
 impl PhotonApp {
+    /// THE HEADLESS TICK (field 2026-10-13, Brittany: "never closed Photon" yet offline for days): what a screenless app needs each beat — finish the session resume (the vault opens on a worker and its completion was polled only by the draw tick, so an app with no screen never finished attesting) and pump the protocol. The Android service drives this whether or not a screen exists.
+    pub fn headless_tick(&mut self, now: Instant) -> bool {
+        let resumed = self.poll_resume_vault();
+        self.advance_protocol(now) || resumed
+    }
+
     /// The surface-free half of `tick`: presence pinging, draining every network/background channel, and advancing the CLUTCH ceremony + message chains. Returns `true` if anything changed (the caller turns that into a redraw request). Split out of `tick` so the Android foreground service can drive it headlessly while backgrounded — the paused Activity's Choreographer has stopped calling `tick`, but `PhotonApp` is alive and its inbound CLUTCH/chat still needs to advance so ceremonies complete and messages get ACKed without the screen being on. See docs/background-tick.md. MUST touch no `Context`/surface state — everything here is pure `self`.
     pub fn advance_protocol(&mut self, now: Instant) -> bool {
         let mut needs_redraw = false;

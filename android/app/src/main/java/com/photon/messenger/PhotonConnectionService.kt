@@ -59,6 +59,14 @@ class PhotonConnectionService : Service() {
         const val SESSION_PERMISSION = "com.photon.SESSION_READ"
         const val SESSION_EXTRA_VSF = "vsf"
 
+        // THE ONE APP CONTEXT for the process (field 2026-10-13, Brittany: offline for days with Photon "never closed"). The service OWNS it: the screen adopts it on create and lets go on destroy, and the app keeps running headless in between — a screen teardown used to free the whole Rust app, after which every service tick was a silent no-op. 0 = not built yet. @Volatile: written on the main thread, read by the poll thread.
+        @Volatile var sharedContext: Long = 0L
+        // True while a screen (PhotonActivity) holds the context; the last holder out frees it.
+        @Volatile var activityAttached: Boolean = false
+        // Watchdog thresholds, in POLLS of the existing 1 s network poll (counted on a loop that already runs — no new timer): a protocol heartbeat that stops moving while backgrounded is logged, then (as lumis's camera process does when its UI heartbeat stops) the process exits and START_STICKY brings it back headless.
+        private const val WATCHDOG_WARN_POLLS = 15
+        private const val WATCHDOG_EXIT_POLLS = 300
+
         // The live service instance, for the FCM doorbell path (PhotonMessagingService needs to poke
         // a protocol tick on wake, and Android gives it no binding to an already-running service).
         // Set in onCreate, cleared in onDestroy; @Volatile because FCM delivers on a binder thread.
@@ -72,7 +80,6 @@ class PhotonConnectionService : Service() {
     // initializeNativeIfReady and retracted (0) in onDestroy. Lets the RX worker drive a headless
     // protocol tick while the Activity is backgrounded. @Volatile: written on the main thread, read on
     // the RX worker thread. 0 = no live Activity context → skip the tick. See docs/background-tick.md.
-    @Volatile private var activityContextPtr: Long = 0
 
     // Brief wakelock held only across a headless tick, so the CPU is scheduled to run advance_protocol
     // when a packet arrives while the screen is off. Acquired with a short timeout as a safety net.
@@ -103,6 +110,9 @@ class PhotonConnectionService : Service() {
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
     private external fun nativeGetDevicePubkey(networkPtr: Long): String
+    private external fun nativeCreateHeadless(networkPtr: Long, width: Int, height: Int, isSamsung: Boolean): Long  // the app with no screen (see sharedContext)
+    private external fun nativeDestroyContext(contextPtr: Long)
+    private external fun nativeProtocolBeat(): Long  // the watchdog's heartbeat read
     private external fun nativeServiceTick(contextPtr: Long)  // Headless advance_protocol on the Activity ctx (background delivery)
 
     // Session broadcast — VSF capsule carrying identity_seed + vault_seed + handle_proof.
@@ -316,9 +326,12 @@ class PhotonConnectionService : Service() {
             }
         }
         // Extract fingerprint and data dirs from intent. shadowDir is "" if getExternalFilesDir returned null on the Activity side — Rust treats empty as "fall back to dataDir with shadow-suffix filename".
+        // A START_STICKY restart (Android killed the process and brought the service back) or an FCM-woken start delivers NO extras — the network used to stay down forever then (field 2026-10-13). Everything the extras carry is recomputable here: the fingerprint is ANDROID_ID + user (DeviceFingerprint), the dirs are this app's own.
         val fingerprint = intent?.getByteArrayExtra("fingerprint")
-        val dataDir = intent?.getStringExtra("dataDir")
-        val shadowDir = intent?.getStringExtra("shadowDir") ?: ""
+            ?: try { DeviceFingerprint.gather(this).fingerprint } catch (e: Throwable) { PhotonLog.w(TAG, "fingerprint recompute failed", e); null }
+        val dataDir = intent?.getStringExtra("dataDir") ?: filesDir.absolutePath
+        val shadowDir = intent?.getStringExtra("shadowDir") ?: (getExternalFilesDir(null)?.absolutePath ?: "")
+        val headlessStart = intent?.getByteArrayExtra("fingerprint") == null
 
         if (fingerprint != null && dataDir != null && networkPtr == 0L) {
             // Per-boot secret for the session capsule's boot-lock (wairua): the app-private session file is FBE-sandbox-protected, so this value only needs to be per-boot-STABLE, not secret. Settings.Global.BOOT_COUNT is exactly that — constant during a boot, incremented on reboot — and readable with no permission on every ROM, unlike /proc/sys/kernel/random/boot_id which locked-down Samsung SELinux blocks from untrusted_app (which silently broke session persistence there: re-attest on every app restart). Prefix-tagged so it can never collide with a raw boot_id string.
@@ -338,6 +351,7 @@ class PhotonConnectionService : Service() {
                 devicePubkeyHex = nativeGetDevicePubkey(networkPtr)
                 PhotonLog.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")
                 startNetworkPolling()
+                if (headlessStart) PhotonLog.i(TAG, "service started with no screen (restart or wake) — network up from recomputed material")
                 // Hand the FCM bell material to Rust: the ping cycle publishes `fcm:<project>:<token>`
                 // to the worker's bell registry so a sender can wake this phone from deep Doze
                 // (docs/reachability-doorbell.md). Project id comes off the baked google-services.json
@@ -362,7 +376,30 @@ class PhotonConnectionService : Service() {
 
         // EXPLICIT dataSync-only foreground type at launch. The two-arg startForeground inherits the manifest's FULL type set (dataSync|microphone), and Android 14 (targetSDK 34) hard-rejects a microphone-type FGS start without RECORD_AUDIO granted + the app in an eligible state — which is every fresh launch now that the mic prompt is deferred to the first wave (launch crash on Android 14 Samsungs, field 2026-08-19; pre-14 devices don't enforce and were fine). The mic type is ADDED at wave time by promoteForeground(true) in startCapture and dropped again at stopWaveAudio.
         promoteForeground(false)
+        // No screen alive: build the app headless now, so the protocol runs from this moment rather than waiting for the user to open Photon.
+        if (PhotonActivity.live == null) ensureHeadless("service start with no screen")
         return START_STICKY
+    }
+
+    /** Build the app with no screen, if nothing holds one and the network is up. Main thread (the app's single-threaded contract). A screen that is merely starting (live set, native not yet built) builds its own instead. */
+    fun ensureHeadless(reason: String) {
+        mainHandler.post {
+            if (sharedContext != 0L || networkPtr == 0L || PhotonActivity.live != null) return@post
+            val dm = resources.displayMetrics
+            val samsung = Build.MANUFACTURER.equals("samsung", ignoreCase = true)
+            val ptr = try { nativeCreateHeadless(networkPtr, dm.widthPixels, dm.heightPixels, samsung) } catch (e: Throwable) { PhotonLog.w(TAG, "headless build failed", e); 0L }
+            if (ptr != 0L) {
+                sharedContext = ptr
+                PhotonLog.i(TAG, "headless: app context up ($reason)")
+                requestServiceTick()
+            }
+        }
+    }
+
+    /** The FCM doorbell: make sure there is an app and a network, then tick. */
+    fun wakeFromDoorbell() {
+        ensureHeadless("doorbell wake")
+        requestServiceTick()
     }
 
     /** (Re)assert the foreground notification with explicit FGS types: dataSync always, microphone only when a wave is actively capturing (withMic). API 29- has no typed startForeground; the MICROPHONE constant is API 30+. SecurityException is caught, not fatal: an ineligible mic promotion (e.g., backgrounded edge) degrades to listen-only instead of crashing the whole app. */
@@ -393,6 +430,12 @@ class PhotonConnectionService : Service() {
         live = null
         PhotonLog.d(TAG, "Service destroying")
         stopBeamCapture()
+        // The last holder out frees the app: a screen still attached keeps it (and frees it on its own destroy).
+        if (!activityAttached && sharedContext != 0L) {
+            val p = sharedContext
+            sharedContext = 0L
+            try { nativeDestroyContext(p) } catch (_: Throwable) {}
+        }
         multicastLock?.release()
         multicastLock = null
         stopNetworkPolling()
@@ -459,8 +502,9 @@ class PhotonConnectionService : Service() {
      * The Activity hands us its native context ptr once the fluor shell + PhotonApp exist, and retracts
      * it (0) in onDestroy before freeing. We only ever tick a ptr the Activity currently vouches is live.
      */
+    /** Kept for the screen's existing call sites: the shared context IS the screen's context now. 0 = the screen let go (the app stays, headless). */
     fun setActivityContextPtr(ptr: Long) {
-        activityContextPtr = ptr
+        if (ptr != 0L) sharedContext = ptr
     }
 
     /**
@@ -476,12 +520,16 @@ class PhotonConnectionService : Service() {
     private val mainHandler = Handler(Looper.getMainLooper())
     @Volatile private var servicePending = false
     fun requestServiceTick() {
-        if (activityContextPtr == 0L) return  // no live Activity context (destroyed / not yet created)
+        if (sharedContext == 0L) {
+            // No app at all: build one (no screen) rather than ticking nothing — the silent no-op that left a phone dark for days.
+            if (PhotonActivity.live == null) ensureHeadless("tick asked with no app")
+            return
+        }
         if (servicePending) return
         servicePending = true
         mainHandler.post {
             servicePending = false
-            val ptr = activityContextPtr
+            val ptr = sharedContext
             if (ptr == 0L) return@post
             try {
                 wakeLock.acquire(2_000L)  // safety-net timeout; the tick is milliseconds
@@ -515,6 +563,7 @@ class PhotonConnectionService : Service() {
                     // See docs/background-tick.md.
                     if (!PhotonActivity.inForeground) {
                         requestServiceTick()
+                        watchdog()
                     }
                     networkHandler?.postDelayed(this, POLL_INTERVAL_MS)
                 }
@@ -522,6 +571,30 @@ class PhotonConnectionService : Service() {
         }
         networkHandler?.post(pollRunnable)
         PhotonLog.d(TAG, "Network polling started")
+    }
+
+    private var lastBeat = -1L
+    private var stalePolls = 0
+
+    /** THE WATCHDOG (Nick 2026-10-13: "a watchdog on Android similar to how Lumis handles a similar problem"). Runs on the existing background poll, counted in polls: no app → build it headless; a protocol heartbeat that stops moving → log, and past WATCHDOG_EXIT_POLLS (the main thread wedged for minutes) exit the process so START_STICKY restarts the service, which now comes back headless with the network up. */
+    private fun watchdog() {
+        if (sharedContext == 0L) {
+            if (PhotonActivity.live == null) ensureHeadless("watchdog: no app context")
+            return
+        }
+        val beat = try { nativeProtocolBeat() } catch (_: Throwable) { return }
+        if (beat != lastBeat) {
+            if (stalePolls >= WATCHDOG_WARN_POLLS) PhotonLog.i(TAG, "watchdog: protocol heartbeat moving again after $stalePolls polls")
+            lastBeat = beat
+            stalePolls = 0
+            return
+        }
+        stalePolls++
+        if (stalePolls == WATCHDOG_WARN_POLLS) PhotonLog.w(TAG, "watchdog: no protocol pass for $stalePolls polls while backgrounded — ticks are being asked for but not running")
+        if (stalePolls >= WATCHDOG_EXIT_POLLS) {
+            PhotonLog.e(TAG, "watchdog: protocol stalled $stalePolls polls — exiting so the service restarts headless")
+            android.os.Process.killProcess(android.os.Process.myPid())
+        }
     }
 
     private fun stopNetworkPolling() {

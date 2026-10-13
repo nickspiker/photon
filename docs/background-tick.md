@@ -53,3 +53,15 @@ The "split worker" photon needs **already exists**: `PhotonConnectionService` + 
 ## Open question
 
 Whether `nativeServiceTick` should run the *full* `advance_protocol()` or a narrower "just drain + ACK + advance chain/ceremony" subset while backgrounded (deferring, say, avatar downloads and roster merges to the next foreground tick) — to keep the backgrounded wake cheap. Start with the full pass; narrow only if the wake proves too heavy.
+
+## The app outlives the screen (2026-10-13)
+
+Field (Brittany, 0.110.10): a phone where Photon was "never closed" showed offline for days. Two holes, both closed:
+
+1. **A screen teardown freed the whole app.** `PhotonActivity.onDestroy` called `nativeDestroy`, so every later service tick was a silent no-op (`activityContextPtr == 0`): no pings, no pipe upkeep, no CLUTCH. Now the SERVICE owns the one app context (`PhotonConnectionService.sharedContext`). The screen ADOPTS it on create (a resize to its surface) and lets go on destroy; the app keeps running headless. The context never owned a surface — the window arrives with each draw — so nothing about it needs a screen.
+2. **A restarted service never brought the network up.** `onStartCommand` initialised the network only from the screen's intent extras; a START_STICKY restart delivers a null intent. Now the service recomputes them itself (`DeviceFingerprint.gather`, its own dirs).
+
+The service builds the app headless (`nativeCreateHeadless`) on three EDGES: its own start with no screen alive, an FCM doorbell wake (`wakeFromDoorbell`; with no service at all the wake now starts one), and a tick asked for with no app. A screenless app also finishes its session resume: the service drives `PhotonApp::headless_tick` = `poll_resume_vault` + `advance_protocol` (the resume completion used to be polled only by the draw tick).
+
+**The watchdog** (Nick: "similar to how Lumis handles a similar problem" — lumis's camera process exits when its UI heartbeat stops; here the watcher revives instead): every protocol pass bumps `PROTOCOL_BEAT` (the service tick and the screen's draw). The existing 1 s background poll reads it, counted in polls, no new timer. No app → build it. Beat stale for 15 polls → logged. Stale for 300 polls (the main thread wedged for minutes) → the process exits and START_STICKY brings the service back, headless, network up.
+

@@ -41,7 +41,7 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
-- [Android dark in background](project_android_headless_dark.md) — 2026-10-13 CONVICTED (Brittany): Activity destroy frees the Rust app, sticky restart has no fingerprint → offline for days; FCM wake pokes nothing. Fix unbuilt
+- [Android dark in background](project_android_headless_dark.md) — 2026-10-13 CONVICTED (Brittany): Activity destroy frees the Rust app, sticky restart has no fingerprint → offline for days; FCM wake pokes nothing. Fix BUILT (service owns the app + watchdog), field verify pending
 - [Beams](project_beams.md) — 2026-10-10 DECIDED + Linux desktop slice BUILT: H.264 (hardware phones / OpenH264 desktops), intra refresh, ISP stood aside, gains as pre-emphasis, VSF labels, integer chain + blue noise; phone capture next
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02: Jeff wave holes = L rule; Emma 2x = future-named backlog → re-anchor + render-trace + recv-loop guard BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: opsin pixels pack thru fluor::theme::fmt (R↔B Android); loads/convert off-thread; viewer fetch/decode bar

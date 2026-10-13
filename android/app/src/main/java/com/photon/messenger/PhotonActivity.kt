@@ -720,13 +720,22 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         // Samsung needs workarounds for Choreographer throttling
         val isSamsung = android.os.Build.MANUFACTURER.equals("samsung", ignoreCase = true)
 
-        PhotonLog.d(TAG, "Initializing native UI with network ptr 0x${networkPtr.toString(16)}")
-        nativePtr = nativeInitWithNetwork(
-            holder.surfaceFrame.width(),
-            holder.surfaceFrame.height(),
-            networkPtr,
-            isSamsung
-        )
+        // ADOPT the app the service is already running headless (2026-10-13): the same Rust app carries on — attested, mid-ceremony, whatever it was doing — and only learns the screen's size. Build fresh only when none exists.
+        val running = PhotonConnectionService.sharedContext
+        if (running != 0L) {
+            nativePtr = running
+            nativeResize(nativePtr, holder.surfaceFrame.width(), holder.surfaceFrame.height())
+            PhotonLog.i(TAG, "screen adopted the running app at 0x${running.toString(16)}")
+        } else {
+            PhotonLog.d(TAG, "Initializing native UI with network ptr 0x${networkPtr.toString(16)}")
+            nativePtr = nativeInitWithNetwork(
+                holder.surfaceFrame.width(),
+                holder.surfaceFrame.height(),
+                networkPtr,
+                isSamsung
+            )
+        }
+        PhotonConnectionService.activityAttached = nativePtr != 0L
 
         if (nativePtr != 0L) {
             PhotonLog.d(TAG, "Native UI initialized at 0x${nativePtr.toString(16)}")
@@ -912,11 +921,15 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         if (live === this) live = null // drop the Service's back-reference to this (possibly recreated) Activity
         Choreographer.getInstance().removeFrameCallback(this)
         frameHandler.removeCallbacks(idleFrameRunnable)
+        PhotonConnectionService.activityAttached = false
         if (nativePtr != 0L) {
-            // Retract the ptr from the service FIRST so its RX worker can't fire a headless tick into
-            // a context we're about to free, then destroy.
-            connectionService?.setActivityContextPtr(0L)
-            nativeDestroy(nativePtr)
+            // THE SCREEN LETS GO, THE APP STAYS (field 2026-10-13, Brittany): while the service lives it keeps this same app running headless — freeing it here is what left a phone dark for days. Only with no service to carry it does the screen free it, as before.
+            if (PhotonConnectionService.live == null) {
+                PhotonConnectionService.sharedContext = 0L
+                nativeDestroy(nativePtr)
+            } else {
+                PhotonLog.i(TAG, "screen destroyed — the service keeps the app running headless")
+            }
             nativePtr = 0
         }
     }

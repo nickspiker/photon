@@ -43,11 +43,19 @@ class PhotonMessagingService : FirebaseMessagingService() {
             "wake" -> {
                 val svc = PhotonConnectionService.live
                 if (svc != null) {
-                    PhotonLog.d(TAG, "Doorbell wake — poking protocol tick")
-                    svc.requestServiceTick()
+                    // Not just a tick: a tick into no app was a silent no-op for days (2026-10-13). The wake builds the headless app if none runs, then ticks.
+                    PhotonLog.d(TAG, "Doorbell wake — ensuring the app, then a protocol tick")
+                    svc.wakeFromDoorbell()
                 } else {
-                    PhotonLog.d(TAG, "Doorbell wake with no live service — posting notification")
-                    postWakeNotification()
+                    // No service at all: start it. It recomputes its own fingerprint and comes up headless with the network (a high-priority FCM message permits the foreground start); only if Android refuses do we fall back to asking the user.
+                    try {
+                        val i = Intent(this, PhotonConnectionService::class.java)
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+                        PhotonLog.d(TAG, "Doorbell wake with no service — started it headless")
+                    } catch (e: Throwable) {
+                        PhotonLog.w(TAG, "Doorbell wake: could not start the service (${e.javaClass.simpleName}) — posting notification")
+                        postWakeNotification()
+                    }
                 }
             }
             "update" -> {

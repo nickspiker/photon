@@ -441,6 +441,75 @@ impl PhotonContext {
     }
 }
 
+/// THE PROTOCOL HEARTBEAT (the Android watchdog, 2026-10-13): bumped by every protocol pass — the service's headless tick and the screen's draw. The service's poll loop reads it; a beat that stops moving while backgrounded means nothing is driving the protocol (cf. lumis's UI heartbeat in shared memory, inverted: here the watcher revives rather than kills).
+#[cfg(target_os = "android")]
+static PROTOCOL_BEAT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(target_os = "android")]
+fn beat() {
+    PROTOCOL_BEAT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Build the one app context — the screen's, or the service's headless one. The context never owns a surface (the window arrives with each draw), so it lives on with no screen at all.
+#[cfg(target_os = "android")]
+fn create_context(env: &mut JNIEnv<'_>, width: jint, height: jint, network_ptr: jlong, is_samsung: jboolean) -> jlong {
+    if network_ptr == 0 {
+        error!("Null NetworkContext pointer");
+        return 0;
+    }
+    // Feed Android's user-facing double-tap timing to fluor so the multi-tap gestures (double = word, triple = paragraph) honour the SYSTEM setting instead of the 400 ms default.
+    match env.call_static_method("android/view/ViewConfiguration", "getDoubleTapTimeout", "()I", &[]) {
+        Ok(v) => {
+            if let Ok(ms) = v.i() {
+                if ms > 0 {
+                    fluor::host::os_input::set_double_click_interval(ms as u32);
+                }
+            }
+        }
+        Err(_) => {
+            let _ = env.exception_clear();
+        }
+    }
+    fluor::host::android::surface::set_samsung_mode(is_samsung != JNI_FALSE);
+    let network = unsafe { &*(network_ptr as *const NetworkContext) };
+    let context = Box::new(PhotonContext::new(width.max(1) as u32, height.max(1) as u32, network));
+    Box::into_raw(context) as jlong
+}
+
+/// The SERVICE builds the app with no screen (no Activity alive, or none ever was since the process started): the service's own start, an FCM doorbell wake, or the watchdog finding no app. The screen adopts this same context when it appears.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeCreateHeadless(
+    mut env: JNIEnv<'_>,
+    _class: JClass<'_>,
+    network_ptr: jlong,
+    width: jint,
+    height: jint,
+    is_samsung: jboolean,
+) -> jlong {
+    info!("PhotonService: building the app HEADLESS {}x{} (network @ 0x{:x}) — no screen, the protocol runs anyway", width, height, network_ptr as u64);
+    create_context(&mut env, width, height, network_ptr, is_samsung)
+}
+
+/// The service frees the app only when no screen holds it (its own onDestroy with no Activity attached).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeDestroyContext(_env: JNIEnv<'_>, _class: JClass<'_>, context_ptr: jlong) {
+    if context_ptr != 0 {
+        info!("PhotonService: destroying the app context (service going away, no screen holds it)");
+        unsafe {
+            let _ = Box::from_raw(context_ptr as *mut PhotonContext);
+        }
+    }
+}
+
+/// The watchdog's read of the protocol heartbeat.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeProtocolBeat(_env: JNIEnv<'_>, _class: JClass<'_>) -> jlong {
+    PROTOCOL_BEAT.load(std::sync::atomic::Ordering::Relaxed) as jlong
+}
+
 #[cfg(target_os = "android")]
 fn get_context(ptr: jlong) -> Option<&'static mut PhotonContext> {
     if ptr == 0 {
@@ -468,26 +537,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeInitWithNetwork
         network_ptr as u64,
         is_samsung != JNI_FALSE
     );
-    if network_ptr == 0 {
-        error!("Null NetworkContext pointer");
-        return 0;
-    }
-    // Feed Android's user-facing double-tap timing to fluor so the multi-tap gestures (double = word, triple = paragraph) honour the SYSTEM setting instead of the 400 ms default. ViewConfiguration.getDoubleTapTimeout() is static — no Context needed.
-    match env.call_static_method("android/view/ViewConfiguration", "getDoubleTapTimeout", "()I", &[]) {
-        Ok(v) => {
-            if let Ok(ms) = v.i() {
-                if ms > 0 {
-                    fluor::host::os_input::set_double_click_interval(ms as u32);
-                    info!("PhotonActivity: double-tap timeout = {ms} ms (ViewConfiguration)");
-                }
-            }
-        }
-        Err(e) => info!("PhotonActivity: ViewConfiguration.getDoubleTapTimeout unavailable ({e}) — 400 ms default"),
-    }
-    fluor::host::android::surface::set_samsung_mode(is_samsung != JNI_FALSE);
-    let network = unsafe { &*(network_ptr as *const NetworkContext) };
-    let context = Box::new(PhotonContext::new(width as u32, height as u32, network));
-    Box::into_raw(context) as jlong
+    create_context(&mut env, width, height, network_ptr, is_samsung)
 }
 
 #[cfg(target_os = "android")]
@@ -512,6 +562,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeDraw(
     // Returns whether pixels changed this frame — Kotlin's frame callback drops to an idle cadence after a run of unchanged frames (an idle screen ticked at every vsync, 2026-09-10).
     let wrote = ctx.shell.draw(&window);
     ctx.ticking.store(false, Ordering::Release);
+    beat();
     wrote as jni::sys::jboolean
 }
 
@@ -538,8 +589,9 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeServic
         return;
     }
     let now = std::time::Instant::now();
-    ctx.shell.app().advance_protocol(now);
+    ctx.shell.app().headless_tick(now);
     ctx.ticking.store(false, Ordering::Release);
+    beat();
 }
 
 #[cfg(target_os = "android")]
