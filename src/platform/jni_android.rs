@@ -297,6 +297,12 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamSe
     crate::wave::beam_session::android_self_frame(w.max(0) as usize, h.max(0) as usize, &bytes);
 }
 
+/// BEAMS: the picture's rotation changed (quarter turns clockwise; a front camera mirrors its self-view).
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamOrient(_env: JNIEnv<'_>, _class: JClass<'_>, quarter_turns: jint, front: jni::sys::jboolean) {
+    crate::wave::beam_session::android_orient(quarter_turns.clamp(0, 3) as u8, front != 0);
+}
+
 /// BEAMS: the phone's pipeline is up — geometry, fps, the maker's XYZ→camera matrix (9 floats row-major, or null) and whether the straight-thru request took in full. Starts the encoded sender armed by the Beam button.
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean) {

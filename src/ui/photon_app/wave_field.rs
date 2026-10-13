@@ -218,24 +218,40 @@ fn under_premult(top: u32, bot: u32) -> u32 {
 }
 
 /// Paint a beam picture (γ2 Rec.2020 RGB triples) letterboxed in the square, under whatever is already on the canvas — the same under-compositing the field uses, so avatars and buttons drawn before it stay in front. Nearest-neighbour scaling, integer: the picture is already the display's transfer, so the only work per pixel is the pack.
+#[allow(dead_code)]
 pub(super) fn paint_picture(canvas: &mut Canvas, g: &FieldGeom, pic: &crate::wave::beam_session::Picture) {
     let x0 = canvas.width.saturating_sub(g.side) / 2;
     paint_picture_in(canvas, x0, g.y0, g.side, pic);
 }
 
-/// The same blit into any square: `x0`,`y0` its top-left, `side` its edge — the self-view inset uses it.
+/// The same blit into any square: `x0`,`y0` its top-left, `side` its edge — centred.
 pub(super) fn paint_picture_in(canvas: &mut Canvas, x0: usize, y0: usize, side: usize, pic: &crate::wave::beam_session::Picture) {
-    if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || side == 0 {
+    paint_picture_rect(canvas, x0, y0, side, side, pic, false);
+}
+
+/// THE BEAM'S REGION (Nick 2026-10-13: "keeps the image top as big as it can, so not letterbox but letterbottom… the wave buttons are in the empty space below the video"): the full width, from under the status bar down to just above the button stack.
+pub(super) fn picture_region(buf_w: usize, buf_h: usize, unit: f32) -> (usize, usize, usize, usize) {
+    let top = (unit * 0.4).max(crate::ui::safe_top_px() as f32);
+    let bottom = (unit * 1.5).max(crate::ui::safe_bottom_px() as f32);
+    // The diagonal stack's top edge: three slots stepped 0.55 of a 2.4-unit button apart, half a button above the lowest centre, plus a half-unit gap.
+    let stack = unit * 2.4 * (0.5 + 2.0 * 0.55 + 0.5) + unit * 0.5;
+    let h = (buf_h as f32 - top - bottom - stack).max(16.0);
+    (0, top as usize, buf_w, h as usize)
+}
+
+/// Blit a picture into a rect, as big as fits: TOP-ANCHORED when `top`, so the spare room is all below it; centred otherwise.
+pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: usize, rh: usize, pic: &crate::wave::beam_session::Picture, top: bool) {
+    if pic.w == 0 || pic.h == 0 || pic.rgb.len() < pic.w * pic.h * 3 || rw == 0 || rh == 0 {
         return;
     }
     let (cw, ch) = (canvas.width, canvas.height);
-    // Fit: the larger picture axis spans the side.
-    let (dw, dh) = if pic.w * side >= pic.h * side {
-        (side, (pic.h * side / pic.w).max(1))
+    // Fit: whichever axis binds first.
+    let (dw, dh) = if pic.w * rh >= pic.h * rw {
+        (rw, (pic.h * rw / pic.w).max(1))
     } else {
-        ((pic.w * side / pic.h).max(1), side)
+        ((pic.w * rh / pic.h).max(1), rh)
     };
-    let (dx0, dy0) = (x0 + (side - dw) / 2, y0 + (side - dh) / 2);
+    let (dx0, dy0) = (x0 + (rw - dw) / 2, if top { y0 } else { y0 + (rh - dh) / 2 });
     let y_end = (dy0 + dh).min(ch);
     let x_end = (dx0 + dw).min(cw);
     for y in dy0..y_end {

@@ -38,6 +38,8 @@ pub enum Kind {
     Data = 0,
     /// The beam's self-description (geometry, fps, codec, colour).
     Info = 1,
+    /// ORIENTATION (Nick 2026-10-13: "we capture and send at whatever orientation the sensor is… flip it on demand based on the rotation set by the frame that we send"): `[2, quarter turns clockwise 0..=3]` — how far the receiver turns the sensor-native picture so the world's up is up. Sent at start, the moment it changes, and with every self-description; a v117 receiver counts the unknown kind as a bad packet and carries on.
+    Orient = 2,
 }
 
 /// Which codec the encoded frames are in. One today; the byte exists so a second never needs a flag day.
@@ -184,6 +186,11 @@ impl BeamTx {
         }
     }
 
+    /// Send the picture's rotation: quarter turns clockwise (0..=3) that put the world's up at the top.
+    pub fn send_orient(&mut self, quarter_turns: u8) {
+        self.seal_and_send(&[Kind::Orient as u8, quarter_turns & 3]);
+    }
+
     /// Send the beam's self-description. Call at start and on the `INFO_EVERY_FRAMES` cadence (the caller's frame counter is the edge).
     pub fn send_info(&mut self, info: &Info) {
         let p = encode_info(info);
@@ -225,6 +232,8 @@ pub struct BeamRx {
     /// The latest self-description heard, and whether it changed since the decoder stage last looked.
     info: Option<Info>,
     info_changed: bool,
+    /// The sender's latest rotation, quarter turns clockwise.
+    pub rotation: u8,
     pub frames_done: u64,
     pub frames_lost: u64,
     pub bad_packets: u64,
@@ -242,6 +251,7 @@ impl BeamRx {
             newest_done: 0,
             info: None,
             info_changed: false,
+            rotation: 0,
             frames_done: 0,
             frames_lost: 0,
             bad_packets: 0,
@@ -291,6 +301,10 @@ impl BeamRx {
                 None
             }
             Some(&k) if k == Kind::Data as u8 => self.push_symbol(&payload),
+            Some(&k) if k == Kind::Orient as u8 && payload.len() >= 2 => {
+                self.rotation = payload[1] & 3;
+                None
+            }
             _ => {
                 self.bad_packets += 1;
                 None
@@ -363,6 +377,12 @@ static BEAM_FRAMES_CV: std::sync::Condvar = std::sync::Condvar::new();
 const FRAMES_CAP: usize = 120;
 /// The latest self-description the receiver heard (for the decoder stage's reconfigure edge and the UI's "what is this beam" line).
 static BEAM_INFO: Mutex<Option<Info>> = Mutex::new(None);
+/// The peer's picture rotation (quarter turns clockwise), from its Orient packets — the decoder stage turns each displayed picture by it.
+static BEAM_ROTATION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub fn current_rotation() -> u8 {
+    BEAM_ROTATION.load(std::sync::atomic::Ordering::Relaxed)
+}
 
 /// Is a beam receiver up? The media sink asks before demuxing.
 pub fn rx_live() -> bool {
@@ -408,6 +428,7 @@ impl Drop for RxHandle {
         }
         BEAM_FRAMES.lock().unwrap().clear();
         *BEAM_INFO.lock().unwrap() = None;
+        BEAM_ROTATION.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -436,6 +457,7 @@ pub fn start_rx(wave_secret: &[u8; 32], dir: Direction) -> RxHandle {
                         if let Some(info) = brx.take_info_change() {
                             *BEAM_INFO.lock().unwrap() = Some(info);
                         }
+                        BEAM_ROTATION.store(brx.rotation, std::sync::atomic::Ordering::Relaxed);
                     }
                     Err(mpsc::RecvTimeoutError::Timeout) => {}
                     Err(mpsc::RecvTimeoutError::Disconnected) => break,
@@ -554,6 +576,19 @@ mod tests {
         let wire2 = packet::seal_beam(&tx.chain, 1, &p).unwrap();
         rx.push(&wire2);
         assert_eq!(rx.take_info_change(), None);
+    }
+
+    #[test]
+    fn orientation_rides_its_own_packet() {
+        let s = secret();
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let mut tx = BeamTx::new(&s, Direction::OriginToAnswer, peer);
+        let mut rx = BeamRx::new(&s, Direction::OriginToAnswer);
+        tx.chain.advance_to(0);
+        let wire = packet::seal_beam(&tx.chain, 0, &[Kind::Orient as u8, 3]).unwrap();
+        assert!(rx.push(&wire).is_none());
+        assert_eq!(rx.rotation, 3);
+        assert_eq!(rx.bad_packets, 0);
     }
 
     #[test]

@@ -1058,16 +1058,21 @@ impl PhotonApp {
                     }
                 }
                 // The field goes UNDER everything drawn so far in this panel (avatars, rings, text, buttons): fluor composites front to back. It is translucent; the panel paints NO backdrop of its own (Nick 2026-09-28: it must not hide things) — the per-screen bodies are skipped while it shows, so what lands under it is the chrome group's speckle layer, flattened last, and the chrome itself stays on top (flattened first).
-                // OUR camera, the self-view inset (bottom-right of the square), FIRST: fluor composites front to back, so it lands under the avatars and buttons and over the peer's picture painted next.
-                if let (Some(g), Some(pic)) = (field_geom, crate::wave::beam_session::self_picture()) {
-                    let s = g.side / 4;
-                    let m = g.side / 32;
-                    let x0 = buf_w.saturating_sub(g.side) / 2 + g.side - s - m;
-                    super::wave_field::paint_picture_in(&mut canvas, x0, g.y0 + g.side - s - m, s, &pic);
-                }
-                // The peer's BEAM, if one is flowing: under the avatars and buttons, over the field — the newest decoded picture, letterboxed in the square.
-                if let (Some(g), Some(pic)) = (field_geom, crate::wave::beam_session::picture()) {
-                    super::wave_field::paint_picture(&mut canvas, &g, &pic);
+                // THE BEAM LAYOUT (Nick 2026-10-13): the peer's picture as big as the screen allows, TOP-anchored, so the buttons sit in the room below it; our camera as an inset in the picture's bottom-right corner. The inset paints FIRST: fluor composites front to back, so it lands over the picture painted next and under the avatars and buttons.
+                if field_geom.is_some() {
+                    let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
+                    let (rx0, ry0, rw, rh) = super::wave_field::picture_region(buf_w, buf_h, unit_now);
+                    let peer = crate::wave::beam_session::picture();
+                    // The picture's drawn height (fit to width first), so the inset hugs its corner rather than the region's.
+                    let ph = peer.as_ref().map_or(rh, |p| if p.w * rh >= p.h * rw { (p.h * rw / p.w.max(1)).min(rh) } else { rh });
+                    if let Some(me) = crate::wave::beam_session::self_picture() {
+                        let s = (rw.min(ph) / 4).max(16);
+                        let m = s / 8;
+                        super::wave_field::paint_picture_rect(&mut canvas, rx0 + rw - s - m, ry0 + ph.saturating_sub(s + m), s, s, &me, false);
+                    }
+                    if let Some(p) = peer {
+                        super::wave_field::paint_picture_rect(&mut canvas, rx0, ry0, rw, rh, &p, true);
+                    }
                 }
                 if let (Some(g), Some(m)) = (field_geom, self.wave_field_map.as_ref()) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);

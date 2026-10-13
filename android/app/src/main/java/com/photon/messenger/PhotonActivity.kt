@@ -60,6 +60,9 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         /** The live Activity, for the Service to reach back into UI-only work (the wave-start mic prompt). Set in onCreate, cleared in onDestroy. Single-Activity app, so this is the one instance. @Volatile: the Service reads it from the JNI wave-start upcall thread. */
         @Volatile
         var live: PhotonActivity? = null
+        /** The device's rotation, degrees CLOCKWISE from its natural orientation (0/90/180/270), from photon's OWN gravity snap — never Android's display rotation — and kept current even when the user locks screen rotation, because a beam's picture follows the world, not the UI (Nick 2026-10-13). Read by PhotonBeam per frame. */
+        @Volatile
+        var deviceRotationCw: Int = 0
     }
 
     // Native UI context pointer (rendering, touch, etc.)
@@ -122,6 +125,14 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
                 gravityX = event.values[0]
                 gravityY = event.values[1]
                 gravityZ = event.values[2]
+                // The beam's rotation, same 7 m/s² deadband, held when near-flat: top up 0°, turned clockwise (top to the right) 90°, upside down 180°, counter-clockwise (top to the left) 270°.
+                deviceRotationCw = when {
+                    gravityY > 7.0f -> 0
+                    gravityX < -7.0f -> 90
+                    gravityY < -7.0f -> 180
+                    gravityX > 7.0f -> 270
+                    else -> deviceRotationCw
+                }
                 updateOrientationFromGravity()
             }
         }

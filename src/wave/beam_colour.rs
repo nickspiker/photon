@@ -318,6 +318,43 @@ impl Converter {
     }
 }
 
+/// Turn an RGB-triple picture `q` quarter turns CLOCKWISE (0..=3); returns the new pixels and size. A pure index map — no resampling, no float.
+pub fn rotate_rgb(rgb: &[u8], w: usize, h: usize, q: u8) -> (Vec<u8>, usize, usize) {
+    let q = q & 3;
+    if q == 0 {
+        return (rgb.to_vec(), w, h);
+    }
+    let (nw, nh) = if q % 2 == 1 { (h, w) } else { (w, h) };
+    let mut out = vec![0u8; w * h * 3];
+    for y in 0..h {
+        for x in 0..w {
+            // Where source (x, y) lands after q clockwise quarter turns.
+            let (nx, ny) = match q {
+                1 => (h - 1 - y, x),
+                2 => (w - 1 - x, h - 1 - y),
+                _ => (y, w - 1 - x),
+            };
+            let s = (y * w + x) * 3;
+            let d = (ny * nw + nx) * 3;
+            out[d..d + 3].copy_from_slice(&rgb[s..s + 3]);
+        }
+    }
+    (out, nw, nh)
+}
+
+/// Mirror an RGB-triple picture left↔right in place (the self-view of a front camera, as a mirror shows you).
+pub fn mirror_rgb(rgb: &mut [u8], w: usize, h: usize) {
+    for y in 0..h {
+        let row = &mut rgb[y * w * 3..(y + 1) * w * 3];
+        for x in 0..w / 2 {
+            let (a, b) = (x * 3, (w - 1 - x) * 3);
+            for c in 0..3 {
+                row.swap(a + c, b + c);
+            }
+        }
+    }
+}
+
 fn mat_mul(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
     let mut o = [0f32; 9];
     for r in 0..3 {
@@ -383,6 +420,26 @@ mod tests {
         let (pb, hb) = (mb(&plain), mb(&halved));
         // Linear blue halves → γ2 blue × 1/√2.
         assert!((hb / pb - 0.7071).abs() < 0.03, "plain {pb:.1} halved {hb:.1}");
+    }
+
+    #[test]
+    fn rotation_and_mirror_are_exact_index_maps() {
+        // A 3×2 picture whose pixel values name their source position.
+        let (w, h) = (3, 2);
+        let px: Vec<u8> = (0..(w * h) as u8).flat_map(|i| [i, i, i]).collect();
+        let (r1, w1, h1) = rotate_rgb(&px, w, h, 1);
+        assert_eq!((w1, h1), (2, 3));
+        // Clockwise: the bottom-left source (index 3) lands top-left.
+        let first: Vec<u8> = r1.chunks(3).map(|p| p[0]).collect();
+        assert_eq!(first, vec![3, 0, 4, 1, 5, 2]);
+        let (r2, w2, h2) = rotate_rgb(&r1, w1, h1, 1);
+        let (r3, w3, h3) = rotate_rgb(&r2, w2, h2, 1);
+        let (r4, _, _) = rotate_rgb(&r3, w3, h3, 1);
+        assert_eq!(r4, px, "four quarter turns are the identity");
+        let mut m = px.clone();
+        mirror_rgb(&mut m, w, h);
+        let mv: Vec<u8> = m.chunks(3).map(|p| p[0]).collect();
+        assert_eq!(mv, vec![2, 1, 0, 5, 4, 3]);
     }
 
     #[test]

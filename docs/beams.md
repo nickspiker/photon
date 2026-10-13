@@ -81,6 +81,12 @@ The receiver branches on the characterization's `Transfer` and class: `gamma2` �
 
 16×16 macroblocks, predicted intra (from neighbours) or inter (a motion-shifted patch of a reference), the residual transformed in 4×4 (and 8×8 in High) integer blocks and quantized; the step doubles every 6 QP. At beam rates: **blocking** at block boundaries (the normative in-loop deblocker smooths it, keyed to QP), **ringing / mosquitoes** beside sharp edges, **smearing** of fine texture (high coefficients go first), **chroma bleed** (half-resolution, coarser-quantized colour — which the receiver's matrix then amplifies), and **keyframe pumping**, which intra refresh removes.
 
+## 5b. Orientation and layout (decided + built 2026-10-13)
+
+Nick: "We capture and send at whatever orientation the sensor is, we don't flip anything. We do however record the orientation from our screen orientation code (don't use Android's)… flip it on demand based on the rotation set by the frame that we send." The wire stays sensor-native. A `Kind::Orient` packet `[2, quarter turns clockwise]` names how far the receiver turns the picture so the world's up is up: the camera's mounting angle (`SENSOR_ORIENTATION`) against the device's rotation from photon's OWN gravity snap (`PhotonActivity.deviceRotationCw`, the same 7 m/s² deadband that drives the UI, kept current even when rotation is locked), the front camera's sense reversed (Camera2's JPEG-orientation rule). Sent at start, on every change, and with every self-description; a v117 receiver ignores the unknown kind. The receiver turns each displayed picture (`beam_colour::rotate_rgb`, an index map); the self-view turns the same way and is MIRRORED for a front camera (a desktop webcam counts as one).
+
+Layout (Nick: "keeps the image top as big as it can, so not letterbox but letterbottom… the wave buttons are in the empty space below the video"): the peer's picture fills the full width, top-anchored, down to just above the button stack (`wave_field::picture_region`); the self-view is an inset in the picture's bottom-right corner.
+
 ## 6. Stages (build order)
 
 1. **Codec substrate (desktop).** OpenH264 as a desktop-only dependency through the arch gate; encode + decode of I420 in software; intra refresh if the library has it, else periodic keyframes on the desktop side only. A round-trip test.

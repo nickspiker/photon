@@ -38,9 +38,14 @@ pub fn self_picture() -> Option<Picture> {
     SELF_PICTURE.lock().unwrap().clone()
 }
 
-fn post_self(conv: &Converter, frame: &h264::I420, gains: Gains, n: u32, rgb: &mut Vec<u8>) {
+/// The self-view: the camera frame thru the receiver's chain, turned to this screen's orientation (the same quarter turns the far side applies), and MIRRORED for a front camera — you see yourself as a mirror shows you; the far side gets the true image.
+fn post_self(conv: &Converter, frame: &h264::I420, gains: Gains, n: u32, rgb: &mut Vec<u8>, quarter_turns: u8, mirror: bool) {
     conv.convert(frame, gains, n, rgb);
-    *SELF_PICTURE.lock().unwrap() = Some(Picture { w: frame.w, h: frame.h, frame_no: n, rgb: rgb.clone() });
+    let (mut out, w, h) = super::beam_colour::rotate_rgb(rgb, frame.w, frame.h, quarter_turns);
+    if mirror {
+        super::beam_colour::mirror_rgb(&mut out, w, h);
+    }
+    *SELF_PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out });
     PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -65,8 +70,18 @@ pub fn android_self_frame(w: usize, h: usize, planes: &[u8]) {
     let g = ANDROID_SELF_CONV.lock().unwrap();
     if let Some(conv) = g.as_ref() {
         let mut rgb = Vec::new();
-        post_self(conv, &f, Gains::NONE, 0, &mut rgb);
+        let o = ANDROID_ORIENT.load(Ordering::Relaxed);
+        post_self(conv, &f, Gains::NONE, 0, &mut rgb, o & 3, o & 4 != 0);
     }
+}
+
+/// The phone's picture rotation: bits 0..1 = quarter turns clockwise (from the camera's mounting angle and facing combined with photon's own gravity snap — never Android's display rotation), bit 2 = a front camera (the self-view mirrors). Set by Kotlin on every change.
+static ANDROID_ORIENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+/// The value last put on the wire, so a change goes out at once.
+static ANDROID_ORIENT_SENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xFF);
+
+pub fn android_orient(quarter_turns: u8, front: bool) {
+    ANDROID_ORIENT.store((quarter_turns & 3) | if front { 4 } else { 0 }, Ordering::Relaxed);
 }
 
 /// A camera frame source for the desktop sender: blocks for the next frame.
@@ -189,7 +204,9 @@ fn decode_loop(stop: Arc<AtomicBool>) {
         }
         if let Some((pic, gains, n)) = shown {
             conv.convert(&pic, gains, n, &mut rgb);
-            *PICTURE.lock().unwrap() = Some(Picture { w: pic.w, h: pic.h, frame_no: n, rgb: rgb.clone() });
+            // The sender's rotation, applied here at display (the wire stays sensor-native).
+            let (out, w, h) = super::beam_colour::rotate_rgb(&rgb, pic.w, pic.h, beam::current_rotation());
+            *PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out });
             PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -251,10 +268,12 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                 }
                 if frame_no % beam::INFO_EVERY_FRAMES == 0 {
                     tx.send_info(&info);
+                    tx.send_orient(0);
                 }
                 // The self-view, every other frame: the camera thru the receiver's own chain.
+                // A desktop camera faces the user and is upright: no turn, mirrored for the self-view.
                 if frame_no % 2 == 0 {
-                    post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb);
+                    post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb, 0, true);
                 }
                 match enc.encode(&frame) {
                     Ok(au) if !au.is_empty() => {
@@ -299,8 +318,14 @@ pub fn push_encoded(gains: Gains, au: &[u8]) -> bool {
             tx.set_peer(addr);
         }
     }
+    let o = ANDROID_ORIENT.load(Ordering::Relaxed) & 3;
+    let changed = ANDROID_ORIENT_SENT.swap(o, Ordering::Relaxed) != o;
     if *frame_no % beam::INFO_EVERY_FRAMES == 0 {
         tx.send_info(info);
+    }
+    // The rotation goes out the moment it changes, and with every self-description for a receiver that joined late.
+    if changed || *frame_no % beam::INFO_EVERY_FRAMES == 0 {
+        tx.send_orient(o);
     }
     tx.send_frame(*frame_no, gains, au);
     *frame_no = frame_no.wrapping_add(1);
@@ -344,6 +369,7 @@ pub fn android_stop() {
     *ANDROID_SENDER.lock().unwrap() = None;
     *ANDROID_ARMED.lock().unwrap() = None;
     *ANDROID_SELF_CONV.lock().unwrap() = None;
+    ANDROID_ORIENT_SENT.store(0xFF, Ordering::Relaxed);
     clear_self();
     #[cfg(target_os = "android")]
     crate::platform::jni_android::wave_service_void("stopBeamCapture");

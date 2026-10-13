@@ -1016,6 +1016,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeBeamFrame(au: ByteArray, g0: Int, g1: Int, g2: Int, g3: Int)
     private external fun nativeBeamStarted(w: Int, h: Int, fps: Int, matrix: FloatArray?, straight: Boolean)
     private external fun nativeBeamSelf(planes: ByteArray, w: Int, h: Int)
+    private external fun nativeBeamOrient(quarterTurns: Int, front: Boolean)
 
     @Volatile private var beamRunning = false
     private var beam: PhotonBeam? = null
@@ -1034,7 +1035,8 @@ class PhotonConnectionService : Service() {
         val b = PhotonBeam(this,
             onFrame = { au, g -> try { nativeBeamFrame(au, g[0], g[1], g[2], g[3]) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamFrame", e) } },
             onStarted = { w, h, fps, m, straight -> try { nativeBeamStarted(w, h, fps, m, straight) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamStarted", e) } },
-            onSelf = { planes, w, h -> try { nativeBeamSelf(planes, w, h) } catch (_: Throwable) {} })
+            onSelf = { planes, w, h -> try { nativeBeamSelf(planes, w, h) } catch (_: Throwable) {} },
+            onOrient = { q, front -> try { nativeBeamOrient(q, front) } catch (_: Throwable) {} })
         beam = b
         b.start()
         PhotonLog.i(TAG, "beam: capture started")

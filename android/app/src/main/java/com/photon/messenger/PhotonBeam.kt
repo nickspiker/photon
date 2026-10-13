@@ -44,6 +44,8 @@ class PhotonBeam(
     private val onStarted: (Int, Int, Int, FloatArray?, Boolean) -> Unit,
     /** The self-view: a 4× subsampled I420 frame (y‖u‖v), every other camera frame. */
     private val onSelf: (ByteArray, Int, Int) -> Unit,
+    /** The picture's rotation changed: quarter turns clockwise that put the world's up at the top, and whether this is a front camera. */
+    private val onOrient: (Int, Boolean) -> Unit,
 ) {
     companion object {
         private const val TAG = "PhotonBeam"
@@ -91,6 +93,9 @@ class PhotonBeam(
             return
         }
         val chars = cm.getCameraCharacteristics(id)
+        sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        frontFacing = chars.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT
+        lastQuarter = -1
         val size = pickSize(chars)
         w = size.width
         h = size.height
@@ -262,6 +267,21 @@ class PhotonBeam(
 
     /** One camera frame into the encoder, if an input buffer is free; else dropped (never block the camera). Planes copied honouring row and pixel strides. */
     private var selfTick = 0L
+    private var sensorOrientation = 0
+    private var frontFacing = true
+    private var lastQuarter = -1
+
+    /** The frames go out SENSOR-NATIVE (never turned here); this names how far the receiver turns them so the world's up is up — the sensor's mounting angle against the device's rotation (photon's gravity snap), the front camera's sense reversed (Camera2's JPEG-orientation rule). Reported on change only. */
+    private fun reportOrientation() {
+        val dev = PhotonActivity.deviceRotationCw
+        val deg = if (frontFacing) (sensorOrientation - dev + 360) % 360 else (sensorOrientation + dev) % 360
+        val q = (deg / 90) and 3
+        if (q != lastQuarter) {
+            lastQuarter = q
+            onOrient(q, frontFacing)
+            PhotonLog.i(TAG, "orientation: sensor ${sensorOrientation}°, device ${dev}°, front=$frontFacing → picture turns ${q * 90}° clockwise")
+        }
+    }
 
     /** The self-view inset: every other frame, the camera subsampled 4× in each direction (160×120 at 640×480), straight from the camera planes. */
     private fun sendSelf(img: Image) {
@@ -283,6 +303,7 @@ class PhotonBeam(
     }
 
     private fun feed(img: Image) {
+        reportOrientation()
         try { sendSelf(img) } catch (_: Throwable) {}
         val mc = codec ?: return
         val idx = freeInputs.poll() ?: run { dropped++; return }
