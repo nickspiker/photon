@@ -1530,6 +1530,18 @@ fn run(
                         }
                     }
                 }
+                // The beam ladder's input: this second's verdict on the shared path (wave/mod.rs LINK_VERDICT) — congested on loss the queue corroborates or a building delay slope, clean on no reported loss and a calm slope.
+                {
+                    let slope_now = if slope_buckets.len() >= 5 {
+                        let (f, b) = (*slope_buckets.front().unwrap() as f32, *slope_buckets.back().unwrap() as f32);
+                        (b - f) / ((slope_buckets.len() - 1) as f32 * 0.1)
+                    } else {
+                        0.0
+                    };
+                    let congested = (peer_loss_sec_max >= LOSSES_TO_DROP as u32 && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC)) || slope_now > SLOPE_DROP_MS_PER_SEC;
+                    let clean = peer_loss_sec_max == 0 && slope_now <= SLOPE_CLIMB_MS_PER_SEC;
+                    super::publish_link_verdict(congested, clean);
+                }
                 peer_loss_sec_max = 0;
                 tail_lost_base = windows_lost;
                 send_l_tail = true;

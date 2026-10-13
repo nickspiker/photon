@@ -87,6 +87,14 @@ Nick: "We capture and send at whatever orientation the sensor is, we don't flip 
 
 Layout (Nick: "keeps the image top as big as it can, so not letterbox but letterbottom… the wave buttons are in the empty space below the video"): the peer's picture fills the full width, top-anchored, down to just above the button stack (`wave_field::picture_region`); the self-view is an inset in the picture's bottom-right corner.
 
+## 5c. The rungs (decided + built 2026-10-13)
+
+H.264 cannot predict across a coded-size change (a new size = new parameter sets + a keyframe); VP9, AV1 and VVC can (reference scaling / resampling), but none has hardware encode on the phones. So the CODED size changes rarely and the DETAIL moves instead: each camera frame is cropped to 16:9, box-shrunk to the effective size and grown back to the coded size before the encoder (`beam_scale.rs`) — a softer picture, fewer bits, no keyframe, any decoder.
+
+Five coded bands, each double the last (Nick: "fill out two more rungs… 2560x1440 and 160x90"): 160×90, 320×180, 640×360, 1280×720, 2560×1440. Detail `d` in half-stops of effective width above 160; band `b` covers `d ∈ [2b−4, 2b]` (two stops); adjacent bands overlap by one stop and the ladder crosses a band only on LEAVING the current one's range, so a link teetering on an edge holds the lower band (Nick: "overlap at least one 'stop' per band so it doesn't jump back and forth… sticks in the lower"). Below the smallest band the lever is frame rate (free in H.264): 30 → 5 fps. A 1280×720 coded stream cannot be softened all the way down: every 16×16 block costs a few bits however smooth (`bitrate_for` carries that floor), which is why bands, not softness alone, carry the bottom.
+
+Steering (`beam_ladder.rs`): the audio engine's once-a-second verdict on the shared path (`wave::LINK_VERDICT` — congested on corroborated loss or a building delay slope, clean on no loss and a calm slope): congested → down a half-stop at once; three clean in a row → up a half-stop. Ceilings: the camera's capture after the crop; 2560×1440 only on a LAN-fast path (desktops); phones stop at 1280×720; metered → 640×360. Bitrate moves live within a band (MediaCodec `PARAMETER_KEY_VIDEO_BITRATE`; OpenH264 `ENCODER_OPTION_BITRATE`); a band crossing restarts the encoder at the new size and re-describes the beam.
+
 ## 6. Stages (build order)
 
 1. **Codec substrate (desktop).** OpenH264 as a desktop-only dependency through the arch gate; encode + decode of I420 in software; intra refresh if the library has it, else periodic keyframes on the desktop side only. A round-trip test.

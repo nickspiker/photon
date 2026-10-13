@@ -24,6 +24,8 @@ pub mod playback;
 pub mod keys;
 pub mod packet;
 pub mod beam;
+pub mod beam_ladder;
+pub mod beam_scale;
 pub mod beam_colour;
 pub mod beam_session;
 pub mod h264;
@@ -45,6 +47,21 @@ pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub static MIC_SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// macOS: the Microphone grant is DENIED for Photon (platform/mic_permission.rs sets it at wave start); the wave screen says so and where the switch is.
 pub static MIC_DENIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// THE LINK VERDICT (the beam ladder's input, 2026-10-13): the audio engine's once-a-second judgement of the path both tracks share — bit 0 CLEAN (no loss reported, delay calm), bit 1 CONGESTED (loss the queue corroborates, or delay building), the rest a sequence number so a reader sees each verdict once. One controller for the link; video is the elastic part that moves first.
+pub static LINK_VERDICT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+pub fn publish_link_verdict(congested: bool, clean: bool) {
+    use std::sync::atomic::Ordering;
+    let seq = (LINK_VERDICT.load(Ordering::Relaxed) >> 2).wrapping_add(1) & 0x3FFF_FFFF;
+    LINK_VERDICT.store((seq << 2) | ((congested as u32) << 1) | clean as u32, Ordering::Relaxed);
+}
+
+/// (sequence, congested, clean); sequence 0 = no verdict yet.
+pub fn link_verdict() -> (u32, bool, bool) {
+    let v = LINK_VERDICT.load(std::sync::atomic::Ordering::Relaxed);
+    (v >> 2, v & 2 != 0, v & 1 != 0)
+}
 
 /// Sink generation: each install bumps it; an engine clears only the generation it installed (a drained engine exiting seconds after hangup must not tear down the next wave's sink).
 static MEDIA_SINK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);

@@ -49,8 +49,11 @@ class PhotonBeam(
 ) {
     companion object {
         private const val TAG = "PhotonBeam"
-        const val WANT_W = 640
-        const val WANT_H = 480
+        // CAPTURE size: the ladder's phone ceiling (beam_ladder.rs, 1280×720 = band 3). The CODED size is the ladder's band, resampled from this in Rust (beam_scale.rs).
+        const val WANT_W = 1280
+        const val WANT_H = 720
+        /** The ladder's coded sizes, smallest first — must match beam_ladder::BANDS. */
+        val BANDS = arrayOf(intArrayOf(160, 90), intArrayOf(320, 180), intArrayOf(640, 360), intArrayOf(1280, 720), intArrayOf(2560, 1440))
         const val FPS = 30
         const val BITRATE = 600_000
         /** Frames per full intra-refresh sweep: two seconds at 30 fps. */
@@ -76,6 +79,16 @@ class PhotonBeam(
     @Volatile private var running = false
     private var w = WANT_W
     private var h = WANT_H
+    // The encoder's coded size and bitrate (the ladder's current band) — distinct from the capture size above.
+    private var codedW = 640
+    private var codedH = 360
+    private var codedKbps = 0
+    private var tierUsed = 0
+    private external fun nativeBeamPlan(timestampNs: Long): Long
+    private external fun nativeBeamFill(
+        sy: java.nio.ByteBuffer, su: java.nio.ByteBuffer, sv: java.nio.ByteBuffer, sYRow: Int, sYPx: Int, sUVRow: Int, sUVPx: Int, sw: Int, sh: Int,
+        dy: java.nio.ByteBuffer, du: java.nio.ByteBuffer, dv: java.nio.ByteBuffer, dYRow: Int, dYPx: Int, dUVRow: Int, dUVPx: Int, dw: Int, dh: Int, soft: Int
+    ): Boolean
     @Volatile private var gains: IntArray = UNIT_GAINS
 
     /** Open the camera and the encoder. The CAMERA permission must already be granted. */
@@ -190,9 +203,9 @@ class PhotonBeam(
     }
 
     /** One encoder configuration attempt, from fullest to plainest (field 2026-10-13: Emma's phone threw IllegalArgumentException on the full set and never sent a frame). Each tier drops what an encoder is most likely to refuse; the log names the tier that took, so we learn each device's limits. */
-    private fun formatFor(tier: Int): MediaFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+    private fun formatFor(tier: Int): MediaFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, codedW, codedH).apply {
         setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-        setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
+        setInteger(MediaFormat.KEY_BIT_RATE, if (codedKbps > 0) codedKbps * 1000 else BITRATE)
         setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
         if (tier <= 1) {
             // Only the first frame is a keyframe; the picture is kept fresh by intra refresh instead.
@@ -219,6 +232,7 @@ class PhotonBeam(
                 c.configure(formatFor(tier), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 c.start()
                 codec = c
+                tierUsed = tier
                 PhotonLog.i(TAG, "encoder ${c.name} configured at tier $tier (0 = full low-latency + intra refresh, 1 = no latency keys, 2 = keyframes every 2 s, 3 = plainest)")
                 return
             } catch (e: Throwable) {
@@ -302,9 +316,49 @@ class PhotonBeam(
         onSelf(out, sw, sh)
     }
 
+    /** A band crossing: restart the encoder at the new coded size (its first frame is the keyframe the new size needs — the only one the ladder ever costs). */
+    private fun reconfigure(nw: Int, nh: Int, kbps: Int) {
+        val c = codec ?: return
+        try { c.stop() } catch (_: Throwable) {}
+        freeInputs.clear()
+        config = null
+        codedW = nw
+        codedH = nh
+        codedKbps = kbps
+        try {
+            setCallbacks(c)
+            c.configure(formatFor(tierUsed), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            c.start()
+            PhotonLog.i(TAG, "ladder: encoder restarted at ${nw}x$nh, $kbps kbit/s")
+        } catch (e: Throwable) {
+            PhotonLog.w(TAG, "ladder: restart at ${nw}x$nh failed — rebuilding the encoder", e)
+            try { c.release() } catch (_: Throwable) {}
+            codec = null
+            try { startCodec() } catch (e2: Throwable) { PhotonLog.w(TAG, "ladder: no encoder", e2) }
+        }
+    }
+
     private fun feed(img: Image) {
         reportOrientation()
         try { sendSelf(img) } catch (_: Throwable) {}
+        // THE LADDER (beam_ladder.rs): keep or drop this frame (frame rate), which band (coded size), how soft, what bitrate.
+        val plan = try { nativeBeamPlan(img.timestamp) } catch (_: Throwable) { -1L }
+        if (plan < 0L || (plan and 1L) == 0L) return
+        val band = ((plan shr 1) and 7L).toInt().coerceIn(0, BANDS.size - 1)
+        val soft = ((plan shr 4) and 7L).toInt()
+        val kbps = (plan shr 8).toInt()
+        val (bw, bh) = BANDS[band][0] to BANDS[band][1]
+        if (bw != codedW || bh != codedH) {
+            reconfigure(bw, bh, kbps)
+            return
+        }
+        if (kbps != codedKbps && kbps > 0) {
+            // Within a band: the bitrate moves LIVE — no restart, no keyframe.
+            try {
+                codec?.setParameters(android.os.Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, kbps * 1000) })
+                codedKbps = kbps
+            } catch (e: Throwable) { PhotonLog.w(TAG, "ladder: bitrate change refused", e) }
+        }
         val mc = codec ?: return
         val idx = freeInputs.poll() ?: run { dropped++; return }
         val dst = try { mc.getInputImage(idx) } catch (e: Throwable) { null }
@@ -312,8 +366,18 @@ class PhotonBeam(
             try { mc.queueInputBuffer(idx, 0, 0, 0, 0) } catch (_: Throwable) {}
             return
         }
-        for (p in 0 until 3) {
-            copyPlane(img.planes[p], dst.planes[p], if (p == 0) w else w / 2, if (p == 0) h else h / 2)
+        // The camera frame → the coded size at the ladder's softness, written straight into the encoder's planes (crop to 16:9, shrink, grow — beam_scale.rs).
+        val s = img.planes
+        val d = dst.planes
+        val filled = try {
+            nativeBeamFill(
+                s[0].buffer, s[1].buffer, s[2].buffer, s[0].rowStride, s[0].pixelStride, s[1].rowStride, s[1].pixelStride, w, h,
+                d[0].buffer, d[1].buffer, d[2].buffer, d[0].rowStride, d[0].pixelStride, d[1].rowStride, d[1].pixelStride, codedW, codedH, soft
+            )
+        } catch (e: Throwable) { PhotonLog.w(TAG, "ladder: fill failed", e); false }
+        if (!filled) {
+            try { mc.queueInputBuffer(idx, 0, 0, 0, 0) } catch (_: Throwable) {}
+            return
         }
         // THE LENGTH (field 2026-10-10, "stopped after 0 frames"): the frame was written thru the Image view, so the byte count to submit is the whole input buffer — the encoder reads it by the layout it chose. Submitting 0 handed it an empty buffer every frame, and it encoded nothing.
         // Strides read NOW: getInputBuffer below invalidates the input Image (field 2026-10-13, "Image is already closed" from the first-frame log line).

@@ -113,6 +113,14 @@ mod real {
             self.enc.force_intra_frame();
         }
 
+        /// Change the target bitrate LIVE (the beam ladder's within-band step): no keyframe, no new parameter sets.
+        pub fn set_bitrate(&mut self, bps: u32) {
+            let mut info = openh264_sys2::SBitrateInfo { iLayer: openh264_sys2::SPATIAL_LAYER_ALL, iBitrate: bps.min(i32::MAX as u32) as i32 };
+            unsafe {
+                self.enc.raw_api().set_option(openh264_sys2::ENCODER_OPTION_BITRATE, &mut info as *mut _ as *mut std::ffi::c_void);
+            }
+        }
+
         pub fn dimensions(&self) -> (usize, usize) {
             (self.w, self.h)
         }
@@ -190,6 +198,7 @@ mod real {
             Err("H264: no desktop codec on this platform".into())
         }
         pub fn force_keyframe(&mut self) {}
+        pub fn set_bitrate(&mut self, _bps: u32) {}
         pub fn dimensions(&self) -> (usize, usize) {
             (0, 0)
         }

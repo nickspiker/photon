@@ -303,6 +303,55 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamOr
     crate::wave::beam_session::android_orient(quarter_turns.clamp(0, 3) as u8, front != 0);
 }
 
+/// BEAMS: the ladder's plan for one camera frame (see beam_session::android_plan).
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamPlan(_env: JNIEnv<'_>, _this: JObject<'_>, t_ns: jlong) -> jlong {
+    crate::wave::beam_session::android_plan(t_ns)
+}
+
+/// BEAMS: resample one camera frame (three planes, each with its row and pixel stride) straight into the encoder's input Image planes at the coded size and the ladder's softness — the coded size changes only at a band crossing (beam_scale.rs).
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamFill(
+    env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    sy: jni::objects::JByteBuffer<'_>,
+    su: jni::objects::JByteBuffer<'_>,
+    sv: jni::objects::JByteBuffer<'_>,
+    s_yrow: jint,
+    s_ypx: jint,
+    s_uvrow: jint,
+    s_uvpx: jint,
+    sw: jint,
+    sh: jint,
+    dy: jni::objects::JByteBuffer<'_>,
+    du: jni::objects::JByteBuffer<'_>,
+    dv: jni::objects::JByteBuffer<'_>,
+    d_yrow: jint,
+    d_ypx: jint,
+    d_uvrow: jint,
+    d_uvpx: jint,
+    dw: jint,
+    dh: jint,
+    soft: jint,
+) -> jni::sys::jboolean {
+    use crate::wave::beam_scale::Plane;
+    let plane = |b: &jni::objects::JByteBuffer<'_>, row: jint, px: jint, w: jint, h: jint| -> Option<Plane> {
+        let ptr = env.get_direct_buffer_address(b).ok()?;
+        let len = env.get_direct_buffer_capacity(b).ok()?;
+        let p = Plane { ptr, len, row: row.max(0) as usize, px: px.max(1) as usize, w: w.max(0) as usize, h: h.max(0) as usize };
+        p.fits().then_some(p)
+    };
+    let (sw, sh, dw, dh) = (sw & !1, sh & !1, dw & !1, dh & !1);
+    let src = [plane(&sy, s_yrow, s_ypx, sw, sh), plane(&su, s_uvrow, s_uvpx, sw / 2, sh / 2), plane(&sv, s_uvrow, s_uvpx, sw / 2, sh / 2)];
+    let dst = [plane(&dy, d_yrow, d_ypx, dw, dh), plane(&du, d_uvrow, d_uvpx, dw / 2, dh / 2), plane(&dv, d_uvrow, d_uvpx, dw / 2, dh / 2)];
+    let (Some(s0), Some(s1), Some(s2), Some(d0), Some(d1), Some(d2)) = (src[0], src[1], src[2], dst[0], dst[1], dst[2]) else {
+        return 0;
+    };
+    crate::wave::beam_scale::resample_frame([s0, s1, s2], [d0, d1, d2], soft.clamp(0, 4) as u8);
+    1
+}
+
 /// BEAMS: the phone's pipeline is up — geometry, fps, the maker's XYZ→camera matrix (9 floats row-major, or null) and whether the straight-thru request took in full. Starts the encoded sender armed by the Beam button.
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean) {
