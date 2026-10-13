@@ -184,20 +184,48 @@ class PhotonBeam(
         return out
     }
 
-    private fun startCodec() {
-        val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
-            setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
-            setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
-            setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
-            // Only the first frame is a keyframe (a negative interval, API 25+); the picture is kept fresh by intra refresh instead.
+    /** One encoder configuration attempt, from fullest to plainest (field 2026-10-13: Emma's phone threw IllegalArgumentException on the full set and never sent a frame). Each tier drops what an encoder is most likely to refuse; the log names the tier that took, so we learn each device's limits. */
+    private fun formatFor(tier: Int): MediaFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+        setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
+        setInteger(MediaFormat.KEY_BIT_RATE, BITRATE)
+        setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+        if (tier <= 1) {
+            // Only the first frame is a keyframe; the picture is kept fresh by intra refresh instead.
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, -1)
             setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, INTRA_REFRESH_FRAMES)
-            setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+        } else {
+            // The plain tier: no intra refresh on this encoder, so a keyframe every two seconds — the one fallback where a burst is the price of working at all.
+            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+        }
+        if (tier <= 2) setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+        if (tier == 0) {
             setInteger(MediaFormat.KEY_LATENCY, 1)
             setInteger(MediaFormat.KEY_PRIORITY, 0)
             if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
         }
-        val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+    }
+
+    private fun startCodec() {
+        var lastErr: Throwable? = null
+        for (tier in 0..3) {
+            val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+            try {
+                setCallbacks(c)
+                c.configure(formatFor(tier), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                c.start()
+                codec = c
+                PhotonLog.i(TAG, "encoder ${c.name} configured at tier $tier (0 = full low-latency + intra refresh, 1 = no latency keys, 2 = keyframes every 2 s, 3 = plainest)")
+                return
+            } catch (e: Throwable) {
+                lastErr = e
+                PhotonLog.w(TAG, "encoder ${c.name} refused tier $tier: ${e.javaClass.simpleName} ${e.message}")
+                try { c.release() } catch (_: Throwable) {}
+            }
+        }
+        throw lastErr ?: IllegalStateException("no encoder tier took")
+    }
+
+    private fun setCallbacks(c: MediaCodec) {
         c.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(mc: MediaCodec, index: Int) {
                 if (!freeInputs.offer(index)) {
@@ -230,9 +258,6 @@ class PhotonBeam(
             override fun onError(mc: MediaCodec, e: MediaCodec.CodecException) { PhotonLog.w(TAG, "codec error", e) }
             override fun onOutputFormatChanged(mc: MediaCodec, format: MediaFormat) { PhotonLog.i(TAG, "codec format $format") }
         }, codecHandler)
-        c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        c.start()
-        codec = c
     }
 
     /** One camera frame into the encoder, if an input buffer is free; else dropped (never block the camera). Planes copied honouring row and pixel strides. */
@@ -270,6 +295,8 @@ class PhotonBeam(
             copyPlane(img.planes[p], dst.planes[p], if (p == 0) w else w / 2, if (p == 0) h else h / 2)
         }
         // THE LENGTH (field 2026-10-10, "stopped after 0 frames"): the frame was written thru the Image view, so the byte count to submit is the whole input buffer — the encoder reads it by the layout it chose. Submitting 0 handed it an empty buffer every frame, and it encoded nothing.
+        // Strides read NOW: getInputBuffer below invalidates the input Image (field 2026-10-13, "Image is already closed" from the first-frame log line).
+        val dstStrides = "${dst.planes[0].rowStride}/${dst.planes[0].pixelStride} u ${dst.planes[1].rowStride}/${dst.planes[1].pixelStride}"
         val size = try { mc.getInputBuffer(idx)?.capacity() ?: 0 } catch (e: Throwable) { 0 }
         if (size <= 0) {
             PhotonLog.w(TAG, "input buffer $idx has no capacity — frame skipped")
@@ -279,7 +306,7 @@ class PhotonBeam(
         try {
             mc.queueInputBuffer(idx, 0, size, img.timestamp / 1000, 0)
             fed++
-            if (fed == 1L) PhotonLog.i(TAG, "first frame into the encoder: ${img.width}x${img.height}, planes y ${img.planes[0].rowStride}/${img.planes[0].pixelStride} u ${img.planes[1].rowStride}/${img.planes[1].pixelStride} → input ${dst.planes[0].rowStride}/${dst.planes[0].pixelStride} u ${dst.planes[1].rowStride}/${dst.planes[1].pixelStride}, $size B")
+            if (fed == 1L) PhotonLog.i(TAG, "first frame into the encoder: ${img.width}x${img.height}, planes y ${img.planes[0].rowStride}/${img.planes[0].pixelStride} u ${img.planes[1].rowStride}/${img.planes[1].pixelStride} → input $dstStrides, $size B")
         } catch (e: Throwable) {
             PhotonLog.w(TAG, "queueInputBuffer", e)
         }

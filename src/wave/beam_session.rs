@@ -117,7 +117,12 @@ fn decode_loop(stop: Arc<AtomicBool>) {
     let mut rgb = Vec::new();
     let mut decoded = 0u64;
     let mut failed = 0u64;
+    let mut skipped = 0u64;
     let mut last_info: Option<Info> = None;
+    // The reorder hold (see below): frames waiting for their predecessor, and the next frame number to decode.
+    let mut pending: std::collections::BTreeMap<u32, beam::Frame> = std::collections::BTreeMap::new();
+    let mut next: Option<u32> = None;
+    const REORDER: u32 = 6;
     while !stop.load(Ordering::Relaxed) {
         let frames = beam::take_frames_wait(std::time::Duration::from_millis(250));
         if frames.is_empty() {
@@ -133,36 +138,68 @@ fn decode_loop(stop: Arc<AtomicBool>) {
                 last_info = Some(info);
             }
         }
-        // Only the NEWEST completed frame is worth decoding when several queued: a late picture is no picture. (H.264 P-frames reference their predecessors, so skipping one costs a reference; the decoder conceals and the next keyframe or refresh stripe repairs it — the price of never falling behind.)
-        let Some(frame) = frames.into_iter().last() else { continue };
-        if decoder.is_none() {
-            match h264::Decoder::new() {
-                Ok(d) => decoder = Some(d),
+        // EVERY FRAME, IN ORDER (field 2026-10-13, Emma's phone: decoding only the newest of a queued batch skipped a reference, and with no keyframes ever the decoder never recovered). Frames complete in fountain order, not encode order, so a short reorder hold: decode `next` the moment it is here; give up on it (a loss — concealment paints over it) once the queue runs REORDER frames past it. Only the newest decoded picture of a batch is converted for display.
+        for f in frames {
+            if next.is_none() {
+                next = Some(f.frame_no);
+            }
+            if f.frame_no >= next.unwrap_or(0) {
+                pending.insert(f.frame_no, f);
+            }
+        }
+        let mut shown: Option<(h264::I420, Gains, u32)> = None;
+        loop {
+            let Some(n) = next else { break };
+            let frame = if let Some(f) = pending.remove(&n) {
+                f
+            } else {
+                match pending.keys().next().copied() {
+                    Some(lowest) if pending.keys().next_back().copied().unwrap_or(lowest) >= n + REORDER => {
+                        skipped += (lowest - n) as u64;
+                        next = Some(lowest);
+                        continue;
+                    }
+                    _ => break,
+                }
+            };
+            next = Some(n.wrapping_add(1));
+            if decoder.is_none() {
+                match h264::Decoder::new() {
+                    Ok(d) => decoder = Some(d),
+                    Err(e) => {
+                        crate::logf!("BEAM: {}", e);
+                        continue;
+                    }
+                }
+            }
+            let Some(dec) = decoder.as_mut() else { continue };
+            match dec.decode(&frame.bytes) {
+                Ok(Some(pic)) => {
+                    decoded += 1;
+                    shown = Some((pic, frame.gains, frame.frame_no));
+                }
+                Ok(None) => {}
                 Err(e) => {
-                    crate::logf!("BEAM: {}", e);
-                    // No codec on this platform: nothing to show, but keep draining so the mailbox never fills.
-                    continue;
+                    failed += 1;
+                    if failed <= 3 || failed % 100 == 0 {
+                        crate::logf!("BEAM: decode failed ({} so far): {}", failed, e);
+                    }
                 }
             }
         }
-        let Some(dec) = decoder.as_mut() else { continue };
-        match dec.decode(&frame.bytes) {
-            Ok(Some(pic)) => {
-                conv.convert(&pic, frame.gains, frame.frame_no, &mut rgb);
-                *PICTURE.lock().unwrap() = Some(Picture { w: pic.w, h: pic.h, frame_no: frame.frame_no, rgb: rgb.clone() });
-                PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
-                decoded += 1;
-            }
-            Ok(None) => {}
-            Err(e) => {
-                failed += 1;
-                if failed <= 3 || failed % 100 == 0 {
-                    crate::logf!("BEAM: decode failed ({} so far): {}", failed, e);
-                }
-            }
+        if let Some((pic, gains, n)) = shown {
+            conv.convert(&pic, gains, n, &mut rgb);
+            *PICTURE.lock().unwrap() = Some(Picture { w: pic.w, h: pic.h, frame_no: n, rgb: rgb.clone() });
+            PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }
-    crate::logf!("BEAM: decode thread down — {} pictures, {} failures", decoded, failed);
+    crate::logf!(
+        "BEAM: decode thread down — {} pictures ({} concealed), {} failures, {} frames given up as lost",
+        decoded,
+        decoder.as_ref().map_or(0, |d| d.concealed),
+        failed,
+        skipped
+    );
 }
 
 /// The sending half.

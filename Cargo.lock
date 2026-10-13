@@ -5200,6 +5200,7 @@ dependencies = [
  "objc2-app-kit 0.3.2",
  "objc2-foundation 0.3.2",
  "openh264",
+ "openh264-sys2",
  "opsin",
  "opus",
  "p256",

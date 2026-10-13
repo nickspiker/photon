@@ -120,28 +120,50 @@ mod real {
 
     pub struct Decoder {
         dec: Dec,
+        /// Pictures delivered with the decoder's concealment at work (a reference was lost and painted over) — the instrument line.
+        pub concealed: u64,
     }
 
     impl Decoder {
         pub fn new() -> Result<Self, String> {
             let cfg = DecoderConfig::new().flush_after_decode(Flush::NoFlush);
-            let dec = Dec::with_api_config(OpenH264API::from_source(), cfg)
+            let mut dec = Dec::with_api_config(OpenH264API::from_source(), cfg)
                 .map_err(|e| format!("H264: decoder: {e}"))?;
-            Ok(Self { dec })
+            // ERROR CONCEALMENT ON (field 2026-10-13, Emma's phone: one lost reference and every later frame failed "ref lost + no param sets", forever). The crate leaves it disabled and has no setter; a beam never keyframes (intra refresh), so the decoder must paint over a loss and keep going until the refresh stripe heals it. Slice + motion-vector copy, across IDRs — OpenH264's strongest mode.
+            let mut idc: i32 = openh264_sys2::ERROR_CON_SLICE_MV_COPY_CROSS_IDR as i32;
+            unsafe {
+                dec.raw_api().set_option(openh264_sys2::DECODER_OPTION_ERROR_CON_IDC, &mut idc as *mut i32 as *mut std::ffi::c_void);
+            }
+            Ok(Self { dec, concealed: 0 })
         }
 
-        /// Decode one access unit (Annex-B). `None` when the unit produced no picture yet (parameter sets alone, or a frame the decoder is still assembling).
+        /// Decode one access unit (Annex-B). `None` when the unit produced no picture yet (parameter sets alone, or a frame the decoder is still assembling). A picture the decoder had to conceal is still a picture: the raw entry point is used because the crate's wrapper turns every non-zero decoding state — concealment included — into an error and drops the frame.
         pub fn decode(&mut self, au: &[u8]) -> Result<Option<I420>, String> {
-            let pic = self.dec.decode(au).map_err(|e| format!("H264: decode: {e}"))?;
-            Ok(pic.map(|p| {
-                let (w, h) = p.dimensions();
-                let (sy, su, sv) = p.strides();
+            let mut dst = [std::ptr::null_mut::<u8>(); 3];
+            let mut info = openh264_sys2::SBufferInfo::default();
+            let state = unsafe { self.dec.raw_api().decode_frame_no_delay(au.as_ptr(), au.len() as std::ffi::c_int, dst.as_mut_ptr(), &mut info) };
+            if info.iBufferStatus == 1 && !dst[0].is_null() && !dst[1].is_null() && !dst[2].is_null() {
+                let sb = unsafe { info.UsrData.sSystemBuffer };
+                let (w, h) = (sb.iWidth.max(0) as usize & !1, sb.iHeight.max(0) as usize & !1);
+                let (sy, suv) = (sb.iStride[0].max(0) as usize, sb.iStride[1].max(0) as usize);
+                if w < 2 || h < 2 || sy < w || suv < w / 2 {
+                    return Err(format!("H264: decode: odd picture geometry {w}×{h} strides {sy}/{suv}"));
+                }
                 let mut out = I420::new(w, h);
-                copy_plane(p.y(), sy, w, h, &mut out.y);
-                copy_plane(p.u(), su, w / 2, h / 2, &mut out.u);
-                copy_plane(p.v(), sv, w / 2, h / 2, &mut out.v);
-                out
-            }))
+                unsafe {
+                    copy_plane(std::slice::from_raw_parts(dst[0], sy * h), sy, w, h, &mut out.y);
+                    copy_plane(std::slice::from_raw_parts(dst[1], suv * (h / 2)), suv, w / 2, h / 2, &mut out.u);
+                    copy_plane(std::slice::from_raw_parts(dst[2], suv * (h / 2)), suv, w / 2, h / 2, &mut out.v);
+                }
+                if state != 0 {
+                    self.concealed += 1;
+                }
+                return Ok(Some(out));
+            }
+            if state != 0 {
+                return Err(format!("H264: decode state {state} (no picture)"));
+            }
+            Ok(None)
         }
     }
 
@@ -173,7 +195,9 @@ mod real {
         }
     }
 
-    pub struct Decoder;
+    pub struct Decoder {
+        pub concealed: u64,
+    }
     impl Decoder {
         pub fn new() -> Result<Self, String> {
             Err("H264: no desktop codec on this platform yet (docs/beams.md stage 1)".into())

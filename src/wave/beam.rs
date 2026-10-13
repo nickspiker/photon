@@ -359,7 +359,8 @@ static BEAM_SINK: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
 static BEAM_FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
 /// Signalled on every completed frame, so the decoder stage blocks instead of polling.
 static BEAM_FRAMES_CV: std::sync::Condvar = std::sync::Condvar::new();
-const FRAMES_CAP: usize = 4;
+/// Generous: the decoder must see EVERY frame in order (H.264 frames reference their predecessors and a beam never keyframes) — the display, not the mailbox, is where staleness is dropped. A cap only for a decoder that has stalled outright.
+const FRAMES_CAP: usize = 120;
 /// The latest self-description the receiver heard (for the decoder stage's reconfigure edge and the UI's "what is this beam" line).
 static BEAM_INFO: Mutex<Option<Info>> = Mutex::new(None);
 
