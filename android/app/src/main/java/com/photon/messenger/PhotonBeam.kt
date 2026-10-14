@@ -41,7 +41,7 @@ class PhotonBeam(
     /** One encoded access unit + the gains the ISP applied (Q12: R, G-even, G-odd, B). */
     private val onFrame: (ByteArray, IntArray) -> Unit,
     /** The pipeline is up: width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, and whether the straight-thru request took in full. */
-    private val onStarted: (Int, Int, Int, FloatArray?, Boolean) -> Unit,
+    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean) -> Unit,
     /** The self-view: a 4× subsampled I420 frame (y‖u‖v), every other camera frame. */
     private val onSelf: (ByteArray, Int, Int) -> Unit,
     /** The picture's rotation changed: quarter turns clockwise that put the world's up at the top, and whether this is a front camera. */
@@ -136,7 +136,8 @@ class PhotonBeam(
                     camera = dev
                     try {
                         val straight = startSession(dev, chars)
-                        onStarted(w, h, FPS, matrix, straight)
+                        // The label follows the COLOUR path alone (not whether distortion or edge keys existed): absolute only when the straight colour path took.
+                        onStarted(w, h, FPS, matrix, fullStraight, curveTook)
                     } catch (e: Throwable) {
                         PhotonLog.w(TAG, "session failed", e)
                         stop()
@@ -281,6 +282,10 @@ class PhotonBeam(
 
     /** One camera frame into the encoder, if an input buffer is free; else dropped (never block the camera). Planes copied honouring row and pixel strides. */
     private var selfTick = 0L
+    /** The full straight-thru colour path took (AWB off with our neutral gains + identity matrix). Off = the camera's own white balance and colour; no gains travel as pre-emphasis then. */
+    private var fullStraight = false
+    /** Our γ2 tonemap curve is in force (else the camera's own curve, treated as sRGB). */
+    private var curveTook = false
     /** What the focus request chose (logged with the readback). */
     private var focusPlan = "unset"
     /** AF_MODE_AUTO needs one trigger after the repeating request starts. */
@@ -438,12 +443,24 @@ class PhotonBeam(
         val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
         val manualPost = caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_MANUAL_POST_PROCESSING)
         val awbModes = chars.get(CameraCharacteristics.CONTROL_AWB_AVAILABLE_MODES) ?: intArrayOf()
-        want(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF, awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF))
-        want(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX, manualPost)
-        want(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(1f, 1f, 1f, 1f), manualPost)
-        want(CaptureRequest.COLOR_CORRECTION_TRANSFORM, ColorSpaceTransform(intArrayOf(1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1)), manualPost)
+        // ALL OR NOTHING ON COLOUR (field 2026-10-13, Nick: "Samsung cam looks very green… defaulting to unprofiled is not a good option"): white balance comes OFF only where our neutral gains and identity matrix can go ON in its place. A camera that lets AWB go off but lacks manual post-processing used to hand us raw, green, unbalanced sensor colour that nothing downstream undid. Otherwise the camera keeps its own white balance and colour, we read back nothing as pre-emphasis, and the beam is labelled what it is.
+        // …and only where the far side can undo the raw colour: the maker's matrix must exist and our γ2 curve must take, or the frames would be unbalanced sensor colour labelled as something else.
+        val toneModesEarly = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: intArrayOf()
+        val hasMaker = (chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2) ?: chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)) != null
+        fullStraight = manualPost && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF) && hasMaker &&
+            toneModesEarly.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
+        if (fullStraight) {
+            req.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
+            req.set(CaptureRequest.COLOR_CORRECTION_MODE, CameraMetadata.COLOR_CORRECTION_MODE_TRANSFORM_MATRIX)
+            req.set(CaptureRequest.COLOR_CORRECTION_GAINS, RggbChannelVector(1f, 1f, 1f, 1f))
+            req.set(CaptureRequest.COLOR_CORRECTION_TRANSFORM, ColorSpaceTransform(intArrayOf(1, 1, 0, 1, 0, 1, 0, 1, 1, 1, 0, 1, 0, 1, 0, 1, 1, 1)))
+        } else {
+            straight = false
+            req.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
+        }
         val toneModes = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: intArrayOf()
         val curveOk = toneModes.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
+        curveTook = curveOk
         want(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE, curveOk)
         if (curveOk) {
             val n = (chars.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 64).coerceIn(2, 128)
@@ -455,8 +472,9 @@ class PhotonBeam(
             }
             req.set(CaptureRequest.TONEMAP_CURVE, TonemapCurve(pts, pts, pts))
         }
+        // Lens shading off only on the straight path: with the camera's own colour in charge, its shading map also carries the colour-shading correction, and switching it off would tint the corners.
         val shading = chars.get(CameraCharacteristics.SHADING_AVAILABLE_MODES) ?: intArrayOf()
-        want(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF, shading.contains(CameraMetadata.SHADING_MODE_OFF))
+        if (fullStraight) want(CaptureRequest.SHADING_MODE, CameraMetadata.SHADING_MODE_OFF, shading.contains(CameraMetadata.SHADING_MODE_OFF))
         val nr = chars.get(CameraCharacteristics.NOISE_REDUCTION_AVAILABLE_NOISE_REDUCTION_MODES) ?: intArrayOf()
         want(CaptureRequest.NOISE_REDUCTION_MODE, CameraMetadata.NOISE_REDUCTION_MODE_OFF, nr.contains(CameraMetadata.NOISE_REDUCTION_MODE_OFF))
         val edge = chars.get(CameraCharacteristics.EDGE_AVAILABLE_EDGE_MODES) ?: intArrayOf()
@@ -509,7 +527,8 @@ class PhotonBeam(
                         override fun onCaptureCompleted(sess: CameraCaptureSession, request: CaptureRequest, result: TotalCaptureResult) {
                             // THE READBACK IS THE TRUTH: what the HAL applied, per frame. The gains ride every encoded frame (Q12); the rest is logged once.
                             val g = result.get(CaptureResult.COLOR_CORRECTION_GAINS)
-                            if (g != null) {
+                            // Gains travel only on the straight path (pre-emphasis the receiver divides back out). With the camera's own white balance the frames are already balanced — sending its gains would make the receiver UNDO the balance.
+                            if (g != null && fullStraight) {
                                 gains = intArrayOf((g.red * 4096f).toInt(), (g.greenEven * 4096f).toInt(), (g.greenOdd * 4096f).toInt(), (g.blue * 4096f).toInt())
                             }
                             if (!logged) {

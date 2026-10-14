@@ -436,11 +436,11 @@ pub fn android_arm(wave_secret: [u8; 32], we_are_origin: bool) -> bool {
 }
 
 /// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed.
-pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool) -> Result<(), String> {
+pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool) -> Result<(), String> {
     let Some((secret, origin)) = *ANDROID_ARMED.lock().unwrap() else {
         return Err("BEAM: pipeline up with nothing armed".into());
     };
-    let entry = phone_entry(maker, straight);
+    let entry = phone_entry(maker, straight, curve);
     *ANDROID_SELF_CONV.lock().unwrap() = Some(Converter::new(Characterization::from_entry(&entry)));
     // THE LADDER (beam_ladder.rs): the camera's capture (w×h) after its 16:9 crop names the ceiling; a phone stops at 1280×720 (its own decoders' load on the far side, and the capture it can sustain), and a metered network at 640×360.
     let crop_w = super::beam_scale::crop_16x9(w, h).2;
@@ -475,8 +475,9 @@ pub fn android_sending() -> bool {
 }
 
 /// The phone's characterization (docs/beams.md): with the maker's XYZ→camera matrix AND the straight-thru request in force, `absolute` / `model` / `gamma2` with camera→VSF-RGB = XYZ→VSF-RGB × inv(XYZ→camera); otherwise `creative` / `assumed` / `gamma2` (the HAL white-balanced and matrixed toward sRGB under our γ2 curve), the sRGB→VSF-RGB matrix.
-pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool) -> vsf::spectral_image::ProfileEntry {
-    if let (Some(m), true) = (maker, straight) {
+/// `curve` = our γ2 tonemap curve took; without it the camera's own curve is in force, treated as sRGB. Off the straight path the camera white-balances and colour-corrects toward sRGB itself (the fallback, 2026-10-13 — never raw, unbalanced sensor colour), so the entry is the assumed sRGB one at whichever transfer the frames really carry.
+pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool, curve: bool) -> vsf::spectral_image::ProfileEntry {
+    if let (Some(m), true) = (maker, straight && curve) {
         if let Some(inv) = invert3(&m) {
             return vsf::spectral_image::ProfileEntry {
                 matrix: mat_mul3(&vsf::colour::XYZ2VSF_RGB, &inv),
@@ -494,7 +495,7 @@ pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool) -> vsf::spectral_ima
         class: vsf::spectral_image::IdtClass::Creative,
         tier: vsf::spectral_image::ProfileTier::Assumed,
         illuminant: 0,
-        transfer: vsf::spectral_image::Transfer::Gamma2,
+        transfer: if curve { vsf::spectral_image::Transfer::Gamma2 } else { vsf::spectral_image::Transfer::Srgb },
     }
 }
 
@@ -639,17 +640,19 @@ mod tests {
 
     #[test]
     fn the_phone_entry_is_absolute_only_with_a_matrix_and_a_straight_request() {
-        let e = phone_entry(None, true);
+        let e = phone_entry(None, true, true);
         assert_eq!(e.class, vsf::spectral_image::IdtClass::Creative);
-        let e = phone_entry(Some([1., 0., 0., 0., 1., 0., 0., 0., 1.]), false);
+        let e = phone_entry(Some([1., 0., 0., 0., 1., 0., 0., 0., 1.]), false, true);
         assert_eq!(e.class, vsf::spectral_image::IdtClass::Creative);
-        let e = phone_entry(Some([2., 0., 0., 0., 2., 0., 0., 0., 2.]), true);
+        let e = phone_entry(Some([2., 0., 0., 0., 2., 0., 0., 0., 2.]), true, true);
         assert_eq!(e.class, vsf::spectral_image::IdtClass::Absolute);
         // XYZ→camera = 2·I, so camera→VSF = XYZ2VSF × ½·I.
         for i in 0..9 {
             assert!((e.matrix[i] - vsf::colour::XYZ2VSF_RGB[i] * 0.5).abs() < 1e-6);
         }
         assert!(invert3(&[0.; 9]).is_none());
+        // Off the straight path with the camera's own curve, the label says sRGB transfer — never γ2 it does not carry.
+        assert_eq!(phone_entry(None, false, false).transfer, vsf::spectral_image::Transfer::Srgb);
     }
 
     #[test]
