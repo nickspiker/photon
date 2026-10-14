@@ -692,8 +692,9 @@ impl PhotonApp {
             return;
         }
         let live = self.active_wave.as_ref().map_or(false, |w| w.phase == WavePhase::Active && w.engine.is_some() && w.beam_tx.is_none());
-        // A Mac waiting on the camera prompt: hold the arm until the user answers, rather than re-asking every tick.
+        // A Mac waiting on the camera prompt: hold the arm until the user answers — asking first if nothing has (Beam back arms without the Beam button's ask), never re-asking every tick.
         if live && !crate::wave::beam_session::camera_ready() {
+            crate::wave::beam_session::ask_camera_once();
             return;
         }
         if live {
@@ -738,12 +739,13 @@ impl PhotonApp {
         if wave.phase != WavePhase::Active || wave.engine.is_none() {
             return;
         }
-        let (wave_id, peer, offer_osc, was_reconnecting, last_anchor) = (
+        let (wave_id, peer, offer_osc, was_reconnecting, last_anchor, answered_by_us) = (
             wave.wave_id,
             wave.peer_handle_hash,
             wave.offer_osc,
             wave.reconnecting,
             wave.last_anchor_osc,
+            (!wave.we_are_origin).then_some(wave.answer_nonce).flatten(),
         );
         use std::sync::atomic::Ordering::Relaxed;
         let start = crate::wave::MEDIA_START_OSC.load(Relaxed);
@@ -813,6 +815,12 @@ impl PhotonApp {
                         }
                     }
                     self.send_express_signal(ci, &WaveSignal::Anchor { wave_id }, now, None);
+                    // THE ANSWER RIDES AGAIN (field 2026-10-14, Emma/Nick: the one answer was lost, the caller sat in Outgoing for twenty seconds RECEIVING these very anchors, and the wave died): we answered and have never heard the caller, so the answer may never have landed — re-send it, the same nonce (the secret both sides derive), with every anchor round until media flows. A caller already live ignores it.
+                    if let Some(nonce) = answered_by_us.filter(|_| !media_has_flowed) {
+                        let device = self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
+                        crate::logf!("WAVE: never heard the caller — the answer goes again with the anchor (id {})", hex::encode(&wave_id[..4]));
+                        self.send_express_signal(ci, &WaveSignal::Answer { wave_id, nonce, device }, now, None);
+                    }
                 }
                 if let Some(c) = self.active_wave.as_mut() {
                     c.last_anchor_osc = now;
@@ -1229,6 +1237,15 @@ impl PhotonApp {
             }
             if !keys.contains(&current) {
                 keys.push(current);
+            }
+            // …and the RETIRED era while it is still readable (field 2026-10-14, Emma/Nick on v118: Emma's phone had just re-keyed with Nick's desktop and answered under the new era only; Nick's MacBook adopted that era by chain sync 17 ms AFTER the answer arrived, so the answer was dropped as "an era we do not hold" and the wave never connected). A peer one ceremony behind opens it under the era it still holds — offers have always carried both.
+            if let Some(r) = chains.retired_era() {
+                if let Some(hk) = r.history_key.as_ref() {
+                    let k = crate::wave::signal::express_key(&r.lane_root, hk);
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
             }
         }
         // A beam wave's offers say so (docs/beams.md).

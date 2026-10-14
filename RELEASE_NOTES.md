@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Fixed: a wave answered in the same moment its keys were refreshed never connected.** The answer now also goes out under the keys the caller may still be holding, and if the answering side never hears the caller, it sends the answer again every couple of seconds until the wave connects.
+- **Fixed: turning a beam off and on again mid-wave froze the other side's picture.** The beam now carries on where it left off instead of starting a new stream the other side can't read.
+- **Fixed: a Mac answering with Beam back never sent its camera** when macOS hadn't been asked for the camera yet. Photon now asks, and the camera goes out once you allow it.
 
 ## v118
 - **Fixed: Macs that never asked for the microphone.** A Mac installed before the microphone description existed kept an old app description that updates never replaced, so macOS refused the microphone without asking and Photon wasn't even listed in Settings. Photon now repairs its own app description on launch; if macOS refused without asking, quit and reopen Photon once and it will ask. The wave screen's microphone messages now wrap onto several lines, and a beam you start says "beaming", not "waving".

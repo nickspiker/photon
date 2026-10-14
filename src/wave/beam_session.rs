@@ -152,12 +152,42 @@ impl Drop for Receiver {
             let _ = t.join();
         }
         *PICTURE.lock().unwrap() = None;
+        *PARKED_TX.lock().unwrap() = None;
         PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
 }
 
 /// Start receiving the peer's beam for a wave. `we_are_origin` picks the chain: the peer sends in the other direction.
+/// THE BEAM'S TRANSPORT OUTLIVES ITS CAMERA (field 2026-10-14, Emma's Samsung on v118: the beam turned off and on mid-wave, the restart built a NEW BeamTx whose step chain began again at 0, the receiver's chain had moved past it, and all 3,700 packets after the restart failed to open — the far side froze on the last picture). One transport per wave and direction, with its frame counter: parked when the camera stops, taken back when it starts again. Keyed by a one-way hash of the wave secret and our side, so a new wave never inherits it; dropped when a wave's receiver starts or stops (the wave's own edges).
+static PARKED_TX: Mutex<Option<([u8; 32], BeamTx, u32)>> = Mutex::new(None);
+
+fn tx_key(wave_secret: &[u8; 32], we_are_origin: bool) -> [u8; 32] {
+    let mut h = blake3::Hasher::new_derive_key("photon beam transport park v0");
+    h.update(wave_secret);
+    h.update(&[we_are_origin as u8]);
+    *h.finalize().as_bytes()
+}
+
+/// This wave's transport: the parked one if it is this wave's (its chain runs on), else a new one.
+fn take_tx(wave_secret: &[u8; 32], we_are_origin: bool, peer: std::net::SocketAddr) -> (BeamTx, u32) {
+    let key = tx_key(wave_secret, we_are_origin);
+    if let Some((k, mut tx, n)) = PARKED_TX.lock().unwrap().take() {
+        if k == key {
+            tx.set_peer(peer);
+            crate::logf!("BEAM: the wave's beam transport resumes at frame {} — its key chain runs on", n);
+            return (tx, n);
+        }
+    }
+    let dir = if we_are_origin { Direction::OriginToAnswer } else { Direction::AnswerToOrigin };
+    (BeamTx::new(wave_secret, dir, peer), 0)
+}
+
+fn park_tx(key: [u8; 32], tx: BeamTx, frame_no: u32) {
+    *PARKED_TX.lock().unwrap() = Some((key, tx, frame_no));
+}
+
 pub fn start_receiver(wave_secret: &[u8; 32], we_are_origin: bool) -> Receiver {
+    *PARKED_TX.lock().unwrap() = None;
     let dir = if we_are_origin { Direction::AnswerToOrigin } else { Direction::OriginToAnswer };
     let rx = beam::start_rx(wave_secret, dir);
     let stop = Arc::new(AtomicBool::new(false));
@@ -280,7 +310,9 @@ impl Drop for Sender {
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        *ENCODED_TX.lock().unwrap() = None;
+        if let Some((tx, _, n)) = ENCODED_TX.lock().unwrap().take() {
+            park_tx(*ENCODED_KEY.lock().unwrap(), tx, n);
+        }
     }
 }
 
@@ -296,7 +328,7 @@ fn ceiling(bands: &[(u16, u16)]) -> usize {
 
 /// Start sending a camera's frames (desktop): capture → H.264 → the beam track, toward the wave's current peer address (re-read every frame, so a redirect is followed).
 pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box<dyn FrameSource>, _bitrate_bps: u32) -> Result<Sender, String> {
-    let dir = if we_are_origin { Direction::OriginToAnswer } else { Direction::AnswerToOrigin };
+    let key = tx_key(wave_secret, we_are_origin);
     let (sw, sh) = source.dimensions();
     let cam_fps = source.fps().max(1);
     // THE LADDER (beam_ladder.rs): bands from the camera's own frame; the ceiling per `ceiling`.
@@ -309,7 +341,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
     let Some(peer) = super::wave_tx_addr() else {
         return Err("BEAM: no peer address yet — the wave's first authenticated packet sets it".into());
     };
-    let mut tx = BeamTx::new(wave_secret, dir, peer);
+    let (mut tx, first_frame) = take_tx(wave_secret, we_are_origin, peer);
     let self_conv = Converter::new(Characterization::from_entry(&source.characterization()));
     let colour = colour_bytes(&source.characterization());
     let mut info = Info { width: bw, height: bh, fps: cam_fps as u8, codec: Codec::H264, colour };
@@ -320,7 +352,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
     let thread = std::thread::Builder::new()
         .name("beam-send".into())
         .spawn(move || {
-            let mut frame_no = 0u32;
+            let mut frame_no = first_frame;
             let mut cam_frames = 0u64;
             let mut sent_bytes = 0u64;
             let mut self_rgb = Vec::new();
@@ -401,6 +433,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                 }
             }
             clear_self();
+            park_tx(key, tx, frame_no);
         })
         .map_err(|e| format!("beam-send thread: {e}"))?;
     Ok(Sender { stop, thread: Some(thread) })
@@ -408,16 +441,18 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
 
 /// The ENCODED-frame feed (Android: Kotlin's Camera2 + MediaCodec push access units here). Installed by [`start_encoded_sender`], read by [`push_encoded`].
 static ENCODED_TX: Mutex<Option<(BeamTx, Info, u32)>> = Mutex::new(None);
+/// The parking key of the transport in ENCODED_TX (see PARKED_TX).
+static ENCODED_KEY: Mutex<[u8; 32]> = Mutex::new([0; 32]);
 
 /// Start a sender that is fed encoded frames from outside (the phone). Returns the handle whose drop clears the feed.
 pub fn start_encoded_sender(wave_secret: &[u8; 32], we_are_origin: bool, info: Info) -> Result<Sender, String> {
-    let dir = if we_are_origin { Direction::OriginToAnswer } else { Direction::AnswerToOrigin };
     let Some(peer) = super::wave_tx_addr() else {
         return Err("BEAM: no peer address yet".into());
     };
-    let mut tx = BeamTx::new(wave_secret, dir, peer);
+    let (mut tx, first_frame) = take_tx(wave_secret, we_are_origin, peer);
     tx.send_info(&info);
-    *ENCODED_TX.lock().unwrap() = Some((tx, info, 0));
+    *ENCODED_KEY.lock().unwrap() = tx_key(wave_secret, we_are_origin);
+    *ENCODED_TX.lock().unwrap() = Some((tx, info, first_frame));
     Ok(Sender { stop: Arc::new(AtomicBool::new(false)), thread: None })
 }
 
@@ -684,6 +719,15 @@ pub fn can_send() -> bool {
 /// Is the camera ready to open now (not waiting on the system prompt)? The armed-beam edge waits for the user's answer instead of re-asking every tick.
 pub fn camera_ready() -> bool {
     crate::platform::mic_permission::camera_status() != crate::platform::mic_permission::MicAccess::Undetermined
+}
+
+/// Ask the system for the camera — once per run (field 2026-10-14, Nick's MacBook on v118: Beam back armed the beam, the fresh binary's camera grant was undetermined, and the armed beam waited for an answer to a question nobody had asked — the Mac never sent). The answer's edge flips `camera_ready` and the armed beam goes out.
+pub fn ask_camera_once() {
+    static ASKED: AtomicBool = AtomicBool::new(false);
+    if !ASKED.swap(true, Ordering::Relaxed) {
+        crate::log("BEAM: asking for the camera (an armed beam found the grant undetermined)");
+        crate::platform::mic_permission::request_camera();
+    }
 }
 
 /// The sender's bitrate for a frame size, from the ladder in docs/beams.md: ~600 kbit/s at 640×480, scaled by area.
