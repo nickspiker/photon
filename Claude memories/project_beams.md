@@ -19,3 +19,5 @@ metadata:
 
 **Field verify pending:** desktop↔laptop over the LAN with a V4L2 camera. Then the phone (TICKETS "BEAMS — the rest").
 Related: [[project_waves]], [[project_wave_beam_transition]], [[project_wave_canonical_container]].
+
+2026-10-14 field: Samsung (Emma, no MANUAL_POST_PROCESSING) asked AWB AUTO + our γ2 contrast curve → readback awb=0, still green. The HAL drops AWB when handed a curve. Fix: the curve rides only the full-straight path too (00d61e14, Android dev 0.117.6). Mac mic+cam prompts confirmed working after the plist repair (0.117.5). Decoder green fill = OpenH264's zeroed buffers (Y=Cb=Cr=0): healed from the last picture else black (030e3b1d); the beam screen hides avatars/ripples/name once a picture is up. Mac "concealed" count stays high with no loss (no IDR from phones), cosmetic, unconvicted.
