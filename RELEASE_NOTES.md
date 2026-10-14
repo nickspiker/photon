@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v118
 - **Fixed: Macs that never asked for the microphone.** A Mac installed before the microphone description existed kept an old app description that updates never replaced, so macOS refused the microphone without asking and Photon wasn't even listed in Settings. Photon now repairs its own app description on launch; if macOS refused without asking, quit and reopen Photon once and it will ask. The wave screen's microphone messages now wrap onto several lines, and a beam you start says "beaming", not "waving".
 - **Switch cameras mid-beam.** Tap your own picture during a beam to move to the next camera: the front camera, then each back lens from widest to longest, including the zoomed modes. The beam carries on without dropping, and each lens sends its own colour.
 - **Beams use the camera's own shape.** A phone beam now sends the whole picture the camera sees, at up to about 5 megapixels and 30 frames a second, instead of cutting it to widescreen. Lower quality steps are exact halves of it.
