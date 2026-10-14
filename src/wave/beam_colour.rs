@@ -320,12 +320,17 @@ impl Converter {
 
 /// Turn an RGB-triple picture `q` quarter turns CLOCKWISE (0..=3); returns the new pixels and size. A pure index map — no resampling, no float.
 pub fn rotate_rgb(rgb: &[u8], w: usize, h: usize, q: u8) -> (Vec<u8>, usize, usize) {
+    rotate_px(rgb, w, h, q, 3)
+}
+
+/// The same turn for any bytes-per-pixel `n` (the beam's quarter-size hole mask is n = 1).
+pub fn rotate_px(rgb: &[u8], w: usize, h: usize, q: u8, n: usize) -> (Vec<u8>, usize, usize) {
     let q = q & 3;
     if q == 0 {
         return (rgb.to_vec(), w, h);
     }
     let (nw, nh) = if q % 2 == 1 { (h, w) } else { (w, h) };
-    let mut out = vec![0u8; w * h * 3];
+    let mut out = vec![0u8; w * h * n];
     for y in 0..h {
         for x in 0..w {
             // Where source (x, y) lands after q clockwise quarter turns.
@@ -334,9 +339,9 @@ pub fn rotate_rgb(rgb: &[u8], w: usize, h: usize, q: u8) -> (Vec<u8>, usize, usi
                 2 => (w - 1 - x, h - 1 - y),
                 _ => (y, w - 1 - x),
             };
-            let s = (y * w + x) * 3;
-            let d = (ny * nw + nx) * 3;
-            out[d..d + 3].copy_from_slice(&rgb[s..s + 3]);
+            let s = (y * w + x) * n;
+            let d = (ny * nw + nx) * n;
+            out[d..d + n].copy_from_slice(&rgb[s..s + n]);
         }
     }
     (out, nw, nh)

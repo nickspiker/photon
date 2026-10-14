@@ -20,6 +20,8 @@ pub struct Picture {
     pub h: usize,
     pub frame_no: u32,
     pub rgb: Vec<u8>,
+    /// Blocks the decoder has never painted (h264::I420::unpainted_mask, turned with the picture): one byte per 2×2 block, (w/2) × (h/2), non-zero = show the background thru. `None` = whole.
+    pub holes: Option<Vec<u8>>,
 }
 
 static PICTURE: Mutex<Option<Picture>> = Mutex::new(None);
@@ -50,7 +52,7 @@ fn post_self(conv: &Converter, frame: &h264::I420, gains: Gains, n: u32, rgb: &m
     if mirror {
         super::beam_colour::mirror_rgb(&mut out, w, h);
     }
-    *SELF_PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out });
+    *SELF_PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out, holes: None });
     PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
 }
 
@@ -169,9 +171,7 @@ fn decode_loop(stop: Arc<AtomicBool>) {
     let mut decoded = 0u64;
     let mut failed = 0u64;
     let mut skipped = 0u64;
-    let mut healed = 0u64;
-    // The last healed picture: what a never-painted (green) block takes its pixels from (h264::I420::heal_unpainted).
-    let mut prev: Option<h264::I420> = None;
+    let mut holey = 0u64;
     let mut last_info: Option<Info> = None;
     // The reorder hold (see below): frames waiting for their predecessor, and the next frame number to decode.
     let mut pending: std::collections::BTreeMap<u32, beam::Frame> = std::collections::BTreeMap::new();
@@ -201,7 +201,7 @@ fn decode_loop(stop: Arc<AtomicBool>) {
                 pending.insert(f.frame_no, f);
             }
         }
-        let mut shown: Option<(Gains, u32)> = None;
+        let mut shown: Option<(h264::I420, Gains, u32)> = None;
         loop {
             let Some(n) = next else { break };
             let frame = if let Some(f) = pending.remove(&n) {
@@ -228,11 +228,9 @@ fn decode_loop(stop: Arc<AtomicBool>) {
             }
             let Some(dec) = decoder.as_mut() else { continue };
             match dec.decode(&frame.bytes) {
-                Ok(Some(mut pic)) => {
+                Ok(Some(pic)) => {
                     decoded += 1;
-                    healed += pic.heal_unpainted(prev.as_ref()) as u64;
-                    prev = Some(pic);
-                    shown = Some((frame.gains, frame.frame_no));
+                    shown = Some((pic, frame.gains, frame.frame_no));
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -243,19 +241,23 @@ fn decode_loop(stop: Arc<AtomicBool>) {
                 }
             }
         }
-        if let (Some((gains, n)), Some(pic)) = (shown, prev.as_ref()) {
-            conv.convert(pic, gains, n, &mut rgb);
+        if let Some((pic, gains, n)) = shown {
+            conv.convert(&pic, gains, n, &mut rgb);
             // The sender's rotation, applied here at display (the wire stays sensor-native).
-            let (out, w, h) = super::beam_colour::rotate_rgb(&rgb, pic.w, pic.h, beam::current_rotation());
-            *PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out });
+            let rot = beam::current_rotation();
+            let (out, w, h) = super::beam_colour::rotate_rgb(&rgb, pic.w, pic.h, rot);
+            // THE SWIPE IN (Nick 2026-10-14: "the swipe to start is really nice… Nice and empty!"): what the intra refresh has not reached yet shows the screen's own background, not the decoder's green.
+            let holes = pic.unpainted_mask().map(|m| super::beam_colour::rotate_px(&m, pic.w / 2, pic.h / 2, rot, 1).0);
+            holey += holes.is_some() as u64;
+            *PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out, holes });
             PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }
     crate::logf!(
-        "BEAM: decode thread down — {} pictures ({} concealed, {} never-painted blocks healed), {} failures, {} frames given up as lost",
+        "BEAM: decode thread down — {} pictures ({} concealed, {} shown with holes), {} failures, {} frames given up as lost",
         decoded,
         decoder.as_ref().map_or(0, |d| d.concealed),
-        healed,
+        holey,
         failed,
         skipped
     );

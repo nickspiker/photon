@@ -258,12 +258,17 @@ pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: 
         let sy = (y - dy0) * pic.h / dh;
         let srow = sy * pic.w;
         let line = &mut canvas.pixels[y * cw..(y + 1) * cw];
+        // A block the decoder has never painted is left untouched: the background composited under it later shows thru.
+        let hole_row = pic.holes.as_deref().map(|m| &m[(sy / 2) * (pic.w / 2)..]);
         for x in dx0..x_end {
             let d = line[x];
             if d >= 0xFF00_0000 {
                 continue;
             }
             let sx = (x - dx0) * pic.w / dw;
+            if hole_row.is_some_and(|r| r.get(sx / 2).is_some_and(|&b| b != 0)) {
+                continue;
+            }
             let o = (srow + sx) * 3;
             let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
             // Opaque: α = 255, the channels stored as darkness (fluor's layer convention, see `field_pixel`).

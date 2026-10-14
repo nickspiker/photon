@@ -87,6 +87,10 @@ Nick: "We capture and send at whatever orientation the sensor is, we don't flip 
 
 Layout (Nick: "keeps the image top as big as it can, so not letterbox but letterbottom… the wave buttons are in the empty space below the video"): the peer's picture fills the full width, top-anchored, down to just above the button stack (`wave_field::picture_region`); the self-view is an inset in the picture's bottom-right corner.
 
+Once a picture is up the screen is picture + buttons: no avatars, ripples, name or delay labels; only a warning status (microphone, reconnecting) still draws over it (Nick 2026-10-14).
+
+The swipe in (Nick 2026-10-14: "the swipe to start is really nice. I like not even starting with a keyframe. Nice and empty!"): blocks the decoder has never painted (OpenH264's zeroed buffers, Y = Cb = Cr = 0, which no encoder writes) travel as a quarter-size hole mask (`I420::unpainted_mask`, turned with the picture) and the blit leaves them untouched, so the speckle background shows thru until the intra-refresh stripe reaches them. The same happens for a moment after a band change.
+
 ## 5c. The rungs (decided + built 2026-10-13)
 
 H.264 cannot predict across a coded-size change (a new size = new parameter sets + a keyframe); VP9, AV1 and VVC can (reference scaling / resampling), but none has hardware encode on the phones. So the CODED size changes rarely and the DETAIL moves instead: each camera frame is cropped to 16:9, box-shrunk to the effective size and grown back to the coded size before the encoder (`beam_scale.rs`) — a softer picture, fewer bits, no keyframe, any decoder.
