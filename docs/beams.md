@@ -116,7 +116,7 @@ The status line says "looking for the target…", then the outcome. The outcome 
 
 **Only on the straight path.** With the camera's own AWB running, the next scene moves the colour out from under a one-frame matrix, so the button stays hidden. **The calibration lasts the app run, as in lumis:** a relative IDT is the camera under the light it was scanned in.
 
-**Network:** the first scan of a target serial downloads that target's spectral data from VERICHROME; after that it is offline. Photon hands chameleon no device identifier. On Android, chameleon keys its local cache from a random per-install salt in photon's files dir.
+**Network:** the first scan of a target serial downloads that target's spectral data from VERICHROME; after that it is offline. chameleon encrypts that cached data at rest. Photon binds it to the DEVICE, not the install (Nick: "no sense in hiding cal data from others… so reinstalls still read the chart/colour data and so do other users"), by handing chameleon `spaghettify("verichrome-cache-v0" ‖ machine fingerprint)` in place of its random per-install salt. The derivation is one-way and domain-separated, so the closed library never sees the fingerprint. Any install, user or app on the device that derives the key this way reads the same cache. On Android, ANDROID_ID is per user profile and per signing key, and an uninstall deletes the files themselves, so there a reinstall fetches each target once more unless the files come back (a backup restore).
 
 **Desktop:** not shipped yet. The loader looks beside the binary, and in a macOS bundle's Frameworks, but no installer carries the library, and a desktop camera's own AWB makes a one-frame matrix drift anyway.
 

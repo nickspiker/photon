@@ -2,7 +2,9 @@
 //!
 //! chameleon is closed source; photon is not. A Cargo dependency — even an optional one behind a feature — leaves every photon checkout unbuildable without the private sibling (Cargo resolves optional path dependencies for the lockfile; measured 2026-10-14), so photon never links it. The shipped builds carry chameleon's C library beside photon's own (Android: the APK's native libs, scripts/lib/android.sh) and photon opens it when it is there. No library, no Calibrate button; nothing else changes.
 //!
-//! The one entry point is `chameleon_scan_linear_rgb` (chameleon/src/ffi.rs). The first scan of a target serial downloads that target's spectral data from VERICHROME; later scans of it are offline. Photon hands over no device identifier (on Android chameleon keys its local cache from a random per-install salt instead).
+//! The one entry point is `chameleon_scan_linear_rgb` (chameleon/src/ffi.rs). The first scan of a target serial downloads that target's spectral data from VERICHROME; later scans of it are offline.
+//!
+//! THE CACHE FOLLOWS THE DEVICE (Nick 2026-10-14: "calibration data and devices likely go together, no sense in hiding cal data from others… use the ihi crate and the machine fingerprint so reinstalls still read the chart/colour data and so do other users"): chameleon encrypts its cached target data at rest; its own binding mixes a random per-install salt, so a reinstall could not read what the last install fetched. Photon hands it a DEVICE KEY instead — `spaghettify("verichrome-cache-v0" ‖ machine fingerprint)`, one-way and domain-separated, so the closed library never sees the fingerprint or anything photon's identity is derived from. The same device gives the same key to every install, user and app that derives it this way (Android's ANDROID_ID is per user profile and signing key, so there it is per profile).
 
 use std::ffi::{c_char, CStr};
 use std::sync::OnceLock;
@@ -35,7 +37,7 @@ struct ChameleonCal {
     error: *mut c_char,
 }
 
-type ScanFn = unsafe extern "C" fn(*const f32, u32, u32, *const c_char, *const c_char, *mut ChameleonCal) -> bool;
+type ScanFn = unsafe extern "C" fn(*const f32, u32, u32, *const c_char, *const u8, usize, *mut ChameleonCal) -> bool;
 type FreeFn = unsafe extern "C" fn(*mut c_char);
 
 struct Plugin {
@@ -66,7 +68,9 @@ fn open() -> Option<Plugin> {
             }
             let scan = libc::dlsym(h, c"chameleon_scan_linear_rgb".as_ptr());
             let free = libc::dlsym(h, c"chameleon_free_string".as_ptr());
-            if scan.is_null() || free.is_null() {
+            // The device-key signature landed with the symbol's second revision; an older library has the symbol under the first and would misread its arguments — refused by version below.
+            let version = libc::dlsym(h, c"chameleon_device_key_abi".as_ptr());
+            if scan.is_null() || free.is_null() || version.is_null() {
                 crate::logf!("CALIBRATE: {} opened but lacks the photon entry point — an older chameleon", path);
                 continue;
             }
@@ -114,9 +118,10 @@ pub fn scan(rgb: &[f32], w: usize, h: usize) -> Result<Scan, String> {
     let dir = crate::ui::avatar::get_android_data_dir().and_then(|d| std::ffi::CString::new(d.to_string_lossy().into_owned()).ok());
     #[cfg(not(target_os = "android"))]
     let dir: Option<std::ffi::CString> = None;
+    let key = device_key();
     let mut out = ChameleonCal { success: false, xyz_to_cam: [0.; 9], target_type: 0, serial: 0, gamma: 0., life: 0., timestamp: std::ptr::null_mut(), warning: std::ptr::null_mut(), error: std::ptr::null_mut() };
     // SAFETY: the frame outlives the call; `out` is a valid ChameleonCal; every string chameleon returns is freed exactly once below.
-    let ok = unsafe { (p.scan)(rgb.as_ptr(), w as u32, h as u32, dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()), std::ptr::null(), &mut out) };
+    let ok = unsafe { (p.scan)(rgb.as_ptr(), w as u32, h as u32, dir.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()), key.as_ref().map_or(std::ptr::null(), |k| k.as_ptr()), key.as_ref().map_or(0, |k| k.len()), &mut out) };
     let take = |s: *mut c_char| -> String {
         if s.is_null() {
             return String::new();
@@ -130,4 +135,33 @@ pub fn scan(rgb: &[f32], w: usize, h: usize) -> Result<Scan, String> {
         return Err(if error.is_empty() { "no target found".into() } else { error });
     }
     Ok(Scan { xyz_to_cam: out.xyz_to_cam, target_type: out.target_type, serial: out.serial, gamma: out.gamma, life: out.life, timestamp, warning })
+}
+
+/// The device key chameleon binds its cache to (see the module doc): one-way from the machine fingerprint, computed once.
+fn device_key() -> Option<[u8; 32]> {
+    static KEY: OnceLock<Option<[u8; 32]>> = OnceLock::new();
+    *KEY.get_or_init(|| match tohu::device::machine_fingerprint() {
+        Ok(fp) => {
+            let mut input = Vec::with_capacity(19 + fp.len());
+            input.extend_from_slice(b"verichrome-cache-v0");
+            input.extend_from_slice(&fp);
+            Some(ihi::spaghettify(&input))
+        }
+        Err(e) => {
+            crate::logf!("CALIBRATE: no machine fingerprint ({}) — chameleon binds its cache to this install instead", e);
+            None
+        }
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn the_device_key_is_stable_and_not_the_fingerprint() {
+        let (Some(a), Some(b)) = (super::device_key(), super::device_key()) else { return };
+        assert_eq!(a, b);
+        if let Ok(fp) = tohu::device::machine_fingerprint() {
+            assert!(!fp.windows(8).any(|w| a.windows(8).any(|k| k == w)), "no run of fingerprint bytes survives into the key");
+        }
+    }
 }
