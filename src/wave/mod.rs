@@ -47,6 +47,8 @@ pub static MEDIA_QUIET: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub static MIC_SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// macOS: the Microphone grant is DENIED for Photon (platform/mic_permission.rs sets it at wave start); the wave screen says so and where the switch is.
 pub static MIC_DENIED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// macOS refused the microphone WITHOUT asking (an answer in under half a second — the stale-bundle case): the bundle is repaired and its permission entry reset, so the wave screen says to quit and reopen Photon rather than sending anyone to a Settings list Photon is not even in.
+pub static MIC_RELAUNCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// THE LINK VERDICT (the beam ladder's input, 2026-10-13): the audio engine's once-a-second judgement of the path both tracks share — bit 0 CLEAN (no loss reported, delay calm), bit 1 CONGESTED (loss the queue corroborates, or delay building), the rest a sequence number so a reader sees each verdict once. One controller for the link; video is the elastic part that moves first.
 pub static LINK_VERDICT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);

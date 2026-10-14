@@ -43,8 +43,17 @@ mod mac {
     /// Raise the system prompt (a no-op if the status is already decided). The answer lands on a system queue; it is logged, and the capture path sees the grant on its next open.
     pub fn request() {
         let media = audio_type();
-        let block = block2::RcBlock::new(|granted: objc2::runtime::Bool| {
-            crate::logf!("AUDIO: microphone access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
+        let asked = std::time::Instant::now();
+        let block = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
+            // An answer inside half a second was not a person: macOS refused without showing the prompt (the stale-bundle case — see repair_bundle_plist).
+            let ms = asked.elapsed().as_millis();
+            if !granted.as_bool() && ms < 500 {
+                crate::logf!("AUDIO: microphone access refused by macOS WITHOUT a prompt ({} ms) — the app's description was missing or not trusted; repaired at startup, its permission entry reset, so quit and reopen Photon", ms);
+                reset_tcc("Microphone");
+                crate::wave::MIC_RELAUNCH.store(true, std::sync::atomic::Ordering::Relaxed);
+            } else {
+                crate::logf!("AUDIO: microphone access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
+            }
         });
         unsafe {
             let _: () = msg_send![class!(AVCaptureDevice), requestAccessForMediaType: &*media, completionHandler: &*block];
@@ -65,12 +74,25 @@ mod mac {
 
     pub fn request_camera() {
         let media = NSString::from_str("vide");
-        let block = block2::RcBlock::new(|granted: objc2::runtime::Bool| {
-            crate::logf!("BEAM: camera access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
+        let asked = std::time::Instant::now();
+        let block = block2::RcBlock::new(move |granted: objc2::runtime::Bool| {
+            let ms = asked.elapsed().as_millis();
+            if !granted.as_bool() && ms < 500 {
+                crate::logf!("BEAM: camera access refused by macOS WITHOUT a prompt ({} ms) — repaired at startup, its permission entry reset; quit and reopen Photon", ms);
+                reset_tcc("Camera");
+            } else {
+                crate::logf!("BEAM: camera access {} by the user", if granted.as_bool() { "GRANTED" } else { "DENIED" });
+            }
         });
         unsafe {
             let _: () = msg_send![class!(AVCaptureDevice), requestAccessForMediaType: &*media, completionHandler: &*block];
         }
+    }
+
+    /// Clear Photon's own entry for one privacy service (the user's database, no admin rights): after a refusal macOS made without asking, the next request asks a person instead of repeating the refusal. Never used on a real "Don't Allow" — that is the person's answer.
+    fn reset_tcc(service: &str) {
+        let ok = std::process::Command::new("/usr/bin/tccutil").args(["reset", service, "org.fgtw.photon-messenger"]).status().map(|s| s.success()).unwrap_or(false);
+        crate::logf!("macOS: permission entry for {} {}", service, if ok { "reset — the next request asks" } else { "could not be reset" });
     }
 
     static CAMERA_SETTINGS_OPENED: AtomicBool = AtomicBool::new(false);
@@ -118,6 +140,35 @@ mod mac {
 }
 
 pub use mac::{camera_status, open_camera_settings_once, open_settings_once, request, request_camera, status};
+
+/// THE BUNDLE'S OWN DESCRIPTION (field 2026-10-13, Nick's MacBook on 0.117.0: "microphone access undetermined — asking" then "DENIED by the user" ten milliseconds later, no prompt ever shown). A process launched from `Photon Messenger.app` is judged by the BUNDLE's Info.plist, not the one embedded in the binary — and updates replace only the binary, so a bundle installed before the plist carried a microphone (or camera) description keeps lacking it forever, and macOS refuses privacy access without asking. The bundle's plist also differed from the embedded one the binary's signature records. So at startup Photon makes its bundle's Info.plist byte-identical to the embedded one (macos/Info.plist, the complete bundle plist) and re-registers the bundle with Launch Services; macOS asks on the next request, or the one after a relaunch.
+pub fn repair_bundle_plist() {
+    #[cfg(target_os = "macos")]
+    {
+        const EMBEDDED: &str = include_str!("../../macos/Info.plist");
+        let Ok(exe) = std::env::current_exe() else { return };
+        // …/Photon Messenger.app/Contents/MacOS/photon-messenger
+        let Some(contents) = exe.parent().and_then(|m| m.parent()) else { return };
+        let Some(bundle) = contents.parent() else { return };
+        if bundle.extension().and_then(|e| e.to_str()) != Some("app") {
+            return; // the bare binary — its embedded plist is what macOS reads
+        }
+        let plist = contents.join("Info.plist");
+        if std::fs::read_to_string(&plist).ok().as_deref() == Some(EMBEDDED) {
+            return;
+        }
+        match std::fs::write(&plist, EMBEDDED) {
+            Ok(()) => {
+                let _ = std::process::Command::new("/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister")
+                    .arg("-f")
+                    .arg(bundle)
+                    .status();
+                crate::logf!("macOS: the app bundle's Info.plist was stale (no microphone/camera description, and not the plist the signature records) — rewrote it from the embedded one and re-registered {}", bundle.display());
+            }
+            Err(e) => crate::logf!("macOS: could not rewrite the bundle's Info.plist ({}): {}", plist.display(), e),
+        }
+    }
+}
 
 /// The wave-start edge: ask when undetermined, say and open Settings when denied. Returns the status seen, and sets [`crate::wave::MIC_DENIED`] for the wave screen.
 pub fn at_wave_start() -> MicAccess {

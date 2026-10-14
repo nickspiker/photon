@@ -884,7 +884,9 @@ impl PhotonApp {
                     }
                     crate::wave::WavePhase::Active => {
                         // THE MIC, named (field 2026-10-10): a denied grant or a capture of zeros is said on the status line, so the one end that is broken knows it is this one.
-                        if crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed) {
+                        if crate::wave::MIC_RELAUNCH.load(std::sync::atomic::Ordering::Relaxed) {
+                            tr(Msg::MicRelaunch).into_owned()
+                        } else if crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed) {
                             tr(Msg::MicDenied).into_owned()
                         } else if crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed) {
                             format!("{} \u{00B7} {}", wave_dur_str, tr(Msg::MicSilent))
@@ -897,10 +899,33 @@ impl PhotonApp {
                             tr(Msg::WaveActiveNoPath(&wave_dur_str)).into_owned()
                         }
                     }
+                    // A beam we placed says so (field 2026-10-13: "Beam from mac says 'waving Emma' rather than beaming").
+                    crate::wave::WavePhase::Outgoing if self.active_wave.as_ref().is_some_and(|w| w.beam) => tr(Msg::BeamingName(&name)).into_owned(),
                     crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(&name)).into_owned(),
                 };
                 let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
-                ctx.text.draw_text_center(&mut canvas, &status_line, acx, acy + avatar_r + unit * 2.2, &status_style, None, None);
+                // WRAPPED (field 2026-10-13: "you have to resize Photon super wide to read it"): a long status — the microphone messages — breaks onto as many centred lines as it needs within 90% of the window.
+                {
+                    let max_w = buf_w as f32 * 0.9;
+                    let mut lines: Vec<String> = Vec::new();
+                    let mut cur = String::new();
+                    for word in status_line.split(' ') {
+                        let trial = if cur.is_empty() { word.to_string() } else { format!("{cur} {word}") };
+                        if !cur.is_empty() && ctx.text.measure_text(&trial, &status_style) > max_w {
+                            lines.push(std::mem::take(&mut cur));
+                            cur = word.to_string();
+                        } else {
+                            cur = trial;
+                        }
+                    }
+                    if !cur.is_empty() {
+                        lines.push(cur);
+                    }
+                    let y0 = acy + avatar_r + unit * 2.2;
+                    for (i, line) in lines.iter().enumerate() {
+                        ctx.text.draw_text_center(&mut canvas, line, acx, y0 + i as f32 * unit * 0.85, &status_style, None, None);
+                    }
+                }
                 // Under each avatar, the rung that voice is sent on; centred between them, the ROUND TRIP mouth to ear and back (Nick 2026-09-28): our own l plus the l they report. The sum is exact whatever the two clocks disagree by — a one-way split would be a guess until the grid has an outside reference (GPS or the like).
                 if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active)) {
                     let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
@@ -1083,7 +1108,9 @@ impl PhotonApp {
                 let x0 = (buf_w as f32 - bar_w) * 0.5;
                 let gap = unit * 0.5;
                 let mut status = match phase {
+                    crate::wave::WavePhase::Outgoing if self.active_wave.as_ref().is_some_and(|w| w.beam) => tr(Msg::BeamingName(name)).into_owned(),
                     crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(name)).into_owned(),
+                    crate::wave::WavePhase::Ringing if self.active_wave.as_ref().is_some_and(|w| w.beam) => tr(Msg::BeamBarBeaming(name)).into_owned(),
                     crate::wave::WavePhase::Ringing => tr(Msg::WaveBarWaving(name)).into_owned(),
                     crate::wave::WavePhase::Active => tr(Msg::WaveBarInWave(name)).into_owned(),
                 };
