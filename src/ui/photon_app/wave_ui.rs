@@ -97,6 +97,11 @@ impl PhotonApp {
             self.answer_wave();
             any = true;
         }
+        // Calibrate (beam_calibrate.rs): the next camera frame goes to chameleon; the status line reports.
+        if self.beam_cal_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
+            crate::wave::beam_calibrate::request();
+            any = true;
+        }
         if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
             match phase {
                 Some(WavePhase::Active) => {

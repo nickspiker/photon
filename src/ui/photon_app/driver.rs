@@ -383,6 +383,7 @@ impl FluorApp for PhotonApp {
         self.beam_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamStart)));
         self.beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
         self.wave_reject_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
+        self.beam_cal_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Calibrate)));
         for b in [
             self.wave_status_btn.as_mut(),
             self.wave_start_btn.as_mut(),
@@ -394,6 +395,7 @@ impl FluorApp for PhotonApp {
             self.beam_btn.as_mut(),
             self.beam_back_btn.as_mut(),
             self.wave_reject_btn.as_mut(),
+            self.beam_cal_btn.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -2287,6 +2289,7 @@ impl FluorApp for PhotonApp {
                     self.wave_action_btn.as_mut(),
                     self.wave_decline_btn.as_mut(),
                     self.beam_btn.as_mut(),
+                    self.beam_cal_btn.as_mut(),
                 ]
                 .into_iter()
                 .flatten()
@@ -4059,6 +4062,7 @@ impl FluorApp for PhotonApp {
             self.wave_action_btn.as_ref(),
             self.wave_decline_btn.as_ref(),
             self.beam_btn.as_ref(),
+            self.beam_cal_btn.as_ref(),
         ]
         .into_iter()
         .flatten()

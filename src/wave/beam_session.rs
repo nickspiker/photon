@@ -453,7 +453,11 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
     let Some((secret, origin)) = *ANDROID_ARMED.lock().unwrap() else {
         return Err("BEAM: pipeline up with nothing armed".into());
     };
-    let entry = phone_entry(maker, straight, curve);
+    // A calibration made earlier this run (beam_calibrate.rs) outranks the maker's matrix — on the straight path only, where the frames are the colour it was solved from.
+    let on_straight = straight && curve;
+    super::beam_calibrate::set_straight(on_straight);
+    let calibrated = super::beam_calibrate::calibration().filter(|_| on_straight);
+    let entry = calibrated.as_ref().map_or_else(|| phone_entry(maker, straight, curve), |(e, _)| e.clone());
     *ANDROID_SELF_CONV.lock().unwrap() = Some(Converter::new(Characterization::from_entry(&entry)));
     // THE LADDER (beam_ladder.rs): the camera's capture (w×h) after its 16:9 crop names the ceiling; a phone stops at 1280×720 (its own decoders' load on the far side, and the capture it can sustain), and a metered network at 640×360.
     let crop_w = super::beam_scale::crop_16x9(w, h).2;
@@ -465,7 +469,7 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
     let (cw, ch) = super::beam_ladder::BANDS[ladder.plan().band];
     crate::logf!("BEAM: phone ladder up — capture {}×{}, ceiling {}×{}, starting {}×{}", w, h, super::beam_ladder::BANDS[max_band].0, super::beam_ladder::BANDS[max_band].1, cw, ch);
     *ANDROID_LADDER.lock().unwrap() = Some((ladder, 0));
-    let info = Info { width: cw, height: ch, fps: fps as u8, codec: Codec::H264, colour: colour_bytes(&entry) };
+    let info = Info { width: cw, height: ch, fps: fps as u8, codec: Codec::H264, colour: colour_bytes_cal(&entry, calibrated.map(|(_, c)| c)) };
     let s = start_encoded_sender(&secret, origin, info)?;
     *ANDROID_SENDER.lock().unwrap() = Some(s);
     Ok(())
@@ -477,10 +481,22 @@ pub fn android_stop() {
     *ANDROID_ARMED.lock().unwrap() = None;
     *ANDROID_SELF_CONV.lock().unwrap() = None;
     *ANDROID_LADDER.lock().unwrap() = None;
+    super::beam_calibrate::set_straight(false);
     ANDROID_ORIENT_SENT.store(0xFF, Ordering::Relaxed);
     clear_self();
     #[cfg(target_os = "android")]
     crate::platform::jni_android::wave_service_void("stopBeamCapture");
+}
+
+/// A calibration just landed (beam_calibrate.rs): the self-view and the beam's self-description switch to it at once — the receiver reconfigures on the info edge.
+pub fn android_apply_calibration(entry: &vsf::spectral_image::ProfileEntry, cal: vsf::spectral_image::CalProvenance) {
+    if let Some(conv) = ANDROID_SELF_CONV.lock().unwrap().as_mut() {
+        conv.set_characterization(Characterization::from_entry(entry));
+    }
+    if let Some((tx, info, _)) = ENCODED_TX.lock().unwrap().as_mut() {
+        info.colour = colour_bytes_cal(entry, Some(cal));
+        tx.send_info(info);
+    }
 }
 
 pub fn android_sending() -> bool {
@@ -493,7 +509,7 @@ pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool, curve: bool) -> vsf:
     if let (Some(m), true) = (maker, straight && curve) {
         if let Some(inv) = invert3(&m) {
             return vsf::spectral_image::ProfileEntry {
-                matrix: mat_mul3(&vsf::colour::XYZ2VSF_RGB, &inv),
+                matrix: mat_mul3(&super::beam_colour::vsf_rows(vsf::colour::XYZ2VSF_RGB), &inv),
                 source: "dng_colormatrix2".into(),
                 class: vsf::spectral_image::IdtClass::Absolute,
                 tier: vsf::spectral_image::ProfileTier::Model,
@@ -503,7 +519,7 @@ pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool, curve: bool) -> vsf:
         }
     }
     vsf::spectral_image::ProfileEntry {
-        matrix: vsf::colour::SRGB2VSF_RGB,
+        matrix: super::beam_colour::vsf_rows(vsf::colour::SRGB2VSF_RGB),
         source: "assumed_srgb".into(),
         class: vsf::spectral_image::IdtClass::Creative,
         tier: vsf::spectral_image::ProfileTier::Assumed,
@@ -512,7 +528,7 @@ pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool, curve: bool) -> vsf:
     }
 }
 
-fn invert3(m: &[f32; 9]) -> Option<[f32; 9]> {
+pub(super) fn invert3(m: &[f32; 9]) -> Option<[f32; 9]> {
     let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
     if !det.is_finite() || det.abs() < 1e-9 {
         return None;
@@ -530,7 +546,7 @@ fn invert3(m: &[f32; 9]) -> Option<[f32; 9]> {
     ])
 }
 
-fn mat_mul3(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
+pub(super) fn mat_mul3(a: &[f32; 9], b: &[f32; 9]) -> [f32; 9] {
     let mut o = [0f32; 9];
     for r in 0..3 {
         for c in 0..3 {
@@ -546,12 +562,17 @@ const COLOUR_SECTION: &str = "colour_profile";
 
 /// The camera's characterization entry as a one-section VSF document — VSF's own `colour_profile` codec, so the beam's colour label is the same bytes a still would carry.
 pub fn colour_bytes(entry: &vsf::spectral_image::ProfileEntry) -> Vec<u8> {
+    colour_bytes_cal(entry, None)
+}
+
+/// The same, carrying the calibration's provenance (which target, when it was measured) beside a chameleon entry.
+pub fn colour_bytes_cal(entry: &vsf::spectral_image::ProfileEntry, cal: Option<vsf::spectral_image::CalProvenance>) -> Vec<u8> {
     let profile = vsf::spectral_image::ColourProfile {
         target: "vsf_rgb".into(),
         entries: vec![entry.clone()],
         dng_colormatrix: [None, None],
         patches: None,
-        cal: None,
+        cal,
     };
     vsf::VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -591,7 +612,7 @@ pub fn colour_from_bytes(bytes: &[u8]) -> Option<Characterization> {
 /// The entry for a camera we know nothing about (a UVC webcam, a Mac): `creative` / `assumed` / `srgb`, the sRGB→VSF-RGB matrix.
 pub fn assumed_srgb_entry() -> vsf::spectral_image::ProfileEntry {
     vsf::spectral_image::ProfileEntry {
-        matrix: vsf::colour::SRGB2VSF_RGB,
+        matrix: super::beam_colour::vsf_rows(vsf::colour::SRGB2VSF_RGB),
         source: "assumed_srgb".into(),
         class: vsf::spectral_image::IdtClass::Creative,
         tier: vsf::spectral_image::ProfileTier::Assumed,
@@ -639,6 +660,30 @@ pub fn bitrate_for(w: usize, h: usize) -> u32 {
 mod tests {
     use super::*;
 
+    /// White in, white out (field 2026-10-14: the matrices were read transposed and an `assumed` beam's white came out green). Every row of every entry's matrix maps the source white to VSF white [1, 1, 1], and the receive chain keeps a neutral grey neutral.
+    #[test]
+    fn grey_stays_grey_thru_every_entry_and_the_chain() {
+        let rows = |m: &[f32; 9]| [m[0] + m[1] + m[2], m[3] + m[4] + m[5], m[6] + m[7] + m[8]];
+        for (name, e) in [("assumed sRGB", assumed_srgb_entry()), ("phone fallback", phone_entry(None, false, false))] {
+            for (r, v) in rows(&e.matrix).iter().enumerate() {
+                assert!((v - 1.0).abs() < 2e-3, "{name}: row {r} maps white to {v}, not 1");
+            }
+        }
+        // XYZ→camera = the XYZ white (Illuminant E, [1,1,1]) onto camera [1,1,1]: camera white must land on VSF white.
+        let e = phone_entry(Some([1., 0., 0., 0., 1., 0., 0., 0., 1.]), true, true);
+        for v in rows(&e.matrix) {
+            assert!((v - 1.0).abs() < 2e-3, "absolute entry maps camera white to {v}");
+        }
+        let conv = super::super::beam_colour::Converter::new(Characterization::from_entry(&assumed_srgb_entry()));
+        let mut grey = h264::I420::new(64, 64);
+        grey.y.iter_mut().for_each(|v| *v = 128);
+        let mut rgb = Vec::new();
+        conv.convert(&grey, Gains::NONE, 0, &mut rgb);
+        let mean = |c: usize| rgb.iter().skip(c).step_by(3).map(|&v| v as u32).sum::<u32>() / (64 * 64);
+        let (r, g, b) = (mean(0), mean(1), mean(2));
+        assert!(r.abs_diff(g) <= 2 && g.abs_diff(b) <= 2, "a neutral grey must stay neutral, got {r} {g} {b}");
+    }
+
     #[test]
     fn the_colour_entry_round_trips_as_vsf() {
         let e = assumed_srgb_entry();
@@ -646,7 +691,7 @@ mod tests {
         assert!(!bytes.is_empty());
         let chr = colour_from_bytes(&bytes).expect("reads back");
         assert_eq!(chr.transfer, super::super::beam_colour::Transfer::Srgb);
-        assert_eq!(chr.matrix, vsf::colour::SRGB2VSF_RGB);
+        assert_eq!(chr.matrix, super::super::beam_colour::vsf_rows(vsf::colour::SRGB2VSF_RGB));
         assert!(colour_from_bytes(&[]).is_none());
         assert!(colour_from_bytes(b"not a vsf document").is_none());
     }
@@ -661,7 +706,7 @@ mod tests {
         assert_eq!(e.class, vsf::spectral_image::IdtClass::Absolute);
         // XYZ→camera = 2·I, so camera→VSF = XYZ2VSF × ½·I.
         for i in 0..9 {
-            assert!((e.matrix[i] - vsf::colour::XYZ2VSF_RGB[i] * 0.5).abs() < 1e-6);
+            assert!((e.matrix[i] - super::super::beam_colour::vsf_rows(vsf::colour::XYZ2VSF_RGB)[i] * 0.5).abs() < 1e-6);
         }
         assert!(invert3(&[0.; 9]).is_none());
         // Off the straight path with the camera's own curve, the label says sRGB transfer — never γ2 it does not carry.

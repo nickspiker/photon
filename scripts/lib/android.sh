@@ -30,6 +30,18 @@ android_build() {
     mkdir -p "$proj/app/src/main/jniLibs/arm64-v8a"
     cp "$so" "$proj/app/src/main/jniLibs/arm64-v8a/"
 
+    # CHAMELEON (docs/beams.md §5d): VERICHROME's target scanner is closed source, so photon never links it — it ships as its own library beside photon's, which photon opens at runtime (src/platform/chameleon_plugin.rs) to light the beam's Calibrate button. Built only where the private sibling checkout exists; anywhere else the APK simply has no Calibrate button. Never a stale copy: no checkout, no library.
+    local cham="${SNAP_DIR:-.}/../chameleon"
+    [ -d "$cham" ] || cham="../chameleon"
+    if [ -f "$cham/Cargo.toml" ]; then
+        echo "Building chameleon (the Calibrate plugin) for Android..."
+        ( cd "$cham" && cargo build --release --lib --target aarch64-linux-android ) || { echo "ERROR: chameleon build failed"; exit 1; }
+        cp "$cham/target/aarch64-linux-android/release/libchameleon.so" "$proj/app/src/main/jniLibs/arm64-v8a/"
+    else
+        rm -f "$proj/app/src/main/jniLibs/arm64-v8a/libchameleon.so"
+        echo "No chameleon checkout — this APK has no Calibrate button."
+    fi
+
     # SYMBOLS (2026-09-10): Gradle strips the .so it packages, so a tombstone's rel_pc can only be symbolized against the unstripped build kept here — one reflink per published build, named by the version and commit the APK reports. Symbolize with: llvm-symbolizer --obj=<file> 0x<rel_pc>
     local symdir="/mnt/Harbor/Code/photon-symbols/android-arm64"
     local ver commit

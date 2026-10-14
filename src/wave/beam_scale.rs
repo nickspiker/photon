@@ -33,6 +33,15 @@ impl Plane {
     pub fn fits(&self) -> bool {
         self.w > 0 && self.h > 0 && self.px > 0 && (self.h - 1) * self.row + (self.w - 1) * self.px < self.len
     }
+    /// Copy the top-left w×h of the plane into a packed buffer (row = w, one byte per pixel).
+    pub fn copy_to(&self, out: &mut [u8], w: usize, h: usize) {
+        let (w, h) = (w.min(self.w), h.min(self.h));
+        for y in 0..h {
+            for x in 0..w {
+                out[y * w + x] = self.at(x, y);
+            }
+        }
+    }
     pub fn from_slice(buf: &mut [u8], row: usize, px: usize, w: usize, h: usize) -> Plane {
         Plane { ptr: buf.as_mut_ptr(), len: buf.len(), row, px, w, h }
     }

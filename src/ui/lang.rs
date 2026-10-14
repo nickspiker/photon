@@ -948,6 +948,11 @@ pub enum Msg<'a> {
     /// Placing a beam (the Outgoing status), and a friend beaming us on the compact bar.
     BeamingName(&'a str),
     BeamBarBeaming(&'a str),
+    /// The beam's Calibrate button (beam_calibrate.rs) and what it reports on the status line.
+    Calibrate,
+    CalScanning,
+    Calibrated(&'a str),
+    CalFailed(&'a str),
     /// The ring screen's status when the offer carries a beam.
     IncomingBeam,
     /// macOS: the Microphone grant is off for Photon — and where the switch is.

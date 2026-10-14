@@ -235,6 +235,11 @@ fn build_blue_noise() -> [u8; TILE * TILE] {
 
 // ───────────────────────── the converter ─────────────────────────
 
+/// VSF's colour constants (`vsf::colour::*2*`) are stored COLUMN-major; this chain, a `ProfileEntry`'s matrix, lumis and opsin are all row-major. Every VSF constant enters the beam thru here (field 2026-10-14: read raw, sRGB white came out (0.65, 1.35, 1.00) — the green on every `assumed` beam, Samsung and Mac).
+pub const fn vsf_rows(m: [f32; 9]) -> [f32; 9] {
+    [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
+}
+
 /// Converts decoded frames to γ2 Rec.2020 RGB triples for the blit. One per beam; `set_characterization` on the info edge.
 pub struct Converter {
     chr: Characterization,
@@ -250,7 +255,7 @@ impl Converter {
     }
 
     pub fn set_characterization(&mut self, chr: Characterization) {
-        self.fold = mat_mul(&vsf::colour::VSF_RGB2REC2020, &chr.matrix);
+        self.fold = mat_mul(&vsf_rows(vsf::colour::VSF_RGB2REC2020), &chr.matrix);
         self.chr = chr;
     }
 
@@ -458,7 +463,7 @@ mod tests {
 
     /// The inverse of VSF RGB→Rec.2020, so the fold becomes identity: samples that are already Rec.2020 pass straight through.
     fn inverse_rec2020() -> [f32; 9] {
-        let m = vsf::colour::VSF_RGB2REC2020;
+        let m = vsf_rows(vsf::colour::VSF_RGB2REC2020);
         let det = m[0] * (m[4] * m[8] - m[5] * m[7]) - m[1] * (m[3] * m[8] - m[5] * m[6]) + m[2] * (m[3] * m[7] - m[4] * m[6]);
         let mut inv = [0f32; 9];
         inv[0] = (m[4] * m[8] - m[5] * m[7]) / det;

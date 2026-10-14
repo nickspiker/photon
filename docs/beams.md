@@ -99,6 +99,29 @@ Five coded bands, each double the last (Nick: "fill out two more rungs… 2560x1
 
 Steering (`beam_ladder.rs`): the audio engine's once-a-second verdict on the shared path (`wave::LINK_VERDICT` — congested on corroborated loss or a building delay slope, clean on no loss and a calm slope): congested → down a half-stop at once; three clean in a row → up a half-stop. Ceilings: the camera's capture after the crop; 2560×1440 only on a LAN-fast path (desktops); phones stop at 1280×720; metered → 640×360. Bitrate moves live within a band (MediaCodec `PARAMETER_KEY_VIDEO_BITRATE`; OpenH264 `ENCODER_OPTION_BITRATE`); a band crossing restarts the encoder at the new size and re-describes the beam.
 
+## 5d. Calibration with chameleon (built 2026-10-14)
+
+Nick: "on the Chameleon integration, yes. However you want to wire it in."
+
+**Wiring: a runtime plugin, never a Cargo dependency.** chameleon is closed source; photon is public. Even an optional path dependency behind a feature breaks every checkout without the private sibling (Cargo resolves optional path dependencies for the lockfile, measured 2026-10-14), so photon never links it. The Android publish builds chameleon's `cdylib` when `../chameleon` exists and packages `libchameleon.so` beside photon's library (scripts/lib/android.sh). Photon `dlopen`s it (platform/chameleon_plugin.rs) and shows **Calibrate** only when it is there. The one entry point is chameleon's `chameleon_scan_linear_rgb` (ffi.rs): linear RGB in; out come the scan's XYZ→camera ColorMatrix (D50, row-major) and the target's type, serial and timestamp.
+
+**What a tap does** (wave/beam_calibrate.rs):
+1. The next full-size camera frame is copied out of `nativeBeamFill` before the ladder shrinks it.
+2. That frame goes back to linear camera RGB: the receive chain's 601 full-range decode, then γ2 squared away.
+3. chameleon scans it on a worker thread.
+4. The matrix becomes the beam's entry, by lumis's derivation: camera → VSF RGB = (XYZ → VSF RGB) × (XYZ → camera)⁻¹. It is labelled `chameleon` / `relative` / `unit`, illuminant 23, and carries `CalProvenance`.
+5. The beam re-describes itself at once (`android_apply_calibration`), and the self-view switches with it.
+
+The status line says "looking for the target…", then the outcome. The outcome stays up until the next poke.
+
+**Only on the straight path.** With the camera's own AWB running, the next scene moves the colour out from under a one-frame matrix, so the button stays hidden. **The calibration lasts the app run, as in lumis:** a relative IDT is the camera under the light it was scanned in.
+
+**Network:** the first scan of a target serial downloads that target's spectral data from VERICHROME; after that it is offline. Photon hands chameleon no device identifier. On Android, chameleon keys its local cache from a random per-install salt in photon's files dir.
+
+**Desktop:** not shipped yet. The loader looks beside the binary, and in a macOS bundle's Frameworks, but no installer carries the library, and a desktop camera's own AWB makes a one-frame matrix drift anyway.
+
+**Found on the way: VSF matrices were read transposed.** `vsf::colour` constants are column-major; a `ProfileEntry` matrix and this chain are row-major. The beam read `SRGB2VSF_RGB`, `XYZ2VSF_RGB` and `VSF_RGB2REC2020` raw, so sRGB white came out as (0.65, 1.35, 1.00): every `assumed` beam (Samsung fallback, Mac) was green. Now every VSF constant enters the chain thru `beam_colour::vsf_rows`, and a grey-stays-grey test guards it.
+
 ## 6. Stages (build order)
 
 1. **Codec substrate (desktop).** OpenH264 as a desktop-only dependency through the arch gate; encode + decode of I420 in software; intra refresh if the library has it, else periodic keyframes on the desktop side only. A round-trip test.

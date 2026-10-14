@@ -30,6 +30,8 @@ pub mod audio_aaudio;
 /// macOS: Apple's Voice Processing I/O unit in front of the mic (echo cancellation with its gain control off), chosen per route by `audio::voice_dsp_wanted`.
 #[cfg(target_os = "macos")]
 pub mod audio_vpio;
+/// chameleon (VERICHROME's target scanner, closed source) opened at runtime when a shipped build carries it — never linked (docs/beams.md §5d).
+pub mod chameleon_plugin;
 /// The microphone grant on macOS: ask, say, open Settings (field 2026-10-10, Jon's silent Mac); a stub elsewhere.
 pub mod mic_permission;
 /// macOS: the desktop camera for beams (AVFoundation, NV12 → I420) — docs/beams.md stage 5.

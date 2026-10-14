@@ -1782,6 +1782,8 @@ pub struct PhotonApp {
     wave_start_btn: Option<Button>,
     /// Beam (video) — a stub button, rendered disabled beside the Wave button until video lands. Never dispatches.
     beam_btn: Option<Button>,
+    /// The beam's Calibrate button (beam_calibrate.rs): shown beside a phone's running beam when chameleon shipped and the camera is straight.
+    beam_cal_btn: Option<Button>,
     /// BEAM FROM THE CONVERSATION (docs/beams.md stage 4): the Beam slat started this wave, so the camera goes out the moment the wave is live. Cleared when the send starts or the wave ends.
     beam_armed: bool,
     /// Reject — the silent dismissal on the ring panel (no signal to the origin; the wave row's Rejected outcome stops every sibling's ring on merge).
@@ -2753,6 +2755,7 @@ impl PhotonApp {
             wave_status_btn: None,
             wave_start_btn: None,
             beam_btn: None,
+            beam_cal_btn: None,
             beam_armed: false,
             beam_back_btn: None,
             wave_reject_btn: None,
@@ -3493,6 +3496,12 @@ impl PhotonApp {
                     // The Beam toggle (docs/beams.md) — in the walk so a press + release becomes a click (field 2026-10-10: it was painted and stamped nowhere).
                     if crate::wave::beam_session::can_send() {
                         if let Some(b) = self.beam_btn.as_mut() {
+                            f(b);
+                        }
+                    }
+                    // Calibrate: only while it is drawn (the same gate as the paint).
+                    if crate::wave::beam_calibrate::available() {
+                        if let Some(b) = self.beam_cal_btn.as_mut() {
                             f(b);
                         }
                     }

@@ -348,6 +348,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamFill(
     let (Some(s0), Some(s1), Some(s2), Some(d0), Some(d1), Some(d2)) = (src[0], src[1], src[2], dst[0], dst[1], dst[2]) else {
         return 0;
     };
+    // A Calibrate tap takes this frame, full size, before the ladder shrinks it (beam_calibrate.rs).
+    crate::wave::beam_calibrate::offer_planes([s0, s1, s2]);
     crate::wave::beam_scale::resample_frame([s0, s1, s2], [d0, d1, d2], soft.clamp(0, 4) as u8);
     1
 }

@@ -28,6 +28,7 @@ pub mod beam_ladder;
 pub mod beam_scale;
 pub mod beam_colour;
 pub mod beam_session;
+pub mod beam_calibrate;
 pub mod h264;
 pub mod signal;
 

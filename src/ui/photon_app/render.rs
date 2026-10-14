@@ -877,6 +877,23 @@ impl PhotonApp {
                     );
                 }
                 // Status / timer line beneath the name. Active shows the LIVE wave timer (per-frame recompute from phase_osc); Ended a frozen wave summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
+                // CALIBRATION on the status line (beam_calibrate.rs): "looking" while the scan runs; the outcome until the next poke after it — an edge, never a timer.
+                let cal_line: Option<String> = {
+                    use crate::wave::beam_calibrate::Status;
+                    let unpoked = |t: std::time::Instant| self.last_poke.map_or(true, |p| p <= t);
+                    match crate::wave::beam_calibrate::status() {
+                        (Status::Scanning, _) => Some(tr(Msg::CalScanning).into_owned()),
+                        (Status::Done { serial, warning }, Some(t)) if unpoked(t) => {
+                            let line = tr(Msg::Calibrated(&serial.to_string())).into_owned();
+                            Some(match warning.lines().map(str::trim).find(|l| !l.is_empty()) {
+                                Some(w) => format!("{line} \u{00B7} \u{26A0} {w}"),
+                                None => line,
+                            })
+                        }
+                        (Status::Failed(why), Some(t)) if unpoked(t) => Some(tr(Msg::CalFailed(why.lines().next().unwrap_or("").trim())).into_owned()),
+                        _ => None,
+                    }
+                };
                 let status_line = match phase {
                     crate::wave::WavePhase::Ringing => {
                         if self.active_wave.as_ref().is_some_and(|w| w.beam) {
@@ -893,6 +910,8 @@ impl PhotonApp {
                             tr(Msg::MicRelaunch).into_owned()
                         } else if crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed) {
                             tr(Msg::MicDenied).into_owned()
+                        } else if let Some(line) = cal_line.clone() {
+                            line
                         } else if crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed) {
                             format!("{} \u{00B7} {}", wave_dur_str, tr(Msg::MicSilent))
                         } else if wave_reconnecting {
@@ -913,7 +932,8 @@ impl PhotonApp {
                     && (crate::wave::MIC_RELAUNCH.load(std::sync::atomic::Ordering::Relaxed)
                         || crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed)
                         || crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed)
-                        || wave_reconnecting);
+                        || wave_reconnecting
+                        || cal_line.is_some());
                 // WRAPPED (field 2026-10-13: "you have to resize Photon super wide to read it"): a long status — the microphone messages — breaks onto as many centred lines as it needs within 90% of the window.
                 if !beam_showing || status_warns {
                     let max_w = buf_w as f32 * 0.9;
@@ -1061,6 +1081,17 @@ impl PhotonApp {
                             b.set_enabled(true);
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        // CALIBRATE (beam_calibrate.rs): the left column's upper slot, above ‹ Contact, while a phone beams thru a straight camera and chameleon shipped with this build.
+                        if crate::wave::beam_calibrate::available() {
+                            if let Some(b) = self.beam_cal_btn.as_mut() {
+                                b.set_rect(lx, ly - bh * 1.3, bw, bh);
+                                b.set_font_size(bfont * 0.8);
+                                b.set_label(tr(Msg::Calibrate));
+                                b.set_enabled(crate::wave::beam_calibrate::status().0 != crate::wave::beam_calibrate::Status::Scanning);
+                                let id = b.hit_id();
+                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            }
                         }
                         // The route (Android, field 2026-09-14): labelled with the device the wave plays on (the Kotlin route mirror); a tap cycles to the next available output.
                         #[cfg(target_os = "android")]
