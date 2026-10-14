@@ -458,10 +458,11 @@ class PhotonBeam(
             straight = false
             req.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_AUTO)
         }
+        // Our γ2 curve only on the straight path too (field 2026-10-14, Emma's Samsung, still green: we asked AWB AUTO and the readback said awb=0 — the HAL switched white balance OFF the moment it was handed a contrast curve it has no manual post-processing for). On the camera's own colour path the camera keeps its own curve as well, and the frames are labelled sRGB.
         val toneModes = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: intArrayOf()
-        val curveOk = toneModes.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
+        val curveOk = fullStraight && toneModes.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
         curveTook = curveOk
-        want(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE, curveOk)
+        if (fullStraight) want(CaptureRequest.TONEMAP_MODE, CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE, curveOk)
         if (curveOk) {
             val n = (chars.get(CameraCharacteristics.TONEMAP_MAX_CURVE_POINTS) ?: 64).coerceIn(2, 128)
             val pts = FloatArray(n * 2)
@@ -542,6 +543,7 @@ class PhotonBeam(
                                 val afs = result.get(CaptureResult.CONTROL_AF_STATE)
                                 val dist = result.get(CaptureResult.LENS_FOCUS_DISTANCE)
                                 PhotonLog.i(TAG, "applied: awb=$awb ccm=$ccm tonemap=$tm shading=$sh nr=$nrm gains=${g?.red},${g?.greenEven},${g?.greenOdd},${g?.blue} straightAsked=$straightNow; focus asked $focusPlan, running af=$afm state=$afs at $dist diopters")
+                                if (!fullStraight && awb != CameraMetadata.CONTROL_AWB_MODE_AUTO) PhotonLog.w(TAG, "the camera's own white balance was asked for and the HAL reports awb=$awb — expect a colour cast")
                             }
                         }
                     }, cameraHandler)
