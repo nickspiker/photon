@@ -99,6 +99,39 @@ Five coded bands, each double the last (Nick: "fill out two more rungs… 2560x1
 
 Steering (`beam_ladder.rs`): the audio engine's once-a-second verdict on the shared path (`wave::LINK_VERDICT` — congested on corroborated loss or a building delay slope, clean on no loss and a calm slope): congested → down a half-stop at once; three clean in a row → up a half-stop. Ceilings: the camera's capture after the crop; 2560×1440 only on a LAN-fast path (desktops); phones stop at 1280×720; metered → 640×360. Bitrate moves live within a band (MediaCodec `PARAMETER_KEY_VIDEO_BITRATE`; OpenH264 `ENCODER_OPTION_BITRATE`); a band crossing restarts the encoder at the new size and re-describes the beam.
 
+## 5e. Capture, lenses and the camera cycle (built 2026-10-14)
+
+Nick: "sampling what we have available and working with it, even if we only get a 25fps camera with a 2:1 aspect… cap the framerate at 30 and the megapixels at 5 ish… ideally uncropped", and "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview".
+
+**The capture** (PhotonBeam.pickCapture). Of the YUV sizes the sensor streams (≤ ~5 MP), the pick is, in order:
+1. The highest frame rate up to 30.
+2. The least crop of the sensor's own aspect (within 1% counts as uncropped).
+3. The most pixels.
+
+On the Pixel 8 Pro every lens lands on 2560×1920 @ 30. The back sensors are 4:3 (4080×3072), so that is uncropped. The front sensor is 3440×2448 (1.405), and its only uncropped size is the full 8.4 MP frame, over the cap, so the front loses ~5% of its width.
+
+**The bands** (beam_ladder::bands_for). The top band is the capture, and each band below is an exact half, at the capture's own aspect: 2560×1920 → 1280×960 → 640×480 → 320×240 → 160×120. Nothing is cropped to 16:9 any more. The ceiling (`ceiling`):
+- On a LAN-fast path (≤ 15 ms round trip): the whole capture.
+- Elsewhere: the highest band ≤ 1280 wide, because the far side's software decoder is the limit.
+- On a metered network: two bands lower again.
+
+Kotlin reads the coded size straight from the packed plan (`pack_plan`: width << 24, height << 40). No band table is duplicated.
+
+**The lenses** (PhotonBeam.listTargets):
+- Every logical camera counts.
+- A logical multi-camera with two or more streamable lenses contributes each lens as its own target. It is opened through the logical id, with the stream pinned to the lens (`OutputConfiguration.setPhysicalCameraId`), so the picture and its colour matrix are that sensor's.
+- A lens seen twice (same facing, focal length and sensor width) counts once.
+- In-sensor crop modes stay as zoom stops (Nick: "you may want to zoom in").
+- Order: front first, then the back lenses widest to longest. On the Pixel 8 Pro: front, ultrawide, main, main 2×, tele, tele 2×.
+- A HAL that refuses a physical stream falls back to the logical camera.
+
+**The switch.** A tap on the self-view inset calls `cycleBeamCamera`. The camera thread closes the session, reader and encoder, then:
+1. Reopens the device, or only the session, between lenses of one logical camera.
+2. Picks the capture.
+3. Fires the pipeline-up edge again.
+
+Rust's `android_started` sees a live sender and keeps it, because a new BeamTx would restart its key chain. It rebuilds the ladder from the new capture, keeping the link's detail, and re-describes the beam: size, fps, the lens's own colour entry or calibration, and orientation. The first planned frame builds the encoder at the new size, and its keyframe is the one the new size needs. Calibrations are kept per lens; a scan that finishes after a switch is kept for its own lens, never applied to the new one.
+
 ## 5d. Calibration with chameleon (built 2026-10-14)
 
 Nick: "on the Chameleon integration, yes. However you want to wire it in."

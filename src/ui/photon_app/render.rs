@@ -1131,10 +1131,16 @@ impl PhotonApp {
                     let peer = crate::wave::beam_session::picture();
                     // The picture's drawn height (fit to width first), so the inset hugs its corner rather than the region's.
                     let ph = peer.as_ref().map_or(rh, |p| if p.w * rh >= p.h * rw { (p.h * rw / p.w.max(1)).min(rh) } else { rh });
+                    self.beam_self_rect = None;
                     if let Some(me) = crate::wave::beam_session::self_picture() {
                         let s = (rw.min(ph) / 4).max(16);
                         let m = s / 8;
-                        super::wave_field::paint_picture_rect(&mut canvas, rx0 + rw - s - m, ry0 + ph.saturating_sub(s + m), s, s, &me, false);
+                        let (ix, iy) = (rx0 + rw - s - m, ry0 + ph.saturating_sub(s + m));
+                        super::wave_field::paint_picture_rect(&mut canvas, ix, iy, s, s, &me, false);
+                        // The inset is the camera switch on a phone (a tap cycles lenses): its square is a tap target, re-stamped at the end of the frame.
+                        if cfg!(target_os = "android") && crate::wave::beam_session::android_sending() {
+                            self.beam_self_rect = Some((ix, iy, ix + s, iy + s));
+                        }
                     }
                     if let Some(p) = peer {
                         super::wave_field::paint_picture_rect(&mut canvas, rx0, ry0, rw, rh, &p, true);
@@ -7454,6 +7460,17 @@ impl PhotonApp {
                         if wave_overlay.as_ref().map(|t| t.0) == Some(crate::wave::WavePhase::Active) && crate::wave::beam_session::can_send() {
                             if let Some(b) = self.beam_btn.as_ref() {
                                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                            }
+                        }
+                        // Calibrate and the self-view's camera cycle, where they painted — the same re-assert after the modal wipe.
+                        if wave_overlay.as_ref().map(|t| t.0) == Some(crate::wave::WavePhase::Active) {
+                            if crate::wave::beam_calibrate::available() {
+                                if let Some(b) = self.beam_cal_btn.as_ref() {
+                                    b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
+                                }
+                            }
+                            if let Some((x0, y0, x1, y1)) = self.beam_self_rect {
+                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, x0 as isize, y0 as isize, x1 as isize, y1 as isize, self.beam_self_hit);
                             }
                         }
                     }

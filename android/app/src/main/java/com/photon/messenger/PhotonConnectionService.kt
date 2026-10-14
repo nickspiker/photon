@@ -1014,7 +1014,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeMicGranted()  // RECORD_AUDIO landed mid-wave: Rust opens the AAudio input leg it could not open at start.
     // BEAMS (docs/beams.md): one encoded H.264 access unit + the ISP's gains (Q12), and the pipeline-up edge with the camera's geometry, the maker's XYZ→camera matrix (or null) and whether the straight-thru request took.
     private external fun nativeBeamFrame(au: ByteArray, g0: Int, g1: Int, g2: Int, g3: Int)
-    private external fun nativeBeamStarted(w: Int, h: Int, fps: Int, matrix: FloatArray?, straight: Boolean, curve: Boolean)
+    private external fun nativeBeamStarted(w: Int, h: Int, fps: Int, matrix: FloatArray?, straight: Boolean, curve: Boolean, camera: String)
     private external fun nativeBeamSelf(planes: ByteArray, w: Int, h: Int)
     private external fun nativeBeamOrient(quarterTurns: Int, front: Boolean)
 
@@ -1034,12 +1034,17 @@ class PhotonConnectionService : Service() {
         promoteForeground(waveAudioRunning)
         val b = PhotonBeam(this,
             onFrame = { au, g -> try { nativeBeamFrame(au, g[0], g[1], g[2], g[3]) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamFrame", e) } },
-            onStarted = { w, h, fps, m, straight, curve -> try { nativeBeamStarted(w, h, fps, m, straight, curve) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamStarted", e) } },
+            onStarted = { w, h, fps, m, straight, curve, camera -> try { nativeBeamStarted(w, h, fps, m, straight, curve, camera) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamStarted", e) } },
             onSelf = { planes, w, h -> try { nativeBeamSelf(planes, w, h) } catch (_: Throwable) {} },
             onOrient = { q, front -> try { nativeBeamOrient(q, front) } catch (_: Throwable) {} })
         beam = b
         b.start()
         PhotonLog.i(TAG, "beam: capture started")
+    }
+
+    /** Called from Rust when the beam's self-view is tapped: the next camera, in flight (PhotonBeam.switchCamera). */
+    fun cycleBeamCamera() {
+        beam?.switchCamera()
     }
 
     fun stopBeamCapture() {

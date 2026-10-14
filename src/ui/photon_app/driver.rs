@@ -266,6 +266,9 @@ impl FluorApp for PhotonApp {
         // Reserve a hit-id for the Ready-screen avatar circle. Not a Widget — the avatar is just a paint primitive — so click dispatch is handled directly in `on_event`'s MouseInput::Pressed arm, not thru `widget::dispatch_click`. Incrementing the shared counter keeps the contiguous-id contract intact for the `[]h` debug overlay.
         reserve_hits(&mut self.hit_counter, 1);
         self.avatar_hit_id = self.hit_counter;
+        // The beam's self-view inset — the same kind of plain hit rect: a tap cycles the phone's camera.
+        reserve_hits(&mut self.hit_counter, 1);
+        self.beam_self_hit = self.hit_counter;
         // KnownHandle fork pills (pick-another / it's-mine) — plain hit rects like the avatar circle, dispatched in the Pressed arm.
         reserve_hits(&mut self.hit_counter, 1);
         self.known_pick_hit = self.hit_counter;
@@ -687,6 +690,15 @@ impl FluorApp for PhotonApp {
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
+        }
+        // THE CAMERA CYCLE (Nick 2026-10-14: "ideally it cycles thru all when I tap on my preview"): a tap on the beam's self-view inset moves the phone to its next camera — front, then each back lens widest to longest, then front again.
+        if hit_id == self.beam_self_hit && self.beam_self_hit != HIT_NONE && self.beam_self_rect.is_some() {
+            #[cfg(target_os = "android")]
+            if crate::wave::beam_session::android_cycle_camera() {
+                crate::log("BEAM: self-view tapped — next camera");
+            }
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
         }
         // Avatar tap on Ready dispatches to the image picker — not a Widget, just a hit-stamp in chrome.hit_test_map. Drops focus first because the picker overlays the whole UI.
         if hit_id == self.avatar_hit_id

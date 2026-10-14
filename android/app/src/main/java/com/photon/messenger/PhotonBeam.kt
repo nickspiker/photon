@@ -40,8 +40,8 @@ class PhotonBeam(
     private val ctx: Context,
     /** One encoded access unit + the gains the ISP applied (Q12: R, G-even, G-odd, B). */
     private val onFrame: (ByteArray, IntArray) -> Unit,
-    /** The pipeline is up: width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, and whether the straight-thru request took in full. */
-    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean) -> Unit,
+    /** The pipeline is up (again, after a camera switch): width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, whether the straight-thru colour path took, whether our γ2 curve took, and the camera's key ("1", "0/3"). */
+    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean, String) -> Unit,
     /** The self-view: a 4× subsampled I420 frame (y‖u‖v), every other camera frame. */
     private val onSelf: (ByteArray, Int, Int) -> Unit,
     /** The picture's rotation changed: quarter turns clockwise that put the world's up at the top, and whether this is a front camera. */
@@ -49,12 +49,13 @@ class PhotonBeam(
 ) {
     companion object {
         private const val TAG = "PhotonBeam"
-        // CAPTURE size: the ladder's phone ceiling (beam_ladder.rs, 1280×720 = band 3). The CODED size is the ladder's band, resampled from this in Rust (beam_scale.rs).
-        const val WANT_W = 1280
-        const val WANT_H = 720
-        /** The ladder's coded sizes, smallest first — must match beam_ladder::BANDS. */
-        val BANDS = arrayOf(intArrayOf(160, 90), intArrayOf(320, 180), intArrayOf(640, 360), intArrayOf(1280, 720), intArrayOf(2560, 1440))
-        const val FPS = 30
+        // The CAPTURE caps ([pickCapture]); the CODED size is the ladder's band, every band an exact half of the capture (beam_ladder.rs bands_for), resampled in Rust (beam_scale.rs).
+        const val MAX_PIXELS = 5_100_000L
+        const val MAX_FPS = 30
+        /** The self-view inset's width target: the camera is subsampled by a whole factor to about this. */
+        const val SELF_W = 320
+        /** The lens the last beam was on (this app run): the next beam starts there. */
+        @Volatile var lastKey: String? = null
         const val BITRATE = 600_000
         /** Frames per full intra-refresh sweep: two seconds at 30 fps. */
         const val INTRA_REFRESH_FRAMES = 60
@@ -77,11 +78,12 @@ class PhotonBeam(
     private var dropped = 0L
     private var fed = 0L
     @Volatile private var running = false
-    private var w = WANT_W
-    private var h = WANT_H
-    // The encoder's coded size and bitrate (the ladder's current band) — distinct from the capture size above.
-    private var codedW = 640
-    private var codedH = 360
+    private var w = 1280
+    private var h = 720
+    private var fps = MAX_FPS
+    // The encoder's coded size and bitrate (the ladder's current band) — distinct from the capture size above. Zero = no encoder yet: the first planned frame builds it.
+    private var codedW = 0
+    private var codedH = 0
     private var codedKbps = 0
     private var tierUsed = 0
     private external fun nativeBeamPlan(timestampNs: Long): Long
@@ -90,6 +92,12 @@ class PhotonBeam(
         dy: java.nio.ByteBuffer, du: java.nio.ByteBuffer, dv: java.nio.ByteBuffer, dYRow: Int, dYPx: Int, dUVRow: Int, dUVPx: Int, dw: Int, dh: Int, soft: Int
     ): Boolean
     @Volatile private var gains: IntArray = UNIT_GAINS
+
+    /** One camera the beam can be on: a logical camera, or one physical lens of a logical multi-camera (opened thru its logical id, the stream pinned to the lens). `chars` describe the SENSOR (sizes, matrix, orientation, facing); `logical` holds the request capabilities. `key` names it to Rust ("1", "0/3"), `fov` orders it (sensor width ÷ focal length — wider first). */
+    private class Target(val openId: String, val physicalId: String?, val chars: CameraCharacteristics, val logical: CameraCharacteristics, val key: String, val fov: Float, val front: Boolean)
+
+    private var targets: List<Target> = emptyList()
+    private var target: Target? = null
 
     /** Open the camera and the encoder. The CAMERA permission must already be granted. */
     fun start() {
@@ -100,26 +108,48 @@ class PhotonBeam(
         codecThread = HandlerThread("photon-beam-codec").also { it.start() }
         codecHandler = Handler(codecThread!!.looper)
         val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
-        val id = pickCamera(cm) ?: run {
+        targets = try { listTargets(cm) } catch (e: Throwable) { PhotonLog.w(TAG, "camera list", e); emptyList() }
+        if (targets.isEmpty()) {
             PhotonLog.w(TAG, "no camera")
             stop()
             return
         }
-        val chars = cm.getCameraCharacteristics(id)
-        sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
-        frontFacing = chars.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT
+        PhotonLog.i(TAG, "cameras: " + targets.joinToString { "${it.key}${if (it.front) " front" else ""} fov ${"%.2f".format(it.fov)}" })
+        // The lens used last this run, else the front camera — a beam is aimed at a person, and the person is behind the screen.
+        val t = targets.firstOrNull { it.key == lastKey } ?: targets.firstOrNull { it.front } ?: targets[0]
+        cameraHandler?.post { openTarget(cm, t) }
+    }
+
+    /** THE CAMERA CYCLE (Nick 2026-10-14: "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview"): the next target, in flight. Rust keeps the beam's transport; this side restarts the camera (or only the session, between lenses of one logical camera) and the encoder, and the pipeline-up edge re-describes the beam. */
+    fun switchCamera() {
+        if (!running || targets.size < 2) return
+        cameraHandler?.post {
+            if (!running) return@post
+            val cur = targets.indexOf(target).coerceAtLeast(0)
+            val next = targets[(cur + 1) % targets.size]
+            PhotonLog.i(TAG, "switch: ${target?.key} → ${next.key}")
+            openTarget(ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager, next)
+        }
+    }
+
+    /** Bring the pipeline up on `t` (camera thread). A lens of the camera already open needs only a new session; anything else reopens the device. The encoder is rebuilt lazily by the first planned frame at the size the ladder names. */
+    private fun openTarget(cm: CameraManager, t: Target) {
+        closeSession()
+        val sameDevice = camera?.id == t.openId
+        if (!sameDevice) {
+            try { camera?.close() } catch (_: Throwable) {}
+            camera = null
+        }
+        target = t
+        lastKey = t.key
+        sensorOrientation = t.chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
+        frontFacing = t.front
         lastQuarter = -1
-        val size = pickSize(chars)
+        val (size, rate) = pickCapture(t.chars)
         w = size.width
         h = size.height
-        val matrix = makerMatrix(chars)
-        try {
-            startCodec()
-        } catch (e: Throwable) {
-            PhotonLog.w(TAG, "encoder failed", e)
-            stop()
-            return
-        }
+        fps = rate
+        val matrix = makerMatrix(t.chars)
         reader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 4).also { r ->
             r.setOnImageAvailableListener({ rd ->
                 val img = rd.acquireLatestImage() ?: return@setOnImageAvailableListener
@@ -130,21 +160,30 @@ class PhotonBeam(
                 }
             }, cameraHandler)
         }
+        val up: (CameraDevice) -> Unit = { dev ->
+            try {
+                startSession(dev, t, t.physicalId != null)
+                // The label follows the COLOUR path alone (not whether distortion or edge keys existed): absolute only when the straight colour path took.
+                onStarted(w, h, fps, matrix, fullStraight, curveTook, t.key)
+            } catch (e: Throwable) {
+                PhotonLog.w(TAG, "session failed", e)
+                stop()
+            }
+        }
+        val dev = camera
+        if (sameDevice && dev != null) {
+            up(dev)
+            return
+        }
         try {
-            cm.openCamera(id, object : CameraDevice.StateCallback() {
-                override fun onOpened(dev: CameraDevice) {
-                    camera = dev
-                    try {
-                        val straight = startSession(dev, chars)
-                        // The label follows the COLOUR path alone (not whether distortion or edge keys existed): absolute only when the straight colour path took.
-                        onStarted(w, h, FPS, matrix, fullStraight, curveTook)
-                    } catch (e: Throwable) {
-                        PhotonLog.w(TAG, "session failed", e)
-                        stop()
-                    }
+            cm.openCamera(t.openId, object : CameraDevice.StateCallback() {
+                override fun onOpened(d: CameraDevice) {
+                    if (!running) { try { d.close() } catch (_: Throwable) {}; return }
+                    camera = d
+                    up(d)
                 }
-                override fun onDisconnected(dev: CameraDevice) { PhotonLog.w(TAG, "camera disconnected"); stop() }
-                override fun onError(dev: CameraDevice, error: Int) { PhotonLog.w(TAG, "camera error $error"); stop() }
+                override fun onDisconnected(d: CameraDevice) { PhotonLog.w(TAG, "camera disconnected"); if (camera == d) stop() }
+                override fun onError(d: CameraDevice, error: Int) { PhotonLog.w(TAG, "camera error $error"); if (camera == d) stop() }
             }, cameraHandler)
         } catch (e: CameraAccessException) {
             PhotonLog.w(TAG, "openCamera", e)
@@ -155,19 +194,28 @@ class PhotonBeam(
         }
     }
 
-    fun stop() {
-        if (!running) return
-        running = false
+    /** The session, the reader and the encoder — what every switch replaces. The device stays open. */
+    private fun closeSession() {
         try { session?.close() } catch (_: Throwable) {}
         session = null
-        try { camera?.close() } catch (_: Throwable) {}
-        camera = null
         try { reader?.close() } catch (_: Throwable) {}
         reader = null
         try { codec?.stop(); codec?.release() } catch (_: Throwable) {}
         codec = null
         freeInputs.clear()
         config = null
+        codedW = 0
+        codedH = 0
+        codedKbps = 0
+    }
+
+    fun stop() {
+        if (!running) return
+        running = false
+        closeSession()
+        try { camera?.close() } catch (_: Throwable) {}
+        camera = null
+        target = null
         cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
         codecThread?.quitSafely(); codecThread = null; codecHandler = null
         PhotonLog.i(TAG, "stopped after $frames encoded frames, $fed fed, $dropped dropped")
@@ -176,20 +224,56 @@ class PhotonBeam(
         fed = 0
     }
 
-    /** The front camera — a beam is aimed at a person, and the person is behind the screen — else the first camera there is. */
-    private fun pickCamera(cm: CameraManager): String? {
-        val ids = cm.cameraIdList
-        return ids.firstOrNull { cm.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT } ?: ids.firstOrNull()
+    /** Every camera the beam can use: each logical camera, and each physical lens of a logical multi-camera (the Pixel 8 Pro's back camera is ultrawide, main, main 2× crop, tele, tele 2× crop — the crop modes stay: Nick, "you may want to zoom in"). A lens listed twice (as its own id and inside a logical camera) counts once; a lens with no YUV stream is skipped. Front first, then widest to longest. */
+    private fun listTargets(cm: CameraManager): List<Target> {
+        val out = mutableListOf<Target>()
+        val seen = mutableSetOf<String>()
+        fun add(openId: String, physId: String?, chars: CameraCharacteristics, logical: CameraCharacteristics) {
+            val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return
+            if (map.getOutputSizes(ImageFormat.YUV_420_888).isNullOrEmpty()) return
+            val focal = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_FOCAL_LENGTHS)?.firstOrNull() ?: 0f
+            val phys = chars.get(CameraCharacteristics.SENSOR_INFO_PHYSICAL_SIZE)
+            val front = chars.get(CameraCharacteristics.LENS_FACING) == CameraMetadata.LENS_FACING_FRONT
+            // The same lens and sensor area seen twice is one camera.
+            val sig = "$front/${"%.2f".format(focal)}/${"%.2f".format(phys?.width ?: 0f)}"
+            if (!seen.add(sig)) return
+            val fov = if (focal > 0f && phys != null) phys.width / focal else 1f
+            out.add(Target(openId, physId, chars, logical, if (physId == null) openId else "$openId/$physId", fov, front))
+        }
+        for (id in cm.cameraIdList) {
+            val chars = cm.getCameraCharacteristics(id)
+            val caps = chars.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: intArrayOf()
+            val physIds = if (Build.VERSION.SDK_INT >= 28 && caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_LOGICAL_MULTI_CAMERA)) chars.physicalCameraIds.toList() else emptyList()
+            val lenses = physIds.mapNotNull { pid -> try { pid to cm.getCameraCharacteristics(pid) } catch (_: Throwable) { null } }
+                .filter { (_, pc) -> !(pc.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.YUV_420_888).isNullOrEmpty()) }
+            if (lenses.size >= 2) {
+                for ((pid, pc) in lenses) add(id, pid, pc, chars)
+            } else {
+                // One lens (or none listed): the logical camera itself, described by its one physical sensor when there is one.
+                add(id, null, lenses.firstOrNull()?.second ?: chars, chars)
+            }
+        }
+        return out.sortedWith(compareBy<Target>({ !it.front }, { -it.fov }))
     }
 
-    /** 640×480 when the camera offers it for YUV_420_888, else the smallest size at or above it, else the largest below. Even dimensions only. */
-    private fun pickSize(chars: CameraCharacteristics): Size {
-        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return Size(WANT_W, WANT_H)
-        val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.filter { it.width % 2 == 0 && it.height % 2 == 0 } ?: return Size(WANT_W, WANT_H)
-        sizes.firstOrNull { it.width == WANT_W && it.height == WANT_H }?.let { return it }
-        val above = sizes.filter { it.width >= WANT_W && it.height >= WANT_H }.minByOrNull { it.width * it.height }
-        if (above != null) return above
-        return sizes.maxByOrNull { it.width * it.height } ?: Size(WANT_W, WANT_H)
+    /** THE CAPTURE (Nick 2026-10-14: "sampling what we have available and working with it, even if we only get a 25fps camera with a 2:1 aspect… cap the framerate at 30 and the megapixels at 5 ish… ideally uncropped"): of the YUV sizes this sensor streams, the one with the highest frame rate up to [MAX_FPS], then the least crop of the sensor's own aspect (within 1% counts as uncropped), then the most pixels up to [MAX_PIXELS]. Returns the size and the frame rate it runs at. */
+    private fun pickCapture(chars: CameraCharacteristics): Pair<Size, Int> {
+        val fallback = Size(1280, 720) to MAX_FPS
+        val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return fallback
+        val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.filter { it.width % 2 == 0 && it.height % 2 == 0 && it.width.toLong() * it.height <= MAX_PIXELS } ?: return fallback
+        val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
+        val native = if (active != null && active.height() > 0) active.width().toFloat() / active.height() else 4f / 3f
+        data class Cand(val size: Size, val fps: Int, val crop: Float)
+        val cands = sizes.map { sz ->
+            val dur = try { map.getOutputMinFrameDuration(ImageFormat.YUV_420_888, sz) } catch (_: Throwable) { 0L }
+            val rate = if (dur > 0) (1_000_000_000L / dur).toInt() else MAX_FPS
+            val a = sz.width.toFloat() / sz.height
+            val keep = minOf(a / native, native / a)
+            Cand(sz, rate.coerceAtMost(MAX_FPS), if (keep >= 0.99f) 0f else 1f - keep)
+        }
+        val best = cands.sortedWith(compareBy<Cand>({ -it.fps }, { it.crop }, { -(it.size.width.toLong() * it.size.height) })).firstOrNull() ?: return fallback
+        PhotonLog.i(TAG, "capture: ${best.size.width}x${best.size.height} @ ${best.fps} fps (sensor aspect ${"%.3f".format(native)}, ${if (best.crop == 0f) "uncropped" else "crop ${"%.1f".format(best.crop * 100)}%"}; ${sizes.size} sizes under ${MAX_PIXELS / 1_000_000} MP)")
+        return best.size to best.fps
     }
 
     /** The maker's XYZ→camera matrix (DNG ColorMatrix, what lumis reads), daylight set (2) preferred. Null when the camera reports none. */
@@ -207,7 +291,7 @@ class PhotonBeam(
     private fun formatFor(tier: Int): MediaFormat = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, codedW, codedH).apply {
         setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Flexible)
         setInteger(MediaFormat.KEY_BIT_RATE, if (codedKbps > 0) codedKbps * 1000 else BITRATE)
-        setInteger(MediaFormat.KEY_FRAME_RATE, FPS)
+        setInteger(MediaFormat.KEY_FRAME_RATE, fps)
         if (tier <= 1) {
             // Only the first frame is a keyframe; the picture is kept fresh by intra refresh instead.
             setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, -1)
@@ -267,7 +351,7 @@ class PhotonBeam(
                         frames++
                         if (frames == 1L) PhotonLog.i(TAG, "first access unit out of the encoder: ${au.size} B (config prepended ${withConfig})")
                         onFrame(au, gains)
-                        if (frames % (FPS * 10L) == 0L) PhotonLog.i(TAG, "encoded $frames frames, last ${bytes.size} B, $dropped dropped")
+                        if (frames % (fps * 10L) == 0L) PhotonLog.i(TAG, "encoded $frames frames, last ${bytes.size} B, $dropped dropped")
                     }
                 } catch (e: Throwable) {
                     PhotonLog.w(TAG, "output", e)
@@ -306,22 +390,23 @@ class PhotonBeam(
         }
     }
 
-    /** The self-view inset: every other frame, the camera subsampled 4× in each direction (160×120 at 640×480), straight from the camera planes. */
+    /** The self-view inset: every other frame, the camera subsampled by a whole factor to about [SELF_W] wide (8× at 2560×1920 → 320×240), straight from the camera planes. */
     private fun sendSelf(img: Image) {
         selfTick++
         if (selfTick % 2L != 0L) return
-        val sw = (w / 4) and 1.inv()
-        val sh = (h / 4) and 1.inv()
+        val f = (w / SELF_W).coerceAtLeast(1)
+        val sw = (w / f) and 1.inv()
+        val sh = (h / f) and 1.inv()
         if (sw < 2 || sh < 2) return
         val cw = sw / 2
         val ch = sh / 2
         val out = ByteArray(sw * sh + 2 * cw * ch)
         val yp = img.planes[0]; val up = img.planes[1]; val vp = img.planes[2]
         val yb = yp.buffer; val ub = up.buffer; val vb = vp.buffer
-        for (y in 0 until sh) for (x in 0 until sw) out[y * sw + x] = yb.get((y * 4) * yp.rowStride + (x * 4) * yp.pixelStride)
+        for (y in 0 until sh) for (x in 0 until sw) out[y * sw + x] = yb.get((y * f) * yp.rowStride + (x * f) * yp.pixelStride)
         var o = sw * sh
-        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = ub.get((y * 4) * up.rowStride + (x * 4) * up.pixelStride) }
-        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = vb.get((y * 4) * vp.rowStride + (x * 4) * vp.pixelStride) }
+        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = ub.get((y * f) * up.rowStride + (x * f) * up.pixelStride) }
+        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = vb.get((y * f) * vp.rowStride + (x * f) * vp.pixelStride) }
         onSelf(out, sw, sh)
     }
 
@@ -353,10 +438,20 @@ class PhotonBeam(
         // THE LADDER (beam_ladder.rs): keep or drop this frame (frame rate), which band (coded size), how soft, what bitrate.
         val plan = try { nativeBeamPlan(img.timestamp) } catch (_: Throwable) { -1L }
         if (plan < 0L || (plan and 1L) == 0L) return
-        val band = ((plan shr 1) and 7L).toInt().coerceIn(0, BANDS.size - 1)
+        // beam_session::pack_plan: keep | band << 1 | soft << 4 | kbit/s << 8 (14 bits) | coded width << 24 | coded height << 40 (16 bits each).
         val soft = ((plan shr 4) and 7L).toInt()
-        val kbps = (plan shr 8).toInt()
-        val (bw, bh) = BANDS[band][0] to BANDS[band][1]
+        val kbps = ((plan shr 8) and 0x3FFFL).toInt()
+        val bw = ((plan shr 24) and 0xFFFFL).toInt()
+        val bh = ((plan shr 40) and 0xFFFFL).toInt()
+        if (bw < 2 || bh < 2) return
+        if (codec == null) {
+            // The first planned frame on this camera builds the encoder at the size the ladder names.
+            codedW = bw
+            codedH = bh
+            codedKbps = kbps
+            try { startCodec() } catch (e: Throwable) { PhotonLog.w(TAG, "encoder failed", e); stop() }
+            return
+        }
         if (bw != codedW || bh != codedH) {
             reconfigure(bw, bh, kbps)
             return
@@ -375,7 +470,7 @@ class PhotonBeam(
             try { mc.queueInputBuffer(idx, 0, 0, 0, 0) } catch (_: Throwable) {}
             return
         }
-        // The camera frame → the coded size at the ladder's softness, written straight into the encoder's planes (crop to 16:9, shrink, grow — beam_scale.rs).
+        // The camera frame → the coded size at the ladder's softness, written straight into the encoder's planes (shrink, grow — beam_scale.rs; the bands share the capture's aspect, so nothing is cropped).
         val s = img.planes
         val d = dst.planes
         val filled = try {
@@ -430,12 +525,13 @@ class PhotonBeam(
         }
     }
 
-    /** Build the session with the straight-thru request. Returns whether every key the design asks for was available and set. */
-    private fun startSession(dev: CameraDevice, chars: CameraCharacteristics): Boolean {
+    /** Build the session with the straight-thru request on `t` — its lens pinned when `physical` (a lens of a logical multi-camera; a refused physical stream falls back to the logical camera). Request capabilities come from the logical camera, the colour matrix from the lens. Returns whether every key the design asks for was available and set. */
+    private fun startSession(dev: CameraDevice, t: Target, physical: Boolean): Boolean {
+        val chars = t.logical
         val surface = reader!!.surface
         val req = dev.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
         req.addTarget(surface)
-        req.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, Range(FPS, FPS))
+        req.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, aeRange(chars, fps))
         var straight = true
         fun <T> want(key: CaptureRequest.Key<T>, value: T, available: Boolean) {
             if (available) req.set(key, value) else straight = false
@@ -446,7 +542,7 @@ class PhotonBeam(
         // ALL OR NOTHING ON COLOUR (field 2026-10-13, Nick: "Samsung cam looks very green… defaulting to unprofiled is not a good option"): white balance comes OFF only where our neutral gains and identity matrix can go ON in its place. A camera that lets AWB go off but lacks manual post-processing used to hand us raw, green, unbalanced sensor colour that nothing downstream undid. Otherwise the camera keeps its own white balance and colour, we read back nothing as pre-emphasis, and the beam is labelled what it is.
         // …and only where the far side can undo the raw colour: the maker's matrix must exist and our γ2 curve must take, or the frames would be unbalanced sensor colour labelled as something else.
         val toneModesEarly = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: intArrayOf()
-        val hasMaker = (chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM2) ?: chars.get(CameraCharacteristics.SENSOR_COLOR_TRANSFORM1)) != null
+        val hasMaker = makerMatrix(t.chars) != null
         fullStraight = manualPost && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF) && hasMaker &&
             toneModesEarly.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
         if (fullStraight) {
@@ -507,8 +603,7 @@ class PhotonBeam(
         // AE and AF stay automatic; hot-pixel correction stays as the template has it.
         PhotonLog.i(TAG, "request: manualPost=$manualPost awbOff=${awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)} curve=$curveOk straight=$straight size=${w}x$h")
         val straightNow = straight
-        @Suppress("DEPRECATION")
-        dev.createCaptureSession(listOf(surface), object : CameraCaptureSession.StateCallback() {
+        val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
                 session = s
                 try {
@@ -551,8 +646,34 @@ class PhotonBeam(
                     PhotonLog.w(TAG, "setRepeatingRequest", e)
                 }
             }
-            override fun onConfigureFailed(s: CameraCaptureSession) { PhotonLog.w(TAG, "session configure failed"); stop() }
-        }, cameraHandler)
+            override fun onConfigureFailed(s: CameraCaptureSession) {
+                if (physical) {
+                    // A HAL that will not stream this lens on its own: the logical camera instead (its own lens choice), same size and request.
+                    PhotonLog.w(TAG, "session refused the physical stream ${t.key} — falling back to the logical camera ${t.openId}")
+                    try { startSession(dev, t, false) } catch (e: Throwable) { PhotonLog.w(TAG, "fallback session", e); stop() }
+                } else {
+                    PhotonLog.w(TAG, "session configure failed")
+                    stop()
+                }
+            }
+        }
+        if (physical && Build.VERSION.SDK_INT >= 28 && t.physicalId != null) {
+            // THE LENS PINNED: the stream rides one physical camera of the logical one, so the picture (and its colour matrix) is that sensor's, never a HAL-chosen switch.
+            val oc = android.hardware.camera2.params.OutputConfiguration(surface).apply { setPhysicalCameraId(t.physicalId) }
+            val handler = cameraHandler ?: return straight
+            val sc = android.hardware.camera2.params.SessionConfiguration(android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR, listOf(oc), java.util.concurrent.Executor { handler.post(it) }, cb)
+            dev.createCaptureSession(sc)
+        } else {
+            @Suppress("DEPRECATION")
+            dev.createCaptureSession(listOf(surface), cb, cameraHandler)
+        }
         return straight
+    }
+
+    /** The auto-exposure frame-rate range for `rate`: fixed [rate, rate] when listed, else the listed range with the highest top at or below it (the highest floor among those). */
+    private fun aeRange(chars: CameraCharacteristics, rate: Int): Range<Int> {
+        val ranges = chars.get(CameraCharacteristics.CONTROL_AE_AVAILABLE_TARGET_FPS_RANGES) ?: return Range(rate, rate)
+        ranges.firstOrNull { it.lower == rate && it.upper == rate }?.let { return it }
+        return ranges.filter { it.upper <= rate }.maxWithOrNull(compareBy<Range<Int>>({ it.upper }, { it.lower })) ?: Range(rate, rate)
     }
 }

@@ -4,7 +4,7 @@
 //!
 //! Only on the STRAIGHT path (AWB off, unit gains, identity matrix, our γ2 curve): there the frames are the sensor's own colour and a matrix solved from one of them holds for every later one. With the camera's own white balance running, the next scene would move the colour out from under the matrix, so the button does not show.
 //!
-//! The calibration lasts for this run of the app (as in lumis): a relative IDT is the camera under the light it was scanned in, and a new room wants a new scan.
+//! The calibration lasts for this run of the app (as in lumis): a relative IDT is the camera under the light it was scanned in, and a new room wants a new scan. Each LENS keeps its own (a tap on the self-view cycles cameras mid-beam, and every sensor has its own colour): switching back to a calibrated lens brings its calibration back; a scan that finishes after the camera moved on is dropped, never pasted onto the wrong lens.
 
 use super::beam_scale::Plane;
 use super::h264::I420;
@@ -26,15 +26,24 @@ static STATUS: Mutex<(Status, Option<std::time::Instant>)> = Mutex::new((Status:
 static WANT: AtomicBool = AtomicBool::new(false);
 /// The phone's camera is on the straight path, so a calibration means something.
 static STRAIGHT: AtomicBool = AtomicBool::new(false);
-/// This run's calibration of the phone camera: the entry and the target it was solved against.
-static CALIBRATION: Mutex<Option<(vsf::spectral_image::ProfileEntry, vsf::spectral_image::CalProvenance)>> = Mutex::new(None);
+type Calibration = (vsf::spectral_image::ProfileEntry, vsf::spectral_image::CalProvenance);
+/// This run's calibrations, by lens key ("1", "0/3" — beam_session::android_started's `camera`).
+static CALIBRATIONS: Mutex<Vec<(String, Calibration)>> = Mutex::new(Vec::new());
+/// The lens the beam is on now.
+static CAMERA: Mutex<String> = Mutex::new(String::new());
 
 /// Can the Calibrate button work right now: chameleon shipped, the camera straight?
 pub fn available() -> bool {
     STRAIGHT.load(Ordering::Relaxed) && crate::platform::chameleon_plugin::available()
 }
 
-/// The phone pipeline's colour path (beam_session::android_started / android_stop).
+/// The phone pipeline came up on `camera` (beam_session::android_started), straight or not.
+pub fn set_camera(camera: &str, straight: bool) {
+    *CAMERA.lock().unwrap() = camera.to_string();
+    STRAIGHT.store(straight, Ordering::Relaxed);
+}
+
+/// The phone pipeline's colour path went away (beam_session::android_stop).
 pub fn set_straight(on: bool) {
     STRAIGHT.store(on, Ordering::Relaxed);
 }
@@ -58,9 +67,10 @@ pub fn status() -> (Status, Option<std::time::Instant>) {
     STATUS.lock().unwrap().clone()
 }
 
-/// This run's calibration, if one has been made.
-pub fn calibration() -> Option<(vsf::spectral_image::ProfileEntry, vsf::spectral_image::CalProvenance)> {
-    CALIBRATION.lock().unwrap().clone()
+/// This run's calibration of the lens the beam is on, if one has been made.
+pub fn calibration() -> Option<Calibration> {
+    let cam = CAMERA.lock().unwrap().clone();
+    CALIBRATIONS.lock().unwrap().iter().find(|(k, _)| *k == cam).map(|(_, c)| c.clone())
 }
 
 /// Per camera frame on the phone (jni nativeBeamFill), before it is resampled for the encoder: when a scan is wanted, this full-size frame is copied out and handed to the worker. Costs one atomic otherwise.
@@ -69,11 +79,12 @@ pub fn offer_planes(src: [Plane; 3]) {
         return;
     }
     let (w, h) = (src[0].w & !1, src[0].h & !1);
+    let camera = CAMERA.lock().unwrap().clone();
     let mut f = I420::new(w, h);
     src[0].copy_to(&mut f.y, w, h);
     src[1].copy_to(&mut f.u, w / 2, h / 2);
     src[2].copy_to(&mut f.v, w / 2, h / 2);
-    if let Err(e) = std::thread::Builder::new().name("beam-calibrate".into()).spawn(move || scan_frame(f)) {
+    if let Err(e) = std::thread::Builder::new().name("beam-calibrate".into()).spawn(move || scan_frame(f, camera)) {
         finish(Status::Failed(format!("no scan thread: {e}")));
     }
 }
@@ -82,7 +93,7 @@ fn finish(s: Status) {
     *STATUS.lock().unwrap() = (s, Some(std::time::Instant::now()));
 }
 
-fn scan_frame(f: I420) {
+fn scan_frame(f: I420, camera: String) {
     let rgb = linear_rgb(&f);
     match crate::platform::chameleon_plugin::scan(&rgb, f.w, f.h) {
         Ok(scan) => {
@@ -92,7 +103,8 @@ fn scan_frame(f: I420) {
                 return;
             };
             crate::logf!(
-                "CALIBRATE: target {} #{} (life {}%, linearity {}) solved {}×{} — the beam is now relative/unit{}",
+                "CALIBRATE: camera {} — target {} #{} (life {}%, linearity {}) solved {}×{} — relative/unit{}",
+                camera,
                 scan.target_type,
                 scan.serial,
                 (scan.life * 100.0).round() as i32,
@@ -102,8 +114,17 @@ fn scan_frame(f: I420) {
                 if scan.warning.is_empty() { String::new() } else { format!(" ⚠ {}", scan.warning.replace('\n', " ")) }
             );
             let cal = vsf::spectral_image::CalProvenance { target_type: scan.target_type, target_serial: scan.serial, timestamp: scan.timestamp.clone() };
-            *CALIBRATION.lock().unwrap() = Some((entry.clone(), cal.clone()));
-            super::beam_session::android_apply_calibration(&entry, cal);
+            {
+                let mut all = CALIBRATIONS.lock().unwrap();
+                all.retain(|(k, _)| *k != camera);
+                all.push((camera.clone(), (entry.clone(), cal.clone())));
+            }
+            // Applied live only if the beam is still on the lens the frame came from.
+            if *CAMERA.lock().unwrap() == camera {
+                super::beam_session::android_apply_calibration(&entry, cal);
+            } else {
+                crate::logf!("CALIBRATE: kept for camera {} — the beam has moved to another lens since", camera);
+            }
             finish(Status::Done { serial: scan.serial, warning: scan.warning });
         }
         Err(e) => {

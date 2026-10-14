@@ -90,7 +90,7 @@ static ANDROID_ORIENT_SENT: std::sync::atomic::AtomicU8 = std::sync::atomic::Ato
 /// The phone's ladder and the camera timestamp (ns) of the last frame it kept.
 static ANDROID_LADDER: Mutex<Option<(super::beam_ladder::Ladder, i64)>> = Mutex::new(None);
 
-/// Per camera frame (Kotlin, before it touches the encoder): step the ladder with any new link verdict and say what to do with this frame — packed `keep | band << 1 | soft << 4 | kbit/s << 8`; −1 when no beam is running. A band change also re-describes the beam at once (the receiver's geometry).
+/// Per camera frame (Kotlin, before it touches the encoder): step the ladder with any new link verdict and say what to do with this frame — packed `keep | band << 1 | soft << 4 | kbit/s << 8 | coded width << 24 | coded height << 40` (14 bits of kbit/s, 16 of each dimension); −1 when no beam is running. A band change also re-describes the beam at once (the receiver's geometry).
 pub fn android_plan(t_ns: i64) -> i64 {
     let mut g = ANDROID_LADDER.lock().unwrap();
     let Some((ladder, last_kept)) = g.as_mut() else { return -1 };
@@ -98,8 +98,8 @@ pub fn android_plan(t_ns: i64) -> i64 {
     let (seq, congested, clean) = super::link_verdict();
     if ladder.verdict(seq, congested, clean) {
         let p = ladder.plan();
-        if p.band != before.band {
-            let (nw, nh) = super::beam_ladder::BANDS[p.band];
+        if (p.w, p.h) != (before.w, before.h) {
+            let (nw, nh) = (p.w, p.h);
             crate::logf!("BEAM: phone ladder → band {}×{} (soft {}, {} fps, {} kbit/s) — the encoder restarts at the new size", nw, nh, p.soft, p.fps, p.bitrate / 1000);
             if let Some((tx, info, _)) = ENCODED_TX.lock().unwrap().as_mut() {
                 info.width = nw;
@@ -115,7 +115,12 @@ pub fn android_plan(t_ns: i64) -> i64 {
     if keep {
         *last_kept = t_ns;
     }
-    (keep as i64) | ((p.band as i64) << 1) | ((p.soft as i64) << 4) | (((p.bitrate / 1000) as i64) << 8)
+    pack_plan(keep, &p)
+}
+
+/// The packed plan Kotlin reads (see `android_plan`).
+pub fn pack_plan(keep: bool, p: &super::beam_ladder::Plan) -> i64 {
+    (keep as i64) | (((p.band as i64) & 7) << 1) | (((p.soft as i64) & 7) << 4) | ((((p.bitrate / 1000) as i64) & 0x3FFF) << 8) | ((p.w as i64) << 24) | ((p.h as i64) << 40)
 }
 
 pub fn android_orient(quarter_turns: u8, front: bool) {
@@ -279,18 +284,27 @@ impl Drop for Sender {
     }
 }
 
+/// The ladder's ceiling for a capture's bands: the whole capture on a LAN-fast path (a round trip of 15 ms or less), else the highest band no wider than 1280 — the far side's software decoder is the limit off the LAN — and two bands lower again on a metered network.
+fn ceiling(bands: &[(u16, u16)]) -> usize {
+    let lan = super::LAST_LINK_RTT_MS.load(Ordering::Relaxed).max(1) <= 15;
+    let mut top = if lan { bands.len().saturating_sub(1) } else { super::beam_ladder::top_within(bands, 1280) };
+    if crate::network::wfd::net_metered() {
+        top = top.saturating_sub(2);
+    }
+    top
+}
+
 /// Start sending a camera's frames (desktop): capture → H.264 → the beam track, toward the wave's current peer address (re-read every frame, so a redirect is followed).
 pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box<dyn FrameSource>, _bitrate_bps: u32) -> Result<Sender, String> {
     let dir = if we_are_origin { Direction::OriginToAnswer } else { Direction::AnswerToOrigin };
     let (sw, sh) = source.dimensions();
     let cam_fps = source.fps().max(1);
-    // THE LADDER (beam_ladder.rs): the highest band the camera can fill after its 16:9 crop; 2560×1440 only on a LAN-fast path.
-    let crop_w = super::beam_scale::crop_16x9(sw, sh).2;
-    let lan = super::LAST_LINK_RTT_MS.load(Ordering::Relaxed).max(1) <= 15;
-    let max_band = super::beam_ladder::BANDS.iter().rposition(|&(w, _)| (w as usize) <= crop_w).unwrap_or(0).min(if lan { 4 } else { 3 });
-    let mut ladder = super::beam_ladder::Ladder::new(max_band);
+    // THE LADDER (beam_ladder.rs): bands from the camera's own frame; the ceiling per `ceiling`.
+    let bands = super::beam_ladder::bands_for(sw, sh);
+    let max_band = ceiling(&bands);
+    let mut ladder = super::beam_ladder::Ladder::new(bands, max_band);
     let mut plan = ladder.plan();
-    let (bw, bh) = super::beam_ladder::BANDS[plan.band];
+    let (bw, bh) = (plan.w, plan.h);
     let mut enc = h264::Encoder::new(bw as usize, bh as usize, cam_fps, plan.bitrate)?;
     let Some(peer) = super::wave_tx_addr() else {
         return Err("BEAM: no peer address yet — the wave's first authenticated packet sets it".into());
@@ -299,7 +313,8 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
     let self_conv = Converter::new(Characterization::from_entry(&source.characterization()));
     let colour = colour_bytes(&source.characterization());
     let mut info = Info { width: bw, height: bh, fps: cam_fps as u8, codec: Codec::H264, colour };
-    crate::logf!("BEAM: ladder up — camera {}×{}, ceiling {}×{}, starting {}×{} at {} kbit/s", sw, sh, super::beam_ladder::BANDS[max_band].0, super::beam_ladder::BANDS[max_band].1, bw, bh, plan.bitrate / 1000);
+    let top = ladder.bands()[max_band];
+    crate::logf!("BEAM: ladder up — camera {}×{}, ceiling {}×{}, starting {}×{} at {} kbit/s", sw, sh, top.0, top.1, bw, bh, plan.bitrate / 1000);
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
     let thread = std::thread::Builder::new()
@@ -331,7 +346,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                     let next = ladder.plan();
                     if next.band != plan.band {
                         // A band crossing: the one place the coded size — and so a keyframe — changes.
-                        let (nw, nh) = super::beam_ladder::BANDS[next.band];
+                        let (nw, nh) = (next.w, next.h);
                         match h264::Encoder::new(nw as usize, nh as usize, cam_fps, next.bitrate) {
                             Ok(e) => {
                                 enc = e;
@@ -448,31 +463,52 @@ pub fn android_arm(wave_secret: [u8; 32], we_are_origin: bool) -> bool {
     crate::platform::jni_android::wave_service_void("startBeamCapture")
 }
 
-/// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed.
-pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool) -> Result<(), String> {
+/// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed. `camera` names the lens ("1", "0/3" — logical id / physical id), the key a calibration is kept under.
+/// A CAMERA SWITCH mid-beam (Nick 2026-10-14: "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview") arrives as this same edge while the sender is live: the transport stays — a new BeamTx would restart its key chain — and the ladder rebuilds from the new capture keeping the link's detail; the new size, colour and orientation go out at once, and the encoder's restart opens with the keyframe the new size needs.
+pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, camera: &str) -> Result<(), String> {
     let Some((secret, origin)) = *ANDROID_ARMED.lock().unwrap() else {
         return Err("BEAM: pipeline up with nothing armed".into());
     };
-    // A calibration made earlier this run (beam_calibrate.rs) outranks the maker's matrix — on the straight path only, where the frames are the colour it was solved from.
+    // A calibration made earlier this run for THIS lens (beam_calibrate.rs) outranks the maker's matrix — on the straight path only, where the frames are the colour it was solved from.
     let on_straight = straight && curve;
-    super::beam_calibrate::set_straight(on_straight);
+    super::beam_calibrate::set_camera(camera, on_straight);
     let calibrated = super::beam_calibrate::calibration().filter(|_| on_straight);
     let entry = calibrated.as_ref().map_or_else(|| phone_entry(maker, straight, curve), |(e, _)| e.clone());
     *ANDROID_SELF_CONV.lock().unwrap() = Some(Converter::new(Characterization::from_entry(&entry)));
-    // THE LADDER (beam_ladder.rs): the camera's capture (w×h) after its 16:9 crop names the ceiling; a phone stops at 1280×720 (its own decoders' load on the far side, and the capture it can sustain), and a metered network at 640×360.
-    let crop_w = super::beam_scale::crop_16x9(w, h).2;
-    let mut max_band = super::beam_ladder::BANDS.iter().rposition(|&(bw, _)| (bw as usize) <= crop_w).unwrap_or(0).min(3);
-    if crate::network::wfd::net_metered() {
-        max_band = max_band.min(2);
+    let colour = colour_bytes_cal(&entry, calibrated.map(|(_, c)| c));
+    // THE LADDER (beam_ladder.rs): bands from the capture itself (Kotlin picked it: ≤ ~5 MP, ≤ 30 fps, least cropped), the ceiling per `ceiling`.
+    let bands = super::beam_ladder::bands_for(w, h);
+    let max_band = ceiling(&bands);
+    let top = bands[max_band];
+    let mut lg = ANDROID_LADDER.lock().unwrap();
+    if let (Some((ladder, last_kept)), Some((tx, info, _))) = (lg.as_mut(), ENCODED_TX.lock().unwrap().as_mut()) {
+        ladder.rebuild(bands, max_band);
+        *last_kept = 0;
+        let p = ladder.plan();
+        info.width = p.w;
+        info.height = p.h;
+        info.fps = fps.min(255) as u8;
+        info.colour = colour;
+        tx.send_info(info);
+        ANDROID_ORIENT_SENT.store(0xFF, Ordering::Relaxed);
+        crate::logf!("BEAM: camera switched to {} — capture {}×{} @ {} fps, ceiling {}×{}, now {}×{} (detail kept)", camera, w, h, fps, top.0, top.1, p.w, p.h);
+        return Ok(());
     }
-    let ladder = super::beam_ladder::Ladder::new(max_band);
-    let (cw, ch) = super::beam_ladder::BANDS[ladder.plan().band];
-    crate::logf!("BEAM: phone ladder up — capture {}×{}, ceiling {}×{}, starting {}×{}", w, h, super::beam_ladder::BANDS[max_band].0, super::beam_ladder::BANDS[max_band].1, cw, ch);
-    *ANDROID_LADDER.lock().unwrap() = Some((ladder, 0));
-    let info = Info { width: cw, height: ch, fps: fps as u8, codec: Codec::H264, colour: colour_bytes_cal(&entry, calibrated.map(|(_, c)| c)) };
+    let ladder = super::beam_ladder::Ladder::new(bands, max_band);
+    let p = ladder.plan();
+    crate::logf!("BEAM: phone ladder up — camera {}, capture {}×{} @ {} fps, ceiling {}×{}, starting {}×{}", camera, w, h, fps, top.0, top.1, p.w, p.h);
+    *lg = Some((ladder, 0));
+    drop(lg);
+    let info = Info { width: p.w, height: p.h, fps: fps.min(255) as u8, codec: Codec::H264, colour };
     let s = start_encoded_sender(&secret, origin, info)?;
     *ANDROID_SENDER.lock().unwrap() = Some(s);
     Ok(())
+}
+
+/// The self-view was tapped: the next camera (Kotlin cycles front → each back lens by field of view → front).
+#[cfg(target_os = "android")]
+pub fn android_cycle_camera() -> bool {
+    android_sending() && crate::platform::jni_android::wave_service_void("cycleBeamCamera")
 }
 
 /// Stop a phone send: the sender handle, the arm, and Kotlin's pipeline.

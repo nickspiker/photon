@@ -1,6 +1,6 @@
 //! The beam's resampler (beam_ladder.rs): a camera frame → the coded size at the ladder's softness, so the encoder's coded size changes only at a band crossing. Integer throughout.
 //!
-//! Three steps per plane: CROP the source to 16:9 about its centre (a 4:3 camera loses its top and bottom bands; a sensor-native portrait-mounted frame is still landscape, so this is its long axis), SHRINK to the effective size by box averaging (every source pixel counted once — no aliasing), GROW back to the coded size by linear interpolation in Q8. With no softness the middle step is skipped and the crop is resampled straight to the coded size.
+//! Three steps per plane: CROP the source to the coded size's aspect about its centre — the ladder's bands share the capture's own aspect (beam_ladder::bands_for), so this is at most a pixel of rounding and the picture goes out uncropped — SHRINK to the effective size by box averaging (every source pixel counted once — no aliasing), GROW back to the coded size by linear interpolation in Q8. With no softness the middle step is skipped and the crop is resampled straight to the coded size.
 //!
 //! Planes are addressed by (row stride, pixel stride), so the same code reads a camera Image's planes and writes a MediaCodec input Image's planes in place (Android's chroma planes often step two bytes per pixel).
 
@@ -47,33 +47,50 @@ impl Plane {
     }
 }
 
-/// The centred 16:9 window of a w×h frame: (x0, y0, cw, ch), even.
-pub fn crop_16x9(w: usize, h: usize) -> (usize, usize, usize, usize) {
-    if w * 9 >= h * 16 {
-        let cw = (h * 16 / 9) & !1;
+/// The centred window of a w×h frame at the aspect aw:ah: (x0, y0, cw, ch), even.
+pub fn crop_to(w: usize, h: usize, aw: usize, ah: usize) -> (usize, usize, usize, usize) {
+    let (aw, ah) = (aw.max(1), ah.max(1));
+    if w * ah >= h * aw {
+        let cw = ((h * aw + ah / 2) / ah).min(w) & !1;
         ((w - cw) / 2 & !1, 0, cw, h & !1)
     } else {
-        let ch = (w * 9 / 16) & !1;
+        let ch = ((w * ah + aw / 2) / aw).min(h) & !1;
         (0, (h - ch) / 2 & !1, w & !1, ch)
     }
 }
 
 /// Box-average the (x0,y0,cw,ch) window of `src` into an ew×eh scratch plane (ew ≤ cw, eh ≤ ch).
 fn shrink(src: &Plane, x0: usize, y0: usize, cw: usize, ch: usize, ew: usize, eh: usize, out: &mut [u8]) {
+    // The column spans once per plane (a 5 MP capture is ~7 M samples a frame; no division per sample), then whole source rows summed into a row of accumulators.
+    let spans: Vec<(usize, usize)> = (0..ew)
+        .map(|ox| {
+            let a = x0 + ox * cw / ew;
+            (a, (x0 + (ox + 1) * cw / ew).max(a + 1))
+        })
+        .collect();
+    let mut acc = vec![0u32; ew];
     for oy in 0..eh {
         let sy0 = y0 + oy * ch / eh;
         let sy1 = (y0 + (oy + 1) * ch / eh).max(sy0 + 1);
-        for ox in 0..ew {
-            let sx0 = x0 + ox * cw / ew;
-            let sx1 = (x0 + (ox + 1) * cw / ew).max(sx0 + 1);
-            let mut sum = 0u32;
-            for sy in sy0..sy1 {
-                for sx in sx0..sx1 {
-                    sum += src.at(sx, sy) as u32;
+        acc.iter_mut().for_each(|a| *a = 0);
+        for sy in sy0..sy1 {
+            let base = sy * src.row;
+            debug_assert!(base + (x0 + cw - 1) * src.px < src.len);
+            // SAFETY: `fits` checked the plane covers w×h at its strides, and the crop window lies inside w×h.
+            let row = unsafe { std::slice::from_raw_parts(src.ptr.add(base), src.len - base) };
+            if src.px == 1 {
+                for (a, &(sx0, sx1)) in acc.iter_mut().zip(&spans) {
+                    *a += row[sx0..sx1].iter().map(|&v| v as u32).sum::<u32>();
+                }
+            } else {
+                for (a, &(sx0, sx1)) in acc.iter_mut().zip(&spans) {
+                    *a += (sx0..sx1).map(|sx| row[sx * src.px] as u32).sum::<u32>();
                 }
             }
-            let n = ((sy1 - sy0) * (sx1 - sx0)) as u32;
-            out[oy * ew + ox] = (sum / n) as u8;
+        }
+        let rows = (sy1 - sy0) as u32;
+        for (ox, (&a, &(sx0, sx1))) in acc.iter().zip(&spans).enumerate() {
+            out[oy * ew + ox] = (a / (rows * (sx1 - sx0) as u32)) as u8;
         }
     }
 }
@@ -104,18 +121,24 @@ pub fn resample_plane(src: &Plane, dst: &Plane, soft: u8) {
     if !src.fits() || !dst.fits() {
         return;
     }
-    let (x0, y0, cw, ch) = crop_16x9(src.w, src.h);
+    let (x0, y0, cw, ch) = crop_to(src.w, src.h, dst.w, dst.h);
     let (cw, ch) = (cw.max(1), ch.max(1));
     let scale = 2f64.powf(-(soft.min(4) as f64) / 2.0);
     let ew = ((dst.w as f64 * scale).round() as usize).clamp(1, dst.w).min(cw);
     let eh = ((dst.h as f64 * scale).round() as usize).clamp(1, dst.h).min(ch);
     if soft == 0 && dst.w <= cw && dst.h <= ch {
-        // Full detail and a downscale: box-average the crop straight onto the coded grid.
+        // Full detail and a downscale (or the same size): box-average the crop straight onto the coded grid.
         let mut tmp = vec![0u8; dst.w * dst.h];
         shrink(src, x0, y0, cw, ch, dst.w, dst.h, &mut tmp);
         for y in 0..dst.h {
-            for x in 0..dst.w {
-                dst.put(x, y, tmp[y * dst.w + x]);
+            let line = &tmp[y * dst.w..(y + 1) * dst.w];
+            if dst.px == 1 {
+                // SAFETY: `fits` checked the destination covers w×h at its strides.
+                unsafe { std::ptr::copy_nonoverlapping(line.as_ptr(), dst.ptr.add(y * dst.row), dst.w) };
+            } else {
+                for (x, &v) in line.iter().enumerate() {
+                    dst.put(x, y, v);
+                }
             }
         }
         return;
@@ -138,10 +161,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_16x9_crop_is_centred_and_even() {
-        assert_eq!(crop_16x9(640, 480), (0, 60, 640, 360));
-        assert_eq!(crop_16x9(1280, 720), (0, 0, 1280, 720));
-        assert_eq!(crop_16x9(1000, 400), (144, 0, 710, 400));
+    fn the_crop_is_centred_even_and_follows_the_coded_aspect() {
+        assert_eq!(crop_to(640, 480, 16, 9), (0, 60, 640, 360));
+        assert_eq!(crop_to(1280, 720, 640, 360), (0, 0, 1280, 720));
+        assert_eq!(crop_to(1000, 400, 16, 9), (144, 0, 710, 400));
+        assert_eq!(crop_to(2560, 1920, 640, 480), (0, 0, 2560, 1920), "a band of the capture's own aspect: uncropped");
+    }
+
+    #[test]
+    fn an_exact_half_is_a_two_by_two_box() {
+        let (w, h) = (8, 4);
+        let s: Vec<u8> = (0..w * h).map(|i| (i * 7 % 251) as u8).collect();
+        let mut buf = s.clone();
+        let src = Plane::from_slice(&mut buf, w, 1, w, h);
+        let mut d = vec![0u8; 4 * 2];
+        let dst = Plane::from_slice(&mut d, 4, 1, 4, 2);
+        resample_plane(&src, &dst, 0);
+        for oy in 0..2 {
+            for ox in 0..4 {
+                let sum: u32 = [(0, 0), (1, 0), (0, 1), (1, 1)].iter().map(|&(dx, dy)| s[(2 * oy + dy) * w + 2 * ox + dx] as u32).sum();
+                assert_eq!(d[oy * 4 + ox] as u32, sum / 4);
+            }
+        }
     }
 
     #[test]

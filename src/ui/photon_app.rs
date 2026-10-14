@@ -1954,6 +1954,10 @@ pub struct PhotonApp {
     device_avatar_scaled_diameter: usize,
     /// HitId reserved for the Ready-screen self-avatar circle. Allocated in `init` alongside the other widget IDs; stamped into `chrome.hit_test_map` during the Ready render so a tap on the circle dispatches to the avatar code path (open the image picker on Android).
     avatar_hit_id: HitId,
+    /// The beam's self-view inset as a tap target (a paint primitive, not a Widget — dispatched in the Pressed arm like the avatar): a tap cycles the phone's camera.
+    beam_self_hit: HitId,
+    /// Where the inset was painted this frame, for the end-of-frame re-stamp; None when it is not on screen.
+    beam_self_rect: Option<(usize, usize, usize, usize)>,
     /// KnownHandle fork pills — pick-another-name / it's-mine (docs/lifecycle.md D1). Plain hit rects, Pressed-arm dispatch.
     known_pick_hit: HitId,
     known_mine_hit: HitId,
@@ -2804,6 +2808,8 @@ impl PhotonApp {
             device_avatar_scaled: None,
             device_avatar_scaled_diameter: 0,
             avatar_hit_id: HIT_NONE,
+            beam_self_hit: HIT_NONE,
+            beam_self_rect: None,
             known_pick_hit: HIT_NONE,
             known_mine_hit: HIT_NONE,
             joiner_selected: false,
