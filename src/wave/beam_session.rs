@@ -31,6 +31,11 @@ pub fn picture() -> Option<Picture> {
     PICTURE.lock().unwrap().clone()
 }
 
+/// Is any beam picture up (theirs or our own inset)? The wave screen's switch to the beam layout, without cloning a frame.
+pub fn showing() -> bool {
+    PICTURE.lock().unwrap().is_some() || SELF_PICTURE.lock().unwrap().is_some()
+}
+
 /// THE SELF-VIEW (2026-10-10, Nick: "when you choose beam, still no video shows"): what this device's camera is sending, converted thru the same chain the receiver runs — so the inset shows the colour the far side gets, tungsten-yellow included.
 static SELF_PICTURE: Mutex<Option<Picture>> = Mutex::new(None);
 
@@ -164,6 +169,9 @@ fn decode_loop(stop: Arc<AtomicBool>) {
     let mut decoded = 0u64;
     let mut failed = 0u64;
     let mut skipped = 0u64;
+    let mut healed = 0u64;
+    // The last healed picture: what a never-painted (green) block takes its pixels from (h264::I420::heal_unpainted).
+    let mut prev: Option<h264::I420> = None;
     let mut last_info: Option<Info> = None;
     // The reorder hold (see below): frames waiting for their predecessor, and the next frame number to decode.
     let mut pending: std::collections::BTreeMap<u32, beam::Frame> = std::collections::BTreeMap::new();
@@ -193,7 +201,7 @@ fn decode_loop(stop: Arc<AtomicBool>) {
                 pending.insert(f.frame_no, f);
             }
         }
-        let mut shown: Option<(h264::I420, Gains, u32)> = None;
+        let mut shown: Option<(Gains, u32)> = None;
         loop {
             let Some(n) = next else { break };
             let frame = if let Some(f) = pending.remove(&n) {
@@ -220,9 +228,11 @@ fn decode_loop(stop: Arc<AtomicBool>) {
             }
             let Some(dec) = decoder.as_mut() else { continue };
             match dec.decode(&frame.bytes) {
-                Ok(Some(pic)) => {
+                Ok(Some(mut pic)) => {
                     decoded += 1;
-                    shown = Some((pic, frame.gains, frame.frame_no));
+                    healed += pic.heal_unpainted(prev.as_ref()) as u64;
+                    prev = Some(pic);
+                    shown = Some((frame.gains, frame.frame_no));
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -233,8 +243,8 @@ fn decode_loop(stop: Arc<AtomicBool>) {
                 }
             }
         }
-        if let Some((pic, gains, n)) = shown {
-            conv.convert(&pic, gains, n, &mut rgb);
+        if let (Some((gains, n)), Some(pic)) = (shown, prev.as_ref()) {
+            conv.convert(pic, gains, n, &mut rgb);
             // The sender's rotation, applied here at display (the wire stays sensor-native).
             let (out, w, h) = super::beam_colour::rotate_rgb(&rgb, pic.w, pic.h, beam::current_rotation());
             *PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out });
@@ -242,9 +252,10 @@ fn decode_loop(stop: Arc<AtomicBool>) {
         }
     }
     crate::logf!(
-        "BEAM: decode thread down — {} pictures ({} concealed), {} failures, {} frames given up as lost",
+        "BEAM: decode thread down — {} pictures ({} concealed, {} never-painted blocks healed), {} failures, {} frames given up as lost",
         decoded,
         decoder.as_ref().map_or(0, |d| d.concealed),
+        healed,
         failed,
         skipped
     );

@@ -791,6 +791,8 @@ impl PhotonApp {
                     })
                     .unwrap_or(*theme::STATUS_TEXT_COLOUR);
                 let avatar_r = unit * 3.5;
+                // THE BEAM SCREEN IS PICTURE + BUTTONS (Nick 2026-10-14: "we don't need the ripple effect or the avatars on beam. just the buttons"): once a picture is up, no avatars, rings, ripples or name — only a status line that is a warning.
+                let beam_showing = field_geom.is_some() && crate::wave::beam_session::showing();
                 // With the field up (an Active wave), the name/status/stats block sits under the square; otherwise the single ringing avatar at its usual height.
                 let (acx, acy) = match field_geom {
                     Some(g) => (w * 0.5, (g.y0 + g.side) as f32 + unit * 0.2 - avatar_r),
@@ -805,6 +807,7 @@ impl PhotonApp {
                 let path_colour = wave_path;
                 match field_geom {
                     None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
+                    Some(_) if beam_showing => {}
                     Some(g) => {
                         // Both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
                         // Each party is shown once it is IN the wave (Nick 2026-09-29): ringing out, only ours; ringing in, only theirs (they are already waving); talking, both.
@@ -862,15 +865,17 @@ impl PhotonApp {
                     }
                 }
                 // Name in the relationship colour, large; the phase line beneath in the status grey.
-                ctx.text.draw_text_center(
-                    &mut canvas,
-                    &name,
-                    acx,
-                    acy + avatar_r + unit * 1.1,
-                    &TextStyle::new(unit * 1.05, colour),
-                    None,
-                    None,
-                );
+                if !beam_showing {
+                    ctx.text.draw_text_center(
+                        &mut canvas,
+                        &name,
+                        acx,
+                        acy + avatar_r + unit * 1.1,
+                        &TextStyle::new(unit * 1.05, colour),
+                        None,
+                        None,
+                    );
+                }
                 // Status / timer line beneath the name. Active shows the LIVE wave timer (per-frame recompute from phase_osc); Ended a frozen wave summary; Ringing the incoming cue. Oxanium so the base-aware `fmt_duration` (Phase 4 dozenal) resolves its glyphs.
                 let status_line = match phase {
                     crate::wave::WavePhase::Ringing => {
@@ -904,8 +909,13 @@ impl PhotonApp {
                     crate::wave::WavePhase::Outgoing => tr(Msg::WavingName(&name)).into_owned(),
                 };
                 let status_style = TextStyle::new(unit * 0.62, *theme::STATUS_TEXT_COLOUR).font("Oxanium");
+                let status_warns = matches!(phase, crate::wave::WavePhase::Active)
+                    && (crate::wave::MIC_RELAUNCH.load(std::sync::atomic::Ordering::Relaxed)
+                        || crate::wave::MIC_DENIED.load(std::sync::atomic::Ordering::Relaxed)
+                        || crate::wave::MIC_SILENT.load(std::sync::atomic::Ordering::Relaxed)
+                        || wave_reconnecting);
                 // WRAPPED (field 2026-10-13: "you have to resize Photon super wide to read it"): a long status — the microphone messages — breaks onto as many centred lines as it needs within 90% of the window.
-                {
+                if !beam_showing || status_warns {
                     let max_w = buf_w as f32 * 0.9;
                     let mut lines: Vec<String> = Vec::new();
                     let mut cur = String::new();
@@ -927,7 +937,7 @@ impl PhotonApp {
                     }
                 }
                 // Under each avatar, the rung that voice is sent on; centred between them, the ROUND TRIP mouth to ear and back (Nick 2026-09-28): our own l plus the l they report. The sum is exact whatever the two clocks disagree by — a one-way split would be a guess until the grid has an outside reference (GPS or the like).
-                if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active)) {
+                if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active) && !beam_showing) {
                     let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
                     let ours_l = crate::platform::audio::play_latency().map(|l| (l.max(0) / 48) as u32);
                     let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(std::sync::atomic::Ordering::Relaxed)).filter(|&v| v != u32::MAX);
@@ -1099,7 +1109,7 @@ impl PhotonApp {
                         super::wave_field::paint_picture_rect(&mut canvas, rx0, ry0, rw, rh, &p, true);
                     }
                 }
-                if let (Some(g), Some(m)) = (field_geom, self.wave_field_map.as_ref()) {
+                if let (Some(g), Some(m), false) = (field_geom, self.wave_field_map.as_ref(), beam_showing) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {

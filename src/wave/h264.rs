@@ -21,6 +21,40 @@ impl I420 {
         let (cw, ch) = (w / 2, h / 2);
         Self { w, h, y: vec![0; w * h], u: vec![128; cw * ch], v: vec![128; cw * ch] }
     }
+
+    /// THE GREEN FILL, painted over (field 2026-10-14, Nick: "the frame fill is green for missed frames"): the decoder's picture buffers start at all zeros, and a region it has not received yet — the stripes an intra refresh has not reached, a slice lost before its first refresh — comes out as Y = Cb = Cr = 0, which full-range 601 displays as saturated green. No encoder writes that triple (it is green below black), so a 2×2 block of it is never-painted: it takes the same block of `prev` (the last healed picture, when the size matches), else black. Returns the blocks healed.
+    pub fn heal_unpainted(&mut self, prev: Option<&I420>) -> usize {
+        let (cw, ch) = (self.w / 2, self.h / 2);
+        let prev = prev.filter(|p| p.w == self.w && p.h == self.h);
+        let mut healed = 0;
+        for cy in 0..ch {
+            for cx in 0..cw {
+                let c = cy * cw + cx;
+                if self.u[c] != 0 || self.v[c] != 0 {
+                    continue;
+                }
+                let (y0, y1) = (2 * cy * self.w + 2 * cx, (2 * cy + 1) * self.w + 2 * cx);
+                if self.y[y0] != 0 || self.y[y0 + 1] != 0 || self.y[y1] != 0 || self.y[y1 + 1] != 0 {
+                    continue;
+                }
+                healed += 1;
+                match prev {
+                    Some(p) => {
+                        self.u[c] = p.u[c];
+                        self.v[c] = p.v[c];
+                        for i in [y0, y0 + 1, y1, y1 + 1] {
+                            self.y[i] = p.y[i];
+                        }
+                    }
+                    None => {
+                        self.u[c] = 128;
+                        self.v[c] = 128;
+                    }
+                }
+            }
+        }
+        healed
+    }
 }
 
 /// NV12 → I420, integer. Video-range input (16..235 luma, 16..240 chroma) is expanded to full range in Q12, truncating — the receive chain is 601 full range.
@@ -222,6 +256,24 @@ pub use real::{Decoder, Encoder, AVAILABLE};
 #[cfg(test)]
 mod conv_tests {
     use super::*;
+
+    #[test]
+    fn never_painted_green_heals_from_the_last_picture_else_black() {
+        let mut prev = I420::new(4, 4);
+        prev.y.iter_mut().for_each(|v| *v = 90);
+        prev.u.iter_mut().for_each(|v| *v = 100);
+        let mut pic = I420::new(4, 4);
+        pic.u.iter_mut().for_each(|v| *v = 0);
+        pic.v.iter_mut().for_each(|v| *v = 0);
+        // One block was really decoded: dark luma, real chroma — it stays.
+        pic.u[3] = 120;
+        let mut black = I420 { w: 4, h: 4, y: pic.y.clone(), u: pic.u.clone(), v: pic.v.clone() };
+        assert_eq!(pic.heal_unpainted(Some(&prev)), 3);
+        assert_eq!((pic.y[0], pic.u[0], pic.v[0]), (90, 100, 128));
+        assert_eq!((pic.y[15], pic.u[3]), (0, 120), "a decoded block is untouched");
+        assert_eq!(black.heal_unpainted(None), 3);
+        assert_eq!((black.y[0], black.u[0], black.v[0]), (0, 128, 128), "no earlier picture: black");
+    }
 
     #[test]
     fn nv12_deinterleaves_and_expands_video_range() {
