@@ -2342,7 +2342,7 @@ pub struct PhotonApp {
     update_progress: Option<(u64, u64)>,
     /// Which channel pill started the running download / the last apply: Some(false) = release, Some(true) = dev, None = nothing user-started (an auto-update). The Updates page draws the bar and outcome RIGHT UNDER that pill (Nick 2026-09-10), not at the page bottom.
     update_active_dev: Option<bool>,
-    /// Next automatic release-channel check, eagle time. 0 = not yet scheduled (the driver arms a short post-launch delay, then ~6–8h jittered). The AUTOMATIC path (docs/updates.md): desktop release builds self-apply thru the stamp window; dev builds and Android only surface a toast — dev updates stay manual by mandate, Android package installs belong to the OS.
+    /// Next automatic release-channel check, eagle time. 0 = not yet scheduled (the driver arms a short post-launch delay, then ~6–8h jittered). The AUTOMATIC path (docs/updates.md): any build that finds a newer RELEASE installs it thru the stamp window (Android: idle + unmetered, via the installer session); the dev channel is never polled, so a newer dev is never automatic.
     next_update_check_osc: i64,
     /// Session dedup for the "update available" toast — the version already announced, so a 6-hourly re-check doesn't re-toast the same release.
     update_toasted: Option<(usize, usize, usize)>,

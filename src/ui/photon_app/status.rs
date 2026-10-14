@@ -5566,7 +5566,7 @@ impl PhotonApp {
         // Private-identity-secret S: probe/reconstitute/deposit blinds toward whichever friends need an op (no-op at steady state).
         self.drive_blind_ops();
 
-        // Automatic update poll (release channel, ~6–8h jittered, updates.auto-gated): desktop release builds self-apply thru the stamp window; dev builds + Android toast once per version.
+        // Automatic update poll (release channel, ~6–8h jittered, updates.auto-gated): any build — dev included — installs a newer release thru the stamp window; a newer dev is never automatic.
         self.drive_auto_update();
 
         // NOTE: Proactive CLUTCH initiation is now handled via background keygen:

@@ -24,7 +24,7 @@ impl PhotonApp {
             .unwrap_or(true)
     }
 
-    /// The AUTOMATIC update path (docs/updates.md): a jittered ~6–8h RELEASE-channel poll, gated by the `updates.auto` fleet setting (default ON). What "apply" means is per-platform (see `on_auto_update_check`): a desktop release build self-applies thru the stamp window and re-execs; dev builds (manual by mandate) and Android (the OS owns package installs) surface a once-per-version toast. The DEV channel is never polled automatically.
+    /// The AUTOMATIC update path (docs/updates.md): a jittered ~6–8h RELEASE-channel poll, gated by the `updates.auto` fleet setting (default ON). Any build — release or dev — that finds a NEWER RELEASE installs it thru the stamp window (Android: thru the installer session, idle and unmetered only). The DEV channel is never polled automatically, so a newer dev build is never installed on its own (Nick 2026-10-14: "if a release comes out that's newer and they have auto-update checked, update it! If a newer dev comes out, don't auto.").
     pub(super) fn drive_auto_update(&mut self) {
         if !self.online || self.update_busy || !self.auto_updates_enabled() {
             return;
@@ -60,7 +60,7 @@ impl PhotonApp {
         });
     }
 
-    /// Policy for a finished automatic check: tuple-forward only (a downgrade is never automatic), then the stamp window `floor < t ≤ now` with the STAGED clock — system eagle time on the happy path, the nunc consensus verdict (conservative edge) consulted exactly when the check fails forward, a fresh consensus requested when none is in hand. Clearing all gates: desktop release builds self-apply + re-exec; dev builds and Android get a once-per-version toast pointing at Settings → Updates.
+    /// Policy for a finished automatic check: tuple-forward only (a downgrade is never automatic), then the stamp window `floor < t ≤ now` with the STAGED clock — system eagle time on the happy path, the nunc consensus verdict (conservative edge) consulted exactly when the check fails forward, a fresh consensus requested when none is in hand. Clearing all gates, the release installs — on a dev build too, which thereby lands back on the release channel; Android defers it while a wave or ceremony runs or the network is metered, and a standing band says it is waiting.
     pub(super) fn on_auto_update_check(
         &mut self,
         stamp_osc: i64,
@@ -106,29 +106,28 @@ impl PhotonApp {
             }
             StampVerdict::Accept => {}
         }
-        // A dev build never hops channels on its own — it announces. patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0.
+        // A DEV build takes a newer RELEASE too (Nick 2026-10-14): the only automatic hop is forward onto release, never onto a newer dev (that channel is not polled). patch == 0 IS the release-build predicate: the version scheme guarantees a dev build never wears .0.
         let release_build = ours.2 == 0;
         // Android (Nick 2026-10-06, "that auto update would be very nice"): the APK is downloaded and staged here and handed to the PackageInstaller SESSION (PhotonActivity.installApk) — silent on Android 12+ once photon is its own installer of record (the first self-update is the one confirm tap that makes it so), the system confirm dialog otherwise. The install kills the process, so never mid-ceremony (a lost completion = era split, the 2026-09-10 lesson) or mid-wave, and never on a metered network; a deferred update is re-evaluated at a short cadence instead of the 6–8 h one.
         let android_busy = cfg!(target_os = "android")
             && (self.active_wave.is_some() || self.contacts.iter().any(|c| c.clutch_ceremony_in_progress || c.clutch_keygen_in_progress));
         let android_metered = cfg!(target_os = "android") && crate::network::wfd::net_metered();
-        if release_build && (cfg!(not(target_os = "android")) || !(android_busy || android_metered)) {
+        if cfg!(not(target_os = "android")) || !(android_busy || android_metered) {
             crate::logf!(
-                "UPDATE: auto-applying release {} (stamp window clear{})",
+                "UPDATE: auto-applying release {} over {} build (stamp window clear{})",
                 row.version_string(),
+                if release_build { "a release" } else { "a dev" },
                 if cfg!(target_os = "android") { ", unmetered, idle — staging the APK for the installer session" } else { "" }
             );
             self.update_release = ChannelCheck::Ready(Some(row));
             self.spawn_update_apply(crate::network::updates::Channel::Release);
         } else {
-            if release_build {
-                crate::logf!(
-                    "UPDATE: {} available — deferring the install ({}), re-checking soon",
-                    row.version_string(),
-                    if android_busy { "a wave or ceremony is in progress" } else { "metered network" }
-                );
-                self.next_update_check_osc = now_sys + (15 * 60 + crate::jitter(5 * 60)) * crate::OSC_PER_SEC;
-            }
+            crate::logf!(
+                "UPDATE: {} available — deferring the install ({}), re-checking soon",
+                row.version_string(),
+                if android_busy { "a wave or ceremony is in progress" } else { "metered network" }
+            );
+            self.next_update_check_osc = now_sys + (15 * 60 + crate::jitter(5 * 60)) * crate::OSC_PER_SEC;
             // A standing band, not a toast (Nick 2026-09-09): it stays until the update is on, and it stacks with the other bands.
             if self.update_toasted != Some(row.version) {
                 self.update_toasted = Some(row.version);
