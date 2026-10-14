@@ -36,7 +36,8 @@ android_build() {
     if [ -f "$cham/Cargo.toml" ]; then
         echo "Building chameleon (the Calibrate plugin) for Android..."
         ( cd "$cham" && cargo build --release --lib --target aarch64-linux-android ) || { echo "ERROR: chameleon build failed"; exit 1; }
-        cp "$cham/target/aarch64-linux-android/release/libchameleon.so" "$proj/app/src/main/jniLibs/arm64-v8a/"
+        # A deploy exports CARGO_TARGET_DIR (photon's own target, shared by the snapshot builds), so chameleon's library lands there; a dev publish leaves it in chameleon's own target (field 2026-10-14: the v118 deploy looked in the wrong one).
+        cp "${CARGO_TARGET_DIR:-$cham/target}/aarch64-linux-android/release/libchameleon.so" "$proj/app/src/main/jniLibs/arm64-v8a/"
     else
         rm -f "$proj/app/src/main/jniLibs/arm64-v8a/libchameleon.so"
         echo "No chameleon checkout — this APK has no Calibrate button."
