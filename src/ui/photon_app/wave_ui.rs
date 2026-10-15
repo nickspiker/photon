@@ -732,7 +732,8 @@ impl PhotonApp {
             self.push_address_record_to(vec![dev]);
         }
         const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
-        let (reconnect_after, anchor_every, drop_after) = (5 * OSC, 2 * OSC, 30 * OSC);
+        // NO GIVE-UP (Nick 2026-10-15: "Reconnecting at 2s or longer, not 5 and I'd pull the 30s dropped. Should be able to wait forever if needed, could be an unattended beam that needs to stay live across network outages"): two seconds of silence starts the reconnect — anchors every 2 s, addresses re-pushed, the answer re-sent while the caller has never been heard — and a live wave or beam then waits through any outage until a person ends it.
+        let (reconnect_after, anchor_every) = (2 * OSC, 2 * OSC);
         let Some(wave) = self.active_wave.as_ref() else {
             return;
         };
@@ -755,19 +756,6 @@ impl PhotonApp {
         let last_rx = crate::wave::LAST_MEDIA_RX_OSC.load(Relaxed).max(start);
         let now = vsf::eagle_time_oscillations();
         let drought = now - last_rx;
-        if drought >= drop_after {
-            crate::logf!(
-                "WAVE: dropped — no authenticated media for {}s (id {})",
-                drought / OSC,
-                hex::encode(&wave_id[..4])
-            );
-            // The Hangup rides the durable lane row: a far end alive behind a dead path converges the moment any path heals, and the row tombstones the chip fleet-wide.
-            if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
-                let _ = self.send_wave_signal(ci, WaveSignal::Hangup { wave_id }, vsf::eagle_time_oscillations());
-            }
-            self.end_wave(WaveOutcome::Dropped, offer_osc);
-            return;
-        }
         if drought >= reconnect_after {
             if !was_reconnecting {
                 crate::logf!(

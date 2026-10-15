@@ -144,7 +144,9 @@ Field: a deliberate LAN→WAN switch dropped a wave at the 30 s deadline while b
 - Anchors went only to the wave's own addresses. An anchor now fans to every candidate the phonebook holds, like an offer.
 - Anchors took the relay only when no validated path existed — but a stale path still reads as valid, so a moved peer got no relay copy at all. An anchor now ALWAYS sends its relay copy; it is fired precisely when the direct path is in doubt.
 
-Media itself still has no relay carriage: if no candidate works, the wave still ends at the 30 s deadline. A relayed media plane is its own design.
+Media itself still has no relay carriage: while no candidate works, the wave is silent. A relayed media plane is its own design.
+
+**No give-up (2026-10-15, Nick: "Reconnecting at 2s or longer, not 5 and I'd pull the 30s dropped. Should be able to wait forever if needed, could be an unattended beam that needs to stay live across network outages").** Two seconds without authenticated media starts the reconnect: anchors every 2 s on every candidate and the relay, addresses re-pushed, and the answer re-sent while the caller has never been heard. There is no deadline after that. A live wave or beam waits through any outage until a person ends it, and the first authenticated packet back resumes it.
 
 ## Express replay guard (2026-09-11)
 
