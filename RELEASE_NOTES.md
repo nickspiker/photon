@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v120
 - **Waves and beams no longer give up.** A wave or beam that loses its connection now starts reconnecting after 2 seconds instead of 5, and keeps trying for as long as it takes rather than dropping after 30 seconds, so an unattended beam stays up through a network outage and picks up again when the connection returns. It ends only when someone hangs up.
 - **Direct connections, fixed in three places.** Devices now share the real port they listen on at home, so two devices on the same network can reach each other directly instead of trying a port that only works from outside. When two of a friend's devices sit behind the same router, Photon no longer mixes up which address belongs to which. And while there's no direct path to a friend, messages go straight over the relay instead of first retrying a dead address for minutes. Devices on this version can't read the new address details from older versions, so update all your devices.
 - **Your unsent messages follow you.** A message you've started typing is now shared across your own devices whenever it's saved, so you can start on your phone and finish on your computer. Whichever device edited it last wins, and if a newer version arrives while that conversation is open, it replaces what's in the box.
