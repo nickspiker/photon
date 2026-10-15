@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v119
 - **Text at its true weights.** Photon's fonts are now variable, so every weight the app asks for is drawn exactly instead of snapping to the nearest of a few fixed ones, the dozenal digits included. Small text is drawn a touch heavier and large text a touch lighter so every size reads the same.
 - **Fixed: a wave answered in the same moment its keys were refreshed never connected.** The answer now also goes out under the keys the caller may still be holding, and if the answering side never hears the caller, it sends the answer again every couple of seconds until the wave connects.
 - **Fixed: turning a beam off and on again mid-wave froze the other side's picture.** The beam now carries on where it left off instead of starting a new stream the other side can't read.
