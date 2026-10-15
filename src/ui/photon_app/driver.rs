@@ -4546,6 +4546,12 @@ impl PhotonApp {
 
         // UNATTENDED MODE (off by default, Security → "Auto-attest on reboot"): the boot-locked tohu session dies on reboot BY DESIGN, so a normal reboot lands on the typed-attest screen. When the operator has explicitly opted a failsafe box into unattended mode, a device-bound reboot capsule (sealed under the hardware fingerprint, not the wairua) survives the reboot — adopt it into tohu's live session here so the identical resume path below runs with no handle typed. The capsule opens ONLY on the same hardware; a copy elsewhere fails. If tohu already has a live session (warm restart, same boot) this is a no-op.
         if tohu::session().is_none() {
+            // WHY NO SESSION (field 2026-10-14, Jeff: "got kicked off again and did not reboot"): the reason tohu found (no capsule / a different boot / a damaged one, with its age) beside how long the device has been up — a phone that restarted itself overnight reads as exactly that.
+            crate::logf!(
+                "RESUME: no live session — {} · device up {}",
+                tohu::session_miss().unwrap_or_else(|| "no capsule store on this platform".into()),
+                crate::platform::uptime_text()
+            );
             if let Some(cap) = crate::storage::device_vault_if_open()
                 .and_then(|v| v.read_device(Self::REBOOT_CAPSULE_ENTRY).ok().flatten())
                 .and_then(|bytes| tohu::open_reboot_capsule(&bytes))

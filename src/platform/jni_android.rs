@@ -1667,7 +1667,11 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     match env.convert_byte_array(&boot_secret) {
         Ok(bytes) if !bytes.is_empty() => {
             tohu::set_boot_secret_override(&bytes);
-            info!("session boot-secret override set ({} bytes)", bytes.len());
+            // The boot COUNT is no secret (a small per-boot integer, the capsule's protection is the app sandbox) and is exactly what says whether the phone restarted between two logs; an install-secret fallback is never printed.
+            match std::str::from_utf8(&bytes).ok().filter(|t| t.starts_with("bootcount:")) {
+                Some(t) => info!("session boot secret = {} (device up {})", t, crate::platform::uptime_text()),
+                None => info!("session boot-secret override set ({} bytes, device up {})", bytes.len(), crate::platform::uptime_text()),
+            }
         }
         _ => error!(
             "nativeNetworkInit: empty/unreadable boot secret — session may not persist on this ROM"

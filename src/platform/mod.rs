@@ -41,6 +41,20 @@ pub mod camera_avf;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub mod camera_v4l2;
 
+/// How long the device has been up, for a log line ("3d 4h", "17m"): CLOCK_BOOTTIME on Linux and Android (counts deep sleep), "unknown" elsewhere.
+pub fn uptime_text() -> String {
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        let mut ts = libc::timespec { tv_sec: 0, tv_nsec: 0 };
+        // SAFETY: a valid timespec for the kernel to fill.
+        if unsafe { libc::clock_gettime(libc::CLOCK_BOOTTIME, &mut ts) } == 0 {
+            let s = ts.tv_sec.max(0) as u64;
+            return if s >= 86_400 { format!("{}d {}h", s / 86_400, s % 86_400 / 3600) } else if s >= 3600 { format!("{}h {}m", s / 3600, s % 3600 / 60) } else { format!("{}m", s / 60) };
+        }
+    }
+    "unknown".into()
+}
+
 /// "Is a human plausibly looking at this app RIGHT NOW" — the platform-appropriate attended check, one name for both worlds (desktop: window visible+focused; Android: Activity foregrounded).
 pub fn attended_here() -> bool {
     #[cfg(target_os = "android")]
