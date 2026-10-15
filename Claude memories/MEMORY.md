@@ -44,7 +44,7 @@
 ## Active / open
 - [Android dark in background](project_android_headless_dark.md) — 2026-10-13 CONVICTED: Activity destroy freed the app, offline for days; fix BUILT (service owns app + watchdog), verify pending
 - [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port + shared public ip:port; FIXED, server first; flap unconfirmed
-- [Hotplug abort](project_hotplug_abort.md) — 2026-10-15 SIGABRT on monitor plug; 0-px avatar expect likely, FIXED; need per-release symbols
+- [Hotplug abort](project_hotplug_abort.md) — 2026-10-15 SIGABRT x2 on monitor plug = 0-px avatar expect, CONVICTED; fixed post-v120
 - [Beams](project_beams.md) — 2026-10-10 DECIDED + desktop BUILT: H.264, intra refresh, ISP stood aside, VSF labels; phone capture + cycle built
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 Jeff holes = L rule; re-anchor + render-trace + recv guard BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread

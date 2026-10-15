@@ -1,6 +1,6 @@
 ---
 name: project-hotplug-abort
-description: "2026-10-15 desktop monitor-hotplug: photon (v119) + rustdesk both SIGABRT at 12:06:46; core kept but unsymbolizable (stripped, no matching unstripped build); fix needs per-release symbols first"
+description: "2026-10-15 monitor-hotplug: photon v119 SIGABRT twice (12:06, 13:13) at the avatar resizer expect (0-px destination); FIXED in 0.120.1 dev, NOT in v120; per-release symbols still wanted"
 metadata:
   node_type: memory
   type: project
@@ -11,7 +11,7 @@ metadata:
 2026-10-15 12:06:46 PDT on leviathan (Linux/X11 Cinnamon): internet dropped, Nick plugged a monitor into the physical port, the session lost taskbar/icons/apps, hard reset at 12:09:51.
 `coredumpctl list` shows rustdesk (pid 6405, no core) and photon-messenger (pid 4438, core PRESENT, 87 MB) both SIGABRT within 2 s — photon's main thread: a Rust panic → abort (frames #7–#15 panic machinery, #16+ app code).
 Core symbolization FAILED: installed binary BuildID 4b98624780532e39680e2945649e6ece45cf72a0 (v119, installed 04:23) is stripped and no unstripped build with that id exists; /tmp (photon.crash.txt + tmpfs log) was wiped by the reset.
-Heap fragments in the core hold "…vatar_render.rs:23:6" = the resizer `.expect` in update_avatar_scaled — resize 0.8 returns InvalidParameters for a 0 destination, and callers compute `(radius * 2.0) as usize` which hits 0 at a squeezed viewport. LIKELY CAUSE (circumstantial — the panic text is that very location, no symbols to prove the frame); FIXED same day: zero diameter → empty texture, draw_avatar refuses a short texture, test a_zero_pixel_avatar_is_empty_not_a_panic.
+Heap fragments in the core hold "…vatar_render.rs:23:6" = the resizer `.expect` in update_avatar_scaled — resize 0.8 returns InvalidParameters for a 0 destination, and callers compute `(radius * 2.0) as usize` which hits 0 at a squeezed viewport. CONVICTED by repetition: a SECOND abort at 13:13:18 (rustdesk 13:11:29 again, then a second hard reset ~13:14) left the identical "…vatar_render.rs:23:6" in its core; FIXED same day: zero diameter → empty texture, draw_avatar refuses a short texture, test a_zero_pixel_avatar_is_empty_not_a_panic.
 Core also holds "FLUOR-MON: EMPTY input region on live home surface 0".
 fluor `rebuild_span` / `resumed` already return on an empty monitor list.
 
