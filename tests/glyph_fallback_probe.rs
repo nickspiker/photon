@@ -163,7 +163,7 @@ fn ink(tr: &mut TextRenderer, s: &str, family: &'static str, weight: u16) -> u64
     px.iter().map(|p| p.to_le_bytes().iter().map(|&b| b as u64).sum::<u64>()).sum()
 }
 
-/// VARIABLE WEIGHTS, MEASURED (Nick 2026-10-14: "copy the dozenal over and get it all variable please"): every weight is a real one. Oxanium's digits — the twelve dozenal ones synthesized by tools/oxanium-dozenal.py and the Latin ones — draw strictly more ink at each heavier weight, and Open Sans 500 and 600 sit strictly between 400 and 700 (as two static cuts they snapped to one or the other).
+/// VARIABLE WEIGHTS, MEASURED (Nick 2026-10-14: "copy the dozenal over and get it all variable please"): every weight is a real one. Oxanium's digits — the twelve dozenal ones (weights synthesized once, see ui/fonts.rs) and the Latin ones — draw strictly more ink at each heavier weight, and Open Sans 500 and 600 sit strictly between 400 and 700 (as two static cuts they snapped to one or the other).
 #[test]
 fn every_weight_is_a_real_one() {
     let mut tr = renderer(true);
