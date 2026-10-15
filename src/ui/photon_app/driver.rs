@@ -1953,6 +1953,11 @@ impl FluorApp for PhotonApp {
                     ctx.window.request_redraw();
                     return EventResponse::Handled;
                 }
+                // Field 2026-10-15 (Mac): a link in a just-sent row did not open until the conversation was re-entered — say what the tap saw when it misses every link rect.
+                if crate::is_dev_build() && !self.msg_link_hits.is_empty() {
+                    let near = self.msg_link_hits.iter().map(|(x0, y0, x1, y1, _)| ((cx_f - cx_f.clamp(*x0, *x1)).abs() + (cy_f - cy_f.clamp(*y0, *y1)).abs()) as i32).min().unwrap_or(-1);
+                    crate::logf!("CHAT: row tap missed every link — slot {} at ({}, {}), {} link rect(s), nearest {} px", hit_id - self.msg_hit_base, cx_f as i32, cy_f as i32, self.msg_link_hits.len(), near);
+                }
             }
             // The stream filter pill cycles all → waves → text. The wrap cache keys on the filter, so the list rebuilds itself.
             // THE DIGIT STRIP (Nick 2026-09-16, "use them in casual conversation"): a tap on a glyph key inserts that digit byte into the message box, focus untouched.
@@ -4085,7 +4090,14 @@ impl FluorApp for PhotonApp {
                 return CursorIcon::Pointer;
             }
         }
-        // Any textbox under the cursor → I-beam. `hover_is_textbox` is set by the ONE hover walk (via `Widget::is_text_input`) on every `CursorMoved`, so every box on every screen is covered with no hand-list.
+        // A LINK in a message (field 2026-10-15: "hovering over hyperlinks doesn't give hand"): the hand over the very rects a tap opens (msg_link_hits, rebuilt each frame by the render) — inside a message row's hit band only, as the tap dispatch reads them.
+        if self.msg_hit_base != HIT_NONE && hit >= self.msg_hit_base && hit < (self.msg_hit_base + super::MSG_HIT_SPAN) {
+            let (cx, cy) = (x as f32, y as f32);
+            if self.msg_link_hits.iter().any(|(x0, y0, x1, y1, _)| cx >= *x0 && cx <= *x1 && cy >= *y0 && cy <= *y1) {
+                return CursorIcon::Pointer;
+            }
+        }
+                // Any textbox under the cursor → I-beam. `hover_is_textbox` is set by the ONE hover walk (via `Widget::is_text_input`) on every `CursorMoved`, so every box on every screen is covered with no hand-list.
         if self.hover_is_textbox && hit == self.hover_hit {
             return CursorIcon::Text;
         }

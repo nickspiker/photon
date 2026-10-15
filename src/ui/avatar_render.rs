@@ -11,6 +11,10 @@ use fluor::pixel::{Blend, BlendMode};
 pub fn update_avatar_scaled(src: &[u8], src_size: usize, dst_diameter: usize) -> Vec<u8> {
     use resize::Pixel::RGB8;
     use resize::Type::Mitchell;
+    // A zero-pixel avatar is an empty texture, never a panic: the 2026-10-15 monitor hotplug shrank X's framebuffer to 320×200, the avatar diameter rounded to 0, resize refused it and the expect below aborted the whole app. draw_avatar draws nothing for a zero diameter.
+    if dst_diameter == 0 || src_size == 0 || src.len() < src_size * src_size * 3 {
+        return Vec::new();
+    }
 
     let mut resizer = resize::new(
         src_size,
@@ -49,7 +53,7 @@ pub fn draw_avatar(
 ) {
     let width = canvas.width;
     let height = canvas.height;
-    if radius <= 0.0 || scaled_diameter == 0 || width == 0 || height == 0 {
+    if radius <= 0.0 || scaled_diameter == 0 || scaled.len() < scaled_diameter * scaled_diameter * 3 || width == 0 || height == 0 {
         return;
     }
     let r_in = (radius - 0.5).max(0.0); // the algorithm: the anti-aliased rim's inner radius; a disk under half a pixel has no solid interior
@@ -114,5 +118,24 @@ pub fn draw_avatar(
             let idx = row_off + px;
             pixels[idx] = pixels[idx].under(avatar_pixel, BlendMode::Normal);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The 2026-10-15 hotplug abort: a framebuffer squeezed to 320×200 rounds an avatar to zero pixels — that must scale to nothing and draw nothing, never panic.
+    #[test]
+    fn a_zero_pixel_avatar_is_empty_not_a_panic() {
+        let src = vec![128u8; 4 * 4 * 3];
+        assert!(update_avatar_scaled(&src, 4, 0).is_empty());
+        assert!(update_avatar_scaled(&src, 0, 8).is_empty());
+        assert_eq!(update_avatar_scaled(&src, 4, 2).len(), 2 * 2 * 3);
+        let mut px = vec![0u32; 16 * 16];
+        let mut dmg = fluor::canvas::Damage::default();
+        let mut canvas = Canvas::new(&mut px, 16, 16, &mut dmg);
+        draw_avatar(&mut canvas, 8.0, 8.0, 0.4, &[], 0, None);
+        draw_avatar(&mut canvas, 8.0, 8.0, 4.0, &[], 8, None);
     }
 }

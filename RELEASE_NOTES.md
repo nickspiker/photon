@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Links look clickable.** The pointer turns into a hand over a link in a message.
+- **The pointer changes shape on a Mac even when Photon isn't the front window.** Hovering a link or the message box shows the hand or the text cursor without clicking Photon first.
+- **Plugging in or unplugging a monitor no longer crashes Photon.** When the screen briefly shrank to almost nothing, a picture too small to draw could stop the whole app; now it's simply skipped until the screen comes back.
 
 ## v120
 - **Waves and beams no longer give up.** A wave or beam that loses its connection now starts reconnecting after 2 seconds instead of 5, and keeps trying for as long as it takes rather than dropping after 30 seconds, so an unattended beam stays up through a network outage and picks up again when the connection returns. It ends only when someone hangs up.
