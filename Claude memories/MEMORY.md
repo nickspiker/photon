@@ -15,6 +15,7 @@
 - [Stage only your own files](feedback_stage_only_own_files.md) — HARD: stage by explicit path; never `git add -u`/`-A` (shared tree; 2026-09-26 vsf sweep)
 - [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
 - [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
+- [No Python](feedback_no_python.md) — HARD: no Python in the photon repo unless proven necessary; commit generated artifacts (fonts), tools are Rust
 - [No wrapped comments](no-wrapped-comments.md) — one sentence per line, never hard-wrapped ([feedback_no_comment_wraps.md](feedback_no_comment_wraps.md))
 - [Edges, not timers](edges-not-timers.md) — react on event edges, never timers/debounces; UI too: [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md)
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is direct pixel access only; no GPU shaders/float pipeline
