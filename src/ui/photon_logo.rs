@@ -22,7 +22,7 @@ const LOGO_HIGHLIGHT_GRAY: u8 = 128;
 /// Aspect ratio (width : height) of the "Photon" wordmark at the rendered weight. Used by the harmonic-mean sizer to fit the text inside `rect`.
 const TEXT_ASPECT: f32 = 6.;
 
-/// Oxanium font family name. Must match the family name in the loaded `.ttf` files (Oxanium-* weights all share this family). Weight 800 selects ExtraBold; weights 200/300/400/500/600/700/800 are loaded by `PhotonApp::init`.
+/// Oxanium font family name. Must match the family name in the loaded `.ttf` (the variable Oxanium-VariableFont_wght+glyphs, family "Oxanium"). Weight 800 draws ExtraBold on its wght axis; any weight 200..800 is a real one.
 const FONT: &str = "Oxanium";
 const WEIGHT: u16 = 800;
 

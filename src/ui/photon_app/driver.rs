@@ -182,8 +182,10 @@ impl FluorApp for PhotonApp {
     }
 
     fn init(&mut self, ctx: &mut Context) {
-        // Every bundled face (Oxanium weights, the dozenal `+glyphs` superset, the Noto symbol/math/mono coverage, the per-script fonts) — one loader, shared with tests/glyph_fallback_probe.rs so the KAT measures the bundle the app actually ships.
+        // Every bundled face (the variable Oxanium with the dozenal digits, the Noto symbol/math/mono coverage, the per-script fonts) — one loader, shared with tests/glyph_fallback_probe.rs so the KAT measures the bundle the app actually ships.
         crate::ui::fonts::load_bundled(ctx.text);
+        // Optical weight (fluor, with the variable faces — Nick 2026-10-14): small text a touch heavier, display text a touch lighter, so every size reads as the weight it asks for.
+        ctx.text.set_optical_weight(true);
 
         // Chrome owns its own hit-test map sized to the viewport, allocates four hit-ids for its buttons via the threaded counter, and stamps the perimeter + button rasters in `rasterize_chrome`. The Photon orb (chromatic starburst — same brand mark as the OS-level app icon) ships as a VSF image and decodes into the chrome's app_icon slot. Decode the bundled orb (the Photon brand mark, and the app_icon slot that swaps to a peer's avatar in a conversation). A decode failure logs LOUDLY instead of silently falling back to a plain coloured disk — a stale asset against a bumped vsf format is exactly how a blank orb shipped unnoticed, so make the next one scream rather than degrade in silence.
         // DEV builds get a per-build random gradient orb so a fresh upload is visible at a glance; release ships the real brand mark.

@@ -152,3 +152,39 @@ fn trimmed_statics_match_their_sources() {
         assert_eq!(a, b, "{name} ({family}): trimmed {a} vs source {b}");
     }
 }
+
+/// Total ink of a run drawn at `weight`: the whole canvas's channel sum (fluor's α+darkness pixels), so a heavier stroke can only add.
+fn ink(tr: &mut TextRenderer, s: &str, family: &'static str, weight: u16) -> u64 {
+    let (w, h) = (640usize, 120usize);
+    let mut px = vec![0u32; w * h];
+    let mut dmg = fluor::canvas::Damage::default();
+    let mut canvas = fluor::canvas::Canvas::new(&mut px, w, h, &mut dmg);
+    tr.draw_text_left(&mut canvas, s, 8.0, 80.0, &TextStyle::new(48.0, 0xFFFF_FFFF).font(family).weight(weight), None, None);
+    px.iter().map(|p| p.to_le_bytes().iter().map(|&b| b as u64).sum::<u64>()).sum()
+}
+
+/// VARIABLE WEIGHTS, MEASURED (Nick 2026-10-14: "copy the dozenal over and get it all variable please"): every weight is a real one. Oxanium's digits — the twelve dozenal ones synthesized by tools/oxanium-dozenal.py and the Latin ones — draw strictly more ink at each heavier weight, and Open Sans 500 and 600 sit strictly between 400 and 700 (as two static cuts they snapped to one or the other).
+#[test]
+fn every_weight_is_a_real_one() {
+    let mut tr = renderer(true);
+    let dozenal: String = (0x10u8..=0x1B).map(|b| b as char).collect();
+    for (what, s, family) in [("dozenal digits", dozenal.as_str(), "Oxanium"), ("Latin digits", "0123456789", "Oxanium")] {
+        let (a, b, c) = (ink(&mut tr, s, family, 200), ink(&mut tr, s, family, 400), ink(&mut tr, s, family, 800));
+        assert!(a > 0 && a < b && b < c, "{what}: ink must rise 200 < 400 < 800, got {a} {b} {c}");
+    }
+    let open: Vec<u64> = [400u16, 500, 600, 700].iter().map(|&w| ink(&mut tr, "Hamburg", "Open Sans", w)).collect();
+    assert!(open.windows(2).all(|p| p[0] < p[1]), "Open Sans ink must rise 400 < 500 < 600 < 700, got {open:?}");
+}
+
+/// The optical rule: 16 px draws the asked weight, smaller heavier, larger lighter, within the clamps — and nothing when it is off.
+#[test]
+fn optical_weight_follows_the_size() {
+    let mut tr = TextRenderer::new();
+    assert_eq!(tr.optical_weight(400, 9.0), 400, "off by default");
+    tr.set_optical_weight(true);
+    assert_eq!(tr.optical_weight(400, 16.0), 400);
+    assert_eq!(tr.optical_weight(400, 10.0), 424);
+    assert_eq!(tr.optical_weight(400, 4.0), 448);
+    assert_eq!(tr.optical_weight(400, 0.5), 460, "at most +60");
+    assert_eq!(tr.optical_weight(500, 40.0), 460, "at most −40");
+}

@@ -13,4 +13,6 @@ S2=../fluor/assets/Noto_Sans_Symbols2/NotoSansSymbols2-Regular.ttf
 "$tool" assets/Noto/sources/NotoSansMono-Regular.ttf assets/Noto/NotoSansMono-Regular.ttf --minus "$S2" --drop GSUB --drop GPOS --drop GDEF --compact 2500-257F 2580-259F 20A0-20CF
 # Math: arrows, operators, the misc/supplemental math blocks, the alphanumerics, arabic mathematical symbols — minus Symbols 2's own arrows.
 "$tool" assets/Noto/sources/NotoSansMath-Regular.ttf assets/Noto/NotoSansMath-Regular.ttf --minus "$S2" --drop GSUB --drop GPOS --drop GDEF --drop MATH --compact 2190-21FF 2200-22FF 27C0-27EF 27F0-27FF 2900-297F 2980-29FF 2A00-2AFF 2B00-2BFF 1D400-1D7FF 1EE00-1EEFF
+# Oxanium: the variable font WITH the dozenal digits, their weights synthesized in proportion to Oxanium's own stems (tools/oxanium-dozenal.py; needs fontTools). The proof sheet is for a person to look at.
+python3 tools/oxanium-dozenal.py --proof "${TMPDIR:-/tmp}/oxanium-dozenal-proof.png"
 echo "completed $(date)"

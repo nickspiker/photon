@@ -571,7 +571,7 @@ impl PhotonApp {
                 self.pending_zoom_restore = Some(ru);
                 crate::logf!("SETTINGS: restoring device zoom = {} (one-shot)", ru);
             }
-            // Window geometry rides the same one-shot: two typed PAIRS (display.window.pos v_i5[x,y], .size v_u5[w,h] — fluor window_rect desktop units), device-local like zoom. Pos and size are atomic pairs (a move never changes just an x), so each is one value that reads as itself in the inspector. The host clamps into live surfaces at apply, so a rect from an unplugged monitor snaps back on-screen.
+            // Window geometry rides the same one-shot: two typed PAIRS (display.window.pos t_i5[x,y], .size t_u5[w,h] — fluor window_rect desktop units), device-local like zoom. Pos and size are atomic pairs (a move never changes just an x), so each is one value that reads as itself in the inspector. The host clamps into live surfaces at apply, so a rect from an unplugged monitor snaps back on-screen.
             {
                 use crate::storage::fleet_settings::{as_i32_pair, as_u32_pair};
                 let pos = self.fleet_settings.as_ref().and_then(|fs| fs.device_local("display.window.pos")).and_then(as_i32_pair);
@@ -588,7 +588,7 @@ impl PhotonApp {
         }
     }
 
-    /// Persist the settled window geometry as this DEVICE's two typed pairs — display.window.pos (v_i5 [x,y]) + .size (v_u5 [w,h]), fluor `window_rect` GLOBAL desktop units. Fed by the host's once-per-gesture settle hook (drag-move release / resize-drag end), so no dirty tracking exists. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global — but still mirrored thru the fleet's device maps like every device setting.
+    /// Persist the settled window geometry as this DEVICE's two typed pairs — display.window.pos (t_i5 [x,y]) + .size (t_u5 [w,h]), fluor `window_rect` GLOBAL desktop units. Fed by the host's once-per-gesture settle hook (drag-move release / resize-drag end), so no dirty tracking exists. Device-local and UNLINKED like zoom: where a window sits is monitor ergonomics, never fleet-global — but still mirrored thru the fleet's device maps like every device setting.
     pub(super) fn save_window_geometry(&mut self, x: i32, y: i32, w: u32, h: u32) {
         if !self.ensure_fleet_settings() {
             return;

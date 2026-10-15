@@ -62,7 +62,7 @@ pub fn as_u32(v: &VsfType) -> Option<u32> {
     v.as_u64().and_then(|n| u32::try_from(n).ok())
 }
 
-/// A typed i32 pair (v_i5 of exactly two) — the window-position shape.
+/// A typed i32 pair (a two-value t_i5 tensor) — the window-position shape.
 pub fn as_i32_pair(v: &VsfType) -> Option<(i32, i32)> {
     match v {
         VsfType::t_i5(p) if p.data.len() == 2 => Some((p.data[0], p.data[1])),
@@ -70,7 +70,7 @@ pub fn as_i32_pair(v: &VsfType) -> Option<(i32, i32)> {
     }
 }
 
-/// A typed u32 pair (v_u5 of exactly two) — the window-size shape.
+/// A typed u32 pair (a two-value t_u5 tensor) — the window-size shape.
 pub fn as_u32_pair(v: &VsfType) -> Option<(u32, u32)> {
     match v {
         VsfType::t_u5(p) if p.data.len() == 2 => Some((p.data[0], p.data[1])),
