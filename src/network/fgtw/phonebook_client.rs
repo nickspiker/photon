@@ -71,6 +71,7 @@ pub async fn publish_address(
     handle_proof: &[u8; 32],
     addr: std::net::SocketAddr,
     local_ip: Option<std::net::IpAddr>,
+    local_port: u16,
 ) -> Result<(), PhonebookError> {
     let (rec, eggs) = Record::sign_device_address(
         signer,
@@ -79,6 +80,7 @@ pub async fn publish_address(
         &ip_to_bytes(addr.ip()),
         addr.port(),
         &local_ip.map(ip_to_bytes).unwrap_or([0u8; 16]),
+        local_port,
         vsf::eagle_time_oscillations(),
     );
     debug_assert!(rec.verify_address(&eggs), "a record we just signed must verify");
@@ -237,13 +239,14 @@ pub fn record_socket_addr(rec: &Record) -> Option<std::net::SocketAddr> {
     Some(std::net::SocketAddr::new(ip, rec.port()))
 }
 
-/// The LAN address a resolved record carries, if any.
+/// The LAN address a resolved record carries, if any: its LAN IP at the port the device STATED it listens on, else PHOTON_PORT — never the public port, which is the NAT's mapping (2026-10-15).
 pub fn record_local_addr(rec: &Record) -> Option<std::net::SocketAddr> {
     let ip = bytes_to_ip(&rec.local_ip());
-    if ip.is_unspecified() || rec.port() == 0 {
+    if ip.is_unspecified() {
         return None;
     }
-    Some(std::net::SocketAddr::new(ip, rec.port()))
+    let port = if rec.local_port() != 0 { rec.local_port() } else { crate::PHOTON_PORT };
+    Some(std::net::SocketAddr::new(ip, port))
 }
 
 #[cfg(test)]
@@ -264,34 +267,27 @@ mod tests {
         assert_eq!(bytes_to_ip(&ip_to_bytes(v6)), v6);
     }
 
-    /// The full publish-side shape: what we sign is what a resolver reads back, addresses intact.
+    /// The full publish-side shape: what we sign is what a resolver reads back, addresses intact — and the LAN address carries the port the device LISTENS on, never the NAT's public mapping (2026-10-15, Jon: a LAN candidate of 192.168.1.66:49189 could never connect).
     #[test]
     fn a_published_record_reads_back_with_its_addresses() {
         let dev = key(1);
-        let addr: std::net::SocketAddr = "66.135.65.206:4383".parse().unwrap();
+        let addr: std::net::SocketAddr = "66.135.65.206:49189".parse().unwrap();
         let lan: std::net::IpAddr = "192.168.0.40".parse().unwrap();
-        let (rec, eggs) = Record::sign_device_address(
-            &dev,
-            B,
-            &[3u8; 32],
-            &ip_to_bytes(addr.ip()),
-            addr.port(),
-            &ip_to_bytes(lan),
-            77,
-        );
+        let (rec, eggs) = Record::sign_device_address(&dev, B, &[3u8; 32], &ip_to_bytes(addr.ip()), addr.port(), &ip_to_bytes(lan), 3546, 77);
         assert!(rec.verify_address(&eggs));
         assert_eq!(record_socket_addr(&rec), Some(addr));
-        assert_eq!(
-            record_local_addr(&rec),
-            Some(std::net::SocketAddr::new(lan, 4383))
-        );
+        assert_eq!(record_local_addr(&rec), Some(std::net::SocketAddr::new(lan, 3546)), "the stated LAN port");
+        // A record minted before the field: the LAN side assumes PHOTON_PORT, not the public 49189.
+        let (old, old_eggs) = Record::sign_device_address(&dev, B, &[3u8; 32], &ip_to_bytes(addr.ip()), addr.port(), &ip_to_bytes(lan), 0, 77);
+        assert!(old.verify_address(&old_eggs));
+        assert_eq!(record_local_addr(&old), Some(std::net::SocketAddr::new(lan, crate::PHOTON_PORT)));
     }
 
     /// An all-zero address slot is ABSENCE, not `0.0.0.0` — adopting it as a peer endpoint is the relay-sentinel poisoning that made sends go nowhere while `validated_path` looked Some.
     #[test]
     fn an_empty_address_slot_is_absence() {
         let dev = key(2);
-        let (rec, _) = Record::sign_device_address(&dev, B, &[3u8; 32], &[0u8; 16], 0, &[0u8; 16], 5);
+        let (rec, _) = Record::sign_device_address(&dev, B, &[3u8; 32], &[0u8; 16], 0, &[0u8; 16], 0, 5);
         assert_eq!(record_socket_addr(&rec), None);
         assert_eq!(record_local_addr(&rec), None);
     }
@@ -301,7 +297,7 @@ mod tests {
     fn a_record_for_another_device_has_a_different_key() {
         let ours = key(1);
         let theirs = key(9);
-        let (rec, eggs) = Record::sign_device_address(&theirs, B, &[3u8; 32], &[1u8; 16], 4383, &[0u8; 16], 5);
+        let (rec, eggs) = Record::sign_device_address(&theirs, B, &[3u8; 32], &[1u8; 16], 4383, &[0u8; 16], 0, 5);
         assert!(
             rec.verify_address(&eggs),
             "their record is genuinely valid — validity is not enough"
@@ -349,7 +345,7 @@ mod tests {
         let addr: std::net::SocketAddr = "203.0.113.7:4383".parse().unwrap();
         let lan: std::net::IpAddr = "192.168.7.7".parse().unwrap();
 
-        rt.block_on(publish_address(&dev, B, &[0xABu8; 32], addr, Some(lan)))
+        rt.block_on(publish_address(&dev, B, &[0xABu8; 32], addr, Some(lan), crate::PHOTON_PORT))
             .expect("publish succeeds");
         let rec = rt
             .block_on(resolve_device_address(&pubkey))
@@ -376,7 +372,7 @@ mod tests {
     #[test]
     fn a_pb_rec_frame_parses_back_to_the_record() {
         let dev = key(4);
-        let (rec, eggs) = Record::sign_device_address(&dev, B, &[3u8; 32], &[7u8; 16], 4383, &[8u8; 16], 12);
+        let (rec, eggs) = Record::sign_device_address(&dev, B, &[3u8; 32], &[7u8; 16], 4383, &[8u8; 16], 0, 12);
         let frame = vsf::VsfBuilder::new()
             .creation_time_oscillations(vsf::eagle_time_oscillations())
             .add_section(

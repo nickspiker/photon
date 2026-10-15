@@ -99,6 +99,7 @@ mod tests {
             pubkey: [9u8; 32],
             public,
             lan,
+            public_seen: 0,
             online: true,
             braid: crate::crypto::chain::BRAID_V1,
         }

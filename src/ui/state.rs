@@ -205,6 +205,8 @@ pub struct FoundPeer {
     pub device_pubkey: crate::types::DevicePubkey,
     pub ip: std::net::SocketAddr, // Public (WAN) address from FGTW
     pub local_ip: Option<std::net::IpAddr>, // Same-LAN address from FGTW, for hairpin-NAT direct connect
+    /// The port at `local_ip` (PeerRecord::lan_port — the stated one, else PHOTON_PORT; never the public port).
+    pub lan_port: u16,
 }
 
 #[derive(Debug, Clone)]

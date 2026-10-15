@@ -182,6 +182,8 @@ pub struct PeerRecord {
     pub device_pubkey: DevicePubkey, // Device's Ed25519 identity key (also the gossip signature key)
     pub ip: SocketAddr,              // Where to reach this device (public IP)
     pub local_ip: Option<std::net::IpAddr>, // LAN IP for hairpin NAT (peers behind same public IP)
+    /// The port the device LISTENS on at `local_ip` (2026-10-15, Jon's two devices: every LAN candidate used to borrow the public port — the NAT's mapping, 49189 — and so could never connect). 0 = not stated (a record minted before the field); readers then assume PHOTON_PORT ([`PeerRecord::lan_port`]). Signed only when stated, so older records verify unchanged.
+    pub local_port: u16,
     pub last_seen: i64,              // Eagle Time oscillations
     pub signature: [u8; 64], // Ed25519 sig by device_pubkey over signing_bytes(); [0;64] = unsigned
     /// OUR view of when this record was current (2026-09-25, Nick: "future dated peer records need to floor with known local time"): the signed `last_seen` floored to our own clock at the moment it reached us, then raised whenever WE hear from the device.
@@ -917,6 +919,7 @@ impl PeerRecord {
             device_pubkey,
             ip,
             local_ip: None,
+            local_port: 0,
             last_seen: now,
             signature: [0u8; 64],
             local_seen: now,
@@ -936,7 +939,25 @@ impl PeerRecord {
         out.extend_from_slice(&(local.len() as u32).to_le_bytes());
         out.extend_from_slice(local.as_bytes());
         out.extend_from_slice(&self.last_seen.to_le_bytes());
+        if self.local_port != 0 {
+            out.extend_from_slice(b"local_port");
+            out.extend_from_slice(&self.local_port.to_le_bytes());
+        }
         out
+    }
+
+    /// The port to try at `local_ip`: the one the device stated, else PHOTON_PORT (every device binds it unless it is taken) — never the public port, which is the NAT's and means nothing on the LAN.
+    pub fn lan_port(&self) -> u16 {
+        if self.local_port != 0 {
+            self.local_port
+        } else {
+            crate::PHOTON_PORT
+        }
+    }
+
+    /// The LAN candidate this record names, if any.
+    pub fn lan_addr(&self) -> Option<SocketAddr> {
+        self.local_ip.map(|ip| SocketAddr::new(ip, self.lan_port()))
     }
 
     /// Self-sign this record with the device's Ed25519 secret key. The secret MUST be the half of `device_pubkey`; callers pass their own device keypair (the one derived from the machine fingerprint), so a device only ever signs its OWN entry. Fills `signature` in place.
@@ -969,7 +990,7 @@ pub(crate) fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
         Some(IpAddr::V6(v6)) => v6.octets().to_vec(),
         None => Vec::new(),
     };
-    let values = vec![
+    let mut values = vec![
         VsfType::hP(peer.handle_proof.to_vec()),
         peer.device_pubkey.to_vsf(),
         VsfType::t_u3(vsf::Tensor::new(vec![ip_octets.len()], ip_octets)),
@@ -978,6 +999,10 @@ pub(crate) fn encode_peer_field(peer: &PeerRecord) -> (String, Vec<VsfType>) {
         VsfType::t_u3(vsf::Tensor::new(vec![local_octets.len()], local_octets)),
         VsfType::ge(peer.signature.to_vec()),
     ];
+    // The LAN port at index 7, only when stated: a reader that predates it reads indices 0..=6 and never looks further.
+    if peer.local_port != 0 {
+        values.push(VsfType::u4(peer.local_port));
+    }
     ("peer".to_string(), values)
 }
 
@@ -3866,6 +3891,29 @@ mod phonebook_tests {
         r.sign(&sk);
         assert!(r.verify());
         r
+    }
+
+    /// THE LAN PORT on the gossip record (2026-10-15, Jon): stated, it rides the field at index 7, is signed (a changed port no longer verifies), and becomes the LAN candidate's port; unstated, the record signs as before and the LAN side assumes PHOTON_PORT — never the public port.
+    #[test]
+    fn the_lan_port_rides_signed_and_old_records_still_verify() {
+        let sk = SigningKey::from_bytes(&[4u8; 32]);
+        let pubkey = DevicePubkey::from_bytes(sk.verifying_key().to_bytes());
+        let mut r = PeerRecord::new([1u8; 32], pubkey, "174.45.252.101:49189".parse().unwrap());
+        r.local_ip = Some("192.168.1.66".parse().unwrap());
+        r.local_port = 3546;
+        r.sign(&sk);
+        assert!(r.verify());
+        let (name, values) = encode_peer_field(&r);
+        let back = crate::network::fgtw::bootstrap::parse_peer_from_field(&vsf::VsfField::with_values(name, values)).unwrap();
+        assert_eq!((back.local_port, back.lan_addr()), (3546, Some("192.168.1.66:3546".parse().unwrap())));
+        assert!(back.verify());
+        let mut moved = back.clone();
+        moved.local_port = 3547;
+        assert!(!moved.verify(), "the LAN port is signed");
+        let old = signed_peer(1, 5, "174.45.252.101:49189", 7);
+        assert_eq!(old.local_port, 0);
+        assert!(old.verify());
+        assert_eq!(old.lan_addr(), Some(SocketAddr::new("192.168.1.7".parse().unwrap(), crate::PHOTON_PORT)));
     }
 
     #[test]

@@ -475,11 +475,15 @@ pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord,
         [0u8; 64]
     };
 
+    // Optional LAN port at index 7 (2026-10-15); absent = not stated.
+    let local_port = field.values.get(7).and_then(|v| u16::from_vsf_type(v).ok()).unwrap_or(0);
+
     Ok(PeerRecord {
         handle_proof,
         device_pubkey,
         ip: SocketAddr::new(parsed_ip, port),
         local_ip,
+        local_port,
         last_seen,
         signature,
         local_seen: last_seen, // floored to our clock when the store admits it

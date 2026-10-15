@@ -1021,6 +1021,7 @@ impl HandleQuery {
             device_pubkey: crate::types::DevicePubkey::from_bytes(device),
             ip,
             local_ip,
+            lan_port: crate::PHOTON_PORT, // this path has no record to state one
         })
     }
 
@@ -1038,6 +1039,7 @@ impl HandleQuery {
                 device_pubkey: peer.device_pubkey.clone(),
                 ip: peer.ip,
                 local_ip: peer.local_ip,
+                lan_port: peer.lan_port(),
             })
         })
     }

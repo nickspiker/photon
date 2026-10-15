@@ -515,6 +515,8 @@ pub struct DeviceEndpoint {
     pub public: Option<SocketAddr>,
     /// LAN address, from a pong arriving from a private source.
     pub lan: Option<SocketAddr>,
+    /// When the record that set `public` was current (its signed stamp, floored to our clock). Runtime only. One public ip:port is one NAT mapping, so when two devices of a contact claim the same one, the newer claim keeps it (peers.rs adopt_endpoint_into).
+    pub public_seen: i64,
     /// This device answered its own ping within the timeout window.
     pub online: bool,
     /// The newest braid this device's last sealed pong said it weaves (crypto::chain::BRAID_*). Runtime only: v1 until a pong says otherwise, so an unheard device never lets us claim v2.
@@ -1032,6 +1034,7 @@ impl Contact {
             pubkey: *pubkey,
             public: None,
             lan: None,
+            public_seen: 0,
             online: false,
             braid: crate::crypto::chain::BRAID_V1,
         });
@@ -1041,6 +1044,11 @@ impl Contact {
     /// Any device of this contact's fleet currently answering pings. The contact-level online ring shows the IDENTITY reachable, not one particular device.
     pub fn any_device_online(&self) -> bool {
         self.device_endpoints.iter().any(|e| e.online)
+    }
+
+    /// The punch has given up on a direct path for now: online, nothing validated after [`PUNCH_UNREACHABLE_THRESHOLD`] cycles ("pending relay"). Bulk sends then go relay-only — PT's reliable queue otherwise retries an unproven address for minutes (3,595 transfers to one dead address in one field log, 2026-10-15) and stalls everything queued behind it. A fresh record (adopt) or a validated punch clears it.
+    pub fn direct_parked(&self) -> bool {
+        self.validated_path.is_none() && self.punch_unvalidated_cycles >= PUNCH_UNREACHABLE_THRESHOLD
     }
 
     pub fn race_addrs(&self) -> Option<(SocketAddr, Option<SocketAddr>)> {

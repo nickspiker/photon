@@ -962,7 +962,9 @@ impl PhotonApp {
             return Err("no device key for contact");
         };
         // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the seam" never happened. The relay sentinel keeps the send alive.
-        let (peer_addr, alt_addr) = match contact.race_addrs() {
+        // Parked on "pending relay": the relay carries it alone until a direct path validates (Contact::direct_parked).
+        let direct = if contact.direct_parked() && !relay_to.is_empty() { None } else { contact.race_addrs() };
+        let (peer_addr, alt_addr) = match direct {
             Some(pair) => pair,
             None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
             None => return Err("no known address for contact"),
@@ -985,7 +987,8 @@ impl PhotonApp {
             if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == party) {
                 let relay_to = c.relay_device_list();
                 let Some(recipient_pubkey) = c.device_key() else { continue };
-                let (peer_addr, alt_addr) = match c.race_addrs() {
+                let direct = if c.direct_parked() && !relay_to.is_empty() { None } else { c.race_addrs() };
+                let (peer_addr, alt_addr) = match direct {
                     Some(pair) => pair,
                     None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
                     None => continue,

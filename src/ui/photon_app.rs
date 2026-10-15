@@ -1925,7 +1925,7 @@ pub struct PhotonApp {
     )>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
-    /// In-flight phonebook resolution: `(handle_proof, device_pubkey, public, lan)` for devices we could not otherwise address. The handle_proof binds each record to the identity it was resolved FOR, so a friend can adopt a registry-vouched device it has never met. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
+    /// In-flight phonebook resolution: `(handle_proof, device_pubkey, public, lan, record time)` for devices we could not otherwise address. The handle_proof binds each record to the identity it was resolved FOR, so a friend can adopt a registry-vouched device it has never met. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
     pb_resolve_rx: Option<
         std::sync::mpsc::Receiver<
             Vec<(
@@ -1933,6 +1933,7 @@ pub struct PhotonApp {
                 [u8; 32],
                 std::net::SocketAddr,
                 Option<std::net::SocketAddr>,
+                i64,
             )>,
         >,
     >,

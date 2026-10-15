@@ -3132,7 +3132,7 @@ async fn run_checker(
                                                 }
                                                 if let Some(std::net::IpAddr::V4(lan)) = rec.local_ip {
                                                     if fgtw::traverse::gather::peer_lan_reachable(lan, crate::network::udp::get_local_ip()) {
-                                                        targets.push(SocketAddr::new(std::net::IpAddr::V4(lan), rec.ip.port()));
+                                                        targets.push(SocketAddr::new(std::net::IpAddr::V4(lan), rec.lan_port()));
                                                     }
                                                 }
                                             }

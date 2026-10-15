@@ -158,7 +158,8 @@ impl PhotonApp {
                             rec.handle_proof,
                             *rec.device_pubkey.as_bytes(),
                             rec.ip,
-                            rec.local_ip.map(|ip| std::net::SocketAddr::new(ip, rec.ip.port())),
+                            rec.lan_addr(),
+                            rec.local_seen,
                             true,
                         );
                     }

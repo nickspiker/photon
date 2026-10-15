@@ -452,7 +452,7 @@ impl PhotonApp {
                     peer.device_pubkey.clone(),
                 )
                 .with_ip(peer.ip)
-                .with_local_ip(peer.local_ip, peer.ip.port());
+                .with_local_ip(peer.local_ip, peer.lan_port);
                 // §4.2 one-ceremony claim: the ADDING device owns this friendship's CLUTCH. The claim rides the roster entry this add is about to push, so siblings park instead of racing their own rounds at the friend.
                 contact.ceremony_owner =
                     self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes());
