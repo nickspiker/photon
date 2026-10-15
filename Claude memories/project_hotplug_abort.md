@@ -17,3 +17,7 @@ fluor `rebuild_span` / `resumed` already return on an empty monitor list.
 
 **Why:** Nick: "If I unplug a monitor and my machine crashes, that's a fucking problem" — photon must survive a zero-monitor / tiny-framebuffer moment.
 **How to apply:** first make deploy keep per-release debug symbols (objcopy --only-keep-debug keyed by BuildID) so the next core symbolizes; check the avatar resizer for a 0 diameter at tiny viewports; reproduce with Xvfb + `xrandr --fb 320x200` under an isolated HOME (never disturb the live instance).
+
+**The desktop side (13:11 event, read from journal + Xorg.0.log.old):** no kernel/NetworkManager event at all — the "internet down" was DNS failing upstream (Verizon gateway), and both outputs carry EDID vendor "LNX" (virtual).
+13:11:29 rustdesk aborts on exit (TLS-after-destruction), relaunched 13:11:30 by its sudo watchdog; 13:11:30 X drops to a 320×200 framebuffer (every output off); 13:13:16 Cinnamon restarts (calendar server respawn) and photon aborts as X returns at 5760×2130; journal ends 13:13:53, then the hard reset.
+Nick's description: windows and taskbar gone, only wallpaper, network never recovers — matches the rustdesk-fork commit ed56b73d9 (2026-10-01) "legacy XEmbed tray icon crashes Cinnamon into fallback mode on a panel rebuild"; the INSTALLED ~/.local/bin/rustdesk is dated 2026-09-20, i.e. pre-fix. Rustdesk is not ours to edit from photon threads — tell Nick, don't touch.
