@@ -1109,6 +1109,8 @@ impl PhotonApp {
                             });
                         }
                         self.apply_settings_to_ui();
+                        // A sibling's saved draft rides the same slot: newer ones replace ours (and the open compose bar).
+                        self.merge_remote_drafts();
                         // A sibling's profile edit just landed: refresh the You-page boxes from the merged values (reload-on-next-frame) and republish our pong name in case profile.name changed.
                         self.you_fields_loaded = false;
                         self.publish_profile_name();

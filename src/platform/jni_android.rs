@@ -1088,6 +1088,15 @@ pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnKeyEvent(
 }
 
 #[cfg(target_os = "android")]
+/// The app's folded focus (Nick 2026-10-15: "should be the same on all platforms. screen off should be treated as defocus"): the Activity reports resumed ∧ window-focused ∧ display-on on every change, and the shell delivers it as the desktop host delivers a window's focus — the compose draft is saved, the caret sleeps, the other devices hear this one stopped looking.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnFocus(_env: JNIEnv<'_>, _class: JClass<'_>, context_ptr: jlong, focused: jboolean) {
+    let Some(ctx) = get_context(context_ptr) else {
+        return;
+    };
+    ctx.shell.on_focus(focused != 0);
+}
+
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOnBackPressed(
     _env: JNIEnv<'_>,

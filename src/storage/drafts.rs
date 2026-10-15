@@ -1,6 +1,6 @@
 //! Compose DRAFTS — what the human typed into a conversation's compose bar and has not sent (Nick 2026-09-25: "trackable structures for each conversation … when you navigate away or let it sit for more than 60s it writes to disk").
 //!
-//! Device-local by design: a draft is this device's unfinished sentence, never replicated to the fleet.
+//! FLEET-WIDE since 2026-10-15 (Nick: "upon draft save I think that should sync fleetwide… timestamp it so if it's newer than text already in the box, REPLACE!"): every draft carries the eagle time of its last edit, and each save edge also puts it into the fleet state as `draft.<conversation>` (ui/photon_app/drafts.rs) — the newest edit wins on every device. This vault entry is the device's own copy.
 //! One vault entry holds every draft, at `vault_key("drafts", vault_seed)` — a complete VSF document with one `draft` section per conversation and one `draft_link` section per tagged link, each link naming its conversation by field.
 //! Repeated same-name sections are first-class in VSF, so a draft's links are records of their own, never parallel columns.
 
@@ -29,9 +29,16 @@ pub struct Draft {
     pub reply_to: Option<i64>,
     pub edit_of: Option<i64>,
     pub react_to: Option<i64>,
+    /// Eagle time of the draft's last EDIT — the clock the fleet's last-writer-wins runs on (a newer draft from another device replaces this one, open compose bar included). 0 = never stamped (a draft saved before stamps existed: any stamped copy is newer).
+    pub updated: i64,
 }
 
 impl Draft {
+    /// The same compose state, whenever it was typed: everything but the stamp.
+    pub fn same_content(&self, o: &Draft) -> bool {
+        self.text == o.text && self.links == o.links && self.reply_to == o.reply_to && self.edit_of == o.edit_of && self.react_to == o.react_to
+    }
+
     /// Nothing worth keeping: no text and no armed mode. An empty draft is deleted, never stored.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty() && self.reply_to.is_none() && self.edit_of.is_none() && self.react_to.is_none()
@@ -62,6 +69,9 @@ pub fn drafts_to_vsf_bytes(drafts: &[(ConversationId, Draft)]) -> Result<Vec<u8>
         }
         if let Some(t) = d.react_to {
             fields.push(("react_to".into(), e6(t)));
+        }
+        if d.updated != 0 {
+            fields.push(("updated".into(), e6(d.updated)));
         }
         b = b.add_section(DRAFT_SECTION, fields);
         for l in &d.links {
@@ -115,6 +125,7 @@ pub fn drafts_from_vsf_bytes(bytes: &[u8]) -> Result<Vec<(ConversationId, Draft)
             reply_to: osc_of(s, "reply_to"),
             edit_of: osc_of(s, "edit_of"),
             react_to: osc_of(s, "react_to"),
+            updated: osc_of(s, "updated").unwrap_or(0),
         };
         out.push((conv, d));
     }
@@ -130,6 +141,16 @@ pub fn drafts_from_vsf_bytes(bytes: &[u8]) -> Result<Vec<(ConversationId, Draft)
         }
     }
     Ok(out)
+}
+
+/// One draft as its own complete VSF document — the value a `draft.<conversation>` fleet-state entry carries.
+pub fn draft_to_bytes(conv: ConversationId, d: &Draft) -> Result<Vec<u8>, StorageError> {
+    drafts_to_vsf_bytes(&[(conv, d.clone())])
+}
+
+/// Read a single-draft document back; `None` when it is unreadable or empty.
+pub fn draft_from_bytes(bytes: &[u8]) -> Option<(ConversationId, Draft)> {
+    drafts_from_vsf_bytes(bytes).ok()?.into_iter().next()
 }
 
 /// Write every draft (or delete the entry when there are none).
@@ -166,12 +187,24 @@ mod tests {
                     reply_to: Some(2_561_124_741_904_843_777),
                     edit_of: None,
                     react_to: None,
+                    updated: 2_565_600_000_000_000_000,
                 },
             ),
-            (b, Draft { text: "\t".into(), links: Vec::new(), reply_to: None, edit_of: Some(7), react_to: None }),
+            (b, Draft { text: "\t".into(), links: Vec::new(), reply_to: None, edit_of: Some(7), react_to: None, updated: 0 }),
         ];
         let bytes = drafts_to_vsf_bytes(&drafts).unwrap();
         assert_eq!(drafts_from_vsf_bytes(&bytes).unwrap(), drafts);
+    }
+
+    /// The fleet value: one draft, stamp included, back as itself; the stamp never counts as content.
+    #[test]
+    fn a_single_draft_round_trips_with_its_stamp() {
+        let c = ConversationId::from_bytes([5; 32]);
+        let d = Draft { text: "later".into(), updated: 42, ..Default::default() };
+        let (c2, d2) = draft_from_bytes(&draft_to_bytes(c, &d).unwrap()).unwrap();
+        assert_eq!((c2, &d2), (c, &d));
+        assert!(d.same_content(&Draft { updated: 99, ..d.clone() }));
+        assert!(!d.same_content(&Draft { text: "now".into(), ..d.clone() }));
     }
 
     /// A tampered document is refused whole — the provenance hash covers every section.

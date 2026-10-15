@@ -1583,7 +1583,7 @@ pub struct PhotonApp {
     contacts_plus_btn: Option<Button>,
     /// Conversation-screen message compose box (Conversation state). Distinct from the launch/search boxes so content never bleeds between screens. Enter sends (`submit_message`); the contents encrypt onto the open contact's friendship chain.
     message_textbox: Option<fluor::widgets::MultiTextbox>,
-    /// Compose drafts, one per conversation holding one (drafts.rs, storage/drafts.rs) — this device's unsent text, never synced. Linear search: one entry per conversation with unsent text.
+    /// Compose drafts, one per conversation holding one (drafts.rs, storage/drafts.rs) — unsent text, each stamped with its last edit and shared fleet-wide on every save edge (newest edit wins). Linear search: one entry per conversation with unsent text.
     drafts: Vec<(crate::types::ConversationId, crate::storage::drafts::Draft)>,
     /// The booted ledger (manage.rs, storage::booted): every contact this identity booted, re-emitted as a roster tombstone on every push and consulted before any path mints a contact. Loaded with the contacts at attest. Linear search: a handful of entries.
     booted: Vec<crate::storage::booted::Booted>,
@@ -1600,6 +1600,8 @@ pub struct PhotonApp {
     draft_seen: Option<drafts::ComposeSeen>,
     /// The open conversation's draft still has to be put back into the compose bar (the tick holds the text renderer it needs).
     draft_restore_pending: bool,
+    /// A newer draft for the OPEN conversation arrived from another device (drafts.rs merge_remote_drafts): the next tick replaces the compose bar with it.
+    draft_replace_pending: bool,
     /// Compose-box FLING velocity in pixels per frame (Nick 2026-09-09): a finger drag on the box scrolls its text and each move overwrites this with the frame's delta; the release leaves it running and every tick applies it, then decays it — magnitude right-shifted by one and minus one, so it reaches exactly zero and zero means done. Wheel notches scroll but never fling. Runtime only.
     compose_fling: i32,
     /// LIST FLING velocity in pixels per frame (Nick 2026-10-03, Android): a touch drag's last pixel delta on a pane; on release the tick keeps scrolling by it and sheds one pixel per frame until zero (driver.rs pane_scroll).
@@ -2669,6 +2671,7 @@ impl PhotonApp {
             draft_dirty_since: None,
             draft_seen: None,
             draft_restore_pending: false,
+            draft_replace_pending: false,
             compose_fling: 0,
             list_fling: 0,
             fling_recent: [0; 5],

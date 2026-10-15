@@ -229,8 +229,28 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private fun pushDisplayState() {
         try {
             val d = (getSystemService(DISPLAY_SERVICE) as android.hardware.display.DisplayManager).getDisplay(android.view.Display.DEFAULT_DISPLAY)
-            nativeSetDisplayOn(d == null || d.state == android.view.Display.STATE_ON)
+            displayOn = d == null || d.state == android.view.Display.STATE_ON
+            nativeSetDisplayOn(displayOn)
         } catch (e: Throwable) { PhotonLog.w("Display", "display state mirror failed: ${e.message}") }
+        pushFocus()
+    }
+
+    // APP FOCUS, the same on every platform (Nick 2026-10-15: "should be the same on all platforms. screen off should be treated as defocus"): the app is focused only while the Activity is resumed, its window has focus, and the display is on. Screen off, the proximity blank, the shade, a dialog, home and the app switcher all read as a desktop window losing focus — the shell delivers each edge as the desktop host does (the draft is saved, the caret sleeps, the other devices hear this one stopped looking).
+    private external fun nativeOnFocus(contextPtr: Long, focused: Boolean)
+    private var displayOn = true
+    private var windowFocused = true
+    private var reportedFocus: Boolean? = null
+    private fun pushFocus() {
+        val focused = inForeground && windowFocused && displayOn
+        if (nativePtr == 0L || reportedFocus == focused) return
+        reportedFocus = focused
+        try { nativeOnFocus(nativePtr, focused) } catch (e: Throwable) { PhotonLog.w("Focus", "focus edge failed: ${e.message}") }
+    }
+
+    override fun onWindowFocusChanged(hasFocus: Boolean) {
+        super.onWindowFocusChanged(hasFocus)
+        windowFocused = hasFocus
+        pushFocus()
     }
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
@@ -986,6 +1006,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         super.onPause()
         inForeground = false
         nativeSetForeground(false)
+        // The defocus edge FIRST, while this thread still owns the app: the draft is written before Android can freeze or kill the process.
+        pushFocus()
         try { (getSystemService(DISPLAY_SERVICE) as android.hardware.display.DisplayManager).unregisterDisplayListener(displayListener) } catch (_: Throwable) {}
         Choreographer.getInstance().removeFrameCallback(this)
         frameHandler.removeCallbacks(idleFrameRunnable)
@@ -1003,6 +1025,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
         inForeground = true
         nativeSetForeground(true)
+        pushFocus()
         try { (getSystemService(DISPLAY_SERVICE) as android.hardware.display.DisplayManager).registerDisplayListener(displayListener, null) } catch (_: Throwable) {}
         pushDisplayState()
         // WFD work parked on the permission gate gets its retry now that a foreground exists to prompt from (a background stranded-arm cannot show the dialog).

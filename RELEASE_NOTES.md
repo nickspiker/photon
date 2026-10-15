@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Your unsent messages follow you.** A message you've started typing is now shared across your own devices whenever it's saved, so you can start on your phone and finish on your computer. Whichever device edited it last wins, and if a newer version arrives while that conversation is open, it replaces what's in the box.
+- **Turning the screen off now saves what you're typing.** On phones, the screen going off, switching apps or pulling down the shade now counts the same as switching away from the window on a computer: your unsent message is saved, the cursor stops blinking, and your other devices know you've stepped away. On Macs the display going to sleep does the same.
 
 ## v119
 - **Text at its true weights.** Photon's fonts are now variable, so every weight the app asks for is drawn exactly instead of snapping to the nearest of a few fixed ones, the dozenal digits included. Small text is drawn a touch heavier and large text a touch lighter so every size reads the same.
