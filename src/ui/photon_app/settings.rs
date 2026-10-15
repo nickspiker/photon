@@ -593,14 +593,14 @@ impl PhotonApp {
         if !self.ensure_fleet_settings() {
             return;
         }
-        use vsf::types::tensor::Vector;
+        use vsf::types::Tensor;
         use vsf::VsfType;
         let now = vsf::eagle_time_oscillations();
         let fs = self.fleet_settings.as_mut().unwrap();
         let mut changed = false;
         for (k, v) in [
-            ("display.window.pos", VsfType::v_i5(Vector { data: vec![x, y] })),
-            ("display.window.size", VsfType::v_u5(Vector { data: vec![w, h] })),
+            ("display.window.pos", VsfType::t_i5(Tensor::new(vec![2], vec![x, y]))),
+            ("display.window.size", VsfType::t_u5(Tensor::new(vec![2], vec![w, h]))),
         ] {
             if fs.linked(k) {
                 fs.set_link(k, false, now);

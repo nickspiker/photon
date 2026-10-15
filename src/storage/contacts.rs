@@ -226,9 +226,10 @@ pub fn save_contact_state(contact: &Contact, storage: &FlatStorage) -> Result<()
         builder = builder
             .set(
                 "ip",
-                VsfType::v_u3(vsf::types::Vector {
-                    data: crate::network::fgtw::protocol::socketaddr_to_bytes(ip),
-                }),
+                {
+                    let b = crate::network::fgtw::protocol::socketaddr_to_bytes(ip);
+                    VsfType::t_u3(vsf::types::Tensor::new(vec![b.len()], b))
+                },
             )
             .map_err(|e| StorageError::Parse(e.to_string()))?;
     }
@@ -454,7 +455,7 @@ fn apply_contact_state(contact: &mut Contact, vsf_bytes: &[u8]) -> Result<(), St
     contact.roster_updated = added;
 
     // Optional fields
-    if let Some(VsfType::v_u3(v)) = section
+    if let Some(VsfType::t_u3(v)) = section
         .get_fields("ip")
         .first()
         .and_then(|f| f.values.first())

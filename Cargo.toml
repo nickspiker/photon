@@ -104,7 +104,6 @@ hex = "0.4.3"
 bincode = "2.0.1"
 # winit specified per-platform below
 pollster = "0.4.0"
-cosmic-text = "0.14.2"
 rayon = "1.11.0"
 # softbuffer specified per-platform below
 # arboard specified per-platform below (pulls x11rb on Linux)

@@ -1277,16 +1277,15 @@ fn append_log_record(level: LogLevel, msg: &str, vals: &[LogValue]) {
             LogValue::F(n) => vsf::VsfType::f6(*n),
             LogValue::B(b) => vsf::VsfType::u(*b as usize, false),
             LogValue::T(s) => vsf::VsfType::x(s.clone()),
-            LogValue::Addr(a) => vsf::VsfType::v_u3(vsf::types::Vector {
-                data: {
-                    let mut b = match a.ip() {
-                        std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
-                        std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
-                    };
-                    b.extend_from_slice(&a.port().to_le_bytes());
-                    b
-                },
-            }),
+            LogValue::Addr(a) => {
+                let mut b = match a.ip() {
+                    std::net::IpAddr::V4(v4) => v4.octets().to_vec(),
+                    std::net::IpAddr::V6(v6) => v6.octets().to_vec(),
+                };
+                b.extend_from_slice(&a.port().to_le_bytes());
+                // A 1-D tensor: the same `tn` bytes the vector type wrote (vsf 0.10).
+                vsf::VsfType::t_u3(vsf::types::Tensor::new(vec![b.len()], b))
+            }
         };
         section.add_field_multi("val", vec![t]);
     }
@@ -1778,7 +1777,7 @@ pub fn parse_log_records(buf: &[u8]) -> (Vec<LogRecord>, usize) {
                 v if v.as_i64().is_some() && !matches!(v, VsfType::e(_)) => {
                     LogValue::I(v.as_i64().unwrap_or(0) as i128)
                 }
-                VsfType::v_u3(vec) if vec.data.len() == 6 || vec.data.len() == 18 => {
+                VsfType::t_u3(vec) if vec.data.len() == 6 || vec.data.len() == 18 => {
                     let (ip_bytes, port_bytes) = vec.data.split_at(vec.data.len() - 2);
                     let port = u16::from_le_bytes([port_bytes[0], port_bytes[1]]);
                     let ip: std::net::IpAddr = if ip_bytes.len() == 4 {
