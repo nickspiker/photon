@@ -6,7 +6,6 @@ pub mod drafts;
 pub mod fanout_pairs;
 pub mod fleet_settings;
 pub mod friendship;
-mod legacy_columns;
 pub mod molecule;
 pub mod record;
 pub mod spool;

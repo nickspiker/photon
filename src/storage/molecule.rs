@@ -251,18 +251,8 @@ pub fn load_roster(molecule_id: &MoleculeId, storage: &FlatStorage) -> Result<Op
     let Some(bytes) = storage.read_addr(&roster_key(molecule_id))? else {
         return Ok(None);
     };
-    let (loaded_id, roster) = match roster_from_vsf_bytes(&bytes) {
-        Ok(r) => r,
-        // DISK-ONLY MIGRATION (legacy_columns.rs): this device's own v2 roster, read once and rewritten in the record shape — refusing it would drop the group on upgrade.
-        Err(strict) => match crate::storage::legacy_columns::roster_from_v2_bytes(&bytes) {
-            Ok((gid, old)) if gid == *molecule_id => {
-                save_roster(molecule_id, &old, storage)?;
-                crate::logf!("MIGRATION: parallel-column roster for {} rewritten as record sections", hex::encode(&gid.0[..4]));
-                (gid, old)
-            }
-            _ => return Err(strict),
-        },
-    };
+    // The record shape only: the parallel-column v2 reader (legacy_columns.rs) was dropped 2026-10-17 once every device had rewritten its rosters on sight (Nick: "Ditch the old!").
+    let (loaded_id, roster) = roster_from_vsf_bytes(&bytes)?;
     if loaded_id != *molecule_id {
         return Err(StorageError::Parse("roster id mismatch at its own address".to_string()));
     }
