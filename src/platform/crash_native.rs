@@ -67,8 +67,7 @@ mod imp {
     }
 }
 
-// Real unixes only: Redox is cfg(unix) but its libc has no sigaltstack/SIGSTKSZ/stack_t/si_addr (broke the v0.71.0 deploy's redox leg) — it takes the no-op below until its signal surface grows.
-#[cfg(all(unix, not(target_os = "redox")))]
+#[cfg(unix)]
 mod imp {
     use std::sync::atomic::{AtomicI32, Ordering};
 
@@ -207,7 +206,7 @@ mod imp {
     }
 }
 
-#[cfg(not(any(target_os = "windows", all(unix, not(target_os = "redox")))))]
+#[cfg(not(any(target_os = "windows", unix)))]
 mod imp {
     pub fn install() {}
 }

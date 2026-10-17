@@ -39,19 +39,11 @@ impl PhotonApp {
             }
         };
 
-        #[cfg(not(target_os = "redox"))]
         {
             use thread_priority::{ThreadBuilderExt, ThreadPriority};
             std::thread::Builder::new()
                 .name("clutch-keygen".to_string())
                 .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn CLUTCH keygen thread");
-        }
-        #[cfg(target_os = "redox")]
-        {
-            std::thread::Builder::new()
-                .name("clutch-keygen".to_string())
-                .spawn(thread_body)
                 .expect("Failed to spawn CLUTCH keygen thread");
         }
         progress
@@ -106,19 +98,11 @@ impl PhotonApp {
             }
         };
 
-        #[cfg(not(target_os = "redox"))]
         {
             use thread_priority::{ThreadBuilderExt, ThreadPriority};
             std::thread::Builder::new()
                 .name("clutch-kem-encap".to_string())
                 .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn KEM encap thread");
-        }
-        #[cfg(target_os = "redox")]
-        {
-            std::thread::Builder::new()
-                .name("clutch-kem-encap".to_string())
-                .spawn(thread_body)
                 .expect("Failed to spawn KEM encap thread");
         }
     }
@@ -160,19 +144,11 @@ impl PhotonApp {
             }
         };
 
-        #[cfg(not(target_os = "redox"))]
         {
             use thread_priority::{ThreadBuilderExt, ThreadPriority};
             std::thread::Builder::new()
                 .name("clutch-kem-decap".to_string())
                 .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn KEM decap thread");
-        }
-        #[cfg(target_os = "redox")]
-        {
-            std::thread::Builder::new()
-                .name("clutch-kem-decap".to_string())
-                .spawn(thread_body)
                 .expect("Failed to spawn KEM decap thread");
         }
     }
@@ -412,19 +388,11 @@ impl PhotonApp {
             }
         };
 
-        #[cfg(not(target_os = "redox"))]
         {
             use thread_priority::{ThreadBuilderExt, ThreadPriority};
             std::thread::Builder::new()
                 .name("clutch-ceremony".to_string())
                 .spawn_with_priority(ThreadPriority::Min, move |_| thread_body())
-                .expect("Failed to spawn ceremony thread");
-        }
-        #[cfg(target_os = "redox")]
-        {
-            std::thread::Builder::new()
-                .name("clutch-ceremony".to_string())
-                .spawn(thread_body)
                 .expect("Failed to spawn ceremony thread");
         }
     }

@@ -11,13 +11,13 @@ Two rules run underneath everything:
 
 ## 1. Live wave audio (the conversation)
 
-| | desktop (macOS/Linux/Windows) | Android | Redox |
-|---|---|---|---|
-| device | cpal in+out, own thread (streams are `!Send`) | Kotlin `AudioRecord` + `AudioTrack` over JNI queues | none |
-| capture | device rate → 48 kHz mono i16, linear resample | `VOICE_RECOGNITION`, raw fast-track | — |
-| render | 48 kHz mono → device rate | `USAGE_MEDIA`, fast mixer | — |
-| level | 4 stops down at rx enqueue | same (shared constant) | — |
-| status | live | live | signaling only, `start()` returns false |
+| | desktop (macOS/Linux/Windows) | Android |
+|---|---|---|
+| device | cpal in+out, own thread (streams are `!Send`) | Kotlin `AudioRecord` + `AudioTrack` over JNI queues |
+| capture | device rate → 48 kHz mono i16, linear resample | `VOICE_RECOGNITION`, raw fast-track |
+| render | 48 kHz mono → device rate | `USAGE_MEDIA`, fast mixer |
+| level | 4 stops down at rx enqueue | same (shared constant) |
+| status | live | live |
 
 Engine ([`wave/engine.rs`](../src/wave/engine.rs)): mic → PID level+duck → Opus CELT on a 16→128 kbps AIMD ladder → RaptorQ window → sealed datagram; inbound reverses it. No PLC — a window that can't decode is silence, never guesswork.
 
@@ -29,7 +29,7 @@ Engine ([`wave/engine.rs`](../src/wave/engine.rs)): mic → PID level+duck → O
 
 The **answerer's own ring** cadence, same relationship digest as their inbound ring, so the origin hears *who* they're waving. Rides the **wave output path** (not the notification stream) at the same 4-stop pad, so the ringback and the conversation that follows land at one loudness. Loops on chirp's published `RING_REPEAT_GAP_SECS` until any Outgoing teardown edge drops `ActiveWave::ringback`. Honors the `notify.ring_wave` tick.
 
-Same on desktop and Android (it's the shared platform audio layer); silent on Redox.
+Same on desktop and Android (it's the shared platform audio layer).
 
 **It is also the calibration probe.** A ringback is a known signal played into the room while the near human is provably not talking — the far-talks-alone condition the in-wave learner otherwise waits a whole conversation for. The session is open, so the mic captures while it plays; the same `learn::Learner` runs on the ring and publishes a probe. On answer, the engine seeds from that freshly measured `(g, delay)` instead of a stored profile from another day. Field waves 1-2 failed exactly there: the learner never armed inside a 41 s wave, so both sides ducked on stale seeds.
 
@@ -61,7 +61,6 @@ The ring deliberately **bypasses the `will_ding` gates**: a wave is the one alwa
 
 - **Desktop**: detached thread, `play_blocking` on the default device. Gated by `will_ding` (not looking at that conversation, no live sibling clearer, real friend row — never a chain-weave probe or a fleet-sync frame) and deduped on `msg_hp`. The visual toast has its own gate (nothing while attended).
 - **Android**: `postMessageNotification` → one-shot `playChirp` on `USAGE_NOTIFICATION` + one-shot haptic. Survives Doze — FCM wakes the app, Rust renders the WAV + haptic envelope, Kotlin plays them, so the OS default tone never fires and the sound is per-contact even from deep sleep. The pubkey never crosses JNI; only rendered audio does.
-- **Redox**: none.
 
 ## 5. V-chirp connect probe — [`wave/vchirp.rs`](../src/wave/vchirp.rs)
 
@@ -96,6 +95,5 @@ Every stop is an **edge, never a timer** — the project rule.
 1. **Android route label lies.** Sniffer reports `"earpiece"` for a loudspeaker path; calibration profiles are keyed on that string, so they'd collide if a real receiver path ever lands.
 2. **No receiver/speaker choice on Android.** One path, one loudness, set by the 4-stop pad. Restoring a real earpiece mode means taking the 80 ms buffer floor back in that mode.
 3. **Ring cadence length is fixed** at 0.5 s bursts / 0.25 s inner gap / 2 s repeat. Not user-tunable, not per-contact beyond the digest.
-4. **Redox is silent** end to end — signaling only.
-5. **The volume rocker adjusts media, not the OS's `STREAM_VOICE_CALL`** on Android — the direct consequence of the `USAGE_MEDIA` trade. Self-consistent (the mirror reads the same stream the render uses), and the ring/ringback split still matches the customary model: inbound ring on the ringtone slider, ringback on the wave/media one.
-6. **Desktop ring gap is polled** (24 × 50 ms) rather than event-driven; the poll exists only so a stop edge lands within ~50 ms.
+4. **The volume rocker adjusts media, not the OS's `STREAM_VOICE_CALL`** on Android — the direct consequence of the `USAGE_MEDIA` trade. Self-consistent (the mirror reads the same stream the render uses), and the ring/ringback split still matches the customary model: inbound ring on the ringtone slider, ringback on the wave/media one.
+5. **Desktop ring gap is polled** (24 × 50 ms) rather than event-driven; the poll exists only so a stop edge lands within ~50 ms.

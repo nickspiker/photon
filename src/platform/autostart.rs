@@ -170,7 +170,7 @@ pub fn disable() -> Result<(), String> {
     }
 }
 
-// ───────── Anything else desktop-ish (Redox…) — no autostart mechanism wired ─────────
+// ───────── Anything else (ferros…) — no autostart mechanism wired ─────────
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub fn enabled() -> bool {

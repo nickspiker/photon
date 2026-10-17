@@ -1,6 +1,6 @@
 //! The desktop H.264 codec for beams (docs/beams.md): Cisco OpenH264, C++ built from source by cc, desktop-only — the phones encode and decode in hardware through MediaCodec and never link this.
 //!
-//! Where the toolchain can build its C++ today: x86_64 Linux, macOS, and Android (decode; the phone encodes thru MediaCodec). Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link, Redox never (the build script has no redox arm). The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
+//! Where the toolchain can build its C++ today: x86_64 Linux, macOS, and Android (decode; the phone encodes thru MediaCodec). Everywhere else this module is the stub below, [`AVAILABLE`] is false and a beam is not offered — aarch64 Linux joins once its cross sysroot carries libstdc++, Windows once the builder has a C++ cross-compiler and a static C++ runtime link. The gate is the same cfg as the dependency in Cargo.toml; keep the two in step.
 //!
 //! What OpenH264 lacks against the design: a rolling intra refresh (it has only whole IDR frames, periodic or on demand) and a per-frame byte cap (only per-NAL slicing). So the DESKTOP sends a keyframe every [`KEYFRAME_EVERY`] frames and on request, which docs/beams.md allows — the desktop is never the constrained end — and the phone side keeps the no-keyframes rule.
 //!

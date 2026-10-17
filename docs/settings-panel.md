@@ -62,7 +62,7 @@ The only page about *getting back in* rather than *clearing out* — kept separa
 
 ### Updates
 Platform-conditional — one slot, two personalities (wire with `#[cfg]`):
-- **Non-Android** (Linux / macOS / Windows / Redox): **"Install updates automatically" — on by default.** Linux self-replaces its own binary with no gate; macOS/Windows are promptless *per update* provided the build is signed/notarised (a one-time pipeline cost already paid in `deploy.sh`, not a per-update tap).
+- **Non-Android** (Linux / macOS / Windows): **"Install updates automatically" — on by default.** Linux self-replaces its own binary with no gate; macOS/Windows are promptless *per update* provided the build is signed/notarised (a one-time pipeline cost already paid in `deploy.sh`, not a per-update tap).
 - **Android**: no silent install exists for a sideloaded APK, so the toggle becomes **"Notify of updates" — on by default.** The app auto-*downloads* in the background (no permission needed), notifies when an update is ready, and on the first **Install** tap prompts the `REQUEST_INSTALL_PACKAGES` "Install unknown apps" grant (asked at install-time for context, never at toggle-time) plus a one-time explainer that each install needs a confirm tap — the price of staying off the Play Store.
 
 ### Diagnostics (log)

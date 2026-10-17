@@ -56,7 +56,7 @@ mod input;
 mod launch;
 mod manage;
 /// The headless lifeline pump (docs/headless-lifeline.md) — pub so main.rs can enter it instead of fluor's run_app.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 pub mod lifeline;
 mod messaging;
 mod music_play;
@@ -1870,7 +1870,7 @@ pub struct PhotonApp {
         )>,
     >,
     /// The ONE long-lived OS clipboard handle (desktop). X11/Wayland clipboards are OWNERSHIP-based: the copying app must stay alive serving the selection, and arboard's ownership dies with the instance — the old create-set-drop pattern lost ~48 of every 50 copies (field 2026-09-02, Nick pressing copy fifty times); the strays that landed were a clipboard manager snatching the selection inside the drop window. Lazily created, recreated once on a set/get failure.
-    #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(not(target_os = "android"))]
     clipboard: Option<arboard::Clipboard>,
     /// Count of durable writes queued-but-not-landed across the message + chains writers, with a condvar for the quit drain. The 2026-09-02 vanish: deliberate quit exits the process while a snapshot sits in the writer queue — the typed row dies with it (never-written, not written-then-lost). Every enqueue increments; the writer decrements per consumed item AFTER its write completes and notifies; `drain_durable_writers` blocks the quit edge until zero. Pure edges, no timers — a wedged vault holds the quit honestly rather than silently eating rows.
     durable_pending: std::sync::Arc<(std::sync::Mutex<usize>, std::sync::Condvar)>,
@@ -2159,20 +2159,20 @@ pub struct PhotonApp {
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
     /// Bridge executor channels (host side): commands go to the off-thread dispatcher that routes to one worker+shell per sibling device; FINAL outputs come back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     bridge_cmd_tx: Option<std::sync::mpsc::Sender<bridge::BridgeJob>>,
     /// Per-command unsent-DELTA spool (host side) — the worker appends what's new, the UI drain broadcasts what's missing at most 1Hz; the exit folds into the last frame (no separate final channel).
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     bridge_partials: Option<
         std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ContactId, bridge::BridgeEmit>>>,
     >,
     /// Last wire-send instant per conversation for streamed PARTIALS — the ONE granted timer (Nick 2026-08-31): at most one partial per second per conversation; the latest-wins slot holds anything faster. Finals never consult it.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     bridge_partial_sent: crate::linear_map::LinearMap<ContactId, std::time::Instant>,
     /// Eagle-time of the last bridge PARTIAL sent per conversation — the own-ACK gate: the next partial ships only once this one has left pending_messages (see drain_bridge_output).
     bridge_partial_inflight: crate::linear_map::LinearMap<ContactId, i64>,
     /// The interrupt registry (host side): device → (foreground-job pgid handle, bash pid), so a Stop arriving while a worker is blocked draining output can signal the command's own process group directly.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     bridge_fg: Option<bridge::BridgeFgMap>,
     /// HOST: each sibling's shell cwd (bridge::BridgeCwdMap) — where a dropped pigeon lands. Created with the executor, read at landing.
     bridge_cwds: Option<bridge::BridgeCwdMap>,
@@ -2468,7 +2468,7 @@ impl PhotonApp {
             registry_converged_fold: Vec::new(),
             peer_store_persisted_len: 0,
             zoom_saved_ru: 1.0,
-            #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+            #[cfg(not(target_os = "android"))]
             clipboard: None,
             persist_tx: None,
             durable_pending: std::sync::Arc::new((
@@ -2916,15 +2916,15 @@ impl PhotonApp {
             attach_confirmed: std::collections::HashSet::new(),
             attach_bar_shown: std::collections::HashSet::new(),
             pending_attach_picker: false,
-            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            #[cfg(all(unix, not(target_os = "android")))]
             bridge_cmd_tx: None,
-            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
-            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            #[cfg(all(unix, not(target_os = "android")))]
+            #[cfg(all(unix, not(target_os = "android")))]
             bridge_partials: None,
-            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            #[cfg(all(unix, not(target_os = "android")))]
             bridge_partial_sent: crate::linear_map::LinearMap::new(),
             bridge_partial_inflight: crate::linear_map::LinearMap::new(),
-            #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+            #[cfg(all(unix, not(target_os = "android")))]
             bridge_fg: None,
             bridge_cwds: None,
             pigeon_rx: Default::default(),
@@ -3184,7 +3184,6 @@ impl PhotonApp {
             .filter(|n| !n.is_empty());
         let wake = self.event_proxy.clone();
         std::thread::spawn(move || {
-            #[cfg(not(target_os = "redox"))]
             let _ =
                 thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
             let rgb_f32 = match crate::ui::avatar::image_to_avatar_rgb_f32(&image_bytes) {

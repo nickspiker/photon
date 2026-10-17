@@ -41,7 +41,6 @@ pub enum ClockCheckResult {
 
 /// Each precise observation as a TrueClock exchange on the boot clock. Only the sub-millisecond protocols count (NTP, NTS, Roughtime — HTTPS's Date header is whole-second), and only sources the consensus did not reject.
 /// The offset follows nunc's own convention (the server's mid-trip time against the local receipt less half the trip), and each receipt, read on the WALL clock, moves onto the boot clock by how long before the query returned it landed — both clocks read once, here, so a wall-clock step elsewhere cannot tear the batch.
-#[cfg(not(target_os = "redox"))]
 fn exchanges_of(t: &nunc::NuncTime) -> Vec<crate::network::true_clock::Exchange> {
     let (boot_now, wall_now) = (crate::network::time_base::boot_now(), vsf::eagle_time_oscillations());
     t.raw
@@ -59,8 +58,7 @@ fn exchanges_of(t: &nunc::NuncTime) -> Vec<crate::network::true_clock::Exchange>
 
 /// Spawn the background clock check. Mirrors the avatar / clutch worker shape: own thread, own current-thread tokio runtime (nunc is async), result back over an `mpsc` channel, then wake the event loop so the next frame drains it. Never blocks the UI thread.
 ///
-/// Every platform except Redox (nunc's TLS stack needs `ring`, which has no Redox target — Redox reaches the same-signature stub below so callers compile without a nunc link). On Android the wake handle is `None` — its redraws come thru the JNI/Choreographer path, and `drain_clock_check` runs every tick regardless.
-#[cfg(not(target_os = "redox"))]
+/// Every platform. On Android the wake handle is `None` — its redraws come thru the JNI/Choreographer path, and `drain_clock_check` runs every tick regardless.
 pub fn spawn_clock_check(
     tx: std::sync::mpsc::Sender<ClockCheckResult>,
     #[allow(unused_variables)] event_proxy: ClockWake,
@@ -103,16 +101,6 @@ pub fn spawn_clock_check(
     });
 }
 
-/// Redox stub: `nunc-time` isn't linked here (its TLS stack needs `ring`, which has no Redox target), so there's no consensus source to query. Report Unavailable so the caller's channel still receives a result and the UI leaves the clock banner in its prior state — the real check runs only where nunc is a dependency.
-#[cfg(target_os = "redox")]
-pub fn spawn_clock_check(
-    tx: std::sync::mpsc::Sender<ClockCheckResult>,
-    #[allow(unused_variables)] event_proxy: ClockWake,
-) {
-    let _ = tx.send(ClockCheckResult::Unavailable(
-        "nunc-time not available on this platform".to_string(),
-    ));
-}
 
 /// Detects gross, unexplained jumps in the wall clock by comparing it to the monotonic clock.
 ///

@@ -323,7 +323,7 @@ impl PhotonApp {
     }
 
     /// Set the clipboard thru the app's long-lived handle, recreating it once on failure. LONG-LIVED is the fix (field 2026-09-02, "fifty copies, two land"): X11/Wayland clipboards are ownership-based — the selection is served only while the arboard instance lives, so the old create-set-drop pattern surrendered ownership microseconds after every copy and the text survived only when a clipboard manager happened to snatch it first. Loud on every outcome so a field log can convict the next failure mode instead of guessing.
-    #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(not(target_os = "android"))]
     pub(super) fn clipboard_set(&mut self, s: String) -> bool {
         let n = s.len();
         for attempt in 0..2u8 {
@@ -353,7 +353,7 @@ impl PhotonApp {
     }
 
     /// Read the clipboard thru the same long-lived handle (one recreate on failure, same law as `clipboard_set`).
-    #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(not(target_os = "android"))]
     pub(super) fn clipboard_get(&mut self) -> Option<String> {
         for _ in 0..2u8 {
             if self.clipboard.is_none() {
@@ -368,9 +368,9 @@ impl PhotonApp {
         None
     }
 
-    /// Copy `s` to the OS clipboard. Desktop rides the long-lived arboard handle (`clipboard_set`); Android has no clipboard JNI yet (returns false — a ClipboardManager bridge is a follow-up), Redox has no arboard backend. Returns true on success.
+    /// Copy `s` to the OS clipboard. Desktop rides the long-lived arboard handle (`clipboard_set`); Android has no clipboard JNI yet (returns false — a ClipboardManager bridge is a follow-up). Returns true on success.
     pub(super) fn copy_to_clipboard(&mut self, s: &str) -> bool {
-        #[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(not(target_os = "android"))]
         {
             return self.clipboard_set(s.to_string());
         }
@@ -380,16 +380,10 @@ impl PhotonApp {
             self.pending_clipboard_copy = Some(s.to_string());
             return true;
         }
-        #[cfg(target_os = "redox")]
-        {
-            let _ = s;
-            crate::log("clipboard: copy not wired on this platform yet");
-            false
-        }
     }
 
     /// Clipboard chord handler (desktop only). `op` is the lowercased character — "c" copy, "x" cut, "v" paste — acting on whichever textbox holds focus (launch handle or contacts search). Returns `Handled` when a textbox owned the focus, `Pass` otherwise (so the chord doesn't get eaten on a non-text screen). Copy/cut read `selected_text`; cut only deletes after the OS `set_text` succeeds, so a clipboard failure never silently destroys the selection. Paste inserts the clipboard string at the cursor (replacing any selection via `insert_str`). A launch-textbox edit clears a stale `Error` back to `Fresh`; the cursor blink reset is the caller's job.
-    #[cfg(not(any(target_os = "redox", target_os = "android")))]
+    #[cfg(not(target_os = "android"))]
     pub(super) fn clipboard_chord(
         &mut self,
         op: &str,
@@ -1054,7 +1048,7 @@ impl PhotonApp {
         // Bridge: locus/interrupt client state everywhere; host-side maps where the shell host exists.
         self.bridge_locus = None;
         self.bridge_int = None;
-        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(all(unix, not(target_os = "android")))]
         {
             if let Some(p) = self.bridge_partials.as_ref() {
                 if let Ok(mut m) = p.lock() {

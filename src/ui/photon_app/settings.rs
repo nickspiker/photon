@@ -411,7 +411,6 @@ impl PhotonApp {
             .and_then(crate::storage::fleet_settings::as_text)
             .filter(|n| !n.is_empty());
         std::thread::spawn(move || {
-            #[cfg(not(target_os = "redox"))]
             let _ =
                 thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
             match crate::ui::avatar::upload_avatar_from_seed(&kp.secret, &identity_seed, &new_pin, &hp, our_name.as_deref(), &storage) {
@@ -1425,7 +1424,6 @@ impl PhotonApp {
             .and_then(crate::storage::fleet_settings::as_text)
             .filter(|n| !n.is_empty());
         std::thread::spawn(move || {
-            #[cfg(not(target_os = "redox"))]
             let _ =
                 thread_priority::set_current_thread_priority(thread_priority::ThreadPriority::Min);
             match crate::ui::avatar::upload_avatar_from_seed(

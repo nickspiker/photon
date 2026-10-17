@@ -1,6 +1,6 @@
 //! Loopback probe for the wave-audio substrate (docs/waves.md step 1): mic → 200ms delay → speaker, ten seconds, then stats. Proves capture, playback, the resampler pair, and the AEC reference ring on THIS machine before any wave code exists. Run with speakers low or a headset — you will hear yourself.
 
-#[cfg(not(any(target_os = "android", target_os = "redox")))]
+#[cfg(not(target_os = "android"))]
 fn main() {
     use photon_messenger::platform::audio;
     use std::collections::VecDeque;
@@ -45,7 +45,7 @@ fn main() {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "redox"))]
+#[cfg(target_os = "android")]
 fn main() {
     println!("audio-probe: desktop-only (Android capture rides the Kotlin service)");
 }

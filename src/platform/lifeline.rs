@@ -1,5 +1,5 @@
 // Lifeline enrolment (docs/headless-lifeline.md) — the "bulletproof bridge" checkbox's platform half, mirroring autostart.rs doctrine: the artifact IS the setting, exe_path is dev-honest, absence reads as disabled.
-// Linux: a systemd user unit (the user manager provably survives session death — the 2026-09-04 incident ran three days on it). macOS: a LaunchAgent with KeepAlive. Windows/Android/Redox: no --lifeline (the flag itself is cfg'd out), so this module is too.
+// Linux: a systemd user unit (the user manager provably survives session death — the 2026-09-04 incident ran three days on it). macOS: a LaunchAgent with KeepAlive. Windows/Android: no --lifeline (the flag itself is cfg'd out), so this module is too.
 
 #[cfg(any(target_os = "linux", target_os = "macos"))]
 fn exe_path() -> Result<std::path::PathBuf, String> {

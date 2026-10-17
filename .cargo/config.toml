@@ -1,7 +1,6 @@
 # Linker configuration for Photon Messenger
 #
 # mold: Fast linker for native Linux builds (default)
-# Redox: Cross-compilation support when explicitly targeting x86_64-unknown-redox
 # macOS: osxcross for x86_64 and ARM64
 
 # Linux ARM64 cross-compilation (from x86_64 host)
@@ -19,27 +18,13 @@ linker = "/mnt/Harbor/Code/osxcross/target/bin/x86_64-apple-darwin-clang-wrapper
 [target.aarch64-apple-darwin]
 linker = "clang"
 
-# Redox cross-compilation (use when: cargo build --target x86_64-unknown-redox)
-[target.x86_64-unknown-redox]
-linker = "/mnt/Harbor/Code/redox/prefix/x86_64-unknown-redox/rust-install/bin/x86_64-unknown-redox-gcc"
-# The vendored Opus (audiopus_sys builds it from source for Redox — there's no cross-lib) calls libm
-# functions (log, etc.), but its static libopus.a is linked AFTER -lc, so the symbols are already
-# discarded by the time the archive is searched → "undefined reference to `log`". Append -lm at the
-# very end of the link so libm is searched after libopus.a. relibc ships libm.a (and log is even in
-# libc.a), so this only fixes link order — no new dependency.
-rustflags = ["-C", "link-arg=-lm"]
-
-# Non-glibc GCC cross-targets (MinGW Windows-x64, Redox) need a features.h shim on the C include path so
+# Non-glibc GCC cross-targets (MinGW Windows-x64) need a features.h shim on the C include path so
 # pqcrypto-mlkem's PQClean compat.h can #include <features.h> / call __GNUC_PREREQ (glibc-only symbols their
 # GCCs lack — see cross-libs/gcc-noglibc-shim/features.h). cc-rs reads CFLAGS_<target> from the environment;
 # setting it here makes the fix automatic for dev + deploy, not just deploy.sh. The aarch64 Windows build uses
 # clang and takes compat.h's __clang__ branch, so it needs no shim.
 [env]
-# Opus: ALWAYS the vendored static build, NEVER the system library. audiopus_sys otherwise probes pkg-config first, so the link depended on distro state — a box with opus headers but no lib died at `-lopus` (field: first outside builder, 2026-08-30), and a box with the lib silently linked libopus.so and shipped a runtime dep. NO_PKG skips the probe, STATIC compiles the vendored C source (CMake) into the binary on every target, same as Android/Redox always did.
+# Opus: ALWAYS the vendored static build, NEVER the system library. audiopus_sys otherwise probes pkg-config first, so the link depended on distro state — a box with opus headers but no lib died at `-lopus` (field: first outside builder, 2026-08-30), and a box with the lib silently linked libopus.so and shipped a runtime dep. NO_PKG skips the probe, STATIC compiles the vendored C source (CMake) into the binary on every target, same as Android always did.
 OPUS_NO_PKG = "1"
 OPUS_STATIC = "1"
 CFLAGS_x86_64_pc_windows_gnu = "-I/mnt/Harbor/Code/photon/cross-libs/gcc-noglibc-shim"
-# Redox has its OWN (musl-derived) features.h that its system headers need — but it lacks __GNUC_PREREQ,
-# which pqcrypto-mlkem's compat.h requires. So the redox shim #include_next's the real one (dir FIRST on -I)
-# and only ADDS the missing macro; a plain replacement stub (like the mingw one) would break relibc's headers.
-CFLAGS_x86_64_unknown_redox = "-I/mnt/Harbor/Code/photon/cross-libs/redox-features-shim"

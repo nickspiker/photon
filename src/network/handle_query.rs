@@ -2,7 +2,7 @@
 //
 // Network layer for querying the FGTW (Fractal Gradient Trust Web) to check if a handle has been attested (claimed) or is available.
 //
-// This is a unified implementation that works on all platforms (Linux, Windows, Android, Redox).
+// This is a unified implementation that works on all platforms (Linux, macOS, Windows, Android).
 
 use crate::network::fgtw::Keypair;
 use crate::network::fgtw::{bootstrap::load_bootstrap_peers, PeerRecord, PeerStore};
@@ -323,8 +323,7 @@ impl HandleQuery {
             // Channel for network change notifications
             let (net_change_tx, net_change_rx) = std_channel::<()>();
 
-            // Spawn async network watcher (not available on Redox)
-            #[cfg(not(target_os = "redox"))]
+            // Spawn async network watcher
             {
                 let net_change_tx_clone = net_change_tx.clone();
                 thread::spawn(move || {

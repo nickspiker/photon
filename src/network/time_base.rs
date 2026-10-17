@@ -42,7 +42,7 @@ fn boot_osc() -> i64 {
     }
     #[allow(unreachable_code)]
     {
-        // Fallback (redox, an exotic host): the process-monotonic clock — correct while awake, blind to suspend.
+        // Fallback (an exotic host): the process-monotonic clock — correct while awake, blind to suspend.
         static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
         let start = START.get_or_init(std::time::Instant::now);
         ns_to_osc(start.elapsed().as_nanos() as i128)

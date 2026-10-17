@@ -1,6 +1,6 @@
 //! Desktop playback for MUSIC PIGEONS: a rodio sink over the blob's bytes. Android is a stub for now — its audio belongs to the wave engine's AAudio path and music will route thru it later.
 
-#[cfg(all(not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(not(target_os = "android"))]
 mod real {
     pub struct MusicPlay {
         pub hash: [u8; 32],
@@ -42,7 +42,7 @@ mod real {
     }
 }
 
-#[cfg(any(target_os = "android", target_os = "redox"))]
+#[cfg(target_os = "android")]
 mod real {
     pub struct MusicPlay {
         pub hash: [u8; 32],

@@ -3,7 +3,7 @@
 use super::*;
 
 /// Work item for the off-thread bridge executor: run a command in a sibling's persistent shell, or reset (kill) that sibling's shell so the next command starts fresh.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 pub(super) enum BridgeJob {
     /// (contact id, device, command text, the command row's eagle_time — the target streamed output frames reference).
     Run(ContactId, [u8; 32], String, i64),
@@ -11,7 +11,7 @@ pub(super) enum BridgeJob {
 }
 
 /// One streamed emission from the executor toward the wire: `body` is this emission's output bytes (a DELTA since 1358caa8 — the snapshot form this doc once described is gone; docs/bridge.md carries the re-serve rules), `target` is the command row's eagle_time (what the client's replace-in-place keys on), `fin` carries the exit code once the command completed, and the locus names where the shell stands so the operator is never blind to host+cwd again (field 2026-08-23: a pull meant for photon ran in keys/). Partials ride a latest-wins slot (a superseded snapshot is garbage by definition); finals ride the ordered channel because every one must reach the wire.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 pub(super) struct BridgeEmit {
     /// The sibling conversation, by id — the emit crosses the executor thread and back, and an index would drift after a removal.
     pub contact: ContactId,
@@ -27,7 +27,7 @@ pub(super) struct BridgeEmit {
 }
 
 /// The interrupt registry the UI thread signals thru while a worker is blocked draining output: device → the shell's bash pid. The in-flight command is found live as bash's child TREE (a foreground group needs no announce — see run_streaming's foreground rationale). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 pub(super) type BridgeFgMap =
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], i32>>>;
 /// Each sibling's shell CWD as of its last completed command — the bridge pigeon's landing directory ("show up in whatever folder the bridge is currently in", Nick 2026-09-17). The worker owns the shell and learns the cwd from the command sentinel; the UI thread reads it at landing time, so the map is the one seam between them. Absent or empty (no command run yet) = the shell's starting directory, which is home.
@@ -35,7 +35,7 @@ pub(super) type BridgeCwdMap =
     std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>>;
 
 /// Every live descendant of `root`, breadth-first via `pgrep -P` (present on every unix host the bridge ships to). The foreground command and everything it spawned — bash itself excluded by construction.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 fn bridge_child_tree(root: i32) -> Vec<i32> {
     let mut all: Vec<i32> = Vec::new();
     let mut frontier = vec![root];
@@ -57,7 +57,7 @@ fn bridge_child_tree(root: i32) -> Vec<i32> {
 }
 
 /// Unsent-delta buffer bound per command (Nick's delta redesign 2026-09-03): frames carry only what's NEW, so nothing is ever re-sent — the only cap left is host memory while a client is slow/unreachable. Past this, the buffer's FRONT is trimmed and the dropped byte count rides the next frame's elision marker (a gap is explicit, never silent). 64KB ≈ minutes of full-tilt cargo spew.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 const BRIDGE_BUF_MAX: usize = 65536;
 
 /// Wake the event loop from a worker thread. Platform-agnostic (a plain event send) — the pigeon landing on any host uses it, so it carries no shell cfg gate.
@@ -68,7 +68,7 @@ pub(super) fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>
 }
 
 /// One worker thread per sibling device, owning that device's persistent shell. Per-device because the executor used to serialize EVERY sibling thru one thread — with no timeout, one long build would have queued every other bridge behind it. The worker blocks in run_streaming for as long as the command takes; liveness is visible thru the streamed partials, and the operator's stop lever runs thru BridgeFgMap, not thru this queue.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 fn spawn_bridge_worker(
     dev: [u8; 32],
     partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>>,
@@ -167,7 +167,7 @@ fn spawn_bridge_worker(
 }
 
 /// One persistent shell for a sibling's bridge session (host side). A single long-lived `bash` process — spawned on the first command, reused for every command after — so working directory, exported vars, and shell state persist exactly like a real terminal, instead of a fresh `bash -lc` per command (Nick, 2026-08-22). stderr is merged into stdout in-shell (`exec 2>&1`); a per-session random sentinel marks each command's output boundary + exit code + cwd — shell-internal plumbing between this process and its own child, it NEVER touches the Photon wire (the wire carries typed VSF fields only). There is deliberately NO command timeout: busy is not wedged, liveness is the child process existing, and the operator holds the interrupt (the 30s reset both lied about killing the command AND orphaned a running deploy — field 2026-08-23). Shell DEATH is the one respawn edge.
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 pub(super) struct BridgeShell {
     child: std::process::Child,
     stdin: std::process::ChildStdin,
@@ -176,7 +176,7 @@ pub(super) struct BridgeShell {
     host: String,
 }
 
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(unix, not(target_os = "android")))]
 impl BridgeShell {
     const MAX_OUT: usize = 12 * 1024;
 
@@ -337,7 +337,7 @@ impl BridgeShell {
     // (The old whole-session `kill` — SIGKILL the descendant tree then bash — is deleted: nothing called it since the Stop ladder took over per-command signalling (SIGINT→TERM→KILL against the job's own process group), which is strictly better — the session and its cwd survive a stopped command.)
 }
 
-#[cfg(all(test, unix, not(target_os = "android"), not(target_os = "redox")))]
+#[cfg(all(test, unix, not(target_os = "android")))]
 mod tests {
     use super::*;
 
@@ -389,7 +389,7 @@ impl PhotonApp {
         // A fresh session starts unoriented: the locus strip fills from the first output's typed fields, and no Stop escalation carries over.
         self.bridge_locus = None;
         self.bridge_int = None;
-        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(all(unix, not(target_os = "android")))]
         self.send_bridge_reset(ci);
         self.open_conversation_with(ci);
         self.state = AppState::Conversation;
@@ -414,7 +414,7 @@ impl PhotonApp {
     }
 
     /// HOST role, chat transport: a NEW command arrived as an ordinary chat message in the sibling `ci`'s conversation — dispatch it to the OFF-THREAD bridge executor, which runs it in that sibling's PERSISTENT shell and posts the raw output back for `drain_bridge_output` to reply with (typed RefKind::BridgeOut so it renders but never re-runs). Running the shell inline froze the host's event loop for the command's whole duration, stalling the ACK it owes the operator (field 2026-08-22). ONE shell per sibling, spawned on first command and reused after so `cd`/env/state persist like a real session; the executor thread OWNS the shells so nothing blocks the UI.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn run_bridge_command_chat(&mut self, ci: usize, cmd: &str, cmd_ts: i64) {
         let Some((contact, dev)) = self.contacts.get(ci).and_then(|c| Some((c.id, c.device_key()?))) else {
             return;
@@ -426,7 +426,7 @@ impl PhotonApp {
     }
 
     /// A BridgeCtl row arrived (the operator pressed Stop): signal the in-flight command's descendant tree — never bash, so the session and its cwd survive the interrupt. A late arrival after completion finds an empty tree and is a natural no-op.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn bridge_interrupt_host(&mut self, ci: usize, sig: u64, target: i64) {
         let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
             return;
@@ -586,14 +586,14 @@ impl PhotonApp {
     }
 
     /// Client OPENED the bridge → tell the host to drop its shell for us so the next command starts a FRESH session (Nick 2026-08-22). Fire-and-forget over the chain as a hidden BridgeReset control row.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn send_bridge_reset(&mut self, ci: usize) {
         // A minimal payload; the TYPED reference carries the meaning and the row is hidden either way.
         self.send_chain_message(ci, " ", false, Some((crate::types::RefKind::BridgeReset, 0)), None);
     }
 
     /// Host received a BridgeReset (the peer opened the bridge) → drop that sibling's shell so the next command respawns fresh.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn reset_bridge_shell(&mut self, ci: usize) {
         let Some(dev) = self.contacts.get(ci).and_then(|c| c.device_key()) else {
             return;
@@ -619,7 +619,7 @@ impl PhotonApp {
     }
 
     /// Lazily spawn the off-thread bridge DISPATCHER (routes jobs to one worker thread per sibling device — see spawn_bridge_worker). No-op once running.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     fn ensure_bridge_exec(&mut self) {
         if self.bridge_cmd_tx.is_some() {
             return;
@@ -685,7 +685,7 @@ impl PhotonApp {
     }
 
     /// Tick drain: ship each command's accumulated DELTA over the durable chain — spool up to the 1s window, broadcast what's missing, and if nothing spooled, send nothing (ten silent minutes = zero frames). Every frame carries the typed locus + seq; the frame whose `exit` field is present IS the finish signal (no special end message — Nick 2026-09-03). UI thread, zero shell work — just the sends.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     pub(super) fn drain_bridge_output(&mut self) {
         let Some(slots) = self.bridge_partials.clone() else {
             return;

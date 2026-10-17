@@ -1640,7 +1640,7 @@ impl PhotonApp {
                 );
             }
         }
-        #[cfg(not(any(target_os = "android", target_os = "redox")))]
+        #[cfg(not(target_os = "android"))]
         {
             use std::sync::atomic::{AtomicBool, Ordering};
             crate::platform::desktop_notify::notify_new_message(

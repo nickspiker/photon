@@ -3724,9 +3724,7 @@ impl PhotonApp {
                                 fluor::region::Region::new(pad_x + pw + line_h * 0.5, ty, pw, pill_h * 0.9),
                                 fluor::region::Region::new(pad_x + (pw + line_h * 0.5) * 2.0, ty, pw, pill_h * 0.9),
                             ];
-                            // Every platform with a browser opens (Android thru the Kotlin ACTION_VIEW bridge); Redox alone stays copy-only.
-                            let can_open = !cfg!(target_os = "redox");
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::OpenLinkPill), self.link_consent_base, ctx.pressed_hit, can_open, Some(*theme::PILL_GREEN), "Open Sans");
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[0], &tr(Msg::OpenLinkPill), self.link_consent_base, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Open Sans");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[1], &tr(Msg::CopyPill), self.link_consent_base + 1, ctx.pressed_hit, true, None, "Open Sans");
                             draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, prects[2], &tr(Msg::Cancel), self.link_consent_base + 2, ctx.pressed_hit, true, None, "Open Sans");
                             paint::fill_rect(&mut canvas, 0, py0 as isize, buf_w as isize, (list_bottom - py0) as isize, *theme::CONSENT_BG_COLOUR, None, None);

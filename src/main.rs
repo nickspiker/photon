@@ -113,7 +113,7 @@ fn main() {
             photon_messenger::platform::control::install_tcp_listener(l);
         }
     };
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     if lifeline_mode {
         // WATCHER: while a real instance runs, do nothing but wait for the lock to free (X death takes the instance and its flock with it). Liveness polling of a lock file is supervisor work, not UI work — the edges-not-timers rule governs the product, not the janitor.
         let lock = loop {
@@ -129,7 +129,7 @@ fn main() {
         photon_messenger::flush_log_buffer();
         std::process::exit(0);
     }
-    #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+    #[cfg(not(all(unix, not(target_os = "android"))))]
     if lifeline_mode {
         eprintln!("photon: --lifeline is desktop-unix only");
         std::process::exit(1);
@@ -217,7 +217,7 @@ fn main() {
     }
 
     // Hand off to fluor's host. PhotonApp::new() is parameterless: the host hands us the event-loop proxy via FluorApp::set_event_proxy and the initial viewport via FluorApp::init, so there's nothing to thread thru up-front.
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+    #[cfg(all(unix, not(target_os = "android")))]
     {
         let (app, res) = fluor::host::app::run_app_recoverable(PhotonApp::new());
         if let Err(e) = res {
@@ -229,6 +229,6 @@ fn main() {
             photon_messenger::flush_log_buffer();
         }
     }
-    #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+    #[cfg(not(all(unix, not(target_os = "android"))))]
     fluor::host::app::run_app(PhotonApp::new()).expect("event loop failed");
 }

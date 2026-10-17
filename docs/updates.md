@@ -34,8 +34,7 @@ The economics: an update check already has the network (a manifest was just fetc
 No consensus → defer, exactly like forward-dated — "not yet" is already the fail-safe outcome.
 Staged version: system clock on the happy path, nunc invoked as tiebreaker only when the window check fails forward — consult the expensive honest clock exactly when someone claims time travel.
 This requirement is universal: every platform, Android included — most users are Android users, and a system-clock fallback there would hand the majority platform exactly the freeze/poisoning attacks the consensus exists to close.
-nunc is a dependency on every platform except Redox (un-gated 2026-07-12 — the old "ring needs the NDK" desktop-only gating was untested caution; ring cross-compiles fine under the NDK env the Android build already uses).
-Redox is the one real gap (ring has no Redox target); the fix is a pure-Rust rustls CryptoProvider in nunc, ferros-era, and until then Redox defers all updates — fail-safe, not fail-open.
+nunc is a dependency on every platform (un-gated 2026-07-12 — the old "ring needs the NDK" desktop-only gating was untested caution; ring cross-compiles fine under the NDK env the Android build already uses).
 
 Later hardening (out of scope for v1, noted so it is not forgotten): reproducible builds plus a transparency log, so a maliciously-signed update targeting one user is publicly detectable rather than silent.
 
@@ -116,7 +115,7 @@ Still to build:
 ## Decided
 
 - **Stamp window:** version = release stamp; accept iff `floor < t ≤ now`. No downgrades, no forward-dated stamps — forward-dated means "not yet", re-evaluated on the next poll, with no skew tolerance parameter.
-- **`now` = nunc consensus** at the accept/defer decision, on EVERY platform — no system-clock fallback anywhere (conservative edge of the confidence interval). No consensus → defer, same as forward-dated. nunc-on-Android un-gated 2026-07-12; Redox (no ring target) defers all updates until nunc grows a pure-Rust TLS provider.
+- **`now` = nunc consensus** at the accept/defer decision, on EVERY platform — no system-clock fallback anywhere (conservative edge of the confidence interval). No consensus → defer, same as forward-dated. nunc-on-Android un-gated 2026-07-12.
 - **Manual affordance:** yes — a "Check for updates" button on the Settings → Updates page, every platform.
 - **Desktop default:** automatic updates ON by default, with an opt-out toggle (disclosed in the operating notes).
 - **Android default:** "notify of updates" ON by default; the notification explains, then requests `REQUEST_INSTALL_PACKAGES`, then hands off to the system installer.

@@ -45,14 +45,16 @@
 - [Android dark in background](project_android_headless_dark.md) — 2026-10-13 CONVICTED: Activity destroy freed the app, offline for days; fix BUILT (service owns app + watchdog), verify pending
 - [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port + shared public ip:port; FIXED, server first; flap unconfirmed
 - [Hotplug abort](project_hotplug_abort.md) — 2026-10-15 SIGABRT x2 on monitor plug = 0-px avatar expect, CONVICTED; fixed post-v120
+- [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next non-mainstream OS
+- [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device
 - [Beams](project_beams.md) — 2026-10-10 DECIDED + desktop BUILT: H.264, intra refresh, ISP stood aside, VSF labels; phone capture + cycle built
-- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 Jeff holes = L rule; re-anchor + render-trace + recv guard BUILT
+- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 Jeff holes = L rule; fixes BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE 2026-10-07: attachments are off-chain wrapped VSF blobs; unbuilt flag day
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
-- [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 Jeff's PDF: fetch asked one friend device (fixed); push one-shot, auto-fetch policy open
+- [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 fetch asked one friend device (fixed); auto-fetch open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
-- [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes, photonlog --gripes/--gripe-status, token keys/gripes.token
+- [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes, photonlog --gripes
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device roster claim; OPEN: restart re-keys offline friends
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): offer before mutuality + dropped knock
@@ -66,7 +68,7 @@
 - [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent; FIXED in fluor
 - [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows not built; macOS drag VANISHES
 - [project_notifications_pinned.md](project_notifications_pinned.md) — fleet-wide notification design PINNED (unnotified flag + one-active-clearer)
-- [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted Jennifer's Windows dark-theme search text
+- [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
@@ -77,7 +79,7 @@
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
 - [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
 - [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, level-coloured rings); mic/speaker pickers
-- [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission; instrumented cron kept bait (unconvicted)
+- [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — log sweep ate a fresh submission (unconvicted)
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — CLOSED 2026-10-06: Y=0.5 physical; uniform-by-area draw
 - [project_arabic_indexing_fixits.md](project_arabic_indexing_fixits.md) — FIX-IT: decimal-indexed VSF field names → native multi-value fields
 - [project_zero_sentinel_purge.md](project_zero_sentinel_purge.md) — sentinel purge shipped; a few remain, convert when touched

@@ -1019,7 +1019,7 @@ fn clear_queues() {
 // Desktop: cpal capture + playback on a dedicated audio thread.
 // ---------------------------------------------------------------------------
 
-#[cfg(not(any(target_os = "android", target_os = "redox")))]
+#[cfg(not(target_os = "android"))]
 mod desktop {
     use super::*;
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -1314,7 +1314,7 @@ mod desktop {
     }
 }
 
-#[cfg(not(any(target_os = "android", target_os = "redox")))]
+#[cfg(not(target_os = "android"))]
 pub use desktop::{route, start, stop};
 
 // ---------------------------------------------------------------------------
@@ -1404,18 +1404,6 @@ mod android {
 pub use android::{route, start, stop};
 #[cfg(target_os = "android")]
 pub(crate) use android::{on_mic_granted, on_mic_mirror, on_route_mirror, on_volume_mirror};
-
-// Redox: no audio backend yet — waves are signaling-only there.
-#[cfg(target_os = "redox")]
-pub fn start() -> bool {
-    false
-}
-#[cfg(target_os = "redox")]
-pub fn stop() {}
-#[cfg(target_os = "redox")]
-pub fn route() -> AudioRoute {
-    AudioRoute::Unknown
-}
 
 #[cfg(test)]
 mod tests {

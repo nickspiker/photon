@@ -3,7 +3,7 @@
 //! One frame, TWO carriers, every platform: the 16 beacon bytes = `keyed_hash(handle_key, device_pubkey ‖ eagle_time)` (see [`fgtw::pair::beacon_id`]) — the whole 16 bytes are the hash, no magic, no nonce. Advertised as a 128-bit BLE **service UUID** where the OS allows it (Apple's CoreBluetooth permits ONLY service UUIDs; Linux/Android too), and as **manufacturer data** under company id 0xFFFF on Windows (whose publisher REFUSES service UUIDs — 0x80070057, the OS owns every AD section except manufacturer data). Same bytes either way; every scanner ingests BOTH carriers, so any platform pair works with no frame fork.
 //! `eagle_time` is the new device's PUBLISHED binding-offer stamp, so the beacon is a function of real, signed, published registry state — not invented entropy. It rolls per repost (unlinkable) and is indistinguishable from any random service UUID at rest.
 //! The ceremony never learns which courier ran: the new device announces thru [`announce_guard`] (re-emitting via [`reannounce`] on each repost), the sponsor's scanner drops every heard UUID into [`heard`], and the sponsor's matcher recomputes [`fgtw::pair::beacon_id`] for each public-list candidate and intersects — the hash-match IS the filter. Everything between is plumbing.
-//! Per-platform couriers: Android advertises AND scans (the `PhotonBeacon` Kotlin bridge); Linux advertises AND scans via bluer (BlueZ over D-Bus); macOS/Windows land next (btleplug scan + native advertise); Redox waits on a ferros radio.
+//! Per-platform couriers: Android advertises AND scans (the `PhotonBeacon` Kotlin bridge); Linux advertises AND scans via bluer (BlueZ over D-Bus); macOS/Windows land next (btleplug scan + native advertise).
 
 use std::sync::Mutex;
 use std::time::Instant;
@@ -427,7 +427,7 @@ mod imp {
     }
 }
 
-// ── Everything else: stub couriers (Redox when ferros owns a radio). ──
+// ── Everything else: stub couriers (ferros, once it owns a radio). ──
 
 #[cfg(not(any(
     target_os = "linux",

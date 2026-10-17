@@ -2707,8 +2707,8 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Pass;
                 }
 
-                // Clipboard chords (Ctrl/Cmd + C / X / V) are intercepted HERE, before delivery to the focused widget — fluor's design keeps the OS clipboard (arboard) with the app, not on Textbox (the clipboard is a single global resource; threading it thru every widget would be premature). Ctrl+A stays on the widget (pure selection, no OS resource). Desktop only: Android paste arrives thru the IME commit path, and Redox has no arboard backend.
-                #[cfg(not(any(target_os = "redox", target_os = "android")))]
+                // Clipboard chords (Ctrl/Cmd + C / X / V) are intercepted HERE, before delivery to the focused widget — fluor's design keeps the OS clipboard (arboard) with the app, not on Textbox (the clipboard is a single global resource; threading it thru every widget would be premature). Ctrl+A stays on the widget (pure selection, no OS resource). Desktop only: Android paste arrives thru the IME commit path.
+                #[cfg(not(target_os = "android"))]
                 if ctx.modifiers.control_key() || ctx.modifiers.super_key() {
                     if let Key::Character(c) = &kev.logical_key {
                         let lc = c.to_lowercase();
@@ -4123,7 +4123,7 @@ impl FluorApp for PhotonApp {
 
 /// Open a URL in the system browser — the About-weblink commands, factored for the link consent dialog. Android is gated upstream (the Open pill disables until the Intent-thru-Kotlin bridge exists).
 fn open_url_in_browser(url: &str) {
-    #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox"), not(target_os = "macos")))]
+    #[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
     {
         let _ = std::process::Command::new("xdg-open").arg(url).spawn();
     }
@@ -4141,10 +4141,6 @@ fn open_url_in_browser(url: &str) {
         if !crate::platform::jni_android::open_url(url) {
             crate::log("CHAT: open link failed (service ref down?)");
         }
-    }
-    #[cfg(target_os = "redox")]
-    {
-        crate::logf!("CHAT: open link unsupported on this platform ({} bytes)", url.len());
     }
 }
 

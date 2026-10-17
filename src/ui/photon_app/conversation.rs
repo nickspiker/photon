@@ -1234,14 +1234,14 @@ impl PhotonApp {
         // A GROUP row persists by its conversation id, never by the sender's contact (whose own conversation is a different table) — docs/molecules.md step 4.
         let mut persist_molecule_conv: Option<crate::types::ConversationId> = None;
         // BRIDGE host: a TYPED command arrived as an ordinary sibling message — run it + reply AFTER the chains borrow ends (needs &mut self). Deferred like sibling_push; the i64 is the command row's eagle_time (what the streamed output frames target). A Stop press defers likewise.
-        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(all(unix, not(target_os = "android")))]
         let mut bridge_run: Option<(usize, String, i64)> = None;
         // A bridge PIGEON announcement (the operator dropped a file): open its spool once, on first receipt only, like a command.
         let mut bridge_pigeon: Option<(usize, crate::network::message_package::BridgePigeon)> = None;
-        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(all(unix, not(target_os = "android")))]
         let mut bridge_ctl: Option<(usize, u64, i64)> = None;
         // Non-host builds: a typed command to answer with a "no shell here" final (deferred past the conv borrow).
-        #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+        #[cfg(not(all(unix, not(target_os = "android"))))]
         let mut bridge_refuse: Option<(usize, i64)> = None;
         let mut conv_state_pos: Option<usize> = None;
         let mut replays: Vec<crate::network::status::StatusUpdate> = Vec::new();
@@ -1743,10 +1743,10 @@ impl PhotonApp {
                 let sender_name = contact.display_name();
                 // BRIDGE host capture, TYPED (2026-08-23): a row runs as a command iff it carries RefKind::BridgeCmd — the mark rides the wire's reference field, never the content (the old any-plain-sibling-row-executes gate with its stripped `$ ` prefix was content-as-trigger, the exact class the typed-reference rework exists to kill). A bare untyped sibling row still runs for ONE transition era, loudly, so a not-yet-updated client keeps its bridge until the fleet converges. Promotion to an actual run stays gated on is_new_row below — a re-served/duplicate/history-backfilled command must never re-execute (Nick 2026-08-22).
                 // A BridgeReset row (the peer opened the bridge) drops our shell for them; a BridgeCtl row is the operator's Stop press (signal number in the typed bsig field) — both hidden control rows, never commands.
-                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                #[cfg(all(unix, not(target_os = "android")))]
                 let bridge_reset = contact_is_sibling
                     && matches!(wire_reference, Some((crate::types::RefKind::BridgeReset, _)));
-                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                #[cfg(all(unix, not(target_os = "android")))]
                 let bridge_sig: Option<(u64, i64)> = if let (true, Some((crate::types::RefKind::BridgeCtl, t))) =
                     (contact_is_sibling, wire_reference)
                 {
@@ -1755,7 +1755,7 @@ impl PhotonApp {
                 } else {
                     None
                 };
-                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                #[cfg(all(unix, not(target_os = "android")))]
                 let bridge_cmd_candidate: Option<String> = if contact_is_sibling && !is_chain_probe
                 {
                     match wire_reference {
@@ -1954,7 +1954,7 @@ impl PhotonApp {
                         bridge_pigeon = Some((contact_idx, p));
                     }
                 }
-                #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+                #[cfg(all(unix, not(target_os = "android")))]
                 if is_new_row {
                     if bridge_reset {
                         bridge_run = Some((contact_idx, String::new(), 0)); // sentinel: empty cmd = reset (handled at the drain site)
@@ -1964,8 +1964,8 @@ impl PhotonApp {
                         bridge_run = Some((contact_idx, cmd, msg.timestamp));
                     }
                 }
-                // NON-HOST platforms (Android/Windows/redox) REFUSE a typed command instead of swallowing it: from the client a silent host is indistinguishable from a hung one (field 2026-08-26). Only TYPED BridgeCmd refuses — a legacy bare row toward a phone is just a note.
-                #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+                // NON-HOST platforms (Android/Windows) REFUSE a typed command instead of swallowing it: from the client a silent host is indistinguishable from a hung one (field 2026-08-26). Only TYPED BridgeCmd refuses — a legacy bare row toward a phone is just a note.
+                #[cfg(not(all(unix, not(target_os = "android"))))]
                 if is_new_row
                     && contact_is_sibling
                     && matches!(wire_reference, Some((crate::types::RefKind::BridgeCmd, _)))
@@ -2011,7 +2011,7 @@ impl PhotonApp {
 
                 // Per-contact notification chime: the sender's relationship digest → deterministic modal bell (chirp crate) — the SAME digest that colours their handle and messages, so ears and eyes agree. The handle TEXT never touches the session store by design; the pre-PoW hashes are the canonical identity material. Synthesis (~a second of f64 modal math) + playback run on a detached thread so the receive loop never blocks; desktop-only (Android gets platform notifications).
                 // Only ding for a real human message from a friend: a chain-weave probe (hidden ceremony frame) and a sibling/fleet-sync frame (our own devices propagating a conversation) both arrive as ChatMessages, and neither is something a person sent us — so neither should ring. And only when NOT looking at this conversation (`!looking`): watching the message land IS the alert; the chirp is for everyone else's messages (the user ask: "ding when I get a message from anyone and I'm not in a conversation with them"). The old unconditional chirp over-dinged in-conversation.
-                #[cfg(not(any(target_os = "redox", target_os = "android")))]
+                #[cfg(not(target_os = "android"))]
                 if !is_chain_probe && will_ding {
                     let digest = relationship_digest(&from_handle_hash, &our_handle_hash);
                     std::thread::spawn(move || {
@@ -2126,7 +2126,7 @@ impl PhotonApp {
         if let Some((ci, p)) = bridge_pigeon {
             self.on_pigeon_announced(ci, p);
         }
-        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(all(unix, not(target_os = "android")))]
         if let Some((ci, cmd, ts)) = bridge_run {
             if cmd.is_empty() {
                 self.reset_bridge_shell(ci);
@@ -2134,11 +2134,11 @@ impl PhotonApp {
                 self.run_bridge_command_chat(ci, &cmd, ts);
             }
         }
-        #[cfg(all(unix, not(target_os = "android"), not(target_os = "redox")))]
+        #[cfg(all(unix, not(target_os = "android")))]
         if let Some((ci, sig, t)) = bridge_ctl {
             self.bridge_interrupt_host(ci, sig, t);
         }
-        #[cfg(not(all(unix, not(target_os = "android"), not(target_os = "redox"))))]
+        #[cfg(not(all(unix, not(target_os = "android"))))]
         if let Some((ci, t)) = bridge_refuse {
             let wire = crate::network::message_package::BridgeWire {
                 exit: Some(-1),

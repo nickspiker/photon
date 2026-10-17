@@ -149,7 +149,7 @@ These are the one family where law 1 needs a decision (below): a stolen phone is
 | macOS | bash (shipped) | ✅ pigeons | ScreenCaptureKit | — | TCC grants once |
 | Windows | PowerShell via ConPTY | planned | Desktop Duplication | — | needs a lifeline service |
 | Android | none (app sandbox only) | app storage + SAF | MediaProjection | ✅ the point | foreground service for mic, camera and location |
-| Redox / ferros | later | later | later | — | |
+| ferros | later | later | later | — | |
 
 An Android host offers **verbs, not a shell**: its value is its sensors, its files and find. A shell inside the app sandbox would be a toy that looks like a promise.
 

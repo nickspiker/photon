@@ -842,19 +842,11 @@ impl StatusChecker {
             });
         };
 
-        #[cfg(not(target_os = "redox"))]
         {
             use thread_priority::{ThreadBuilderExt, ThreadPriority};
             thread::Builder::new()
                 .name("network-status".to_string())
                 .spawn_with_priority(ThreadPriority::Max, move |_| thread_body())
-                .expect("Failed to spawn network thread");
-        }
-        #[cfg(target_os = "redox")]
-        {
-            thread::Builder::new()
-                .name("network-status".to_string())
-                .spawn(thread_body)
                 .expect("Failed to spawn network thread");
         }
 
@@ -957,19 +949,11 @@ impl StatusChecker {
             });
         };
 
-        #[cfg(not(target_os = "redox"))]
         {
             use thread_priority::{ThreadBuilderExt, ThreadPriority};
             thread::Builder::new()
                 .name("network-status".to_string())
                 .spawn_with_priority(ThreadPriority::Max, move |_| thread_body())
-                .expect("Failed to spawn network thread");
-        }
-        #[cfg(target_os = "redox")]
-        {
-            thread::Builder::new()
-                .name("network-status".to_string())
-                .spawn(thread_body)
                 .expect("Failed to spawn network thread");
         }
 

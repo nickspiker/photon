@@ -94,7 +94,7 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 **🟢 Mainnet is live.** The network is open and permissionless — [install](#installation), pick a handle, and you're on. No invite, no waitlist, no approval. It's early and rough in places (see below), but it's real and running.
 
 ### What Works
-- ✅ Cross-platform GUI (Windows, Linux, macOS, Android; Redox builds every release) on fluor, a direct-pixel renderer — no GPU pipeline
+- ✅ Cross-platform GUI (Windows, Linux, macOS, Android) on fluor, a direct-pixel renderer — no GPU pipeline
 - ✅ Text input, selection, editing; every font bundled; sixteen languages, switched in-app
 - ✅ Handle attestation with memory-hard proof-of-work (~1s computation)
 - ✅ Peer discovery via FGTW DHT (handle → IP lookup), LAN discovery, NAT hole punching, port mapping, relay as the last resort
@@ -112,7 +112,7 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 - ✅ Self-update: signed release manifests, verified before exec; desktop hot-swaps and re-execs, Android installs automatically on Wi-Fi; release notes shown in the app
 - ✅ Notifications on every platform, cleared fleet-wide once read anywhere; a doorbell to reach a friend whose devices are asleep
 - ✅ Dozenal by default, hexadecimal for coders, arabic if you insist — every number on screen thru one base switch, magnitudes on a doubling scale (docs/dozenal.md)
-- ✅ Signed binary distribution with self-verification; Linux, Windows, macOS (Intel + ARM), Android and Redox built from one deploy
+- ✅ Signed binary distribution with self-verification; Linux, Windows, macOS (Intel + ARM) and Android built from one deploy
 
 ### What Doesn't Work Yet
 - ⚠️ Custodian recovery (all-devices-lost): threshold reconstruction is designed and partially built — **not yet a backstop you can rely on.** Keep more than one device.
@@ -136,7 +136,6 @@ Photon is a peer-to-peer messenger. Your identity is a handle you own, derived f
 | macOS x86_64 | ✅ Working | fluor direct-pixel renderer |
 | macOS Apple Silicon | ✅ Working | fluor direct-pixel renderer |
 | Android | ✅ Working | ARM64, tested on device; automatic updates |
-| Redox | 🟡 Builds every release | Orbital, untested in use |
 | iOS | ❌ Blocked | See "Why No iOS?" below |
 | ferros | ✅ Future | waiting on ferros components |
 
@@ -150,7 +149,7 @@ If that site is ever down, use the **GitHub fallback** commands further down —
 
 ### Release (Recommended)
 
-**Linux/macOS/Redox:**
+**Linux/macOS:**
 ```bash
 curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/photon/install-release.sh | sh
 ```
@@ -166,7 +165,7 @@ powershell -ExecutionPolicy Bypass -c "irm https://brobdingnagian.holdmyoscillos
 
 Pre-release builds for testing, visually tagged so they're never mistaken for release.
 
-**Linux/macOS/Redox:**
+**Linux/macOS:**
 ```bash
 curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/photon/install-development.sh | sh
 ```
@@ -195,7 +194,6 @@ Every binary self-verifies its Ed25519 signature on launch regardless of where i
 | Windows | ARM64 (aarch64) | `photon-messenger-windows-arm64-release.exe` |
 | macOS | x86_64 | `photon-messenger-macos-x86_64-release` |
 | macOS | ARM64 (aarch64) | `photon-messenger-macos-arm64-release` |
-| Redox | x86_64 | `photon-messenger-redox-release` |
 | Android | ARM64 (aarch64) | `photon-messenger-android-release.apk` |
 
 Then mark it executable and run it (it verifies itself on first launch):
@@ -296,7 +294,6 @@ let keypair = Ed25519::from_seed(&seed);      // Deterministic
 | Windows | Registry `MachineGuid` | Survives reboots, unique per install |
 | macOS | `IOPlatformUUID` | Hardware-burned, survives reinstalls |
 | Android | `ANDROID_ID` + user number | Per-device, per-signing-key |
-| Redox | `/etc/hostid` or hostname | Fallback path |
 
 **Why derived keys?**
 
@@ -804,6 +801,6 @@ See [LICENSE-MIT](LICENSE-MIT) and [LICENSE-APACHE](LICENSE-APACHE)
 
 **Project Status:** 🟡 Early Development (GUI functional, P2P status working, messaging pending)
 
-**Platform Support:** Linux x86_64 ✅ | Linux ARM64 ✅ | Windows ✅ | macOS ✅ | Android ✅ | Redox 🟡 | iOS ❌
+**Platform Support:** Linux x86_64 ✅ | Linux ARM64 ✅ | Windows ✅ | macOS ✅ | Android ✅ | iOS ❌
 
 **Last Updated:** 2026-03-11

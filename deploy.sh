@@ -220,15 +220,6 @@ echo ""
 echo "Signing Windows ARM64 binary..."
 ./target/release/photon-signature-signer target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe
 
-# Build Redox
-echo ""
-echo "Building Redox release..."
-snap_cargo build --release --target x86_64-unknown-redox
-
-echo ""
-echo "Signing Redox binary..."
-./target/release/photon-signature-signer target/x86_64-unknown-redox/release/photon-messenger
-
 # Apple code signature with a STABLE identity (self-signed 10-yr cert in the keys dir, identifier org.fgtw.photon): macOS TCC keys privacy grants (Local Network etc.) on this identity, so an updated binary keeps its permissions instead of re-prompting every release (the linker's ad-hoc signature had no identity and a per-build identifier). MUST run BEFORE photon-signature-signer — rcodesign rewrites the Mach-O, which would strip an already-appended Ed25519 tail. Gatekeeper is unaffected either way: the curl installer never sets the quarantine xattr.
 MACOS_CODESIGN_CERT="/mnt/Harbor/Code/keys/photon-macos-codesign"
 apple_sign() {
@@ -334,8 +325,6 @@ r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
     --file target/x86_64-pc-windows-gnu/release/photon-messenger.exe --remote
 r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-arm64-release.exe" \
     --file target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-redox-release" \
-    --file target/x86_64-unknown-redox/release/photon-messenger --remote
 r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-x86_64-release" \
     --file target/x86_64-apple-darwin/release/photon-messenger --remote
 r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
@@ -366,7 +355,7 @@ r2_put "$R2_BUCKET/$R2_PATH/release-notes.md" \
 
 note_time "R2 upload (10 artefacts)" $((SECONDS - PHASE_T0))
 echo ""
-echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, Redox, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
+echo "Linux ARM64, Linux x86_64, Windows x86_64, Windows ARM64, macOS x86_64, macOS ARM64, Android binaries + manifest deployed to R2"
 echo "  Windows SHA256: $WINDOWS_SHA256"
 
 # R2 is fully live — the release is public. Its provenance is the built commit $COMMIT: the hash build.rs baked into every binary (PHOTON_GIT_COMMIT) and the SHA the signed manifest stamped. Pin it with the IMMUTABLE v<n> tag and push THAT — the commit rides along with its hash intact, even tho main has moved past its parent during the ~1h build. This is NOT a branch push (a plain `git push` of the hour-old bump is rejected non-fast-forward the moment any device touched main during the build — five deploys died exactly here, 2026-08-28). main itself only ever gets the fast-forwarding dev-line bump, further down.
@@ -390,7 +379,6 @@ if ensure_release "$GH_TAG" false; then
     mirror "photon-messenger-linux-arm64-release"   target/aarch64-unknown-linux-gnu/release/photon-messenger
     mirror "photon-messenger-windows-release.exe"   target/x86_64-pc-windows-gnu/release/photon-messenger.exe
     mirror "photon-messenger-windows-arm64-release.exe" target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe
-    mirror "photon-messenger-redox-release"         target/x86_64-unknown-redox/release/photon-messenger
     mirror "photon-messenger-macos-x86_64-release"   target/x86_64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-macos-arm64-release"   target/aarch64-apple-darwin/release/photon-messenger
     mirror "photon-messenger-android-release.apk"   android/app/build/outputs/apk/release/app-release.apk
