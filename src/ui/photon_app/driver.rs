@@ -389,6 +389,8 @@ impl FluorApp for PhotonApp {
         self.beam_back_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::BeamBack)));
         self.wave_reject_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Reject)));
         self.beam_cal_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., tr(Msg::Calibrate)));
+        self.wave_mic_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
+        self.wave_out_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         for b in [
             self.wave_status_btn.as_mut(),
             self.wave_start_btn.as_mut(),
@@ -401,6 +403,8 @@ impl FluorApp for PhotonApp {
             self.beam_back_btn.as_mut(),
             self.wave_reject_btn.as_mut(),
             self.beam_cal_btn.as_mut(),
+            self.wave_mic_btn.as_mut(),
+            self.wave_out_btn.as_mut(),
         ]
         .into_iter()
         .flatten()
@@ -694,11 +698,10 @@ impl FluorApp for PhotonApp {
             }
         }
         // THE CAMERA CYCLE (Nick 2026-10-14: "ideally it cycles thru all when I tap on my preview"): a tap on the beam's self-view inset moves the phone to its next camera — front, then each back lens widest to longest, then front again.
+        // Every platform since 2026-10-17 (Nick: "cycle thru cameras on all platforms, not just Android"): a desktop moves to its next camera and restarts the sender on it.
         if hit_id == self.beam_self_hit && self.beam_self_hit != HIT_NONE && self.beam_self_rect.is_some() {
-            #[cfg(target_os = "android")]
-            if crate::wave::beam_session::android_cycle_camera() {
-                crate::log("BEAM: self-view tapped — next camera");
-            }
+            crate::log("BEAM: self-view tapped — next camera");
+            self.cycle_beam_camera();
             ctx.window.request_redraw();
             return EventResponse::Handled;
         }

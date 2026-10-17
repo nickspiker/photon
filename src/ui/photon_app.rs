@@ -1786,6 +1786,10 @@ pub struct PhotonApp {
     beam_btn: Option<Button>,
     /// The beam's Calibrate button (beam_calibrate.rs): shown beside a phone's running beam when chameleon shipped and the camera is straight.
     beam_cal_btn: Option<Button>,
+    /// The in-wave MICROPHONE picker (Nick 2026-10-17: "cycle thru … mic/speaker sources and enumerate the names"): labelled with the device in use, a tap moves to the next one (Auto first).
+    wave_mic_btn: Option<Button>,
+    /// The in-wave SPEAKER picker on a desktop (a phone's speaker is the route pill, `wave_speaker_btn`).
+    wave_out_btn: Option<Button>,
     /// BEAM FROM THE CONVERSATION (docs/beams.md stage 4): the Beam slat started this wave, so the camera goes out the moment the wave is live. Cleared when the send starts or the wave ends.
     beam_armed: bool,
     /// Reject — the silent dismissal on the ring panel (no signal to the origin; the wave row's Rejected outcome stops every sibling's ring on merge).
@@ -2764,6 +2768,8 @@ impl PhotonApp {
             wave_start_btn: None,
             beam_btn: None,
             beam_cal_btn: None,
+            wave_mic_btn: None,
+            wave_out_btn: None,
             beam_armed: false,
             beam_back_btn: None,
             wave_reject_btn: None,
@@ -3513,6 +3519,14 @@ impl PhotonApp {
                         if let Some(b) = self.beam_cal_btn.as_mut() {
                             f(b);
                         }
+                    }
+                    // The mic picker everywhere; the speaker picker on a desktop (a phone's output is the route pill above).
+                    if let Some(b) = self.wave_mic_btn.as_mut() {
+                        f(b);
+                    }
+                    #[cfg(not(target_os = "android"))]
+                    if let Some(b) = self.wave_out_btn.as_mut() {
+                        f(b);
                     }
                 }
                 _ => {}

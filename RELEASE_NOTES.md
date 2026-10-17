@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Pick your camera, microphone and speaker during a wave.** Tap your own picture during a beam to switch to the next camera on any phone or computer; its name shows underneath. The microphone and speaker buttons show which device is in use, and each tap moves to the next one, starting with Auto. Your choice is remembered on that device.
+- **Waves work on computers without a default sound device.** If the system names no default microphone or speaker, Photon now uses the first one it finds instead of going silent.
 - **Adding a device works again.** A new phone or computer can join your other devices again: the request is no longer turned away as too large, and tapping the green "finish" on your existing device now completes the join instead of doing nothing.
 - **Links look clickable.** The pointer turns into a hand over a link in a message.
 - **The pointer changes shape on a Mac even when Photon isn't the front window.** Hovering a link or the message box shows the hand or the text cursor without clicking Photon first.

@@ -663,6 +663,15 @@ pub fn render_frames_total() -> usize {
 pub fn rebuild_streams() {
     #[cfg(target_os = "android")]
     crate::platform::audio_aaudio::rebuild();
+    #[cfg(not(target_os = "android"))]
+    desktop::rebuild();
+}
+
+/// The next pick after `cur` in the cycle [Auto, names…] — a name that is gone counts as Auto, and the last name wraps back to Auto (`None`).
+pub fn next_pick(cur: &Option<String>, names: &[String]) -> Option<String> {
+    let at = cur.as_ref().and_then(|n| names.iter().position(|x| x == n)).map_or(0, |p| p + 1);
+    let next = (at + 1) % (names.len() + 1);
+    if next == 0 { None } else { Some(names[next - 1].clone()) }
 }
 
 pub fn is_active() -> bool {
@@ -1092,6 +1101,92 @@ mod desktop {
         *ROUTE.lock().unwrap()
     }
 
+    /// THE PICKS (Nick 2026-10-17: "cycle thru … mic/speaker sources and enumerate the names"): the device the user chose by name, `None` = Auto.
+    /// Auto is the host's default device, else the FIRST device the host lists (field 2026-10-17, Emma's Arch box: no ALSA default at all, so the wave ran with neither mic nor speaker).
+    static MIC_PICK: Mutex<Option<String>> = Mutex::new(None);
+    static SPEAKER_PICK: Mutex<Option<String>> = Mutex::new(None);
+    /// What the live session actually opened, by name — the label the wave screen shows.
+    static MIC_OPEN: Mutex<Option<String>> = Mutex::new(None);
+    static SPEAKER_OPEN: Mutex<Option<String>> = Mutex::new(None);
+    /// A pick changed: the session thread drops its streams and opens the new devices, the session itself staying up.
+    static REBUILD: AtomicBool = AtomicBool::new(false);
+    /// The session has a render stream (the engine's stall watchdog has nothing to rebuild without one).
+    static HAS_RENDER: AtomicBool = AtomicBool::new(false);
+
+    fn name_of(dev: &cpal::Device) -> String {
+        dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into())
+    }
+
+    pub fn input_names() -> Vec<String> {
+        cpal::default_host().input_devices().map(|ds| ds.map(|d| name_of(&d)).collect()).unwrap_or_default()
+    }
+
+    pub fn output_names() -> Vec<String> {
+        cpal::default_host().output_devices().map(|ds| ds.map(|d| name_of(&d)).collect()).unwrap_or_default()
+    }
+
+    /// The device for a pick: the named one when it is still there, else Auto (the default, else the first listed).
+    fn choose(pick: Option<String>, listed: Vec<cpal::Device>, default: Option<cpal::Device>) -> Option<cpal::Device> {
+        if let Some(want) = pick {
+            if let Some(d) = listed.iter().find(|d| name_of(d) == want) {
+                return Some(d.clone());
+            }
+            crate::logf!("AUDIO: picked device '{}' is gone — Auto", want);
+        }
+        default.or_else(|| listed.into_iter().next())
+    }
+
+    fn input_device(host: &cpal::Host) -> Option<cpal::Device> {
+        let listed: Vec<cpal::Device> = host.input_devices().map(|ds| ds.collect()).unwrap_or_default();
+        choose(MIC_PICK.lock().unwrap().clone(), listed, host.default_input_device())
+    }
+
+    fn output_device(host: &cpal::Host) -> Option<cpal::Device> {
+        let listed: Vec<cpal::Device> = host.output_devices().map(|ds| ds.collect()).unwrap_or_default();
+        choose(SPEAKER_PICK.lock().unwrap().clone(), listed, host.default_output_device())
+    }
+
+    pub fn picks() -> (Option<String>, Option<String>) {
+        (MIC_PICK.lock().unwrap().clone(), SPEAKER_PICK.lock().unwrap().clone())
+    }
+
+    pub fn set_picks(mic: Option<String>, speaker: Option<String>) {
+        *MIC_PICK.lock().unwrap() = mic;
+        *SPEAKER_PICK.lock().unwrap() = speaker;
+    }
+
+    pub fn set_mic_pick(pick: Option<String>) {
+        *MIC_PICK.lock().unwrap() = pick;
+        rebuild();
+    }
+
+    pub fn set_speaker_pick(pick: Option<String>) {
+        *SPEAKER_PICK.lock().unwrap() = pick;
+        rebuild();
+    }
+
+    pub fn opened() -> (Option<String>, Option<String>) {
+        (MIC_OPEN.lock().unwrap().clone(), SPEAKER_OPEN.lock().unwrap().clone())
+    }
+
+    pub fn has_render() -> bool {
+        HAS_RENDER.load(Ordering::Relaxed)
+    }
+
+    /// Reopen the devices for the current picks while a session is live. On a Mac whose voice-processing unit holds the session, a pick moves it to the plain path (the unit only ever opens the system defaults).
+    pub fn rebuild() {
+        if !ACTIVE.load(Ordering::SeqCst) {
+            return;
+        }
+        #[cfg(target_os = "macos")]
+        if crate::platform::audio_vpio::live() {
+            crate::platform::audio_vpio::stop();
+            let _ = std::thread::Builder::new().name("wave-audio".into()).spawn(audio_thread);
+            return;
+        }
+        REBUILD.store(true, Ordering::SeqCst);
+    }
+
     /// Start the audio session: spawns the thread that owns both cpal streams for the life of the wave. Returns false when no devices exist (the wave proceeds one-way rather than failing — a mic-less desktop can still listen).
     pub fn start() -> bool {
         if ACTIVE.swap(true, Ordering::SeqCst) {
@@ -1099,13 +1194,12 @@ mod desktop {
         }
         clear_queues();
         // The route first (the output device's name), so the backend choice below can read it.
-        if let Some(dev) = cpal::default_host().default_output_device() {
-            let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
-            *ROUTE.lock().unwrap() = sniff_route(&name);
+        if let Some(dev) = output_device(&cpal::default_host()) {
+            *ROUTE.lock().unwrap() = sniff_route(&name_of(&dev));
         }
         // THE MAC'S VOICE PROCESSING UNIT (audio_vpio.rs): built-in speakers always, a headset on the Wave page's say-so; a unit that refuses hands the wave to the plain path below.
         #[cfg(target_os = "macos")]
-        if super::voice_dsp_wanted() && crate::platform::audio_vpio::start() {
+        if super::voice_dsp_wanted() && picks() == (None, None) && crate::platform::audio_vpio::start() {
             return true;
         }
         std::thread::Builder::new()
@@ -1232,13 +1326,38 @@ mod desktop {
         Some(stream)
     }
 
+    /// The session thread: open the picked devices, park, and reopen in place when a pick changes (REBUILD) until the wave ends.
     fn audio_thread() {
-        use cpal::SampleFormat;
         let host = cpal::default_host();
+        crate::logf!("AUDIO: devices — inputs {}, outputs {} (picks {})", format!("{:?}", input_names()), format!("{:?}", output_names()), format!("{:?}", picks()));
+        loop {
+            REBUILD.store(false, Ordering::SeqCst);
+            let (in_stream, out_stream) = open_streams(&host);
+            HAS_RENDER.store(out_stream.is_some(), Ordering::Relaxed);
+            while ACTIVE.load(Ordering::Relaxed) && !REBUILD.load(Ordering::SeqCst) {
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+            drop(in_stream);
+            drop(out_stream);
+            if !ACTIVE.load(Ordering::Relaxed) {
+                break;
+            }
+            crate::log("AUDIO: a device pick changed — reopening the streams");
+        }
+        HAS_RENDER.store(false, Ordering::Relaxed);
+        *MIC_OPEN.lock().unwrap() = None;
+        *SPEAKER_OPEN.lock().unwrap() = None;
+        clear_queues();
+        crate::log("AUDIO: session closed");
+    }
 
+    /// One open of the picked mic and speaker (either may be absent — the wave runs one-way rather than not at all).
+    fn open_streams(host: &cpal::Host) -> (Option<cpal::Stream>, Option<cpal::Stream>) {
+        use cpal::SampleFormat;
         // ---- input (mic) ----
-        let in_stream = host.default_input_device().and_then(|dev| {
-            let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
+        let in_stream = input_device(host).and_then(|dev| {
+            let name = name_of(&dev);
+            *MIC_OPEN.lock().unwrap() = Some(name.clone());
             super::set_mic_identity(format!("mic:{name}"));
             let sc = dev.default_input_config().ok()?;
             let src_rate = sc.sample_rate();
@@ -1263,12 +1382,14 @@ mod desktop {
             }
         });
         if in_stream.is_none() {
+            *MIC_OPEN.lock().unwrap() = None;
             crate::log("AUDIO: no capture device — the wave is listen-only on this end");
         }
 
         // ---- output (speaker) ----
-        let out_stream = host.default_output_device().and_then(|dev| {
-            let name = dev.description().map(|d| d.name().to_string()).unwrap_or_else(|_| "?".into());
+        let out_stream = output_device(host).and_then(|dev| {
+            let name = name_of(&dev);
+            *SPEAKER_OPEN.lock().unwrap() = Some(name.clone());
             let sniffed = sniff_route(&name);
             *ROUTE.lock().unwrap() = sniffed;
             // Calibration-profile key: coarse route + the device name (a USB headset and the built-in jack must not share a profile).
@@ -1300,22 +1421,24 @@ mod desktop {
             }
         });
         if out_stream.is_none() {
+            *SPEAKER_OPEN.lock().unwrap() = None;
             crate::log("AUDIO: no render device — the wave is talk-only on this end");
         }
-
-        // Park until the session ends; streams die with this scope.
-        while ACTIVE.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(50));
-        }
-        drop(in_stream);
-        drop(out_stream);
-        clear_queues();
-        crate::log("AUDIO: session closed");
+        (in_stream, out_stream)
     }
 }
 
 #[cfg(not(target_os = "android"))]
 pub use desktop::{route, start, stop};
+/// The wave screen's mic and speaker pickers (desktop: cpal's devices by name).
+#[cfg(not(target_os = "android"))]
+pub use desktop::{has_render, input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+
+/// Android renders thru AAudio for the life of the wave; its stall watchdog always has a stream to rebuild.
+#[cfg(target_os = "android")]
+pub fn has_render() -> bool {
+    true
+}
 
 // ---------------------------------------------------------------------------
 // Android: Kotlin owns the device loops; JNI crosses into the shared queues.
@@ -1367,6 +1490,69 @@ mod android {
         }
     }
 
+    /// THE MIC PICKER on a phone (Nick 2026-10-17): the inputs Kotlin lists, as (AudioDeviceInfo id, name); the pick is by NAME (ids are reassigned across boots and plugs), resolved to an id at each input open.
+    static MICS: Mutex<Vec<(i32, String)>> = Mutex::new(Vec::new());
+    static MIC_PICK: Mutex<Option<String>> = Mutex::new(None);
+    /// The input the live stream actually opened, by name.
+    static MIC_OPEN: Mutex<Option<String>> = Mutex::new(None);
+
+    pub(crate) fn set_mic_list(mics: Vec<(i32, String)>) {
+        *MICS.lock().unwrap() = mics;
+    }
+
+    fn refresh_mics() {
+        let _ = crate::platform::jni_android::wave_service_void("pushMicList");
+    }
+
+    pub fn input_names() -> Vec<String> {
+        refresh_mics();
+        MICS.lock().unwrap().iter().map(|(_, n)| n.clone()).collect()
+    }
+
+    /// A phone's speaker is the route pill, not this picker.
+    pub fn output_names() -> Vec<String> {
+        Vec::new()
+    }
+
+    pub fn picks() -> (Option<String>, Option<String>) {
+        (MIC_PICK.lock().unwrap().clone(), None)
+    }
+
+    pub fn set_picks(mic: Option<String>, _speaker: Option<String>) {
+        *MIC_PICK.lock().unwrap() = mic;
+    }
+
+    pub fn set_mic_pick(pick: Option<String>) {
+        *MIC_PICK.lock().unwrap() = pick;
+        if ACTIVE.load(Ordering::Relaxed) {
+            crate::platform::audio_aaudio::rebuild();
+        }
+    }
+
+    pub fn set_speaker_pick(_pick: Option<String>) {}
+
+    pub fn opened() -> (Option<String>, Option<String>) {
+        (MIC_OPEN.lock().unwrap().clone(), None)
+    }
+
+    /// The AAudio device id for the picked mic, 0 (Android routes) for Auto or a pick that is gone.
+    pub(crate) fn picked_mic_id() -> i32 {
+        let Some(want) = MIC_PICK.lock().unwrap().clone() else { return 0 };
+        refresh_mics();
+        let found = MICS.lock().unwrap().iter().find(|(_, n)| *n == want).map(|(id, _)| *id);
+        if found.is_none() {
+            crate::logf!("AUDIO: picked mic '{}' is gone — Auto", want);
+        }
+        found.unwrap_or(0)
+    }
+
+    /// The input stream opened on this device id: name it for the picker label.
+    pub(crate) fn note_mic_opened(device_id: i32) {
+        refresh_mics();
+        let name = MICS.lock().unwrap().iter().find(|(id, _)| *id == device_id).map(|(_, n)| n.clone());
+        *MIC_OPEN.lock().unwrap() = name;
+    }
+
     /// Route on Android — mirrored down from Kotlin's AudioDeviceCallback (see `on_route_mirror`); Unknown until the first callback (the duck treats Unknown as Builtin, the safe default).
     static ANDROID_ROUTE: Mutex<AudioRoute> = Mutex::new(AudioRoute::Unknown);
 
@@ -1404,10 +1590,26 @@ mod android {
 pub use android::{route, start, stop};
 #[cfg(target_os = "android")]
 pub(crate) use android::{on_mic_granted, on_mic_mirror, on_route_mirror, on_volume_mirror};
+/// The wave screen's mic picker on a phone (its speaker is the route pill).
+#[cfg(target_os = "android")]
+pub use android::{input_names, opened, output_names, picks, set_mic_pick, set_picks, set_speaker_pick};
+#[cfg(target_os = "android")]
+pub(crate) use android::{note_mic_opened, picked_mic_id, set_mic_list};
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The picker cycle (Nick 2026-10-17): Auto, then every device by name, then Auto again; a device that vanished counts as Auto so the next tap lands on the first real one.
+    #[test]
+    fn device_picks_cycle_auto_then_each_name() {
+        let names = vec!["Built-in".to_string(), "USB Headset".to_string()];
+        assert_eq!(next_pick(&None, &names), Some("Built-in".into()));
+        assert_eq!(next_pick(&Some("Built-in".into()), &names), Some("USB Headset".into()));
+        assert_eq!(next_pick(&Some("USB Headset".into()), &names), None);
+        assert_eq!(next_pick(&Some("Unplugged".into()), &names), Some("Built-in".into()));
+        assert_eq!(next_pick(&None, &[]), None);
+    }
 
     /// ONE test on purpose: the queues are process-global statics, so parallel test threads racing clear_queues corrupt each other — everything that touches them serializes here.
     #[test]

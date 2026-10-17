@@ -236,6 +236,11 @@ pub enum Msg<'a> {
     SpeakerToggleOn,
     SpeakerToggleOff,
     SpeakerPlain,
+    /// The automatic device choice in the wave screen's mic / speaker / camera pickers (the system default, else the first device found).
+    AutoPick,
+    /// A phone camera's facing in the beam's self-view caption ("Back · 24 mm").
+    CameraFront,
+    CameraBack,
     EarpiecePlain,
     /// The earpiece on a device whose voice path is slow (a longer delay than the loudspeaker).
     EarpieceSlower,

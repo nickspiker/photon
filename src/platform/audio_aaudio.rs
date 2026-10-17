@@ -3,7 +3,7 @@
 //! Kotlin keeps only what Android makes Kotlin's: the proximity lock, the foreground-service microphone type, the lock-screen flags, the RECORD_AUDIO prompt (whose grant calls `nativeMicGranted` → [`ensure_input`]), and the route/volume mirrors.
 
 use std::ffi::c_void;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::sync::Mutex;
 
 use ndk::audio::{
@@ -26,6 +26,8 @@ struct Session {
 static SESSION: Mutex<Option<Session>> = Mutex::new(None);
 /// A stream reported an error (route change, device gone): rebuilt off the callback thread, once per fault.
 static REOPENING: AtomicBool = AtomicBool::new(false);
+/// The AAudio device id of the picked microphone for the next input open (0 = let Android route).
+static PICKED_INPUT: AtomicI32 = AtomicI32::new(0);
 /// The render's usage for the NEXT output open: voice communication (true) or media (false). start_output decides it per open.
 static OUTPUT_VOICE: AtomicBool = AtomicBool::new(true);
 
@@ -67,6 +69,9 @@ fn build(direction: AudioDirection, sharing: AudioSharingMode, format: i32, cb: 
         .format(AudioFormat::from(format))
         .data_callback(cb)
         .error_callback(Box::new(move |_s, e| on_stream_error(direction, e)));
+    // The picked microphone (the wave screen's mic picker): its device id, 0 = Android routes as it would.
+    let picked = PICKED_INPUT.load(Ordering::Relaxed);
+    let b = if matches!(direction, AudioDirection::Input) && picked > 0 { b.device_id(picked) } else { b };
     b.open_stream().map_err(|e| format!("{sharing:?}: {e:?}"))
 }
 
@@ -227,7 +232,10 @@ pub fn rebuild() {
 fn start_input() -> Result<AudioStream, String> {
     // The preset is decided at open (see voice_dsp_wanted); what opened is what the engine's level plan and the duck read.
     let vendor = super::audio::voice_dsp_wanted();
+    // The pick resolves to a device id once per open (the builder reads it on every format/sharing attempt).
+    PICKED_INPUT.store(super::audio::picked_mic_id(), Ordering::Relaxed);
     let s = open_with_fallback(AudioDirection::Input, &input_callback)?;
+    super::audio::note_mic_opened(s.device_id());
     super::audio::VOICE_DSP_ACTIVE.store(vendor, Ordering::Relaxed);
     super::audio::VOICE_DSP_CANCELS.store(vendor, Ordering::Relaxed); // the phone's canceller and gain control come as one
     crate::logf!("AUDIO: input opened {} (route \"{}\")", if vendor { "thru the phone's voice processing" } else { "unprocessed, calibrated" }, super::audio::route_id());

@@ -22,23 +22,29 @@ pub struct Camera {
     frames: u64,
 }
 
-/// The first /dev/video* that offers YUYV capture. Metadata-only nodes (the second node most UVC cameras expose) have no formats and are skipped.
-fn find_device() -> Result<String, String> {
+/// Every /dev/video* that offers YUYV capture, as (path, name) — the name is the driver's card string, what the user knows the camera by. Metadata-only nodes (the second node most UVC cameras expose) have no formats and are skipped.
+pub fn list() -> Vec<(String, String)> {
     let yuyv = v4l::FourCC::new(b"YUYV");
+    let mut out = Vec::new();
     for i in 0..16u32 {
         let p = format!("/dev/video{i}");
         let Ok(dev) = v4l::Device::with_path(&p) else { continue };
         let Ok(formats) = Capture::enum_formats(&dev) else { continue };
         if formats.iter().any(|f| f.fourcc == yuyv) {
-            return Ok(p);
+            let name = dev.query_caps().map(|c| c.card).unwrap_or_else(|_| p.clone());
+            out.push((p, name));
         }
     }
-    Err("BEAM: no V4L2 camera with YUYV capture under /dev/video0..15".into())
+    out
 }
 
-/// Open the camera at 640×480 YUYV, or whatever even size the driver settles on.
-pub fn open() -> Result<Camera, String> {
-    let path = find_device()?;
+/// Open a camera (`path`, else the first listed) at 640×480 YUYV, or whatever even size the driver settles on.
+pub fn open(path: Option<&str>) -> Result<Camera, String> {
+    let cams = list();
+    let path = match path.and_then(|want| cams.iter().find(|(p, _)| p == want)) {
+        Some((p, _)) => p.clone(),
+        None => cams.first().map(|(p, _)| p.clone()).ok_or("BEAM: no V4L2 camera with YUYV capture under /dev/video0..15")?,
+    };
     let dev = v4l::Device::with_path(&path).map_err(|e| format!("{path}: {e} (another process has the camera? `fuser {path}`)"))?;
     // Close-on-exec: a child we spawn must not keep the camera busy after we are gone (opsin learned this with ffmpeg).
     {

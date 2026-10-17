@@ -1110,6 +1110,17 @@ impl PhotonApp {
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                         }
+                        // The phone's MIC picker (Nick 2026-10-17) above the route pill: labelled with the input in use, a tap moves to the next.
+                        #[cfg(target_os = "android")]
+                        if let Some(b) = self.wave_mic_btn.as_mut() {
+                            let (mic_pick, _) = crate::platform::audio::picks();
+                            let (mic_open, _) = crate::platform::audio::opened();
+                            b.set_rect(rx, ry - bh * 1.3, bw, bh);
+                            b.set_font_size(bfont * 0.6);
+                            b.set_label(Self::device_label("🎤", mic_pick, mic_open));
+                            let id = b.hit_id();
+                            b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
                         // The BEAM toggle (docs/beams.md), in the right slot the route button holds on Android: live when this device has a codec and a camera path.
                         #[cfg(not(target_os = "android"))]
                         if let Some(b) = self.beam_btn.as_mut() {
@@ -1120,6 +1131,26 @@ impl PhotonApp {
                             b.set_enabled(crate::wave::beam_session::can_send());
                             let id = b.hit_id();
                             b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                        }
+                        // THE MIC AND SPEAKER PICKERS (Nick 2026-10-17): the speaker above ‹ Contact, the mic above Beam, each labelled with the device in use; a tap moves to the next.
+                        #[cfg(not(target_os = "android"))]
+                        {
+                            let (mic_pick, out_pick) = crate::platform::audio::picks();
+                            let (mic_open, out_open) = crate::platform::audio::opened();
+                            if let Some(b) = self.wave_out_btn.as_mut() {
+                                b.set_rect(lx, ly - bh * 1.3, bw, bh);
+                                b.set_font_size(bfont * 0.6);
+                                b.set_label(Self::device_label("🔊", out_pick, out_open));
+                                let id = b.hit_id();
+                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            }
+                            if let Some(b) = self.wave_mic_btn.as_mut() {
+                                b.set_rect(rx, ry - bh * 1.3, bw, bh);
+                                b.set_font_size(bfont * 0.6);
+                                b.set_label(Self::device_label("🎤", mic_pick, mic_open));
+                                let id = b.hit_id();
+                                b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
+                            }
                         }
                     }
                 }
@@ -1137,9 +1168,19 @@ impl PhotonApp {
                         let m = s / 8;
                         let (ix, iy) = (rx0 + rw - s - m, ry0 + ph.saturating_sub(s + m));
                         super::wave_field::paint_picture_rect(&mut canvas, ix, iy, s, s, &me, false);
-                        // The inset is the camera switch on a phone (a tap cycles lenses): its square is a tap target, re-stamped at the end of the frame.
-                        if cfg!(target_os = "android") && crate::wave::beam_session::android_sending() {
+                        // The inset is the camera switch (a tap cycles lenses on a phone, devices on a desktop): its square is a tap target, re-stamped at the end of the frame.
+                        let sending = if cfg!(target_os = "android") {
+                            crate::wave::beam_session::android_sending()
+                        } else {
+                            self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && crate::wave::beam_session::desktop_cameras().len() > 1
+                        };
+                        if sending {
                             self.beam_self_rect = Some((ix, iy, ix + s, iy + s));
+                        }
+                        // The camera's name under the inset (Nick 2026-10-17: "enumerate the names").
+                        if let Some(name) = Self::camera_label() {
+                            let cap = TextStyle::new((s as f32 / 9.0).max(10.0), *theme::STATUS_TEXT_COLOUR).font("Oxanium");
+                            ctx.text.draw_text_center(&mut canvas, &name, (ix + s / 2) as f32, (iy + s + m) as f32 + s as f32 / 12.0, &cap, None, None);
                         }
                     }
                     if let Some(p) = peer {

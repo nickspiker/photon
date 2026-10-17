@@ -159,6 +159,9 @@ impl Drop for Receiver {
 
 /// Start receiving the peer's beam for a wave. `we_are_origin` picks the chain: the peer sends in the other direction.
 /// THE BEAM'S TRANSPORT OUTLIVES ITS CAMERA (field 2026-10-14, Emma's Samsung on v118: the beam turned off and on mid-wave, the restart built a NEW BeamTx whose step chain began again at 0, the receiver's chain had moved past it, and all 3,700 packets after the restart failed to open — the far side froze on the last picture). One transport per wave and direction, with its frame counter: parked when the camera stops, taken back when it starts again. Keyed by a one-way hash of the wave secret and our side, so a new wave never inherits it; dropped when a wave's receiver starts or stops (the wave's own edges).
+/// The lens the phone is beaming from, as Kotlin names it ("Front", "Back · 24 mm"), for the self-view caption.
+static ANDROID_CAMERA_NAME: Mutex<Option<String>> = Mutex::new(None);
+
 static PARKED_TX: Mutex<Option<([u8; 32], BeamTx, u32)>> = Mutex::new(None);
 
 fn tx_key(wave_secret: &[u8; 32], we_are_origin: bool) -> [u8; 32] {
@@ -500,7 +503,8 @@ pub fn android_arm(wave_secret: [u8; 32], we_are_origin: bool) -> bool {
 
 /// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed. `camera` names the lens ("1", "0/3" — logical id / physical id), the key a calibration is kept under.
 /// A CAMERA SWITCH mid-beam (Nick 2026-10-14: "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview") arrives as this same edge while the sender is live: the transport stays — a new BeamTx would restart its key chain — and the ladder rebuilds from the new capture keeping the link's detail; the new size, colour and orientation go out at once, and the encoder's restart opens with the keyframe the new size needs.
-pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, camera: &str) -> Result<(), String> {
+pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, camera: &str, camera_name: &str) -> Result<(), String> {
+    *ANDROID_CAMERA_NAME.lock().unwrap() = Some(camera_name.to_string());
     let Some((secret, origin)) = *ANDROID_ARMED.lock().unwrap() else {
         return Err("BEAM: pipeline up with nothing armed".into());
     };
@@ -692,15 +696,87 @@ pub fn assumed_srgb_entry() -> vsf::spectral_image::ProfileEntry {
     }
 }
 
-/// The desktop's camera, if the platform has one we can open: Linux V4L2 today.
-pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
+/// The desktop camera the user picked (Nick 2026-10-17: "cycle thru cameras on all platforms"), by its platform id — a V4L2 path or an AVFoundation uniqueID. `None` = the first / system default.
+static DESKTOP_CAMERA: Mutex<Option<String>> = Mutex::new(None);
+
+/// The cameras as last enumerated: the render reads this every frame, and enumerating opens every /dev/video node, so it refreshes on edges only (a beam starting, a switch).
+static DESKTOP_CAMS: Mutex<Option<Vec<(String, String)>>> = Mutex::new(None);
+
+/// Every camera this desktop can beam from, as (id, name) — the cached list.
+pub fn desktop_cameras() -> Vec<(String, String)> {
+    let mut cached = DESKTOP_CAMS.lock().unwrap();
+    if cached.is_none() {
+        *cached = Some(enumerate_desktop_cameras());
+    }
+    cached.clone().unwrap_or_default()
+}
+
+/// Forget the cached list: the next read enumerates again (a camera plugged in or out since).
+pub fn refresh_desktop_cameras() {
+    *DESKTOP_CAMS.lock().unwrap() = None;
+}
+
+fn enumerate_desktop_cameras() -> Vec<(String, String)> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
-        crate::platform::camera_v4l2::open().map(|c| Box::new(c) as Box<dyn FrameSource>)
+        crate::platform::camera_v4l2::list()
     }
     #[cfg(target_os = "macos")]
     {
-        crate::platform::camera_avf::open().map(|c| Box::new(c) as Box<dyn FrameSource>)
+        crate::platform::camera_avf::list()
+    }
+    #[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
+    {
+        Vec::new()
+    }
+}
+
+pub fn desktop_camera_pick() -> Option<String> {
+    DESKTOP_CAMERA.lock().unwrap().clone()
+}
+
+pub fn set_desktop_camera_pick(id: Option<String>) {
+    *DESKTOP_CAMERA.lock().unwrap() = id;
+}
+
+/// Advance the pick to the next camera (wrapping), returning the new pick — `None` when there is nothing to cycle to.
+pub fn next_desktop_camera() -> Option<String> {
+    refresh_desktop_cameras();
+    let cams = desktop_cameras();
+    if cams.len() < 2 {
+        return None;
+    }
+    let cur = desktop_camera_pick();
+    let at = cur.as_ref().and_then(|c| cams.iter().position(|(id, _)| id == c)).unwrap_or(0);
+    let next = cams[(at + 1) % cams.len()].0.clone();
+    set_desktop_camera_pick(Some(next.clone()));
+    Some(next)
+}
+
+/// The name of the camera this device is beaming from (desktop: the pick, else the first listed; phone: the lens Kotlin opened).
+pub fn camera_name() -> Option<String> {
+    #[cfg(target_os = "android")]
+    {
+        ANDROID_CAMERA_NAME.lock().unwrap().clone()
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let cams = desktop_cameras();
+        let pick = desktop_camera_pick();
+        pick.as_ref().and_then(|p| cams.iter().find(|(id, _)| id == p)).or(cams.first()).map(|(_, n)| n.clone())
+    }
+}
+
+/// The desktop's camera, if the platform has one we can open: the user's pick, else the first one.
+pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
+    let pick = desktop_camera_pick();
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        crate::platform::camera_v4l2::open(pick.as_deref()).map(|c| Box::new(c) as Box<dyn FrameSource>)
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::platform::camera_avf::open(pick.as_deref()).map(|c| Box::new(c) as Box<dyn FrameSource>)
     }
     #[cfg(not(any(all(target_os = "linux", target_arch = "x86_64"), target_os = "macos")))]
     {

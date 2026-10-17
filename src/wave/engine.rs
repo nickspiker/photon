@@ -819,7 +819,8 @@ fn run(
             let rendered = crate::platform::audio::render_frames_total();
             if rendered != stall_mark.0 {
                 stall_mark = (rendered, rx_queued_frames);
-            } else if rx_queued_frames - stall_mark.1 >= 400 {
+            } else if rx_queued_frames - stall_mark.1 >= 400 && crate::platform::audio::has_render() {
+                // Only a speaker that EXISTS can stall (field 2026-10-17, Emma's Arch box: no render device at all, and this rebuilt nothing every 2 s for the whole wave).
                 crate::logf!("WAVE: the speaker stopped rendering — {} far frame(s) queued since its last frame; rebuilding the audio streams", rx_queued_frames - stall_mark.1);
                 crate::platform::audio::rebuild_streams();
                 stall_mark = (rendered, rx_queued_frames);

@@ -115,8 +115,31 @@ impl Drop for Camera {
     }
 }
 
-/// Open the default camera at 640×480. Blocks briefly for the first frame so the geometry is the camera's real one.
-pub fn open() -> Result<Camera, String> {
+/// Every camera AVFoundation offers (built-in, USB, Continuity Camera), as (uniqueID, localizedName).
+pub fn list() -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    unsafe {
+        let video = NSString::from_str("vide");
+        #[allow(deprecated)]
+        let devices: Option<Retained<AnyObject>> = msg_send![class!(AVCaptureDevice), devicesWithMediaType: &*video];
+        let Some(devices) = devices else { return out };
+        let n: usize = msg_send![&*devices, count];
+        for i in 0..n {
+            let d: Retained<AnyObject> = msg_send![&*devices, objectAtIndex: i];
+            let id: Option<Retained<NSString>> = msg_send![&*d, uniqueID];
+            let name: Option<Retained<NSString>> = msg_send![&*d, localizedName];
+            if let Some(id) = id {
+                let id = id.to_string();
+                let name = name.map_or_else(|| id.clone(), |s| s.to_string());
+                out.push((id, name));
+            }
+        }
+    }
+    out
+}
+
+/// Open a camera (`id` = its uniqueID, else the system default) at 640×480. Blocks briefly for the first frame so the geometry is the camera's real one.
+pub fn open(id: Option<&str>) -> Result<Camera, String> {
     match crate::platform::mic_permission::camera_status() {
         crate::platform::mic_permission::MicAccess::Granted => {}
         crate::platform::mic_permission::MicAccess::Undetermined => {
@@ -131,7 +154,17 @@ pub fn open() -> Result<Camera, String> {
     }
     unsafe {
         let video = NSString::from_str("vide");
-        let device: Option<Retained<AnyObject>> = msg_send![class!(AVCaptureDevice), defaultDeviceWithMediaType: &*video];
+        let picked: Option<Retained<AnyObject>> = match id {
+            Some(id) => {
+                let uid = NSString::from_str(id);
+                msg_send![class!(AVCaptureDevice), deviceWithUniqueID: &*uid]
+            }
+            None => None,
+        };
+        let device: Option<Retained<AnyObject>> = match picked {
+            Some(d) => Some(d),
+            None => msg_send![class!(AVCaptureDevice), defaultDeviceWithMediaType: &*video],
+        };
         let device = device.ok_or("BEAM: no camera on this Mac")?;
         let null_err: *mut *mut AnyObject = std::ptr::null_mut();
         let input: Option<Retained<AnyObject>> = msg_send![class!(AVCaptureDeviceInput), deviceInputWithDevice: &*device, error: null_err];

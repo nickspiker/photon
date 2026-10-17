@@ -41,7 +41,7 @@ class PhotonBeam(
     /** One encoded access unit + the gains the ISP applied (Q12: R, G-even, G-odd, B). */
     private val onFrame: (ByteArray, IntArray) -> Unit,
     /** The pipeline is up (again, after a camera switch): width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, whether the straight-thru colour path took, whether our γ2 curve took, and the camera's key ("1", "0/3"). */
-    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean, String) -> Unit,
+    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean, String, String) -> Unit,
     /** The self-view: a 4× subsampled I420 frame (y‖u‖v), every other camera frame. */
     private val onSelf: (ByteArray, Int, Int) -> Unit,
     /** The picture's rotation changed: quarter turns clockwise that put the world's up at the top, and whether this is a front camera. */
@@ -94,7 +94,7 @@ class PhotonBeam(
     @Volatile private var gains: IntArray = UNIT_GAINS
 
     /** One camera the beam can be on: a logical camera, or one physical lens of a logical multi-camera (opened thru its logical id, the stream pinned to the lens). `chars` describe the SENSOR (sizes, matrix, orientation, facing); `logical` holds the request capabilities. `key` names it to Rust ("1", "0/3"), `fov` orders it (sensor width ÷ focal length — wider first). */
-    private class Target(val openId: String, val physicalId: String?, val chars: CameraCharacteristics, val logical: CameraCharacteristics, val key: String, val fov: Float, val front: Boolean)
+    private class Target(val openId: String, val physicalId: String?, val chars: CameraCharacteristics, val logical: CameraCharacteristics, val key: String, val fov: Float, val front: Boolean, val label: String)
 
     private var targets: List<Target> = emptyList()
     private var target: Target? = null
@@ -164,7 +164,7 @@ class PhotonBeam(
             try {
                 startSession(dev, t, t.physicalId != null)
                 // The label follows the COLOUR path alone (not whether distortion or edge keys existed): absolute only when the straight colour path took.
-                onStarted(w, h, fps, matrix, fullStraight, curveTook, t.key)
+                onStarted(w, h, fps, matrix, fullStraight, curveTook, t.key, t.label)
             } catch (e: Throwable) {
                 PhotonLog.w(TAG, "session failed", e)
                 stop()
@@ -238,7 +238,11 @@ class PhotonBeam(
             val sig = "$front/${"%.2f".format(focal)}/${"%.2f".format(phys?.width ?: 0f)}"
             if (!seen.add(sig)) return
             val fov = if (focal > 0f && phys != null) phys.width / focal else 1f
-            out.add(Target(openId, physId, chars, logical, if (physId == null) openId else "$openId/$physId", fov, front))
+            // The lens as a person names it: facing + 35 mm-equivalent focal length ("back|24"); Rust words it in the UI language for the self-view caption.
+            val diag = phys?.let { kotlin.math.hypot(it.width.toDouble(), it.height.toDouble()) } ?: 0.0
+            val eq = if (focal > 0f && diag > 0.0) Math.round(focal * 43.27 / diag).toInt() else 0
+            val label = (if (front) "front" else "back") + "|" + eq
+            out.add(Target(openId, physId, chars, logical, if (physId == null) openId else "$openId/$physId", fov, front, label))
         }
         for (id in cm.cameraIdList) {
             val chars = cm.getCameraCharacteristics(id)

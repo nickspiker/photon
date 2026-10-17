@@ -510,6 +510,8 @@ impl PhotonApp {
         if let Some(cb) = self.settings_wave_hold_check.as_mut() {
             cb.set_checked(self.wave_hold);
         }
+        // The remembered mic / speaker / camera picks (device-local): the next wave and beam open them.
+        self.apply_device_picks();
         // The phone's voice processing: device-local, absent = OFF.
         // Absent = OFF on the phone (the raw earpiece sounds best and runs 50 ms sooner), ON on the Mac (Nick 2026-10-03: a MacBook's mic is next to its speakers; the unit's gain control is off there, so nothing of ours is lost).
         let voice_dsp = self

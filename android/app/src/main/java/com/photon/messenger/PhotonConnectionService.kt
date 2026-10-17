@@ -1014,7 +1014,7 @@ class PhotonConnectionService : Service() {
     private external fun nativeMicGranted()  // RECORD_AUDIO landed mid-wave: Rust opens the AAudio input leg it could not open at start.
     // BEAMS (docs/beams.md): one encoded H.264 access unit + the ISP's gains (Q12), and the pipeline-up edge with the camera's geometry, the maker's XYZ→camera matrix (or null) and whether the straight-thru request took.
     private external fun nativeBeamFrame(au: ByteArray, g0: Int, g1: Int, g2: Int, g3: Int)
-    private external fun nativeBeamStarted(w: Int, h: Int, fps: Int, matrix: FloatArray?, straight: Boolean, curve: Boolean, camera: String)
+    private external fun nativeBeamStarted(w: Int, h: Int, fps: Int, matrix: FloatArray?, straight: Boolean, curve: Boolean, camera: String, label: String)
     private external fun nativeBeamSelf(planes: ByteArray, w: Int, h: Int)
     private external fun nativeBeamOrient(quarterTurns: Int, front: Boolean)
 
@@ -1034,7 +1034,7 @@ class PhotonConnectionService : Service() {
         promoteForeground(waveAudioRunning)
         val b = PhotonBeam(this,
             onFrame = { au, g -> try { nativeBeamFrame(au, g[0], g[1], g[2], g[3]) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamFrame", e) } },
-            onStarted = { w, h, fps, m, straight, curve, camera -> try { nativeBeamStarted(w, h, fps, m, straight, curve, camera) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamStarted", e) } },
+            onStarted = { w, h, fps, m, straight, curve, camera, label -> try { nativeBeamStarted(w, h, fps, m, straight, curve, camera, label) } catch (e: Throwable) { PhotonLog.w(TAG, "beam: nativeBeamStarted", e) } },
             onSelf = { planes, w, h -> try { nativeBeamSelf(planes, w, h) } catch (_: Throwable) {} },
             onOrient = { q, front -> try { nativeBeamOrient(q, front) } catch (_: Throwable) {} })
         beam = b
@@ -1144,6 +1144,28 @@ class PhotonConnectionService : Service() {
             }
         } catch (e: Exception) { PhotonLog.w(TAG, "waveAudio: route change failed", e) }
         applyRouteSideEffects()
+    }
+
+    private external fun nativeMicList(list: String)
+
+    /** The phone's microphones for the in-wave mic picker (Rust: wave_service_void "pushMicList", Nick 2026-10-17): one "id<TAB>name" line per input, handed back synchronously. Named by product name plus the mic's position where Android gives one ("bottom", "back"). */
+    fun pushMicList() {
+        val am = getSystemService(AUDIO_SERVICE) as android.media.AudioManager
+        val sb = StringBuilder()
+        for (d in am.getDevices(android.media.AudioManager.GET_DEVICES_INPUTS)) {
+            val kind = when (d.type) {
+                android.media.AudioDeviceInfo.TYPE_BUILTIN_MIC -> "mic"
+                android.media.AudioDeviceInfo.TYPE_WIRED_HEADSET -> "headset"
+                android.media.AudioDeviceInfo.TYPE_USB_DEVICE, android.media.AudioDeviceInfo.TYPE_USB_HEADSET -> "usb"
+                android.media.AudioDeviceInfo.TYPE_BLUETOOTH_SCO, android.media.AudioDeviceInfo.TYPE_BLE_HEADSET -> "bt"
+                else -> continue
+            }
+            val product = d.productName?.toString()?.takeIf { it.isNotBlank() }
+            val where = d.address?.takeIf { it.isNotBlank() && !it.contains(':') }
+            val name = listOfNotNull(product, where).joinToString(" · ").ifBlank { kind }
+            sb.append(d.id).append('\t').append(name.replace('\t', ' ').replace('\n', ' ')).append('\n')
+        }
+        try { nativeMicList(sb.toString()) } catch (e: Throwable) { PhotonLog.w(TAG, "mic list: ${e.message}") }
     }
 
     /** The in-wave route pill (Rust: wave_service_void "cycleWaveRoute"): advance the wave's output to the next available communication device — earpiece → speaker → headset → bluetooth, whatever the list holds this moment. */

@@ -356,16 +356,17 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamFill(
 
 /// BEAMS: the phone's pipeline is up — geometry, fps, the maker's XYZ→camera matrix (9 floats row-major, or null) and whether the straight-thru request took in full. Starts the encoded sender armed by the Beam button.
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(mut env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean, curve: jni::sys::jboolean, camera: JString<'_>) {
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(mut env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean, curve: jni::sys::jboolean, camera: JString<'_>, name: JString<'_>) {
     let camera: String = env.get_string(&camera).map(String::from).unwrap_or_default();
+    let name: String = env.get_string(&name).map(String::from).unwrap_or_default();
     let maker = if matrix.is_null() {
         None
     } else {
         let mut m = [0f32; 9];
         env.get_float_array_region(&matrix, 0, &mut m).ok().map(|_| m)
     };
-    match crate::wave::beam_session::android_started(w.max(2) as usize, h.max(2) as usize, fps.clamp(1, 120) as u32, maker, straight != 0, curve != 0, &camera) {
-        Ok(()) => info!("BEAM: phone sender up — camera {} {}x{} @ {} fps (maker matrix {}, straight {}, γ2 curve {})", camera, w, h, fps, maker.is_some(), straight != 0, curve != 0),
+    match crate::wave::beam_session::android_started(w.max(2) as usize, h.max(2) as usize, fps.clamp(1, 120) as u32, maker, straight != 0, curve != 0, &camera, &name) {
+        Ok(()) => info!("BEAM: phone sender up — camera {} ({}) {}x{} @ {} fps (maker matrix {}, straight {}, γ2 curve {})", camera, name, w, h, fps, maker.is_some(), straight != 0, curve != 0),
         Err(e) => error!("BEAM: {}", e),
     }
 }
@@ -967,6 +968,19 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeAudioM
         .map(|s| s.into())
         .unwrap_or_else(|_| "builtin-mic".to_string());
     crate::platform::audio::on_mic_mirror(id);
+}
+
+/// The phone's microphones for the in-wave mic picker: "id<TAB>name" lines, pushed back synchronously from `pushMicList`.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeMicList(mut env: JNIEnv<'_>, _class: JClass<'_>, list: JString<'_>) {
+    let list: String = env.get_string(&list).map(|s| s.into()).unwrap_or_default();
+    let mics = list
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .filter_map(|(id, name)| id.parse::<i32>().ok().map(|id| (id, name.to_string())))
+        .collect();
+    crate::platform::audio::set_mic_list(mics);
 }
 
 /// Volume mirror (calibration substrate): the STREAM_VOICE_CALL volume in dB, at service start + on every VOLUME_CHANGED broadcast.

@@ -102,6 +102,15 @@ impl PhotonApp {
             crate::wave::beam_calibrate::request();
             any = true;
         }
+        // The mic and speaker pickers: each tap moves to the next device (Auto first), reopens the streams in place, and remembers the pick on this device.
+        if self.wave_mic_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
+            self.cycle_mic();
+            any = true;
+        }
+        if self.wave_out_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
+            self.cycle_speaker();
+            any = true;
+        }
         if self.beam_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) {
             match phase {
                 Some(WavePhase::Active) => {
@@ -1824,27 +1833,133 @@ impl PhotonApp {
         }
         #[cfg(not(target_os = "android"))]
         {
-            let source = match crate::wave::beam_session::open_desktop_camera() {
-                Ok(s) => s,
-                Err(e) => {
-                    crate::logf!("BEAM: {}", e);
-                    // The system's camera prompt is up (a Mac's first beam): stay armed, and the answer's edge opens the camera.
-                    #[cfg(target_os = "macos")]
-                    if e == crate::platform::camera_avf::ASKING {
-                        self.beam_armed = true;
-                    }
-                    return;
+            let _ = secret;
+            self.start_desktop_beam();
+        }
+    }
+
+    /// Open the picked desktop camera and start sending it on the active wave (the Beam button, and every camera switch: the parked transport keeps the chain running across the restart).
+    #[cfg(not(target_os = "android"))]
+    fn start_desktop_beam(&mut self) {
+        crate::wave::beam_session::refresh_desktop_cameras();
+        let source = match crate::wave::beam_session::open_desktop_camera() {
+            Ok(s) => s,
+            Err(e) => {
+                crate::logf!("BEAM: {}", e);
+                // The system's camera prompt is up (a Mac's first beam): stay armed, and the answer's edge opens the camera.
+                #[cfg(target_os = "macos")]
+                if e == crate::platform::camera_avf::ASKING {
+                    self.beam_armed = true;
                 }
+                return;
+            }
+        };
+        let Some(wave) = self.active_wave.as_mut() else { return };
+        let Some(secret) = wave.secret else { return };
+        let (w, h) = source.dimensions();
+        match crate::wave::beam_session::start_sender(&secret, wave.we_are_origin, source, crate::wave::beam_session::bitrate_for(w, h)) {
+            Ok(tx) => {
+                crate::logf!("BEAM: sending {}×{} from {}", w, h, crate::wave::beam_session::camera_name().unwrap_or_default());
+                wave.beam_tx = Some(tx);
+            }
+            Err(e) => crate::logf!("BEAM: {}", e),
+        }
+    }
+
+    /// The self-view was tapped (Nick 2026-10-14 phone, 2026-10-17 every platform): the next camera — a phone's next lens, a desktop's next device, restarting the sender on it.
+    pub(super) fn cycle_beam_camera(&mut self) {
+        #[cfg(target_os = "android")]
+        {
+            let _ = crate::wave::beam_session::android_cycle_camera();
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            let Some(next) = crate::wave::beam_session::next_desktop_camera() else {
+                crate::log("BEAM: one camera — nothing to switch to");
+                return;
             };
-            let (w, h) = source.dimensions();
-            match crate::wave::beam_session::start_sender(&secret, wave.we_are_origin, source, crate::wave::beam_session::bitrate_for(w, h)) {
-                Ok(tx) => {
-                    crate::logf!("BEAM: sending {}×{}", w, h);
-                    wave.beam_tx = Some(tx);
+            crate::logf!("BEAM: camera → {}", crate::wave::beam_session::camera_name().unwrap_or_default());
+            self.store_device_pick("beam.camera", &Some(next));
+            let sending = self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some());
+            if sending {
+                if let Some(w) = self.active_wave.as_mut() {
+                    w.beam_tx = None;
                 }
-                Err(e) => crate::logf!("BEAM: {}", e),
+                self.start_desktop_beam();
             }
         }
+    }
+
+    /// The next microphone: Auto, then each input by name, wrapping.
+    pub(super) fn cycle_mic(&mut self) {
+        let (cur, _) = crate::platform::audio::picks();
+        let next = crate::platform::audio::next_pick(&cur, &crate::platform::audio::input_names());
+        crate::logf!("AUDIO: mic → {}", next.as_deref().unwrap_or("Auto"));
+        crate::platform::audio::set_mic_pick(next.clone());
+        self.store_device_pick("audio.mic", &next);
+    }
+
+    /// The next speaker: Auto, then each output by name, wrapping (a phone cycles its route pill instead).
+    pub(super) fn cycle_speaker(&mut self) {
+        #[cfg(not(target_os = "android"))]
+        {
+            let (_, cur) = crate::platform::audio::picks();
+            let next = crate::platform::audio::next_pick(&cur, &crate::platform::audio::output_names());
+            crate::logf!("AUDIO: speaker → {}", next.as_deref().unwrap_or("Auto"));
+            crate::platform::audio::set_speaker_pick(next.clone());
+            self.store_device_pick("audio.speaker", &next);
+        }
+    }
+
+    /// Remember a device pick on THIS device (device-local, never linked — another machine's devices are not ours): empty = Auto.
+    fn store_device_pick(&mut self, key: &str, pick: &Option<String>) {
+        let now = vsf::eagle_time_oscillations();
+        if self.ensure_fleet_settings() {
+            let fs = self.fleet_settings.as_mut().unwrap();
+            if fs.linked(key) {
+                fs.set_link(key, false, now);
+            }
+            if fs.set(key, vsf::VsfType::x(pick.clone().unwrap_or_default()), now) {
+                crate::logf!("SETTINGS: {} = {} (device-local)", key, pick.as_deref().unwrap_or("Auto"));
+                self.persist_and_push_settings();
+            }
+        }
+    }
+
+    /// The remembered picks into the audio and camera layers (settings load): the next wave opens them.
+    pub(super) fn apply_device_picks(&self) {
+        let get = |k: &str| {
+            self.fleet_settings
+                .as_ref()
+                .and_then(|fs| fs.device_local(k))
+                .and_then(crate::storage::fleet_settings::as_text)
+                .filter(|s| !s.is_empty())
+        };
+        crate::platform::audio::set_picks(get("audio.mic"), get("audio.speaker"));
+        crate::wave::beam_session::set_desktop_camera_pick(get("beam.camera"));
+    }
+
+    /// A picker's label: the picked device's name, or "Auto · <what Auto opened>" ("—" when nothing opened).
+    pub(super) fn device_label(icon: &str, pick: Option<String>, opened: Option<String>) -> String {
+        match pick {
+            Some(name) => format!("{icon} {name}"),
+            None => format!("{icon} {} · {}", tr(Msg::AutoPick), opened.unwrap_or_else(|| "—".into())),
+        }
+    }
+
+    /// The self-view caption: the camera's name (a phone's "front|24" descriptor worded in the UI language).
+    pub(super) fn camera_label() -> Option<String> {
+        let raw = crate::wave::beam_session::camera_name()?;
+        Some(match raw.split_once('|') {
+            Some((facing, mm)) => {
+                let side = tr(if facing == "front" { Msg::CameraFront } else { Msg::CameraBack }).into_owned();
+                match mm.parse::<u32>() {
+                    Ok(mm) if mm > 0 => format!("{side} · {mm} mm"),
+                    _ => side,
+                }
+            }
+            None => raw,
+        })
     }
 
     fn spawn_wave_engine(
