@@ -1,28 +1,20 @@
 ---
 name: project_scroll_memmove
-description: "2026-10-06 SCROLL AS A MEMMOVE built (conversation list + contacts block): fluor already had scroll_copy_rect + the scroll_hint hook (unused); photon arms (rect, dy, band) in damage_rect, hosts memmove scratch (+ persistent screen on desktop), render memmoves bg layer + hit map and paints only the band + fixed overlays; settings pane not yet; field verify pending"
+description: "Scroll as a memmove (2026-10-06, phone field-verified 10-07): fluor scroll_hint + memmove of the bg layer and hit map, paint only the band; settings pane not yet"
 metadata:
   type: project
 ---
 
-**Nick 2026-10-06:** "scrolling itself is quite slow … how do we make it so it's just a mem move like we do with moving the window when the user scrolls?" → "Go for it!"
+Nick 2026-10-06: "how do we make it so it's just a mem move like we do with moving the window?" Before: every scroll was a full viewport repaint (22 ms/frame on desktop).
+**Shape:**
+- fluor: the desktop host and Android shell memmove SCRATCH on `FluorApp::scroll_hint` BEFORE `clear_scratch_rect`; `DefaultChrome::scroll_bg(rect, dy, band, …)` shifts the bg layer and re-rasters only the band; `scroll_hit_map(rect, dy)`.
+- photon: `pane_scroll` accumulates `scroll_shift` while the offset stays in bounds and skips invalidate_bg/chrome/scene_dirty; `damage_rect` arms `scroll_hint_armed = (rect, dy, band)` from `last_pane` when nothing else is dirty (damage = band ∪ fixed overlays ∪ their shifted copies); otherwise a shift forces a FULL repaint. The hint is valid only when the host didn't do a full repaint; if a shift happened but no hint carried the frame, render invalidates bg + chrome itself.
+- Panes: the conversation list and the contacts block. Not done: the settings content pane.
+**Convictions (rules):**
+- The wheel is exempt from the blanket `scene_dirty` claim in `on_event` (its consumers mark their own).
+- Anything that wants a frame WITHOUT a full repaint must not go thru `needs_redraw` (tick folds it into scene_dirty) — the fling calls `request_redraw()` directly.
+- The fling ends at a bound (`pane_in_bounds`); samples are per nominal frame; ≤4 trailing still frames are dropped before the pick, 5+ = a hold; `fling_pick` = the largest of the newest three.
+Result: memmove frames 6–11 ms on the phone, one settle frame after each glide. Dev instrument: `SCROLL:` lines.
 
-**Why it was slow:** every scroll set `scene_dirty` → `damage_rect` = full viewport → every visible row re-rasterised, the bg noise layer re-rastered whole (`invalidate_bg`), the chrome layer + hit map re-stamped (`invalidate_chrome`), full finalize + present. 22 ms/frame on the desktop Ready screen.
-
-**Shape (shipped):**
-- fluor had `paint::scroll_copy_rect` and the `FluorApp::scroll_hint` hook with the desktop host memmoving `persistent_screen` — photon never implemented the hook. Added: the desktop host AND the Android shell memmove SCRATCH on the hint BEFORE `clear_scratch_rect` (the clear would zero the memmove's source band); `DefaultChrome::scroll_bg(rect, dy, band, damage, paint)` (bg layer shift + band-only re-raster, layer stays clean) and `scroll_hit_map(rect, dy)`.
-- photon: `pane_scroll` accumulates `scroll_shift` (+ = content down) only while the offset stays inside [0, max] (Ready: `old − new`; Conversation: `new − old`, and only when the blind did NOT move) and then skips `invalidate_bg/chrome` and `scene_dirty`; `damage_rect` (idempotent) arms `scroll_hint_armed = (rect, dy, band)` from `last_pane` when nothing else is dirty, damage = band ∪ each fixed overlay ∪ its copy shifted by dy ∪ widget damage; otherwise a shift forces a FULL repaint (never a skipped one). Render: hint valid only when `ctx.damage_clip != full viewport` (a host full repaint did no memmove); bg via `scroll_bg` with the band as clip (noise_split + version text take the clip); hit map shift after `rasterize_chrome`; the conversation `scroll` is ROUNDED; `list_clip`/`rows_clip` narrowed to the damage (`clip_to_damage`); `flatten_bg_into` clipped to the damage; `last_pane` recorded per frame (1 = conversation list rect [list_top, list_bottom) with toast + orb overlays; 2 = contacts block [strip_height or 0, buf_h) with standing bands + orb); shift + hint cleared at render end.
-- Correctness lean: rows outside the band are still walked (hit rows, stamps — `stamp_hit_rect_under` skips opaque pixels, so memmoved rows keep their memmoved stamps); painting outside the damage is only wasted work, never wrong.
-
-**Not done:** settings content pane (rail fixed beside, split bg per pane); mixed-DPI extra pass may overwrite `last_pane`. Field verify on a phone pending (seams, overlays, PERF lines).
-
-Related: [[feedback_render_never_touches_vault]], [[project_render_storm_lag]], [[project_ready_first_paint]].
-
-**First phone build CONVICTED 2026-10-06 (Nick: "has not been applied… seems more glitchy"; phone log: every scroll frame still 17-23 ms):** the pre-dispatch rule in `on_event` set `scene_dirty` for EVERY event except CursorMoved — the wheel (and Android's synthetic touch wheel) included — so no frame ever qualified for the hint, while `pane_scroll`'s rigid path had already skipped `invalidate_bg/chrome` → the bg noise stood still under moving rows and hit stamps lagged a shift. Fixes: the wheel is exempt from the blanket claim (its consumers mark their own); `row_hover` does not dirty the scene while `press_held`; the render invalidates bg + chrome itself whenever `scroll_shift != 0` but no hint carried the frame (self-protecting — a refused hint can never leave a half-applied scroll again).
-
-**FIELD-VERIFIED 2026-10-07 (Nick: "much better"), four more convictions on the way:**
-1. `tick()`'s last line folds `needs_redraw` into `scene_dirty` — a fling frame asked for via `needs_redraw` was ALWAYS a full repaint (drag frames, asked for by the touch events, rode the memmove). The fling now calls `ctx.window.request_redraw()` directly. General rule: anything that wants a frame WITHOUT a full repaint must not go thru `needs_redraw`.
-2. The fling must END at a bound (`pane_in_bounds`), never creep thru the rubber zone (the spring fought a resisted sliver each frame and `moved` never went false).
-3. Fling samples are per NOMINAL frame: a slow tick that spanned n frames contributes n samples of acc/n (one tick had swallowed 523 px and the glide replayed the lump every real frame).
-4. The lift: Android's UP lands 1-4 frames after the last move; up to four trailing still frames are dropped before the pick, five or more = a hold = no fling. The pick itself is `fling_pick` = largest by magnitude of the newest three samples (the median of five read a touch slow to Nick).
-Memmove frames cost 6-11 ms on the phone (bg 2-5, rows 0-3) after fluor culls clipped-out text before shaping and off-band rows skip the pixel-reading hit stamp; a SETTLE frame (one full repaint) follows every glide. Dev-build instrument stays: `SCROLL:` lines (fling start/end/cut with samples, drag frames vs wheel events, memmove vs full renders, refused-hint reason with the tick checkpoint that raised `scene_dirty`).
+**Why:** Nick: scrolling "is quite slow".
+**How to apply:** keep the hint path self-protecting (a refused hint never leaves a half-applied scroll). Related: [[project_ready_first_paint]], [[feedback_render_never_touches_vault]].

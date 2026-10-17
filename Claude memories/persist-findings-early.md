@@ -1,17 +1,13 @@
 ---
 name: persist-findings-early
-description: "Nick edits/rewinds messages mid-session, which deletes ALL conversation context (not just post-edit) — persist load-bearing findings as they land, not at session end"
-metadata: 
-  node_type: memory
+description: "Nick edits/rewinds messages mid-session, which deletes ALL conversation context (not just post-edit) — persist load-bearing findings as they land; a rewind erases context, not the repo"
+metadata:
   type: feedback
-  originSessionId: 749c1c88-4ac9-4f2f-9651-e136c93bcc59
-  modified: 2026-08-08T08:46:36.689Z
 ---
 
-Nick undoes by editing earlier messages ("edit one word and BOOP"). Confirmed 2026-08-08: this deletes ALL conversation context, not just everything after the edit point — the post-edit session starts completely cold. It has burned him repeatedly.
+Nick undoes by editing earlier messages ("edit one word and BOOP"). Confirmed 2026-08-08: this deletes ALL conversation context, not just what follows the edit — the post-edit session starts cold.
 
-**Why:** message edits fork the transcript and the fork carries nothing over — anything not persisted outside the conversation is unrecoverable, including facts established before the edit point.
+**Why:** an edit forks the transcript and the fork carries nothing over; anything not persisted outside the conversation is gone, including facts established before the edit point.
 
-**How to apply:** when a session establishes a load-bearing fact or design decision (e.g. braid/chain semantics), write it to memory or repo docs at the moment it's established. Keep exploration cheap to replay: name the files that mattered, not just conclusions.
-
-**The other half (learned 2026-08-23): a rewind erases CONTEXT, not the REPO.** A rewound session's commits, pushes, and working-tree state all survive — the post-rewind session sees a stale system-snapshot and a repo that is AHEAD of what its context says happened. Before re-implementing anything after an apparent reset: `git reflog` + compare HEAD against the last thing context can account for. The 2026-08-23 session nearly re-implemented three already-landed, already-pushed, already-published fixes because the rewound turns had finished them invisibly.
+**How to apply:** write a load-bearing fact or design decision to memory or repo docs the moment it is established; name the files that mattered, not just conclusions.
+The other half (2026-08-23): a rewind erases CONTEXT, not the REPO — commits, pushes and working-tree state survive. Before re-implementing anything after an apparent reset, check `git reflog` / `git log` against the last thing context can account for (a session nearly re-did three already-pushed fixes).

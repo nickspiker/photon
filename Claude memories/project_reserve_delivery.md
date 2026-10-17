@@ -1,22 +1,17 @@
 ---
 name: project-reserve-delivery
-description: "sender-side RE-SERVE SHIPPED 97e2bcc 2026-08-20 (Nick-approved): durable row store outranks the pending list — peer's sealed per-device lane tip + anti-entropy row deficit trigger re-serving non-pending rows at original stamps; stale-offer 60s ring gate rides along; field-verify pending"
-metadata: 
-  node_type: memory
+description: "Sender RE-SERVE (97e2bcc, 2026-08-20): the durable row store outranks the pending list — the peer's sealed lane tip + a row deficit re-serve rows at original stamps, once per row per session; stale-offer 60 s gate"
+metadata:
   type: project
-  originSessionId: d83fbeaf-685c-4da4-8647-7b49de82fd2c
 ---
 
-**THE delivery-model decision (Nick approved 2026-08-20): the durable store outranks the pending list.** Shipped @97e2bcc in the sync-record drain (status.rs, the Online arm's digest block — the pull-gate comment there had already promised "the fix is on the delivery side").
+**Decision (Nick 2026-08-20): the durable store outranks the pending list.**
+The wedge: a row implied-delivered by a FLEET ack that one peer device never got stopped retransmitting forever, and the peer's in-order braid gate buffered every later row (wave answers ride the lane → "answered but never went active").
+- **Trigger:** anti-entropy shows we're STRICTLY ahead in rows AND non-pending rows exist above the peer's lane tip (the tip rides the pong's AEAD-sealed tail under the pairwise per-device key).
+- **Bounds:** 8 rows per burst, oldest first; a re-serve = `chain_transmit` at the ORIGINAL eagle_times; `lane_reserved_rows` = one re-serve per (fid, row) per session (2026-09-08 storm fix: re-arming on every pong re-encrypted rows 29× and broke braid order); a re-serve never takes the last in-flight window slot; the duplicate path re-ACKs with a blake3(content) stand-in.
+- **Stale-offer gate:** a re-served wave offer older than 60 s at decrypt is recorded, never rung (an age check on starting a ring, not a ring timer).
+- Receiver half: chain gaps arm the urgent friend history walk (recovers content, never advances the braid).
+- Open (2026-09-08): why a peer's pong can list no head for our own lane label (tip 0) — read the "tip 0 from <dev> — our label X vs their lane head(s)" line.
 
-**The wedge it kills** (killed two calls 2026-08-19/20, and the chronic 53-buffered/4-filled stuck messages): a row implied-delivered by a FLEET ack that one peer device never received stops retransmitting forever; the peer's in-order braid gate buffers every later row (call ANSWERS ride the lane → "answered but never went active"); the peer's pong truthfully reports the hole every cycle but rearm_pending_after only revives rows STILL pending.
-
-**Trigger + trust:** fires only when anti-entropy shows we are STRICTLY ahead in rows (they provably lack content) AND rows exist above their lane tip that are not pending. The tip rides the pong's AEAD-sealed tail under the pairwise per-device key — cryptographically stronger than the fleet-granular, eagle_time-matched ACKs the pending list trusts (MAC-in-ACK remains the separate phase-3 item). Replayed stale pongs cost bandwidth only (receiver row-store dedup absorbs; Re-ACK clears the fresh pending).
-
-**Bounds:** 8 rows/burst oldest-first (the oldest hole holds the in-order gate shut; later holes fill on subsequent tips), 2 bursts per stuck tip value (`lane_reserve_bursts` map — sibling-lane rows above OUR lane's tip would re-serve forever otherwise: peer dedups them and dedup never advances our tip), cap resets when the tip moves. Re-serve = chain_transmit at ORIGINAL eagle_times (lane-rotation-flush semantics; in-flight guard idempotent, window paces).
-
-**STALE-OFFER GATE (hazard the re-serve creates):** a re-served call OFFER decrypts fresh hours later and would RING for a dead call — offers older than 60s at decrypt are recorded, never rung (wave_ui.rs on_call_signal; an age check on STARTING a ring, not a ring timer — edges still end rings).
-
-Related: [[project-voice-calls]] (answers ride the lane), the receiver-side half = chain gaps arm the urgent friend history walk (@3e1cdfc — recovers CONTENT but never advances the braid position; the re-serve is what fixes the chain). Field signal: "peer N row(s) behind … re-serving" then "gap filled" within one ping cycle.
-
-**2026-09-08 RE-SERVE STORM, convicted from Emma+Nick logs:** the burst-cap convergence rule re-arms on ANY peer-testimony change, and a live chat changes (row_count, digest) every pong → Emma's two rows re-encrypted 29× in 75 min, Nick re-serving his 8 OLDEST rows on every pong ("peer 10 rows behind with our lane tip 0" — her record names none of his lanes; the new tip-0 diagnostic line prints our label vs their lane heads to settle label-mismatch vs stale-twin-blob next time). Consequences: (1) re-encrypting old rows at fresh lane positions made Emma's FRESH row arrive out of braid order at Nick → gap-buffered → history walk merged it (no ACK, no ack_hash) → every direct retransmit "Skipping duplicate — no stored ack_hash" → **Emma never saw an ack**; (2) four re-served rows parked in the 4-slot IN_FLIGHT_WINDOW made Nick's fresh send wait a full ACK round-trip (~1s). FIXES (photon, same day): `lane_reserved_rows` = one re-serve per (fid,row) per session; re-serve never takes the last window slot; dup path re-ACKs with a blake3(content) stand-in (sender's process_ack clears on eagle_time, only logs a hash mismatch — the braid hash covers woven strand refs and is unrecoverable from a stored row). OPEN: why Emma's pong lists no head for Nick's own label (tip 0) — read the new "tip 0 from <dev> — our label X vs their lane head(s)" line.
+**Why:** a hole the peer truthfully reports must get filled even after the pending list forgot the row.
+**How to apply:** re-serves keep original stamps and stay bounded; never let convergence re-arm on every testimony change. Related: [[lane-rotation-wedge-heal]], [[per-device-lanes]].

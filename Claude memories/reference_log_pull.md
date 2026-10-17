@@ -1,30 +1,25 @@
 ---
 name: reference-log-pull
-description: "pull submitted device logs: photonlog --pull --session (own machine, from live tohu registers) or --handle <LEFT-column map bytes>; MAP FORMAT = 'handle = petname' — handle LEFT, petname RIGHT, burned 2026-08-21 by reading it backwards; desktop local log = tmpfs, volatile soft-mode"
-metadata: 
-  node_type: memory
+description: "pull submitted device logs: photonlog --pull --session (own machine) or --handle <LEFT-column map bytes>; pull to a file first; use target/debug/photonlog; desktop local log = tmpfs soft-mode"
+metadata:
   type: reference
-  originSessionId: f4272721-c713-4a82-a97a-db8106029756
 ---
 
-`photonlog --pull --session` (added 2026-08-21, commit b58312b) pulls the LOCAL machine's own submitted logs from the live tohu registers — the seed the app actually submitted under, no handle typed anywhere. Preferred for own-machine pulls.
-`photonlog --pull --handle <handle>` re-derives from handle bytes. **THE MAP-COLUMN TRAP (burned 2026-08-21, cost an hour of phantom identity-drift theories):** keys/claude-pseudonym-map.txt is `<handle> = <petname>` — the SECRET handle is the LEFT column, the safe prose alias is the RIGHT. Passing the right-column text as --handle derives a garbage tag that "finds nothing" and looks exactly like a vanished submission or a stale map. Extract the LEFT column mechanically (shell var, never echoed); verified same day: the live desktop session tag equals derive(left-column bytes) precisely — registers, map, and app all agree.
-One identity covers every device's submissions.
-Nick = the user's test identity (handed over 2026-07-23 for debugging; delete this memory if asked).
-Nick fleet GROUND TRUTH (pid-probe verified 2026-07-23): handle_proof=7ff3835f…, identity_party_id=1861e459…; desktop 90e571bf = device name "FlakyPositive", sibling-pid 1af83ffd → pid-pseudonym "BarkCook"; phone 1be949c1 = "LotteryStandard", sibling-pid d48d972b → "TheoryConvertible".
-NAMING TRAPS (cost three wrong diagnoses in one day):
-1. Ceremony/punch/status log lines print `fp(contact.handle_proof)` — a SIBLING contact carries OUR OWN handle_proof, so every sibling ceremony logs as "our own hp" (looks like a self/friend party). Friend lines print THEIR hp (identical across our devices — that's normal, hps are per-identity).
-2. CHAT lines print display_name = petname → published_name → keyed_pseudonym(handle_hash) — for siblings that's the pid pseudonym (BarkCook/TheoryConvertible), NOT the fleet-page device name (device_name_default: LotteryStandard/FlakyPositive). Two naming systems, same hardware — UX bug worth fixing (sibling contacts should display the device name).
-3. To ground-truth pids: derive_identity_seed(handle) + Handle::username_to_handle_proof + current_members + sibling_party_id/keyed_pseudonym/device_name_default — the pid-probe pattern (kept param-ready at src/bin/pid-probe.rs; never commit a handle string).
-**CORRECTION (pid-probe from the map, 2026-09-27):** hp 633219a1 (device 53a64508, fleet of ONE) is THERESA, not "Sarah"; hp f2103dc8 (devices c0804a1d + 002026e1) is AZIE's real identity, not Emma's pre-wipe handle. The Jul-23 labels below were guesses; trust `pid-probe` against the map over them.
-Known Nick contacts (2026-07-23): Sarah = contact_id ea3d0ed9 / hp 633219a1 / bootstrap device 53a64508 / WAN 65.131.198.94 (fleet of 3+: 53a64508, c9b5f417, b94e4b48); other friend hps 5fb63507, aefd768a, f2103dc8 (new 2026-07-23, LAN .151 + Verizon v6). Roster slot = 5 entries = 5 friends ✓; desktop's extra contact = its SELF/notes contact (never in the roster — auto-created per-device since ensure_self_contact).
-Emma ground truth (RESOLVED 2026-07-23, the ghost-contact saga): her ONE phone has two identity eras — pre-wipe: unknown original handle → hp f2103dc8, device key c0804a1d; post-wipe: handle "Emma" → hp 8d2d1b2b, device key 8b29d719 ("RidiculeRoof"). NO factory reset — CAUSE CONFIRMED by user: the APK signing key was changed to the TOKEN key, and ANDROID_ID is per-signing-cert → it rotated → new fingerprint → new device key (same family as [[project_android_session_capsule]] / test-device-key.rs).
-LANDMINE: every Android device attested under an OLD-signing-key build will silently shift device identity when it first runs a TOKEN-signed build — its fleet chain lists the old key, the new key can't fold in without re-pairing. Sarah's fleet (3+ devices, attested pre-change, currently offline) is the standing case: expect orphaned identities / re-attest flows when she updates, NOT a protocol bug.
-Nick's "Emma" contact = the f2103dc8 GHOST, resurrected by the JUL-22 14:06:44 bulk cloud-restore (identity-never-dies keeps the ghost chain alive; its addr rows point at the real phone). Ceremony ran 7/8 across the identity boundary (early frames match by address/device, only the token-keyed ClutchComplete exposes it → "unknown conversation_token 4d56c97a" storm; her side reads "0 resends left" and fires anyway = budget floor unenforced).
-Fix queue born from this: pid-bind ceremony frames from frame ONE (fail loudly on identity mismatch); enforce the proof-resend floor + terminal state; flag restored contacts whose chain folds to devices we've never spoken to. Unstick = delete ghost Emma on Nick (tombstone syncs) + re-add as "Emma".
-The desktop's live log is VOLATILE tmpfs: /tmp/photon-<user>/photon.log.vsf (decode with photonlog; also -g grep / -l level flags). SOFT-MODE means records batch in RAM and reach disk only on edges (panic/background/submit/threshold — and since b58312b, quit + update-re-exec); mid-session the file may not exist at all. Submit success CLEARS the local file by design — "not local anymore" is correct behavior.
-Submissions are whole-log snapshots split by `── photon-logs/<tag>/<eagle>-dev<id>.vsf ──` boundaries; the log rotates at 16 MiB so a tiny follow-up submission = post-rotation content only.
+**Pulling:**
+- `photonlog --pull --session` pulls THIS machine's submitted logs from the live tohu registers — preferred, no handle typed.
+- `photonlog --pull --handle <handle>` for anyone else. **MAP-COLUMN TRAP:** `keys/claude-pseudonym-map.txt` is `<handle> = <petname>` — the secret handle is the LEFT column. Passing the petname derives a garbage tag that "finds nothing" (cost an hour, 2026-08-21). Extract the left column mechanically into a shell var; never echo it.
+- PULL TO A FILE FIRST (`> /tmp/x.log`), then grep: submissions are swept within 24 h and can vanish between pulls.
+- Use `target/debug/photonlog` after `./scripts/dev.sh` (release builds are disabled; `target/release/photonlog` is stale). Gripes: `--gripes` / `--gripe-status`.
+- One identity covers every device's submissions; submissions are whole-log snapshots split by `── photon-logs/<tag>/<eagle>-dev<id>.vsf ──`; the log rotates at 16 MiB.
 
-**PULL TO FILE FIRST (burned 2026-08-15):** submitted logs are ephemeral (24h sweep + can vanish between pulls) — always `photonlog --pull --handle X > /tmp/x.log` immediately, grep the file; piping the pull straight into grep threw away a one-shot storm capture.
+**Local desktop log:** volatile tmpfs `/tmp/photon-<user>/photon.log.vsf` (decode with photonlog, `-g` grep, `-l` level). Soft mode batches in RAM and reaches disk only on edges (panic/background/submit/threshold/quit/update re-exec); a successful submit clears it by design.
 
-**Binary (2026-10-03):** release builds are disabled by build.rs ("RELEASE BUILDS DISABLED"); the fresh tool after a `./scripts/dev.sh` is `target/debug/photonlog` (target/release/photonlog is a stale old build). Gripes: `--gripes` / `--gripe-status` (docs/ideas.md).
+**Nick's devices** (Nick = the user's test identity, handed over for debugging 2026-07-23 — delete this line if asked): desktop Leviathan 90e571bf; MacBook fe46a74b; Pixel cacbc223; 1be949c1 = the old, locked-out phone (ghost).
+
+**Naming traps:**
+1. Ceremony/punch/status lines print `fp(contact.handle_proof)`; a SIBLING contact carries OUR OWN hp, so sibling ceremonies log as "our own hp".
+2. CHAT lines print the pid pseudonym for siblings, not the fleet-page device name — two naming systems, same hardware.
+3. Ground-truth pids with `src/bin/pid-probe.rs` against the map (never commit a handle) — trust it over any hand-written label.
+
+Android landmine: changing the APK signing key rotates ANDROID_ID → new device key → the device needs re-pairing (Emma's phone, 2026-07-23).
+Log tag `CALL:` became `WAVE:` on 2026-09-23.

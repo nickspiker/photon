@@ -1,18 +1,21 @@
 ---
 name: project_font_bundle
-description: Photon's font stack is 100% bundled (no system fonts, by design); what's actually covered, and the glyph-fallback contract
+description: "Photon's font stack is 100% bundled (no system fonts, by design): coverage, the glyph-fallback contract, FE0F/FE0E colour routing, Rust-only font trimming"
 metadata:
   type: project
 ---
 
-Photon/fluor render text with ZERO host-font reads — deliberate, for determinism/security/reliability (Nick 2026-09-08 restated it as a hard requirement).
-Enforced in fluor `src/text.rs`: `Database::new()` (empty, never `load_system_fonts()`), a custom `BundledFallback` naming ONLY bundled families, and a hardcoded "en-US" locale so even cosmic-text's han-unification order can't vary by `LANG`. Motivating bug: a heart rendered on desktop (system fallback) and tofu'd on Android (cosmic-text's `PlatformFallback` returns an EMPTY list on Android).
+Photon/fluor read ZERO host fonts (Nick 2026-09-08, hard: determinism, security, reliability).
+Enforced in fluor `src/text.rs`: empty `Database::new()` (never `load_system_fonts()`), `BundledFallback` naming only bundled families, hardcoded "en-US" locale.
+Motivating bug: a heart rendered on desktop via system fallback and tofu'd on Android (cosmic-text's PlatformFallback is empty there).
 
-**The glyph-fallback contract (MEASURED, not assumed — tests/glyph_fallback_probe.rs):** dozenal digits live at 0x10..0x1B in `Oxanium-Regular+glyphs.ttf`, and they resolve from ANY primary family. cosmic-text tries the primary face first, so a font carrying its own matching glyphs wins; only a miss falls through. Oxanium is now named FIRST in `common_fallback()` to make that deliberate (it previously worked only via cosmic-text's last-resort scan of every loaded face). **No per-font glyph art is needed, and PUA codepoints are unnecessary.** The long-standing "fmt_num would tofu in the bubble font" belief was false.
+**Fallback contract (measured, tests/glyph_fallback_probe.rs):** cosmic-text tries the primary face first, and a miss falls thru the chain.
+Dozenal digits live at 0x10..0x1B in `Oxanium-Regular+glyphs.ttf`; Oxanium is FIRST in `common_fallback()`, so they resolve from any primary family — no PUA, no per-font glyph art.
+**Bundled** (src/ui/fonts.rs::load_bundled, assets/Noto, OFL): Open Sans, Oxanium(+glyphs), Josefin Slab, Noto Color Emoji, Noto Sans Symbols / Symbols 2 / Math / Mono, Arabic / Devanagari / Thai / Armenian / Georgian / Runic.
+**Not bundled:** CJK + Hangul (10–20 MB; Nick's call to revisit).
+**Colour rule:** Noto Color Emoji sits before the mono symbol faces; U+FE0F forces colour, U+FE0E forces mono, via fluor `set_text_vs` span-level family routing. UI chrome pins ▶ with FE0E so Play matches ■ Stop.
+**Trimming:** no Python ([[feedback_no_python]]); `tools/font-trim.rs` (std-only rustc tool) via `scripts/fonts/build.sh` cuts static fonts to owned blocks with stable glyph ids (`--compact` refused unless every gid-bearing table is dropped); sources in assets/Noto/sources.
+KAT `trimmed_statics_match_their_sources` asserts advance parity; coverage tests assert width > 0 (an out-of-range glyph lays out as nothing, not tofu).
 
-**Coverage as of 2026-09-08 (measured from cmaps, loader = src/ui/fonts.rs::load_bundled, KAT = tests/glyph_fallback_probe.rs):** Open Sans + Oxanium(+glyphs) + Josefin Slab + Noto Sans Symbols 2 + Noto Color Emoji (feature on all targets) + Noto Sans Symbols / Math / Mono (mono symbols, arrows, math, box drawing, currency) + Noto Sans Arabic / Devanagari / Thai / Armenian / Georgian / Runic (~2.4MB total, assets/Noto, OFL).
-**NOT bundled, tofu by decision:** CJK + Hangul (10–20MB; Nick: "skip it for now… maybe roll that in later").
-**Colour rule (Nick 2026-09-08):** Noto Color Emoji sits BEFORE the mono symbol faces in fluor's chain, so colour wins whenever a colour glyph exists. Override per character with variation selectors — U+FE0F forces colour, U+FE0E forces mono — implemented in fluor `set_text_vs` as span-level family routing (cosmic-text can't do it in-font: fallback fires per missing glyph and ignores selectors). UI chrome pins ▶ with FE0E so Play matches ■ Stop; ☎ ⚠ 📹 🔊 📎 render colour.
-Adding a font = drop the .ttf in assets/Noto, load it in fonts.rs, name it in fluor's chain (common_fallback or script_fallback), extend the KAT.
-
-**Trimming (2026-09-08, Nick: "cut the cruft and ship the fonts and don't condense to one"):** NO Python in the tree (scripts/lib/comment-gate.sh NO-PYTHON GATE) — fontTools/pyftsubset is forbidden; the tool is `tools/font-trim.rs`, a std-only rustc bitty-executable (same convention as tools/arch-gate.rs), driven by `scripts/fonts/build.sh`. It cuts a STATIC TrueType font to owned Unicode blocks with glyph ids stable (cmap + glyf/loca rewritten, nothing else), or `--compact` (dense renumber) which it REFUSES unless every gid-bearing layout table was `--drop`ped. Mono 582→30 KB, Math 967→358 KB; sources committed under assets/Noto/sources. Variable script fonts ship whole (their bulk is shaping tables). The KAT `trimmed_statics_match_their_sources` asserts bit-exact advance parity with the untrimmed sources — it caught the compact-cmap-old-ids bug (glyphs out of range lay out as NOTHING, which the "≠ tofu" check had passed vacuously; coverage tests now also assert w > 0).
+**Why:** a glyph must render identically on every platform, and host fonts are an outside input.
+**How to apply:** adding a font = .ttf in assets/Noto, load it in fonts.rs, name it in fluor's chain (common_fallback or script_fallback), extend the KAT.

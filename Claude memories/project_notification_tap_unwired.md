@@ -1,14 +1,14 @@
 ---
 name: project_notification_tap_unwired
-description: OPEN 2026-10-01 — tapping a new-message notification opens nothing on any platform; Android plan = contact-id extra on the content PendingIntent + one JNI latch drained in tick (the wave-answer pattern); desktop notifiers have no click path at all
+description: "OPEN since 2026-10-01: tapping a new-message notification opens nothing on any platform; Android plan = contact-id extra + JNI latch drained in tick; desktop notifiers have no click path"
 metadata:
   type: project
 ---
 
-Traced 2026-10-01 (Nick: "clicking the notification does not bring up that conversation").
+Nick 2026-10-01: "clicking the notification does not bring up that conversation". Still unwired as of 2026-10-17 (no `nativeOpenConversation` in the tree).
+**Android:** message notifications go conversation.rs → `jni_android::notify_new_message` → PhotonConnectionService.postMessageNotification; the push wake posts a generic banner (PhotonMessagingService.postWakeNotification). Both content PendingIntents carry NO extras; PhotonActivity (singleTask) reads only the wave extras (applyWaveIntent). The fixed MESSAGE_NOTIFICATION_ID collapses a multi-sender burst into one banner.
+**Desktop:** src/platform/desktop_notify.rs fires notify-send / osascript / a PowerShell toast and never waits — no click callback. A real notifier is needed (notify-send --action --wait on a thread, a UNUserNotificationCenter bundle, a registered Windows app id) sending a PhotonEvent like control.rs's ShowWindow.
+**The open sequence exists:** `open_conversation_with(ci)` plus the tail in driver.rs (state = Conversation, ping backoff reset, topbar/blind reset, clear_unread, change_focus(None)), repeated in bridge.rs / wave_ui.rs — pull it into one helper keyed by ContactId, not index.
 
-**Android:** message notifications are posted from conversation.rs (~1978 per message, ~2773 batch) thru jni_android::notify_new_message → Kotlin PhotonConnectionService.postMessageNotification (android/.../PhotonConnectionService.kt ~596); the app-not-running push wake posts a generic banner from PhotonMessagingService.postWakeNotification (~85, knows no sender). Both content intents are `PendingIntent.getActivity(this, 0, Intent(PhotonActivity), FLAG_IMMUTABLE)` with NO extras; PhotonActivity (singleTask) only reads the two wave extras in applyWaveIntent (~913). A tap just foregrounds the app. The fixed MESSAGE_NOTIFICATION_ID collapses a multi-sender burst into one banner.
-**Desktop:** src/platform/desktop_notify.rs spawns notify-send / osascript / a PowerShell toast and never waits; no click callback exists (macOS shows as Script Editor, Windows as PowerShell). Opening a conversation from a click needs a real notifier (notify-send --action --wait on a thread, UNUserNotificationCenter bundle, registered Windows app id) sending a PhotonEvent like control.rs's ShowWindow.
-**The open sequence** already exists: open_conversation_with(ci) (conversation.rs ~335) then the 7-line tail at driver.rs ~1512 (state = Conversation, reset_contact_ping_backoff, conv_topbar_off, conv_blind_*, clear_unread, change_focus(None)) — repeated in bridge.rs/wave_ui.rs; pull into one helper and key it by ContactId, not index.
-
-**How to apply:** Android = add a contact-id extra (request code or FLAG_UPDATE_CURRENT so extras refresh), read it in onCreate/onNewIntent, a new JNI `nativeOpenConversation` latch like PENDING_WAVE_ACTION (jni_android.rs ~125), drained in tick like take_wave_action (driver.rs ~3582). Needs an Android build (scripts/android/dev-adb.sh) — not done in the desktop-only 2026-10-01 batch; Nick's go pending.
+**Why:** a notification that opens nothing makes the user hunt for the conversation.
+**How to apply:** Android = contact-id extra (unique request code or FLAG_UPDATE_CURRENT), read in onCreate/onNewIntent, a `nativeOpenConversation` latch like PENDING_WAVE_ACTION drained in tick like take_wave_action; build with scripts/android/dev-adb.sh. Nick's go pending.

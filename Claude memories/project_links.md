@@ -1,14 +1,17 @@
 ---
 name: project_links
-description: message links = typed MARKS (kind 1 = link, byte range + dest) beside the plaintext; send-side bare-URL detection, receiver validation, link-coloured bubble spans with a consent dialog; 2026-09-09 LIVE detection in the compose box on the edit edge + paste-onto-selection tagging (desktop chord) — previews and non-http schemes deliberately absent
+description: "Message links = typed MARKS (kind 1 = link, byte range + dest) beside the plaintext; a purple chain-link button relabels a bare URL on consent; nothing auto-links while typing; no previews"
 metadata:
   type: project
 ---
 
-Links are typed content marks (`types::MessageMark`: kind, byte start, byte len, dest) riding the message package as fields beside the body, validated on receive (`valid_marks`: known kind, char-boundary ranges, no overlap, http/https only), persisted in the row, painted in the link colour with a hit rect, and opened only thru the consent dialog that shows the full destination.
+Links are typed content marks (`types::MessageMark`: kind, byte start, len, dest) riding the message package beside the body.
+They are validated on receive (`valid_marks`: known kind, char-boundary ranges, no overlap, http/https only), persisted in the row, painted purple (`theme::LINK_PURPLE`, bold in bubbles), and opened only thru the consent dialog showing the full destination (the dialog gets the mark's dest, never the label).
+Compose (Nick's spec 2026-09-09, CONSENT-ORIENTED): NOTHING is auto-linked or coloured while typing.
+A purple chain-link button (`compose_link_btn`, U+1F517 FE0F) shows left of send while `compose_bare_urls()` is non-empty; its click (`compose_link_click` → fluor `relabel_span`) turns the address under the caret into a tagged link labelled with the trimmed address, the label SELECTED: typing replaces it, whitespace/arrows/a click accept, Backspace/Escape revert to plain text.
+Desktop Ctrl/Cmd+V of a URL over a selection also tags it.
+Tagged marks leave with the text (`take_compose_tagged_marks` → `marks_for_send`); a re-serve reads the ROW's marks and never re-detects.
+Deliberately absent: previews (a fetch on someone's behalf), bare domains / mailto / tel, markdown.
 
-2026-09-09: fluor `MultiTextbox` gained styled `Span`s (char range + colour + optional dest) that ride every edit (`spans_on_insert`/`spans_on_delete`, `edit_seq` as the app's change edge). Photon runs `detect_url_marks` over the compose text on that edge (`sync_compose_link_spans`, called at the top of render_frame) so a URL is link-coloured the moment it is one. A URL pasted onto a selection (desktop Ctrl/Cmd+V) tags the selection as a link (`tag_link`); tagged marks leave with the text (`take_compose_tagged_marks` → `marks_for_send`), and a re-serve reads the ROW's marks, never re-detecting, so the tag survives. Android tagging gesture: not built (the IME owns paste there).
-
-Later 2026-09-09 (the link button, Nick's spec, CONSENT-ORIENTED): NOTHING is detected-into-a-link or coloured while typing. Links are PURPLE everywhere (`theme::LINK_PURPLE`, bold 700 in bubbles). A purple chain-link `Button` (`compose_link_btn`, U+1F517 FE0F) shows one slot left of send while `compose_bare_urls()` (detect_url_marks over the box text, tagged spans excluded) is non-empty and no relabel is pending; it re-stamps its hit silhouette after the textbox like send does (else hover/hand/click land on the textbox). The click (`compose_link_click`) calls fluor `relabel_span`: the address under the caret (else the last) becomes a tagged link whose text is the literal trim (scheme off, trailing slash off), full URL as dest, and the label comes back SELECTED with a purple caret. fluor rules while `relabel_pending`: typing replaces the selected label and then extends it; whitespace / arrow keys / Home/End / a click ACCEPT (caret goes plain, a later char at the link's end lands outside — an accepted link never grows); Backspace/Delete on the still-selected label or Escape REVERT to the plain address (link dropped); paste over the selected label makes the pasted text the label. The consent dialog receives the mark's dest, never the label. Desktop paste-onto-selection (Ctrl/Cmd+V of a URL over selected text) still tags, in purple — an explicit gesture, kept.
-
-**Deliberately absent:** link previews (a fetch on someone's behalf), bare domains / mailto / tel, markdown syntax.
+**Why:** a link is a consent decision, not a text pattern.
+**How to apply:** any new link surface goes thru marks + the consent dialog; the button re-stamps its hit silhouette after the textbox, like send does.

@@ -1,32 +1,19 @@
 ---
 name: project_self_message_vanish
-description: self-message 40s-to-minutes latency + restart vanish ROOT-CAUSED (21-verdict adversarial sweep 2026-09-02) — delta gate + quit drain SHIPPED 68b1912; vault engine + PT re-target + ghost device still open
-metadata: 
-  node_type: memory
+description: "CLOSED 2026-09-02: self-message latency + restart vanish = ~300 durable commits per send + quit killing queued writes; delta gate + drain_durable_writers + batch commits fixed it"
+metadata:
   type: project
-  originSessionId: 8c6221f3-48a5-4f77-b00e-1e3c7fa4c3b5
 ---
 
-Field day 2026-09-02 ("ten-thousand-year letter"). Workflow sweep (4 investigators + adversarial verifiers, 21 verdicts) + live stuck-message forensics. My first theory (is_sibling ephemeral gate eats fleet chat) was WRONG for Notes-to-self — that contact is NOT is_sibling; the gate only covers per-device `$ ` bridge contacts, correctly.
+Field day 2026-09-02: notes-to-self took 40 s to minutes and a row vanished on restart.
 
-**CONVICTED + FIXED (photon 68b1912):**
-- **~300-commit amplification**: save_messages re-put EVERY row every save (72-row table × 4-5 durable commits/row via rarangi WAL/row/catalog/superroot/retire); kete fresh-random-nonce AEAD defeats identical-overwrite skip. FIXED: delta gate in save_messages + save_messages_page (compare would-be Record vs decoded durable row — Record: PartialEq, width-tolerant decode round-trips equal — skip identical). save_messages returns (written, skipped); regression test pins (5,0)/(0,5)/(1,5)/delivered-flip.
-- **Quit ate queued writes**: process exited with snapshots in the message/chains writer queues (the vanish: 73rd row merged 22:59:15, persist enqueued, quit killed it — never-written). FIXED: durable_pending Arc<(Mutex<usize>,Condvar)> counts enqueues on message+chains writers, dec AFTER write lands; drain_durable_writers() blocks deliberate-quit/non-resident-close/update-re-exec edges until zero. Edges not timers.
-- Zero-remote design itself is CORRECT: self send = vault write IS delivery, bright on persist verdict (messaging.rs:132-146) — identical machinery as friends, per the hard rule.
+**Convicted + fixed (photon 68b1912):**
+- `save_messages` re-put EVERY row every save (fresh-nonce AEAD defeats identical-overwrite skip) → ~300 commits per send. Delta gate in `save_messages` / `save_messages_page`: skip rows whose would-be Record equals the decoded durable row.
+- Quit killed queued writes. `durable_pending` counts message+chains writer enqueues; `drain_durable_writers()` blocks the quit / non-resident close / update re-exec edges until zero.
+- Engine batching: manifestus `apply_batch` (one spine commit), kete librarian drains every queued mutation into one batch, rarangi transact = one ordered batch. One send ≈ 2 commits.
+- PT frozen-address fix: `retarget_peer` on verified pong (photon 115a346).
 
-**ENGINE + TRANSPORT FIXES SHIPPED 2026-09-02 (four repos):**
-- **manifestus 660c66d**: apply_batch — mixed puts+deletes, order-preserving, ONE spine commit; fence-safe (put ladder already commits mid-ladder on Fenced — the revert's homework was done, never wired).
-- **kete 7fabf12**: librarian gathers EVERY queued mutation per drain into one apply_batch commit (safe 1944ebe: commits within the cycle, never held open) + apply_addr_batch API + entry_addr; dead put_growing removed.
-- **rarangi 2ac9e8a**: transact apply = one ordered batch [post-images, superroot, WAL retire]; WAL stays atomicity anchor. 4-5 commits/transaction → 2. With delta gate: one send ≈ 2 commits (was ~300).
-- **photon 115a346**: PT frozen-address fix — retarget_peer on verified pong (re-aims queued packets + un-locked transfers by recipient pubkey), handle_data unique-stream fallback with address adoption (SPEC-via-v6 + DATA-via-v4 wedge), handle_ack/handle_spec_ack third-address lock. 3 regression tests.
+The zero-remote design is correct: a self send's vault write IS delivery, same machinery as friends.
+A full local wipe the same night lost nothing — FLEET-HOLDS-HISTORY backfilled every page.
 
-**STILL OPEN:**
-1. **Ghost device 1be949c1** in the published membership chain → dead fan-out leg. Design note SHIPPED docs/ghost-device-supersession.md (recommend: routing ostracism now, hardware-continuity supersession in fleet-key redesign). Awaiting Nick.
-
-**CLOSED in the 2026-09-02 night sweep (328bc7d + f0fe5c7):** delete persist off UI thread; PT completion dispatcher gaps CONVICTED+FIXED (chain_sync 17331B frames from the phone + the 3 ckpt spine frames were datagram-only kinds — large chains NEVER replicated via PT, sibling-lane staleness class); call GLARE fixed (mutual dial → smaller call_id wins, larger side folds+auto-answers — covers lane AND express paths thru on_call_signal); Recovery+Notifications → Flow layout. Contacts-glow ticket found ALREADY FIXED in code (invalidate_bg on focus edges, pre-2026-08-14) — retest before re-opening. Android clipboard bridge found fully wired (pending_clipboard_copy → Kotlin setPrimaryClip).
-
-Phone cacbc223 runs a STALE build (APK 15:26 < fixes) — needs scripts/android/dev-adb.sh rebuild before any self→phone delivery works.
-
-**2026-09-02 23:48 wipe**: Nick []x-nuked desktop, re-attested 23:49:08, FLEET-HOLDS-HISTORY backfilled everything (13 pages, "47 new of 47"…) — zero loss fleet-wide even after full local wipe. The durability model held; the transport made it slow ("sync finally happened" ≈ minutes).
-
-Call glare (same day): Emma+Nick dialed simultaneously → mutual auto-BUSY, no ring, no notification; offer fires to only 1 path. Unfixed.
+Ghost device 1be949c1 is tracked in [[project_clutch_completion_rebroadcast]] / docs/ghost-device-supersession.md.

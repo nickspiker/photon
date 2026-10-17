@@ -1,12 +1,16 @@
 ---
 name: project-vault-op-latency
-description: "CONVICTED 2026-08-21: every vault put on the Linux desktop costs ~850-1130ms FLAT regardless of size (53B = 857ms) — per-op commit/fsync on both mirror rings; the click-a-contact hang = open-path reads behind the permanently-occupied write queue (fstate ping-pong storm); fix order = ping-pong, then librarian GROUP COMMIT, then UI-drain write audit"
+description: "CLOSED 2026-08-21: every vault put on the Linux desktop cost ~0.9-1.1 s flat (per-op commit+fsync); click-a-contact hang = reads queued behind it; group commit + off-UI writes fixed it"
 metadata:
   type: project
 ---
 
-The 2026-08-21 hang arc's terminal finding, via kete's librarian slow-op probe (kete 63edff4) on the first quit-flush local capture: vault puts are ~850-1130ms each INDEPENDENT of size (53 bytes = 857ms, 22KB = 1130ms) — pure per-operation commit+fsync latency across both mirror rings on BTRFS.
-Every vault caller blocks on the librarian's reply, so: click-a-contact hang = the conversation-open path's vault reads waiting behind the in-flight ~900ms write (the fstate reconcile ping-pong keeps one permanently in flight); the 4-6s process-wide log silences = a few queued mutations back-to-back; `PERF: status arm BlindFrameReceived took 890ms (UI thread)` shows a UI drain writing (or waiting) synchronously.
-ALL THREE FIXES LANDED same evening ("full meal deal", Nick's call): 1. ping-pong DIAGNOSED as correct-CRDTs + real churn from the era wedge (the Mac's ~90s failed-re-weave cycle bumps the roster LWW clock and pushes — 12 pushes/33 pulls/18min; dies when the wedge heals, comparator needs nothing), 2. GROUP COMMIT shipped — manifestus b925230 put_batch (put ladder factored to put_no_commit; N puts ONE spine generation, tested + cold-resume) + kete 1944ebe librarian batch drain (consecutive queued puts + late arrivals into one put_batch, MAX_BATCH 64, slow-op probe now per-batch), 3. photon b7dd871 — five UI-thread inline vault writes moved to the seal room (blind deposit-confirmed flag = the measured 890ms arm, its reconstitute twin, published-name sweep, avatar-pin index rewrite, fstate merge persist); once-per-ceremony saves stay inline by doctrine.
-Sibling finding, same arc: the Mac (fe46a74b, .152) never hangs — it renders ~106ms full-scene frames under the same event storm; the Linux desktop (90e571bf, .156) is where the vault latency bites. [[project-render-storm-lag]] was the same disease's earlier appearance (vault mutex contention); the mutex moved into the librarian but the blocking remained.
-Related: [[project-log-sweep-eats-fresh]] (the arc), [[reference-log-pull]] (--session/--petname pulls, quit-flush).
+2026-08-21, via kete's librarian slow-op probe: vault puts on Leviathan (btrfs, dual mirror rings) cost ~850-1130 ms each REGARDLESS of size (53 B = 857 ms). Every caller blocks on the librarian, so conversation-open reads waited behind in-flight writes = the click-a-contact hang; the Mac never showed it.
+
+Fixed same evening:
+1. GROUP COMMIT: manifestus `put_batch` (N puts, one spine generation) + kete librarian batch drain (MAX_BATCH 64).
+2. Five UI-thread inline vault writes moved to the seal room (photon b7dd871).
+3. The fstate "ping-pong" was correct CRDT churn from an era wedge, not a bug.
+
+**How to apply:** a UI hitch near storage = suspect a synchronous vault op on the UI thread first ([[feedback_render_never_touches_vault]]).
+Related: [[project_render_storm_lag]], [[project_self_message_vanish]] (the later batch-commit arc).

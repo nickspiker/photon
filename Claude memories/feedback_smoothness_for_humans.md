@@ -1,16 +1,12 @@
 ---
 name: feedback-smoothness-for-humans
-description: "Smooth math in Photon's GUI exists because humans physically prefer continuity — not for \"technical correctness\" or storage-format reasons."
-metadata: 
-  node_type: memory
+description: "Smooth (C¹+) math in Photon's GUI exists because humans physically feel discontinuities — lead with perception, not technical correctness"
+metadata:
   type: feedback
-  originSessionId: a9f51934-7668-45d4-b896-93ebab974b35
 ---
 
-When asked why fluor / Photon insists on C¹-or-better continuous derivatives for GUI elements (curves, animations, layout transitions), **the reason is human perception, not technical correctness**. Humans feel derivative discontinuities the way they feel road potholes — even when they can't consciously see them. A clamp, a piecewise `if`, a circular arc joined to a straight line, or any other `C⁰` join registers as a micro-slap to the visual cortex. Smooth = massage; discontinuous = slap.
+Fluor / Photon insist on C¹-or-better continuity for visible elements (curves, animations, layout transitions) because **humans feel derivative discontinuities** like road potholes, even unseen. A clamp, a piecewise `if`, an arc joined to a line — any C⁰ join — is a micro-slap; smooth is a massage.
 
-**Why:** the user pointed this out after I tried to justify the "calculus or else" rule with framings about 8-bit precision, supersampling cracks, and analytical correctness — all of which are real but **secondary**. The primary motivation is that products feel cheap when they're full of perceptual papercuts, even when each papercut is too small to consciously notice. Cumulative discomfort is the failure mode.
+**Why:** Nick corrected me when I justified "calculus or else" with 8-bit precision, supersampling cracks and analytical correctness — real but secondary. Products feel cheap when full of perceptual papercuts too small to notice individually; cumulative discomfort is the failure mode.
 
-**How to apply:** when explaining why a piece of math is the way it is in Photon's UI / fluor's compositor — corners, easings, falloffs, layout interpolations, anything visible — lead with "humans feel it" rather than "the math is more correct" or "it survives precision changes." The math is correct *because* humans feel it, not the other way around. Same goes when defending a smooth choice against a tempting clamp or piecewise approximation in code review: the cost of the slap, not the cost of the math, is the argument.
-
-Related: [[feedback-legacy-first]] (faithful porting first), `AGENT.md` § "GUI Continuity: Calculus or Else" (the formal rule).
+**How to apply:** when explaining or defending smooth math (corners, easings, falloffs, interpolations), lead with "humans feel it"; the cost of the slap, not the cost of the math, is the argument against a tempting clamp. Formal rule: AGENT.md § "GUI Continuity: Calculus or Else".

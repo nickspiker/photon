@@ -1,16 +1,15 @@
 ---
 name: succession-emit-side-unwired
-description: Identity-succession emit side (re-found flow) is NOT wired; receive path + worker slot are done
+description: Identity-succession emit side (re-found flow) is NOT wired; receive path + worker slot are done; no deadline since the v1 sunset was retired 2026-10-06
 metadata:
   type: project
 ---
 
-Identity succession (docs/identity-succession.md) is fully built and wired EXCEPT the emit side.
+Identity succession (docs/identity-succession.md) is built EXCEPT the emit side.
 
-Done and committed: the shared-crate primitive (`SuccessorRecord`, `verify_for_pin`, `ContinuityEgg`), the worker slot (`handle_succession_put`/`_get` in fgtw-bootstrap, member-gated, mirrors `fstate_put`), the client oracle (`fetch_successor`/`publish_successor`), and the photon contact RECEIVE path (`spawn_successor_check` in devices.rs → `verify_for_pin` off-thread → migrate `pinned_genesis`, clear `identity_superseded`, re-fold; triggered from the genesis-mismatch branch in protocol.rs). Also done: the compile-time sunset tripwire at `V1_FLEET_VERIFY_SUNSET = (0,70,0)` in src/network/fgtw/fleet.rs.
+Done: the shared primitive (`SuccessorRecord`, `verify_for_pin`, `ContinuityEgg`), the worker slot (`handle_succession_put`/`_get`, member-gated), the client oracle (`fetch_successor` / `publish_successor`), and photon's RECEIVE path (`spawn_successor_check` in devices.rs, triggered from the genesis-mismatch branch in protocol.rs).
 
-**Outstanding ticket — the EMIT side:** nothing BUILDS a `SuccessorRecord` (via `SuccessorRecord::new`) and calls `fgtw::fleet::publish_successor` on a re-found. It is net-new — there is no existing identity-recreation/re-found UX to hook into — and needs a product decision on when/how a user declares "I re-founded this identity." Constraint: the re-founder must still hold ≥1 OLD-chain device to sign a continuity egg. Until this ships, the receive path is inert in practice (nothing publishes a record for contacts to find).
+**Open:** nothing builds a `SuccessorRecord` and calls `publish_successor` on a re-found. Net-new UX with no hook yet; needs a product decision on how a user declares "I re-founded this identity". The re-founder must still hold ≥1 OLD-chain device to sign a continuity egg. Until then the receive path is inert.
 
-**Why:** deliberately deferred — the receive path is the security-load-bearing half (verify against the pin, can't be forged) and was safe to ship; the emit side changes founding UX and had no natural hook yet.
-
-**2026-10-06:** the v1 fleet-verify sunset tripwire that depended on this emit side is RETIRED — the v1 path is permanent by ruling (docs/identity-succession.md "Sunset decision"). The emit side is now a plain design item for the total-loss / re-found story, with no deadline attached.
+**Why deferred:** the receive half is the security-load-bearing part and was safe to ship alone.
+2026-10-06: the v1 fleet-verify sunset tripwire was retired (v1 path permanent by ruling), so this is a plain design item for the total-loss / re-found story ([[project_total_loss_recovery]]).

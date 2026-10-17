@@ -1,33 +1,24 @@
 ---
 name: project_update_flow
-description: "Self-update flow BUILT (manual + automatic + stamp window @ 228f68c 2026-07-16) + release-notice push BUILT 2026-07-19 (deploy.sh curl -> worker hub broadcast + FCM updates topic -> instant manifest poll); remaining: Android platform notification, rollback, idle gating"
-metadata: 
-  node_type: memory
+description: "Self-update BUILT: signed manifest + stamp window, desktop swap+re-exec, Android PackageInstaller auto-install (2026-10-06), release-notice push; RELEASE_NOTES.md → Updates page + site"
+metadata:
   type: project
-  originSessionId: 5bffb0bc-fa36-44f3-979a-7be0e42db118
 ---
 
-Live-update flow written up 2026-07-10 in `docs/updates.md` (status: DESIGN, nothing built).
-The user kept feeling "we discussed this" — it had only ever been verbal, so it kept evaporating; now captured.
+Design: docs/updates.md.
 
-Agreed shape:
-- **Desktop = hot self-replace.** Poll a VSF-signed version manifest (release key, the one `photon-keygen` makes + binaries self-verify against) → download new signed binary → verify on disk BEFORE exec → atomic swap (Unix `rename()` over the path; Windows rename running exe to `photon.old`, write new, delete `.old` next launch) → `execv` re-exec. Transparent because session (tohu registers) + vault persist; re-exec lands on the same screen.
-- **Android = notification → system installer.** OS forbids silent APK self-replace; ceiling is "update available" → tap → package installer. User already accepts this.
-- **The invariant:** verify-before-exec is the WHOLE security boundary (the update channel is an RCE vector). Plus the STAMP WINDOW (decided 2026-07-12): version = release stamp `t`, accept iff `floor < t ≤ now`. Lower bound = no downgrade replay; upper bound = no forward-dated stamps, so the floor can never outrun real time and a far-future-stamped build can't version-ceiling-brick the client. Forward-dated means "not yet" (re-evaluated next poll), so no skew tolerance parameter exists — a lagging clock just delays. Floor = the running build's embedded stamp, never mutable stored state. Cost: clock enters the boundary — and the answer (decided 2026-07-12) is `now` = nunc consensus at the accept/defer decision point (see [[project_nunc_clock_check]]), NOT the system clock. Rationale: a locally-dishonest clock is out of the threat model (self-harm only, forward stamps only exist under key compromise); the real adversary is network clock-bending — clock-back = silent freeze the upper bound itself introduces, clock-forward+stolen-key = floor poisoning surviving key rotation. Fail-safe composes: no consensus → defer = "not yet". Compare against the conservative confidence edge. USER MANDATE: nunc-`now` on EVERY platform, no system-clock fallback anywhere (most users are Android; a fallback there re-opens the attacks on the majority platform) — nunc un-gated on Android 2026-07-12 to satisfy this; Redox defers all updates until nunc gets a pure-Rust TLS provider. This makes nunc load-bearing for updates, beyond warn-only banner duty.
+**Invariants:**
+- Verify-before-exec is the whole security boundary (the update channel is an RCE vector).
+- STAMP WINDOW: accept iff `floor < t ≤ now`; t = the signed manifest header's creation stamp, floor = `PHOTON_BUILD_STAMP` of the running build (never mutable state). Forward-dated = "not yet", no skew parameter.
+- `now` is staged: system eagle time on the happy path; the retained nunc verdict arbitrates any forward failure; no verdict → spawn consensus and defer ([[project_nunc_clock_check]]).
 
-Two things I added beyond the user's sketch: downgrade protection (the monotonic check) and in-flight-textbox hand-off across the exec (so it's fully transparent, not "aside from unsent typing").
-Reuses existing: Ed25519 binary signing + startup self-verify, R2 distribution, FGTW/VSF signed docs, durable session+vault persistence.
+**Built:**
+- Manual (Updates page): installs on ANY version difference, both channels (explicit hop/downgrade by user intent, not window-gated).
+- Automatic: `drive_auto_update` polls the release channel every ~6-8 h (gated by `updates.auto`, default on). Desktop release builds self-apply + re-exec; dev builds are NEVER auto (Nick's mandate); the dev channel is never polled automatically.
+- Android auto-install (2026-10-06, `on_auto_update_check`): release build + unmetered + no active wave + no contact mid-ceremony → PackageInstaller session (silent once photon is its own installer of record). Nobody re-attests after an update: the session capsule is boot-locked.
+- Release-notice push: deploy.sh curls the worker → WS hub `release` event + FCM `updates` topic → immediate poll. Advisory only; the stamp window still gates installs.
 
-**BUILT 2026-07-16** (manual flow earlier that week; automatic + stamp window @ 228f68c):
-- Manual: Updates page auto-checks both channels on open; two buttons install on ANY version difference (explicit channel hop, downgrade by user intent — deliberately not window-gated); desktop swap+re-exec, Android → system installer; CDN cache-bust by content hash.
-- Stamp window AS BUILT, reconciled to the counter version scheme (the "version = stamp" design line predates major.minor.patch): `t` = the signed manifest HEADER's creation stamp (e6, inside the signature), floor = `PHOTON_BUILD_STAMP` (build.rs, eagle osc at build; vsf is a build-dep so the clocks can't drift). Forward-only ordering rides the version tuple.
-- `now` STAGED (not always-nunc — softening of the earlier mandate that keeps nunc load-bearing): system eagle time happy-path; the retained nunc verdict (`clock_consensus`, conservative edge offset−confidence) arbitrates every forward failure; no verdict → spawn consensus + defer.
-- Automatic: `drive_auto_update` in tick — jittered ~6–8h release-channel poll (first ~1min after launch), gated by fleet-synced `updates.auto` (Updates-page checkbox, default ON). Desktop RELEASE builds (patch==0) self-apply+re-exec; dev builds NEVER auto (user mandate: dev is manual) and Android toast once per version. Dev channel never polled automatically.
-- Publish integrity: manifest stamps pinned at bump + flock-serialized publishes (58bf7ed) after the 2026-07-16 race (a v11 APK published claiming v12 + the wrong commit — overlapping dev-*.sh runs).
-**Release-notice push BUILT 2026-07-19** (photon 1e3fb1f + worker 7f681a9): deploy.sh post-publish curls `/admin/release-notice?auth=<activity token>`; worker broadcasts a `release` pair_evt over the WS hub (every RUNNING client sets `next_update_check_osc = 1` -> poll now) + one FCM v1 send to the `updates` topic (dozed Android; Kotlin subscribes at token fetch, `type=update` sets a one-shot drained past drive_auto_update's gates). ADVISORY ONLY by design — the notice can at worst cause a signed-manifest poll; the stamp window still gates installs. Endpoint smoke-tested live (fcm topic ok = the RS256/OAuth/FCM-v1 chain works). Shares the doorbell sender ([[project_doorbell]]).
-Remaining (ticketed): Android platform notification (toast only today), rollback-on-crash (.prev), idle gating + textbox hand-off across exec.
+**RELEASE NOTES:** `RELEASE_NOTES.md` at repo root, top section `## Upcoming`, shipped sections `## vN` (minor only). Compiled into the Updates page (src/ui/release_notes.rs); deploy.sh renders the newest three onto the site. Write Upcoming bullets AS FEATURES LAND: one plain sentence for the installer, never the builder.
 
-**v84 (0.84.0) DEPLOYED 2026-09-08 ~05:40Z (Claude-babysat overnight, Nick asleep)**: all 8 platforms + manifest + GitHub mirror + site, 33m31s total, tag v84 → 3c6c2d1. Attempt 1 tore on Windows leg (the per-target unused-lint whipsaw: `_lock` rename broke cfg(not(unix)) — fixed 3c6c2d1, both arms consume). Redox built clean first try. Carried: 5ms flag day, v-chirp+NLMS+local-source, ring lease, record-by-default+durable spool, DeletePolicy/UnlinkOnly, traffic-light buttons, call channel. FLAG DAY: 5ms wire — all devices must update together; pre-v84 peers shape-drop v84 media (signaling still works).
-RELEASE NOTES 2026-09-09: RELEASE_NOTES.md at the repo root, top section always `## Upcoming`, shipped sections `## vN` (minor only — patches are dev builds and never appear). Compiled in (src/ui/release_notes.rs, include_str) → the Updates page shows the running version's section (+ Upcoming on a dev build). deploy.sh rolls Upcoming → v<ship> in the build tree (snapshot or live, restored by the trap), renders the newest 3 sections between RELEASE-NOTES-START/END markers on holdmyoscilloscope/photon/index.html, and release_advance_main's dev-line-open commit rolls main (Upcoming → vN + fresh Upcoming). WRITE THE UPCOMING BULLETS AS FEATURES LAND: one plain-language sentence per line for the installer, never the builder.
-
-**2026-10-06 Android AUTOMATIC INSTALL wired** (settings.rs `on_auto_update_check`): release build + unmetered (`wfd::net_metered`) + no active wave + no contact mid-ceremony → `spawn_update_apply(Release)` → APK staged → `pending_apk_install` → Kotlin `installApk` PackageInstaller session (`USER_ACTION_NOT_REQUIRED` on 12+; silent once photon is its own installer of record — the first self-update is the one confirm tap). Deferred (busy/metered) → standing band + re-poll in ~15 min. Nobody re-attests after an update: the session capsule is BOOT-locked, not process-locked (see [[project_android_session_capsule]]); only a reboot de-attests. `Msg::AutoUpdateCheck` deleted — one label everywhere.
+Remaining: rollback-on-crash, in-flight textbox hand-off across exec.
+Related: [[nick-publishes]], [[project_android_session_capsule]].

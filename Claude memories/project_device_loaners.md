@@ -1,43 +1,20 @@
 ---
 name: project_device_loaners
-description: "Loaner devices DECIDED 2026-09-04: LEASE model (docs/device-lease.md) — grant/recall on the brand, title never moves; airport delegated guest session = stage 2 with pairing-v2 + fleet-inbox cluster"
-metadata: 
-  node_type: memory
+description: "Loaner devices DECIDED 2026-09-04: LEASE model (docs/device-lease.md) — title never moves, leased device = PROXY never member, foreign hardware never receives a handle; vocabulary BIND/UNBIND, never sign in/out"
+metadata:
   type: project
-  originSessionId: 9dd5621d-5f68-4b43-83bd-807531b898e2
 ---
 
-Loaner-device design DISCUSSED 2026-07-12 (user-initiated), not yet spec'd into docs — open questions pending user.
+**Canonical docs:** docs/device-lease.md (the lease), docs/key-custody.md (handle entry), docs/lifecycle.md.
 
-Facts established:
-- One-owner-per-device guard is node-side LIVE and covers genesis too (whole posted chain is checked) — "first attest needs owned devices" already holds.
-- `device_owned` is a specific worker error frame and the client plumbing DOES surface it on the owner's add screen — but only post-words (bind is the first server contact) and only owner-side (the joiner is never told). Client-side up-front probe + joiner-side verdict are the queued follow-ups.
-- `[]x` shred RELEASES the claim (unbind, blank slate); session-clear/app-data-clear keeps it. Which reset was used decides whether a subsequent add SHOULD decline.
+**Decisions (2026-09-04):**
+- Grant = owner-fleet-signed brand annotation naming the guest; worker attest rule = brand owner OR live grant; recall = owner-signed edge at the ROUTING layer (the lockout machinery pointed at a guest), never a chain op.
+- A leased device is a PROXY, never a member: no genesis, no vote, no durable vault (streams from the fleet, composes thru fleet-forward). Device classes: MEMBER / PROXY / HUSK.
+- Lattice: lease = friends-only; stranger = ephemeral SESSION; newcomer = NEW OWNER release (no genesis on leased hardware — sybil rule).
+- The airport flow is the ONLY lease flow: the handle never touches borrowed hardware; a delegated session key (routing + fleet-streamed history, never the seed) lands instead, killable from any owned device. The typed-handle "household lease" was CUT (Nick: foreign hardware never receives a handle, family included).
+- Owned hardware: DIRECT handle entry on that device is the primary flow; tap-only fleet vouch and approver-typed handles are rejected (possession alone is nothing).
+- Departure asks WHAT'S HAPPENING: new owner (countersign + release), desk/wiped (countersign, brand kept), loaner. Every decision point completes or visibly holds — no flow mints a second step discovered later.
+- De-attest must NOT release ownership claims (else one machine launders handle after handle); `[]x` wipe releases, app-data clear keeps.
 
-The loaner middle state: claimed-dormant (de-attest keeps claims, handle off the air). HARD CONSTRAINT: de-attest must NOT release claims, else one machine can mint handle after handle (sybil laundering). Dormancy relaxes ONLY bind-into-another-fleet (pairing possession = consent), never genesis.
-
-**DECIDED 2026-09-04 — the LEASE (docs/device-lease.md is canonical)**: option (b) won and grew. Grant = owner-fleet-signed brand annotation naming the guest identity; worker attest rule = brand owner OR live grant; recall = owner-signed edge at the ROUTING layer (the lockout machinery pointed at a guest); guest vault seals under their handle (mutual privacy); owner re-attest on recalled hardware wipes foreign vaults; recall never touches the guest's own fleet membership (they bilaterally depart at leisure). Release-folded-into-Approve REJECTED — with leases, "someone uses my device" is a lease, and title transfer keeps its two-tap friction.
-**The airport vision (now the ONLY lease flow)**: borrow a device, approve on your watch, everything appears — the handle NEVER touches borrowed hardware (seed = BLAKE3(handle)); a delegated SESSION key (routing + fleet-streamed history, never the seed) lands instead, killable from any owned device. Builds with the pairing-v2 + fleet-inbox + session-capsule cluster, after voice calls. The typed-handle "household lease" stage was CUT 2026-09-04 (Nick's nervousness = the invariant: foreign hardware never receives a handle, family included).
-**VOCABULARY (Nick 2026-09-07): no passwords → no "sign in/out", EVER.** The verbs are BIND/UNBIND (device ↔ fleet), attest (session), lock/unlock, lease/loan, release, retire. UI relabeled: "Unbind — new owner" / "Unbind — keeping the device" (es desvincular, mi wewete); "signed-in identity" → "attested identity". Apply in all future strings + the wording sweep.
-**PROXY class DECIDED 2026-09-04 (Nick: "operates as proxy, doesn't count toward my fleet")**: a leased device is NEVER a member — no genesis, no identity-liveness (last-member gate counts OWNED only; existing only on a loan is impossible), no vote (no countersign/release/unattended/sub-lease), no durable vault (viewport: streams from the fleet, composes thru fleet-forward; residue session-scoped under wairua). Lease and airport session = ONE runtime object differing only in grant lifetime. Three device classes: MEMBER / PROXY / HUSK.
-**Lease lattice CLOSED 2026-09-04**: lease = FRIENDS-ONLY (roster names the guest; the friendship carries recall — no channel, no civil recall; no open grants), stranger = ephemeral SESSION (no naming — possession + guest-fleet approval defines the guest), newcomer = NEW OWNER release (no genesis on leased hardware — sybil rule). Departure ceremony DECIDED: intent declared on the LEAVER's Security page (two remove pills collapse into one intent-carrying sign-out), approver's Fleet page shows intent + demands the departing device's MASKED WORDS (mirror of add's ceremony, existing machinery; binds the physical device, kills the thief-mints-new-owner-request rubber-stamp; words relay thru the new owner on remote handoffs = feature), approve completes the declared path end to end, both screens narrating.
-**Departure-intent menu DECIDED 2026-09-04 (the retire/Release support incident)**: approving a sign-out asks WHAT'S HAPPENING — (1) new owner = countersign + release, complete at the tap; (2) desk/wiped = countersign, brand kept, retired row is INVENTORY not a to-do; (3) loaner joins only when the delegated session can complete it. Lockout stays off this menu (still-a-member drawer case). All paths wipe the departing vault (fleet holds history). Failures surface IMMEDIATELY as named held states with retry. Plus the joiner-side honesty fix: branded hardware TELLS the new user its previous owner can release it (the device_owned verdict, currently owner-side only). Rule for the wording/flow sweep: every decision point completes or visibly holds — no flow mints a second step discovered later.
-Also flagged 2026-09-04: a WORDING/FLOW sweep across most pages is wanted — the lease/recall/release/retire vocabulary should land with it.
-**docs/key-custody.md settled 2026-09-04 after TWO Nick revisions**: (1) tap-only fleet vouch rejected (stolen backpack must never authenticate — possession alone is nothing); (2) approver-typed handle for OWNED devices rejected too — **the primary flow for owned hardware is DIRECT handle entry on that device**; the delegated session is the LEASE's mechanism only, scoped to borrowed hardware (which must never see the handle). Keylogging = platform hardening of the entry box (ferros/Android kernel-protected input; Win/Mac honest about the gap), never a reason to move entry off-device. Guest session and owned-device wake become ONE approval flow; lockout = fleet refusing to vouch. Wrapped-root design deliberately deferred to the fleet-key redesign's ira-wrap (don't front-run Nick's review).
-
-Superseded original question:
-1. Loan ownership model: (a) transfer-on-bind (owner index flips; recall needs borrower cooperation) vs (b) loan annotation (owner stays, `loaned_to` added; unilateral recall enforced at announce time — I argued for (b)).
-2. Dormancy fleet-wide only, or per-device loanability.
-3. Stated (not accidental): the handle stays occupied thru dormancy — forced anyway since seeds derive from the handle string.
-
-Loan-recall announcements ride [[project_fleet_inbox]]. Revocation/eviction = remove+rotate, bundles with [[project_rekey_attack_surface]] device-remove work.
-
-**Removal consent model — REVISED 2026-08-31 (see [[self-only-removal]]): departures are BILATERAL now** — leaver's signed request + a surviving member's countersignature (mirror of add); bare self-departure is refused at the worker (it was the device-laundering vector). The device's own signature remains mandatory (the 2026-07-12 "requires a sig from the device, period" mandate holds); what changed is that it alone no longer suffices. The chain records consent-only facts: bilateral adds + bilateral departures, nothing else. No remote removal op, no tombstone chain op, no contest windows, no custodes in device-removal (custodes = identity recovery only). Kills thief-evicts-owner wholesale (today a stolen member can unbind your devices + rotate you out — must be rewired to this model; `clean_device_for_reuse` self-signout is already the pattern).
-
-Accepted consequences (design constraints, not footnotes):
-1. Fleet key = readable by every ever-added device until IDENTITY re-key (rotation no longer evicts; an un-removed member's ihi recovers every epoch, no handle needed) → fleet key must only gate low-blast-radius state (roster); nothing compounding behind it.
-2. Hostile-live-device containment lives ABOVE the fleet: session decay (boot-lock), vault handle-gating, S/friendship-layer re-key (friends re-key to owner via social-graph authority — asymmetric, thief can't counter), microwave for hardware in hand.
-3. REFINED 2026-07-17 ([[project_identity_never_dies]]): the claim releases ONLY by owner consent — two-signature retire (device self-departs, surviving member signs device_release; SHIPPED). Lost/stolen hardware stays BURNED (nobody left to consent it free... except the owner, deliberately); factory reset still rolls the fingerprint key (deter-in-app only, until PIPE).
-4. Tombstone = purely LOCAL UI annotation ("presumed dead" icon on surviving devices), zero protocol weight.
-5. Layering rule: revocable OPINIONS (loaner recall, worker announce-refusal, peer de-ranking) live at the routing/trust layer, never as chain ops. A "lock", if ever wanted, returns there.
-Also: dev-build seed-logging leak flagged (handle_query.rs Development: identity_seed line lands plaintext in adb-readable photon.log.vsf — breaks "thief doesn't have my handle"; removal offered, pending). Handle should be treated as display-secret in UI (reveal-gated).
+**VOCABULARY (Nick 2026-09-07): no passwords → never "sign in/out".** Verbs: BIND/UNBIND (device ↔ fleet), attest, lock/unlock, lease/loan, release, retire. "Attested identity", never "signed-in".
+**How to apply:** use these verbs in every new string; removal consent model lives in [[self-only-removal]] and [[project_device_sovereignty]]; recall announcements ride [[project_fleet_inbox]].

@@ -1,21 +1,17 @@
 ---
 name: feedback_no_time_based_ui
-description: never time-based UI — no auto-expiring toasts/banners/transitions; state changes are event-driven and dismissals are interaction-cleared (click or keystroke)
-metadata: 
-  node_type: memory
+description: "never time-based UI — no auto-expiring toasts/banners/transitions; state changes are event-driven, dismissals interaction-cleared; networking push-based; fling sheds 1 px/frame"
+metadata:
   type: feedback
-  originSessionId: 255ce95c-54a6-4041-960d-ad3a2007e55b
 ---
 
 No UI behaviour may be driven by a timer: no N-second toasts, no auto-dismissing banners, no delayed transitions.
-Confirmations and hints are event-SHOWN and interaction-CLEARED — they sit until the user's next click or keystroke acknowledges them (photon: the `clear_hints` path).
+Confirmations and hints are event-SHOWN and interaction-CLEARED — they sit until the next click or keystroke (photon: `clear_hints`, called on every left-press and keystroke).
 
-**Why:** stated bluntly after I shipped a 4s "Device added" toast ("should NOT be doing any time based anything"); the codebase already carried the doctrine on hints ("event-driven — never hover or time"). A timed dismissal can vanish before the user looks, and timers add frames/wakeups for nothing.
+**Why:** after I shipped a 4 s "Device added" toast: "should NOT be doing any time based anything". A timed dismissal can vanish before the user looks, and timers add frames/wakeups for nothing.
 
-**How to apply:** when adding any transient message, wire its clearing into the existing interaction paths (photon: `clear_hints`, called on every left-press and keystroke), never into `tick` elapsed-time checks. Animation phases (spectrum wave, hourglass wobble) are fine — they're rendering, not state.
-
-**Extends to networking (2026-07-03): all PUSH-based, no poll cadences.** The only permitted timers are ones an external protocol/transport forces: the pairing slot's 5-min freshness re-post, reconnect/degraded-transport backoff, NAT keepalive pings. Everything else rides hub push events (`pair_evt` frames: matched/fleet/fstate) — see the join loop and `spawn_fleet_event_sub` for the pattern.
-
-Related: [[feedback_orb_settings_panel]].
-
-**Scroll fling law (Nick 2026-10-03, Android):** on release the list keeps the LAST frame's pixel delta and sheds exactly one pixel per frame until zero (8, 7, 6 … 0), drawing each frame and halting redraws at zero; a bound or a new finger ends it. No timers, no easing curves. Built as `pane_scroll` + `list_fling` in driver.rs; the compose box keeps its own older halving fling.
+**How to apply:**
+- Wire any transient message's clearing into the interaction paths, never `tick` elapsed-time checks. Animation phases (spectrum wave, hourglass wobble) are rendering, not state — fine.
+- Networking (2026-07-03): all PUSH-based, no poll cadences. Only timers an external protocol forces are allowed (pairing slot 5-min freshness re-post, reconnect backoff, NAT keepalives); everything else rides hub push events.
+- Scroll fling law (Nick 2026-10-03): on release keep the LAST frame's pixel delta and shed exactly one pixel per frame to zero (8, 7, 6 … 0), halting redraws at zero; a bound or new finger ends it. No timers, no easing curves (`pane_scroll` + `list_fling` in driver.rs).
+Related: [[edges-not-timers]].

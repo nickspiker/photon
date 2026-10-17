@@ -1,20 +1,17 @@
 ---
 name: project_attachments
-description: "attachments v1+v2 SHIPPED (e8baa81 + cd3aa3f) — row/blob split (marker on chain + PT blob, no cloud), sealed files beside vault, save/fetch, true-shred, Android any-file picker, image resample card, live PT progress + attach_have"
-metadata: 
-  node_type: memory
+description: "attachments SHIPPED (v1 2026-07-26, typed 2026-09-10; docs/attachments.md): row = pointer on the chain, blob over PT, sealed files beside the vault never in it; the attachment IS the message"
+metadata:
   type: project
-  originSessionId: bf3c2e39-d57b-4469-8848-1780b1b5c927
 ---
 
-Attachments v1 SHIPPED 2026-07-26 @ e8baa81. THE design split: the ROW is an ATTACHMENT_PREFIX content string (blake3 + name + size, types/contact.rs) riding the ordinary chain send — every downstream system (ACK, fleet sync, history pages, tombstones, fleet-forward) inherited with zero codec changes; the BLOB travels separately over PT (attach_blob/attach_req frames in fgtw/protocol.rs), sealed under history_key (friend) or fleet key (sibling), stored as kete-sealed content-addressed files in <config>/blobs/ — NEVER in the vault (dual-ring doubles multi-MB writes; vault-grow fsync freezes the UI — same reason clutch keypairs went memory-only).
+Design is docs/attachments.md (canonical). Load-bearing rules:
+- Row/blob split: the row rides the ordinary chain send (ACK, fleet sync, history, tombstones work unchanged); the BLOB travels over PT, sealed under history_key (friend) or the fleet key (sibling), stored kete-sealed and content-addressed in `<config>/blobs/` — NEVER in the vault (dual-ring writes + vault-grow fsync freeze the UI).
+- Wire key = `attach_wire_key` (the relationship of the two DEVICES, not the conversation). Raw markers never reach a glyph: `display_content()`.
+- Kind is sniffed from bytes, never name/wire (receiver re-sniffs, stricter wins); micro thumb on the row, AV1-in-VSF preview blob ≤512 px pushed first, chunked originals (256 KB chunks + manifest, want-bitmap resume, 256 MB cap).
+- Delete-for-everyone removes the blob file at all three tombstone sites (discard, not shred — [[feedback_discard_not_shred]]).
+- "Open original" renders thru opsin to linear VSF RGB ([[project_viewer_is_opsin]]); loose temp files only in sanctioned modules (attachments.rs).
+- THE ATTACHMENT IS THE MESSAGE (Nick 2026-09-12): a row shows only its visual; tap the visual opens it, tap beside it opens the details strip (stats line + pill buttons).
 
-**Why:** no cloud at rest (weakest-link rule); PT + manifestus-adjacent files were the user's explicit direction ("PT handles the exchange and manifestus handles the storage").
-
-**How to apply:** blob helpers = storage::blob_store/load/present/delete; wire key chooser = attach_wire_key (relationship of the two DEVICES, not the conversation); display mapping = display_content() in photon_app.rs — raw markers must never reach a glyph. Attachment blobs TRULY SHRED on delete-for-everyone (only row content is braid-bound) — all three tombstone sites delete the blob file. Notes-to-self fetch uses handle_hash as token fallback (sibling wire key ignores tokens). OPEN: Android send UI (generalize the avatar picker to */*), eager sibling blob replication, resend doesn't re-push the blob (fetch covers it). Related: [[project_fleet_unification_v1]], [[project_clutch_completion_rebroadcast]].
-
-**TYPED ATTACHMENTS SHIPPED 2026-09-10 (4c10f14 kinds+micro preview, 5196600 chunked transport, e015cd1 preview blobs+viewer+reader; design = docs/attachments.md):** kind sniffed from bytes (never name/wire; receiver re-sniffs, stricter wins), micro thumb on the row (≤24 px gamma-2 VSF RGB, page column m_apv), AV1-in-VSF preview blob ≤512 px (avatar::encode_av1_wh + vsf compressed_image) pushed ahead of the original, chunked blobs (256 KB chunks + manifest at a keyed address, want-bitmap resume, streaming save, 256 MB cap), image viewer + text reader overlays (viewer.rs). limbus (path dep) decodes RAW/DNG thru a runtime-dir temp file (limbus is file-only); jxl-oxide decodes JXL. Nick's decisions: house-only video (no h264 dep), two preview tiers, chunked now. LATER: Send-as-VSF for RAW, foreign audio ingest, VSF video container, Android streaming picker, eager sibling replication of originals.
-
-2026-09-11 opsin viewer (photon d6d597f, opsin 3144177): opsin gained a lib target (`default-features = false` = convert + render, no winit host) and `Target::VsfRgb`; photon's "open original" renders thru opsin to linear VSF RGB (full_image_linear, folded to LINEAR_VIEW_MAX_EDGE 2048 phone / 4096 desktop with EXIF orientation), exposure is a gain at encode_linear (VSF RGB → Rec.2020 → gamma 2 → fluor pixel), viewer pills −½/+½/0/clip at viewer_base+4..7. Temp copies for opsin are minted in attachments.rs (artifact gate: loose-file writes only in sanctioned modules). No demosaic (Nick: skip); histograms/spectral chart not ported. opsin's tree carried another session's uncommitted viewer work — committed together, it builds.
-
-2026-09-12: THE ATTACHMENT IS THE MESSAGE (Nick): a row shows only its visual (picture band with no body line, code's first 3 lines, wave card, else bare filename); `msg_attach_visuals` per slot like wave bands; tap inside the visual opens (opsin on desktop for a held original, else viewer/reader), tap beside it opens the details strip: stats line (name · type · size · dims · age) up top, real pill buttons (reply, fetch/play/save, delete) below. Filter pill drawn before the row walk (under-blend) + hit re-assert.
+**Why:** no cloud at rest (weakest-link rule); Nick: "PT handles the exchange and manifestus handles the storage."
+**Next shape:** [[project_chain_text_and_pointers]] (meta + thumbs move off the row) and [[project_fleet_holds_everything]] (sibling replication).
