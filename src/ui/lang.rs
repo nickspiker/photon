@@ -475,6 +475,18 @@ pub enum Msg<'a> {
     DepartWordsShow(&'a str),
     /// LEAVER's pending line under the words.
     DepartWaitingLine,
+    /// Release armed (holdings.rs): the have-set check is running.
+    HoldingsChecking,
+    /// Release armed: no fleet key in RAM, so nothing could be checked.
+    HoldingsNoKey,
+    /// Release armed: every held attachment is also on a sibling.
+    HoldingsAllSafe,
+    /// Release armed: what exists only on this device (counts and size pre-rendered).
+    HoldingsAtRisk { files: &'a str, recordings: &'a str, size: &'a str },
+    /// Release armed: the siblings that have not answered, each "name (age)".
+    HoldingsWaiting(&'a str),
+    /// A sibling with no signed traffic this session, in place of its age.
+    HoldingsNotHeard,
     /// APPROVER's Fleet card: the leaver declared new-owner intent.
     DepartIntentNewOwner,
     /// APPROVER's Fleet card: the leaver declared desk (keeping-it) intent.

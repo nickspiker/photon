@@ -50,6 +50,7 @@ mod conversation;
 mod drafts;
 mod molecules;
 mod devices;
+mod holdings;
 mod ideas;
 mod driver;
 mod input;
@@ -2401,6 +2402,11 @@ pub struct PhotonApp {
     fleet_approve_armed: Option<[u8; 32]>,
     /// Two-tap confirm armed for the Security page's "Remove & shred" (self-departure from the fleet chain, then crypto-wipe). Mutually exclusive with `settings_shred_armed`; cleared on any page switch, like every destructive arm.
     settings_removeshred_armed: bool,
+    /// The Release card's have-set check (holdings.rs): started on arming, answered by siblings, drawn under the pill. RAM only.
+    holdings_check: Option<holdings::HoldingsCheck>,
+    /// SIBLING side: answers a presence worker finished, waiting for the UI thread to seal, sign and send.
+    holdings_serve_tx: std::sync::mpsc::Sender<holdings::HoldingsServe>,
+    holdings_serve_rx: std::sync::mpsc::Receiver<holdings::HoldingsServe>,
     /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
     dialed_wave_ids: std::collections::HashSet<[u8; 16]>,
     /// Fleet wave-presence chip: a wave is running on ANOTHER of our devices — `(wave_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
@@ -2445,6 +2451,7 @@ impl PhotonApp {
         };
         #[cfg(target_os = "android")]
         let (start_in_background, resident_mode) = (false, false);
+        let (holdings_tx, holdings_rx) = std::sync::mpsc::channel();
         Self {
             start_in_background,
             resident_mode,
@@ -3039,6 +3046,9 @@ impl PhotonApp {
             depart_words_entry: None,
             fleet_approve_armed: None,
             settings_removeshred_armed: false,
+            holdings_check: None,
+            holdings_serve_tx: holdings_tx,
+            holdings_serve_rx: holdings_rx,
             dialed_wave_ids: Default::default(),
             fleet_wave_elsewhere: None,
             signing_bundle: None,
@@ -4238,6 +4248,26 @@ fn contact_ping_due(c: &crate::types::Contact, now: std::time::Instant) -> bool 
     }
     let interval = PING_BASE * (1u32 << c.ping_backoff.min(PING_BACKOFF_MAX));
     now.duration_since(last) >= crate::jitter_dur(interval)
+}
+
+/// An age as the page reads it: the DMS doubling count in dozenal mode, the largest whole unit (days, hours, minutes, seconds) in arabic. `osc` = oscillations ago; negative (a peer clock ahead of ours) reads as now.
+fn ago_label(osc: i64) -> String {
+    let osc = osc.max(0);
+    if crate::dms_ui() {
+        let dms = crate::dms_age(osc);
+        return tr(Msg::AgoDms(&dms)).into_owned();
+    }
+    let secs = osc / crate::OSC_PER_SEC;
+    tr(if secs >= 86400 {
+        Msg::AgoDays((secs / 86400) as u32)
+    } else if secs >= 3600 {
+        Msg::AgoHours((secs / 3600) as u32)
+    } else if secs >= 60 {
+        Msg::AgoMinutes((secs / 60) as u32)
+    } else {
+        Msg::AgoSeconds(secs as u32)
+    })
+    .into_owned()
 }
 
 /// Bytes as something a person can read at a glance. Deliberately coarse — one decimal past a megabyte is noise on a figure that exists to answer "is there much in there?".

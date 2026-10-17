@@ -479,6 +479,14 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
+    /// A sibling's departure have-set frame: `ask` = a leaving device's holdings list (answer with what we lack), else the answer to OUR ask. `sealed` = the hash list under the fleet key; the UI gates on sibling membership before opening it.
+    HoldingsReceived {
+        ask: bool,
+        nonce: [u8; 32],
+        sealed: Vec<u8>,
+        sender_pubkey: DevicePubkey,
+        sender_addr: SocketAddr,
+    },
     /// A bridge host's running word on a pigeon we dropped: `got` of `of` chunks sit in its spool. Draws the bar on the pigeon row.
     PigeonAckReceived {
         content_hash: [u8; 32],
@@ -689,6 +697,7 @@ impl StatusUpdate {
             StatusUpdate::AttachHaveReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
+            StatusUpdate::HoldingsReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::PigeonAckReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::PigeonWantReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::AttachReqReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -2165,6 +2174,26 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
+                                    } else if let Ok(((ask, nonce, sealed), sender_pubkey)) =
+                                        crate::network::fgtw::protocol::parse_holdings_vsf(&data)
+                                    {
+                                        if !is_known_sender_pt(&sender_pubkey) {
+                                            crate::log("PT: holdings REJECTED - unknown sender");
+                                            continue;
+                                        }
+                                        send_status_update(
+                                            &status_tx_recv,
+                                            StatusUpdate::HoldingsReceived {
+                                                ask,
+                                                nonce,
+                                                sealed,
+                                                sender_pubkey: DevicePubkey::from_bytes(
+                                                    sender_pubkey,
+                                                ),
+                                                sender_addr: src_addr,
+                                            },
+                                            &event_proxy_recv,
+                                        );
                                     }
                                     // Attachment blob (the file bytes — the typical PT large transfer)
                                     else if let Ok((
@@ -2743,6 +2772,29 @@ async fn run_checker(
                                         k,
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            if let Ok(((ask, nonce, sealed), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_holdings_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::HoldingsReceived {
+                                        ask,
+                                        nonce,
+                                        sealed,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                        sender_addr: src_addr,
                                     },
                                     &event_proxy_recv,
                                 );

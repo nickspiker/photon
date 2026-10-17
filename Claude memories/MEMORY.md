@@ -38,9 +38,9 @@
 - [feedback_no_redundant_disk_ops.md](feedback_no_redundant_disk_ops.md) — safety copy = reflink, never literal; batch repo scans
 - [feedback_legacy_first.md](feedback_legacy_first.md) — port legacy compositing as visible-RGB RMW first; fluor under-blend later
 - [feedback_orb_settings_panel.md](feedback_orb_settings_panel.md) — orb = settings/about/help panel; device mgmt its own page
-- [Persist findings early](persist-findings-early.md) — Nick undoes via message edits: write load-bearing findings to memory/docs as they land
+- [Persist findings early](persist-findings-early.md) — write load-bearing findings to memory/docs as they land (Nick edits messages)
 - [Epoch is fixed](feedback_epoch_fixed.md) — HARD: never move the epoch; fleet mints on legacy 20:17:40 UTC, TAI def 20:17:48 is +29 s; NO flip (decided 2026-09-26)
-- [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding: every string parser is an attacker's lever; drop-and-purge legacy forms the same day
+- [No compat text hatches](feedback_no_compat_text_hatches.md) — never keep a reader for a retired text encoding (attacker lever); purge legacy forms same day
 - [Re-clutch, never store](re-clutch-never-store.md) — recovery = fresh ceremony; secrets at rest only if required
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
@@ -53,7 +53,8 @@
 - [Beams](project_beams.md) — 2026-10-10 DECIDED + desktop BUILT: H.264, intra refresh, ISP stood aside, VSF labels; phone capture + cycle built
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 Jeff holes = L rule; fixes BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
-- [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments are wrapped VSF blobs keyed by their header hb; raw reader 12 releases then build halts
+- [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb; raw reader to v134
+- [Removal safety](project_device_removal_safety.md) — 2026-10-17 phase 2 BUILT: have-set ask on Release arm, at-risk lines; 3-5 open
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 fetch asked one friend device (fixed); auto-fetch open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
@@ -75,7 +76,7 @@
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
-- [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even when asked BOOTTIME; request MONOTONIC + map it
+- [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
 - [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: media render at 7% while the rocker bound VOICE_CALL
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while rate-saturated; FIXED 2026-09-28
 - [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, NO hardcoded timings
@@ -175,8 +176,8 @@
 ## References
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
 - [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes; ff siblings first
-- [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail rewritten history: verify vs origin, reset --hard, ff ALL sibling deps together
-- [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; restore untouched, style commit separate
+- [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail rewritten history: reset to origin, ff ALL sibling deps
+- [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; style commits separate
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — readers MUST use VsfHeader::primary_section
 - [reference_ihi_primitives.md](reference_ihi_primitives.md) — ihi: lossy OWF vs memory-hard PoW
 - [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard force-opens the Edit read guard

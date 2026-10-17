@@ -1302,6 +1302,7 @@ impl FluorApp for PhotonApp {
                             self.request_fleet_departure(1);
                         } else {
                             self.settings_removeshred_armed = true;
+                            self.holdings_check_start();
                             self.settings_shred_armed = false;
                             self.settings_revoke_armed = false;
                         }
@@ -3778,6 +3779,10 @@ impl FluorApp for PhotonApp {
         }
         dirty_checkpoint!();
         if self.drain_vault_stats() {
+            ctx.window.request_redraw();
+        }
+        if self.drain_holdings() {
+            self.scene_dirty = true;
             ctx.window.request_redraw();
         }
         if self.drain_wave_env() {

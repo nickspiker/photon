@@ -3953,24 +3953,8 @@ impl PhotonApp {
                             }) {
                                 // Dozenal mode shows the DMS age (how many times a second has doubled — one number, no units; the Dozenal page carries the legend); arabic mode the unit'd count. The detail style is Oxanium, so the glyphs resolve. A closure because the edit-history lines below stamp each prior version's age too.
                                 let fmt_age = |ts: i64| -> String {
-                                    let osc = (vsf::eagle_time_oscillations() - ts).max(0); // WHY/PROOF: a row stamped by a peer's clock ahead of ours has a negative age — it reads as now
-                                    let secs = osc / crate::OSC_PER_SEC;
-                                    if crate::dms_ui() {
-                                        // LIVE (Nick 2026-10-01): the age is the floor doubling count of its oscillations, and the driver wakes at the next doubling while this row is selected.
-                                        let dms = crate::dms_age(osc);
-                                        tr(Msg::AgoDms(&dms)).into_owned()
-                                    } else {
-                                        tr(if secs >= 86400 {
-                                            Msg::AgoDays((secs / 86400) as u32)
-                                        } else if secs >= 3600 {
-                                            Msg::AgoHours((secs / 3600) as u32)
-                                        } else if secs >= 60 {
-                                            Msg::AgoMinutes((secs / 60) as u32)
-                                        } else {
-                                            Msg::AgoSeconds(secs as u32)
-                                        })
-                                        .into_owned()
-                                    }
+                                    // A row stamped by a peer's clock ahead of ours has a negative age; ago_label reads it as now. LIVE in dozenal (Nick 2026-10-01): the driver wakes at the next doubling while this row is selected.
+                                    ago_label(vsf::eagle_time_oscillations() - ts)
                                 };
                                 let age = fmt_age(msg.timestamp);
                                 // The delivery ladder (sending → replicated ∥ delivered): "delivered" = the friend's fleet ACKed (the line — nothing beyond it exists, ever; "seen" is only a human's explicit reaction); "replicated" = our own fleet holds it but their ACK hasn't landed yet.
@@ -6112,6 +6096,25 @@ impl PhotonApp {
                             &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
                             &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
                             3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
+                        // DEVICE-REMOVAL SAFETY (holdings.rs): while Release is armed, what exists only on this device — so the second tap is an informed one.
+                        if self.settings_removeshred_armed {
+                            if let Some((view, waiting)) = holdings::view(self.holdings_check.as_ref(), &self.contacts) {
+                                let (line, colour) = match view {
+                                    holdings::HoldingsView::Checking => (tr(Msg::HoldingsChecking).into_owned(), *theme::LABEL_COLOUR),
+                                    holdings::HoldingsView::NoKey => (tr(Msg::HoldingsNoKey).into_owned(), *theme::ERROR_TEXT_COLOUR),
+                                    holdings::HoldingsView::Safe => (tr(Msg::HoldingsAllSafe).into_owned(), *theme::SEARCH_FOUND_COLOUR),
+                                    holdings::HoldingsView::AtRisk { files, recordings, bytes } => {
+                                        let (files, recordings, size) = (crate::fmt_num64(files), crate::fmt_num64(recordings), human_bytes(bytes));
+                                        (tr(Msg::HoldingsAtRisk { files: &files, recordings: &recordings, size: &size }).into_owned(), *theme::ERROR_TEXT_COLOUR)
+                                    }
+                                };
+                                flow.prose(&mut canvas, ctx.text, &line, hspan2 * 0.9, colour, 600);
+                                if !waiting.is_empty() {
+                                    flow.prose(&mut canvas, ctx.text, &tr(Msg::HoldingsWaiting(&waiting.join(", "))), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                                }
+                                flow.gap(hspan2 * 0.6);
+                            }
+                        }
                         flow.gap(hspan2 * 0.4);
                         // LEAVER's pending departure: the approval words, big and Oxanium, plus the waiting line — this screen IS the ceremony's display half until the de-fold completes (or relaunch clears it).
                         if self.depart_request_t.is_some() {

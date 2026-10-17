@@ -57,3 +57,17 @@ The one thing Option A bought that B doesn't: a single-device user who wipes tha
 5. **Sealed export** (§5).
 
 Nothing here blocks waves; item 1 is the only near-term obligation. The spec debt this doc retires: braid.md §14.5 (slot substrate — explicitly not built, superseded), §14.6 (linearizer — already retired by lanes), §14.7–14.8 (re-derived above).
+
+## 7. Device-removal safety (2026-10-17)
+
+Nick: "is there a way to let the user know they're removing a device that has the only copy and to wait for sync or offer other options?" — and "my watch likely doesn't have my movie library". A removal must not silently take the last copy of anything with it, and no device is assumed to hold everything.
+
+Holders are counted per ITEM, never per device: a sibling vouches only for the items it actually holds, so a watch with three photos makes those three safe and nothing else. The answer is a list of MISSING content hashes (the reply is as small as the gap), not a bitmap over the ask.
+
+Phases:
+
+1. **The wrapped original** (BUILT, docs/attachments.md "The wrapped original"): an attachment's identity is its own header hb, so every device names the same content the same way.
+2. **The have-set exchange + the at-risk lines** (BUILT, `ui/photon_app/holdings.rs`): arming Release lists the attachment originals and heads this device holds (a worker probes presence; the UI thread makes no vault call), seals the list under a fleet-key derivation and sends `holdings_ask` to every live sibling. Each sibling probes on a worker and answers `holdings_missing` with the subset it lacks. An item is at risk when some hash of it we hold is missing on every sibling that answered. Under the Release pill: checking → all safe, or "only on this device: N files and M recordings (size)", plus each sibling that has not answered and when we last heard from it. The second tap still releases. Hashes are RAW for now (presence follows the raw→hb alias); the ask moves to hb when the raw form retires at v134.
+3. **Pull-these-now + remove-when-done:** a sibling fetches the at-risk set on request, and the departure is persisted to complete only once every item has a second holder.
+4. **Free space, target choice, export:** siblings report free space; the user picks which device takes what, or exports.
+5. **Durability cursor for rows:** the same question for message rows, answered by §2's sync cursors rather than a hash list.
