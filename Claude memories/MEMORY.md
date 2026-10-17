@@ -52,7 +52,7 @@
 - [Beams](project_beams.md) — 2026-10-10 DECIDED + desktop BUILT: H.264, intra refresh, ISP stood aside, VSF labels; phone capture + cycle built
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 Jeff holes = L rule; fixes BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
-- [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE 2026-10-07: attachments are off-chain wrapped VSF blobs; unbuilt flag day
+- [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments are wrapped VSF blobs keyed by their header hb; raw reader 12 releases then build halts
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 fetch asked one friend device (fixed); auto-fetch open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
