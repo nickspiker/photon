@@ -1607,6 +1607,8 @@ impl PhotonApp {
             let identity_seed = session.identity_seed;
             let held = self.fleet_key_ram.lock().ok().and_then(|g| *g);
             let locked = self.locked_devices();
+            // Field 2026-10-17 (Emma): five confirm taps each came back Failed and the reason lived only on the status row — every attempt now says what it grew and why it stopped.
+            crate::logf!("ADD-DEVICE: confirm — growing the fan-out (fleet key held = {}, {} locked device(s) excluded)", held.is_some(), locked.len());
             std::thread::spawn(move || {
                 let r = (|| {
                     let held = held.ok_or_else(|| tr(Msg::NoFleetKey).into_owned())?;
@@ -1614,13 +1616,23 @@ impl PhotonApp {
                         .into_iter()
                         .filter(|m| !locked.contains(m))
                         .collect();
+                    crate::logf!("ADD-DEVICE: confirm — sealing wraps for {} member(s)", members.len());
                     fleet::grow_fleet_wraps(&hp, &kp, &held, &members, &identity_seed).map(|_| ())
                 })();
+                match &r {
+                    Ok(()) => crate::log("ADD-DEVICE: confirm — fan-out grown, the new device can recover the fleet key"),
+                    Err(e) => crate::logf!("ADD-DEVICE: confirm FAILED — {}", e),
+                }
                 let _ = tx.send(match r {
                     Ok(()) => AddDeviceUpdate::Rotated,
                     Err(e) => AddDeviceUpdate::Failed(e),
                 });
             });
+        } else {
+            // A missing input used to leave `checking` set with nothing running, so every later tap returned early and the screen sat on "Finishing" forever.
+            crate::logf!("ADD-DEVICE: confirm cannot start — handle proof {}, device key {}, update channel {}, session {}", self.our_handle_proof().is_some(), self.device_keypair.is_some(), self.add_device_tx.is_some(), self.session.is_some());
+            self.add_device_checking = false;
+            self.add_device_status = tr(Msg::AddDeviceError("not ready — try again in a moment")).into_owned();
         }
     }
 

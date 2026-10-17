@@ -12,3 +12,7 @@ The registry design (docs/pairing-v2.md, July 2026) predates the peers-are-FGTW 
 
 **Why:** FGTW's job is resolving where a device is; anything it stores beyond that is a server dependency, a size/availability failure point and a trust surface (today's outage was exactly that).
 **How to apply:** the selector (words/BLE/NFC) yields the candidate device key → the old device resolves its address in the phonebook → pulls consent + bundle straight from the candidate over PT/relay and verifies there; retire bindreq_put/list/withdraw from the worker. Until that lands, the worker cap must fit a MASK_ALL request.
+
+**Second wall, same day (green confirm never finishes):** after the cap fix Emma's bind landed (sibling 0a08c6e4 reconciled) but every "Yes, green — finish" tap came back Failed, unlogged.
+Cause: fgtw `mint_fleet_key` / `grow_fleet_wraps` took a bare `&Keypair`, so photon's wrappers published the fan-out Ed25519-only; once every member declared Falcon (log: "floor Ed25519 · Falcon · SPHINCS+, 2/2 declared the basket") the worker's `envelope_refusal` bounces it `below_floor`. Every other fleet writer already went thru `signer_for`; these two could not.
+Fixed 2026-10-17: both take `&impl FleetSigner`, photon passes `signer_for(device_key)`; test a_fanout_publish_by_a_full_bundle_device_clears_the_envelope_floor; the confirm now logs ADD-DEVICE lines and a missing input no longer strands `add_device_checking`. Needs a photon build on the CONFIRMING (old) device — the server was never wrong here.

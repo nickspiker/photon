@@ -335,7 +335,8 @@ pub fn mint_fleet_key(
     members: &[[u8; 32]],
     identity_seed: &[u8; 32],
 ) -> Result<(u64, [u8; 32]), String> {
-    fgtw::client::mint_fleet_key(&PhotonTransport, handle_proof, device_key, members, identity_seed)
+    // The installed PQ signer when this is our device key: a bare Ed25519 envelope is below the floor of any fleet whose members all declared Falcon.
+    fgtw::client::mint_fleet_key(&PhotonTransport, handle_proof, &signer_for(device_key), members, identity_seed)
 }
 
 /// GROW the fan-out: republish wraps for `members` under the SAME held key at revision+1 — the add-device/egg/unlock edge. Never a mint; the fingerprint does not move.
@@ -346,7 +347,8 @@ pub fn grow_fleet_wraps(
     members: &[[u8; 32]],
     identity_seed: &[u8; 32],
 ) -> Result<u64, String> {
-    fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, device_key, held_key, members, identity_seed)
+    // Same rule as the mint (Emma 2026-10-17: an Ed25519-only grow bounced below_floor, so the green confirm could never finish).
+    fgtw::client::grow_fleet_wraps(&PhotonTransport, handle_proof, &signer_for(device_key), held_key, members, identity_seed)
 }
 
 // ── The epoch-spine custody slot: {k ‖ epoch_k ‖ prev_k ‖ prev_epoch} sealed under a fleet-key-derived custody key, addressed by the fleet key — the wiped-device jump-to-head, refreshed by each checkpoint winner and re-sealed across rotations. Live siblings never need it (ckpt_state frames serve device-to-device). ──
