@@ -6,6 +6,7 @@ metadata:
 ---
 
 Canonical: docs/dozenal.md. Decided with Nick 2026-09-11/15.
+SCOPE (Nick 2026-10-17): Arabic numerals for the most part — dozenal is a Base setting in the app, and DMS is specifically what it brings; these forms apply when that base is chosen.
 - **Three forms by kind of number:** counts (enumerable — devices, contacts, unread, chunk 3 of 5) are linear in the base; magnitudes (size, age, rate, length, bulk the user can't point at) are DMS; proportions are one dozenal fraction digit with a dot (.Lun = half). Identifiers never convert. The line = perception vs enumeration ("can the user point at each one?").
 - **DMS = doublings, spelled dozenal:** floor(log2 x) in base twelve (the +1 bit-length form was dropped: "should it really be Zil? Not Zila"); zero reads as a word (now / empty / alone).
 - Units (the "1" of each scale) are anchored on the hydrogen line; the current model is [[project_eagle_units_first_principles]] (the 2026-09-11 Eagle-second age unit is superseded); size counts bits.

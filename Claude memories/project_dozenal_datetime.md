@@ -5,6 +5,7 @@ metadata:
   type: project
 ---
 
+SCOPE (Nick 2026-10-17): this is the render when the user's Base setting is dozenal; the app's default display is Arabic ([[feedback_numbers_binary_at_rest]]).
 Convention agreed 2026-09-01 (canonical in inksurf; photon renders to match):
 - Date = `<year-glyphs> <month-glyph> <day-glyphs>`, plain SPACES, never dots/dashes/slashes. Month = ONE zero-indexed glyph (January Zil … December Stelor); day-of-month 1-indexed glyphs.
 - Day-of-week is a NAME, never a number (seven is coprime to twelve): twelves get glyphs, sevens get words. Week-of-year never rendered. The 6-day week was rejected (cadence must interoperate).

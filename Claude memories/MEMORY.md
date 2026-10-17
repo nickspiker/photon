@@ -7,7 +7,7 @@
 - [feedback_test_discipline.md](feedback_test_discipline.md) — publish IS the compile gate; ONE full cargo test per batch (never --lib alone: skips tests/)
 - [feedback_render_never_touches_vault.md](feedback_render_never_touches_vault.md) — HARD: the UI/render thread makes NO vault call (2026-09-18 ANR); presence = cache + worker probe
 - [feedback_reload_mid_ceremony.md](feedback_reload_mid_ceremony.md) — HARD: never dev.sh/deploy reload mid-CLUTCH; check log for a round in flight, batch fixes
-- [Commit trailer](commit-trailer-built-with.md) — never "Co-Authored-By: Claude"; end commits "Built with Claude <model>" ([feedback_commit_attribution.md](feedback_commit_attribution.md))
+- [Commit trailer](commit-trailer-built-with.md) — end commits "Built with Claude <model>"; never Co-Authored-By, never the PR "Generated with" line
 - [Nick publishes](nick-publishes.md) — Nick INITIATES; when asked, run deploy/publish and push WITH build notes (RELEASE_NOTES.md → Updates panel + site); never unasked
 - [Push after landing](push-after-landing.md) — memories live in 'Claude memories/' of the public photon repo: commit+push memory writes WITH photon
 - [No private handles](no-private-handles.md) — public EXCEPT signing keys + handles (keys/ only); handles never in ANY repo; petnames in prose; [doctrine](project_humanitys_code.md); [never on disk](feedback_never_store_handles.md)
@@ -16,7 +16,7 @@
 - [feedback_commit_all.md](feedback_commit_all.md) — "commit" includes all modified files unless told otherwise
 - [feedback_source_map.md](feedback_source_map.md) — keep src/lib.rs source-map comment current when pub items/files change
 - [No Python](feedback_no_python.md) — HARD: no Python in the photon repo unless proven necessary; commit generated artifacts (fonts), tools are Rust
-- [No wrapped comments](no-wrapped-comments.md) — one sentence per line, never hard-wrapped ([feedback_no_comment_wraps.md](feedback_no_comment_wraps.md))
+- [No wrapped comments](feedback_no_comment_wraps.md) — one sentence per line, never hard-wrapped, any repo; comment-gate.sh enforces
 - [Edges, not timers](edges-not-timers.md) — react on event edges, never timers/debounces; UI too: [feedback_no_time_based_ui.md](feedback_no_time_based_ui.md)
 - [feedback_direct_pixel_no_floaters.md](feedback_direct_pixel_no_floaters.md) — rendering is direct pixel access only; no GPU shaders/float pipeline
 - [feedback_spelling.md](feedback_spelling.md) — thru/thruout/altho; colour British; rest US
@@ -27,7 +27,7 @@
 - [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD: self and bob are both people
 - [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD: handles BYTE-PRECISE full-Unicode (whitespace-only valid)
 - [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF ints: writers auto-size, readers widen (as_u64/as_i64), never exact-match
-- [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log)
+- [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log); display Arabic mostly, dozenal = the app's Base setting (DMS)
 - [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify grep-derived line numbers non-empty before sed address ops
 - [Perl UTF-8 trap](feedback_perl_utf8_trap.md) — perl \x{..} without -CSD double-encodes the whole file; grep diffs for mojibake
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org + toka.wasm freely, no confirmation

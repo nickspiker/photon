@@ -16,3 +16,4 @@ Possession of the handle re-derives the whole passless identity (identity_seed =
 - Never write a handle into a memory file, code comment, commit message, log line or doc. Name people by their petname per [[no-private-handles]] (the public-repo version of this rule).
 - The memory corpus is public, so it must be handle-clean regardless.
 - When scrubbing, hunt HANDLES specifically, not towns/roles; if unsure whether a token is a handle, treat it as one and remove it.
+- A handle in the CONVERSATION context is fine (Nick 2026-10-17); it just can never be written into any repo — see [[no-private-handles]].
