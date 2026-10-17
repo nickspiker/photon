@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Adding a device works again.** A new phone or computer can join your other devices again: the request is no longer turned away as too large, and tapping the green "finish" on your existing device now completes the join instead of doing nothing.
 - **Links look clickable.** The pointer turns into a hand over a link in a message.
 - **The pointer changes shape on a Mac even when Photon isn't the front window.** Hovering a link or the message box shows the hand or the text cursor without clicking Photon first.
 - **Plugging in or unplugging a monitor no longer crashes Photon.** When the screen briefly shrank to almost nothing, a picture too small to draw could stop the whole app; now it's simply skipped until the screen comes back.
