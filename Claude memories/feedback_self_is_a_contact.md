@@ -13,6 +13,7 @@ The self conversation (notes-to-self, the fleet table) is ORDINARY: your own dev
 
 **How to apply:**
 - Never write `if has_remote` / `is_zero_remote` / notes-to-self branches for behaviour; if self seems to lack "the peer", it has one — the sibling devices.
-- Fix direction is SUBTRACTION: delete the branches (still ~28 references in src as of 2026-10-17); there is no "self-sync feature" to build.
+- Fix direction is SUBTRACTION: delete self branches; there is no "self-sync feature" to build.
+- Audited 2026-10-17: the ~28 surviving `has_remote`/`is_zero_remote` uses are NOT self branches — each decides by `remote_count(&us)` (participants minus us), i.e. the general rule evaluated on the participant set, with notes-to-self as its empty case (the 2026-08-20 fix converted the old 17 branches to exactly this). Leave them; flag only a NEW check that tests "is this the self row" instead of the participant set.
 - A genuinely unavoidable asymmetry (one device, zero counterparts) is a DEGENERATE CASE of the general path (empty peer set), not a branch.
 Related: [[project_rarangi_messages_fleet]].
