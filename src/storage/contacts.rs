@@ -1025,8 +1025,12 @@ fn set_file_fields(rec: Record, msg: &ChatMessage) -> Record {
         .set("file_hash", Value::Bytes(f.hash.to_vec()))
         .set("file_name", f.name.clone())
         .set("file_size", f.size);
-    match f.head {
+    let rec = match f.head {
         Some(h) => rec.set("file_head", Value::Bytes(h.to_vec())),
+        None => rec,
+    };
+    match f.wrap {
+        Some(w) => rec.set("file_wrap", Value::Bytes(w.to_vec())),
         None => rec,
     }
 }
@@ -1038,6 +1042,7 @@ fn record_file(rec: &Record) -> Option<crate::types::AttachRef> {
         name: rec.text("file_name")?.to_string(),
         size: rec.uint("file_size")?,
         head: rec.bytes("file_head").and_then(|b| <[u8; 32]>::try_from(b).ok()),
+        wrap: rec.bytes("file_wrap").and_then(|b| <[u8; 32]>::try_from(b).ok()),
     })
 }
 
@@ -1668,7 +1673,7 @@ mod tests {
         att.author = Some([5; 32]);
         att.attach = Some(crate::types::AttachMeta { kind: crate::types::AttachKind::Unknown, dims: Some((3, 4)), preview_hash: Some([6; 32]) });
         att.marks = Vec::new();
-        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio, head: None }, true, 30);
+        let rec = ChatMessage::attachment(AttachRef { hash: [7; 32], name: String::new(), size: 5, role: AttachRole::WaveAudio, head: None, wrap: None }, true, 30);
         let ctl = ChatMessage::control(wave.clone(), false, 10);
 
         {

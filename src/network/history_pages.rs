@@ -165,6 +165,9 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
             if let Some(h) = fr.head {
                 r.push(f("file_head", VsfType::hb(h.to_vec())));
             }
+            if let Some(w) = fr.wrap {
+                r.push(f("file_wrap", VsfType::hb(w.to_vec())));
+            }
         }
         doc = doc.add_section(ROW_SECTION, r);
         for m in &row.marks {
@@ -216,6 +219,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
                 name: r.text("file_name")?,
                 size: r.uint("file_size")?,
                 head: r.h32("file_head"),
+                wrap: r.h32("file_wrap"),
             })
         })();
         let attach = (|| {
@@ -356,7 +360,7 @@ mod tests {
             file(3, AttachRef::file([4; 32], "notes.txt", 12)),
             ctl(4, RowControl::Delete { target: 3 }),
             ctl(5, RowControl::Wave(WaveSignal::Hangup { wave_id: [1; 16] })),
-            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio, head: None }),
+            file(6, AttachRef { hash: [5; 32], name: String::new(), size: 99, role: AttachRole::WaveAudio, head: None, wrap: None }),
             ctl(7, RowControl::Era(crate::crypto::era::EraSignal::Init { era_next: 2, nonce: [6; 32], prior_tag: 7, kem_set: 3 })),
             ctl(8, RowControl::Probe),
             ctl(9, RowControl::Wave(WaveSignal::Answer { wave_id: [8; 16], nonce: [9; 32], device: None })),

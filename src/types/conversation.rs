@@ -240,6 +240,10 @@ impl Conversation {
                 if ef.head.is_none() && nf.head.is_some() {
                     ef.head = nf.head;
                 }
+                // The wrapper's hb is the same kind of metadata (row_control.rs `wrap`): adopted from whichever copy carries it.
+                if ef.wrap.is_none() && nf.wrap.is_some() {
+                    ef.wrap = nf.wrap;
+                }
             }
             existing.delivered |= msg.delivered;
             existing.deleted |= msg.deleted;

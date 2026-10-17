@@ -3443,15 +3443,21 @@ impl PhotonApp {
                             .conversations
                             .iter()
                             .flat_map(|c| c.messages.iter())
-                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash).map(|f| f.name.clone()))
+                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash || f.wrap == Some(content_hash)).map(|f| f.name.clone()))
                             .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key) {
-                                Ok(plain) if *blake3::hash(&plain).as_bytes() == content_hash => {
+                                // Raw bytes that hash to the name, or a WRAPPER whose header hb it is (storage/wrapped.rs) — either binding is cryptographic.
+                                Ok(plain) if crate::storage::blob_binds(&plain, &content_hash) => {
                                     match crate::storage::blob_store(&seed, &content_hash, &plain) {
                                         Ok(()) => {
+                                            // A wrapper lands under its hb and is aliased from the raw hash it names; everything downstream (progress, attach_have, the re-sniff) speaks the row's RAW hash, and sniffs the unwrapped original, never the VSF header.
+                                            let (content_hash, sniffed) = match crate::storage::alias_if_wrapper(&seed, &content_hash) {
+                                                Some(raw_hash) => (raw_hash, crate::storage::blob_load(&seed, &raw_hash).map(|raw| crate::types::sniff(&raw, &sniff_name))),
+                                                None => (content_hash, Some(crate::types::sniff(&plain, &sniff_name))),
+                                            };
                                             let _ = tx.send(AttachInstalled {
-                                                sniffed: Some(crate::types::sniff(&plain, &sniff_name)),
+                                                sniffed,
                                                 manifest: None,
                                                 chunk: None,
                                                 conversation_token,
@@ -3496,7 +3502,7 @@ impl PhotonApp {
                             .conversations
                             .iter()
                             .flat_map(|c| c.messages.iter())
-                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash).map(|f| f.name.clone()))
+                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash || f.wrap == Some(content_hash)).map(|f| f.name.clone()))
                             .unwrap_or_default();
                         queue_job(&self.seal_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key).ok().and_then(|p| crate::storage::BlobManifest::from_bytes(&p)) {
@@ -3510,7 +3516,11 @@ impl PhotonApp {
                                             if held >= total && total > 0 {
                                                 crate::storage::blob_presence_forget(&content_hash);
                                                 if crate::storage::blob_present_probe_now(&content_hash) {
-                                                    let sniffed = crate::storage::blob_chunk_load(&m.chunks[0]).map(|first| crate::types::sniff(&first, &sniff_name));
+                                                    // A whole WRAPPER: aliased, then reported under the row's raw hash (its kind lives in the head — the first chunk is a VSF header, not the file).
+                                                    let (content_hash, sniffed) = match crate::storage::alias_if_wrapper(&seed, &content_hash) {
+                                                        Some(raw_hash) => (raw_hash, None),
+                                                        None => (content_hash, crate::storage::blob_chunk_load(&m.chunks[0]).map(|first| crate::types::sniff(&first, &sniff_name))),
+                                                    };
                                                     let _ = tx.send(AttachInstalled {
                                                         sniffed,
                                                         manifest: None,
@@ -3567,8 +3577,10 @@ impl PhotonApp {
                             .conversations
                             .iter()
                             .flat_map(|c| c.messages.iter())
-                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash).map(|f| f.name.clone()))
+                            .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash || f.wrap == Some(content_hash)).map(|f| f.name.clone()))
                             .unwrap_or_default();
+                        // A chunk of a WRAPPER this device asked for (a row names it as its `fw`).
+                        let is_wrapper_fetch = self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.file.as_ref().is_some_and(|f| f.wrap == Some(content_hash)));
                         queue_job(&self.seal_job_tx, move || {
                             let Some(m) = crate::storage::blob_manifest(&content_hash) else {
                                 // EARLY CHUNK (2026-10-07): chunks are content-addressed and authenticated, so one that overtakes its manifest is stored at its OWN hash — no bookkeeping, nothing to park; the manifest finds it held when it lands (it used to be dropped and cost a 20 s re-ask).
@@ -3596,8 +3608,12 @@ impl PhotonApp {
                                             // The chunk store forgot the CHUNK's presence; the blob it belongs to is what the render asks about.
                                             crate::storage::blob_presence_forget(&content_hash);
                                             let complete = crate::storage::blob_present_probe_now(&content_hash);
+                                            // The last chunk of a WRAPPER: aliased and reported under the row's raw hash; a wrapper's chunk 0 is its VSF header, so it is never sniffed (the head carries the kind).
+                                            let raw_of_wrapper = if complete { crate::storage::alias_if_wrapper(&seed, &content_hash) } else { None };
+                                            let sniffed = (index == 0 && !is_wrapper_fetch).then(|| crate::types::sniff(&plain, &sniff_name));
+                                            let content_hash = raw_of_wrapper.unwrap_or(content_hash);
                                             let _ = tx.send(AttachInstalled {
-                                                sniffed: (index == 0).then(|| crate::types::sniff(&plain, &sniff_name)),
+                                                sniffed,
                                                 manifest: None,
                                                 chunk: Some((index, m.chunks.len() as u32, complete)),
                                                 conversation_token,
@@ -3692,6 +3708,49 @@ impl PhotonApp {
                         let kp_sec = *kp.secret.as_bytes();
                         let dispatch = checker.history_dispatch();
                         queue_job(&self.seal_job_tx, move || {
+                            // A RAW request for content held WRAPPED (an older build asking by `fh`, until v134): the original is unwrapped thru the verified load and served FROM MEMORY — an in-memory manifest and slices — never re-stored, so the wrapper stays the one copy at rest.
+                            let held_wrapped_raw = if crate::storage::blob_manifest(&content_hash).is_none() && crate::storage::wrap_alias(&content_hash).is_some_and(|hb| hb != content_hash) {
+                                crate::storage::blob_load(&seed, &content_hash)
+                            } else {
+                                None
+                            };
+                            if let Some(raw) = held_wrapped_raw {
+                                let send = |vsf_bytes: Vec<u8>, relay: bool| {
+                                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                        peer_addr: sender_addr,
+                                        alt_addr: None,
+                                        recipient_pubkey: sender_pubkey.key,
+                                        vsf_bytes,
+                                        relay_to: if relay { vec![sender_pubkey.key] } else { Vec::new() },
+                                        tag: None,
+                                    });
+                                };
+                                if raw.len() <= crate::storage::BLOB_CHUNK_SIZE {
+                                    if let Ok(vsf_bytes) = kete::encrypt_bytes(&raw, &wire_key).and_then(|sealed| crate::network::fgtw::protocol::build_attach_blob_vsf(&conversation_token, &content_hash, sealed, &kp_pub, &kp_sec)) {
+                                        send(vsf_bytes, relay_needed);
+                                    }
+                                    crate::log("ATTACH: served a raw request from the wrapped original");
+                                    return;
+                                }
+                                let m = crate::storage::BlobManifest::of(&raw);
+                                if want.is_none() {
+                                    if let Ok(vsf_bytes) = kete::encrypt_bytes(&m.to_bytes(), &wire_key).and_then(|sealed| crate::network::fgtw::protocol::build_attach_manifest_vsf(&conversation_token, &content_hash, sealed, &kp_pub, &kp_sec)) {
+                                        send(vsf_bytes, true);
+                                    }
+                                }
+                                let mut sent = 0usize;
+                                for (i, part) in raw.chunks(crate::storage::BLOB_CHUNK_SIZE).enumerate() {
+                                    if want.as_deref().is_some_and(|w| !crate::storage::BlobManifest::wanted(w, i)) {
+                                        continue;
+                                    }
+                                    if let Ok(vsf_bytes) = kete::encrypt_bytes(part, &wire_key).and_then(|sealed| crate::network::fgtw::protocol::build_attach_chunk_vsf(&conversation_token, &content_hash, i as u32, sealed, &kp_pub, &kp_sec)) {
+                                        send(vsf_bytes, relay_needed);
+                                        sent += 1;
+                                    }
+                                }
+                                crate::logf!("ATTACH: served a raw chunked request from the wrapped original — {} of {} chunk(s)", sent, m.chunks.len());
+                                return;
+                            }
                             // CHUNKED (Phase 1): a manifest here means the blob is served as manifest + chunks — all of them, or only the requester's WANT bitmap (a resume, which already holds the manifest).
                             // A whole-value blob past the chunk size (a recording kept before 2026-09-11) is re-stored chunked on its first request, so it too travels a piece at a time.
                             if crate::storage::blob_manifest(&content_hash).is_none() {

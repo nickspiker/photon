@@ -98,14 +98,21 @@ impl PhotonApp {
             let raw_tmp = raw_temp_path(kind, &hash, &bytes);
             let p = crate::ui::attach_preview::prepare(&bytes, &name, raw_tmp.as_deref());
             // Sealed to disk HERE, not in the drain: the row and the push need only the manifest.
-            let manifest = match crate::storage::blob_store_any(&seed, &hash, &bytes) {
-                Ok(m) => m,
+            // WRAPPED (storage/wrapped.rs, 2026-10-17): the original rests and travels inside its own VSF document, named by the document's header hb; the raw hash keeps naming it in the row's identity and for older builds (an alias), until v134. A wrap that fails stores the raw form as before.
+            let (wrap, manifest) = match crate::storage::blob_store_wrapped(&seed, &bytes, None) {
+                Ok((hb, m)) => (Some(hb), m),
                 Err(e) => {
-                    crate::logf!("attach: blob store failed: {}", e);
-                    if let Some(t) = raw_tmp.as_ref() {
-                        let _ = std::fs::remove_file(t);
+                    crate::logf!("attach: wrap failed ({}) — storing the raw original", e);
+                    match crate::storage::blob_store_any(&seed, &hash, &bytes) {
+                        Ok(m) => (None, m),
+                        Err(e) => {
+                            crate::logf!("attach: blob store failed: {}", e);
+                            if let Some(t) = raw_tmp.as_ref() {
+                                let _ = std::fs::remove_file(t);
+                            }
+                            return;
+                        }
                     }
-                    return;
                 }
             };
             // THE HEAD (flag day 2026-10-07): name, kind, dims, the micro thumb and the preview, wrapped as one small VSF blob and sealed here too — the row on the chain is the original's hash and this head's hash, nothing else.
@@ -120,7 +127,7 @@ impl PhotonApp {
                     }
                 }
             });
-            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash });
+            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash, wrap });
         });
     }
 
@@ -152,12 +159,12 @@ impl PhotonApp {
                     }
                 }
             }
-            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview, p.hash, p.manifest, p.head);
+            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview, p.hash, p.manifest, p.head, p.wrap);
         }
     }
 
     /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
-    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>, head: Option<[u8; 32]>) {
+    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>, head: Option<[u8; 32]>, wrap: Option<[u8; 32]>) {
         // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
         let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
         // HEADED (flag day 2026-10-07): the chain row is two pointers; THIS device's row is hydrated at once from what it just built (runtime fields the writers never carry for a headed row), so the sender sees its picture and name without reading the head back.
@@ -168,6 +175,8 @@ impl PhotonApp {
             ),
             None => (crate::types::AttachRef::file(hash, wire_name, bytes.len() as u64), meta),
         };
+        // The wrapper's hb rides the row as `fw` (metadata, never identity — row_control.rs).
+        let file = crate::types::AttachRef { wrap, ..file };
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview, file));
         if !self.send_chain_message(ci, "", false, None, None) {
@@ -190,9 +199,11 @@ impl PhotonApp {
                 }
             }
         }
+        // The original goes out as the WRAPPER under its hb when it was stored wrapped (`manifest` is then the wrapper's chunks); a wrapper-aware friend verifies and keeps it as is, an older build refuses the unfamiliar name and fetches by `fh`, which the serve path answers unwrapped.
+        let original = wrap.unwrap_or(hash);
         match manifest {
-            Some(m) => self.send_attach_chunks(ci, &hash, m),
-            None => self.send_attach_blob(ci, &hash),
+            Some(m) => self.send_attach_chunks(ci, &original, m),
+            None => self.send_attach_blob(ci, &original),
         }
         self.msg_wrap = None;
         self.scene_dirty = true;
@@ -201,6 +212,15 @@ impl PhotonApp {
             crate::deglyph_for_log(&name),
             bytes.len()
         );
+    }
+
+    /// The name the rows and progress maps know a blob by: a WRAPPER's hb maps to the raw hash of the row that names it (`fw`); anything else is its own name.
+    pub(super) fn raw_name_of(&self, h: &[u8; 32]) -> [u8; 32] {
+        self.conversations
+            .iter()
+            .flat_map(|c| c.messages.iter())
+            .find_map(|m| m.file.as_ref().filter(|f| f.wrap == Some(*h)).map(|f| f.hash))
+            .unwrap_or(*h)
     }
 
     /// The wire seal key for an attachment exchanged with `device`: fleet key when the device is one of OUR siblings, else the conversation's friendship history key. (Blob files at rest use a separate local-only key.)
@@ -223,6 +243,7 @@ impl PhotonApp {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
+        let bar = self.raw_name_of(content_hash);
         let Some(plain) = crate::storage::blob_load(&seed, content_hash) else {
             crate::log("attach: blob missing locally — nothing to push");
             return;
@@ -283,7 +304,7 @@ impl PhotonApp {
                     recipient_pubkey: device,
                     vsf_bytes,
                     relay_to,
-                    tag: Some(*content_hash), // the bar for THIS blob reads its transfer by this tag
+                    tag: Some(bar), // the bar for THIS blob reads its transfer by this tag (the row's raw hash, also for a wrapper)
                 });
                 crate::log("attach: blob dispatched over PT");
             }
@@ -328,7 +349,9 @@ impl PhotonApp {
         let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
         let dispatch = checker.history_dispatch();
         let content_hash = *content_hash;
-        self.attach_send_total.insert(content_hash, m.chunks.len() as u32);
+        // The bar speaks the row's RAW hash even when the chunks are a wrapper's.
+        let bar = self.raw_name_of(&content_hash);
+        self.attach_send_total.insert(bar, m.chunks.len() as u32);
         queue_job(&self.seal_job_tx, move || {
             // Only the CHUNKS carry the blob's tag: the bar counts them against the chunk total, and the manifest is not one of them.
             let send = |vsf_bytes: Vec<u8>, tag: Option<[u8; 32]>| {
@@ -360,7 +383,7 @@ impl PhotonApp {
                     crate::network::fgtw::protocol::build_attach_chunk_vsf(&token, &content_hash, i as u32, sealed, &kp_pub, &kp_sec)
                 }) {
                     Ok(v) => {
-                        send(v, Some(content_hash));
+                        send(v, Some(bar));
                         sent += 1;
                     }
                     Err(e) => crate::logf!("attach: chunk {} frame build failed: {}", i, e),
@@ -390,8 +413,15 @@ impl PhotonApp {
         else {
             return;
         };
+        // THE ASK (storage/wrapped.rs, until v134): a row naming a WRAPPER (`fw`) asks for it by its hb; a holder still on an older build knows only the raw hash, so the rounds alternate — whichever form answers is stored, and every load by the row's raw hash reads either. The in-flight bookkeeping stays keyed by the raw hash.
+        let wrap = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.hash == *content_hash).and_then(|f| f.wrap));
+        let round = self.attach_fetch_inflight.get(content_hash).map_or(0, |(_, _, n)| *n);
+        let ask = match wrap {
+            Some(hb) if round % 2 == 0 => hb,
+            _ => *content_hash,
+        };
         // Resume: the manifest is here and some chunks are not → ask only for those.
-        let want: Option<Vec<u8>> = crate::storage::blob_chunks_held(content_hash)
+        let want: Option<Vec<u8>> = crate::storage::blob_chunks_held(&ask)
             .filter(|held| held.iter().any(|h| !h))
             .map(|held| crate::storage::BlobManifest::want_bitmap(&held));
         if let Some(w) = want.as_ref() {
@@ -400,7 +430,7 @@ impl PhotonApp {
         }
         let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_want_vsf(
             &token,
-            content_hash,
+            &ask,
             want.as_deref(),
             kp.public.as_bytes(),
             kp.secret.as_bytes(),
@@ -653,7 +683,11 @@ impl PhotonApp {
     /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.
     /// Drain attachment blobs a worker verified + stored off-thread: send the attach_have confirm (needs the keypair + checker, which is why it can't run in the worker) so the pusher's pill flips to delivered, then clear the compose wrap and repaint.
     pub(super) fn drain_attach_installed(&mut self) {
-        while let Ok(r) = self.attach_installed_rx.try_recv() {
+        while let Ok(mut r) = self.attach_installed_rx.try_recv() {
+            // A WRAPPER in flight (storage/wrapped.rs) is named by its hb on the wire; every map here — progress, sniff verdicts, attach_have — speaks the row's RAW hash.
+            if let Some(raw) = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.wrap == Some(r.content_hash)).map(|f| f.hash)) {
+                r.content_hash = raw;
+            }
             // A manifest landed: seed the progress bar and repaint; nothing is installed yet.
             if let Some((held, total)) = r.manifest {
                 self.attach_chunk_progress.insert(r.content_hash, (held, total));

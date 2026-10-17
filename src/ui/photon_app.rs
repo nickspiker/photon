@@ -704,6 +704,8 @@ struct AttachPrepared {
     manifest: Option<crate::storage::BlobManifest>,
     /// The HEAD blob's hash when it was built and stored (flag day 2026-10-07) — `None` sends the pre-flag-day shape.
     head: Option<[u8; 32]>,
+    /// The WRAPPED original's header hb (storage/wrapped.rs) when the original was stored wrapped — then `manifest` is the wrapper's chunks and the push sends the wrapper; `None` = stored raw (a wrap that failed).
+    wrap: Option<[u8; 32]>,
 }
 
 struct AttachInstalled {

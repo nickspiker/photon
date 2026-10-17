@@ -220,16 +220,18 @@ pub struct AttachRef {
     pub role: AttachRole,
     /// THE HEAD (flag day 2026-10-07, Nick: "keep the chain simply text, text formatting, links, pointers… store the pdf or tiff or whatever in a wrapped vsf blob with a thumbnail… off chain"): the hash of the attachment's HEAD blob — name, kind, dims, thumbnails, a wave's envelope — so the row on the chain is two pointers and nothing else. `None` on every row minted before the flag day, which still carries those fields inline and reads exactly as it always did.
     pub head: Option<[u8; 32]>,
+    /// THE WRAPPED ORIGINAL (storage/wrapped.rs, Nick 2026-10-17): the header hb of the original wrapped in its own VSF document — the address a wrapper-aware build fetches, stores and verifies under. NOT identity, exactly like the head: an older build drops the unknown `fw` field, so identity keeps the raw `hash` until v134 retires the raw form.
+    pub wrap: Option<[u8; 32]>,
 }
 
 impl AttachRef {
     pub fn file(hash: [u8; 32], name: &str, size: u64) -> Self {
-        AttachRef { hash, name: name.to_string(), size, role: AttachRole::File, head: None }
+        AttachRef { hash, name: name.to_string(), size, role: AttachRole::File, head: None, wrap: None }
     }
 
     /// A post-flag-day pointer: the original's hash and size, its role, its head — no name (the name lives in the head).
     pub fn pointer(hash: [u8; 32], size: u64, role: AttachRole, head: [u8; 32]) -> Self {
-        AttachRef { hash, name: String::new(), size, role, head: Some(head) }
+        AttachRef { hash, name: String::new(), size, role, head: Some(head), wrap: None }
     }
 
     /// Canonical identity bytes — see [`ident_typed`]. The HEAD is deliberately NOT identity: these bytes feed the braid (a photon's key derives from the previous photon's identity), and a build from before the head drops the unknown field — had the head been identity, the two builds would derive different keys for every photon after a file and the lane would stop decrypting. The head is metadata a merge adopts (`same_identity` + `Conversation::insert_message_sorted`).
@@ -304,6 +306,7 @@ pub fn declare_row_fields(s: SectionSchema) -> SectionSchema {
         .field("fnm", TypeConstraint::Utf8Text) // attachment filename (may be empty)
         .field("fz", TypeConstraint::AnyUnsigned) // attachment size in bytes
         .field("fhd", TypeConstraint::AnyHash) // hb the attachment's HEAD blob (flag day 2026-10-07); absent on older rows — an older build ignores it
+        .field("fw", TypeConstraint::AnyHash) // hb the WRAPPED original's header hb (storage/wrapped.rs, 2026-10-17); absent on older rows and from older builds, which fetch by `fh`
 }
 
 /// Write a control row's fields.
@@ -350,6 +353,10 @@ pub fn put_file(b: SectionBuilder, f: &AttachRef) -> Result<SectionBuilder, Stri
             Some(h) => b.set("fhd", VsfType::hb(h.to_vec())).map_err(e),
             None => Ok(b),
         })
+        .and_then(|b| match f.wrap {
+            Some(w) => b.set("fw", VsfType::hb(w.to_vec())).map_err(e),
+            None => Ok(b),
+        })
 }
 
 fn first<'a>(section: &'a SectionBuilder, name: &str) -> Option<&'a VsfType> {
@@ -394,7 +401,8 @@ pub fn get_file(section: &SectionBuilder) -> Option<AttachRef> {
     };
     let size = first(section, "fz")?.as_u64()?;
     let head = first(section, "fhd").and_then(bytes_of).and_then(|b| <[u8; 32]>::try_from(b).ok());
-    Some(AttachRef { hash, name, size, role, head })
+    let wrap = first(section, "fw").and_then(bytes_of).and_then(|b| <[u8; 32]>::try_from(b).ok());
+    Some(AttachRef { hash, name, size, role, head, wrap })
 }
 
 #[cfg(test)]
@@ -447,6 +455,20 @@ mod tests {
         assert!(std::str::from_utf8(&probe).is_err());
         let f = AttachRef::file([1; 32], "a.txt", 9);
         assert_ne!(f.ident_bytes(), AttachRef { role: AttachRole::WaveAudio, ..f.clone() }.ident_bytes());
+    }
+
+    /// THE WRAPPER IS NOT IDENTITY (2026-10-17, until v134): a wrapper-aware build and an older one must derive the same braid keys for the same file photon, so the wrapper hb changes neither the identity bytes nor `same_identity` — and it rides the wire (`fw`) intact for the builds that read it.
+    #[test]
+    fn wrapper_hb_is_metadata_not_identity() {
+        let bare = AttachRef::pointer([3; 32], 4096, AttachRole::File, [4; 32]);
+        let wrapped = AttachRef { wrap: Some([5; 32]), ..bare.clone() };
+        assert_eq!(bare.ident_bytes(), wrapped.ident_bytes());
+        assert!(bare.same_identity(&wrapped));
+        let schema = declare_row_fields(SectionSchema::new("t"));
+        let b = put_file(SectionBuilder::new(schema.clone()), &wrapped).unwrap();
+        let bytes = b.encode().unwrap();
+        let back = SectionBuilder::parse(schema, &bytes).unwrap();
+        assert_eq!(get_file(&back), Some(wrapped));
     }
 
     /// A malformed slot set is dropped, never guessed into a signal.

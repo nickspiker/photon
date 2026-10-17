@@ -30,6 +30,7 @@
 - [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log); display Arabic mostly, dozenal = the app's Base setting (DMS)
 - [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify grep-derived line numbers non-empty before sed address ops
 - [Perl UTF-8 trap](feedback_perl_utf8_trap.md) — perl \x{..} without -CSD double-encodes the whole file; grep diffs for mojibake
+- [pgrep self-match](feedback_pgrep_self_match.md) — pgrep/pkill -f matches your own bash -c; use exact pids + kill -0
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org + toka.wasm freely, no confirmation
 - [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev logs
 - [feedback_script_timestamps.md](feedback_script_timestamps.md) — build/deploy scripts end with `completed $(date)`
@@ -163,23 +164,23 @@
 ## Closed incidents (conviction hooks)
 - Perf: [ANR-at-launch](project_android_hang_nag.md) · [idle-CPU](project_idle_tick_cost.md) · [render lag](project_render_storm_lag.md)
 - Vault: [seal failures](project_vault_seal_failures.md) · [plow refusal](project_manifestus_plow_reloc_refusal.md) · [tombstone](project_manifestus_tombstone_bug.md)
-- CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md) (KEM = 4th job stage)
+- CLUTCH/braid: [desync class](project_chain_advance_desync.md) · [offer deadlock](project_clutch_offer_deadlock.md) · [UI-thread hitch](project_clutch_ui_thread_hitch.md)
 - [project_traversal_relay_gap.md](project_traversal_relay_gap.md) — 2026-09-17: punch pulse for relay-only friends, amber ring; RELAY MEDIA unbuilt
 - Transport/presence: [no-ring class](project_call_no_ring_incident.md) · [sibling presence flap](project_sibling_presence_flap.md) · [ping reflection](relay-asymmetry-ping-reflection.md)
 - Android/device: [session capsule](project_android_session_capsule.md) · [crash handler](project_crash_handler_sigchain.md) · [colour floor](project_android_color_pipeline_floor.md)
 
 - More closed: [token asymmetry](project_clutch_token_asymmetry.md) · [shadow conversations](split-contacts-incident.md) · [notes-row wedge](self-pair-sibling-row.md) · [self-msg vanish](project_self_message_vanish.md) · [put latency](project_vault_op_latency.md)
-- More closed: [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow damage](project_contacts_glow_damage.md) (stale) · [two-machine git](project_two_machine_git_divergence.md)
+- More closed: [relay pipe](project_nat_traversal_relay_gap.md) · [roster clobber](project_wiped_device_roster_clobber.md) · [FGTW key desync](project_fgtw_key_desync.md) · [glow](project_contacts_glow_damage.md) · [two-machine git](project_two_machine_git_divergence.md)
 
 ## References
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
-- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes (spirix): dozenal test red 3 days
+- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes; ff siblings first
 - [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail rewritten history: verify vs origin, reset --hard, ff ALL sibling deps together
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; restore untouched, style commit separate
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — readers MUST use VsfHeader::primary_section
-- [reference_ihi_primitives.md](reference_ihi_primitives.md) — ihi's two one-way primitives: chaos_amp/spaghettify lossy OWF
+- [reference_ihi_primitives.md](reference_ihi_primitives.md) — ihi: lossy OWF vs memory-hard PoW
 - [reference_claude_unguard.md](reference_claude_unguard.md) — ~/.local/bin/claude-code-unguard force-opens the Edit read guard
-- [reference_aarch64_cross_libs.md](reference_aarch64_cross_libs.md) — aarch64-linux cross-build: vendor .so into cross-libs + mirror x11.pc
+- [reference_aarch64_cross_libs.md](reference_aarch64_cross_libs.md) — aarch64-linux cross-build: vendor .so into cross-libs + x11.pc
 - [reference_windows_arm64_toolchain.md](reference_windows_arm64_toolchain.md) — aarch64-pc-windows-gnullvm via llvm-mingw at /mnt/Harbor/Code/llvm-mingw
 - [reference_mingw_features_shim.md](reference_mingw_features_shim.md) — x86_64-windows: pqcrypto-mlkem needs a features.h shim
 - [reference_site_cv_pdfs.md](reference_site_cv_pdfs.md) — holdmyoscilloscope.com wrangler pages; CV PDFs via make-cv-pdfs.sh

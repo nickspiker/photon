@@ -9,6 +9,7 @@ pub mod friendship;
 pub mod molecule;
 pub mod record;
 pub mod spool;
+pub mod wrapped;
 
 // The storage adapter (was `flat.rs`) now lives in the shared `kete` crate. Re-export its surface so existing call sites — `crate::storage::FlatStorage`, `StorageError`, `encrypt_bytes`/`decrypt_bytes` (used by cloud.rs) — keep resolving unchanged.
 pub use kete::{decrypt_bytes, encrypt_bytes, App, FlatStorage, StorageError};
@@ -537,22 +538,42 @@ fn blob_present_probe(v: &std::sync::Arc<FlatStorage>, addr: &[u8; 32], content_
             complete_cache_set(*content_hash, true);
             true
         }
-        _ => false,
+        // A raw hash whose content is held WRAPPED is present exactly when its wrapper is.
+        _ => match wrap_alias(content_hash).and_then(|hb| blob_addr(&hb).map(|a| (hb, a))) {
+            Some((hb, a)) if hb != *content_hash => blob_present_probe(v, &a, &hb),
+            _ => false,
+        },
     }
 }
 
-/// Load an attachment blob from the vault; verifies the content hash after the vault's own AEAD. A chunked blob is rebuilt from its chunks (RAM-sized callers only — recordings and small files; Save streams thru blob_write_file instead). None = not held locally.
+/// Load an attachment blob from the vault, verified after the vault's own AEAD. A chunked blob is rebuilt from its chunks (RAM-sized callers only — recordings and small files; Save streams thru blob_write_file instead). None = not held locally.
+/// Asked by a wrapper hb it returns the wrapper document; asked by a RAW hash whose content is held wrapped (storage/wrapped.rs) it follows the alias, verifies the wrapper and returns the unwrapped original — so every consumer that loads by a row's raw hash keeps working unchanged.
 pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Vec<u8>> {
     if BLOB_NAME_KEY.lock().unwrap().is_none() {
         blob_init_names(identity_seed);
     }
-    let addr = blob_addr(content_hash)?;
-    let vault = device_vault()?;
-    if let Ok(Some(plain)) = vault.read_addr(&addr) {
-        if blake3::hash(&plain).as_bytes() != content_hash {
+    if let Some(bytes) = blob_load_stored(content_hash) {
+        if !blob_binds(&bytes, content_hash) {
             crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
             return None;
         }
+        return Some(bytes);
+    }
+    let hb = wrap_alias(content_hash)?;
+    let doc = blob_load_stored(&hb)?;
+    let (raw, _) = wrapped::unwrap(&doc, &hb).map_err(|e| crate::logf!("blob: wrapped original refused on load — {}", e)).ok()?;
+    if blake3::hash(&raw).as_bytes() != content_hash {
+        crate::log("blob: wrapper's payload is not the content its alias names — dropped");
+        return None;
+    }
+    Some(raw)
+}
+
+/// The bytes stored under `content_hash` — one value, or its chunks reassembled — with no binding check (callers check).
+fn blob_load_stored(content_hash: &[u8; 32]) -> Option<Vec<u8>> {
+    let addr = blob_addr(content_hash)?;
+    let vault = device_vault()?;
+    if let Ok(Some(plain)) = vault.read_addr(&addr) {
         return Some(plain);
     }
     let m = blob_manifest(content_hash)?;
@@ -560,11 +581,59 @@ pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Ve
     for h in &m.chunks {
         out.extend_from_slice(&blob_chunk_load(h)?);
     }
-    if blake3::hash(&out).as_bytes() != content_hash {
-        crate::log("blob: chunked content hash mismatch on load — dropped");
-        return None;
-    }
     Some(out)
+}
+
+/// Do these bytes BELONG to this hash: either they hash to it (a raw blob, a chunk, a head), or they are a wrapped original whose header hb it is and whose bytes verify to it. Both are cryptographic bindings; accepting either never weakens the check.
+pub fn blob_binds(bytes: &[u8], content_hash: &[u8; 32]) -> bool {
+    blake3::hash(bytes).as_bytes() == content_hash || wrapped::verify(bytes, content_hash).is_ok()
+}
+
+/// THE RAW-FORM WINDOW CLOSES AT v134 (Nick 2026-10-17: back-compat for 12 releases, then halt the build): the wrapper shipped in v122, so releases 122..=133 carry the raw-hash alias, the raw-request serving, the alternating fetch ask and the raw hash in row identity. v134 does not compile until they are gone and identity names the wrapper hb (docs/attachments.md "The wrapped original").
+const _: () = assert!(crate::VERSION_MINOR < 134, "v134: the raw-form compat window is over — drop the wrapped-original alias, raw-request serving and alternating fetch ask, and move row identity to the wrapper hb");
+
+/// THE RAW → WRAPPER ALIAS (until v134): a content held wrapped is still asked for by its RAW hash — every row's identity and every older build's request carry it — so the vault keeps a 32-byte pointer from the raw hash to the wrapper's hb, at its own keyed address.
+fn alias_addr(raw_hash: &[u8; 32]) -> Option<[u8; 32]> {
+    let k = (*BLOB_NAME_KEY.lock().unwrap())?;
+    let mut input = Vec::with_capacity(9 + 32);
+    input.extend_from_slice(b"wrapalias");
+    input.extend_from_slice(raw_hash);
+    Some(*blake3::keyed_hash(&k, &input).as_bytes())
+}
+
+pub fn wrap_alias_store(identity_seed: &[u8; 32], raw_hash: &[u8; 32], hb: &[u8; 32]) -> Result<(), String> {
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
+    }
+    let addr = alias_addr(raw_hash).ok_or("blob: no session name key")?;
+    let vault = device_vault().ok_or("blob: vault unavailable")?;
+    blob_presence_forget(raw_hash);
+    vault.write_addr(&addr, hb).map_err(|e| e.to_string())
+}
+
+/// The wrapper hb a raw hash's content is held under, if it is held wrapped.
+pub fn wrap_alias(raw_hash: &[u8; 32]) -> Option<[u8; 32]> {
+    let addr = alias_addr(raw_hash)?;
+    let bytes = device_vault()?.read_addr(&addr).ok()??;
+    <[u8; 32]>::try_from(bytes.as_slice()).ok()
+}
+
+/// Wrap an original (storage/wrapped.rs), store the wrapper under its hb — one value or chunks + manifest, as its size wants — and alias the raw hash to it. Returns the wrapper hb and its manifest (None = one value).
+pub fn blob_store_wrapped(identity_seed: &[u8; 32], raw: &[u8], content_time: Option<i64>) -> Result<([u8; 32], Option<BlobManifest>), String> {
+    let w = wrapped::wrap(raw, content_time)?;
+    let m = blob_store_any(identity_seed, &w.hb, &w.bytes)?;
+    wrap_alias_store(identity_seed, blake3::hash(raw).as_bytes(), &w.hb)?;
+    Ok((w.hb, m))
+}
+
+/// A blob just landed whole (every chunk, or the one value): when it is a verified WRAPPER, alias the raw hash it names to it (so loads by the row's raw hash find it) and return that raw hash — the name every row and progress map knows the content by. None for anything that is not a verified wrapper.
+pub fn alias_if_wrapper(identity_seed: &[u8; 32], hb: &[u8; 32]) -> Option<[u8; 32]> {
+    let doc = blob_load_stored(hb)?;
+    wrapped::verify(&doc, hb).ok()?;
+    let raw_hash = wrapped::raw_hash(&doc).ok()?;
+    wrap_alias_store(identity_seed, &raw_hash, hb).ok()?;
+    complete_cache_set(raw_hash, true);
+    Some(raw_hash)
 }
 
 
@@ -647,7 +716,12 @@ pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: 
         std::fs::write(path, &plain).ok()?;
         return Some(plain.len() as u64);
     }
-    let m = blob_manifest(content_hash)?;
+    // Held WRAPPED: unwrap thru the verified load (originals are capped at the 256 MB attachment limit, so this fits in RAM) and write the original byte-exact.
+    let Some(m) = blob_manifest(content_hash) else {
+        let raw = blob_load(identity_seed, content_hash)?;
+        std::fs::write(path, &raw).ok()?;
+        return Some(raw.len() as u64);
+    };
     let mut f = std::fs::File::create(path).ok()?;
     let mut hasher = blake3::Hasher::new();
     let mut n = 0u64;
@@ -690,6 +764,13 @@ pub fn blob_delete(content_hash: &[u8; 32]) {
         }
         complete_cache_set(*content_hash, false);
         blob_presence_forget(content_hash);
+        // Held wrapped: the wrapper goes with its raw name, and so does the alias.
+        if let Some(hb) = wrap_alias(content_hash).filter(|hb| hb != content_hash) {
+            blob_delete(&hb);
+            if let Some(a) = alias_addr(content_hash) {
+                let _ = v.delete_addr(&a);
+            }
+        }
     }
 }
 
