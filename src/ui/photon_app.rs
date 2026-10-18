@@ -2407,6 +2407,12 @@ pub struct PhotonApp {
     /// SIBLING side: answers a presence worker finished, waiting for the UI thread to seal, sign and send.
     holdings_serve_tx: std::sync::mpsc::Sender<holdings::HoldingsServe>,
     holdings_serve_rx: std::sync::mpsc::Receiver<holdings::HoldingsServe>,
+    /// SIBLING side: the pulls leavers asked us to take (holdings.rs). RAM only.
+    holdings_pulls: Vec<holdings::PullJob>,
+    /// Copy-then-release pending (device-local `release.when_copied`): this device sends its departure request by itself once nothing is at risk.
+    release_when_copied: bool,
+    /// Fetches aimed at one device first — a pull asks the leaver, who holds the only copy (attach_fetch ranks it ahead of everyone).
+    attach_fetch_prefer: std::collections::HashMap<[u8; 32], [u8; 32]>,
     /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
     dialed_wave_ids: std::collections::HashSet<[u8; 16]>,
     /// Fleet wave-presence chip: a wave is running on ANOTHER of our devices — `(wave_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
@@ -3049,6 +3055,9 @@ impl PhotonApp {
             holdings_check: None,
             holdings_serve_tx: holdings_tx,
             holdings_serve_rx: holdings_rx,
+            holdings_pulls: Vec::new(),
+            release_when_copied: false,
+            attach_fetch_prefer: std::collections::HashMap::new(),
             dialed_wave_ids: Default::default(),
             fleet_wave_elsewhere: None,
             signing_bundle: None,

@@ -3261,9 +3261,27 @@ pub fn parse_attach_have_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), 
     Ok(((conversation_token, content_hash), sender_pubkey))
 }
 
-/// Build a holdings frame — the departure have-set exchange (device-removal safety phase 2, 2026-10-17). `ask = true` is the LEAVING device's `holdings_ask`: the content hashes it holds; `ask = false` is a sibling's `holdings_missing`: the subset of an ask it does NOT hold. Either way the hash list is kete-sealed under the fleet key (only a member can read what the fleet holds), `n` pairs an answer with the ask it answers, and the frame is device-signed like every sibling frame.
+/// The three have-set frames (device-removal safety, 2026-10-17): the LEAVING device's `holdings_ask` (the content hashes it holds), a sibling's `holdings_missing` (the subset of an ask or pull it does NOT hold), and the leaver's `holdings_pull` (the at-risk hashes it asks ONE sibling to fetch from it now).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HoldingsKind {
+    Ask,
+    Missing,
+    Pull,
+}
+
+impl HoldingsKind {
+    fn section(self) -> &'static str {
+        match self {
+            HoldingsKind::Ask => "holdings_ask",
+            HoldingsKind::Missing => "holdings_missing",
+            HoldingsKind::Pull => "holdings_pull",
+        }
+    }
+}
+
+/// Build a holdings frame of `kind`. Every kind carries a hash list kete-sealed under the fleet key (only a member can read what the fleet holds) and `n`, which pairs an answer with the ask or pull it answers; the frame is device-signed like every sibling frame.
 pub fn build_holdings_vsf(
-    ask: bool,
+    kind: HoldingsKind,
     nonce: &[u8; 32],
     sealed_hashes: Vec<u8>,
     device_pubkey: &[u8; 32],
@@ -3272,7 +3290,7 @@ pub fn build_holdings_vsf(
     use vsf::file_format::VsfSection;
     use vsf::VsfBuilder;
 
-    let mut section = VsfSection::new(if ask { "holdings_ask" } else { "holdings_missing" });
+    let mut section = VsfSection::new(kind.section());
     section.add_field("n", VsfType::hR(nonce.to_vec()));
     let blob_len = sealed_hashes.len();
     section.add_field("data", VsfType::t_u3(vsf::Tensor::new(vec![blob_len], sealed_hashes)));
@@ -3287,15 +3305,16 @@ pub fn build_holdings_vsf(
     crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
-/// Parse + verify a holdings frame. Returns ((ask, nonce, sealed_hashes), sender_pubkey); `ask` = the section was `holdings_ask`.
-pub fn parse_holdings_vsf(vsf_bytes: &[u8]) -> Result<((bool, [u8; 32], Vec<u8>), [u8; 32]), String> {
+/// Parse + verify a holdings frame. Returns ((kind, nonce, sealed_hashes), sender_pubkey).
+pub fn parse_holdings_vsf(vsf_bytes: &[u8]) -> Result<((HoldingsKind, [u8; 32], Vec<u8>), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
         .map_err(|e| format!("holdings verification failed: {}", e))?;
     let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
     let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
-    let ask = match section_name.as_str() {
-        "holdings_ask" => true,
-        "holdings_missing" => false,
+    let kind = match section_name.as_str() {
+        "holdings_ask" => HoldingsKind::Ask,
+        "holdings_missing" => HoldingsKind::Missing,
+        "holdings_pull" => HoldingsKind::Pull,
         other => return Err(format!("Expected a holdings section, got '{}'", other)),
     };
     let fields = &section.fields;
@@ -3317,7 +3336,7 @@ pub fn parse_holdings_vsf(vsf_bytes: &[u8]) -> Result<((bool, [u8; 32], Vec<u8>)
             _ => None,
         })
         .ok_or("holdings missing data")?;
-    Ok(((ask, nonce, sealed), sender_pubkey))
+    Ok(((kind, nonce, sealed), sender_pubkey))
 }
 
 /// Build a `pigeon_ack` frame — the host's running word on a bridge pigeon: `got` chunks of `of` are in its spool. Fired on the landing edge of a chunk (thinned to at most sixty-four per pigeon plus the last), it is what draws the progress bar on the sender's row; purely informational, PT already carries the bytes.
@@ -4273,10 +4292,10 @@ mod pong_seal_tests {
     fn holdings_frames_round_trip() {
         let kp = fgtw::keys::Keypair::from_seed(&[0x6Bu8; 32]);
         let pk = kp.public.to_bytes();
-        for ask in [true, false] {
-            let frame = build_holdings_vsf(ask, &[9u8; 32], vec![1, 2, 3, 4], &pk, kp.secret.as_bytes()).unwrap();
+        for kind in [HoldingsKind::Ask, HoldingsKind::Missing, HoldingsKind::Pull] {
+            let frame = build_holdings_vsf(kind, &[9u8; 32], vec![1, 2, 3, 4], &pk, kp.secret.as_bytes()).unwrap();
             let ((a, n, sealed), sender) = parse_holdings_vsf(&frame).unwrap();
-            assert_eq!((a, n, sealed, sender), (ask, [9u8; 32], vec![1, 2, 3, 4], pk));
+            assert_eq!((a, n, sealed, sender), (kind, [9u8; 32], vec![1, 2, 3, 4], pk));
         }
         let other = build_attach_have_vsf(&[1u8; 32], &[2u8; 32], &pk, kp.secret.as_bytes()).unwrap();
         assert!(parse_holdings_vsf(&other).is_err());

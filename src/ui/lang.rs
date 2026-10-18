@@ -487,6 +487,14 @@ pub enum Msg<'a> {
     HoldingsWaiting(&'a str),
     /// A sibling with no signed traffic this session, in place of its age.
     HoldingsNotHeard,
+    /// The Release card's copy pill (removal safety phase 3): copy what exists only here, then release by itself.
+    HoldingsCopyThenRelease,
+    /// The same pill while that is pending: cancel it.
+    HoldingsStopWaiting,
+    /// Hint under the copy pill: which sibling takes the copies.
+    HoldingsCopyHint(&'a str),
+    /// Hint while copy-then-release is pending: who is copying and what happens next.
+    HoldingsCopyingTo(&'a str),
     /// APPROVER's Fleet card: the leaver declared new-owner intent.
     DepartIntentNewOwner,
     /// APPROVER's Fleet card: the leaver declared desk (keeping-it) intent.

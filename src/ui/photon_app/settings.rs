@@ -500,6 +500,7 @@ impl PhotonApp {
         if let Some(cb) = self.settings_hardlogs_check.as_mut() {
             cb.set_checked(crate::hard_logs_active());
         }
+        self.load_release_when_copied();
         // Hold every wave here: device-local, absent = ON (replication is the default; a watch opts out).
         self.wave_hold = self
             .fleet_settings

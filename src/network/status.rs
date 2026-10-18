@@ -479,9 +479,9 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
-    /// A sibling's departure have-set frame: `ask` = a leaving device's holdings list (answer with what we lack), else the answer to OUR ask. `sealed` = the hash list under the fleet key; the UI gates on sibling membership before opening it.
+    /// A sibling's departure have-set frame (protocol::HoldingsKind): a leaving device's ask or pull, or the answer to OURS. `sealed` = the hash list under the fleet key; the UI gates on sibling membership before opening it.
     HoldingsReceived {
-        ask: bool,
+        kind: crate::network::fgtw::protocol::HoldingsKind,
         nonce: [u8; 32],
         sealed: Vec<u8>,
         sender_pubkey: DevicePubkey,
@@ -2174,7 +2174,7 @@ async fn run_checker(
                                             },
                                             &event_proxy_recv,
                                         );
-                                    } else if let Ok(((ask, nonce, sealed), sender_pubkey)) =
+                                    } else if let Ok(((kind, nonce, sealed), sender_pubkey)) =
                                         crate::network::fgtw::protocol::parse_holdings_vsf(&data)
                                     {
                                         if !is_known_sender_pt(&sender_pubkey) {
@@ -2184,7 +2184,7 @@ async fn run_checker(
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::HoldingsReceived {
-                                                ask,
+                                                kind,
                                                 nonce,
                                                 sealed,
                                                 sender_pubkey: DevicePubkey::from_bytes(
@@ -2777,7 +2777,7 @@ async fn run_checker(
                                 );
                                 continue;
                             }
-                            if let Ok(((ask, nonce, sealed), sender_pubkey)) =
+                            if let Ok(((kind, nonce, sealed), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_holdings_vsf(msg_bytes)
                             {
                                 {
@@ -2790,7 +2790,7 @@ async fn run_checker(
                                 send_status_update(
                                     &status_tx_recv,
                                     StatusUpdate::HoldingsReceived {
-                                        ask,
+                                        kind,
                                         nonce,
                                         sealed,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),

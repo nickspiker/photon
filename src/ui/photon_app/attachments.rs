@@ -446,6 +446,9 @@ impl PhotonApp {
             [u8; 32],
             Vec<[u8; 32]>,
         )> = Vec::new();
+        // A PULL (holdings.rs, removal safety): the leaving device holds the only copy and asked us to take it — it outranks everyone; every other rank sits one lower.
+        let prefer = self.attach_fetch_prefer.get(content_hash).copied();
+        let ranked = |k: [u8; 32], rank: u8| if prefer == Some(k) { 0 } else { rank + 1 };
         for c in &self.contacts {
             let is_friend = self.contacts.get(sci).map(|t| t.handle_hash) == Some(c.handle_hash);
             let is_target = c.is_sibling || is_friend;
@@ -463,7 +466,7 @@ impl PhotonApp {
                         (true, false, _) => 3,
                         (false, false, _) => 4,
                     };
-                    targets.push((rank, a, alt, k, relay));
+                    targets.push((ranked(k, rank), a, alt, k, relay));
                 }
             }
             // EVERY DEVICE OF THE FRIEND (field 2026-10-07, Jeff's PDF): the contact row carries ONE device's addresses — the one in their hand — so a file whose only copy sits on the sender's OTHER device (the desktop it was sent from) was never asked for; every retry went to the same phone. Each other known device of the friend joins the list at its own address with its own relay leg; the retry tick still asks ONE device per round, rotating, so this widens the reach without fanning out.
@@ -474,7 +477,7 @@ impl PhotonApp {
                     }
                     let Some(addr) = ep.lan.or(ep.public) else { continue };
                     let alt = if ep.lan.is_some() { ep.public } else { None };
-                    targets.push((if ep.online { 1 } else { 3 }, addr, alt, ep.pubkey, vec![ep.pubkey]));
+                    targets.push((ranked(ep.pubkey, if ep.online { 1 } else { 3 }), addr, alt, ep.pubkey, vec![ep.pubkey]));
                 }
             }
         }
@@ -564,12 +567,16 @@ impl PhotonApp {
         for (hash, id, tries) in due {
             if crate::storage::blob_present(&hash) || crate::storage::blob_manifest(&hash).is_some() {
                 self.attach_fetch_inflight.remove(&hash);
+                if crate::storage::blob_present(&hash) {
+                    self.holdings_pull_settled(&hash, true);
+                }
                 continue;
             }
             // The conversation's contact may be gone since the ask — its fetch is let go, never re-aimed at whoever took its row.
             let Some(sci) = self.ci_of(&id).filter(|_| tries < MAX_TRIES) else {
                 crate::logf!("attach: fetch of {}… let go after {} asks — nobody answered, or its contact was removed", hex::encode(&hash[..4]), tries);
                 self.attach_fetch_inflight.remove(&hash);
+                self.holdings_pull_settled(&hash, false);
                 continue;
             };
             if tries == 0 {
@@ -736,6 +743,8 @@ impl PhotonApp {
             if !complete {
                 continue;
             }
+            // A blob a leaver asked us to take (holdings.rs): one fewer item at risk on its screen.
+            self.holdings_pull_settled(&r.content_hash, true);
             if let (Some(kp), Some(checker)) =
                 (self.device_keypair.as_ref(), self.status_checker.as_ref())
             {

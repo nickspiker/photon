@@ -422,8 +422,8 @@ impl PhotonApp {
         let mut chain_pull_misses_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
         // Sibling departure requests (bilateral removal), deferred past the checker borrow.
         let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
-        // Departure have-set frames (holdings.rs), handled after the drain: (ask, nonce, sealed, sender device, sender addr).
-        let mut holdings_after: Vec<(bool, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
+        // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
+        let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
         let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
@@ -3676,7 +3676,7 @@ impl PhotonApp {
                 }
                 // Departure have-set exchange (holdings.rs): only a live member of OUR fleet may ask what we hold, or answer our ask.
                 StatusUpdate::HoldingsReceived {
-                    ask,
+                    kind,
                     nonce,
                     sealed,
                     sender_pubkey,
@@ -3687,7 +3687,7 @@ impl PhotonApp {
                     }) {
                         continue;
                     }
-                    holdings_after.push((ask, nonce, sealed, sender_pubkey.key, sender_addr));
+                    holdings_after.push((kind, nonce, sealed, sender_pubkey.key, sender_addr));
                 }
                 // A peer wants a blob we may hold: authorize, seal under the requester-relationship key, answer over PT (relay reply when the request came thru the pipe).
                 StatusUpdate::AttachReqReceived {
@@ -5407,9 +5407,9 @@ impl PhotonApp {
             self.rekey_without_chains(ci);
         }
 
-        for (ask, nonce, sealed, sender, addr) in holdings_after {
-            if ask {
-                self.holdings_serve(nonce, sealed, sender, addr);
+        for (kind, nonce, sealed, sender, addr) in holdings_after {
+            if kind != crate::network::fgtw::protocol::HoldingsKind::Missing {
+                self.holdings_serve(kind, nonce, sealed, sender, addr);
             } else if self.holdings_answer(nonce, sealed, sender) {
                 self.scene_dirty = true;
                 changed = true;

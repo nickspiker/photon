@@ -420,6 +420,11 @@ impl PhotonApp {
     }
 
     pub(super) fn dispatch_frame_to_siblings(&self, frame: Vec<u8>) {
+        self.dispatch_frame_to_sibling(frame, None);
+    }
+
+    /// One frame to every live sibling, or (`only`) to that one sibling device alone.
+    pub(super) fn dispatch_frame_to_sibling(&self, frame: Vec<u8>, only: Option<[u8; 32]>) {
         let Some(checker) = self.status_checker.as_ref() else {
             return;
         };
@@ -433,6 +438,9 @@ impl PhotonApp {
             let Some(sib_key) = sib.device_key() else {
                 continue; // a sibling row always carries its key; never fabricate one
             };
+            if only.is_some_and(|k| k != sib_key) {
+                continue;
+            }
             let (primary, alt, relay_to) = match sib.race_addrs() {
                 Some((p, a)) => (
                     p,

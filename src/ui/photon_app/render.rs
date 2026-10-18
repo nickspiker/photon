@@ -6096,9 +6096,10 @@ impl PhotonApp {
                             &tr(Msg::SecurityRemoveShred { armed: self.settings_removeshred_armed }),
                             &tr(if fleet_verbs { Msg::SecurityRemoveShredHint } else { Msg::SecurityReleaseAloneHint }),
                             3, *theme::PILL_RED, self.settings_removeshred_armed, fleet_verbs);
-                        // DEVICE-REMOVAL SAFETY (holdings.rs): while Release is armed, what exists only on this device — so the second tap is an informed one.
-                        if self.settings_removeshred_armed {
-                            if let Some((view, waiting)) = holdings::view(self.holdings_check.as_ref(), &self.contacts) {
+                        // DEVICE-REMOVAL SAFETY (holdings.rs): while Release is armed or a copy-then-release is pending, what exists only on this device — so the second tap is an informed one — and the pill that copies it away first.
+                        if self.settings_removeshred_armed || self.release_when_copied {
+                            if let Some(holdings::HoldingsShown { view, waiting, target }) = holdings::view(self.holdings_check.as_ref(), &self.contacts) {
+                                let at_risk = matches!(view, holdings::HoldingsView::AtRisk { .. });
                                 let (line, colour) = match view {
                                     holdings::HoldingsView::Checking => (tr(Msg::HoldingsChecking).into_owned(), *theme::LABEL_COLOUR),
                                     holdings::HoldingsView::NoKey => (tr(Msg::HoldingsNoKey).into_owned(), *theme::ERROR_TEXT_COLOUR),
@@ -6113,6 +6114,20 @@ impl PhotonApp {
                                     flow.prose(&mut canvas, ctx.text, &tr(Msg::HoldingsWaiting(&waiting.join(", "))), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
                                 }
                                 flow.gap(hspan2 * 0.6);
+                                // Phase 3: copy what exists only here to the most complete sibling, then release by itself — or stop waiting.
+                                if let Some(name) = target.filter(|_| at_risk || self.release_when_copied) {
+                                    if self.release_when_copied {
+                                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                                            &tr(Msg::HoldingsStopWaiting),
+                                            &tr(Msg::HoldingsCopyingTo(&name)),
+                                            5, *theme::PILL_ORANGE, false, true);
+                                    } else {
+                                        action(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map,
+                                            &tr(Msg::HoldingsCopyThenRelease),
+                                            &tr(Msg::HoldingsCopyHint(&name)),
+                                            5, *theme::PILL_GREEN, false, true);
+                                    }
+                                }
                             }
                         }
                         flow.gap(hspan2 * 0.4);

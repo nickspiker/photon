@@ -1299,6 +1299,10 @@ impl FluorApp for PhotonApp {
                         // "Release" (Nick 2026-09-08, the four verbs: Lock / Wipe / Release / Revoke): the BILATERAL departure — signs out, wipes, AND removes this device from the fleet, freeing the hardware brand. No intent question any more — the drawer case is LOCK (stays a member, nothing departs), so every departure is a real handoff. Two-tap confirm; the wipe is GATED on observing our own de-fold. Why not unilateral: whoever briefly holds one unlocked device could sign it out — forcing a key rotation and laundering the hardware into their own fleet.
                         if self.settings_removeshred_armed {
                             self.settings_removeshred_armed = false;
+                            // Releasing NOW overrides a pending copy-then-release.
+                            if self.release_when_copied {
+                                self.set_release_when_copied(false);
+                            }
                             self.request_fleet_departure(1);
                         } else {
                             self.settings_removeshred_armed = true;
@@ -1306,6 +1310,9 @@ impl FluorApp for PhotonApp {
                             self.settings_shred_armed = false;
                             self.settings_revoke_armed = false;
                         }
+                    } else if slot == 5 {
+                        // "Copy, then release" / "Stop waiting" (holdings.rs, removal safety phase 3): drawn under Release while something exists only here.
+                        self.holdings_copy_then_release_tap();
                     }
                 } else if page == SettingsPage::You {
                     if slot == 0 {
