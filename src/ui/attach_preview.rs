@@ -23,8 +23,8 @@ pub fn legacy_linear_planar(bytes: &[u8], name: &str, kind: AttachKind, max_edge
         for ch in 0..3 {
             // The fold hands back gamma-2 VSF RGB; the square is the exact inverse.
             // WHY/PROOF: the next step SQUARES this — a negative would square back to a positive, lighting a pixel that was below black; the clip must come first.
-            let g = f.px[i * 3 + ch].clamp(0.0, 1.0);
-            planar[ch * n + i] = (g * g * 65535.0 + 0.5) as u16;
+            // The planar buffer's white is its top, so light above diffuse white (a `g2t` fold) stops there.
+            planar[ch * n + i] = (f.light(f.px[i * 3 + ch]).min(1.0) * 65535.0 + 0.5) as u16;
         }
     }
     Some((f.w, f.h, planar))
@@ -40,13 +40,64 @@ pub struct Prepared {
     pub blob: Option<Vec<u8>>,
 }
 
-/// A decoded, folded image: source dims, folded dims, and gamma-2 VSF RGB f32 triples (row-major, values 0..1).
+/// A decoded, folded image: source dims, folded dims, and VSF RGB f32 triples (row-major, values 0..1) in `encoding`: gamma 2, or `g2t` when the source holds light above diffuse white (an HDR JPEG XL).
 struct Folded {
     src_w: u32,
     src_h: u32,
     w: usize,
     h: usize,
     px: Vec<f32>,
+    encoding: vsf::visual::Encoding,
+}
+
+impl Folded {
+    /// Scene light (diffuse white = 1) of one encoded sample.
+    fn light(&self, v: f32) -> f32 {
+        match self.encoding {
+            vsf::visual::Encoding::Gamma2Tanh => vsf::colour::convert::linearize_gamma2tanh_f32(v.clamp(0.0, 0.999_999)),
+            vsf::visual::Encoding::Linear => v.max(0.0),
+            vsf::visual::Encoding::Gamma2 => {
+                let g = v.clamp(0.0, 1.0);
+                g * g
+            }
+        }
+    }
+
+    /// Gamma-2 values for an SDR screen (headroom 1): the samples themselves when they are gamma 2; otherwise each sample's light through `vsf::colour::display` for this image's own peak, so highlights fit instead of clipping or showing as gamma 2.
+    fn display_gamma2(&self) -> Vec<f32> {
+        if self.encoding == vsf::visual::Encoding::Gamma2 {
+            return self.px.clone();
+        }
+        let peak = self.px.iter().map(|&v| self.light(v)).fold(0.0f32, f32::max);
+        self.px.iter().map(|&v| vsf::colour::display::display_light(self.light(v), 1.0, peak).sqrt()).collect()
+    }
+}
+
+/// Encode folded LINEAR light (diffuse white = 1) for storage: gamma 2 when nothing exceeds white (untagged), `g2t` when something does, so the highlights keep their place above white.
+fn encode_light(lin: &[f32]) -> (vsf::visual::Encoding, Vec<f32>) {
+    if lin.iter().any(|&v| v > 1.0) {
+        (vsf::visual::Encoding::Gamma2Tanh, lin.iter().map(|&v| vsf::colour::convert::delinearize_gamma2tanh_f32(v.max(0.0))).collect())
+    } else {
+        (vsf::visual::Encoding::Gamma2, gamma2(lin))
+    }
+}
+
+/// VSF RGB values (0..1) → 8-bit codes by ×256 truncation, the VSF quantization rule (never ×255 and round). The `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0), so 1.0 lands on 255.
+fn codes_u8(v: &[f32]) -> Vec<u8> {
+    v.iter().map(|&x| (x * 256.0) as u8).collect()
+}
+
+/// Re-express decoded 8-bit codes of `encoding` as gamma-2 codes for an SDR screen, through `vsf::colour::display` for the image's own brightest code. Gamma 2 is left as it is.
+fn display_codes(rgb: &mut [u8], encoding: vsf::visual::Encoding) {
+    if encoding == vsf::visual::Encoding::Gamma2 {
+        return;
+    }
+    let peak = rgb.iter().copied().max().unwrap_or(0);
+    let light = vsf::colour::display::display_lut_u8(encoding, 1.0, peak);
+    let code: Vec<u8> = light.iter().map(|&l| (l.sqrt() * 256.0) as u8).collect();
+    for v in rgb.iter_mut() {
+        *v = code[*v as usize];
+    }
 }
 
 /// Sniff + dims + both preview tiers for `bytes`. `raw_path` = a temp copy of the bytes on disk for a RAW (limbus reads files); the caller minted it after its own sniff and removes it after the drain. Never fails: an undecodable image keeps its kind and simply has no previews.
@@ -61,13 +112,14 @@ pub fn prepare(bytes: &[u8], name: &str, raw_path: Option<&std::path::Path>) -> 
                 meta.dims = Some((f.src_w, f.src_h));
                 // Micro tier from the same decode (a second fold, linear).
                 let (tw, th) = thumb_dims(f.w, f.h, MICRO_PREVIEW_MAX_EDGE);
-                let micro = fold_gamma2(&f.px, f.w, f.h, tw, th);
-                preview = crate::types::encode_micro_image(tw, th, &micro.iter().map(|v| (v * 255.0 + 0.5) as u8).collect::<Vec<u8>>()); // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
+                // The micro thumb has no tag, so it is always gamma 2, already mapped for an SDR screen.
+                let micro = fold_gamma2(&f.display_gamma2(), f.w, f.h, tw, th);
+                preview = crate::types::encode_micro_image(tw, th, &codes_u8(&micro));
                 // Preview tier: even dims for 4:2:0, AV1, the VSF image container.
                 let (ew, eh) = (f.w & !1, f.h & !1);
                 if ew >= 2 && eh >= 2 {
                     let cropped = crop_rgb_f32(&f.px, f.w, ew, eh);
-                    match crate::ui::avatar::encode_av1_wh(&cropped, ew, eh, PREVIEW_QUANTIZER).and_then(vsf::builders::compressed_image) {
+                    match crate::ui::avatar::encode_av1_wh(&cropped, ew, eh, PREVIEW_QUANTIZER).and_then(|av1| vsf::builders::compressed_image_encoded(av1, f.encoding)) {
                         Ok(vsf_bytes) => {
                             meta.preview_hash = Some(*blake3::hash(&vsf_bytes).as_bytes());
                             blob = Some(vsf_bytes);
@@ -109,14 +161,13 @@ fn decode_pdf(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     let lin = srgb8_to_linear_vsf(&rgb, w, h);
     let (tw, th) = fit_dims(w, h, max_edge);
     let px = fold_linear(&lin, w, h, tw, th);
-    Some(Folded { src_w: pw.round() as u32, src_h: ph.round() as u32, w: tw, h: th, px: gamma2(&px) })
+    Some(Folded { src_w: pw.round() as u32, src_h: ph.round() as u32, w: tw, h: th, px: gamma2(&px), encoding: vsf::visual::Encoding::Gamma2 })
 }
 
 /// A preview built HERE from the original bytes, for a document row that travelled without a preview blob (sent before previews existed for its kind): same tier as the blob would have been, as display pixels.
 pub fn preview_from_original(bytes: &[u8], kind: AttachKind) -> Option<(usize, usize, Vec<u32>)> {
     let f = decode_folded(bytes, "", kind, None, PREVIEW_MAX_EDGE)?;
-    let rgb: Vec<u8> = f.px.iter().map(|v| (v * 255.0 + 0.5) as u8).collect(); // the `as` cast saturates on its own
-    Some((f.w, f.h, micro_to_display(&rgb)))
+    Some((f.w, f.h, micro_to_display(&codes_u8(&f.display_gamma2()))))
 }
 
 /// Decode a held preview blob (AV1-in-VSF) → (w, h, fluor packed α + darkness pixels) for the card and the viewer.
@@ -125,15 +176,15 @@ pub fn decode_preview_blob(vsf_bytes: &[u8]) -> Option<(usize, usize, Vec<u32>)>
     if parsed.encoding != vsf::builders::ENCODING_AV1 {
         return None;
     }
-    let (w, h, rgb) = crate::ui::avatar::decode_avatar(&parsed.data).ok()?;
+    let (w, h, mut rgb) = crate::ui::avatar::decode_avatar(&parsed.data).ok()?;
+    display_codes(&mut rgb, parsed.colour_encoding);
     Some((w, h, micro_to_display(&rgb)))
 }
 
 /// The "open original" render: the original bytes decoded and folded to ≤ FULL_VIEW_MAX_EDGE, as display pixels. Off-thread only.
 pub fn full_image(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>) -> Option<(usize, usize, Vec<u32>)> {
     let f = decode_folded(bytes, name, kind, raw_path, FULL_VIEW_MAX_EDGE)?;
-    let rgb: Vec<u8> = f.px.iter().map(|v| (v * 255.0 + 0.5) as u8).collect(); // the `as` cast saturates on its own (float→int casts clamp to the target range and send NaN to 0)
-    Some((f.w, f.h, micro_to_display(&rgb)))
+    Some((f.w, f.h, micro_to_display(&codes_u8(&f.display_gamma2()))))
 }
 
 fn decode_folded(bytes: &[u8], name: &str, kind: AttachKind, raw_path: Option<&std::path::Path>, max_edge: usize) -> Option<Folded> {
@@ -170,7 +221,7 @@ fn decode_legacy(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     let (pw, ph) = (pre.width() as usize, pre.height() as usize);
     let lin = srgb8_to_linear_vsf(pre.as_raw(), pw, ph);
     let px = fold_linear(&lin, pw, ph, tw, th);
-    Some(Folded { src_w: sw as u32, src_h: sh as u32, w: tw, h: th, px: gamma2(&px) })
+    Some(Folded { src_w: sw as u32, src_h: sh as u32, w: tw, h: th, px: gamma2(&px), encoding: vsf::visual::Encoding::Gamma2 })
 }
 
 /// JPEG XL: decoded in its TAGGED space (primaries + transfer from the header; an ICC-profiled file falls back to the sRGB assumption), linearized, matrixed to VSF RGB, folded.
@@ -196,12 +247,15 @@ fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     }
     let buf = fb.buf();
     #[allow(deprecated)]
+    // Light relative to diffuse white (1.0). SDR transfers top out at white; PQ and HLG carry light above it, which survives to the `g2t` encode.
     let lin_of = |e: f32| -> f32 {
         let e = e.clamp(0.0, 1.0); // WHY/PROOF: squared next — a negative would come back positive, as above
         match tf {
             TransferFunction::Linear => e,
             TransferFunction::Srgb => vsf::colour::srgb_eotf(e),
             TransferFunction::Gamma { g, inverted } if g > 0 => e.powf(if inverted { 1e7 / g as f32 } else { g as f32 / 1e7 }),
+            TransferFunction::Pq => pq_light(e),
+            TransferFunction::Hlg => hlg_light(e),
             _ => vsf::colour::srgb_eotf(e),
         }
     };
@@ -214,8 +268,30 @@ fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
         lin[i * 3 + 2] = o[2].max(0.0); // (gamut floor)
     }
     let (tw, th) = fit_dims(sw, sh, max_edge);
-    let px = fold_linear(&lin, sw, sh, tw, th);
-    Some(Folded { src_w: sw as u32, src_h: sh as u32, w: tw, h: th, px: gamma2(&px) })
+    let (encoding, px) = encode_light(&fold_linear(&lin, sw, sh, tw, th));
+    Some(Folded { src_w: sw as u32, src_h: sh as u32, w: tw, h: th, px, encoding })
+}
+
+/// PQ (SMPTE ST 2084) signal → light relative to diffuse white, which BT.2408 puts at 203 cd/m².
+fn pq_light(e: f32) -> f32 {
+    const M1: f32 = 2610.0 / 16384.0;
+    const M2: f32 = 2523.0 / 4096.0 * 128.0;
+    const C1: f32 = 3424.0 / 4096.0;
+    const C2: f32 = 2413.0 / 4096.0 * 32.0;
+    const C3: f32 = 2392.0 / 4096.0 * 32.0;
+    let p = e.powf(1.0 / M2);
+    let nits = ((p - C1).max(0.0) / (C2 - C3 * p)).powf(1.0 / M1) * 10_000.0;
+    nits / 203.0
+}
+
+/// HLG (BT.2100) signal → scene light relative to diffuse white, which BT.2408 puts at 75 % of the signal (scene light 0.26497).
+fn hlg_light(e: f32) -> f32 {
+    const A: f32 = 0.178_832_77;
+    const B: f32 = 0.284_668_92;
+    const C: f32 = 0.559_910_73;
+    const WHITE: f32 = 0.264_972;
+    let scene = if e <= 0.5 { e * e / 3.0 } else { (((e - C) / A).exp() + B) / 12.0 };
+    scene / WHITE
 }
 
 /// Camera RAW / DNG thru limbus: 2×2 Bayer bin to half-res camera RGB (no demosaic), black subtracted and white normalized, camera → XYZ thru the inverse of the DNG ColorMatrix (D65's when present), XYZ → VSF RGB, auto-white on the brightest channel, folded.
@@ -294,7 +370,8 @@ fn decode_raw(path: &std::path::Path, max_edge: usize) -> Option<Folded> {
     for v in &mut lin {
         *v *= inv;
     }
-    Some(Folded { src_w: w as u32, src_h: h as u32, w: tw, h: th, px: gamma2(&lin) })
+    // Auto-white puts the brightest channel at diffuse white, so nothing sits above it: gamma 2, untagged. (A RAW has no stated diffuse white below clipping here; limbus does not carry BaselineExposure.)
+    Some(Folded { src_w: w as u32, src_h: h as u32, w: tw, h: th, px: gamma2(&lin), encoding: vsf::visual::Encoding::Gamma2 })
 }
 
 /// Aspect-preserving dims with the long edge at `max_edge` (never below 1×1, never upscaled).
@@ -471,6 +548,40 @@ mod tests {
         let (pw, ph, pixels) = decode_preview_blob(&blob).expect("preview decodes");
         assert_eq!((pw, ph), (64, 32));
         assert_eq!(pixels.len(), 64 * 32);
+    }
+}
+
+#[cfg(test)]
+mod hdr_tests {
+    use super::*;
+
+    #[test]
+    fn hdr_transfers_put_diffuse_white_at_one() {
+        assert!((hlg_light(0.75) - 1.0).abs() < 1e-3);
+        // 203 cd/m² is PQ signal 0.58069.
+        assert!((pq_light(0.580_69) - 1.0).abs() < 2e-3);
+        assert!(pq_light(1.0) > 49.0, "PQ peak is 10 000 cd/m², 49× diffuse white");
+    }
+
+    #[test]
+    fn light_above_white_encodes_g2t_and_maps_for_the_screen() {
+        let lin = [0.0f32, 0.25, 1.0, 4.0];
+        let (enc, px) = encode_light(&lin);
+        assert_eq!(enc, vsf::visual::Encoding::Gamma2Tanh);
+        let f = Folded { src_w: 4, src_h: 1, w: 4, h: 1, px, encoding: enc };
+        let disp = f.display_gamma2();
+        assert!(disp.windows(2).all(|w| w[0] <= w[1]));
+        assert!((disp[3] - 1.0).abs() < 1e-5, "the image's peak reaches the screen's peak");
+        assert!(disp[2] < 1.0 && disp[2] > 0.9, "diffuse white sits below peak: {}", disp[2]);
+        let (sdr, gpx) = encode_light(&[0.0f32, 0.25, 1.0]);
+        assert_eq!(sdr, vsf::visual::Encoding::Gamma2);
+        assert_eq!(gpx, vec![0.0, 0.5, 1.0]);
+    }
+
+    #[test]
+    fn codes_truncate_by_256() {
+        assert_eq!(codes_u8(&[0.0, 0.5, 0.999, 1.0, 1.5, f32::NAN]), vec![0, 128, 255, 255, 255, 0]);
+        assert_eq!(codes_u8(&[127.9 / 256.0]), vec![127]);
     }
 }
 
