@@ -466,8 +466,9 @@ mod tests {
         assert!(bare.same_identity(&wrapped));
         let schema = declare_row_fields(SectionSchema::new("t"));
         let b = put_file(SectionBuilder::new(schema.clone()), &wrapped).unwrap();
-        let bytes = b.encode().unwrap();
-        let back = SectionBuilder::parse(schema, &bytes).unwrap();
+        // A complete file, read back thru the verified reader — the shape every real row travels in.
+        let doc = vsf::VsfBuilder::new().provenance_only().add_unboxed("t", b.encode().unwrap()).build().unwrap();
+        let back = SectionBuilder::parse_document(schema, &doc, None).unwrap();
         assert_eq!(get_file(&back), Some(wrapped));
     }
 

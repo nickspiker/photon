@@ -27,35 +27,51 @@ pub fn wrap(raw: &[u8], content_time: Option<i64>) -> Result<Wrapped, String> {
         b = b.creation_time_oscillations(t);
     }
     let bytes = b.add_section_direct(sec).build().map_err(|e| format!("wrap: {e}"))?;
-    let hb = header_hb(&bytes)?;
+    let hb = hb_of(&verified_header(&bytes)?)?;
     Ok(Wrapped { bytes, hb })
 }
 
-/// The hb a wrapped document claims in its header (not yet verified — see [`verify`]).
-pub fn header_hb(doc: &[u8]) -> Result<[u8; 32], String> {
-    let (header, _) = vsf::file_format::VsfHeader::decode(doc).map_err(|e| format!("wrapped: header: {e}"))?;
-    match header.rolling_hash {
+fn hb_of(header: &vsf::file_format::VsfHeader) -> Result<[u8; 32], String> {
+    match &header.rolling_hash {
         Some(VsfType::hb(h)) => <[u8; 32]>::try_from(h.as_slice()).map_err(|_| "wrapped: hb is not 32 bytes".to_string()),
+        _ => Err("wrapped: no hb in the header".to_string()),
+    }
+}
+
+/// A whole wrapped document's header, read thru `read_verified`: provenance and hb both hash-checked before any field is believed.
+fn verified_header(doc: &[u8]) -> Result<vsf::file_format::VsfHeader, String> {
+    vsf::verification::read_verified(doc, None).map(|(h, _)| h).map_err(|e| format!("wrapped: {e}"))
+}
+
+/// The hb a header CLAIMS, plus where the header ends — compared, never trusted: only [`StreamVerifier`] reads it, from a first chunk that is not a whole document (so `read_verified` cannot apply), and its `finish` hashes every byte before anything acts on the content.
+fn claimed_hb(chunk: &[u8]) -> Result<([u8; 32], usize), String> {
+    let h = vsf::verification::parse_full_header(chunk).map_err(|e| format!("wrapped: header: {e}"))?;
+    match h.rolling_hash {
+        Some(VsfType::hb(b)) => Ok((<[u8; 32]>::try_from(b.as_slice()).map_err(|_| "wrapped: hb is not 32 bytes".to_string())?, h.header_end)),
         _ => Err("wrapped: no hb in the header".to_string()),
     }
 }
 
 /// Verify a whole wrapped document: its bytes hash to the hb its header claims, and that hb is the one asked for.
 pub fn verify(doc: &[u8], expect_hb: &[u8; 32]) -> Result<(), String> {
-    if header_hb(doc)? != *expect_hb {
+    verified_and_named(doc, expect_hb).map(|_| ())
+}
+
+fn verified_and_named(doc: &[u8], expect_hb: &[u8; 32]) -> Result<vsf::file_format::VsfHeader, String> {
+    let header = verified_header(doc)?;
+    if hb_of(&header)? != *expect_hb {
         return Err("wrapped: header hb is not the hb asked for".to_string());
     }
-    vsf::verification::verify_file_hash(doc).map_err(|e| format!("wrapped: {e}"))
+    Ok(header)
 }
 
 /// The raw original out of a VERIFIED wrapper, plus its content time: checks the document against `expect_hb`, then the payload against its own `rh`.
 pub fn unwrap(doc: &[u8], expect_hb: &[u8; 32]) -> Result<(Vec<u8>, Option<i64>), String> {
-    verify(doc, expect_hb)?;
+    let header = verified_and_named(doc, expect_hb)?;
     let (raw, rh) = payload(doc)?;
     if *blake3::hash(&raw).as_bytes() != rh {
         return Err("wrapped: payload does not match its rh".to_string());
     }
-    let (header, _) = vsf::file_format::VsfHeader::decode(doc).map_err(|e| format!("wrapped: header: {e}"))?;
     let time = match &header.creation_time {
         Some(VsfType::e(vsf::types::EtType::e6(osc))) => Some(*osc),
         _ => None,
@@ -103,11 +119,10 @@ impl StreamVerifier {
             return Ok(());
         }
         self.started = true;
-        let claimed = header_hb(chunk)?;
+        let (claimed, header_end) = claimed_hb(chunk)?;
         if claimed != self.expect {
             return Err("wrapped: header hb is not the hb asked for".to_string());
         }
-        let (_, header_end) = vsf::file_format::VsfHeader::decode(chunk).map_err(|e| format!("wrapped: header: {e}"))?;
         // The slot is the one place in the header holding the claimed hb's bytes (32 random bytes repeat nowhere else in a header by chance).
         let at = chunk[..header_end.min(chunk.len())]
             .windows(32)
