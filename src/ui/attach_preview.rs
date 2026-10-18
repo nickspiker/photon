@@ -254,8 +254,8 @@ fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
             TransferFunction::Linear => e,
             TransferFunction::Srgb => vsf::colour::srgb_eotf(e),
             TransferFunction::Gamma { g, inverted } if g > 0 => e.powf(if inverted { 1e7 / g as f32 } else { g as f32 / 1e7 }),
-            TransferFunction::Pq => pq_light(e),
-            TransferFunction::Hlg => hlg_light(e),
+            TransferFunction::Pq => vsf::colour::transfer::pq_light(e),
+            TransferFunction::Hlg => vsf::colour::transfer::hlg_light(e),
             _ => vsf::colour::srgb_eotf(e),
         }
     };
@@ -270,28 +270,6 @@ fn decode_jxl(bytes: &[u8], max_edge: usize) -> Option<Folded> {
     let (tw, th) = fit_dims(sw, sh, max_edge);
     let (encoding, px) = encode_light(&fold_linear(&lin, sw, sh, tw, th));
     Some(Folded { src_w: sw as u32, src_h: sh as u32, w: tw, h: th, px, encoding })
-}
-
-/// PQ (SMPTE ST 2084) signal → light relative to diffuse white, which BT.2408 puts at 203 cd/m².
-fn pq_light(e: f32) -> f32 {
-    const M1: f32 = 2610.0 / 16384.0;
-    const M2: f32 = 2523.0 / 4096.0 * 128.0;
-    const C1: f32 = 3424.0 / 4096.0;
-    const C2: f32 = 2413.0 / 4096.0 * 32.0;
-    const C3: f32 = 2392.0 / 4096.0 * 32.0;
-    let p = e.powf(1.0 / M2);
-    let nits = ((p - C1).max(0.0) / (C2 - C3 * p)).powf(1.0 / M1) * 10_000.0;
-    nits / 203.0
-}
-
-/// HLG (BT.2100) signal → scene light relative to diffuse white, which BT.2408 puts at 75 % of the signal (scene light 0.26497).
-fn hlg_light(e: f32) -> f32 {
-    const A: f32 = 0.178_832_77;
-    const B: f32 = 0.284_668_92;
-    const C: f32 = 0.559_910_73;
-    const WHITE: f32 = 0.264_972;
-    let scene = if e <= 0.5 { e * e / 3.0 } else { (((e - C) / A).exp() + B) / 12.0 };
-    scene / WHITE
 }
 
 /// Camera RAW / DNG thru limbus: 2×2 Bayer bin to half-res camera RGB (no demosaic), black subtracted and white normalized, camera → XYZ thru the inverse of the DNG ColorMatrix (D65's when present), XYZ → VSF RGB, auto-white on the brightest channel, folded.
@@ -554,14 +532,6 @@ mod tests {
 #[cfg(test)]
 mod hdr_tests {
     use super::*;
-
-    #[test]
-    fn hdr_transfers_put_diffuse_white_at_one() {
-        assert!((hlg_light(0.75) - 1.0).abs() < 1e-3);
-        // 203 cd/m² is PQ signal 0.58069.
-        assert!((pq_light(0.580_69) - 1.0).abs() < 2e-3);
-        assert!(pq_light(1.0) > 49.0, "PQ peak is 10 000 cd/m², 49× diffuse white");
-    }
 
     #[test]
     fn light_above_white_encodes_g2t_and_maps_for_the_screen() {
