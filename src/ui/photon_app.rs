@@ -479,9 +479,9 @@ fn vsf_rgb_to_stored(rgb_vsf: [f32; 3]) -> u32 {
     let out = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &rgb_vsf);
     // WHY/PROOF: packed into a u32 next, and a u32 cast saturates at 2^32 not 255 — an out-of-gamut channel would bleed into its neighbour; clipped first, √x × 255 ≤ 255.
     let e = |x: f32| (x.clamp(0.0, 1.0).sqrt() * 255.0).round() as u32;
-    fluor::theme::dark(fluor::theme::fmt(
+    fluor::theme::dark(fluor::theme::fmt(fluor::theme::from_gamma2(
         (e(out[0]) << 16) | (e(out[1]) << 8) | e(out[2]),
-    ))
+    )))
 }
 
 /// Self renders in the system's achromatic anchor: VSF grey (0.5, 0.5, 0.5) — photopic Y = 0.5 like every contact colour, zero chroma. It is literally the chroma-0 point of every party's colour ray (Illuminant-E neutral, so a hair warm on a D65 display — that's equal-energy white, the pipeline's honest neutral).
@@ -1306,7 +1306,7 @@ fn ansi_line_to_spans(line: &str, default_colour: u32) -> Vec<(String, u32)> {
         }
         let parts: Vec<u32> = params.split(';').filter_map(|p| p.parse().ok()).collect();
         colour = match parts.as_slice() {
-            [38, 2, r, g, b] => fluor::theme::dark(fluor::theme::fmt((r << 16) | (g << 8) | b)),
+            [38, 2, r, g, b] => fluor::theme::dark(fluor::theme::fmt(fluor::theme::from_gamma2((r << 16) | (g << 8) | b))),
             [] | [0] => default_colour,
             // Bold/basic whites the inspector uses for emphasis.
             p if p.contains(&37) || p.contains(&97) => *theme::CONTACT_NAME_COLOUR,
@@ -3423,11 +3423,11 @@ fn orb_tint_for(online: bool) -> fluor::host::chrome::OrbTint {
     // Visible RGB(64, 224, 64) green: darkness = (0xBF, 0x1F, 0xBF); packed α=0xFF. Visible RGB(224, 64, 64) red:   darkness = (0x1F, 0xBF, 0xBF); packed α=0xFF.
     // These are hand-authored in darkness-space (pre-inverted, so no `dark()`), but they STILL need `fmt()` — the platform channel-order pass (identity on desktop, R↔B swap on Android). Every other photon colour rides `fmt`; the orb ring skipping it was the Android "red-blue swapped ring". `fmt` only reorders RGB and preserves the α byte, so it's correct on the already-darkened constants.
     fluor::host::chrome::OrbTint::Custom {
-        ring: fluor::theme::fmt(if online {
+        ring: fluor::theme::fmt(fluor::theme::darkness_from_gamma2(if online {
             crate::ui::theme::ORB_ONLINE
         } else {
             crate::ui::theme::ORB_OFFLINE
-        }),
+        })),
         brighten: online,
     }
 }

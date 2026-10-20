@@ -93,7 +93,7 @@ pub static PILL_GREY: LazyLock<(u32, u32)> = LazyLock::new(|| (c(0x00_23_23_27),
 pub static PROGRESS_FILL: LazyLock<u32> = LazyLock::new(|| c(0x00_76_C2_00));
 pub static PROGRESS_TRACK: LazyLock<u32> = LazyLock::new(|| c(0x00_00_00_00));
 /// A file row whose transfer finished this session: a translucent green veil under the whole row (Nick 2026-10-07). Stored α + darkness in the surface's byte order — visible green (0, 255, 0) is darkness (255, 0, 255), at α 0x30.
-pub static ATTACH_DONE_TINT: LazyLock<u32> = LazyLock::new(|| fluor::theme::fmt(0x30_FF_00_FF));
+pub static ATTACH_DONE_TINT: LazyLock<u32> = LazyLock::new(|| fluor::theme::fmt(fluor::theme::darkness_from_gamma2(0x30_FF_00_FF)));
 /// Send-button arrowhead glyph — light grey.
 /// The send arrowhead — GREEN over the purple pill (Nick 2026-09-12); the edit check keeps its own green by shape.
 pub static SEND_ARROW_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_2F_C2_2F));

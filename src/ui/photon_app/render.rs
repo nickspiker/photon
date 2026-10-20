@@ -4079,9 +4079,9 @@ impl PhotonApp {
                                 let hl_bot = (y + msg_size * 0.8).min(list_bottom);
                                 // Development builds tint each SECTION its own colour so the boundaries are visible while the layout iterates (Nick 2026-09-12): meta yellow, media white, actions cyan, reactions red. Release wears the rail's white throughout.
                                 let dev = cfg!(feature = "development");
-                                let meta_tint = if dev { fluor::theme::fmt(0x20_00_00_FF) } else { theme::RAIL_ACTIVE_COLOUR };
-                                let action_tint = if dev { fluor::theme::fmt(0x20_FF_00_00) } else { theme::RAIL_ACTIVE_COLOUR };
-                                let react_tint = if dev { fluor::theme::fmt(0x20_00_FF_FF) } else { theme::RAIL_ACTIVE_COLOUR };
+                                let meta_tint = if dev { fluor::theme::fmt(fluor::theme::darkness_from_gamma2(0x20_00_00_FF)) } else { theme::RAIL_ACTIVE_COLOUR };
+                                let action_tint = if dev { fluor::theme::fmt(fluor::theme::darkness_from_gamma2(0x20_FF_00_00)) } else { theme::RAIL_ACTIVE_COLOUR };
+                                let react_tint = if dev { fluor::theme::fmt(fluor::theme::darkness_from_gamma2(0x20_00_FF_FF)) } else { theme::RAIL_ACTIVE_COLOUR };
                                 // No media: the highlight's action region starts at the strip's own top — detail_h carries the wrapped action lines, so the veil grows with them.
                                 let hl_actions_top = media_edges.map(|(_, b)| b).unwrap_or(y - detail_h + line_h * 0.5).max(list_top);
                                 let hl_react_top = (y - line_h * 0.7).max(list_top);

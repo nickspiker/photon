@@ -104,7 +104,7 @@ pub fn draw_avatar(
             let g = scaled[tex_idx + 1] as u32;
             let b = scaled[tex_idx + 2] as u32;
             let visible = (r << 16) | (g << 8) | b;
-            let dark = fluor::theme::dark(fluor::theme::fmt(visible)) & 0x00FFFFFF;
+            let dark = fluor::theme::dark(fluor::theme::fmt(fluor::theme::from_gamma2(visible))) & 0x00FFFFFF;
             let alpha = if dist2 <= r_in2 {
                 0xFFu32
             } else {

@@ -468,7 +468,7 @@ pub fn micro_to_display(vsf_gamma2: &[u8]) -> Vec<u32> {
     bt.chunks_exact(3)
         .map(|p| {
             let visible = ((p[0] as u32) << 16) | ((p[1] as u32) << 8) | p[2] as u32;
-            fluor::theme::dark(fluor::theme::fmt(visible))
+            fluor::theme::dark(fluor::theme::fmt(fluor::theme::from_gamma2(visible)))
         })
         .collect()
 }

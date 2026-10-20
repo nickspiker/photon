@@ -151,7 +151,8 @@ impl FieldTables {
         }
         // Full-brightness hue byte = ENC[c]·255/α (the brightest channel reads 255).
         let hue = |c: u16| (enc[c as usize] * 255 + a / 2) / a;
-        let visible = (hue(r) << 16) | (hue(g) << 8) | hue(b);
+        // γ2 hue → the `g2t` buffer's code for the same light (fluor's buffer is g2t since 2026-10-20).
+        let visible = fluor::theme::from_gamma2((hue(r) << 16) | (hue(g) << 8) | hue(b));
         (a << 24) | (fluor::theme::fmt(visible ^ 0x00FF_FFFF) & 0x00FF_FFFF)
     }
 }
@@ -205,7 +206,9 @@ static ENC: std::sync::LazyLock<Vec<u32>> = std::sync::LazyLock::new(|| (0..Q).m
 #[inline]
 fn field_pixel(enc: &[u32], r: u16, g: u16, b: u16) -> u32 {
     let a = enc[r.max(g).max(b) as usize];
-    let dark = ((a - enc[r as usize]) << 16) | ((a - enc[g as usize]) << 8) | (a - enc[b as usize]);
+    // Premultiplied: α stays the brightest channel's γ2 code; each channel's premultiplied value takes the `g2t` code of its light, which is never above its γ2 code, so it stays ≤ α.
+    let g2t = |c: u16| fluor::theme::GAMMA2_TO_G2T[enc[c as usize].min(255) as usize] as u32;
+    let dark = ((a - g2t(r)) << 16) | ((a - g2t(g)) << 8) | (a - g2t(b));
     (a << 24) | (fluor::theme::fmt(dark) & 0x00FF_FFFF)
 }
 
@@ -270,7 +273,7 @@ pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: 
                 continue;
             }
             let o = (srow + sx) * 3;
-            let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
+            let rgb = fluor::theme::from_gamma2(((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32);
             // Opaque: α = 255, the channels stored as darkness (fluor's layer convention, see `field_pixel`).
             let src = 0xFF00_0000 | (fluor::theme::fmt(rgb ^ 0x00FF_FFFF) & 0x00FF_FFFF);
             line[x] = if d == 0 { src } else { under_premult(d, src) };
@@ -461,20 +464,21 @@ mod tests {
         assert!(lit.iter().all(|&p| [16, 8, 0].iter().all(|&s| (p >> s) & 0xFF <= p >> 24)), "darkness never exceeds opacity");
         assert!(lit.iter().filter(|&&p| p != 0).count() > w * w / 4, "the ripples fill the reach");
         assert!(lit[(h - 1) * w..].iter().all(|&p| p == 0), "nothing below the reach");
-        // Full brightness: the brightest channel of a lit pixel carries no darkness (premultiplied visible level = α).
+        // Full brightness: the brightest channel of a lit pixel carries the `g2t` code of α's light (α is its γ2 code; fluor's buffer is g2t), so its darkness is α minus that code.
         let enc = &*ENC;
         let p = field_pixel(enc, 2000, 500, 100);
-        assert_eq!([16, 8, 0].iter().map(|&s| (p >> s) & 0xFF).min(), Some(0));
+        let a = p >> 24;
+        assert_eq!([16, 8, 0].iter().map(|&s| (p >> s) & 0xFF).min(), Some(a - fluor::theme::GAMMA2_TO_G2T[a as usize] as u32));
         // Under a half-opaque pixel, the field deposits its premultiplied bytes into the half left open — once, not α twice.
         let top = 0x8040_4040u32;
         let out = under_premult(top, p);
         let open = 256 - 0x80;
         assert_eq!(out >> 24, 0x80 + ((p >> 24) * open >> 8));
         assert_eq!(out & 0xFF, 0x40 + ((p & 0xFF) * open >> 8));
-        // The rings take the age-0 colour: straight, full-brightness hue (one channel carries no darkness), α its brightness; silence is transparent.
+        // The rings take the age-0 colour: straight, full-brightness hue (the brightest channel at white, `g2t` code 194, so its darkness is 255 − 194), α its brightness; silence is transparent.
         let ring = loud.ring_colour(true);
         assert!(ring >> 24 > 0);
-        assert_eq!([16, 8, 0].iter().map(|&s| (ring >> s) & 0xFF).min(), Some(0));
+        assert_eq!([16, 8, 0].iter().map(|&s| (ring >> s) & 0xFF).min(), Some(255 - fluor::theme::GAMMA2_TO_G2T[255] as u32));
         assert_eq!(silent.ring_colour(false), 0);
     }
 
