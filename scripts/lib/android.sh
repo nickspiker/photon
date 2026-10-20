@@ -74,7 +74,15 @@ android_build() {
         echo "ERROR: APK versionName is '$stamped' but the tree built as '$ver' — the wrapper and the code disagree; refusing to hand this APK to the deploy"
         exit 1
     fi
-    echo "APK built: $APK_PATH (versionName ${stamped:-unverified — no aapt}, expected $ver)"
+    # STRIPPED, OR NO APK (2026-10-20): Gradle's "Unable to strip … packaging them as they are" is one quiet line, and from 2026-09-10 it shipped every build at ~250 MB (173 MB of the library was debug info). The packaged library must be smaller than the unstripped one in target/.
+    local packaged unstripped
+    packaged="$(unzip -lv "$APK_PATH" lib/arm64-v8a/libphoton_messenger.so 2>/dev/null | awk '$NF ~ /libphoton_messenger.so$/ {print $1}')"
+    unstripped="$(stat -c %s "$so")"
+    if [ -z "$packaged" ] || [ "$packaged" -ge "$unstripped" ]; then
+        echo "ERROR: the APK's libphoton_messenger.so is ${packaged:-missing} bytes against ${unstripped} unstripped — Gradle did not strip it (is ANDROID_NDK_HOME set?); refusing to hand a debug-info APK to the deploy"
+        exit 1
+    fi
+    echo "APK built: $APK_PATH (versionName ${stamped:-unverified — no aapt}, expected $ver; library ${packaged} bytes stripped from ${unstripped})"
 }
 
 # Install the built APK over USB ADB.
