@@ -51,20 +51,21 @@
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next non-mainstream OS
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device
 - [Beams](project_beams.md) — 2026-10-10 DECIDED + desktop BUILT: H.264, intra refresh, ISP stood aside, VSF labels; phone capture + cycle built
-- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 Jeff holes = L rule; fixes BUILT
+- [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 L rule; BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb; raw reader to v134
+- [HDR stack](project_hdr_stack.md) — OWNED 2026-10-20: g2t buffer landed; darkness-0 audit, then Android F16
 - [Removal safety](project_device_removal_safety.md) — 2026-10-17 phases 2-3 BUILT: at-risk lines, copy-then-release; 4-5 open
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 fetch asked one friend device (fixed); auto-fetch open
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
-- [Ideas page](project_ideas_gripes.md) — 2026-10-03 BUILT: anonymous gripes, photonlog --gripes
+- [Ideas page](project_ideas_gripes.md) — BUILT: anonymous gripes
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text
 - [Ceremony claim-first](project_ceremony_claim_first.md) — 2026-10-01 BUILT: owner = adding device roster claim; OPEN: restart re-keys offline friends
 - [Consent order deadlock](project_consent_order_deadlock.md) — 2026-10-01 CONVICTED (Jeff): offer before mutuality + dropped knock
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry
-- [Ready first paint](project_ready_first_paint.md) — v110: hit stamps ride the paint decision; never re-stamp the orb; a mid-render dirty flag survives its render
+- [Ready first paint](project_ready_first_paint.md) — v110: hit stamps ride the paint decision; dirty flag survives its render
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES phase 1 BUILT 2026-09-15; join-by-replay SCOPED 2026-10-01
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1 retire open
 - [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
@@ -175,7 +176,7 @@
 
 ## References
 - [reference_log_pull.md](reference_log_pull.md) — photonlog --pull --session / --handle <LEFT map bytes>; pull to a file first
-- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — 2026-09-18 desktop path deps trailed their remotes; ff siblings first
+- [project_desktop_trails_spirix.md](project_desktop_trails_spirix.md) — desktop path deps trailed remotes; ff siblings
 - [MacBook trails remote](macbook-trails-remote.md) — MacBook clones trail rewritten history: reset to origin, ff ALL sibling deps
 - [photon not fmt-clean](photon-not-fmt-clean.md) — bare cargo fmt churns ~40 files; style commits separate
 - [reference_vsf_primary_section.md](reference_vsf_primary_section.md) — readers MUST use VsfHeader::primary_section
