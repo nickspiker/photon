@@ -1103,6 +1103,8 @@ impl PhotonApp {
             return;
         };
         let (hp, party_id, avatar_pin) = (c.handle_proof, c.handle_hash, c.avatar_pin);
+        // The publisher's own devices: a scoped avatar is honoured only when they signed it (avatar_scoped::fetch_pinned).
+        let publisher_devices = c.answerable_pubkeys();
         // No device key = no one to request the avatar from yet (the FGTW fallback still runs elsewhere).
         let Some(their_device) = c.device_key() else {
             return;
@@ -1156,9 +1158,11 @@ impl PhotonApp {
                 pixels = scoped_kek
                     .and_then(|kek| {
                         // THEIR avatar, so the purpose carries THEIR pid — the friend is the publisher of the blob we are reading.
-                        let raw = crate::ui::avatar_scoped::fetch_blocking(
+                        let raw = crate::ui::avatar_scoped::fetch_pinned(
                             &kek,
                             &crate::ui::avatar_scoped::avatar_purpose(&party_id),
+                            &publisher_devices,
+                            &storage,
                         )?;
                         let (_, px) = crate::ui::avatar_scoped::decode_avatar_plaintext(&raw)?;
                         // Write-thru so the next boot is local (the vault encrypts at rest; the raw-AV1 form is what the cache read above tries first).

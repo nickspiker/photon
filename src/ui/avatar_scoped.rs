@@ -7,7 +7,7 @@
 //! Here the blob id is not a secret and nobody's slot reveals anyone else's, so the object leaks a reader COUNT at publish time and nothing more.
 
 use fgtw::scoped_blob::{
-    is_vsf, new_blob_id, new_dek, open_content, open_slot, seal_content_doc, slot_writes, SlotContents,
+    is_vsf, new_blob_id, new_dek, open_content_signed, open_slot_signed, seal_content_doc, slot_writes, Signed, SlotContents,
 };
 
 use crate::network::fgtw::blob;
@@ -45,14 +45,15 @@ pub fn publish_blocking(
     let dek = new_dek();
     let blob_id = new_blob_id();
     // Stored as a signed VSF document (docs/scoped-blobs.md), never bare bytes.
-    let sealed = seal_content_doc(&dek, &blob_id, plaintext, device_keypair)?;
+    let stamp = vsf::eagle_time_oscillations();
+    let sealed = seal_content_doc(&dek, &blob_id, plaintext, device_keypair, stamp)?;
 
     // Content first: a slot pointing at an object that does not exist yet would strand any reader who acts on it immediately.
     blob::put_blob_blocking(&addr(&blob_id), &sealed, device_keypair, handle_proof)
         .map_err(|e| format!("scoped: content upload failed: {}", e))?;
 
     let contents = SlotContents { blob_id, dek };
-    let writes = slot_writes(readers, purpose, &contents, device_keypair)?;
+    let writes = slot_writes(readers, purpose, &contents, device_keypair, stamp)?;
     let total = writes.len();
     let mut written = 0usize;
     for w in &writes {
@@ -116,7 +117,7 @@ pub fn grant_reader(
     };
     contents.blob_id.copy_from_slice(&buf[..32]);
     contents.dek.copy_from_slice(&buf[32..]);
-    let Ok(writes) = slot_writes(std::slice::from_ref(kek_secret), purpose, &contents, device_keypair) else {
+    let Ok(writes) = slot_writes(std::slice::from_ref(kek_secret), purpose, &contents, device_keypair, vsf::eagle_time_oscillations()) else {
         return;
     };
     for w in &writes {
@@ -127,18 +128,71 @@ pub fn grant_reader(
     }
 }
 
-/// Fetch content shared with us: find our slot from the secret we share with the publisher, unwrap the key, pull the one ciphertext.
+/// Fetch content a publisher shared with us, trusting nothing the host says: find our slot from the secret we share with the publisher, unwrap the key, pull the one ciphertext, and accept it only if
 ///
-/// `None` means "nothing shared with us here" — an absent slot, a slot we cannot open, or content that has since been republished elsewhere. All three are the same fact to a reader, and none is an error worth surfacing.
-pub fn fetch_blocking(kek_secret: &[u8; 32], purpose: &[u8]) -> Option<Vec<u8>> {
+/// - both objects are signed by one of `signers` (the publisher's own devices, `Contact::answerable_pubkeys`), so no other reader holding the data key can stand in for the publisher; and
+/// - the content's signed stamp is no older than the newest we have accepted from this publisher, so the host cannot roll it back to an earlier version.
+///
+/// The bare objects written before the envelope carry neither, so they are accepted only until this publisher's first signed object has been seen; from then on a bare object is refused, or a forger would simply serve the bare form.
+///
+/// `None` means "nothing shared with us here that we can trust": an absent or unopenable slot, content since republished, a wrong signer, a rollback, or a bare object after a signed one. None of these is surfaced as an error.
+pub fn fetch_pinned(kek_secret: &[u8; 32], purpose: &[u8], signers: &[[u8; 32]], storage: &crate::storage::FlatStorage) -> Option<Vec<u8>> {
     let slot_addr = fgtw::scoped_blob::slot_address(kek_secret, purpose);
     let sealed_slot = blob::get_blob_blocking(&addr(&slot_addr)).ok().flatten()?;
-    let contents = open_slot(kek_secret, purpose, &sealed_slot)?;
-    let sealed_content = blob::get_blob_blocking(&addr(&contents.blob_id))
-        .ok()
-        .flatten()?;
-    open_content(&contents.dek, &contents.blob_id, &sealed_content)
+    let (contents, slot_signed) = open_slot_signed(kek_secret, purpose, &sealed_slot)?;
+    let sealed_content = blob::get_blob_blocking(&addr(&contents.blob_id)).ok().flatten()?;
+    let (plain, content_signed) = open_content_signed(&contents.dek, &contents.blob_id, &sealed_content)?;
+    let newest = newest_seen(purpose, storage);
+    accept(slot_signed, content_signed, signers, newest).then(|| {
+        if let Some(c) = content_signed {
+            record_seen(purpose, c.stamp, storage);
+        }
+        plain
+    })
 }
+
+/// The reader's verdict on one fetch (see [`fetch_pinned`]). Every signed part must be by a publisher device; the content's stamp must not go backwards; a bare part is acceptable only before any signed object from this publisher was seen.
+fn accept(slot: Option<Signed>, content: Option<Signed>, signers: &[[u8; 32]], newest: Option<i64>) -> bool {
+    let by_publisher = |s: &Option<Signed>| s.map_or(true, |s| signers.contains(&s.signer));
+    if !by_publisher(&slot) || !by_publisher(&content) {
+        crate::log("SCOPED: refused an avatar signed by a device that is not the publisher's");
+        return false;
+    }
+    match (content, newest) {
+        (Some(c), Some(n)) if c.stamp < n => {
+            crate::log("SCOPED: refused an avatar older than one already accepted (rollback)");
+            false
+        }
+        _ if (slot.is_none() || content.is_none()) && newest.is_some() => {
+            crate::log("SCOPED: refused a bare avatar after a signed one from the same publisher");
+            false
+        }
+        _ => true,
+    }
+}
+
+/// Where the newest accepted stamp per publisher lives (8 bytes, big-endian). Absent = no signed object from this publisher seen yet.
+fn seen_key(purpose: &[u8]) -> [u8; 32] {
+    let mut h = blake3::Hasher::new();
+    h.update(b"PHOTON_SCOPED_SEEN_v");
+    h.update(&[fgtw::scoped_blob::SCOPED_VERSION]);
+    h.update(purpose);
+    crate::storage::vault_key("scoped_seen", h.finalize().as_bytes())
+}
+
+fn newest_seen(purpose: &[u8], storage: &crate::storage::FlatStorage) -> Option<i64> {
+    let buf = storage.read_addr(&seen_key(purpose)).ok().flatten()?;
+    Some(i64::from_be_bytes(buf.as_slice().try_into().ok()?))
+}
+
+fn record_seen(purpose: &[u8], stamp: i64, storage: &crate::storage::FlatStorage) {
+    if newest_seen(purpose, storage).map_or(true, |n| stamp > n) {
+        if let Err(e) = storage.write_addr(&seen_key(purpose), &stamp.to_be_bytes()) {
+            crate::logf!("SCOPED: could not record the accepted stamp: {}", e);
+        }
+    }
+}
+
 
 /// The avatar's plaintext: the house image (`vsf::builders::compressed_image_encoded`), AV1 pixels with their encoding: untagged VSF RGB for an LDR source, `g2t` for an HDR one.
 pub fn avatar_plaintext(av1: Vec<u8>, encoding: vsf::visual::Encoding) -> Result<Vec<u8>, String> {
@@ -202,6 +256,23 @@ pub fn upgrade_in_place(
 mod tests {
     use super::*;
 
+    /// The reader's verdict: a publisher device's signature passes, anyone else's does not, a rollback is refused, and a bare object is fine only before the first signed one.
+    #[test]
+    fn readers_pin_the_signer_refuse_rollback_and_retire_the_bare_form() {
+        let publisher = [1u8; 32];
+        let friend = [2u8; 32];
+        let by = |signer: [u8; 32], stamp: i64| Some(Signed { signer, stamp });
+        assert!(accept(by(publisher, 10), by(publisher, 10), &[publisher], None));
+        assert!(accept(by(publisher, 10), by(publisher, 10), &[publisher], Some(10)));
+        assert!(!accept(by(publisher, 10), by(friend, 10), &[publisher], None), "a reader holding the data key cannot stand in for the publisher");
+        assert!(!accept(by(friend, 10), by(publisher, 10), &[publisher], None));
+        assert!(!accept(by(publisher, 9), by(publisher, 9), &[publisher], Some(10)), "rollback");
+        assert!(accept(None, None, &[publisher], None), "bare, before any signed object");
+        assert!(!accept(None, None, &[publisher], Some(10)), "bare after a signed object");
+        assert!(!accept(by(publisher, 11), None, &[publisher], Some(10)));
+        assert!(!accept(by(publisher, 10), by(publisher, 10), &[], None), "no known publisher device, nothing passes");
+    }
+
     /// Both plaintext forms decode: the house VSF image, and bare AV1 from before it.
     #[test]
     fn avatar_plaintext_round_trips_and_bare_av1_still_reads() {
@@ -224,7 +295,7 @@ mod tests {
             blob_id: [1u8; 32],
             dek: [2u8; 32],
         };
-        let writes = slot_writes(&[secret], &purpose, &contents, &Keypair::from_seed(&[9u8; 32])).unwrap();
+        let writes = slot_writes(&[secret], &purpose, &contents, &Keypair::from_seed(&[9u8; 32]), 1).unwrap();
         assert_eq!(
             writes[0].address,
             fgtw::scoped_blob::slot_address(&secret, &purpose)
