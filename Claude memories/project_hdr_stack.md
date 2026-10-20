@@ -28,3 +28,8 @@ Refs: vsf idt/output.md "Peak brightness depends on how much is lit", colour.md 
 **How to apply:** fluor is a photon dep (in scope). Device tests need Nick's phone; Android builds via scripts/android/dev-adb.sh. See [[project_theme_rec2020]], [[feedback_direct_pixel_no_floaters]].
 
 REQUESTED HEADROOM (Nick 2026-10-20: "make sure we get our requested headroom right. I forget where 255 lands"): g2t code → light: 194 = 1×, 215 = 1.5×, 227 = 2×, 246 = 4×, 255 = 9.72× (bucket bottoms, fluor G2T_LIGHT_Q16). The request must follow the brightest light the frame USES, capped at the display's offer — never a fixed constant, never 9.7× just because the buffer can encode it.
+
+FIELD FACTS, Pixel 8 Pro (husky, Android 16 / SDK 36), probed 2026-10-20:
+- OPEN TEST 1 ANSWERED YES: AHardwareBuffer R16G16B16A16_FLOAT 1080×2400 with CPU_WRITE_OFTEN + COMPOSER_OVERLAY (+GPU_SAMPLED) — isSupported 1, allocate 0, lock 0, CPU write ok, stride 1088. (Same for 1010102 and 8888.) Probe: a tiny NDK C program run over adb (NDK 25 tops at android33-clang), not in the repo.
+- Display: hdrCapabilities types [2,3,4] (HDR10, HLG, HDR10+), maxLuminance 1000, maxAverageLuminance 120, minLuminance 0.0005; supportedColorModes [0,7,9]; hdrSdrRatio 1.0 while nothing HDR is shown.
+- OPEN TEST 2 (extended range with BT.2020 primaries?) still needs a window: an in-app dev probe (ASurfaceControl_createFromWindow child, F16 buffer, BT2020|LINEAR|EXTENDED dataspace, check dumpsys SurfaceFlinger).
