@@ -133,9 +133,9 @@ pub fn grant_reader(
 /// - both objects are signed by one of `signers` (the publisher's own devices, `Contact::answerable_pubkeys`), so no other reader holding the data key can stand in for the publisher; and
 /// - the content's signed stamp is no older than the newest we have accepted from this publisher, so the host cannot roll it back to an earlier version.
 ///
-/// The bare objects written before the envelope carry neither, so they are accepted only until this publisher's first signed object has been seen; from then on a bare object is refused, or a forger would simply serve the bare form.
+/// The bare objects written before the envelope carry neither, so they are never accepted from the network: old forms are read only from our own vault (the cache read in `spawn_avatar_download`), or a forger would simply serve the bare form. A friend still on a pre-envelope build shows their cached avatar until they update, when their startup sync republishes it signed.
 ///
-/// `None` means "nothing shared with us here that we can trust": an absent or unopenable slot, content since republished, a wrong signer, a rollback, or a bare object after a signed one. None of these is surfaced as an error.
+/// `None` means "nothing shared with us here that we can trust": an absent or unopenable slot, content since republished, a wrong signer, a rollback, or a bare object. None of these is surfaced as an error.
 pub fn fetch_pinned(kek_secret: &[u8; 32], purpose: &[u8], signers: &[[u8; 32]], storage: &crate::storage::FlatStorage) -> Option<Vec<u8>> {
     let slot_addr = fgtw::scoped_blob::slot_address(kek_secret, purpose);
     let sealed_slot = blob::get_blob_blocking(&addr(&slot_addr)).ok().flatten()?;
@@ -151,24 +151,21 @@ pub fn fetch_pinned(kek_secret: &[u8; 32], purpose: &[u8], signers: &[[u8; 32]],
     })
 }
 
-/// The reader's verdict on one fetch (see [`fetch_pinned`]). Every signed part must be by a publisher device; the content's stamp must not go backwards; a bare part is acceptable only before any signed object from this publisher was seen.
+/// The reader's verdict on one network fetch (see [`fetch_pinned`]): both parts signed, both by a publisher device, and the content's stamp not older than the newest accepted.
 fn accept(slot: Option<Signed>, content: Option<Signed>, signers: &[[u8; 32]], newest: Option<i64>) -> bool {
-    let by_publisher = |s: &Option<Signed>| s.map_or(true, |s| signers.contains(&s.signer));
-    if !by_publisher(&slot) || !by_publisher(&content) {
+    let (Some(slot), Some(content)) = (slot, content) else {
+        crate::log("SCOPED: refused a bare (unsigned, pre-envelope) avatar from the network");
+        return false;
+    };
+    if !signers.contains(&slot.signer) || !signers.contains(&content.signer) {
         crate::log("SCOPED: refused an avatar signed by a device that is not the publisher's");
         return false;
     }
-    match (content, newest) {
-        (Some(c), Some(n)) if c.stamp < n => {
-            crate::log("SCOPED: refused an avatar older than one already accepted (rollback)");
-            false
-        }
-        _ if (slot.is_none() || content.is_none()) && newest.is_some() => {
-            crate::log("SCOPED: refused a bare avatar after a signed one from the same publisher");
-            false
-        }
-        _ => true,
+    if newest.is_some_and(|n| content.stamp < n) {
+        crate::log("SCOPED: refused an avatar older than one already accepted (rollback)");
+        return false;
     }
+    true
 }
 
 /// Where the newest accepted stamp per publisher lives (8 bytes, big-endian). Absent = no signed object from this publisher seen yet.
@@ -256,9 +253,9 @@ pub fn upgrade_in_place(
 mod tests {
     use super::*;
 
-    /// The reader's verdict: a publisher device's signature passes, anyone else's does not, a rollback is refused, and a bare object is fine only before the first signed one.
+    /// The reader's verdict: a publisher device's signature passes, anyone else's does not, a rollback is refused, and a bare object never passes from the network.
     #[test]
-    fn readers_pin_the_signer_refuse_rollback_and_retire_the_bare_form() {
+    fn readers_pin_the_signer_refuse_rollback_and_refuse_the_bare_form() {
         let publisher = [1u8; 32];
         let friend = [2u8; 32];
         let by = |signer: [u8; 32], stamp: i64| Some(Signed { signer, stamp });
@@ -267,9 +264,9 @@ mod tests {
         assert!(!accept(by(publisher, 10), by(friend, 10), &[publisher], None), "a reader holding the data key cannot stand in for the publisher");
         assert!(!accept(by(friend, 10), by(publisher, 10), &[publisher], None));
         assert!(!accept(by(publisher, 9), by(publisher, 9), &[publisher], Some(10)), "rollback");
-        assert!(accept(None, None, &[publisher], None), "bare, before any signed object");
-        assert!(!accept(None, None, &[publisher], Some(10)), "bare after a signed object");
-        assert!(!accept(by(publisher, 11), None, &[publisher], Some(10)));
+        assert!(!accept(None, None, &[publisher], None), "bare, even before any signed object");
+        assert!(!accept(by(publisher, 11), None, &[publisher], None), "half bare");
+        assert!(!accept(None, by(publisher, 11), &[publisher], None), "half bare");
         assert!(!accept(by(publisher, 10), by(publisher, 10), &[], None), "no known publisher device, nothing passes");
     }
 

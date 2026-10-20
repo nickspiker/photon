@@ -1153,7 +1153,7 @@ impl PhotonApp {
                             .flatten()
                     })
             });
-            // Scoped blob first (docs/scoped-blobs.md): our private slot names the ciphertext and carries its key. Falls back to the legacy pin only while avatars published under the old scheme are still out there — a friend who has re-set their avatar since is served entirely by the slot.
+            // Scoped blob (docs/scoped-blobs.md): our private slot names the ciphertext and carries its key; only a signed, publisher-pinned, non-rollback object is accepted (avatar_scoped::fetch_pinned).
             if pixels.is_none() {
                 pixels = scoped_kek
                     .and_then(|kek| {
@@ -1173,22 +1173,8 @@ impl PhotonApp {
                         }
                         crate::log("AVATAR: fetched from our scoped slot");
                         Some(px)
-                    })
-                    .or_else(|| {
-                        (avatar_pin != [0u8; 64])
-                            .then(|| {
-                                crate::ui::avatar::download_avatar_pinned(
-                                    &party_id,
-                                    &avatar_pin,
-                                    &storage,
-                                )
-                                .map(|(_, p, name)| {
-                                    peer_name = name;
-                                    p
-                                })
-                            })
-                            .flatten()
                     });
+                // No network fallback to the legacy pin: an old-form avatar is read only from our own vault (the cache read above). The pin-sealed wall copy can be written by anyone who holds the pin, which is every friend, and the host is assumed hostile.
             }
             let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                 owner: Some(hp),
