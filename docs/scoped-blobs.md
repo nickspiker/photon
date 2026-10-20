@@ -50,19 +50,24 @@ where `kek_secret` is the CLUTCH pair secret for that friend, or the fleet key f
 ```
 blob/<base64url(slot_addr)>  →  VSF document, device-signed
   section "slot"
-    version   z{N}
-    blob_id   hb{32}          -- which ciphertext to fetch (NOT secret)
-    wrap      v'e'{ AEAD(slot_key, DEK) }
+    version   u{1}
+    wrap      v'e'{ AEAD(slot_key, blob_id ‖ DEK) }
 ```
+
+`blob_id` rides inside the wrap, not beside it: in clear it would let any host link every slot of a blob to each other and to the blob, permanently. Implemented in `fgtw::scoped_blob` (`envelope`, `open_envelope`, `slot_writes`); a reader verifies the document (provenance hash and device signature) before it opens anything.
 
 The content itself is one object at a non-secret address, encrypted once:
 
 ```
-blob/<base64url(blob_id)>  →  VSF document
+blob/<base64url(blob_id)>  →  VSF document, device-signed
   section "blob"
-    version   z{N}
-    content   v'e'{ AEAD(DEK, plaintext) }
+    version   u{1}
+    content   v'e'{ AEAD(DEK, plaintext) }   -- blob_id as AAD
 ```
+
+The plaintext is itself a house format. For the avatar it is the VSF image (`vsf::builders::compressed_image_encoded`): AV1 plus its `encoding`, untagged VSF RGB for an LDR source, `g2t` for HDR.
+
+**The bare form, 2026-08-01 to 2026-10-20.** The first implementation stored both objects as bare `[nonce][ciphertext]` and the avatar plaintext as bare AV1: no framing, no version, no device signature, and nowhere for an encoding tag. Readers still accept that form; nothing writes it. A publisher's startup avatar sync republishes its own bare avatar framed and signed (`avatar_scoped::upgrade_in_place`), so the bare objects retire as each device updates; builds from before the fix cannot read the new form until they update.
 
 So a reader derives their slot address, finds a ~100-byte record (or nothing at all), unwraps the DEK, and fetches the single shared ciphertext. **One ciphertext, N tiny private pointers** — putting the content in each slot instead would mean N copies, which is merely wasteful for a 22 KB avatar and ruinous for an attachment.
 
