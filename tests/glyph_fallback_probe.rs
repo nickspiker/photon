@@ -27,7 +27,8 @@ fn dozenal_block_falls_back_to_oxanium_from_any_primary() {
     let w_with = width(&mut with, glyphs, "Open Sans");
     let w_oxanium = width(&mut with, glyphs, "Oxanium");
     let w_without = width(&mut without, glyphs, "Open Sans");
-    let tofu = width(&mut without, "\u{6F22}\u{6F22}", "Open Sans");
+    // Tofu from a Private Use codepoint: no face covers it and nothing reroutes it. Han no longer serves — since fluor's font packs (79c0c70) a CJK run draws in its regional pack family, so an unloaded pack measures unlike a plain notdef.
+    let tofu = width(&mut without, "\u{E000}\u{E000}", "Open Sans");
     assert!((w_with - w_oxanium).abs() < 0.01, "Open Sans run must adopt Oxanium's dozenal metrics ({w_with} vs {w_oxanium})");
     assert!((w_without - tofu).abs() < 0.01, "with no glyph face the block must measure as tofu ({w_without} vs {tofu})");
 }
