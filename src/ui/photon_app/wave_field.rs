@@ -480,9 +480,10 @@ mod tests {
 
     /// Brightness is linear in amplitude: half the amplitude, half the linear light.
     #[test]
+    /// Below the display's clip. At full amplitude a white card (VSF white, Illuminant E) is brighter in red than a D65 display's red primary (about 1.12 ×, colorimetric since vsf 02076e6) and clips there: that is the display's range, shown honestly, not a fault in the linearity.
     fn brightness_is_linear_in_amplitude() {
         let f = |amp: f32| frame_lin(&FrameEnv { fno: 1, p: [amp * amp, 1.0, 1.0, 1.0] });
-        let (full, half) = (f(1.0), f(0.5));
+        let (full, half) = (f(0.5), f(0.25));
         for c in 0..3 {
             assert!((half[c] as i32 * 2 - full[c] as i32).abs() <= 2, "{half:?} vs {full:?}");
         }

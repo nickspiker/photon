@@ -821,12 +821,12 @@ mod tests {
 
     /// White in, white out (field 2026-10-14: the matrices were read transposed and an `assumed` beam's white came out green). Every row of every entry's matrix maps the source white to VSF white [1, 1, 1], and the receive chain keeps a neutral grey neutral.
     #[test]
-    fn grey_stays_grey_thru_every_entry_and_the_chain() {
+    /// Colorimetric, no chromatic adaptation (vsf 02076e6; Nick 2026-10-20, option a): sRGB white is D65 light, which sits bluer than VSF white (Illuminant E), and reaches a Rec.2020 display as D65 thru the 1931 observer, not quite the display's own D65 thru the 10° fundamentals — about 1.4 % red, −0.4 % green, +2.9 % blue in linear light. That cast is sRGB's 1931 definition showing, and the reason VSF RGB is the connection space; nothing here neutralises it.
+    fn grey_keeps_its_light_thru_every_entry_and_the_chain() {
         let rows = |m: &[f32; 9]| [m[0] + m[1] + m[2], m[3] + m[4] + m[5], m[6] + m[7] + m[8]];
         for (name, e) in [("assumed sRGB", assumed_srgb_entry()), ("phone fallback", phone_entry(None, false, false))] {
-            for (r, v) in rows(&e.matrix).iter().enumerate() {
-                assert!((v - 1.0).abs() < 2e-3, "{name}: row {r} maps white to {v}, not 1");
-            }
+            let [r, g, b] = rows(&e.matrix);
+            assert!(b > g && g > r, "{name}: D65 white lands bluer than VSF white, got {r} {g} {b}");
         }
         // XYZ→camera = the XYZ white (Illuminant E, [1,1,1]) onto camera [1,1,1]: camera white must land on VSF white.
         let e = phone_entry(Some([1., 0., 0., 0., 1., 0., 0., 0., 1.]), true, true);
@@ -839,8 +839,11 @@ mod tests {
         let mut rgb = Vec::new();
         conv.convert(&grey, Gains::NONE, 0, &mut rgb);
         let mean = |c: usize| rgb.iter().skip(c).step_by(3).map(|&v| v as u32).sum::<u32>() / (64 * 64);
-        let (r, g, b) = (mean(0), mean(1), mean(2));
-        assert!(r.abs_diff(g) <= 2 && g.abs_diff(b) <= 2, "a neutral grey must stay neutral, got {r} {g} {b}");
+        let (r, g, b) = (mean(0) as f32, mean(1) as f32, mean(2) as f32);
+        // Expected: sRGB white thru VSF RGB onto Rec.2020, as ratios of γ2 codes.
+        let w = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::SRGB2VSF_RGB, &[1., 1., 1.]));
+        let (er, eb) = ((w[0] / w[1]).sqrt(), (w[2] / w[1]).sqrt());
+        assert!((r / g - er).abs() < 0.015 && (b / g - eb).abs() < 0.015, "grey keeps D65's light: got {r} {g} {b}, want r/g {er} b/g {eb}");
     }
 
     #[test]
