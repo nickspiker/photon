@@ -1,6 +1,6 @@
 //! "Photon" wordmark for the Launch screen — three fluor `under()` layers (white glow + highlight, black body).
 //!
-//! Each visual layer is a proper α+darkness layer composited via `Blend::under` — white (darkness 0) with α = coverage for the glow and highlight rim, black (darkness 0xFFFFFF) with α = coverage for the body.
+//! Each visual layer is a proper α+darkness layer composited via `Blend::under` — diffuse white (`fluor::theme::WHITE`) with α = coverage for the glow and highlight rim, black (darkness 0xFFFFFF) with α = coverage for the body.
 //! Because they're real under() layers, the logo needs nothing opaque beneath it and draws front-to-back like any fluor content; the background (noise + chromatic wave) composes under it afterward.
 //!
 //! Composite order is TOPMOST-FIRST (fluor's convention — first-drawn wins the pixel):
@@ -226,7 +226,7 @@ pub(crate) fn blur_vertical_soft(buf: &mut [u8], buf_w: usize, virtual_height: u
 }
 
 /// Wrap-add each scratch byte into the canvas pixel's visible RGB (legacy compose op for glow + highlight). Read pixel → XOR to visible → wrap-add grey per channel → XOR back to darkness → preserve α. Wrap-around (not saturating) is intentional: produces Photon's characteristic chromatic-interaction look where bright bg pixels wrap dark.
-/// Glow: a WHITE light layer (darkness = 0) composited UNDER whatever's there, α = the blurred coverage byte. `under()` of a darkness-0 pixel brightens the destination toward white by α — an additive-white halo that soft-clamps at 255 (no wrap artifacts). A proper fluor layer, so it needs nothing opaque beneath it and the logo can draw first/topmost.
+/// Glow: a WHITE light layer (diffuse white, `fluor::theme::WHITE`) composited UNDER whatever's there, α = the blurred coverage byte. `under()` of a white pixel brightens the destination toward white by α — an additive-white halo that soft-clamps at 255 (no wrap artifacts). A proper fluor layer, so it needs nothing opaque beneath it and the logo can draw first/topmost.
 pub(crate) fn composite_glow_white(
     pixels: &mut [u32],
     buf_w: usize,
@@ -246,8 +246,8 @@ pub(crate) fn composite_glow_white(
             continue;
         }
         let pixel_idx = i % buf_w + row as usize * buf_w;
-        // darkness = 0x000000 (white), α = coverage.
-        let src = (grey as u32) << 24;
+        // Diffuse white (fluor::theme::WHITE — darkness 0 is the 9.7× top code, a glow on HDR), α = coverage.
+        let src = fluor::theme::white_at(grey as u32);
         pixels[pixel_idx] = pixels[pixel_idx].under(src, BlendMode::Normal);
     }
 }

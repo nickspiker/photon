@@ -7,7 +7,7 @@
 //!
 //! After conversion the value takes fluor's α+darkness storage via `dark(fmt(..))` — `fmt` is identity on desktop and an R↔B swap on Android; `dark` flips visible RGB → darkness and sets α=0xFF.
 //! Use sites deref (`*theme::NAME`) — the statics resolve once and read like the old consts.
-//! The `_COLOUR` values with a bare `0xAA_00_00_00` are α-only watermark tints (pure white at partial opacity) — white is gamut-invariant, so no conversion, still plain consts.
+//! The α-only watermark tints (version, zoom, separator, rail) are diffuse white at partial opacity thru `fluor::theme::white_at` — never a bare darkness 0, which since the `g2t` buffer is the top code, 9.7× white, a glow on an HDR surface.
 //! Linux refinement to come: poll the panel's ICC (X11 `_ICC_PROFILE` / colord; Wayland color-management-v1 once winit exposes it) and convert to the real profile instead of the BT.2020 assumption.
 
 use std::sync::LazyLock;
@@ -30,18 +30,18 @@ pub static VIEWER_BG_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_0B_0B_0B));
 /// The link-consent panel backdrop — dark blue-grey, formerly the raw darkness literal 0xE8E2D8.
 pub static CONSENT_BG_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_17_1D_26));
 
-/// Colour for the dozenal version glyphs at the bottom of the screen: pure white (darkness 0 across all channels), α = 32 = 1/8 opacity. `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
-pub const VERSION_COLOUR: u32 = 0x20_00_00_00;
+/// Colour for the dozenal version glyphs at the bottom of the screen: diffuse white (`fluor::theme::white_at`, never darkness 0, the 9.7× top code), α = 32 = 1/8 opacity. `draw_text_center_u32` multiplies the glyph coverage into this α, so the version reads as a faint watermark over the background noise.
+pub const VERSION_COLOUR: u32 = fluor::theme::white_at(0x20);
 
 /// Colour for the zoom-percentage watermark at the top of the screen: pure white, α = 64 = 1/4 opacity (twice [`VERSION_COLOUR`]'s 1/8). Painted before the background noise so it reads as a faint top-centre indicator of the current `ru` zoom factor.
-pub const ZOOM_COLOUR: u32 = 0x40_00_00_00;
+pub const ZOOM_COLOUR: u32 = fluor::theme::white_at(0x40);
 
 /// Contact name text on the Ready list — near-white.
 pub static CONTACT_NAME_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_BC_BC_BC));
 /// Hairline separating the user section from the contact list — pure white at 1/4 opacity (α=64), the same translucent treatment as the hints + zoom watermark.
-pub const SEPARATOR_COLOUR: u32 = 0x40_00_00_00;
+pub const SEPARATOR_COLOUR: u32 = fluor::theme::white_at(0x40);
 /// Settings-rail ACTIVE row hint — half the separator's opacity (α=32 = 1/8): the full-column bar behind the selected page name (Nick 2026-09-02: the α=64 version read too bright).
-pub const RAIL_ACTIVE_COLOUR: u32 = 0x20_00_00_00;
+pub const RAIL_ACTIVE_COLOUR: u32 = fluor::theme::white_at(0x20);
 
 /// Presence-ring tiers (user spec, VSF RGB): how you are connected, at a glance — cyan = direct in the same room (LAN), green = direct across the WAN, amber = relay-only (never mistakable for direct), grey = offline.
 pub static RING_LAN_COLOUR: LazyLock<u32> = LazyLock::new(|| c(0x00_00_C2_C2));
