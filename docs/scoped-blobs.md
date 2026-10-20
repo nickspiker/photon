@@ -69,6 +69,12 @@ The plaintext is itself a house format. For the avatar it is the VSF image (`vsf
 
 **The bare form, 2026-08-01 to 2026-10-20.** The first implementation stored both objects as bare `[nonce][ciphertext]` and the avatar plaintext as bare AV1: no framing, no version, no device signature, and nowhere for an encoding tag. Readers still accept that form; nothing writes it. A publisher's startup avatar sync republishes its own bare avatar framed and signed (`avatar_scoped::upgrade_in_place`), so the bare objects retire as each device updates; builds from before the fix cannot read the new form until they update.
 
+**Trust.** The host is assumed hostile: it can serve any object it ever held. A reader accepts a slot and its content only when both are signed by one of the publisher's own devices (`Contact::answerable_pubkeys` for a friend; this device and the sibling set for our own avatar), and refuses a content stamp older than the newest it has accepted from that publisher. A bare object is never accepted from the network; old forms are read only from our own vault.
+
+**Our own avatar across our devices** syncs thru the fleet-key slot (`avatar_scoped::sync_own`): newest signed stamp wins, an adopted avatar is saved at the publisher's stamp (so two devices never bounce one version back and forth), and reinstall recovery reads the same slot first (`recover_own`).
+
+**Retirement, photon 0.133.0** (twelve minor versions after 0.121): delete everything marked `RETIRE photon 0.133` — the pin-addressed wall copy (upload, sync, recovery), the avatar pin itself, `upgrade_in_place`, the bare-AV1 and bare-object read arms here and in `fgtw::scoped_blob` (`open_*_signed`'s bare branch, `opens_legacy_12byte_nonce_formats`).
+
 So a reader derives their slot address, finds a ~100-byte record (or nothing at all), unwraps the DEK, and fetches the single shared ciphertext. **One ciphertext, N tiny private pointers** — putting the content in each slot instead would mean N copies, which is merely wasteful for a 22 KB avatar and ruinous for an attachment.
 
 Slot addresses are mutually unlinkable and reveal nothing about who holds them: a stranger cannot tell your twelve slots from twelve unrelated people's, and cannot derive an address without already holding the secret that would let them read anyway.

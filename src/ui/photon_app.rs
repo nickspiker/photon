@@ -3151,6 +3151,15 @@ impl PhotonApp {
         r
     }
 
+    /// Our own devices, the signers we trust for our own scoped avatar: this device plus the sibling set (which the sibling reconcile keeps equal to our fleet minus this device), refused devices excluded.
+    pub(super) fn own_fleet_devices(&self) -> Vec<[u8; 32]> {
+        let mut d: Vec<[u8; 32]> = self.device_keypair.as_ref().map(|k| *k.public.as_bytes()).into_iter().collect();
+        d.extend(self.contacts.iter().filter(|c| c.is_sibling).flat_map(|c| c.answerable_pubkeys()));
+        d.sort_unstable();
+        d.dedup();
+        d
+    }
+
     /// Encode + save + reload an avatar image picked from the OS image picker. Pipeline: raw file bytes → `encode_avatar_from_image` (handles JPEG/PNG/WebP and the ICC-profile colour management — VSF spectral γ=2.0 RGB out) → `save_avatar` (encrypted handle-keyed storage) → `load_avatar` (round-trip check) → `vsf_rgb_to_bt2020` (display conversion for the Android BT.2020 buffer tag) → installed as `device_avatar_pixels` with the scaled cache invalidated. Uploads to FGTW when a `handle_proof` is available so other devices can fetch it. Skipped if the user hasn't attested yet (no handle to derive the storage key from).
     pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
         let identity_seed = match &self.session {

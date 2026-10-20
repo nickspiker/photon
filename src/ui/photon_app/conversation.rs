@@ -825,20 +825,8 @@ impl PhotonApp {
         let Some(handle_proof) = self.our_handle_proof() else {
             return;
         };
-        // Read the fleet-synced avatar pin (random key ‖ lookup) immutably; absent = no avatar set for this identity yet, so nothing to sync.
-        let avatar_pin = match self
-            .fleet_settings
-            .as_ref()
-            .and_then(|fs| fs.effective("profile.avatar_pin"))
-            .and_then(crate::storage::fleet_settings::as_bytes)
-        {
-            Some(v) if v.len() == 64 => {
-                let mut p = [0u8; 64];
-                p.copy_from_slice(&v);
-                p
-            }
-            _ => return,
-        };
+        // The fleet-synced avatar pin (random key ‖ lookup) for the legacy wall copy; absent = no wall copy to sync. The scoped fleet-key slot needs no pin. RETIRE photon 0.133: the pin and the wall.
+        let avatar_pin = self.ensure_avatar_pin_readonly();
         let secret = kp.secret.clone();
         let identity_seed = session.identity_seed;
         // Our current preferred name rides the wall blob beside the pixels (same pin) — read it here so the upload half can publish it; the download half symmetrically RECOVERS it (the reinstall heal: fstate lost the name but the wall copy still carries it).
@@ -851,47 +839,77 @@ impl PhotonApp {
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
-        // Convert in place: our scoped avatar, if still the bare pre-envelope form, is republished signed and framed after the sync below (docs/scoped-blobs.md).
+        // Our own avatar syncs across our devices thru the fleet-key scoped slot, trusting only our own devices (avatar_scoped::sync_own); the legacy wall runs only when no signed copy exists there yet, and is fed whenever we publish, for pre-envelope readers. Convert in place follows (docs/scoped-blobs.md).
         let scoped_readers = self.scoped_avatar_readers();
+        let own_devices = self.own_fleet_devices();
+        let fleet_key = self.fleet_key_cached();
         let upgrade_kp = kp.clone();
         std::thread::spawn(move || {
             use crate::ui::avatar::AvatarSyncResult;
-            let result = crate::ui::avatar::sync_avatar_bidirectional_from_seed(
-                &secret,
-                &identity_seed,
-                &avatar_pin,
-                Some(&handle_proof),
-                our_name.as_deref(),
-                &storage,
-            );
-            match result {
-                AvatarSyncResult::ServerNewer(recovered_name) => {
-                    // FGTW had a newer copy — it's now re-cached; load it and push to the UI, with any name the wall blob carried (the drain writes it into fstate when local profile.name is blank).
-                    crate::log("Avatar: FGTW copy newer — adopted it (startup sync)");
-                    let pixels =
-                        crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
-                            .map(|(_, p)| p);
-                    if pixels.is_some() || recovered_name.is_some() {
-                        let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
-                            owner: None, // self
-                            pixels,
-                            name: recovered_name,
-                        });
+            use crate::ui::avatar_scoped::OwnSync;
+            let own = crate::ui::avatar_scoped::sync_own(fleet_key, &identity_seed, &own_devices, &scoped_readers, &upgrade_kp, &handle_proof, &storage);
+            match own {
+                OwnSync::Adopted => {
+                    crate::log("Avatar: a sibling's newer avatar adopted from our scoped slot (startup sync)");
+                    if let Some(pixels) = crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage).map(|(_, p)| p) {
+                        let _ = tx.send(crate::ui::avatar::AvatarDownloadResult { owner: None, pixels: Some(pixels), name: None });
                         #[cfg(not(target_os = "android"))]
                         if let Some(p) = proxy.as_ref() {
                             let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
                         }
                     }
                 }
-                AvatarSyncResult::LocalNewer => {
-                    crate::log("Avatar: local newer — published to FGTW (startup sync)")
+                OwnSync::Published => {
+                    crate::log("Avatar: ours is newest — published to our scoped slot (startup sync)");
+                    // RETIRE photon 0.133: the wall copy, kept current for pre-envelope readers.
+                    if let Some(pin) = avatar_pin {
+                        if let Err(e) = crate::ui::avatar::upload_avatar_from_seed(&secret, &identity_seed, &pin, &handle_proof, our_name.as_deref(), &storage) {
+                            crate::logf!("Avatar: legacy wall upload failed: {}", e);
+                        }
+                    }
                 }
-                AvatarSyncResult::InSync => crate::log("Avatar: already in sync with FGTW"),
-                AvatarSyncResult::ServerEmpty | AvatarSyncResult::NoLocalAvatar => {
-                    crate::log("Avatar: nothing to sync (startup)")
-                }
-                AvatarSyncResult::Error(e) => {
-                    crate::logf!("Avatar: startup FGTW sync skipped/failed: {}", e)
+                OwnSync::Current => crate::log("Avatar: scoped slot already holds our avatar"),
+                OwnSync::Absent => {}
+            }
+            // RETIRE photon 0.133: the legacy wall sync, only while no signed scoped copy exists (running it beside the slot would bounce versions between the two).
+            if let (OwnSync::Absent, Some(avatar_pin)) = (&own, avatar_pin) {
+                let result = crate::ui::avatar::sync_avatar_bidirectional_from_seed(
+                    &secret,
+                    &identity_seed,
+                    &avatar_pin,
+                    Some(&handle_proof),
+                    our_name.as_deref(),
+                    &storage,
+                );
+                match result {
+                    AvatarSyncResult::ServerNewer(recovered_name) => {
+                        // FGTW had a newer copy — it's now re-cached; load it and push to the UI, with any name the wall blob carried (the drain writes it into fstate when local profile.name is blank).
+                        crate::log("Avatar: FGTW copy newer — adopted it (startup sync)");
+                        let pixels =
+                            crate::ui::avatar::load_cached_avatar_from_seed(&identity_seed, &storage)
+                                .map(|(_, p)| p);
+                        if pixels.is_some() || recovered_name.is_some() {
+                            let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
+                                owner: None, // self
+                                pixels,
+                                name: recovered_name,
+                            });
+                            #[cfg(not(target_os = "android"))]
+                            if let Some(p) = proxy.as_ref() {
+                                let _ = p.send(crate::ui::PhotonEvent::NetworkUpdate);
+                            }
+                        }
+                    }
+                    AvatarSyncResult::LocalNewer => {
+                        crate::log("Avatar: local newer — published to FGTW (startup sync)")
+                    }
+                    AvatarSyncResult::InSync => crate::log("Avatar: already in sync with FGTW"),
+                    AvatarSyncResult::ServerEmpty | AvatarSyncResult::NoLocalAvatar => {
+                        crate::log("Avatar: nothing to sync (startup)")
+                    }
+                    AvatarSyncResult::Error(e) => {
+                        crate::logf!("Avatar: startup FGTW sync skipped/failed: {}", e)
+                    }
                 }
             }
             let purpose = crate::ui::avatar_scoped::avatar_purpose(&crate::crypto::clutch::identity_party_id(&identity_seed));
@@ -3017,18 +3035,25 @@ impl PhotonApp {
 
     /// Recover the device's OWN avatar from the wall after a local clear (the vault load returned nothing). Needs the PIN — that is what addresses and decrypts the published copy — so it no-ops until settings carry one, and the tick retries. Off-thread (blocking FGTW round-trip); the result comes back over avatar_dl_tx with an EMPTY handle, which drain_avatar_downloads routes into device_avatar_pixels.
     pub(super) fn spawn_self_avatar_recover(&self, identity_seed: [u8; 32]) -> bool {
-        let (Some(storage), Some(pin)) = (
-            self.storage.as_ref().map(Arc::clone),
-            self.ensure_avatar_pin_readonly(),
-        ) else {
+        let Some(storage) = self.storage.as_ref().map(Arc::clone) else {
             return false;
         };
+        // First our fleet-key scoped slot, signed by one of our own devices; then (RETIRE photon 0.133) the pin-addressed wall copy.
+        let (fleet_key, pin) = (self.fleet_key_cached(), self.ensure_avatar_pin_readonly());
+        if fleet_key.is_none() && pin.is_none() {
+            return false;
+        }
+        let own_devices = self.own_fleet_devices();
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
         std::thread::spawn(move || {
-            let (pixels, name) =
-                crate::ui::avatar::recover_own_avatar_from_wall(&identity_seed, &pin, &storage);
+            let scoped = fleet_key.and_then(|fk| crate::ui::avatar_scoped::recover_own(fk, &identity_seed, &own_devices, &storage));
+            let (pixels, name) = match (scoped, pin) {
+                (Some(px), _) => (Some(px), None),
+                (None, Some(pin)) => crate::ui::avatar::recover_own_avatar_from_wall(&identity_seed, &pin, &storage),
+                (None, None) => (None, None),
+            };
             if pixels.is_some() || name.is_some() {
                 let _ = tx.send(crate::ui::avatar::AvatarDownloadResult {
                     owner: None, // self

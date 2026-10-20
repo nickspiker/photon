@@ -137,18 +137,111 @@ pub fn grant_reader(
 ///
 /// `None` means "nothing shared with us here that we can trust": an absent or unopenable slot, content since republished, a wrong signer, a rollback, or a bare object. None of these is surfaced as an error.
 pub fn fetch_pinned(kek_secret: &[u8; 32], purpose: &[u8], signers: &[[u8; 32]], storage: &crate::storage::FlatStorage) -> Option<Vec<u8>> {
+    fetch_pinned_stamped(kek_secret, purpose, signers, storage).map(|(plain, _)| plain)
+}
+
+/// [`fetch_pinned`] with the content's signed stamp (Eagle oscillations), for a caller that compares versions.
+pub fn fetch_pinned_stamped(kek_secret: &[u8; 32], purpose: &[u8], signers: &[[u8; 32]], storage: &crate::storage::FlatStorage) -> Option<(Vec<u8>, i64)> {
     let slot_addr = fgtw::scoped_blob::slot_address(kek_secret, purpose);
     let sealed_slot = blob::get_blob_blocking(&addr(&slot_addr)).ok().flatten()?;
     let (contents, slot_signed) = open_slot_signed(kek_secret, purpose, &sealed_slot)?;
     let sealed_content = blob::get_blob_blocking(&addr(&contents.blob_id)).ok().flatten()?;
     let (plain, content_signed) = open_content_signed(&contents.dek, &contents.blob_id, &sealed_content)?;
     let newest = newest_seen(purpose, storage);
-    accept(slot_signed, content_signed, signers, newest).then(|| {
-        if let Some(c) = content_signed {
-            record_seen(purpose, c.stamp, storage);
+    if !accept(slot_signed, content_signed, signers, newest) {
+        return None;
+    }
+    let stamp = content_signed?.stamp;
+    record_seen(purpose, stamp, storage);
+    Some((plain, stamp))
+}
+
+/// The AV1 inside a scoped avatar plaintext: the VSF image's pixels, or the plaintext itself from a pre-image publisher. RETIRE photon 0.133: the bare-AV1 arm.
+pub fn plaintext_av1(plain: &[u8]) -> Option<Vec<u8>> {
+    if !is_vsf(plain) {
+        return Some(plain.to_vec());
+    }
+    let parsed = vsf::builders::parse_compressed_image(plain).ok()?;
+    (parsed.encoding == vsf::builders::ENCODING_AV1).then_some(parsed.data)
+}
+
+/// What the startup sync of our OWN avatar over the fleet-key slot did.
+#[derive(Debug, PartialEq, Eq)]
+pub enum OwnSync {
+    /// A sibling published a newer avatar; it is now in our vault, stamped with the sibling's signed stamp.
+    Adopted,
+    /// Ours was newer, or nothing signed was published yet; we published ours (the caller also feeds the legacy wall for old readers).
+    Published,
+    /// The slot holds the version we have.
+    Current,
+    /// No signed avatar in the slot and nothing for us to publish: the caller falls back to the legacy wall sync.
+    Absent,
+}
+
+/// Sync our own avatar across our devices through the fleet-key scoped slot, trusting only our own devices (`own_devices`: this device and the sibling set) and never the host. Newest signed stamp wins: a sibling's newer avatar is adopted at its stamp; ours, when newer, is published to `readers`. Blocking; call off-thread.
+pub fn sync_own(
+    fleet_key: Option<[u8; 32]>,
+    identity_seed: &[u8; 32],
+    own_devices: &[[u8; 32]],
+    readers: &[[u8; 32]],
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> OwnSync {
+    let purpose = avatar_purpose(&crate::crypto::clutch::identity_party_id(identity_seed));
+    let remote = fleet_key.and_then(|fk| fetch_pinned_stamped(&fk, &purpose, own_devices, storage));
+    let local = crate::ui::avatar::get_local_avatar_timestamp_from_seed(identity_seed, storage);
+    let publish = || -> OwnSync {
+        let Some(av1) = crate::ui::avatar::own_avatar_av1_from_seed(identity_seed, storage) else {
+            return OwnSync::Absent;
+        };
+        if readers.is_empty() {
+            return OwnSync::Absent;
         }
-        plain
-    })
+        match avatar_plaintext(av1, vsf::visual::Encoding::Gamma2).and_then(|p| publish_blocking(&p, readers, &purpose, device_keypair, handle_proof)) {
+            Ok((_, contents)) => {
+                remember_published(&purpose, &contents, storage);
+                OwnSync::Published
+            }
+            Err(e) => {
+                crate::logf!("SCOPED: own avatar publish failed: {}", e);
+                OwnSync::Absent
+            }
+        }
+    };
+    match (remote, local) {
+        (Some((plain, stamp)), local) if local.map_or(true, |l| stamp > l) => {
+            let Some(av1) = plaintext_av1(&plain) else {
+                return OwnSync::Absent;
+            };
+            match crate::ui::avatar::save_avatar_from_seed_at(&av1, identity_seed, storage, stamp) {
+                Ok(()) => OwnSync::Adopted,
+                Err(e) => {
+                    crate::logf!("SCOPED: adopting a sibling's avatar failed: {}", e);
+                    OwnSync::Current
+                }
+            }
+        }
+        (Some((_, stamp)), Some(l)) if l > stamp => publish(),
+        (Some(_), _) => OwnSync::Current,
+        // Nothing signed in the slot. If we never published under it, publish ours; if we did (a bare pre-envelope publish, or an unreachable host), leave it to upgrade_in_place and the legacy wall.
+        (None, Some(_)) if matches!(storage.read_addr(&published_key(&purpose)), Ok(None)) => publish(),
+        (None, _) => OwnSync::Absent,
+    }
+}
+
+/// Recover our own avatar after a local clear from the fleet-key slot (signed by one of our devices), saved at its signed stamp. `None` when there is no signed copy we can trust; the caller then tries the legacy wall.
+pub fn recover_own(
+    fleet_key: [u8; 32],
+    identity_seed: &[u8; 32],
+    own_devices: &[[u8; 32]],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+) -> Option<Vec<u8>> {
+    let purpose = avatar_purpose(&crate::crypto::clutch::identity_party_id(identity_seed));
+    let (plain, stamp) = fetch_pinned_stamped(&fleet_key, &purpose, own_devices, storage)?;
+    let av1 = plaintext_av1(&plain)?;
+    crate::ui::avatar::save_avatar_from_seed_at(&av1, identity_seed, storage, stamp).ok()?;
+    crate::ui::avatar::load_cached_avatar_from_seed(identity_seed, storage).map(|(_, p)| p)
 }
 
 /// The reader's verdict on one network fetch (see [`fetch_pinned`]): both parts signed, both by a publisher device, and the content's stamp not older than the newest accepted.
@@ -198,6 +291,7 @@ pub fn avatar_plaintext(av1: Vec<u8>, encoding: vsf::visual::Encoding) -> Result
 
 /// A scoped avatar's plaintext → (size, display pixels): the VSF image (its tag honoured for an SDR screen), or bare AV1 from a publisher that predates it. `None` for anything else, such as the pin-sealed wall form that shares the cache slot.
 pub fn decode_avatar_plaintext(bytes: &[u8]) -> Option<(usize, Vec<u8>)> {
+    // RETIRE photon 0.133: bare AV1 (only ever from our own vault cache; the network path refuses it).
     if !is_vsf(bytes) {
         return crate::ui::avatar::decode_avatar_av1_to_display(bytes);
     }
@@ -210,7 +304,7 @@ pub fn decode_avatar_plaintext(bytes: &[u8]) -> Option<(usize, Vec<u8>)> {
     (w == h).then_some((w, rgb))
 }
 
-/// Convert in place: if what we last published under `purpose` is still the bare pre-envelope form, republish it signed and framed to the current reader set. Old readers reject the new form; new readers read both. Blocking — call off-thread. No-op when nothing was published, when it is already a VSF document, when there are no readers, or when there is no vault copy to republish.
+/// RETIRE photon 0.133. Convert in place: if what we last published under `purpose` is still the bare pre-envelope form, republish it signed and framed to the current reader set. Old readers reject the new form; new readers read both. Blocking — call off-thread. No-op when nothing was published, when it is already a VSF document, when there are no readers, or when there is no vault copy to republish.
 pub fn upgrade_in_place(
     purpose: &[u8],
     readers: &[[u8; 32]],
@@ -268,6 +362,23 @@ mod tests {
         assert!(!accept(by(publisher, 11), None, &[publisher], None), "half bare");
         assert!(!accept(None, by(publisher, 11), &[publisher], None), "half bare");
         assert!(!accept(by(publisher, 10), by(publisher, 10), &[], None), "no known publisher device, nothing passes");
+    }
+
+    /// An avatar adopted from a sibling keeps the sibling's signed stamp in our vault, so the next sync sees one version, not ours as newer; and the AV1 comes back out of the plaintext either way.
+    #[test]
+    fn an_adopted_avatar_keeps_the_publishers_stamp() {
+        crate::storage::isolate_test_storage();
+        let seed = [0xA1u8; 32];
+        let storage = std::sync::Arc::new(crate::storage::FlatStorage::new(crate::storage::APP, seed, [0xB2; 32]).unwrap());
+        let rgb: Vec<f32> = (0..64 * 64 * 3).map(|i| (i % 5) as f32 / 5.0).collect();
+        let av1 = crate::ui::avatar::encode_av1_wh(&rgb, 64, 64, 40).unwrap();
+        let plain = avatar_plaintext(av1.clone(), vsf::visual::Encoding::Gamma2).unwrap();
+        assert_eq!(plaintext_av1(&plain).unwrap(), av1);
+        assert_eq!(plaintext_av1(&av1).unwrap(), av1);
+        let stamp = 1_234_567_890_123i64;
+        crate::ui::avatar::save_avatar_from_seed_at(&av1, &seed, &storage, stamp).unwrap();
+        assert_eq!(crate::ui::avatar::get_local_avatar_timestamp_from_seed(&seed, &storage), Some(stamp));
+        assert_eq!(crate::ui::avatar::own_avatar_av1_from_seed(&seed, &storage).unwrap(), av1);
     }
 
     /// Both plaintext forms decode: the house VSF image, and bare AV1 from before it.

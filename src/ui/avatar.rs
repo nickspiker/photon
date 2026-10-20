@@ -1214,6 +1214,16 @@ pub fn save_avatar_from_seed(
     identity_seed: &[u8; 32],
     storage: &std::sync::Arc<crate::storage::FlatStorage>,
 ) -> Result<(), crate::storage::StorageError> {
+    save_avatar_from_seed_at(av1_data, identity_seed, storage, vsf::eagle_time_oscillations())
+}
+
+/// [`save_avatar_from_seed`] stamped with `at` (Eagle oscillations) instead of now. An avatar adopted from a sibling keeps the publisher's signed stamp, so the next sync sees the two as the same version rather than ours as newer (which would bounce it back and forth between devices on every boot).
+pub fn save_avatar_from_seed_at(
+    av1_data: &[u8],
+    identity_seed: &[u8; 32],
+    storage: &std::sync::Arc<crate::storage::FlatStorage>,
+    at: i64,
+) -> Result<(), crate::storage::StorageError> {
     use vsf::{VsfBuilder, VsfType};
 
     // Encrypt AV1 data (wraps in v'a' then encrypts)
@@ -1222,7 +1232,7 @@ pub fn save_avatar_from_seed(
 
     // Build VSF with v'e' wrapped encrypted payload. The default build carries hp + hb — a provenance-only doc is UNVERIFIABLE under read_verified and would be rejected on every load.
     let vsf_bytes = VsfBuilder::new()
-        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .creation_time_oscillations(at)
         .add_section(
             "image",
             vec![("pixels".to_string(), VsfType::v(b'e', encrypted))],
