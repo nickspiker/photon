@@ -162,6 +162,7 @@ pub fn entry_from_scan(xyz_to_cam: &[f32; 9]) -> Option<vsf::spectral_image::Pro
         tier: vsf::spectral_image::ProfileTier::Unit,
         illuminant: 23, // D50: chameleon writes its ColorMatrix1 there
         transfer: vsf::spectral_image::Transfer::Gamma2,
+        scale: None,
     })
 }
 

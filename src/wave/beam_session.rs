@@ -590,6 +590,7 @@ pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool, curve: bool) -> vsf:
                 tier: vsf::spectral_image::ProfileTier::Model,
                 illuminant: 21, // D65 (EXIF LightSource), the daylight set
                 transfer: vsf::spectral_image::Transfer::Gamma2,
+                scale: None,
             };
         }
     }
@@ -600,6 +601,7 @@ pub fn phone_entry(maker: Option<[f32; 9]>, straight: bool, curve: bool) -> vsf:
         tier: vsf::spectral_image::ProfileTier::Assumed,
         illuminant: 0,
         transfer: if curve { vsf::spectral_image::Transfer::Gamma2 } else { vsf::spectral_image::Transfer::Srgb },
+        scale: None,
     }
 }
 
@@ -693,6 +695,7 @@ pub fn assumed_srgb_entry() -> vsf::spectral_image::ProfileEntry {
         tier: vsf::spectral_image::ProfileTier::Assumed,
         illuminant: 0,
         transfer: vsf::spectral_image::Transfer::Srgb,
+        scale: None,
     }
 }
 
