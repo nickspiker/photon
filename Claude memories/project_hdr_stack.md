@@ -16,7 +16,7 @@ Nick's constraints: keep the 8-bit g2t buffer, blending as-is, a final table; an
 
 Open, in order:
 1. ANDROID (Nick's Pixel 8 Pro first): RGBA_F16 extended-range linear surface (1.0 = SDR white) + ASurfaceTransaction_setExtendedRangeBrightness; probably an ASurfaceControl child + CPU-lockable AHardwareBuffer (check AHardwareBuffer_isSupported; ANativeWindow_lock lists 8-bit only). Window COLOR_MODE_HDR + desiredHdrHeadroom ≈ 1.5. Headroom: Display.getHdrSdrRatio + listener (API 34, verify). Final table → g2t → half-float linear via vsf::colour::display::display_light(l, headroom, content_peak); rebuilt on headroom change. Open tests: CPU F16 writes on this phone; does extended range take BT.2020 primaries (else scRGB → integer 3×3 per damaged pixel). Never PQ for UI (absolute nits, ignores the slider). PhotonActivity.kt:506 says DISPLAY_P3 while the surface tag is BT.2020 γ2.2.
-2. DARKNESS-0 AUDIT before any HDR surface: darkness 0 = code 255 = 9.7× white (glows on HDR). Author real white (194) where white is meant: photon α-only watermarks + BACK_BUTTON_IDLE_FILL; fluor HINT_COLOUR, GLOW_DEFAULT.
+2. DARKNESS-0 AUDIT — DONE 2026-10-20 (fluor 1bed892, photon e3d679a8): fluor::theme::WHITE + white_at(α); hint, slider, orb glow, blinkey floor, photon watermarks + logo glow. Rule: white light = WHITE, never darkness 0.
 3. macOS: CAMetalLayer wantsExtendedDynamicRangeContent + Rgba16Float wgpu surface (renderer_wgpu.rs is Bgra8Unorm) + NSScreen maximumExtendedDynamicRangeColorComponentValue.
 4. Windows: UpdateLayeredWindow is 8-bit; HDR needs a DXGI FP16 scRGB swapchain presenter.
 5. Linux: Wayland color-management where supported; X11 stays SDR.
@@ -26,3 +26,5 @@ Refs: vsf idt/output.md "Peak brightness depends on how much is lit", colour.md 
 
 **Why:** Nick 2026-10-20: UI colours are VSF RGB g2t, the start of an HDR stack; he then handed the whole stack to the photon session.
 **How to apply:** fluor is a photon dep (in scope). Device tests need Nick's phone; Android builds via scripts/android/dev-adb.sh. See [[project_theme_rec2020]], [[feedback_direct_pixel_no_floaters]].
+
+REQUESTED HEADROOM (Nick 2026-10-20: "make sure we get our requested headroom right. I forget where 255 lands"): g2t code → light: 194 = 1×, 215 = 1.5×, 227 = 2×, 246 = 4×, 255 = 9.72× (bucket bottoms, fluor G2T_LIGHT_Q16). The request must follow the brightest light the frame USES, capped at the display's offer — never a fixed constant, never 9.7× just because the buffer can encode it.
