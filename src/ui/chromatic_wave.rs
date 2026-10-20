@@ -123,10 +123,14 @@ pub fn chromatic_wave_clipped(
             let (r_bg, b_bg) = (((visible >> 16) & 0xFF) as f32, (visible & 0xFF) as f32);
             let g_bg = ((visible >> 8) & 0xFF) as f32;
 
-            // Legacy quadrature add: `sqrt(c * scale + c_bg²)`. `as u8` saturates [0, 255] (legacy semantics: out-of-gamut values clip to gamut edge, NaN → 0).
-            let r_new = (r * scale + r_bg * r_bg).sqrt() as u8 as u32;
-            let g_new = (g * scale + g_bg * g_bg).sqrt() as u8 as u32;
-            let b_new = (b * scale + b_bg * b_bg).sqrt() as u8 as u32;
+            // The quadrature add is a LIGHT add: on the old γ2 buffer `sqrt(c · scale + c_bg²)` added c · scale / 255² of light to the background's. The buffer is `g2t` now, so decode the background's light, add the same light, stop at diffuse white (where γ2 255 used to clip — past it is a 9.7× glow on HDR), and take VSF's bucket. Negative or NaN light adds nothing.
+            let add = |c: f32, bg: f32| -> u32 {
+                let light = fluor::theme::G2T_LIGHT_Q16[bg as usize] as f32 + (c * scale).max(0.0) * (65536.0 / 65025.0);
+                fluor::theme::g2t_code(light.min(65536.0) as u32).min(194).max(bg as u32)
+            };
+            let r_new = add(r, r_bg);
+            let g_new = add(g, g_bg);
+            let b_new = add(b, b_bg);
 
             // Pack R/G/B back into platform byte order — mirror image of the extract above.
             #[cfg(target_os = "android")]
