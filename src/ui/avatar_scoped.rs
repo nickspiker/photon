@@ -7,7 +7,7 @@
 //! Here the blob id is not a secret and nobody's slot reveals anyone else's, so the object leaks a reader COUNT at publish time and nothing more.
 
 use fgtw::scoped_blob::{
-    new_blob_id, new_dek, open_content, open_slot, seal_content, slot_writes, SlotContents,
+    is_vsf, new_blob_id, new_dek, open_content, open_slot, seal_content_doc, slot_writes, SlotContents,
 };
 
 use crate::network::fgtw::blob;
@@ -44,14 +44,15 @@ pub fn publish_blocking(
 ) -> Result<([u8; 32], SlotContents), String> {
     let dek = new_dek();
     let blob_id = new_blob_id();
-    let sealed = seal_content(&dek, &blob_id, plaintext)?;
+    // Stored as a signed VSF document (docs/scoped-blobs.md), never bare bytes.
+    let sealed = seal_content_doc(&dek, &blob_id, plaintext, device_keypair)?;
 
     // Content first: a slot pointing at an object that does not exist yet would strand any reader who acts on it immediately.
     blob::put_blob_blocking(&addr(&blob_id), &sealed, device_keypair, handle_proof)
         .map_err(|e| format!("scoped: content upload failed: {}", e))?;
 
     let contents = SlotContents { blob_id, dek };
-    let writes = slot_writes(readers, purpose, &contents)?;
+    let writes = slot_writes(readers, purpose, &contents, device_keypair)?;
     let total = writes.len();
     let mut written = 0usize;
     for w in &writes {
@@ -115,7 +116,7 @@ pub fn grant_reader(
     };
     contents.blob_id.copy_from_slice(&buf[..32]);
     contents.dek.copy_from_slice(&buf[32..]);
-    let Ok(writes) = slot_writes(std::slice::from_ref(kek_secret), purpose, &contents) else {
+    let Ok(writes) = slot_writes(std::slice::from_ref(kek_secret), purpose, &contents, device_keypair) else {
         return;
     };
     for w in &writes {
@@ -139,9 +140,80 @@ pub fn fetch_blocking(kek_secret: &[u8; 32], purpose: &[u8]) -> Option<Vec<u8>> 
     open_content(&contents.dek, &contents.blob_id, &sealed_content)
 }
 
+/// The avatar's plaintext: the house image (`vsf::builders::compressed_image_encoded`), AV1 pixels with their encoding: untagged VSF RGB for an LDR source, `g2t` for an HDR one.
+pub fn avatar_plaintext(av1: Vec<u8>, encoding: vsf::visual::Encoding) -> Result<Vec<u8>, String> {
+    vsf::builders::compressed_image_encoded(av1, encoding)
+}
+
+/// A scoped avatar's plaintext → (size, display pixels): the VSF image (its tag honoured for an SDR screen), or bare AV1 from a publisher that predates it. `None` for anything else, such as the pin-sealed wall form that shares the cache slot.
+pub fn decode_avatar_plaintext(bytes: &[u8]) -> Option<(usize, Vec<u8>)> {
+    if !is_vsf(bytes) {
+        return crate::ui::avatar::decode_avatar_av1_to_display(bytes);
+    }
+    let parsed = vsf::builders::parse_compressed_image(bytes).ok()?;
+    if parsed.encoding != vsf::builders::ENCODING_AV1 {
+        return None;
+    }
+    let (w, h, mut rgb) = crate::ui::avatar::decode_avatar(&parsed.data).ok()?;
+    crate::ui::attach_preview::display_codes(&mut rgb, parsed.colour_encoding);
+    (w == h).then_some((w, rgb))
+}
+
+/// Convert in place: if what we last published under `purpose` is still the bare pre-envelope form, republish it signed and framed to the current reader set. Old readers reject the new form; new readers read both. Blocking — call off-thread. No-op when nothing was published, when it is already a VSF document, when there are no readers, or when there is no vault copy to republish.
+pub fn upgrade_in_place(
+    purpose: &[u8],
+    readers: &[[u8; 32]],
+    own_av1: Option<Vec<u8>>,
+    device_keypair: &Keypair,
+    handle_proof: &[u8; 32],
+    storage: &crate::storage::FlatStorage,
+) {
+    let Ok(Some(buf)) = storage.read_addr(&published_key(purpose)) else {
+        return;
+    };
+    if buf.len() != 64 || readers.is_empty() {
+        return;
+    }
+    let blob_id: [u8; 32] = buf[..32].try_into().expect("64-byte record");
+    let Ok(Some(stored)) = blob::get_blob_blocking(&addr(&blob_id)) else {
+        return;
+    };
+    if is_vsf(&stored) {
+        return;
+    }
+    let Some(av1) = own_av1 else {
+        crate::log("SCOPED: bare avatar blob, but no vault copy to republish it from");
+        return;
+    };
+    let plaintext = match avatar_plaintext(av1, vsf::visual::Encoding::Gamma2) {
+        Ok(p) => p,
+        Err(e) => return crate::logf!("SCOPED: upgrade skipped: {}", e),
+    };
+    match publish_blocking(&plaintext, readers, purpose, device_keypair, handle_proof) {
+        Ok((_, contents)) => {
+            remember_published(purpose, &contents, storage);
+            crate::log("SCOPED: republished our avatar as a signed VSF document (convert in place)");
+        }
+        Err(e) => crate::logf!("SCOPED: upgrade republish failed: {}", e),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both plaintext forms decode: the house VSF image, and bare AV1 from before it.
+    #[test]
+    fn avatar_plaintext_round_trips_and_bare_av1_still_reads() {
+        let rgb: Vec<f32> = (0..64 * 64 * 3).map(|i| (i % 7) as f32 / 7.0).collect();
+        let av1 = crate::ui::avatar::encode_av1_wh(&rgb, 64, 64, 40).unwrap();
+        let plain = avatar_plaintext(av1.clone(), vsf::visual::Encoding::Gamma2).unwrap();
+        assert!(is_vsf(&plain));
+        let (size, px) = decode_avatar_plaintext(&plain).expect("VSF form");
+        let (bsize, bpx) = decode_avatar_plaintext(&av1).expect("bare form");
+        assert_eq!((size, px.len()), (64, 64 * 64 * 3));
+        assert_eq!((size, &px), (bsize, &bpx), "an untagged image decodes exactly like bare AV1");
+    }
 
     /// The address a reader derives must be exactly the one the publisher writes — the two sides compute it independently from the same secret, and a mismatch would silently share with nobody.
     #[test]
@@ -152,7 +224,7 @@ mod tests {
             blob_id: [1u8; 32],
             dek: [2u8; 32],
         };
-        let writes = slot_writes(&[secret], &purpose, &contents).unwrap();
+        let writes = slot_writes(&[secret], &purpose, &contents, &Keypair::from_seed(&[9u8; 32])).unwrap();
         assert_eq!(
             writes[0].address,
             fgtw::scoped_blob::slot_address(&secret, &purpose)

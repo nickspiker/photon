@@ -1246,6 +1246,12 @@ fn extract_av1_data_from_seed(
     decrypt_av1_data_from_seed(&encrypted, identity_seed)
 }
 
+/// Our own avatar's AV1 from the vault (seed-keyed, verified, decrypted). `None` when there is no vault copy or it does not open.
+pub fn own_avatar_av1_from_seed(identity_seed: &[u8; 32], storage: &crate::storage::FlatStorage) -> Option<Vec<u8>> {
+    let bytes = storage.read_addr(&crate::storage::vault_key("avatar", identity_seed)).ok().flatten()?;
+    extract_av1_data_from_seed(&bytes, identity_seed).ok()
+}
+
 /// Extract AV1 from a verified avatar VSF decrypting under an EXPLICIT key (the pin's key half) — the wire form a friend / a fleet sibling fetched.
 fn extract_av1_data_with_key(vsf_bytes: &[u8], key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let encrypted = avatar_encrypted_payload(vsf_bytes)?;

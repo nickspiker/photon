@@ -851,6 +851,9 @@ impl PhotonApp {
         let tx = self.avatar_dl_tx.clone();
         #[cfg(not(target_os = "android"))]
         let proxy = self.event_proxy.clone();
+        // Convert in place: our scoped avatar, if still the bare pre-envelope form, is republished signed and framed after the sync below (docs/scoped-blobs.md).
+        let scoped_readers = self.scoped_avatar_readers();
+        let upgrade_kp = kp.clone();
         std::thread::spawn(move || {
             use crate::ui::avatar::AvatarSyncResult;
             let result = crate::ui::avatar::sync_avatar_bidirectional_from_seed(
@@ -891,6 +894,15 @@ impl PhotonApp {
                     crate::logf!("Avatar: startup FGTW sync skipped/failed: {}", e)
                 }
             }
+            let purpose = crate::ui::avatar_scoped::avatar_purpose(&crate::crypto::clutch::identity_party_id(&identity_seed));
+            crate::ui::avatar_scoped::upgrade_in_place(
+                &purpose,
+                &scoped_readers,
+                crate::ui::avatar::own_avatar_av1_from_seed(&identity_seed, &storage),
+                &upgrade_kp,
+                &handle_proof,
+                &storage,
+            );
         });
     }
 
@@ -1125,7 +1137,7 @@ impl PhotonApp {
             // The friend's PREFERRED NAME rides the pinned VSF beside the pixels (same pin) — collected wherever we decode that form so the drain can adopt it into published_name.
             let mut peer_name: Option<String> = None;
             let mut pixels = cached.as_ref().and_then(|bytes| {
-                crate::ui::avatar::decode_avatar_av1_to_display(bytes)
+                crate::ui::avatar_scoped::decode_avatar_plaintext(bytes)
                     .map(|(_, px)| px)
                     .or_else(|| {
                         (avatar_pin != [0u8; 64])
@@ -1148,7 +1160,7 @@ impl PhotonApp {
                             &kek,
                             &crate::ui::avatar_scoped::avatar_purpose(&party_id),
                         )?;
-                        let (_, px) = crate::ui::avatar::decode_avatar_av1_to_display(&raw)?;
+                        let (_, px) = crate::ui::avatar_scoped::decode_avatar_plaintext(&raw)?;
                         // Write-thru so the next boot is local (the vault encrypts at rest; the raw-AV1 form is what the cache read above tries first).
                         if let Err(e) = storage
                             .write_addr(&crate::storage::vault_key("avatar", &party_id), &raw)

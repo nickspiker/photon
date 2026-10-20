@@ -53,14 +53,7 @@ struct Folded {
 impl Folded {
     /// Scene light (diffuse white = 1) of one encoded sample.
     fn light(&self, v: f32) -> f32 {
-        match self.encoding {
-            vsf::visual::Encoding::Gamma2Tanh => vsf::colour::convert::linearize_gamma2tanh_f32(v.clamp(0.0, 0.999_999)),
-            vsf::visual::Encoding::Linear => v.max(0.0),
-            vsf::visual::Encoding::Gamma2 => {
-                let g = v.clamp(0.0, 1.0);
-                g * g
-            }
-        }
+        self.encoding.light_f32(v.clamp(0.0, 1.0))
     }
 
     /// Gamma-2 values for an SDR screen (headroom 1): the samples themselves when they are gamma 2; otherwise each sample's light through `vsf::colour::display` for this image's own peak, so highlights fit instead of clipping or showing as gamma 2.
@@ -87,8 +80,8 @@ fn codes_u8(v: &[f32]) -> Vec<u8> {
     v.iter().map(|&x| (x * 256.0) as u8).collect()
 }
 
-/// Re-express decoded 8-bit codes of `encoding` as gamma-2 codes for an SDR screen, through `vsf::colour::display` for the image's own brightest code. Gamma 2 is left as it is.
-fn display_codes(rgb: &mut [u8], encoding: vsf::visual::Encoding) {
+/// Re-express decoded 8-bit codes of `encoding` as gamma-2 codes for an SDR screen (shared with the avatar path), through `vsf::colour::display` for the image's own brightest code. Gamma 2 is left as it is.
+pub(crate) fn display_codes(rgb: &mut [u8], encoding: vsf::visual::Encoding) {
     if encoding == vsf::visual::Encoding::Gamma2 {
         return;
     }

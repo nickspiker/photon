@@ -3129,6 +3129,28 @@ impl PhotonApp {
         s
     }
 
+    /// The scoped-blob reader set for our avatar (docs/scoped-blobs.md), gathered on the UI thread because it needs `&self`: our own fleet key so every sibling can read, plus the CLUTCH pair secret for each friend. A friend with no pair secret yet is simply not a reader this round — their slot appears the next time we publish after their ceremony completes.
+    pub(super) fn scoped_avatar_readers(&self) -> Vec<[u8; 32]> {
+        let mut r = Vec::new();
+        if let Some(fk) = self.fleet_key_cached() {
+            r.push(fk);
+        }
+        if let (Some(ours), Some(storage)) = (
+            self.device_keypair.as_ref().map(|k| *k.public.as_bytes()),
+            self.storage.as_ref(),
+        ) {
+            for c in self.contacts.iter().filter(|c| !c.is_sibling) {
+                let Some(their_dev) = c.device_key() else {
+                    continue;
+                };
+                if let Some(ps) = crate::storage::fanout_pairs::load(&ours, &their_dev, storage) {
+                    r.push(ps);
+                }
+            }
+        }
+        r
+    }
+
     /// Encode + save + reload an avatar image picked from the OS image picker. Pipeline: raw file bytes → `encode_avatar_from_image` (handles JPEG/PNG/WebP and the ICC-profile colour management — VSF spectral γ=2.0 RGB out) → `save_avatar` (encrypted handle-keyed storage) → `load_avatar` (round-trip check) → `vsf_rgb_to_bt2020` (display conversion for the Android BT.2020 buffer tag) → installed as `device_avatar_pixels` with the scaled cache invalidated. Uploads to FGTW when a `handle_proof` is available so other devices can fetch it. Skipped if the user hasn't attested yet (no handle to derive the storage key from).
     pub fn set_avatar_from_file(&mut self, image_bytes: Vec<u8>) {
         let identity_seed = match &self.session {
@@ -3175,31 +3197,7 @@ impl PhotonApp {
             vsf::VsfType::e(vsf::types::EtType::e6(vsf::eagle_time_oscillations())),
         );
         let kp = self.device_keypair.clone();
-        // The scoped-blob reader set (docs/scoped-blobs.md), gathered here because it needs `&self`: our own fleet key so every sibling can read, plus the CLUTCH pair secret for each friend. A friend with no pair secret yet is simply not a reader this round — their slot appears the next time we publish after their ceremony completes.
-        let scoped_readers: Vec<[u8; 32]> = {
-            let mut r = Vec::new();
-            if let Some(fk) = self.fleet_key_cached() {
-                r.push(fk);
-            }
-            if let (Some(ours), Some(storage)) = (
-                self.device_keypair.as_ref().map(|k| *k.public.as_bytes()),
-                self.storage.as_ref(),
-            ) {
-                for c in self.contacts.iter().filter(|c| !c.is_sibling) {
-                    let Some(their_dev) = c.device_key() else {
-                        continue;
-                    };
-                    if let Some(ps) = crate::storage::fanout_pairs::load(
-                        &ours,
-                        &their_dev,
-                        storage,
-                    ) {
-                        r.push(ps);
-                    }
-                }
-            }
-            r
-        };
+        let scoped_readers = self.scoped_avatar_readers();
         let (px_tx, px_rx) = std::sync::mpsc::channel();
         self.avatar_set_rx = Some(px_rx);
         // The fresh wall blob carries the preferred name beside the new pixels (same pin).
@@ -3260,13 +3258,15 @@ impl PhotonApp {
                                 let purpose = crate::ui::avatar_scoped::avatar_purpose(
                                     &crate::crypto::clutch::identity_party_id(&identity_seed),
                                 );
-                                match crate::ui::avatar_scoped::publish_blocking(
-                                    &av1_data,
+                                // The plaintext is the house image: AV1 with its encoding (the picker decodes LDR sources, so untagged VSF RGB).
+                                let plaintext = crate::ui::avatar_scoped::avatar_plaintext(av1_data.clone(), vsf::visual::Encoding::Gamma2);
+                                match plaintext.and_then(|plaintext| crate::ui::avatar_scoped::publish_blocking(
+                                    &plaintext,
                                     &scoped_readers,
                                     &purpose,
                                     &kp,
                                     &hp,
-                                ) {
+                                )) {
                                     // Remember the blob id and its key: a friend whose pair secret is re-minted later needs a slot at their NEW address, and re-uploading the image to give it to them would be absurd.
                                     Ok((_, contents)) => {
                                         crate::ui::avatar_scoped::remember_published(
