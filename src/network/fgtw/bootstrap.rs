@@ -492,7 +492,6 @@ pub(crate) fn parse_peer_from_field(field: &vsf::VsfField) -> Result<PeerRecord,
 
 #[cfg(test)]
 mod tests {
-    use super::*;
 
     /// Build an `announce_ok` ack byte-for-byte the way the worker does, then read it with the client's own parser. This pins the two halves of a contract that live in different repos.
     ///

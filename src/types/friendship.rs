@@ -2275,7 +2275,6 @@ mod tests {
 
     #[test]
     fn test_friendship_chains_advance() {
-        use vsf::EagleTime;
 
         let alice = [1u8; 32];
         let bob = [2u8; 32];

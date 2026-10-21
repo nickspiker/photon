@@ -1707,7 +1707,6 @@ mod tests {
     /// Messages round-trip thru `save_messages`/`load_messages` on a REAL encrypted vault: write three, close the vault, reopen from disk, read them back in order. Proves the rārangi conversation-row path end to end, not just in RAM.
     #[test]
     fn messages_round_trip_on_real_vault() {
-        use crate::types::HandleText;
 
         let device_secret = [29u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-messages-test").as_bytes();
@@ -1828,7 +1827,7 @@ mod tests {
     /// Fleet siblings round-trip thru their OWN index on a real vault: `save_contact` routes a sibling to the sibling list (never the contacts index — its handle-string dedup would collapse all siblings into one), state persists under the device-derived pid, `load_all_siblings` rebuilds contact + state across a vault close/reopen, and `delete_sibling` removes both index entry and state.
     #[test]
     fn sibling_round_trip_on_real_vault() {
-        use crate::types::{ClutchState, HandleText};
+        use crate::types::ClutchState;
 
         let device_secret = [31u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-sibling-test").as_bytes();
@@ -2049,7 +2048,6 @@ mod tests {
     /// Newest-first cursor pagination over a real vault: head page = the newest rows, the cursor walk visits everything exactly once, terminates with more=false — and `load_messages` returns time-sorted output even tho recovery inserts OLDER rows into the catalog LATER.
     #[test]
     fn history_pagination_walk_and_load_sort() {
-        use crate::types::HandleText;
 
         let device_secret = [31u8; 32];
         let vault_seed = *ihi::handle_to_hash("me-paging-test").as_bytes();

@@ -749,7 +749,7 @@ impl PhotonApp {
         if wave.phase != WavePhase::Active || wave.engine.is_none() {
             return;
         }
-        let (wave_id, peer, offer_osc, was_reconnecting, last_anchor, answered_by_us) = (
+        let (wave_id, peer, _offer_osc, was_reconnecting, last_anchor, answered_by_us) = (
             wave.wave_id,
             wave.peer_handle_hash,
             wave.offer_osc,

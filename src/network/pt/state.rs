@@ -524,7 +524,7 @@ mod tests {
         let data = vec![0xAB; 3072]; // 3 packets of 1024 bytes
         let peer = "127.0.0.1:12345".parse().unwrap();
 
-        let mut transfer = OutboundTransfer::new(peer, data.clone(), b'a', 0);
+        let transfer = OutboundTransfer::new(peer, data.clone(), b'a', 0);
 
         assert_eq!(transfer.state, TransferState::AwaitingSpec);
         assert_eq!(transfer.stream_id, b'a');

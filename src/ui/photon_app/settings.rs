@@ -955,7 +955,7 @@ impl PhotonApp {
         let now = vsf::eagle_time_oscillations();
         let fs = self.fleet_settings.as_mut().unwrap();
         let mut changed = false;
-        let mut put = |fs: &mut crate::storage::fleet_settings::FleetSettings, key: String, v: vsf::VsfType| {
+        let put = |fs: &mut crate::storage::fleet_settings::FleetSettings, key: String, v: vsf::VsfType| {
             if fs.linked(&key) {
                 fs.set_link(&key, false, now);
             }
