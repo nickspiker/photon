@@ -20,7 +20,7 @@ pub enum PhonebookError {
     NotFound,
     Rejected(String),
     /// The seed returned a record whose own signature does not verify. Treated as absence, never as data — a seed that serves a forged row must not be able to redirect anyone.
-    Unverified,
+    Unverified(String),
 }
 
 impl std::fmt::Display for PhonebookError {
@@ -29,7 +29,7 @@ impl std::fmt::Display for PhonebookError {
             PhonebookError::Network(s) => write!(f, "network: {}", s),
             PhonebookError::NotFound => write!(f, "no record"),
             PhonebookError::Rejected(s) => write!(f, "rejected: {}", s),
-            PhonebookError::Unverified => write!(f, "record failed verification"),
+            PhonebookError::Unverified(why) => write!(f, "record failed verification: {}", why),
         }
     }
 }
@@ -104,6 +104,49 @@ pub async fn put_record(rec: &Record, eggs: &[u8]) -> Result<(), PhonebookError>
     Ok(())
 }
 
+/// A signature that "does not verify" is either a blob that no longer PARSES as the `n` egg lists the record expects, or a parse whose signature fails: name which, with the schemes it carries.
+fn egg_blob_shape(blob: &[u8], n: usize) -> String {
+    match fgtw::phonebook::eggs_blob_lists(blob, n) {
+        None => format!("egg blob does not parse as {} list(s) ({} bytes, starts {})", n, blob.len(), hex::encode(&blob[..blob.len().min(12)])),
+        Some(lists) => format!("egg blob parses ({} list(s), schemes {:?}) but the signature fails", lists.len(), lists.iter().map(|l| l.iter().map(|e| e.scheme).collect::<Vec<_>>()).collect::<Vec<_>>()),
+    }
+}
+
+/// WHICH check a registry failed (field 2026-10-21: 268 bare "record failed verification" on the desktop, every one of Nick's devices "Unverified" — the error named no cause). Walks RegistryView::verify's checks in the same order and names the first failure, with the record it failed on.
+fn unverified_reason(view: &fgtw::phonebook::RegistryView, handle_proof: &[u8; 32]) -> String {
+    let rec = |r: &Record| format!("index {} epoch {} device {}", r.index(), r.epoch(), crate::fp(&r.device_pubkey()));
+    if let Some(c) = &view.count {
+        let Some(blob) = view.blob(c) else { return format!("count record's egg blob missing (count {}, {} blob(s) held)", c.count(), view.blobs.len()) };
+        if !c.verify_count(blob) {
+            return format!("count record's signature does not verify (count {}, epoch {}, witness {}): {}", c.count(), c.epoch(), crate::fp(&c.witness()), egg_blob_shape(blob, 2));
+        }
+        if !c.verify_departure(blob) {
+            return format!("count record's departure consent does not verify (epoch {})", c.epoch());
+        }
+        if c.handle_proof() != *handle_proof {
+            return format!("count record names identity {}", crate::fp(&c.handle_proof()));
+        }
+        if c.count() as usize != view.pointers.len() {
+            return format!("count says {} but {} pointer(s) came back", c.count(), view.pointers.len());
+        }
+    } else if !view.pointers.is_empty() {
+        return format!("{} pointer(s) but no count record", view.pointers.len());
+    }
+    for (i, p) in view.pointers.iter().enumerate() {
+        let Some(blob) = view.blob(p) else { return format!("pointer's egg blob missing ({})", rec(p)) };
+        if !p.verify_placement(blob) {
+            return format!("pointer's placement signature does not verify ({}, placer {}): {}", rec(p), crate::fp(&p.placer()), egg_blob_shape(blob, 1));
+        }
+        if p.handle_proof() != *handle_proof {
+            return format!("pointer names identity {} ({})", crate::fp(&p.handle_proof()), rec(p));
+        }
+        if p.index() as usize != i {
+            return format!("pointer run is not dense: slot {} holds {}", i, rec(p));
+        }
+    }
+    "no single check failed (verify and this walk disagree)".to_string()
+}
+
 /// The one-round-trip primary+secondary read: the identity's count record, its pointer run, and every pointed device's address record. Verified document in, per-record verification here: the count and placements must verify cryptographically, addresses must verify AND belong to a pointed device. MEMBERSHIP of the signers is the caller's check, against the fold it holds.
 pub async fn fetch_devices(
     handle_proof: &[u8; 32],
@@ -150,7 +193,7 @@ pub async fn fetch_devices(
     // The pointer run arrives in read order but storage owes us nothing — sort by index, then let verify() judge density and signatures.
     view.pointers.sort_by_key(|p| p.index());
     if !view.verify(handle_proof) {
-        return Err(PhonebookError::Unverified);
+        return Err(PhonebookError::Unverified(unverified_reason(&view, handle_proof)));
     }
     let pointed: Vec<[u8; 32]> = view.devices();
     addresses.retain(|a| {
@@ -179,11 +222,11 @@ pub async fn resolve_device_address(device_pubkey: &[u8; 32]) -> Result<Record, 
     let (rec, eggs) = parse_pb_rec(&bytes).ok_or(PhonebookError::NotFound)?;
     // Verify before returning: a record that fails is absence, not data.
     if !rec.verify_address(&eggs) {
-        return Err(PhonebookError::Unverified);
+        return Err(PhonebookError::Unverified(format!("address record's signature does not verify (device {}, epoch {}): {}", crate::fp(&rec.device_pubkey()), rec.epoch(), egg_blob_shape(&eggs, 1))));
     }
     // The record must be the one we asked for. Without this a seed could answer any query with any valid record and silently redirect us to a device we never asked about.
     if rec.key() != Some(key) {
-        return Err(PhonebookError::Unverified);
+        return Err(PhonebookError::Unverified("the seed answered with a different record than the one asked for".to_string()));
     }
     Ok(rec)
 }
