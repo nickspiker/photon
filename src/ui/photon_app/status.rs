@@ -1955,7 +1955,10 @@ impl PhotonApp {
                         if contact.handle_hash == their_handle_hash {
                             // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
                             if sender_addr == crate::network::status::RELAY_ADDR {
-                                contact.reached_via_relay = true;
+                                // A relayed TWIN of a frame that also came direct (senders send ceremony frames both ways) must not undo a validated direct path — that turned a LAN friend amber right after their proof landed (Emma's new device, 2026-10-21). Relay-only is for when nothing direct is proven.
+                                if contact.validated_path.is_none() {
+                                    contact.reached_via_relay = true;
+                                }
                             } else {
                                 contact.reached_via_relay = false;
                                 contact.ip = Some(sender_addr);
@@ -2586,7 +2589,10 @@ impl PhotonApp {
                         if contact.handle_hash == their_handle_hash {
                             // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
                             if sender_addr == crate::network::status::RELAY_ADDR {
-                                contact.reached_via_relay = true;
+                                // A relayed TWIN of a frame that also came direct (senders send ceremony frames both ways) must not undo a validated direct path — that turned a LAN friend amber right after their proof landed (Emma's new device, 2026-10-21). Relay-only is for when nothing direct is proven.
+                                if contact.validated_path.is_none() {
+                                    contact.reached_via_relay = true;
+                                }
                             } else {
                                 contact.reached_via_relay = false;
                                 contact.ip = Some(sender_addr);
@@ -2785,7 +2791,10 @@ impl PhotonApp {
                         if contact.handle_hash == their_handle_hash {
                             // A relayed message (RELAY_ADDR sentinel) carries no reachable peer address — skip address-learning (storing the sentinel as contact.ip would poison direct sends) and mark the link relay-only, which lights the presence lime-yellow. A direct message clears the flag: direct always wins. Otherwise inbound DATA elects the sending device ACTIVE (the fleet reply-TX rule) and seeds its endpoint, so contact-level addressing follows the device actually talking to us.
                             if sender_addr == crate::network::status::RELAY_ADDR {
-                                contact.reached_via_relay = true;
+                                // A relayed TWIN of a frame that also came direct (senders send ceremony frames both ways) must not undo a validated direct path — that turned a LAN friend amber right after their proof landed (Emma's new device, 2026-10-21). Relay-only is for when nothing direct is proven.
+                                if contact.validated_path.is_none() {
+                                    contact.reached_via_relay = true;
+                                }
                             } else {
                                 contact.reached_via_relay = false;
                                 contact.ip = Some(sender_addr);
