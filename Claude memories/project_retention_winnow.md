@@ -15,3 +15,5 @@ Shipped 2026-09-14:
 
 **Why:** Nick's arc — per-chat sizes → budgets ("50 GB to Photon, messages 5 GB or 1 year whichever trims more") → keep/loft/discard → sync.
 **How to apply:** winnow enforcement and loft-for-own-uploads wait for device-sync (blob custody must be checkable; a row's `replicated` flag is not blob custody). A recipient's keep made before the author's retraction stands (decided, not built). Related: [[project_vault_roadmap]], [[feedback_discard_not_shred]].
+
+**2026-10-21 DECIDED (Nick): retention is PER DEVICE, budget = "a reasonable amount of current free space"** — no per-category size numbers; a free-space floor per device, eviction at the write edge (oldest by arrival, unstarred; beams, then waves). Recorded in TICKETS.md retention entry. Beam video recording waits for this (see [[project_beams]]).
