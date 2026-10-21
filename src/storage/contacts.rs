@@ -671,6 +671,11 @@ pub fn load_all_siblings(our_handle_proof: [u8; 32], storage: &FlatStorage) -> V
 
     let mut siblings = Vec::new();
     for device in devices {
+        // A zero-key sibling persisted by an older build is a phantom (the wire's "no key"), never a device: leave it unloaded.
+        if device == [0u8; 32] {
+            crate::log("SIBLING: skipped the zero-key entry in the sibling list");
+            continue;
+        }
         let mut c = Contact::new_sibling(our_handle_proof, DevicePubkey::from_bytes(device));
         match storage.read_addr(&contact_key(&c.handle_hash, "state")) {
             Ok(Some(vsf_bytes)) => {

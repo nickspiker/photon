@@ -870,7 +870,13 @@ impl PhotonApp {
             let mut changed = false;
             let mut to_persist: Vec<usize> = Vec::new();
             let mut successor_checks: Vec<([u8; 32], [u8; 32])> = Vec::new();
-            for (hp, members, tip_ts, genesis, existed) in member_updates {
+            for (hp, mut members, tip_ts, genesis, existed) in member_updates {
+                // The all-zero key is the wire's "no key", never a device (Nick's MacBook 2026-10-20: a phantom sibling 00000000 took pings, history pushes and an offline verdict every 90 s, rotating the active device away from a live desktop).
+                let before = members.len();
+                members.retain(|d| *d != [0u8; 32]);
+                if members.len() != before {
+                    crate::logf!("FLEET: {}'s fold named the zero key — dropped", crate::fp(&hp));
+                }
                 // Tripwire re-arm edge: a result (or the -1 fetch-error sentinel) for this hp ends its pursuit — if the adopted tip still trails the friend's claim, the NEXT stale-claim pong re-fires, naturally paced by ping cadence. No wall clock anywhere.
                 self.fleet_tip_pursuit.remove(&hp);
                 if tip_ts < 0 {

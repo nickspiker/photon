@@ -7,6 +7,11 @@ One sentence per line, however long; plain language for the person who installs 
 
 ## Upcoming
 - **Phones stay signed in when Android restarts itself.** Android sometimes restarts its own framework in the background, for example to finish a system update, without restarting the phone; Photon took that for a reboot and asked you to type your handle again. It now only asks after a real restart of the phone. Updating to this version keeps you signed in.
+- **A new device no longer rings for old photons.** While a new phone or computer catches up on a conversation, a friend's devices send it the older photons it's missing, and each one used to ring as if it had just arrived. Photons older than one the device already has from that friend now arrive quietly; a photon that was genuinely held up still rings.
+- **Less work while nobody is looking.** The age shown under a selected photon no longer redraws every second while the window is hidden, in the background or out of focus, which kept a laptop busy all night.
+- **A phantom device stops getting pings.** A blank entry in a device list was being treated as one of your own devices: Photon kept pinging it, sending it history and, when it never answered, switching away from a device that was working fine.
+- **History stops echoing back and forth.** A leftover blank copy of a file photon was counted as new on every history check and sent back to the device it came from, over and over.
+- **Clearer logs for alerts and permissions.** Logs now say whether a notification was shown or held back on computers, and on phones whether notifications are allowed and whether battery saving may delay them.
 
 ## v122
 - **Photon draws in HDR on phones that can show it.** On an HDR phone such as a Pixel 8 Pro, highlights brighter than white, like the bright parts of an HDR photo, can now really glow, while the rest of Photon looks exactly as before. Photon asks the screen for extra brightness only while something on screen is brighter than white, and only as much as it needs, so an ordinary screen of messages never boosts the display. It needs the phone's own HDR brightness setting (Settings → Display) switched on, and battery saver off.

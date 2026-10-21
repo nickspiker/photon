@@ -4163,6 +4163,10 @@ fn open_url_in_browser(url: &str) {
 impl PhotonApp {
     /// Every live reading on screen right now, as the text it would draw, concatenated: the Base page's clock and since-opened counter, or a selected message's age. Pure function of now and state; tick() compares it with the last one and repaints on a change.
     fn live_readings(&self) -> String {
+        // Nobody watching, nothing live (Nick's MacBook 2026-10-20: 13,227 Conversation frames overnight, one per second, for a message age no one saw). The focus or reveal edge repaints, and the reading lands fresh there.
+        if !self.wave_field_watched() {
+            return String::new();
+        }
         let now_osc = vsf::eagle_time_oscillations();
         match self.state {
             AppState::Settings(SettingsPage::Dozenal) => {
@@ -4383,6 +4387,10 @@ impl PhotonApp {
 
     /// The next instant at which a live reading on screen changes its last digit (see `wake_at`): the Base page's clock (six share digits in dozenal, whole seconds otherwise), its since-opened counter (two fraction digits of a doubling), or the selected message's age. None when nothing live is showing.
     fn live_digit_edge(&self) -> Option<Instant> {
+        // No wake for a digit nobody is watching (see live_readings).
+        if !self.wave_field_watched() {
+            return None;
+        }
         let now_osc = vsf::eagle_time_oscillations();
         let osc_to_instant = |delta_osc: f64| Instant::now() + std::time::Duration::from_secs_f64((delta_osc / crate::OSC_PER_SEC as f64).max(0.0));
         // A magnitude's next digit edge, from an age in oscillations: `frac` fraction digits (the Base counter shows two, a message's age none — it changes only at each doubling).

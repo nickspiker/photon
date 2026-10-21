@@ -296,6 +296,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
+        PhotonLog.i(TAG, "permissions: notification prompt answered ${if (isGranted) "GRANTED" else "DENIED"}")
         if (isGranted) {
             createNotificationChannel()
         }
@@ -669,6 +670,15 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     }
 
     private fun requestNotificationPermission() {
+        // The alert path's standing state, once per start (Emma's phone 2026-10-21: "permissions issues" and the log could not say which).
+        try {
+            val notifs = androidx.core.app.NotificationManagerCompat.from(this).areNotificationsEnabled()
+            val pm = getSystemService(Context.POWER_SERVICE) as android.os.PowerManager
+            val unrestricted = pm.isIgnoringBatteryOptimizations(packageName)
+            PhotonLog.i(TAG, "permissions: notifications ${if (notifs) "on" else "OFF"}, battery ${if (unrestricted) "unrestricted" else "optimised (Doze may hold alerts)"}")
+        } catch (e: Throwable) {
+            PhotonLog.w(TAG, "permissions: state unreadable: $e")
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             when {
                 ContextCompat.checkSelfPermission(

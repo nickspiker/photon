@@ -35,16 +35,20 @@ static LAST_NOTIFIED: std::sync::Mutex<[u8; 32]> = std::sync::Mutex::new([0u8; 3
 
 /// Fire the platform notification for a decrypted message — title = the sender's display name, body = the message text — if anyone could actually be missing it (window hidden or unfocused) and this message hasn't already dinged. Callable from any thread.
 pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str) {
+    // Every outcome logs (Nick's MacBook 2026-10-20: nothing in the log could say whether an alert was ever posted).
     if window_attended() && ATTENTION_OURS.load(Ordering::Relaxed) {
+        crate::log("NOTIFY: desktop alert suppressed — the window is attended");
         return;
     }
     {
         let mut last = LAST_NOTIFIED.lock().unwrap();
         if *last == *msg_hp {
+            crate::log("NOTIFY: desktop alert suppressed — this photon already alerted");
             return;
         }
         *last = *msg_hp;
     }
+    crate::log("NOTIFY: desktop alert posted");
     post(sender, text);
 }
 
@@ -54,7 +58,8 @@ fn post(title: &str, body: &str) {
         .args(["--app-name=Photon", title, body])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+        .map_err(|e| crate::logf!("NOTIFY: the system notifier failed to launch: {}", e));
 }
 
 #[cfg(target_os = "macos")]
@@ -68,7 +73,8 @@ fn post(title: &str, body: &str) {
         .args(["-e", &script])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+        .map_err(|e| crate::logf!("NOTIFY: the system notifier failed to launch: {}", e));
 }
 
 #[cfg(target_os = "windows")]
@@ -89,7 +95,8 @@ fn post(title: &str, body: &str) {
         .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &ps])
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
-        .spawn();
+        .spawn()
+        .map_err(|e| crate::logf!("NOTIFY: the system notifier failed to launch: {}", e));
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]

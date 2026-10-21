@@ -1856,10 +1856,26 @@ impl PhotonApp {
                             c.is_sibling && !c.locked_out && c.knows_device(&dev) && c.is_online
                         })
                 });
+                // BACKFILL, NOT NEWS (Emma's new phone, 2026-10-21: eight chirps for photons 81 days old): a friend re-serves rows we lack at their ORIGINAL stamps over the live path, so a device missing history rang once per old row, oldest first.
+                // The author's own lane is in order (a held frame blocks everything behind it), so a row older than one we already hold from the same author is recovery, never a first sighting — the newer row already carried the alert duty.
+                // A genuinely late photon (a strand miss holding it for hours) still rings: nothing newer on its lane can land ahead of it.
+                // The one miss: a late row from one friend device while a newer one from another of their devices already landed — that conversation already rang for the newer row.
+                let behind_held = !contact_is_sibling
+                    && self.conversations[conv_pos]
+                        .messages
+                        .iter()
+                        .any(|m| !m.is_outgoing && m.author == msg.author && m.timestamp > msg.timestamp);
                 // Exactly-once duty: `looking` = we are the clearer (discharge silently); a fresh live ding also discharges. Either way the flag is set BEFORE the insert + sibling push, so every forwarded copy arrives pre-discharged and no other device re-dings.
-                let will_ding =
-                    !contact_is_sibling && !looking && !claimed_elsewhere && !is_edit_row && !molecule_muted;
-                if looking || will_ding {
+                let will_ding = !contact_is_sibling
+                    && !looking
+                    && !claimed_elsewhere
+                    && !is_edit_row
+                    && !molecule_muted
+                    && !behind_held;
+                if behind_held {
+                    crate::log("NOTIFY: backfilled row behind a held one from the same author — silent");
+                }
+                if looking || will_ding || behind_held {
                     msg.notified = true;
                 }
                 // NO AUTO-SELECT (Nick 2026-10-01, superseding the 2026-09-12 quick-reply self-select): a fresh message never steals a selection the user made by tapping — they are mid-reply or mid-playback on that row. With nothing selected, the newest row's strip is already up unasked (the sel_key / strip_target fallback), and a dismissed strip is keyed to the row that was dismissed, so the new row shows its own.
@@ -1996,7 +2012,7 @@ impl PhotonApp {
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
 
-                if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !molecule_muted {
+                if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !molecule_muted && !behind_held {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;
                     conv_state_pos = Some(conv_pos);
@@ -2631,8 +2647,16 @@ impl PhotonApp {
                 }
                 // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.
                 for msg in to_insert {
+                    // A BLANK TWIN of a file row we hold folds away inside the insert — it is not a new row, so it neither counts nor rides a push (Nick's MacBook 2026-10-20: a sibling's page re-served one every sweep, 268 "1 new" merges each pushed straight back).
+                    let folds = msg.is_bare()
+                        && conv
+                            .messages
+                            .iter()
+                            .any(|m| m.timestamp == msg.timestamp && m.is_outgoing == msg.is_outgoing && m.file.is_some());
                     conv.insert_message_sorted(msg.clone());
-                    fresh.push(msg);
+                    if !folds {
+                        fresh.push(msg);
+                    }
                 }
                 // A tombstone flip on an existing row doesn't pass thru insert_message_sorted, so invalidate the digest for that case (inserts already self-invalidated).
                 if tombstoned_in_merge {

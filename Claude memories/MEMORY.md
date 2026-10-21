@@ -45,8 +45,9 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
-- [Android dark in background](project_android_headless_dark.md) — 2026-10-13 CONVICTED: Activity destroy freed the app, offline for days; fix BUILT (service owns app + watchdog), verify pending
-- [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port + shared public ip:port; FIXED, server first; flap unconfirmed
+- [Android dark in background](project_android_headless_dark.md) — 2026-10-13: Activity destroy freed the app; fix BUILT, verify pending
+- [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port; FIXED
+- [Backfill dings](project_backfill_dings.md) — 2026-10-21: re-serve rang per old photon; + v122 field list
 - [Hotplug abort](project_hotplug_abort.md) — 2026-10-15 SIGABRT x2 on monitor plug = 0-px avatar expect, CONVICTED; fixed post-v120
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next non-mainstream OS
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device
@@ -78,9 +79,9 @@
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 head-page early-stop hid older divergences; fixed
+- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 early-stop hid divergences; fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
-- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: media render at 7% while the rocker bound VOICE_CALL
+- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26: media at 7% while rocker bound VOICE_CALL
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while rate-saturated; FIXED 2026-09-28
 - [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, NO hardcoded timings
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
