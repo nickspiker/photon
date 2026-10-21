@@ -2,7 +2,52 @@
 
 use super::*;
 
+/// While a presence surface stays visible, a slow refresh keeps the rings honest (the entry edge pings at once).
+const PRESENCE_VISIBLE_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
+/// The always-on LAN beacon's cadence off the presence surfaces (see advance_protocol).
+const LAN_BEACON: std::time::Duration = std::time::Duration::from_secs(20);
+/// The own-chain re-fold's cadence while a Settings page is open (see advance_protocol).
+const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
+
 impl PhotonApp {
+    /// THE ONE GATE for each protocol cadence (Nick's MacBook 2026-10-20: 112 wakes a second all night on an idle Conversation).
+    /// `wake_at` and `advance_protocol` both read these, so the wake can never schedule work the pump will not do.
+    /// A wake arm with its own copy of the gate drifted: the re-fold went demand-driven (Settings only) while its arm still fired on Ready and Conversation, so its deadline sat in the past forever and fluor's one-frame floor turned it into a 60 Hz loop.
+    /// Which presence surface the human is watching: 0 = Ready/contacts, 1 = an open conversation, 2 = the Fleet page, None = none.
+    pub(super) fn watched_presence_surface(&self) -> Option<u8> {
+        let watching = crate::platform::app_watching();
+        match self.state {
+            AppState::Ready => watching.then_some(0u8),
+            AppState::Conversation => watching.then_some(1),
+            AppState::Settings(SettingsPage::Fleet) => watching.then_some(2),
+            _ => None,
+        }
+    }
+
+    /// When the presence refresh next runs, or None while no presence surface is watched.
+    pub(super) fn presence_due_at(&self, now: Instant) -> Option<Instant> {
+        self.watched_presence_surface()?;
+        Some(self.last_presence_ping.map_or(now, |last| last + PRESENCE_VISIBLE_REFRESH))
+    }
+
+    /// When the LAN beacon next goes out, or None while it cannot (offline, no session yet, or a watched surface whose ping sweep beacons instead).
+    pub(super) fn lan_beacon_due_at(&self, now: Instant) -> Option<Instant> {
+        let armed = self.online
+            && self.watched_presence_surface().is_none()
+            && self.session.is_some()
+            && self.handle_query.is_some()
+            && self.status_checker.is_some();
+        armed.then(|| self.last_lan_beacon.map_or(now, |last| last + LAN_BEACON))
+    }
+
+    /// When the own-chain re-fold next runs, or None while it will not (off the Settings pages, nobody watching, no handle yet).
+    pub(super) fn fleet_refold_due_at(&self, now: Instant) -> Option<Instant> {
+        let armed = matches!(self.state, AppState::Settings(_))
+            && crate::platform::app_watching()
+            && self.our_handle_proof().is_some();
+        armed.then(|| self.last_fleet_refold.map_or(now, |last| last + FLEET_REFOLD_INTERVAL))
+    }
+
     /// THE HEADLESS TICK (field 2026-10-13, Brittany: "never closed Photon" yet offline for days): what a screenless app needs each beat — finish the session resume (the vault opens on a worker and its completion was polled only by the draw tick, so an app with no screen never finished attesting) and pump the protocol. The Android service drives this whether or not a screen exists.
     pub fn headless_tick(&mut self, now: Instant) -> bool {
         let resumed = self.poll_resume_vault();
@@ -32,13 +77,7 @@ impl PhotonApp {
         let __r = Instant::now();
         // DEMAND-DRIVEN presence (Nick 2026-09-02: "zero reason I need the status of my fleet OR friends until I open my fleet page OR my contacts screen; on a chat, ping THEM"): pings + the beacon that rides the full sweep fire only while the human is LOOKING at a presence surface — the contacts screen or the Fleet page (full sweep) or an open conversation (that one contact). Everything else arrives on edges: inbound acks/pongs/messages update state passively, the announce-on-online edge keeps our own mapping findable, retransmit ladders stay work-driven, and Android's FCM/doorbell is the background wake path. Screen ENTRY is an edge (immediate ping); while the surface stays visible a slow 30s refresh keeps the rings honest. Backgrounded = silent.
         {
-            let watching = crate::platform::app_watching();
-            let surface = match self.state {
-                AppState::Ready => watching.then_some(0u8),
-                AppState::Conversation => watching.then_some(1),
-                AppState::Settings(SettingsPage::Fleet) => watching.then_some(2),
-                _ => None,
-            };
+            let surface = self.watched_presence_surface();
             if surface != self.presence_surface {
                 self.presence_surface = surface;
                 if surface.is_some() {
@@ -46,11 +85,7 @@ impl PhotonApp {
                 }
             }
             if let Some(kind) = surface {
-                const VISIBLE_REFRESH: std::time::Duration = std::time::Duration::from_secs(30);
-                let due = self
-                    .last_presence_ping
-                    .is_none_or(|last| now.duration_since(last) >= VISIBLE_REFRESH);
-                if due {
+                if self.presence_due_at(now).is_some_and(|at| now >= at) {
                     self.last_presence_ping = Some(now);
                     if kind == 1 {
                         self.ping_active_contact();
@@ -60,11 +95,10 @@ impl PhotonApp {
                 }
             }
             // ALWAYS-ON LAN BEACON (regression fix 2026-09-02): the demand-driven gate above stopped a BACKGROUNDED device from announcing at all — so a fleet sibling on any non-presence screen went un-findable on the LAN, its address staled, and a self-message to it sprayed dead endpoints thru PT's retransmit ladder (~10s). The LAN multicast is ONE cheap subnet packet (not the unicast ping fan-out, not the WAN punch/relay machinery — those stay demand-driven and off in the background); keeping it on a modest cadence is what makes same-room delivery instant. Fires regardless of foreground while online.
-            const LAN_BEACON: std::time::Duration = std::time::Duration::from_secs(20);
-            let beacon_due = self
-                .last_lan_beacon
-                .is_none_or(|last| now.duration_since(last) >= LAN_BEACON);
-            if self.online && beacon_due && surface.is_none() {
+            if surface.is_some() {
+                // A watched surface already beaconed via the ping sweep — keep the timer in step so leaving the surface doesn't double-fire.
+                self.last_lan_beacon = Some(now);
+            } else if self.lan_beacon_due_at(now).is_some_and(|at| now >= at) {
                 if let (Some(session), Some(hq), Some(checker)) = (
                     self.session.as_ref(),
                     self.handle_query.as_ref(),
@@ -73,34 +107,25 @@ impl PhotonApp {
                     self.last_lan_beacon = Some(now);
                     checker.send_lan_broadcast(session.handle_proof, hq.port());
                 }
-            } else if surface.is_some() {
-                // A watched surface already beaconed via the ping sweep — keep the timer in step so leaving the surface doesn't double-fire.
-                self.last_lan_beacon = Some(now);
             }
         }
 
         self.tick_prof_add("proto: presence", __r.elapsed().as_secs_f32() * 1000.0);
         let __r = Instant::now();
         // Periodic OWN-chain re-fold — the reliable doorbell for fleet membership changes (docs/pairing-v2.md). The hub `fleet` event is the instant path but best-effort; this catches a device add/remove that arrived while our WebSocket was down. Reconciling siblings re-seeds the answerable-pubkey set, so a newly-added device starts getting pong answers (stops showing offline) and appears in the Fleet list without a relaunch. 45s: brisk enough that a just-added device goes live within a sweep, slow enough to be a negligible one-fetch background poll.
-        const FLEET_REFOLD_INTERVAL: std::time::Duration = std::time::Duration::from_secs(45);
         // Demand-driven (2026-09-02): the refold poll runs only while a Settings page is open (the Fleet list is what it feeds); the hub `fleet` event remains the instant background path, and app-start does one refold via last_fleet_refold starting None.
-        if matches!(self.state, AppState::Settings(_)) && crate::platform::app_watching() {
-            let due = self
-                .last_fleet_refold
-                .is_none_or(|last| now.duration_since(last) >= FLEET_REFOLD_INTERVAL);
-            if due {
-                if let Some(our_hp) = self.our_handle_proof() {
-                    self.last_fleet_refold = Some(now);
-                    self.spawn_contact_fleet_refresh(vec![our_hp]);
-                    // Roster-pull backstop (B4): an exhausted pull used to wait on "the next fleet event", which never comes with the WebSocket down — no roster until relaunch. This edge re-arms a small budget at the refold cadence; success clears the flag, failure re-exhausts and the next sweep tries again.
-                    if self.roster_pull_exhausted && self.roster_pull_rx.is_none() {
-                        self.roster_pull_exhausted = false;
-                        self.needs_initial_roster_pull = true;
-                        self.roster_pull_retries_left = 2;
-                        crate::log(
-                            "FLEET: refold edge re-arming the exhausted roster pull (2 attempts)",
-                        );
-                    }
+        if self.fleet_refold_due_at(now).is_some_and(|at| now >= at) {
+            if let Some(our_hp) = self.our_handle_proof() {
+                self.last_fleet_refold = Some(now);
+                self.spawn_contact_fleet_refresh(vec![our_hp]);
+                // Roster-pull backstop (B4): an exhausted pull used to wait on "the next fleet event", which never comes with the WebSocket down — no roster until relaunch. This edge re-arms a small budget at the refold cadence; success clears the flag, failure re-exhausts and the next sweep tries again.
+                if self.roster_pull_exhausted && self.roster_pull_rx.is_none() {
+                    self.roster_pull_exhausted = false;
+                    self.needs_initial_roster_pull = true;
+                    self.roster_pull_retries_left = 2;
+                    crate::log(
+                        "FLEET: refold edge re-arming the exhausted roster pull (2 attempts)",
+                    );
                 }
             }
         }

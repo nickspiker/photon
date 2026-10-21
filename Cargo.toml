@@ -209,6 +209,8 @@ windows = { version = "0.58", features = [
     "Win32_System_Console",
     # Native-fault catcher (platform/crash_native.rs): SetUnhandledExceptionFilter + EXCEPTION_POINTERS (whose CONTEXT field drags in Win32_System_Kernel).
     "Win32_System_Diagnostics_Debug",
+    # Free space on the vault's volume (storage::vault_volume_space, the keep-a-share-free rule).
+    "Win32_Storage_FileSystem",
     "Win32_System_Kernel",
     # Tray orb (Shell_NotifyIcon) + the tray thread's message-only window module handle.
     "Win32_UI_Shell",

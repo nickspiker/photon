@@ -361,8 +361,9 @@ pub enum StatusUpdate {
         display_name: Option<String>,
         /// The peer's avatar pin from the pong (friend-gated key ‖ lookup). None on pings/timeouts/legacy pongs.
         avatar_pin: Option<[u8; 64]>,
-        /// The peer fleet's REPORTED-STOLEN devices, from the sealed pong tail (empty on legacy/tail-less pongs). The UI thread applies the two-distinct-reporters threshold before refusing anything.
-        locked_reports: Vec<[u8; 32]>,
+        /// The peer fleet's REPORTED-STOLEN devices, from an OPENED sealed pong tail. The UI thread applies the reporter rules before refusing anything.
+        /// None = this update is not lock testimony (a ping, a timeout, an inbound frame, a salvaged or tail-less pong) and must neither refuse nor restore anything.
+        locked_reports: Option<Vec<[u8; 32]>>,
         /// The responding DEVICE's build self-description ("v0.69.1 · abc · linux x86_64") from the sealed tail — the fleet page's per-device About. None on legacy/tail-less pongs.
         about: Option<String>,
         /// The sender fleet's membership-chain tip eagle time from the sealed tail — the fold-freshness tripwire's claim. None = legacy/tail-less/no-tail arms (no verdict).
@@ -1872,6 +1873,11 @@ async fn run_checker(
                         crate::wave::deliver_express(msg_bytes, src_addr);
                         continue;
                     }
+                    // The revival edge for an address PT marked dead (`PTManager::heard_from`): whatever this datagram is, its source answers again.
+                    // A relayed frame names no address of the sender's, so it revives nothing.
+                    if src_addr != RELAY_ADDR {
+                        pt_recv.lock().unwrap().heard_from(src_addr);
+                    }
 
                     // Check for PT DATA packets first (start with 'd') NOTE: Individual DATA packets not logged - only completion/failure
                     if is_pt_data(msg_bytes) {
@@ -3199,7 +3205,7 @@ async fn run_checker(
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
-                                            locked_reports: Vec::new(),
+                                            locked_reports: None,
                                             about: None,
                                             fleet_tip: None,
                                             braid: None,
@@ -3355,7 +3361,7 @@ async fn run_checker(
                                                         sync_records: salvaged,
                                                         display_name: None,
                                                         avatar_pin: None,
-                                                        locked_reports: Vec::new(),
+                                                        locked_reports: None,
                                                         // The About IS adopted here (unlike name/pin/locked, which wait for a matched pong): it's the responder's own sealed self-description, and the boot ANNOUNCE (an unsolicited pong) is exactly how a fresh build reaches the fleet page without waiting out ping backoff (2026-08-31).
                                                         about,
                                                         // The boot ANNOUNCE lands in THIS arm (zero provenance never matches a pending ping) — the highest-value tripwire carrier: a fleet that just grew announces on the new sibling's first cycle.
@@ -3422,7 +3428,7 @@ async fn run_checker(
                                                     sync_records: salvaged,
                                                     display_name: None,
                                                     avatar_pin: None,
-                                                    locked_reports: Vec::new(),
+                                                    locked_reports: None,
                                                     about,
                                                     fleet_tip,
                                                     braid,
@@ -3500,7 +3506,8 @@ async fn run_checker(
                                     }
 
                                     // Sensitive tail: an updated peer sends it ONLY sealed — open with the RESPONDING device's pairwise key (the signer, verified just above). A failed open (key not seeded yet, or a stale key across their re-attest) degrades to a tail-less pong: presence still lands, name/pin/sync simply wait for keys — and it logs once per device, not per pong. A legacy peer still sends the plaintext fields; keep honouring them until it updates.
-                                    let tail =
+                                    // `testified` = the sealed tail actually opened, so its locked set is this device's word.
+                                    let (tail, testified) =
                                         match sealed {
                                             Some(blob) => {
                                                 let key = {
@@ -3518,7 +3525,7 @@ async fn run_checker(
                                                         pong_open_failed.retain(|d| {
                                                             d != responder_pubkey.as_bytes()
                                                         });
-                                                        tail
+                                                        (tail, true)
                                                     }
                                                     None => {
                                                         if !pong_open_failed
@@ -3537,17 +3544,17 @@ async fn run_checker(
                                                                 &event_proxy_recv,
                                                             );
                                                         }
-                                                        crate::network::fgtw::protocol::PongTail::default()
+                                                        (crate::network::fgtw::protocol::PongTail::default(), false)
                                                     }
                                                 }
                                             }
                                             // Legacy plaintext pong: no sealed tail, so no reported-stolen signal either — the report is trusted only under the pairwise seal.
-                                            None => crate::network::fgtw::protocol::PongTail {
+                                            None => (crate::network::fgtw::protocol::PongTail {
                                                 sync_records,
                                                 display_name,
                                                 avatar_pin,
                                                 ..Default::default()
-                                            },
+                                            }, false),
                                         };
 
                                     // Send status update with sync_records for retransmit handling
@@ -3561,7 +3568,7 @@ async fn run_checker(
                                             sync_records: tail.sync_records,
                                             display_name: tail.display_name,
                                             avatar_pin: tail.avatar_pin,
-                                            locked_reports: tail.locked,
+                                            locked_reports: testified.then_some(tail.locked),
                                             about: tail.about,
                                             fleet_tip: tail.fleet_tip,
                                             braid: tail.braid,
@@ -3636,7 +3643,7 @@ async fn run_checker(
                                             sync_records: vec![],
                                             display_name: None,
                                             avatar_pin: None,
-                                            locked_reports: Vec::new(),
+                                            locked_reports: None,
                                             about: None,
                                             fleet_tip: None,
                                             braid: None,
@@ -4358,7 +4365,7 @@ async fn run_checker(
                             sync_records: vec![], // No sync for offline
                             display_name: None,
                             avatar_pin: None,
-                            locked_reports: Vec::new(),
+                            locked_reports: None,
                             about: None,
                             fleet_tip: None,
                             braid: None,
@@ -5138,7 +5145,7 @@ async fn handle_pt_vsf_packet(
 
                     let spec_ack = {
                         let mut pt_mgr = pt.lock().unwrap();
-                        if pt_mgr.spec_known(&spec) {
+                        if pt_mgr.spec_known(src_addr, &spec, sender_pubkey) {
                             // Already ours (another path's copy, or a repeat after a lost ACK): answer it, keep the one transfer, say nothing more.
                             pt_mgr.spec_ack_bytes(&spec)
                         } else {
@@ -5148,7 +5155,7 @@ async fn handle_pt_vsf_packet(
                                 spec.total_packets,
                                 spec.total_size
                             );
-                            pt_mgr.handle_spec(src_addr, spec)
+                            pt_mgr.handle_spec(src_addr, spec, sender_pubkey)
                         }
                     };
                     udp::send(socket, &spec_ack, src_addr).await;

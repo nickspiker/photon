@@ -719,6 +719,12 @@ pub fn refresh_desktop_cameras() {
     *DESKTOP_CAMS.lock().unwrap() = None;
 }
 
+/// Enumerate now and swap the list in whole (the camera worker): the render never finds the cache empty, so it never enumerates on the UI thread.
+pub fn reenumerate_desktop_cameras() {
+    let list = enumerate_desktop_cameras();
+    *DESKTOP_CAMS.lock().unwrap() = Some(list);
+}
+
 fn enumerate_desktop_cameras() -> Vec<(String, String)> {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     {
@@ -787,6 +793,66 @@ pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
     }
 }
 
+/// THE CAMERA OPENS OFF THE UI THREAD (field 2026-10-21, Nick's MacBook: `PERF: drain beam_armed took 1572ms` — AVCaptureSession's startRunning and the wait for the first frame ran inside the wave tick).
+/// A worker enumerates, opens the picked camera and starts the sender; the wave tick drains the answer from the returned channel.
+/// The worker first waits for any sender still stopping (`retire`), so a restart takes back the parked transport and the key chain runs on.
+#[cfg(not(target_os = "android"))]
+pub fn start_desktop_async(wave_secret: &[u8; 32], we_are_origin: bool) -> std::sync::mpsc::Receiver<Result<Sender, String>> {
+    let secret = zeroize::Zeroizing::new(*wave_secret);
+    let (tx, rx) = std::sync::mpsc::sync_channel(1);
+    let spawned = std::thread::Builder::new().name("beam-open".into()).spawn(move || {
+        await_retired();
+        reenumerate_desktop_cameras();
+        let started = open_desktop_camera().and_then(|source| {
+            let (w, h) = source.dimensions();
+            let s = start_sender(&secret, we_are_origin, source, bitrate_for(w, h))?;
+            crate::logf!("BEAM: sending {}×{} from {}", w, h, camera_name().unwrap_or_default());
+            Ok(s)
+        });
+        // A receiver already gone hands the sender back here, so its camera closes on this thread.
+        let _ = tx.send(started);
+    });
+    if let Err(e) = spawned {
+        crate::logf!("BEAM: no camera thread: {}", e);
+    }
+    rx
+}
+
+/// The stopping that runs off the UI thread, in order: each retirement joins the one before it, and a camera open waits for the last.
+static RETIRING: Mutex<Option<std::thread::JoinHandle<()>>> = Mutex::new(None);
+
+fn retire_with(f: impl FnOnce() + Send + 'static) {
+    let prev = RETIRING.lock().unwrap().take();
+    let spawned = std::thread::Builder::new().name("beam-retire".into()).spawn(move || {
+        if let Some(p) = prev {
+            let _ = p.join();
+        }
+        f();
+    });
+    match spawned {
+        Ok(h) => *RETIRING.lock().unwrap() = Some(h),
+        Err(e) => crate::logf!("BEAM: no retire thread ({}) — stopped in place", e),
+    }
+}
+
+/// Stop a sender off the UI thread (field 2026-10-21, Nick's MacBook: the hangup's `drain wave_express took 292ms` — the drop joins the capture thread, and a Mac's camera stops inside it); its join parks the transport.
+pub fn retire(s: Sender) {
+    retire_with(move || drop(s));
+}
+
+/// Cancel a camera still opening: wait for the worker's answer off the UI thread and stop whatever it started.
+pub fn retire_opening(rx: std::sync::mpsc::Receiver<Result<Sender, String>>) {
+    retire_with(move || drop(rx.recv()));
+}
+
+/// The camera worker's first step: every stopping sender has parked its transport.
+fn await_retired() {
+    let h = RETIRING.lock().unwrap().take();
+    if let Some(h) = h {
+        let _ = h.join();
+    }
+}
+
 /// Can this device SEND a beam at all: a codec and a camera path.
 pub fn can_send() -> bool {
     if cfg!(target_os = "android") {
@@ -804,8 +870,16 @@ pub fn camera_ready() -> bool {
 pub fn ask_camera_once() {
     static ASKED: AtomicBool = AtomicBool::new(false);
     if !ASKED.swap(true, Ordering::Relaxed) {
-        crate::log("BEAM: asking for the camera (an armed beam found the grant undetermined)");
+        crate::log("BEAM: asking for the camera (the grant is undetermined)");
         crate::platform::mic_permission::request_camera();
+    }
+}
+
+/// Ask at the first beam intent — the Beam slat, Beam back, the in-wave Beam button — so the system prompt is up while the wave connects (field 2026-10-21, Nick's MacBook: asked 0.7 s into the live wave, granted 6.4 s later, the beam waited on it).
+/// Nothing where no prompt exists: `camera_ready` is true there.
+pub fn ask_camera_early() {
+    if !camera_ready() {
+        ask_camera_once();
     }
 }
 

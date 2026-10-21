@@ -82,7 +82,7 @@ pub(super) struct HoldingsShown {
 }
 
 /// The seal key for every holdings frame: a domain-separated derivation of the fleet key, so a holdings list never shares a key with any other fleet ciphertext.
-fn holdings_key(fleet_key: &[u8; 32]) -> [u8; 32] {
+pub(super) fn holdings_key(fleet_key: &[u8; 32]) -> [u8; 32] {
     let mut h = blake3::Hasher::new();
     h.update(b"PHOTON_FLEET_HOLDINGS_v\x01");
     h.update(fleet_key);
@@ -90,7 +90,7 @@ fn holdings_key(fleet_key: &[u8; 32]) -> [u8; 32] {
 }
 
 /// A sealed list's plaintext as hashes; a length that is not a whole number of hashes is a malformed list and reads as none.
-fn split_hashes(plain: &[u8]) -> Option<Vec<[u8; 32]>> {
+pub(super) fn split_hashes(plain: &[u8]) -> Option<Vec<[u8; 32]>> {
     if plain.len() % 32 != 0 {
         return None;
     }

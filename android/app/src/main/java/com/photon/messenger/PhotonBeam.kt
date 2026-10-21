@@ -77,6 +77,14 @@ class PhotonBeam(
     private var frames = 0L
     private var dropped = 0L
     private var fed = 0L
+    // THE SLOT LEDGER (field 2026-10-21, Emma's Samsung on c2.qti.avc.encoder: 45 fed, 898 dropped, encoded = fed — every drop was a camera frame that found no free encoder input while the encoder sat idle): when each input went in, how long its slot took to come back, the longest an output was held.
+    private val queuedAtNs = LongArray(64)
+    @Volatile private var slotsOffered = 0L
+    @Volatile private var slotBackN = 0L
+    @Volatile private var slotBackSumNs = 0L
+    @Volatile private var slotBackMaxNs = 0L
+    @Volatile private var holdMaxNs = 0L
+    private var keptSinceLog = 0L
     @Volatile private var running = false
     private var w = 1280
     private var h = 720
@@ -218,7 +226,7 @@ class PhotonBeam(
         target = null
         cameraThread?.quitSafely(); cameraThread = null; cameraHandler = null
         codecThread?.quitSafely(); codecThread = null; codecHandler = null
-        PhotonLog.i(TAG, "stopped after $frames encoded frames, $fed fed, $dropped dropped")
+        PhotonLog.i(TAG, "stopped after $frames encoded frames, $fed fed, $dropped dropped, $slotsOffered slots offered since the last slot line")
         frames = 0
         dropped = 0
         fed = 0
@@ -336,32 +344,50 @@ class PhotonBeam(
     private fun setCallbacks(c: MediaCodec) {
         c.setCallback(object : MediaCodec.Callback() {
             override fun onInputBufferAvailable(mc: MediaCodec, index: Int) {
+                val at = queuedAtNs[index and 63]
+                if (at != 0L) {
+                    val back = System.nanoTime() - at
+                    slotBackN++
+                    slotBackSumNs += back
+                    if (back > slotBackMaxNs) slotBackMaxNs = back
+                    queuedAtNs[index and 63] = 0L
+                }
+                slotsOffered++
                 if (!freeInputs.offer(index)) {
                     // More free buffers than we track: hand it straight back empty so the codec keeps cycling.
                     try { mc.queueInputBuffer(index, 0, 0, 0, 0) } catch (_: Throwable) {}
                 }
             }
             override fun onOutputBufferAvailable(mc: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+                val t0 = System.nanoTime()
+                var bytes: ByteArray? = null
                 try {
-                    val buf = mc.getOutputBuffer(index) ?: return
-                    val bytes = ByteArray(info.size)
-                    buf.position(info.offset)
-                    buf.get(bytes, 0, info.size)
-                    if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
-                        config = bytes
-                    } else if (info.size > 0) {
-                        val withConfig = config != null && (frames % CONFIG_EVERY == 0L)
-                        val au = if (withConfig) config!! + bytes else bytes
-                        frames++
-                        if (frames == 1L) PhotonLog.i(TAG, "first access unit out of the encoder: ${au.size} B (config prepended ${withConfig})")
-                        onFrame(au, gains)
-                        if (frames % (fps * 10L) == 0L) PhotonLog.i(TAG, "encoded $frames frames, last ${bytes.size} B, $dropped dropped")
+                    val buf = mc.getOutputBuffer(index)
+                    if (buf != null && info.size > 0) {
+                        val b = ByteArray(info.size)
+                        buf.position(info.offset)
+                        buf.get(b, 0, info.size)
+                        bytes = b
                     }
                 } catch (e: Throwable) {
                     PhotonLog.w(TAG, "output", e)
                 } finally {
+                    // THE OUTPUT GOES BACK FIRST: an output still held can hold back the codec's next input offer, so the buffer returns before the frame goes thru JNI, RaptorQ and the seal, never after.
                     try { mc.releaseOutputBuffer(index, false) } catch (_: Throwable) {}
                 }
+                val held = System.nanoTime() - t0
+                if (held > holdMaxNs) holdMaxNs = held
+                val b = bytes ?: return
+                if (info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0) {
+                    config = b
+                    return
+                }
+                val withConfig = config != null && (frames % CONFIG_EVERY == 0L)
+                val au = if (withConfig) config!! + b else b
+                frames++
+                if (frames == 1L) PhotonLog.i(TAG, "first access unit out of the encoder: ${au.size} B (config prepended ${withConfig})")
+                try { onFrame(au, gains) } catch (e: Throwable) { PhotonLog.w(TAG, "output", e) }
+                if (frames % (fps * 10L) == 0L) PhotonLog.i(TAG, "encoded $frames frames, last ${b.size} B, $dropped dropped")
             }
             override fun onError(mc: MediaCodec, e: MediaCodec.CodecException) { PhotonLog.w(TAG, "codec error", e) }
             override fun onOutputFormatChanged(mc: MediaCodec, format: MediaFormat) { PhotonLog.i(TAG, "codec format $format") }
@@ -436,12 +462,23 @@ class PhotonBeam(
         }
     }
 
+    /** Every ten seconds of KEPT frames (a frame count, never a clock): what the encoder's input slots did since the last line. */
+    private fun noteKept() {
+        keptSinceLog++
+        if (keptSinceLog < fps * 10L) return
+        val n = slotBackN
+        val mean = if (n > 0) slotBackSumNs / n / 1_000_000 else -1L
+        PhotonLog.i(TAG, "slots: $keptSinceLog kept, $fed fed, $dropped dropped (totals), $slotsOffered offered; a queued slot came back in $mean ms mean, ${slotBackMaxNs / 1_000_000} ms max; an output held ${holdMaxNs / 1_000} µs max; ${codec?.name} tier $tierUsed at ${codedW}x$codedH")
+        keptSinceLog = 0; slotsOffered = 0; slotBackN = 0; slotBackSumNs = 0; slotBackMaxNs = 0; holdMaxNs = 0
+    }
+
     private fun feed(img: Image) {
         reportOrientation()
         try { sendSelf(img) } catch (_: Throwable) {}
         // THE LADDER (beam_ladder.rs): keep or drop this frame (frame rate), which band (coded size), how soft, what bitrate.
         val plan = try { nativeBeamPlan(img.timestamp) } catch (_: Throwable) { -1L }
         if (plan < 0L || (plan and 1L) == 0L) return
+        noteKept()
         // beam_session::pack_plan: keep | band << 1 | soft << 4 | kbit/s << 8 (14 bits) | coded width << 24 | coded height << 40 (16 bits each).
         val soft = ((plan shr 4) and 7L).toInt()
         val kbps = ((plan shr 8) and 0x3FFFL).toInt()
@@ -497,6 +534,7 @@ class PhotonBeam(
             return
         }
         try {
+            queuedAtNs[idx and 63] = System.nanoTime()
             mc.queueInputBuffer(idx, 0, size, img.timestamp / 1000, 0)
             fed++
             if (fed == 1L) PhotonLog.i(TAG, "first frame into the encoder: ${img.width}x${img.height}, planes y ${img.planes[0].rowStride}/${img.planes[0].pixelStride} u ${img.planes[1].rowStride}/${img.planes[1].pixelStride} → input $dstStrides, $size B")

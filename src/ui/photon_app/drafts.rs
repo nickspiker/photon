@@ -247,7 +247,11 @@ impl PhotonApp {
     }
 
     /// The draft write deadline, for the wake schedule.
+    /// None while persist_drafts would refuse (vault copy not loaded yet, or no vault): a deadline it cannot clear would sit in the past and spin the loop, and the load's arrival is the edge that writes instead.
     pub(super) fn draft_deadline(&self) -> Option<Instant> {
+        if !self.drafts_loaded || self.storage.is_none() {
+            return None;
+        }
         self.draft_dirty_since.map(|t| t + DRAFT_WRITE_AFTER)
     }
 

@@ -198,6 +198,8 @@ pub struct ActiveWave {
     pub beam_rx: Option<beam_session::Receiver>,
     /// The beam's sending half — up while this device beams.
     pub beam_tx: Option<beam_session::Sender>,
+    /// A desktop camera opening on its worker (`beam_session::start_desktop_async`): the wave tick drains it into `beam_tx`; the Beam button again or the wave's end retires it.
+    pub beam_opening: Option<std::sync::mpsc::Receiver<Result<beam_session::Sender, String>>>,
     /// The recording's keep/delete material (Active → Ended). Dropping it undecided IS the shred — the key lives nowhere else.
     pub spool: Option<spool::SpoolTicket>,
     /// Desktop ring-loop stopper (Ringing phase only; `None` on Android — Kotlin owns playback there). Dropped or cleared = ring stops at the next cadence boundary.

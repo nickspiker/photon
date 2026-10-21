@@ -1167,7 +1167,7 @@ impl PhotonApp {
                     crate::logf!("PIGEON: {} delivered — the vault held these bytes before the drop, so they stay", o.name);
                 } else {
                     crate::logf!("PIGEON: {} delivered — the local copy is shed", o.name);
-                    queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&content_hash));
+                    queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&content_hash));
                 }
             }
         }

@@ -81,6 +81,43 @@ pub struct VaultStatsView {
     pub degraded: bool,
 }
 
+/// The volume the vault lives on: (bytes free to us, bytes total). Worker-thread only (a filesystem call). None when the directory or the call is unavailable.
+pub fn vault_volume_space() -> Option<(u64, u64)> {
+    #[cfg(target_os = "android")]
+    let dir = std::path::PathBuf::from(android_vault_dirs()?.0);
+    #[cfg(not(target_os = "android"))]
+    let dir = dirs::config_dir()?;
+    volume_space(&dir)
+}
+
+#[cfg(unix)]
+fn volume_space(dir: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::unix::ffi::OsStrExt;
+    let path = std::ffi::CString::new(dir.as_os_str().as_bytes()).ok()?;
+    let mut s: libc::statvfs = unsafe { std::mem::zeroed() };
+    // SAFETY: a NUL-terminated path and a zeroed out-struct the call fills.
+    if unsafe { libc::statvfs(path.as_ptr(), &mut s) } != 0 {
+        return None;
+    }
+    let unit = if s.f_frsize > 0 { s.f_frsize as u64 } else { s.f_bsize as u64 };
+    Some((s.f_bavail as u64 * unit, s.f_blocks as u64 * unit))
+}
+
+#[cfg(windows)]
+fn volume_space(dir: &std::path::Path) -> Option<(u64, u64)> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = dir.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    let (mut avail, mut total) = (0u64, 0u64);
+    // SAFETY: a NUL-terminated wide path and two out-params the call fills.
+    unsafe { windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW(windows::core::PCWSTR(wide.as_ptr()), Some(&mut avail as *mut u64), Some(&mut total as *mut u64), None) }.ok()?;
+    Some((avail, total))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn volume_space(_dir: &std::path::Path) -> Option<(u64, u64)> {
+    None
+}
+
 /// Snapshot the device vault's stats, or None while the vault isn't open. Worker-thread only (see VaultStatsView).
 pub fn vault_stats_view() -> Option<VaultStatsView> {
     let v = device_vault_if_open()?;

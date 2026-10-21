@@ -231,7 +231,7 @@ impl OutboundTransfer {
         packets
     }
 
-    /// Handle ACK received Note: chunk_hash verification is done in PTManager::handle_ack() during transfer matching
+    /// Handle ACK received Note: chunk_hash verification is done in PTManager::handle_ack() during transfer matching (`ack_names_chunk`)
     pub fn handle_ack(&mut self, ack: &PTAck) -> bool {
         // Update RTT if we were tracking this packet
         if let Some(rtt_sample) = self.flight.acked(ack.sequence) {
@@ -419,6 +419,10 @@ pub struct InboundTransfer {
     pub duplicates: u32, // Count of duplicate packets received
     pub last_activity: Instant,
     pub created_at: Instant,
+    /// The device that signed the SPEC, when it was signed. Stream letters are each sender's own a..z, so two devices of one friend hold the same letter at once; this, not the letter, says whose transfer it is.
+    pub sender: Option<[u8; 32]>,
+    /// Every address that has declared this exact SPEC (same stream, same hash) or carried its DATA under a proven identity. DATA from any of them routes here without adoption guesswork.
+    pub paths: Vec<SocketAddr>,
 }
 
 impl InboundTransfer {
@@ -437,6 +441,8 @@ impl InboundTransfer {
             duplicates: 0,
             last_activity: Instant::now(),
             created_at: Instant::now(),
+            sender: None,
+            paths: vec![peer_addr],
         }
     }
 
@@ -478,7 +484,9 @@ impl InboundTransfer {
         }
 
         PTComplete {
-            final_hash,
+            // A failure names the hash the sender PROMISED, not the one we assembled: the sender finds its transfer by that hash, so only this lets it retire the transfer (freeing its window slot) instead of sitting in AwaitingComplete forever.
+            // The assembled hash is in the log line above.
+            final_hash: if success { final_hash } else { self.receive_buffer.expected_hash() },
             success,
         }
     }

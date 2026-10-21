@@ -501,6 +501,7 @@ impl PhotonApp {
             cb.set_checked(crate::hard_logs_active());
         }
         self.load_release_when_copied();
+        self.load_space_evicted();
         // Hold every wave here: device-local, absent = ON (replication is the default; a watch opts out).
         self.wave_hold = self
             .fleet_settings

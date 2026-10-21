@@ -88,6 +88,12 @@ pub struct PTManager {
     pending_outbound: std::collections::VecDeque<PendingOutbound>,
     /// Peers whose window is currently full — so the park and the drain each log once, not per transfer.
     window_parked: std::collections::HashSet<PeerKey>,
+    /// Which device last spoke a signed SPEC from each address, oldest first, capped at `SPEC_SENDERS_CAP`.
+    /// DATA carries no identity, so this is how a DATA arriving from an address its transfer was not keyed on is told apart: the same device path-migrating, or another device of the same friend reusing the letter (2026-10-21 Emma: four devices of one friend, 2958 hash mismatches).
+    spec_senders: Vec<(SocketAddr, [u8; 32])>,
+    /// Addresses whose reliable-packet head exhausted every retry without one ACK: dead until a datagram arrives FROM them (`heard_from`, the revival edge).
+    /// Small sends to a dead address go to a live alternate or are refused, so one expired address can't hold a growing queue (2026-10-20 Nick: an expired temporary IPv6 took 2741 retransmits and 548 give-ups over three and a half hours).
+    dead_addrs: Vec<SocketAddr>,
 }
 
 /// How a peer is told apart for the send window and its stream-id rotation: by device key when the caller gave one (a retarget moves the address, the window must not care), else by address.
@@ -146,6 +152,8 @@ impl PTManager {
             next_transfer_id: 0,
             pending_outbound: std::collections::VecDeque::new(),
             window_parked: std::collections::HashSet::new(),
+            spec_senders: Vec::new(),
+            dead_addrs: Vec::new(),
         }
     }
 
@@ -182,6 +190,44 @@ impl PTManager {
     pub const SINGLE_PACKET_MAX: usize = 1024;
     /// Retry cap for a reliable small packet before the stop-and-wait head is dropped and the per-peer FIFO advances. With 1→2→…→60s backoff, ~5 retries ≈ 30-60s of trying — long enough to ride out a brief blip, short enough that an undeliverable head (dead avatar request) can't blackhole the chat queued behind it. The higher layer re-queues (chat retransmit / avatar→FGTW), so a drop is a deferral, not a loss.
     pub const MAX_PACKET_RETRIES: u32 = 5;
+    /// How many addresses `spec_senders` and `dead_addrs` each remember: tens of friend devices times their few addresses, with headroom for rotating temporary IPv6 addresses.
+    /// The oldest falls off first.
+    const SPEC_SENDERS_CAP: usize = 256;
+
+    /// Remember that `sender` signed a SPEC from `addr`.
+    /// A later SPEC from the same address replaces the entry, so a reassigned LAN address follows its new device.
+    fn note_spec_sender(&mut self, addr: SocketAddr, sender: Option<[u8; 32]>) {
+        let Some(dev) = sender else { return };
+        self.spec_senders.retain(|(a, _)| !same_addr(*a, addr));
+        self.spec_senders.push((canon_addr(addr), dev));
+        if self.spec_senders.len() > Self::SPEC_SENDERS_CAP {
+            self.spec_senders.remove(0);
+        }
+    }
+
+    /// The device that last signed a SPEC from `addr`, if any did.
+    fn spec_sender_at(&self, addr: SocketAddr) -> Option<[u8; 32]> {
+        self.spec_senders.iter().find(|(a, _)| same_addr(*a, addr)).map(|(_, d)| *d)
+    }
+
+    /// True when a DATA ACK's chunk hash names the bytes `t` sent at that sequence (the receiver hashes exactly the payload it got).
+    fn ack_names_chunk(t: &OutboundTransfer, ack: &PTAck) -> bool {
+        t.send_buffer.get_packet(ack.sequence).map_or(false, |p| *blake3::hash(p).as_bytes() == ack.chunk_hash)
+    }
+
+    /// True when `addr` stopped answering and has not been heard from since.
+    fn is_dead(&self, addr: SocketAddr) -> bool {
+        self.dead_addrs.iter().any(|d| same_addr(*d, addr))
+    }
+
+    /// The revival edge: any datagram FROM an address proves it answers again, so sends to it resume.
+    /// The receive loop calls this for every datagram; it is a no-op while nothing is dead.
+    pub fn heard_from(&mut self, addr: SocketAddr) {
+        if let Some(i) = self.dead_addrs.iter().position(|d| same_addr(*d, addr)) {
+            self.dead_addrs.swap_remove(i);
+            crate::logf!("PT: heard from {} again — sends to it resume", addr);
+        }
+    }
 
     /// Queue data for reliable delivery to peer
     ///
@@ -238,11 +284,22 @@ impl PTManager {
 
         // Small payload — enqueue as a reliable packet (stop-and-wait, one in flight per peer, retransmitted on backoff in tick() until the receiver's delivery ack arrives). Returns the bytes to send NOW only if no packet is already in flight to this peer; otherwise it queues behind the in-flight head and goes out when that head is acked.
         if data.len() <= Self::SINGLE_PACKET_MAX {
+            // A dead primary hands the send to a live alternate, else the send is refused: nothing queues behind an address that stopped answering, and the first datagram heard from it lifts the refusal.
+            // Returning empty is the same contract as the sentinel guard above; the caller's relay fan-out and retransmit sweep are untouched.
+            let (peer_addr, alt_addr) = match (self.is_dead(peer_addr), alt_addr.filter(|a| !self.is_dead(*a))) {
+                (false, alt) => (peer_addr, alt),
+                (true, Some(alt)) => (alt, None),
+                (true, None) => return Vec::new(),
+            };
             let peer_busy = self
                 .outbound_packets
                 .iter()
                 .any(|p| same_addr(p.peer_addr, peer_addr) && p.in_flight);
             let mut pkt = OutboundPacket::new(peer_addr, alt_addr, data, recipient_pubkey);
+            // The same bytes already queued for this address are the same delivery: a higher layer's retransmit must not stack a copy behind its own original.
+            if self.outbound_packets.iter().any(|p| p.packet_hash == pkt.packet_hash && same_addr(p.peer_addr, peer_addr)) {
+                return Vec::new();
+            }
             if peer_busy {
                 // Queue behind the in-flight head; nothing to send right now.
                 self.outbound_packets.push(pkt);
@@ -361,8 +418,18 @@ impl PTManager {
 
     /// Handle received SPEC (start receiving)
     /// A SPEC we already hold the transfer for — the same stream and hash from ANY address (a six-path anchor delivers one SPEC six times; a lost SPEC ACK makes the sender repeat it). The ACK still goes back so the sender locks onto whichever path answered, but no second transfer and no second log line (2026-10-02, the Emma wave: 222 transfer lines in one second in front of the media).
-    pub fn spec_known(&self, spec: &PTSpec) -> bool {
-        self.inbound.iter().any(|t| t.stream_id == spec.stream_id && t.receive_buffer.expected_hash() == spec.data_hash)
+    /// The answering address joins that transfer's declared paths: the hash names the exact bytes, so DATA from any address that declared this SPEC belongs to it, whichever device sent it.
+    pub fn spec_known(&mut self, peer_addr: SocketAddr, spec: &PTSpec, sender: Option<[u8; 32]>) -> bool {
+        self.note_spec_sender(peer_addr, sender);
+        let Some(t) = self.inbound.iter_mut().find(|t| {
+            t.stream_id == spec.stream_id && t.receive_buffer.expected_hash() == spec.data_hash && t.state != TransferState::Failed
+        }) else {
+            return false;
+        };
+        if !t.paths.iter().any(|p| same_addr(*p, peer_addr)) {
+            t.paths.push(peer_addr);
+        }
+        true
     }
 
     /// The SPEC ACK alone, for a SPEC already known (see `spec_known`).
@@ -375,7 +442,8 @@ impl PTManager {
         .to_vsf_bytes(&self.keypair)
     }
 
-    pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec) -> Vec<u8> {
+    /// `sender` is the device key that signed the SPEC (None only in tests and for unsigned callers): it owns the transfer, not the address it arrived on.
+    pub fn handle_spec(&mut self, peer_addr: SocketAddr, spec: PTSpec, sender: Option<[u8; 32]>) -> Vec<u8> {
         crate::logf!(
             "PT: Received SPEC from {} - stream '{}', {} packets, {} bytes, hash {}",
             peer_addr,
@@ -386,13 +454,20 @@ impl PTManager {
         );
 
         let stream_id = spec.stream_id;
+        self.note_spec_sender(peer_addr, sender);
 
-        // Remove any existing incomplete transfer for this (peer, stream_id) A new SPEC means peer has abandoned the old transfer
+        // Remove any existing incomplete transfer this SENDER held on this stream: a new SPEC means it abandoned the old one.
+        // By device when the SPEC is signed (its old transfer may be keyed at another of its addresses), by address otherwise; never another device's transfer that merely shares the letter, since every sender rotates its own a..z.
         self.inbound.retain(|t| {
-            !(same_addr(t.peer_addr, peer_addr) && t.stream_id == stream_id && !t.is_complete())
+            let same_sender = match (sender, t.sender) {
+                (Some(a), Some(b)) => a == b,
+                _ => same_addr(t.peer_addr, peer_addr),
+            };
+            !(same_sender && t.stream_id == stream_id && !t.is_complete())
         });
 
-        let transfer = InboundTransfer::new(peer_addr, &spec);
+        let mut transfer = InboundTransfer::new(peer_addr, &spec);
+        transfer.sender = sender;
         self.inbound.push(transfer);
 
         // Send SPEC ACK (ACK with seq=MAX as special marker)
@@ -414,11 +489,13 @@ impl PTManager {
         let mut packets = Vec::new();
 
         // Find the transfer by stream_id, accepting the ACK from the primary path, the raced alternate, OR — when the stream id is unambiguous — any third address (a multi-homed receiver's egress can differ from the ingress we aimed at; 2026-09-02 field). Whichever address answered is the reachable one, so lock the transfer onto it and drop the alternate — DATA/ACK route by (peer_addr, stream_id), so all subsequent packets must use the path that ACKed.
+        // The ACK echoes the SPEC's data hash, so both matches require it: a SPEC ACK for another transfer on the same letter (another recipient device, an earlier lap of the alphabet) can never start or re-aim this one.
         let matched = self
             .outbound
             .iter()
             .position(|t| {
                 t.stream_id == stream_id
+                    && t.send_buffer.data_hash() == data_hash
                     && (same_addr(t.peer_addr, peer_addr)
                         || t.alt_addr.map_or(false, |a| same_addr(a, peer_addr)))
             })
@@ -427,7 +504,7 @@ impl PTManager {
                     .outbound
                     .iter()
                     .enumerate()
-                    .filter(|(_, t)| t.stream_id == stream_id && !t.spec_acked);
+                    .filter(|(_, t)| t.stream_id == stream_id && !t.spec_acked && t.send_buffer.data_hash() == data_hash);
                 match (candidates.next(), candidates.next()) {
                     (Some((i, _)), None) => Some(i),
                     _ => None,
@@ -517,31 +594,40 @@ impl PTManager {
 
     /// Handle received DATA packet Routes by (peer_addr, stream_id) to support concurrent transfers
     pub fn handle_data(&mut self, peer_addr: SocketAddr, data: PTData) -> Option<Vec<u8>> {
-        // Find inbound transfer by peer AND stream_id — falling back to a UNIQUE stream match with address adoption. A multi-homed sender's SPEC can arrive via one path (the v6 GUA) and its DATA via another (the v4 LAN): keyed strictly by source address the DATA matched nothing and dropped as "unknown bytes" FOREVER while the sender retransmitted — the 2026-09-02 field wedge. When exactly ONE incomplete inbound transfer carries the stream id, that's the sender path-migrating, not ambiguity: adopt the new source (the receive-side mirror of the SPEC-ACK alternate-path lock). A wrong adoption cannot corrupt: the final data_hash verification rejects the assembled payload and the transfer fails cleanly instead of wedging.
+        // Find the inbound transfer by stream_id and a path that declared it (its SPEC's source, or any address that sent the same SPEC hash).
+        // Falling back to a UNIQUE stream match with address adoption: a multi-homed sender's SPEC can arrive via one path (the v6 GUA) and its DATA via another (the v4 LAN), and keyed strictly by source address the DATA matched nothing and dropped as "unknown bytes" FOREVER while the sender retransmitted — the 2026-09-02 field wedge.
+        // Adoption is by IDENTITY, never by letter alone: stream letters are each sender's own a..z, so several devices of one friend hold the same letter at once, and a letter-only adoption spliced one device's straggler DATA into another device's fresh transfer (2026-10-21 Emma: 79 adoptions bouncing transfers between .156 and .161, 2958 "Hash mismatch" lines, 66 inbound timeouts, 432 attachment re-asks).
+        // An address that has signed a SPEC belongs to that device and adopts only into that device's transfer; an address that never has adopts only into a transfer that has received nothing yet (the 2026-09-02 shape, where the SPEC path and the DATA path split on the very first packet).
         let strict = self.inbound.iter().position(|t| {
-            same_addr(t.peer_addr, peer_addr) && t.stream_id == data.stream_id && !t.is_complete()
+            t.stream_id == data.stream_id && !t.is_complete() && t.paths.iter().any(|p| same_addr(*p, peer_addr))
         });
         let idx = strict.or_else(|| {
-            let mut candidates = self
-                .inbound
-                .iter()
-                .enumerate()
-                .filter(|(_, t)| t.stream_id == data.stream_id && !t.is_complete());
+            let speaker = self.spec_sender_at(peer_addr);
+            let mut candidates = self.inbound.iter().enumerate().filter(|(_, t)| {
+                t.stream_id == data.stream_id
+                    && !t.is_complete()
+                    && match speaker {
+                        Some(dev) => t.sender == Some(dev),
+                        None => t.progress().0 == 0,
+                    }
+            });
             match (candidates.next(), candidates.next()) {
                 (Some((i, _)), None) => Some(i),
                 _ => None,
             }
         });
         if let Some(transfer) = idx.map(|i| &mut self.inbound[i]) {
-            if !same_addr(transfer.peer_addr, peer_addr) {
+            if strict.is_none() {
                 crate::logf!(
                     "PT: DATA for stream '{}' arrived from {} (transfer was keyed {}) — sender path-migrated, adopting the live address",
                     data.stream_id as char,
                     peer_addr,
                     transfer.peer_addr
                 );
-                transfer.peer_addr = peer_addr;
+                transfer.paths.push(peer_addr);
             }
+            // The live address is where completion is looked up and answered (`check_inbound_complete`, `take_inbound_data`).
+            transfer.peer_addr = peer_addr;
             if let Some(ack) = transfer.handle_data(&data) {
                 let (recv, total) = transfer.progress();
                 // Log at milestones: every 50 packets (but not 0) or completion
@@ -580,14 +666,16 @@ impl PTManager {
         }
 
         // Find outbound transfer by peer AND stream_id — with the same unique-stream fallback as handle_data: an ACK returning from an address we never sent to (the receiver's egress differs from its ingress — the multi-homed v4/v6 asymmetry) must lock the transfer onto the path that is demonstrably ALIVE, not be dropped.
+        // Both matches require the ACK's chunk hash to name the bytes this transfer sent at that sequence, so an ACK for another transfer on the same letter (another recipient device, an earlier lap of the alphabet) never marks this one's chunk delivered.
         let strict = self.outbound.iter().position(|t| {
             same_addr(t.peer_addr, peer_addr)
                 && t.stream_id == ack.stream_id
                 && t.state == TransferState::Transferring
+                && Self::ack_names_chunk(t, &ack)
         });
         let idx = strict.or_else(|| {
             let mut candidates = self.outbound.iter().enumerate().filter(|(_, t)| {
-                t.stream_id == ack.stream_id && t.state == TransferState::Transferring
+                t.stream_id == ack.stream_id && t.state == TransferState::Transferring && Self::ack_names_chunk(t, &ack)
             });
             match (candidates.next(), candidates.next()) {
                 (Some((i, _)), None) => Some(i),
@@ -733,10 +821,17 @@ impl PTManager {
         peer_addr: SocketAddr,
         stream_id: u8,
     ) -> Option<Vec<u8>> {
-        if let Some(transfer) = self.inbound.iter().find(|t| {
-            same_addr(t.peer_addr, peer_addr) && t.stream_id == stream_id && t.is_complete()
+        if let Some(transfer) = self.inbound.iter_mut().find(|t| {
+            same_addr(t.peer_addr, peer_addr)
+                && t.stream_id == stream_id
+                && t.is_complete()
+                && t.state != TransferState::Failed
         }) {
             let complete = transfer.build_complete();
+            // A failed assembly is final: retire it on this edge so the next tick sweeps it, instead of re-verifying, re-logging and re-answering it for every straggler DATA until the 30 s stale sweep (2026-10-21 Emma: 2958 "Hash mismatch" lines from about a dozen bad assemblies).
+            if !complete.success {
+                transfer.state = TransferState::Failed;
+            }
             return Some(complete.to_vsf_bytes(&self.keypair));
         }
         None
@@ -944,15 +1039,62 @@ impl PTManager {
 
         // Give-up-and-advance: an in-flight head that has retried past the cap is undeliverable (dead address, peer gone) and must NOT hold the per-peer FIFO forever — otherwise one stuck packet (e.g. an AVATAR_REQUEST to a peer that won't ack) head-of-line-blocks every chat message queued behind it, which is exactly the "messages stick after CLUTCH" bug. Dropping is safe: small packets carry their own higher-layer retransmit (chat re-queues via the CHAT retransmit sweep; avatar falls back to FGTW), so a dropped PT packet just re-enters later — but the queue keeps flowing meanwhile.
         let mut advanced_peers: Vec<SocketAddr> = Vec::new();
+        let mut gone_dead: Vec<SocketAddr> = Vec::new();
         self.outbound_packets.retain(|pkt| {
             if pkt.in_flight && pkt.retry_count >= Self::MAX_PACKET_RETRIES {
                 crate::logf!("PT: giving up on undeliverable packet to {} after {} retries — advancing the queue", pkt.peer_addr, pkt.retry_count);
                 advanced_peers.push(pkt.peer_addr);
+                for a in std::iter::once(pkt.peer_addr).chain(pkt.alt_addr) {
+                    if !gone_dead.iter().any(|d| same_addr(*d, a)) {
+                        gone_dead.push(a);
+                    }
+                }
                 false
             } else {
                 true
             }
         });
+        // An exhausted head is the death edge for the addresses it raced: every retry went to them and not one ACK came back.
+        // Mark them dead until heard from, re-aim what queued behind them at a live alternate where the sender named one, and drop the rest — the same deferral as the give-up itself, and with the address dead a higher layer's re-queue is refused instead of re-stacking a ~24 s ladder per packet (2026-10-20 Nick: 548 give-ups in a row against one expired temporary IPv6).
+        let death_edge = !gone_dead.is_empty();
+        for dead in gone_dead {
+            if !self.is_dead(dead) {
+                crate::logf!("PT: {} never answered — dead until heard from; small sends to it are refused", dead);
+                self.dead_addrs.push(canon_addr(dead));
+                // An expired temporary address is never heard from again, so the list is capped: the oldest falls off and, if anyone still aims at it, dies again after one more ladder.
+                if self.dead_addrs.len() > Self::SPEC_SENDERS_CAP {
+                    self.dead_addrs.remove(0);
+                }
+            }
+        }
+        if death_edge {
+            let dead_addrs = &self.dead_addrs;
+            let is_dead = |a: SocketAddr| dead_addrs.iter().any(|d| same_addr(*d, a));
+            let (mut dropped, mut reaimed) = (0usize, 0usize);
+            self.outbound_packets.retain_mut(|p| {
+                if p.alt_addr.map_or(false, |a| is_dead(a)) {
+                    p.alt_addr = None;
+                }
+                if p.in_flight || !is_dead(p.peer_addr) {
+                    return true;
+                }
+                match p.alt_addr.take() {
+                    Some(alt) => {
+                        p.peer_addr = alt;
+                        reaimed += 1;
+                        advanced_peers.push(alt);
+                        true
+                    }
+                    None => {
+                        dropped += 1;
+                        false
+                    }
+                }
+            });
+            if dropped + reaimed > 0 {
+                crate::logf!("PT: dropped {} queued packet(s) behind a dead address, re-aimed {} at a live alternate", dropped, reaimed);
+            }
+        }
         // Promote the next queued packet for each peer whose stuck head we just dropped (mirrors handle_packet_ack's stop-and-wait advance).
         for peer in advanced_peers {
             let peer_busy = self
@@ -1162,7 +1304,7 @@ mod tests {
         let spec_fields = parse_vsf_section_fields(&spec_bytes);
         let spec = PTSpec::from_vsf_fields(&spec_fields).unwrap();
         // Receiver keys the transfer by the SPEC's source (the v6 path)...
-        let _ = receiver.handle_spec(v6_path, spec.clone());
+        let _ = receiver.handle_spec(v6_path, spec.clone(), None);
         let data_packets = sender.handle_spec_ack(v6_path, spec.stream_id, spec.data_hash);
         // ...but the DATA arrives from the v4 path.
         let first = PTData::from_bytes(&data_packets[0]).unwrap();
@@ -1210,7 +1352,7 @@ mod tests {
         // Parse SPEC and feed to receiver
         let spec_fields = parse_vsf_section_fields(&spec_bytes);
         let spec = PTSpec::from_vsf_fields(&spec_fields).expect("Failed to parse SPEC");
-        let spec_ack = receiver.handle_spec(peer_addr, spec.clone());
+        let spec_ack = receiver.handle_spec(peer_addr, spec.clone(), None);
         assert!(!spec_ack.is_empty());
 
         // Parse SPEC ACK - it's now header-only format
@@ -1373,8 +1515,8 @@ mod tests {
             total_size: d.len() as u32,
             data_hash: *blake3::hash(d).as_bytes(),
         };
-        mgr.handle_spec(peer, spec(b'a', &data_a));
-        mgr.handle_spec(peer, spec(b'b', &data_b));
+        mgr.handle_spec(peer, spec(b'a', &data_a), None);
+        mgr.handle_spec(peer, spec(b'b', &data_b), None);
 
         // Deliver both final packets (order intentionally b-then-a to prove drain isn't positional).
         mgr.handle_data(
@@ -1399,6 +1541,120 @@ mod tests {
         assert!(mgr.check_inbound_complete(peer, b'b').is_some());
         assert_eq!(mgr.take_inbound_data(peer, b'a'), Some(data_a));
         assert_eq!(mgr.take_inbound_data(peer, b'b'), Some(data_b));
+    }
+
+    /// A two-packet SPEC on stream 'c' for `d`, and its DATA chunk `seq`.
+    fn spec_c(d: &[u8]) -> PTSpec {
+        PTSpec {
+            stream_id: b'c',
+            total_packets: 2,
+            packet_size: 1024,
+            total_size: d.len() as u32,
+            data_hash: *blake3::hash(d).as_bytes(),
+        }
+    }
+    fn chunk_c(d: &[u8], seq: u32) -> PTData {
+        let start = seq as usize * 1024;
+        PTData { stream_id: b'c', sequence: seq, payload: d[start..d.len().min(start + 1024)].to_vec() }
+    }
+
+    /// 2026-10-21 Emma: several devices of one friend each rotate their own a..z, so one letter is live from two devices at once.
+    /// Device B's straggler DATA (its own 'c' already landed and drained) must never be adopted into device A's fresh 'c': B signed SPECs from that address, so the address is B's.
+    #[test]
+    fn another_devices_data_never_joins_a_transfer_on_the_same_letter() {
+        let mut rx = PTManager::new(test_keypair());
+        let addr_a: SocketAddr = "[::ffff:192.168.1.156]:4383".parse().unwrap();
+        let addr_b: SocketAddr = "[::ffff:192.168.1.161]:4383".parse().unwrap();
+        let (dev_a, dev_b) = ([0xA1u8; 32], [0xB2u8; 32]);
+        let data_a = vec![0xAA; 2000];
+        let data_b = vec![0xBB; 2000];
+
+        // B's 'c' lands whole and drains.
+        rx.handle_spec(addr_b, spec_c(&data_b), Some(dev_b));
+        rx.handle_data(addr_b, chunk_c(&data_b, 0));
+        rx.handle_data(addr_b, chunk_c(&data_b, 1));
+        assert!(rx.check_inbound_complete(addr_b, b'c').is_some());
+        assert_eq!(rx.take_inbound_data(addr_b, b'c'), Some(data_b.clone()));
+
+        // A opens its own 'c'; B's late duplicate arrives before any of A's DATA.
+        rx.handle_spec(addr_a, spec_c(&data_a), Some(dev_a));
+        assert!(rx.handle_data(addr_b, chunk_c(&data_b, 0)).is_none(), "B's straggler must not be accepted into A's transfer");
+        assert!(same_addr(rx.inbound[0].peer_addr, addr_a), "A's transfer keeps A's address");
+        assert_eq!(rx.inbound[0].progress().0, 0, "nothing of B's landed in A's buffer");
+
+        // A's own DATA completes and verifies.
+        rx.handle_data(addr_a, chunk_c(&data_a, 0));
+        rx.handle_data(addr_a, chunk_c(&data_a, 1));
+        assert!(rx.check_inbound_complete(addr_a, b'c').is_some());
+        assert_eq!(rx.take_inbound_data(addr_a, b'c'), Some(data_a));
+    }
+
+    /// The same device speaking from a second address is still one sender: its DATA follows the transfer there even after data has landed, because the address is attributed to it by a signed SPEC.
+    #[test]
+    fn the_same_device_still_migrates_mid_transfer() {
+        let mut rx = PTManager::new(test_keypair());
+        let v6: SocketAddr = "[2600:100f::1]:4383".parse().unwrap();
+        let v4: SocketAddr = "192.168.1.156:4383".parse().unwrap();
+        let dev = [0xA1u8; 32];
+        let data = vec![0xAA; 2000];
+        let other = vec![0xEE; 64];
+        // The device once signed a SPEC from v4 too (another stream), so v4 is known to be it.
+        rx.handle_spec(v4, PTSpec { stream_id: b'q', total_packets: 1, packet_size: 1024, total_size: 64, data_hash: *blake3::hash(&other).as_bytes() }, Some(dev));
+        rx.handle_spec(v6, spec_c(&data), Some(dev));
+        assert!(rx.handle_data(v6, chunk_c(&data, 0)).is_some());
+        assert!(rx.handle_data(v4, chunk_c(&data, 1)).is_some(), "the same device's DATA from its other address is adopted");
+        assert!(rx.check_inbound_complete(v4, b'c').is_some());
+        assert_eq!(rx.take_inbound_data(v4, b'c'), Some(data));
+    }
+
+    /// A bad assembly answers once, naming the promised hash so the sender can retire its transfer, and is then retired itself: no re-verify and no second COMPLETE per straggler.
+    #[test]
+    fn a_hash_mismatch_answers_once_and_frees_the_sender() {
+        let mut rx = PTManager::new(test_keypair());
+        let peer: SocketAddr = "192.168.1.156:4383".parse().unwrap();
+        let data = vec![0xAA; 2000];
+        rx.handle_spec(peer, spec_c(&data), None);
+        rx.handle_data(peer, chunk_c(&data, 0));
+        rx.handle_data(peer, chunk_c(&vec![0xBB; 2000], 1));
+        let complete_bytes = rx.check_inbound_complete(peer, b'c').expect("a complete assembly answers");
+        let (provenance, values) = parse_pt_header_field(&complete_bytes).unwrap();
+        let complete = PTComplete::from_vsf_header(provenance, &values).unwrap();
+        assert!(!complete.success);
+        assert_eq!(complete.final_hash, *blake3::hash(&data).as_bytes(), "the failure names the hash the sender promised");
+        assert!(rx.check_inbound_complete(peer, b'c').is_none(), "answered once, then retired");
+        rx.tick();
+        assert!(rx.inbound.is_empty(), "the tick sweeps the retired assembly");
+    }
+
+    /// 2026-10-20 Nick: an expired temporary IPv6 took 548 give-ups in a row.
+    /// The first exhausted head kills the address and its queue; new sends are refused; the first datagram heard from it reopens it.
+    #[test]
+    fn an_address_that_never_answers_is_dead_until_heard_from() {
+        let mut mgr = PTManager::new(test_keypair());
+        let dead: SocketAddr = "[2600:100f:a020:deec:d048:3f71:19f3:9e3a]:4383".parse().unwrap();
+        let live: SocketAddr = "192.168.1.159:4383".parse().unwrap();
+        assert!(!mgr.send(dead, vec![1; 64]).is_empty());
+        for i in 2..6u8 {
+            let _ = mgr.send(dead, vec![i; 64]);
+        }
+        // One queued packet names a live alternate: it must be re-aimed, not dropped.
+        let _ = mgr.send_with_pubkey_and_alt(dead, Some(live), vec![7; 64], None);
+        // A retransmit of the same bytes stacks nothing.
+        let _ = mgr.send(dead, vec![2; 64]);
+        assert_eq!(mgr.outbound_packets.len(), 6);
+        // The head exhausts its ladder (forced: the ladder's timing is not under test).
+        mgr.outbound_packets[0].retry_count = PTManager::MAX_PACKET_RETRIES;
+        let sent = mgr.tick();
+        assert_eq!(mgr.outbound_packets.len(), 1, "the queue behind the dead address went with its head, all but the re-aimed one");
+        assert!(same_addr(mgr.outbound_packets[0].peer_addr, live) && mgr.outbound_packets[0].in_flight);
+        assert!(sent.iter().any(|s| same_addr(s.peer_addr, live)), "the re-aimed packet went out on the live path");
+        assert!(mgr.send(dead, vec![9; 64]).is_empty());
+        assert_eq!(mgr.outbound_packets.len(), 1, "new sends to the dead address are refused, not stacked");
+        // The revival edge is the dead address's own datagram; anyone else's revives nothing.
+        mgr.heard_from(live);
+        assert!(mgr.send(dead, vec![9; 64]).is_empty(), "an unrelated datagram revives nothing");
+        mgr.heard_from(dead);
+        assert!(!mgr.send(dead, vec![9; 64]).is_empty(), "heard from again: sends resume");
     }
 
     // Helper to parse VSF section fields (for legacy format like pt_spec)

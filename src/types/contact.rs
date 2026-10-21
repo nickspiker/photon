@@ -1010,6 +1010,12 @@ impl Contact {
         out
     }
 
+    /// A sibling a push should not be spent on right now: an offline verdict, or a Pending sibling never seen up this session.
+    /// Its online edge heals the gap (it pulls from us on seeing us, and our fleet_sweep_due edge re-serves forwards), so parking loses nothing.
+    pub fn sibling_parked(&self) -> bool {
+        self.is_sibling && !self.is_online && (self.presence_probed || self.clutch_state != ClutchState::Complete)
+    }
+
     /// Upsert the per-device endpoint for `pubkey` and apply `update` to it. Linear scan — fleets are single-digit sized.
     /// The device whose offer we are answering this round (the signer of the offer in their slot) and where it was last heard — LAN first, public as the alternate. `None` when no offer is held or the device has no known address.
     pub fn offer_device_addrs(&self) -> Option<([u8; 32], SocketAddr, Option<SocketAddr>)> {

@@ -71,7 +71,7 @@
 - [Ready first paint](project_ready_first_paint.md) — v110: hit stamps ride the paint decision; dirty flag survives its render
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES phase 1 BUILT 2026-09-15; join-by-replay SCOPED 2026-10-01
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1 retire open
-- [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — OPEN: main thread 100% = wake_at returns past Instant
+- [project_fluor_busy_loop.md](project_fluor_busy_loop.md) — 2026-10-21 FIXED: wake arms out of step with the pump; fluor sticky WaitUntil
 - [project_era_ratchet.md](project_era_ratchet.md) — ERA RATCHET stages 1-4 SHIPPED; NEXT stage 5 consent, 6 soak
 - [project_macos_resize_cursor.md](project_macos_resize_cursor.md) — macOS resize arrows intermittent; FIXED in fluor
 - [project_multimonitor_status.md](project_multimonitor_status.md) — phase D + Windows not built; macOS drag VANISHES

@@ -31,6 +31,8 @@ impl PhotonApp {
         // Media-liveness measurement on the live wave (two atomic loads when idle).
         timed_drain!("wave_drought", self.wave_drought_tick());
         timed_drain!("beam_armed", self.beam_armed_tick());
+        // The camera worker's answer: a sender to install, or why not (one try_recv while a camera opens, nothing otherwise).
+        timed_drain!("beam_open", self.drain_beam_open());
         // Ring-lease heartbeat: caller beats the offer ~1s, the answering side lapses a stale ring ~3s (two atomics + a compare when idle).
         timed_drain!("wave_ring", self.wave_ring_tick());
         // Preview worker finished → flip the Play/Stop pill back (one atomic read when idle).
@@ -727,8 +729,11 @@ impl PhotonApp {
                         if contact.knows_device(&peer_pubkey.key) {
                             verdict_matched = true;
                             // REPORTED-STOLEN intake (device-trust-and-recovery.md): the pong's sealed tail names the peer fleet's locked devices, and ONE report from a trusted fold member suffices. The authorization lives at lock CREATION, not here: writing fleet.locked demands the handle at a fresh attest, so a stock-client thief can't mint a false report — and a locked device's stale fleet key can't even read current fstate, so its reportable set is frozen at empty. The key-extraction tier defeats any threshold anyway (it can plant a fresh fold member as a second voucher — the trust doc's own observation), so requiring two only stranded the commonest fleet: two devices, one stolen, one survivor. A reporter still never counts toward refusing itself. Monotonic and persisted.
-                            if !contact.is_sibling {
-                                for reported in &locked_reports {
+                            // Only an opened pong tail testifies: Emma's 41 refuse/unrefuse flips (2026-10-21) were pings, timeouts and inbound chats whose empty report the un-refuse below read as "their locked set no longer names it".
+                            let testimony = if contact.is_sibling { None } else { locked_reports.as_ref() };
+                            if let Some(locked_reports) = testimony {
+                                let mut refusals_moved = false;
+                                for reported in locked_reports {
                                     let pair = (peer_pubkey.key, *reported);
                                     if !contact.locked_reports_seen.contains(&pair) {
                                         contact.locked_reports_seen.push(pair);
@@ -750,11 +755,7 @@ impl PhotonApp {
                                         contact.refused_devices.push(*reported);
                                         changed = true;
                                         crate::logf!("FRIEND-REFUSE: {} device {} refused — reported stolen by {} fleet device(s)", crate::fp(&contact.handle_proof), crate::fp(reported), reporters.len());
-                                        if let Some(storage) = self.storage.as_ref() {
-                                            let _ = crate::storage::contacts::save_contact(
-                                                contact, storage,
-                                            );
-                                        }
+                                        refusals_moved = true;
                                     }
                                 }
                                 // UN-REFUSE — the reversal half the intake never had: an UNLOCK (handle-confirmed at a fresh attest, worker-authoritative) clears the peer fleet's fleet.locked, but a friend who ingested the report kept refusing FOREVER — the 2026-08-16 field wedge: a lock-test on one device left it permanently deaf at every friend (pings silently dropped, contact stuck offline) with no path back. This pong is the SAME trusted testimony channel the refusal arrived on, so its locked set is authoritative for THIS reporter now: its stale (reporter, device) pairs retract, and a refused device is kept only while a standing reporter remains. Crucially the report ledger is RAM-ONLY while refused_devices persists — a restart ORPHANS every refusal (zero recorded reporters; the first un-refuse shipped gated on pair-removal and never fired in the field, round-2 soak) — so an orphaned refusal yields to this pong's live word directly: trusted fold member, current locked set, device absent → restored. Thief-safe: a locked/refused device's own pongs are dropped at the door (knows_device is false for it), so retraction testimony can only come from ANOTHER trusted device of that fleet — exactly who an unlock speaks thru; and a still-locked device re-refuses on the next report-carrying pong.
@@ -785,10 +786,18 @@ impl PhotonApp {
                                     for dev in &dropped {
                                         crate::logf!("FRIEND-UNREFUSE: {} device {} restored — no standing reporter and {}'s current locked set doesn't name it (unlock propagated)", crate::fp(&contact.handle_proof), crate::fp(dev), crate::fp(&peer_pubkey.key));
                                     }
-                                    if let Some(storage) = self.storage.as_ref() {
-                                        let _ = crate::storage::contacts::save_contact(
-                                            contact, storage,
-                                        );
+                                    refusals_moved = true;
+                                }
+                                // OFF THE UI THREAD (the UI thread makes no vault call): a snapshot persists on the worker, in order behind any earlier one.
+                                // Emma 2026-10-21: this save sat 2.1 s and 2.3 s behind 256 KiB attachment commits inside the Online arm.
+                                if refusals_moved {
+                                    if let Some(storage) = self.storage.as_ref().cloned() {
+                                        let snapshot = contact.clone();
+                                        queue_job(&self.seal_job_tx, move || {
+                                            if let Err(e) = crate::storage::contacts::save_contact(&snapshot, &storage) {
+                                                crate::logf!("FRIEND-REFUSE: refusal persist failed: {}", e);
+                                            }
+                                        });
                                     }
                                 }
                             }
@@ -970,20 +979,23 @@ impl PhotonApp {
                             }
                             // Bootstrap un-deadlock (docs/lifecycle.md aftermath, observed): a roster-merged contact starts with ONE bootstrap device (public_identity) as its ping target — if THAT device is asleep, pings chase a corpse forever while the friend's live devices sit in the fold. On the offline edge, rotate the ACTIVE device to the next fleet member with a known endpoint and retarget the contact-level address; the sweep pings it next cycle (round-robin until one answers — a pong or inbound DATA re-elects the real active device).
                             if !identity_online && !is_online {
-                                let cur = contact.active_device;
+                                // No elected active device yet means the first-met one is the implicit active (Emma 2026-10-21 logged an empty name for it).
+                                let cur = contact.active_device.or_else(|| contact.device_key());
                                 // Fleet-locked devices are never rotation candidates: the 2026-09-02 battery log flapped 114× between the two powered-on-but-locked ghosts (their endpoints re-entered via phonebook adoption, now also gated) — every flap re-aimed pings + relay sends at hardware the fleet already refused.
                                 let next = contact
                                     .device_endpoints
                                     .iter()
                                     .filter(|ep| {
                                         Some(ep.pubkey) != cur
+                                            // Never rotate onto the device whose timeout this is.
+                                            && ep.pubkey != peer_pubkey.key
                                             && (ep.public.is_some() || ep.lan.is_some())
                                             && !locked_device_set.contains(&ep.pubkey)
                                     })
                                     .map(|ep| (ep.pubkey, ep.public, ep.lan))
                                     .next();
                                 if let Some((pk, public, lan)) = next {
-                                    crate::logf!("Status: active device {} unreachable — rotating to fleet member {}", cur.map(|d| hex::encode(&d[..4])).unwrap_or_default(), hex::encode(&pk[..4]));
+                                    crate::logf!("Status: active device {} unreachable — rotating to fleet member {}", hex::encode(&cur.unwrap_or(peer_pubkey.key)[..4]), hex::encode(&pk[..4]));
                                     contact.active_device = Some(pk);
                                     if let Some(addr) = public {
                                         contact.ip = Some(addr);
@@ -3460,7 +3472,7 @@ impl PhotonApp {
                             .flat_map(|c| c.messages.iter())
                             .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash || f.wrap == Some(content_hash)).map(|f| f.name.clone()))
                             .unwrap_or_default();
-                        queue_job(&self.seal_job_tx, move || {
+                        queue_job(&self.attach_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key) {
                                 // Raw bytes that hash to the name, or a WRAPPER whose header hb it is (storage/wrapped.rs) — either binding is cryptographic.
                                 Ok(plain) if crate::storage::blob_binds(&plain, &content_hash) => {
@@ -3519,7 +3531,7 @@ impl PhotonApp {
                             .flat_map(|c| c.messages.iter())
                             .find_map(|m| m.file.as_ref().filter(|f| f.hash == content_hash || f.wrap == Some(content_hash)).map(|f| f.name.clone()))
                             .unwrap_or_default();
-                        queue_job(&self.seal_job_tx, move || {
+                        queue_job(&self.attach_job_tx, move || {
                             match kete::decrypt_bytes(&sealed, &wire_key).ok().and_then(|p| crate::storage::BlobManifest::from_bytes(&p)) {
                                 Some(m) if m.size <= super::attachments::MAX_ATTACH as u64 && m.chunk_size as usize == crate::storage::BLOB_CHUNK_SIZE => {
                                     let total = m.chunks.len() as u32;
@@ -3596,7 +3608,7 @@ impl PhotonApp {
                             .unwrap_or_default();
                         // A chunk of a WRAPPER this device asked for (a row names it as its `fw`).
                         let is_wrapper_fetch = self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.file.as_ref().is_some_and(|f| f.wrap == Some(content_hash)));
-                        queue_job(&self.seal_job_tx, move || {
+                        queue_job(&self.attach_job_tx, move || {
                             let Some(m) = crate::storage::blob_manifest(&content_hash) else {
                                 // EARLY CHUNK (2026-10-07): chunks are content-addressed and authenticated, so one that overtakes its manifest is stored at its OWN hash — no bookkeeping, nothing to park; the manifest finds it held when it lands (it used to be dropped and cost a 20 s re-ask).
                                 match kete::decrypt_bytes(&sealed, &wire_key) {
@@ -3752,7 +3764,7 @@ impl PhotonApp {
                         let kp_pub = *kp.public.as_bytes();
                         let kp_sec = *kp.secret.as_bytes();
                         let dispatch = checker.history_dispatch();
-                        queue_job(&self.seal_job_tx, move || {
+                        queue_job(&self.attach_job_tx, move || {
                             // A RAW request for content held WRAPPED (an older build asking by `fh`, until v134): the original is unwrapped thru the verified load and served FROM MEMORY — an in-memory manifest and slices — never re-stored, so the wrapper stays the one copy at rest.
                             let held_wrapped_raw = if crate::storage::blob_manifest(&content_hash).is_none() && crate::storage::wrap_alias(&content_hash).is_some_and(|hb| hb != content_hash) {
                                 crate::storage::blob_load(&seed, &content_hash)
@@ -5443,6 +5455,8 @@ impl PhotonApp {
         for (kind, nonce, sealed, sender, addr) in holdings_after {
             if kind != crate::network::fgtw::protocol::HoldingsKind::Missing {
                 self.holdings_serve(kind, nonce, sealed, sender, addr);
+            } else if self.space_answer(nonce, &sealed, sender) {
+                changed = true;
             } else if self.holdings_answer(nonce, sealed, sender) {
                 self.scene_dirty = true;
                 changed = true;

@@ -116,10 +116,9 @@ impl FluorApp for PhotonApp {
     /// The app's folded OS focus flipped. GAIN counts as fleet-attention input (2026-08-18): alt-tab and titlebar clicks deliver no press to on_event, yet the human is demonstrably here — take the ball (which internally re-claims the open conversation and clears its away-unread). LOSS keeps the 2026-07-23 edge: retract our active-clearer role so a sibling can ding for this conversation again. No timers.
     fn on_focus_changed(&mut self, focused: bool) {
         if focused {
-            // Fluor fires this BEFORE dispatching the Focused event that normally stamps the attended atomic — stamp it now (idempotent with that arm) so the re-claim inside take_fleet_attention sees attended=true. And the gain IS input: stamp the recency clock, or a message arriving right after the alt-tab reads us stale.
+            // Fluor fires this BEFORE dispatching the Focused event that normally stamps the attended atomic — stamp it now (idempotent with that arm) so the re-claim inside take_fleet_attention sees attended=true.
             #[cfg(not(target_os = "android"))]
             crate::platform::desktop_notify::set_window_focused(true);
-            self.last_interaction = Some(Instant::now());
             // If the ball never left us (alt-tab away and back — no input elsewhere), take() no-ops but the blur edge below already RETRACTED our claim: re-claim explicitly, the 2026-07-23 behavior.
             if !self.take_fleet_attention()
                 && self.active_conversation.is_some()
@@ -169,12 +168,18 @@ impl FluorApp for PhotonApp {
         }
     }
 
+    /// The host un-hid the window — a ShowWindow, a Raise, or a macOS Dock click (field 2026-10-21: after close-to-hide and a Dock reopen the visible flag stayed false, so the open conversation still dinged, and the wave field and live digits stayed frozen).
+    /// The one place the visible half of `window_attended` comes back; the hide half is on_close_requested.
+    fn on_window_shown(&mut self) {
+        #[cfg(not(target_os = "android"))]
+        crate::platform::desktop_notify::set_window_visible(true);
+        self.scene_dirty = true;
+    }
+
     fn on_user_event(&mut self, event: PhotonEvent, _ctx: &mut Context) -> EventResponse {
         // A full-UI instance never yields the lock — Yield from a confused second launch just surfaces us (the lifeline's exit-on-Yield lives in lifeline.rs, not here).
+        // The host's ShowWindow calls on_window_shown, which restores the visible flag.
         if matches!(event, PhotonEvent::ShowWindow | PhotonEvent::Yield) {
-            #[cfg(not(target_os = "android"))]
-            crate::platform::desktop_notify::set_window_visible(true);
-            self.scene_dirty = true;
             return EventResponse::ShowWindow;
         }
         // Every other variant is a pure wake — the loop's tick drains whatever channel the sender filled.
@@ -1683,7 +1688,7 @@ impl FluorApp for PhotonApp {
                                 .and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.is_outgoing && !m.deleted))
                                 .and_then(|m| m.file_parts().map(|(h, _, _)| h));
                             if let Some(h) = hash {
-                                queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
+                                queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&h));
                                 crate::log("msg-details: pigeon lofted — local bytes dropped, the row and re-fetch stay");
                             }
                             self.scene_dirty = true;
@@ -2108,8 +2113,6 @@ impl FluorApp for PhotonApp {
     }
 
     fn on_event(&mut self, event: &Event, ctx: &mut Context) -> EventResponse {
-        // Any event is user engagement — reset the presence-sweep idle clock so the cadence returns to the active (5s) tier. Cheap (just a timestamp); the immediate-sweep-on-focus is handled in the Focused arm below.
-        self.last_interaction = Some(Instant::now());
         // FLEET ATTENTION transition edge (2026-08-18): qualifying human input on a NON-holder takes the ball — one frame, only when the human actually moves between devices (take_fleet_attention early-outs while we hold it, so typing here is free). A POKE only (Nick 2026-10-10): a press, a key press or a text commit. The wheel is out — X11 delivers a scroll to whatever window sits under the pointer, focused or not, so a scroll over this window was taking the ball with no click; CursorMoved is bump-and-jitter-prone; Focused has its own edge in on_focus_changed. The same set stamps `last_poke`, the clock the notification recency guard reads. Android touches arrive as these same variants via fluor's shell.
         let poke = match event {
             Event::MouseInput { state: ElementState::Pressed, .. } => true,
@@ -2352,7 +2355,7 @@ impl FluorApp for PhotonApp {
                 // Feed the desktop-notification gate: focused = someone's looking, stay quiet; unfocused/hidden = ding.
                 #[cfg(not(target_os = "android"))]
                 crate::platform::desktop_notify::set_window_focused(*focused);
-                // On focus GAIN, force an immediate presence sweep so rings are fresh the instant the user looks — clearing last_presence_ping makes the next tick treat a sweep as due regardless of how far the idle cadence had backed off. (last_interaction was already stamped at the top of on_event, resetting the cadence to the active tier.)
+                // On focus GAIN, force an immediate presence sweep so rings are fresh the instant the user looks — clearing last_presence_ping makes the next tick treat a sweep as due without waiting out the 30 s refresh.
                 if *focused {
                     self.last_presence_ping = None;
                     ctx.window.request_redraw();
@@ -3144,25 +3147,16 @@ impl FluorApp for PhotonApp {
             // The wave field ripples with every audio frame while an Active wave owns the screen: the audio is the edge, the display rate is how often it is shown.
             || (!self.wave_minimized && self.wave_field_watched() && self.active_wave.as_ref().map_or(false, |c| matches!(c.phase, crate::wave::WavePhase::Active | crate::wave::WavePhase::Outgoing)));
         let anim = animating.then(Instant::now);
-        // Next background presence sweep — keeps online/offline rings refreshing while idle (no input/network). Only on Ready; first sweep is due immediately if never run. Interval tapers with idle time, so as the user stays away the scheduled wake naturally pushes further out.
-        let presence = matches!(self.state, AppState::Ready).then(|| {
-            let now = Instant::now();
-            self.last_presence_ping
-                .map_or(now, |last| last + self.presence_ping_interval(now))
-        });
+        let now = Instant::now();
+        // The protocol cadences, each from the SAME gate advance_protocol services (protocol.rs): a wake arm never fires for work the pump will not do, so none of them can sit in the past.
+        // Presence refresh on a watched presence surface, and the LAN beacon everywhere else while online.
+        let presence = self.presence_due_at(now);
+        let lan_beacon = self.lan_beacon_due_at(now);
         // Pairing flows: join-words (new device) and add-device matcher/confirm (old device) results arrive on mpsc channels from worker threads, with nothing else guaranteed to drive a tick while the user's hands are off — so poll-drain at 2 Hz while either flow is live. This is channel plumbing, not time-based UI: nothing is shown or cleared on a clock.
         let pairing = (self.add_join_rx.is_some() || self.add_device_rx.is_some())
             .then(|| Instant::now() + std::time::Duration::from_millis(500));
-        // Periodic own-chain re-fold (the fleet-membership doorbell) — scheduled on the screens where a stale fleet view matters, so it fires even while the desktop window sits idle on the Fleet page. 45s matches advance_protocol's cadence.
-        let fleet_refold = matches!(
-            self.state,
-            AppState::Ready | AppState::Conversation | AppState::Settings(_)
-        )
-        .then(|| {
-            self.last_fleet_refold.map_or_else(Instant::now, |last| {
-                last + std::time::Duration::from_secs(45)
-            })
-        });
+        // Periodic own-chain re-fold (the fleet-membership doorbell) — only where advance_protocol runs it: a Settings page someone is watching.
+        let fleet_refold = self.fleet_refold_due_at(now);
         // Live wave timer: an Active wave recomputes its duration each frame, so it needs frames flowing — but only at ~2 Hz (seconds granularity), not the pulse's full rate. A minimized Active wave still ticks so the strip's timer stays honest. Ringing already animates at full rate above.
         let wave_timer = self
             .active_wave
@@ -3176,7 +3170,7 @@ impl FluorApp for PhotonApp {
         // LIVE DIGITS (Nick 2026-10-01): the Base page's clock and since-opened counter, and a selected message's live age, each wake at the exact moment their last digit next changes — an edge computed from the reading, never a timer. In dozenal the counter's edges are a gross-th of a doubling apart and a message's age moves only at each doubling; in hex and arabic the clock ticks on the second.
         let live = self.live_digit_edge();
         // Soonest of all scheduled wakeups.
-        [blink, anim, presence, pairing, fleet_refold, wave_timer, probe, draft, live]
+        [blink, anim, presence, lan_beacon, pairing, fleet_refold, wave_timer, probe, draft, live]
             .into_iter()
             .flatten()
             .min()
@@ -3792,6 +3786,7 @@ impl FluorApp for PhotonApp {
             self.scene_dirty = true;
             ctx.window.request_redraw();
         }
+        self.drain_space();
         if self.drain_wave_env() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }

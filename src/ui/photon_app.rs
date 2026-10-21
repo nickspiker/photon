@@ -51,6 +51,7 @@ mod drafts;
 mod molecules;
 mod devices;
 mod holdings;
+mod space;
 mod ideas;
 mod driver;
 mod input;
@@ -403,22 +404,11 @@ fn draw_check_mark(canvas: &mut Canvas, cx: f32, cy: f32, size: f32, colour: u32
     }
 }
 
-// Tiered presence-ping cadence — frequent while the user is engaged, sparse once they've walked away, so an idle/unfocused window isn't waking the radio every few seconds for rings nobody is watching. The tier is chosen by time-since-last-interaction; any interaction (input or focus gain) resets the clock AND fires an immediate sweep, so presence is always fresh the moment the user looks, regardless of how far the cadence had backed off.
-/// Active tier: sweep every 5s while interacting (idle < `PRESENCE_IDLE_NEAR`).
 /// Ceremony-id mismatches in a row that mark a key exchange as wedged (see break_wedged_ceremonies). Three: one or two are a response from a round already replaced, crossing in flight; a steady run is a pair that will never agree unaided.
 const CEREMONY_MISMATCH_LIMIT: u8 = 3;
-const PRESENCE_PING_ACTIVE: std::time::Duration = std::time::Duration::from_secs(5);
-/// Idle tier: sweep every 1min once idle past `PRESENCE_IDLE_NEAR`.
-const PRESENCE_PING_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
-/// Deep-idle tier: sweep every 15min once idle past `PRESENCE_IDLE_FAR`.
-const PRESENCE_PING_DEEP: std::time::Duration = std::time::Duration::from_secs(15 * 60);
 
 /// One CLUTCH round's lifetime, eagle-time. 5 min: a relay ceremony (offer+KEM+proof, each a 5-30s store-and-forward hop) can run 1-2 min, and the round's keys must stay valid the whole time. Everything that judges a round or its owner "stale" shares this clock: the re-key sweep, the resume round-restore, and the §4.2 responder-exception ownership gate.
 const CLUTCH_ROUND_TTL_OSC: i64 = 300 * vsf::OSCILLATIONS_PER_SECOND as i64;
-/// Idle past this → drop from active (5s) to idle (1min).
-const PRESENCE_IDLE_NEAR: std::time::Duration = std::time::Duration::from_secs(30);
-/// Idle past this → drop from idle (1min) to deep-idle (15min).
-const PRESENCE_IDLE_FAR: std::time::Duration = std::time::Duration::from_secs(10 * 60);
 /// Cap on the presence-sweep interval while ANY validated direct path is held. The presence ping doubles as the NAT keepalive for that path (its ack refreshes the mapping), and NAT UDP mappings — especially CGNAT — expire well under a minute, so the idle/deep taper would silently kill a live direct path mid-session (the app keeps believing it for up to PATH_TTL while the mapping is already dead). Clamping to 20s keeps held paths warm under common NAT timeouts. Only ever makes the sweep *more* frequent, never less, so presence liveness is unaffected. Supersedes the never-wired `traverse::session::keepalive_due`.
 const VALIDATED_PATH_KEEPALIVE: std::time::Duration = std::time::Duration::from_secs(20);
 
@@ -1397,13 +1387,11 @@ pub struct PhotonApp {
     presence_surface: Option<u8>,
     /// Last always-on LAN-beacon multicast (regression fix 2026-09-02): the demand-driven presence gate would otherwise let a backgrounded device go silent + un-findable on the LAN, staling its address for self-messages. Kept on a modest cadence independent of the presence surface.
     last_lan_beacon: Option<Instant>,
-    /// Last time `tick()` ran the background presence ping sweep (`ping_contacts`). `None` until the first sweep. Paired with `last_interaction` to drive the tiered cadence (see `presence_ping_interval`): `tick()` re-pings when due and `wake_at()` schedules the next due sweep so presence refreshes even while idle. Without this, contacts only flipped online when you opened their conversation.
+    /// Last time `tick()` ran the presence ping sweep on a watched presence surface. `None` until the first sweep, and reset on each surface entry. `presence_due_at` (protocol.rs) turns it into the next refresh, read by both the sweep and `wake_at()`.
     last_presence_ping: Option<Instant>,
     /// The conversation-enter presence probe: (contact, when the open-ping fired). The verdict tick clears it at one second — offline if no pong landed since.
     presence_probe: Option<(ContactId, Instant)>,
-    /// Last time the user interacted with the app (any input event, or window focus-gain). `None` until the first interaction. The presence sweep tapers with idle time — frequent while you're actively using it, sparse when you've walked away — so an unfocused, untouched window isn't hitting the network every few seconds. Reset on interaction, which also triggers an immediate sweep so rings are fresh the instant you look. See `presence_ping_interval`.
-    last_interaction: Option<Instant>,
-    /// Last time the user actually POKED this device — a press, a key press or a text commit; never a hover, a scroll or a focus gain (Nick 2026-10-10: "has to be an actual tap or click; scrolling doesn't count, hovering doesn't count"). This is the clock the notification recency guard reads: `last_interaction` kept being renewed by the mouse crossing a still-focused window, so the desktop counted itself as looking and the phone stayed silent.
+    /// Last time the user actually POKED this device — a press, a key press or a text commit; never a hover, a scroll or a focus gain (Nick 2026-10-10: "has to be an actual tap or click; scrolling doesn't count, hovering doesn't count"). This is the clock the notification recency guard reads: the old any-event clock kept being renewed by the mouse crossing a still-focused window, so the desktop counted itself as looking and the phone stayed silent.
     last_poke: Option<Instant>,
     /// Last time an already-running device re-folded its OWN fleet chain to catch a device add/remove it may have missed. The hub `fleet` event is the fast path but best-effort (a dropped WebSocket = a missed add), so this periodic re-fold is the reliable doorbell: without it, an existing device never learns a newly-added sibling until relaunch — it wouldn't answer the new device's presence pings (→ shows it offline) and its Fleet list would stay stale. `None` until the first poll.
     last_fleet_refold: Option<Instant>,
@@ -1492,14 +1480,17 @@ pub struct PhotonApp {
     send_encrypt_busy: std::collections::HashSet<[u8; 32]>,
     /// The sealed-I/O worker: kete opens/seals, page builds, blob serves — everything AEAD-shaped queues here instead of spawning a thread per item (see spawn_job_worker).
     seal_job_tx: std::sync::mpsc::Sender<Job>,
+    /// The attachment worker: blob serves (manifest + every chunk), chunk/manifest/blob stores and blob deletes — bulk work that must never queue ahead of a history page's build or open (Emma 2026-10-21: her walk stalled behind a replication flood on both ends).
+    attach_job_tx: std::sync::mpsc::Sender<Job>,
     /// The braid-crypto worker: memory-hard scratch decrypts + encrypts. ONE worker on purpose — the lockstep already serialized same-lane frames; serializing across lanes trades a few ms of queue latency for zero render-thread contention.
     braid_job_tx: std::sync::mpsc::Sender<Job>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
     avatar_dl_started: std::collections::HashSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: crate::linear_map::LinearMap<[u8; 32], i64>,
-    /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today. Entries are consumed on match and swept by the same in-flight timeout.
-    hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64)>,
+    /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc, the device whose page answered it). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today.
+    /// An answered entry stays until the sweep, so the twin every page has (PT plus the relay copy) is recognised and dropped silently; drive_history_recovery sweeps answered entries after one in-flight timeout and unanswered ones after eight.
+    hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64, Option<[u8; 32]>)>,
     /// Fleet-first keygen gate edge state — true while the gate is actively holding friend keygens (logs the hold and the release ONCE each, not per tick).
     keygen_fleet_gate_holding: bool,
     /// Blind-deposit flip-flop detector, keyed (contact hp, depositor device): (hash of the blob the CURRENT stored deposit replaced, consecutive A-B-A flips). Two photon installs sharing one device key wage an S-war — each twin's deposit replaces the other's forever (field 2026-08-21: 400 deposits from ONE device in an afternoon log, each a ~1.5s durable commit, wall-to-wall vault load). At 3 consecutive flips the commits DECIMATE 8:1 (drop-unacked; pure counter, no timer) — the war's write load collapses, a GENUINE re-key still lands within 8 retries, and a byte-identical (stable) deposit resets the detector. Runtime-only: a restart re-arms detection, which is fine.
@@ -2413,6 +2404,13 @@ pub struct PhotonApp {
     holdings_pulls: Vec<holdings::PullJob>,
     /// Copy-then-release pending (device-local `release.when_copied`): this device sends its departure request by itself once nothing is at risk.
     release_when_copied: bool,
+    /// KEEP A SHARE OF THE DISK FREE (space.rs): the look in flight, one more look owed, below the floor now, the eviction ask in flight, and the recordings evicted here (device-local `space.evicted`).
+    space_rx: Option<std::sync::mpsc::Receiver<Option<space::SpaceReading>>>,
+    space_recheck: bool,
+    space_short: bool,
+    space_sweep: Option<space::SpaceSweep>,
+    space_evicted: std::collections::HashSet<[u8; 32]>,
+    space_launch_checked: bool,
     /// Fetches aimed at one device first — a pull asks the leaver, who holds the only copy (attach_fetch ranks it ahead of everyone).
     attach_fetch_prefer: std::collections::HashMap<[u8; 32], [u8; 32]>,
     /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
@@ -2522,7 +2520,6 @@ impl PhotonApp {
             presence_probe: None,
             presence_surface: None,
             last_lan_beacon: None,
-            last_interaction: None,
             last_poke: None,
             last_fleet_refold: None,
             last_stalled_refetch: None,
@@ -2623,6 +2620,7 @@ impl PhotonApp {
             braid_tx_rx: std::sync::mpsc::channel().1,
             send_encrypt_busy: std::collections::HashSet::new(),
             seal_job_tx: spawn_job_worker("photon-seal"),
+            attach_job_tx: spawn_job_worker("photon-attach"),
             braid_job_tx: spawn_job_worker("photon-braid"),
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_grow_pending: false,
@@ -3060,6 +3058,12 @@ impl PhotonApp {
             holdings_serve_rx: holdings_rx,
             holdings_pulls: Vec::new(),
             release_when_copied: false,
+            space_rx: None,
+            space_recheck: false,
+            space_short: false,
+            space_sweep: None,
+            space_evicted: std::collections::HashSet::new(),
+            space_launch_checked: false,
             attach_fetch_prefer: std::collections::HashMap::new(),
             dialed_wave_ids: Default::default(),
             fleet_wave_elsewhere: None,

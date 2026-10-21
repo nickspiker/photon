@@ -210,6 +210,13 @@ impl PhotonApp {
         if answered || !contact.is_online {
             return false;
         }
+        // The one-second word is only fair to a path that can answer inside a second: a relayed ping is an HTTPS leg each way (Nick's MacBook 2026-10-21 00:52:57: the open-ping reached Emma's pipe 0.99 s in and the verdict painted a ringing friend offline 20 ms later).
+        let direct = contact.validated_path.is_some() && !contact.reached_via_relay;
+        // Recent proof outranks one unanswered probe; the sweep's own strikes say so if that changed.
+        let recently_heard = contact.last_heard.is_some_and(|h| at.saturating_duration_since(h) < VALIDATED_PATH_KEEPALIVE);
+        if !direct || recently_heard {
+            return false;
+        }
         contact.is_online = false;
         for ep in contact.device_endpoints.iter_mut() {
             ep.online = false;
@@ -229,27 +236,6 @@ impl PhotonApp {
                 c.last_pinged = None; // due immediately, so the ring is fresh by the time it renders
             }
         }
-    }
-
-    /// Current presence-sweep interval, chosen by how long since the user last interacted. Active (5s) while engaged → idle (1min) → deep-idle (15min). `now` is the tick's clock. Jittered to 50–100% of the tier so a roomful of devices doesn't ping their contacts in lockstep (a synchronised presence sweep is a self-inflicted DDoS). Presence timing is soft, so the fuzziness is free.
-    pub(super) fn presence_ping_interval(&self, now: Instant) -> std::time::Duration {
-        let idle = self
-            .last_interaction
-            .map_or(std::time::Duration::ZERO, |last| now.duration_since(last));
-        let mut tier = if idle < PRESENCE_IDLE_NEAR {
-            PRESENCE_PING_ACTIVE
-        } else if idle < PRESENCE_IDLE_FAR {
-            PRESENCE_PING_IDLE
-        } else {
-            PRESENCE_PING_DEEP
-        };
-        // A held direct path is kept open only by traffic on it, and the presence sweep IS that keepalive — so while any validated path exists, don't let the idle/deep taper starve it below the NAT-safe interval, or the mapping dies mid-session.
-        if tier > VALIDATED_PATH_KEEPALIVE
-            && self.contacts.iter().any(|c| c.validated_path.is_some())
-        {
-            tier = VALIDATED_PATH_KEEPALIVE;
-        }
-        crate::jitter_dur(tier)
     }
 
     /// Ping all contacts that have IP addresses (call periodically)
@@ -362,7 +348,13 @@ impl PhotonApp {
         let mut pinged = 0;
         let now = std::time::Instant::now();
         let mut due: Vec<usize> = Vec::new();
+        // Our fleet's locked set, read once: a locked device is never asked for presence, never named on a relay leg.
+        let locked = self.locked_devices();
         for (i, contact) in self.contacts.iter().enumerate() {
+            // A LOCKED-OUT sibling is never pinged: its verdicts are refused at the door, so presence_probed never latched and the unprobed-sibling fast path re-fired every sweep (Nick's ghost 1be949c1: 437 relay pings in one night, 2026-10-20).
+            if contact.locked_out || contact.device_key().is_some_and(|k| locked.contains(&k)) {
+                continue;
+            }
             // Presence is a question about OTHER people. A conversation with no remote participants has nobody to ask, so it is not skipped by a self-check — there is simply no one in the loop. (Pinging it used to storm our own addresses: probe spam at ourselves, wrong-responder pongs, mobile radio burnt for nothing.)
             let has_remote = self
                 .our_party_id(contact)
@@ -449,6 +441,7 @@ impl PhotonApp {
             // No direct path proven → also ping over the relay pipe so PRESENCE works for a relay-only peer. Taken once per cycle so we don't relay the same ping three times (once per candidate address). A validated path means direct pings suffice — no relay ping needed.
             let mut relay_ping =
                 relay_unless_direct_trusted(&contact, crate::network::udp::get_local_ip());
+            relay_ping.retain(|d| !locked.contains(d));
             // The punch-validated path is the one address PROVEN reachable — when it matches neither stored record (a reflexive-learned mapping can differ from both the registry ip and the LAN row), ping it too, or presence sits TIMEOUT on two dead addresses while the keepalive acks flow.
             if let Some((vpath, _)) = contact.validated_path {
                 if Some(vpath) != lan_addr && Some(vpath) != contact.ip {
@@ -503,6 +496,8 @@ impl PhotonApp {
             for ep in &contact.device_endpoints {
                 if Some(ep.pubkey) == contact.active_device
                     || Some(ep.pubkey) == contact.device_key()
+                    || locked.contains(&ep.pubkey)
+                    || contact.refused_devices.contains(&ep.pubkey)
                 {
                     continue;
                 }
@@ -1372,7 +1367,10 @@ impl PhotonApp {
             Vec<[u8; 32]>,
         )> = Vec::new();
         let mut skipped = 0usize;
-        // EVERY sibling, not just is_online ones: sibling presence has proven unreliable (pong-provenance drops kept siblings "offline" for whole sessions), and gating delivery on it turned the entire fleet plane into a silent no-op — zero FLEET-HIST lines in a full day's desktop log while messages flowed. Direct legs race as before; a sibling with no validated path (or no address at all) rides the relay, which delivers whenever that device next drains its pipe.
+        let mut parked = 0usize;
+        // Every sibling NOT known to be away: an unprobed sibling still gets the push (sibling presence once proved unreliable, and gating on it silenced the whole fleet plane), its direct legs racing the relay.
+        // A sibling with an offline verdict, or Pending and never seen up, is parked: the relay has no mailbox, so every leg died in a closed pipe (Nick's Pixel cacbc223, 2026-10-20 overnight: 345 history relays dropped).
+        // Its online edge delivers what parking held back: the sibling pulls on seeing us, and our fleet_sweep_due edge re-serves undelivered forwards.
         for sib in self
             .contacts
             .iter()
@@ -1382,6 +1380,10 @@ impl PhotonApp {
                 continue; // a sibling row always carries its key; never fabricate one
             };
             if exclude_device == Some(sib_key) {
+                continue;
+            }
+            if sib.sibling_parked() {
+                parked += 1;
                 continue;
             }
             let (primary, alt, relay_to) = match sib.race_addrs() {
@@ -1404,11 +1406,12 @@ impl PhotonApp {
         }
         // ALWAYS log, zero included — a silently-no-op fleet push is exactly how this path shipped broken.
         crate::logf!(
-            "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable)",
+            "FLEET-HIST: live push {} row(s) for {} → {} sibling(s) ({} unreachable, {} parked offline)",
             page.rows.len(),
             label,
             targets.len(),
-            skipped
+            skipped,
+            parked
         );
         if targets.is_empty() {
             return;
@@ -1899,10 +1902,12 @@ impl PhotonApp {
                     rec.urgent = false;
                     // Authoritative rid registry (see hist_rid_map): sweep stale entries, then register this request so its page merges even if another contact resolving the same peer re-arms this conversation's in_flight before the answer lands.
                     // The registry outlives the in-flight timeout ×8: an expired request is re-asked at the timeout, but its page may still be on its way (relay leg, PT ladder) — the rid is one WE minted and merging is idempotent, so a late answer merges instead of "DROPPED — rid unmatched" (Emma's new device, 2026-10-21: Nick's desktop answered after her 45 s window, every page dropped).
-                    self.hist_rid_map.retain(|_, (_, sent)| {
-                        now_osc - *sent <= 8 * HIST_INFLIGHT_TIMEOUT_OSC
+                    // An ANSWERED entry only has to outlive its own twin (the relay copy lands seconds after the PT copy), so it goes after one in-flight timeout and the linear map stays small.
+                    self.hist_rid_map.retain(|_, (_, sent, answered)| {
+                        let horizon = if answered.is_some() { HIST_INFLIGHT_TIMEOUT_OSC } else { 8 * HIST_INFLIGHT_TIMEOUT_OSC };
+                        now_osc - *sent <= horizon
                     });
-                    self.hist_rid_map.insert(rid, (cid, now_osc));
+                    self.hist_rid_map.insert(rid, (cid, now_osc, None));
                     crate::logf!(
                         "HISTORY: requesting page before {} from {}",
                         if before == i64::MAX {

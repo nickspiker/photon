@@ -92,7 +92,7 @@ impl PhotonApp {
             return;
         };
         let tx = self.attach_prepared_tx.clone();
-        queue_job(&self.seal_job_tx, move || {
+        queue_job(&self.attach_job_tx, move || {
             let kind = crate::types::sniff(&bytes, &name);
             let hash = *blake3::hash(&bytes).as_bytes();
             let raw_tmp = raw_temp_path(kind, &hash, &bytes);
@@ -352,7 +352,7 @@ impl PhotonApp {
         // The bar speaks the row's RAW hash even when the chunks are a wrapper's.
         let bar = self.raw_name_of(&content_hash);
         self.attach_send_total.insert(bar, m.chunks.len() as u32);
-        queue_job(&self.seal_job_tx, move || {
+        queue_job(&self.attach_job_tx, move || {
             // Only the CHUNKS carry the blob's tag: the bar counts them against the chunk total, and the manifest is not one of them.
             let send = |vsf_bytes: Vec<u8>, tag: Option<[u8; 32]>| {
                 let _ = dispatch.send(crate::network::status::HistorySendRequest {
@@ -395,6 +395,8 @@ impl PhotonApp {
 
     /// Ask for a missing blob: attach_req to the conversation's friend device AND every online sibling — whoever holds it answers with an attach_blob (or, for a chunked blob, the manifest + chunks; a held manifest turns the ask into a RESUME carrying the want bitmap of the chunks still missing).
     pub(super) fn attach_fetch(&mut self, sci: usize, content_hash: &[u8; 32]) {
+        // Automatic paths gate on recording_wanted before calling, so reaching here is a deliberate fetch.
+        self.space_unevict(content_hash);
         // Token: the friendship token when one exists; else (self-conversation — no chains) the handle hash. Sibling exchanges seal under the FLEET key regardless of token, so the fallback only ever reaches sibling responders, where it's a plain discriminator.
         let Some(token) = ({
             let c = self.contacts.get(sci);
@@ -482,6 +484,12 @@ impl PhotonApp {
             }
         }
         targets.sort_by_key(|t| t.0);
+        // A parked sibling cannot answer: asking it burns one of MAX_TRIES rounds and a relay leg into a closed pipe (Emma 2026-10-21: 72 asks at two old phones that never came online).
+        // It stays a candidate only when nobody else is left, so a fetch is never dropped for want of a live device.
+        let parked: Vec<[u8; 32]> = self.contacts.iter().filter(|c| c.sibling_parked()).filter_map(|c| c.device_key()).collect();
+        if targets.iter().any(|t| !parked.contains(&t.3)) {
+            targets.retain(|t| !parked.contains(&t.3));
+        }
         if targets.is_empty() {
             crate::log("attach: fetch has nobody to ask — no device of the friend or ours has an address");
             return;
@@ -530,7 +538,8 @@ impl PhotonApp {
                         .iter()
                         .filter(|m| !m.deleted)
                         .flat_map(|m| {
-                            let original = m.file.as_ref().filter(|_| !metered && (self.wave_hold || !m.is_wave_recording())).map(|f| f.hash);
+                            // A recording also waits while the disk is below its floor, and never returns once evicted here (space.rs).
+                            let original = m.file.as_ref().filter(|f| !metered && (!m.is_wave_recording() || self.recording_wanted(&f.hash))).map(|f| f.hash);
                             let head = m.file.as_ref().and_then(|f| f.head);
                             original.into_iter().chain(head)
                         })
@@ -745,6 +754,10 @@ impl PhotonApp {
             }
             // A blob a leaver asked us to take (holdings.rs): one fewer item at risk on its screen.
             self.holdings_pull_settled(&r.content_hash, true);
+            // A recording landing is the disk's edge (space.rs).
+            if self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.is_wave_recording() && m.file.as_ref().is_some_and(|f| f.hash == r.content_hash)) {
+                self.space_check("a recording landed");
+            }
             if let (Some(kp), Some(checker)) =
                 (self.device_keypair.as_ref(), self.status_checker.as_ref())
             {

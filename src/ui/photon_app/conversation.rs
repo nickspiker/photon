@@ -1719,7 +1719,7 @@ impl PhotonApp {
                             {
                                 // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
                                 let h = hash;
-                                queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
+                                queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&h));
                             }
                         }
                         crate::logf!(
@@ -2465,10 +2465,15 @@ impl PhotonApp {
                 }
                 continue;
             };
-            // rid must match a request WE minted — a page we didn't ask for (or asked for long ago) is dropped; merging is idempotent so a raced duplicate that DOES match is harmless. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
-            // The rid registry is consulted FIRST and is authoritative: the token-resolved conversation's in_flight alone starved recovery when two contact rows resolved the same peer (the rid lived on the other row's conversation — field, 2026-08-10, every Emma page dropped for days of walk rounds). Consumed on match so the map stays bounded.
-            let rid_registered = self.hist_rid_map.remove(&request_id).is_some();
-            let rid_matches = rid_registered || {
+            // rid must match a request WE minted — a page we didn't ask for (or asked for long ago) is dropped. A friend page must match; a sibling page without a matching rid is the live push — merge it, but leave the cursor alone.
+            // The rid registry is consulted FIRST and is authoritative: the token-resolved conversation's in_flight alone starved recovery when two contact rows resolved the same peer (the rid lived on the other row's conversation — field, 2026-08-10, every Emma page dropped for days of walk rounds).
+            // An answered rid stays registered, marked with the device whose page it took: every page is served twice by design (PT plus the relay copy), and a friend with several devices can answer one ask from more than one (2026-10-21: 126 twins from Jeff's phone dropped on the MacBook, 40 on Emma's new phone).
+            let answered = self.hist_rid_map.get(&request_id).map(|(_, _, by)| *by);
+            // The twin of a page already taken from this same sender carries the same bytes: nothing to merge.
+            if answered == Some(Some(sender_pubkey.key)) {
+                continue;
+            }
+            let in_flight_match = {
                 let cid = self.contacts[idx].conversation(&our_pid).id();
                 self.conversations
                     .iter()
@@ -2477,7 +2482,12 @@ impl PhotonApp {
                     .and_then(|r| r.in_flight.as_ref())
                     .is_some_and(|(rid, _, _)| *rid == request_id)
             };
-            if !(rid_matches || from_sibling) {
+            // Only the FIRST answer to an ask drives the cursor; another device's answer to the same ask merges its rows and leaves the walk where the first answer put it.
+            let rid_matches = answered == Some(None) || (answered.is_none() && in_flight_match);
+            if let Some((_, _, by)) = self.hist_rid_map.get_mut(&request_id) {
+                by.get_or_insert(sender_pubkey.key);
+            }
+            if !(answered.is_some() || in_flight_match || from_sibling) {
                 crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling", crate::fp(&sender_pubkey.key));
                 continue;
             }
@@ -2496,6 +2506,10 @@ impl PhotonApp {
                 }
             };
             let mut fresh: Vec<crate::types::ChatMessage> = Vec::new();
+            // A sibling re-served these as undelivered while we hold them delivered: answered back, or the origin re-serves them every backstop forever.
+            let mut answer_back: Vec<crate::types::ChatMessage> = Vec::new();
+            // A sibling re-served these and we hold them undelivered too: drain candidates beyond the fresh rows.
+            let mut known_undelivered: Vec<crate::types::ChatMessage> = Vec::new();
             {
                 let conv = &mut self.conversations[conv_pos];
                 // Merge to OUR perspective: friend pages flip direction (their outgoing = our incoming); sibling pages ride verbatim (same identity, their flags ARE ours). Friend-recovered outgoing is delivered by definition (the friend has it); dedup on (timestamp, content) against what we already hold.
@@ -2544,6 +2558,13 @@ impl PhotonApp {
                         if from_sibling && existing.is_outgoing && is_outgoing {
                             existing.replicated = true;
                         }
+                        if from_sibling && existing.is_outgoing && is_outgoing && !delivered {
+                            if existing.delivered {
+                                answer_back.push(existing.clone());
+                            } else {
+                                known_undelivered.push(existing.clone());
+                            }
+                        }
                         if row.deleted && !existing.deleted {
                             existing.deleted = true;
                             tombstoned_in_merge = true; // drops a row from the syncable set (inserts self-invalidate; this upgrade path doesn't)
@@ -2551,7 +2572,7 @@ impl PhotonApp {
                                 {
                                 // Off-thread like the local delete (2026-09-12): a chunked blob's shred is many vault commits the UI thread doesn't owe.
                                 let h = hash;
-                                queue_job(&self.seal_job_tx, move || crate::storage::blob_delete(&h));
+                                queue_job(&self.attach_job_tx, move || crate::storage::blob_delete(&h));
                             }
                             }
                             upgraded = true;
@@ -2748,12 +2769,13 @@ impl PhotonApp {
                     self.on_sibling_reject(ts);
                 }
                 // REPLICATION BY DEFAULT (Nick 2026-09-10): a sibling's kept recording is fetched the moment its row lands here, unless this device opted out (waves.hold off — a watch).
-                if self.wave_hold {
+                // Presence from the cache only (the UI thread makes no vault call): a hash nobody has probed yet queues its probe, and replicate_sweep arms it on the answer's edge.
+                {
                     let recs: Vec<[u8; 32]> = fresh
                         .iter()
                         .filter(|m| !m.deleted && m.is_wave_recording())
                         .filter_map(|m| m.file.as_ref().map(|f| f.hash))
-                        .filter(|h| !crate::storage::blob_present_probe_now(h))
+                        .filter(|h| self.recording_wanted(h) && crate::storage::blob_present_known(h) == Some(false))
                         .collect();
                     for h in recs {
                         crate::logf!("WAVE: sibling's recording {}… — fetching (waves held on this device)", hex::encode(&h[..4]));
@@ -2764,7 +2786,7 @@ impl PhotonApp {
                 for t in hints {
                     let hash = self.conv_of(idx).and_then(|v| v.messages.iter().find(|m| m.timestamp == t && !m.deleted).and_then(|m| m.file.as_ref().map(|f| f.hash)));
                     if let Some(h) = hash {
-                        if !crate::storage::blob_present_probe_now(&h) {
+                        if crate::storage::blob_present_known(&h) != Some(true) {
                             crate::logf!("WAVE: fetch hint from a sibling — fetching recording {}…", hex::encode(&h[..4]));
                             self.attach_fetch(idx, &h);
                         }
@@ -2786,9 +2808,22 @@ impl PhotonApp {
                 self.push_rows_to_siblings(idx, &fresh, Some(sender_pubkey.key));
             }
             // FLEET-FORWARD DRAIN (compose anywhere): outgoing UNDELIVERED rows arriving from a SIBLING are messages another device composed and forwarded — if THIS device can write the braid (locally woven, or lane-capable on replicated chains: per-device lanes), transmit them with their ORIGINAL timestamps (one row identity fleet-wide, so the friend's dedup + the delivered upgrade all cohere; a retransmit after a crash is re-ACKed harmlessly from the friend's stored ack_hash). Only FRESH rows drain — known rows were transmitted before or sit in the retransmit machinery. The origin usually transmits itself now; this drain is the DEAD-ORIGIN backstop (battery died between compose and delivery — the rows replicated, the origin's lane went silent, and this device re-serves them on ITS lane; the friend dedups the brief both-alive overlap).
+            // ANSWER-BACK: the one live delivered push was lost and nothing else re-tells the origin (Nick's MacBook 2026-10-20: "re-serving 4 undelivered forward(s) for fd9bd0cc" ×42).
+            // Pushed to every sibling, sender included: its merge upgrades monotonically, a sibling already holding the tick no-ops, so the echo ends in one hop.
+            if !answer_back.is_empty() {
+                crate::logf!("FLEET-HIST: {} re-served row(s) already delivered here — answering the delivered tick back", answer_back.len());
+                self.push_rows_to_siblings(idx, &answer_back, None);
+            }
             if from_sibling && (self.contacts[idx].chain_woven || self.lane_transmit_capable(idx)) {
+                // KNOWN rows drain too when re-served undelivered with no live pending here: they reached us before we could transmit, and the fresh-only rule stranded them.
+                let pending: std::collections::HashSet<i64> = self.contacts[idx]
+                    .friendship_id
+                    .and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid))
+                    .map(|(_, ch)| ch.pending_messages.iter().map(|m| m.eagle_time).collect())
+                    .unwrap_or_default();
                 let fwd: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = fresh
                     .iter()
+                    .chain(known_undelivered.iter().filter(|m| !pending.contains(&m.timestamp)))
                     .filter(|m| m.is_outgoing && !m.delivered)
                     .map(|m| (m.content.clone(), m.timestamp, m.reference))
                     .collect();

@@ -1126,7 +1126,8 @@ impl PhotonApp {
                         if let Some(b) = self.beam_btn.as_mut() {
                             b.set_rect(rx, ry, bw, bh);
                             b.set_font_size(bfont * 0.8);
-                            let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some());
+                            // A camera still opening reads as sending: the next tap cancels it.
+                            let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some() || w.beam_opening.is_some());
                             b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
                             b.set_enabled(crate::wave::beam_session::can_send());
                             let id = b.hit_id();
