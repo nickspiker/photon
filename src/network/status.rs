@@ -348,6 +348,8 @@ pub struct ClearPtSendsRequest {
 /// Status update from the checker
 #[derive(Clone, Debug)]
 pub enum StatusUpdate {
+    /// A device we did not ping answered a ping we sent to `pinged` (a fan-out sibling of that friend, signature verified). When no contact's fold knows the responder, the fold of whoever owns `pinged` is provably stale — Emma's new device dropped Nick's MacBook as unknown for 3.5 h while it answered for his desktop (2026-10-21).
+    ForeignResponder { responder: DevicePubkey, pinged: DevicePubkey },
     /// Online/offline status change
     Online {
         peer_pubkey: DevicePubkey,
@@ -666,6 +668,7 @@ impl StatusUpdate {
     pub fn sender_device(&self) -> Option<&[u8; 32]> {
         match self {
             StatusUpdate::Online { peer_pubkey, .. } => Some(peer_pubkey.as_bytes()),
+            StatusUpdate::ForeignResponder { responder, .. } => Some(responder.as_bytes()),
             StatusUpdate::ChatMessage { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
             StatusUpdate::ChainResetReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
@@ -3399,6 +3402,15 @@ async fn run_checker(
                                                 .map(|t| (t.sync_records, t.about, t.fleet_tip, t.braid))
                                                 .unwrap_or_default();
                                             let (salvaged, about, fleet_tip, braid) = salvaged;
+                                            // The responder answered for `pinged`: if no fold knows it, the UI refreshes the fold of whoever owns `pinged`.
+                                            send_status_update(
+                                                &status_tx_recv,
+                                                StatusUpdate::ForeignResponder {
+                                                    responder: responder_pubkey.clone(),
+                                                    pinged: pending_ping.recipient_pubkey.clone(),
+                                                },
+                                                &event_proxy_recv,
+                                            );
                                             crate::logf!("Status: pong answered by {} but we pinged {} — responder counted alive + {} sync record(s), ping re-armed for its recipient", crate::fp(responder_pubkey.as_bytes()), crate::fp(pending_ping.recipient_pubkey.as_bytes()), salvaged.len());
                                             send_status_update(
                                                 &status_tx_recv,

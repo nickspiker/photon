@@ -986,6 +986,10 @@ impl PhotonApp {
                     }
                     changed = changed || set_changed || arming;
                     to_persist.push(idx);
+                    // A fold that GREW is the moment a friend's new device becomes answerable — logged, because its absence left a 3.5-hour stale fold unreadable in the field (Emma's new device, 2026-10-21).
+                    if grew {
+                        crate::logf!("FLEET: {}'s fleet folded — grew to {} device(s)", crate::fp(&hp), c.fleet_members.len());
+                    }
                     if shrank {
                         crate::logf!("FLEET: device revoked from {}'s fleet — dropping it from the answerable set", crate::fp(&hp));
                         // Cutover: a departed device also loses its endpoint rows — keeping them would keep pinging and relaying to hardware the identity disowned (the fold is the truth; the registry pop-swaps it out on the owner's side).

@@ -333,6 +333,7 @@ impl PhotonApp {
                 StatusUpdate::AttachProgress { .. } => "AttachProgress",
                 StatusUpdate::AttachHaveReceived { .. } => "AttachHaveReceived",
                 StatusUpdate::HoldingsReceived { .. } => "HoldingsReceived",
+                StatusUpdate::ForeignResponder { .. } => "ForeignResponder",
                 StatusUpdate::AttachManifestReceived { .. } => "AttachManifestReceived",
                 StatusUpdate::AttachChunkReceived { .. } => "AttachChunkReceived",
                 StatusUpdate::PigeonChunkReceived { .. } => "PigeonChunkReceived",
@@ -424,6 +425,8 @@ impl PhotonApp {
         let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
         // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
+        // Friend folds proven stale by a ForeignResponder (an unknown device answered for one of their devices): refreshed after the drain.
+        let mut stale_folds_after: Vec<[u8; 32]> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
         // Wi-Fi Direct beacon answer-back target, collected on the p2p learn edge (the reply teaches the peer OUR group address).
         let mut wfd_beacon_reply: Option<std::net::SocketAddr> = None;
@@ -3683,6 +3686,21 @@ impl PhotonApp {
                         changed = true;
                     }
                 }
+                // An unknown device answered for a device we know: whoever owns `pinged` has a fleet our fold has not caught up with — refresh that one fold, once per responder (the edge that would have healed Emma's new device in seconds instead of hours, 2026-10-21).
+                StatusUpdate::ForeignResponder { responder, pinged } => {
+                    if !self.contacts.iter().any(|c| c.knows_device(&responder.key)) && self.stale_fold_refreshed.insert(responder.key) {
+                        if let Some(c) = self.contacts.iter().find(|c| c.knows_device(&pinged.key)) {
+                            crate::logf!(
+                                "FLEET: device {} answered for {}'s device {} but no fold knows it — refreshing {}'s fleet",
+                                crate::fp(&responder.key),
+                                c.display_name(),
+                                crate::fp(&pinged.key),
+                                c.display_name()
+                            );
+                            stale_folds_after.push(c.handle_proof);
+                        }
+                    }
+                }
                 // Departure have-set exchange (holdings.rs): only a live member of OUR fleet may ask what we hold, or answer our ask.
                 StatusUpdate::HoldingsReceived {
                     kind,
@@ -5414,6 +5432,12 @@ impl PhotonApp {
             );
             self.chain_pull_misses.remove(&token);
             self.rekey_without_chains(ci);
+        }
+
+        if !stale_folds_after.is_empty() {
+            stale_folds_after.sort_unstable();
+            stale_folds_after.dedup();
+            self.spawn_contact_fleet_refresh(stale_folds_after);
         }
 
         for (kind, nonce, sealed, sender, addr) in holdings_after {
