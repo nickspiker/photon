@@ -50,14 +50,15 @@
 - [Hotplug abort](project_hotplug_abort.md) — 2026-10-15 SIGABRT x2 on monitor plug = 0-px avatar expect, CONVICTED; fixed post-v120
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next non-mainstream OS
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device
-- [Beams](project_beams.md) — 2026-10-10 DECIDED + desktop BUILT: H.264, intra refresh, ISP stood aside, VSF labels; phone capture + cycle built
+- [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 L rule; BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb; raw reader to v134
-- [HDR stack](project_hdr_stack.md) — OWNED 2026-10-20: g2t buffer landed; darkness-0 audit, then Android F16
+- [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit extended surface MERGED 2026-10-21; peak metric open
+- [New-device history walk](project_new_device_history_walk.md) — 2026-10-21 Emma: strand miss + walk blocked 3 ways; relay-twin amber fixed
 - [Removal safety](project_device_removal_safety.md) — 2026-10-17 phases 2-3 BUILT: at-risk lines, copy-then-release; 4-5 open
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
-- [Pigeon fetch reach](project_pigeon_fetch_reach.md) — 2026-10-07 fetch asked one friend device (fixed); auto-fetch open
+- [Pigeon fetch reach](project_pigeon_fetch_reach.md) — fetch asked one friend device (fixed)
 - [Scroll as a memmove](project_scroll_memmove.md) — 2026-10-06 BUILT (conversation + contacts): band-only paint over a memmove; settings pane + phone verify pending
 - [Ideas page](project_ideas_gripes.md) — BUILT: anonymous gripes
 - [Braid salt codec](project_braid_salt_codec.md) — 2026-10-01 CONVICTED: "chain fork" = chains-blob codec stored the salt source as lossy NFC text
