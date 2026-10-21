@@ -1898,8 +1898,9 @@ impl PhotonApp {
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC;
                     rec.urgent = false;
                     // Authoritative rid registry (see hist_rid_map): sweep stale entries, then register this request so its page merges even if another contact resolving the same peer re-arms this conversation's in_flight before the answer lands.
+                    // The registry outlives the in-flight timeout ×8: an expired request is re-asked at the timeout, but its page may still be on its way (relay leg, PT ladder) — the rid is one WE minted and merging is idempotent, so a late answer merges instead of "DROPPED — rid unmatched" (Emma's new device, 2026-10-21: Nick's desktop answered after her 45 s window, every page dropped).
                     self.hist_rid_map.retain(|_, (_, sent)| {
-                        now_osc - *sent <= HIST_INFLIGHT_TIMEOUT_OSC
+                        now_osc - *sent <= 8 * HIST_INFLIGHT_TIMEOUT_OSC
                     });
                     self.hist_rid_map.insert(rid, (cid, now_osc));
                     crate::logf!(
