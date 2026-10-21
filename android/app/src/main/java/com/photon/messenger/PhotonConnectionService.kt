@@ -105,7 +105,7 @@ class PhotonConnectionService : Service() {
     }
 
     // Native methods for network operations
-    private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String, shadowDir: String, bootSecret: ByteArray): Long
+    private external fun nativeNetworkInit(fingerprint: ByteArray, dataDir: String, shadowDir: String, bootSecret: ByteArray, legacyBootSecret: ByteArray): Long
     private external fun nativeSetFcmToken(token: String, projectId: String)
     private external fun nativeNetworkDestroy(networkPtr: Long)
     private external fun nativeNetworkPoll(networkPtr: Long)  // Check for incoming messages, refresh peers
@@ -334,19 +334,25 @@ class PhotonConnectionService : Service() {
         val headlessStart = intent?.getByteArrayExtra("fingerprint") == null
 
         if (fingerprint != null && dataDir != null && networkPtr == 0L) {
-            // Per-boot secret for the session capsule's boot-lock (wairua): the app-private session file is FBE-sandbox-protected, so this value only needs to be per-boot-STABLE, not secret. Settings.Global.BOOT_COUNT is exactly that — constant during a boot, incremented on reboot — and readable with no permission on every ROM, unlike /proc/sys/kernel/random/boot_id which locked-down Samsung SELinux blocks from untrusted_app (which silently broke session persistence there: re-attest on every app restart). Prefix-tagged so it can never collide with a raw boot_id string.
-            val bootSecret = try {
-                val bc = android.provider.Settings.Global.getInt(contentResolver, "boot_count", 0)
-                "bootcount:$bc".toByteArray()
-            } catch (e: Exception) {
-                // No BOOT_COUNT (pre-API-24 or a stripped ROM): fall back to a per-install random persisted in prefs. Stable across restarts AND reboots (so a reboot won't force re-attest), which is a weaker forward-secrecy posture than the boot-lock but strictly better than being logged out constantly.
+            // Per-boot secret for the session capsule's boot-lock (wairua): the app-private session file is FBE-sandbox-protected, so this value only needs to be per-boot-STABLE, not secret. Settings.Global.BOOT_COUNT is readable with no permission on every ROM, unlike /proc/sys/kernel/random/boot_id which locked-down Samsung SELinux blocks from untrusted_app (which silently broke session persistence there: re-attest on every app restart) — but the count also moves on a userspace restart, so it is the fallback, not the first choice. Prefix-tagged so it can never collide with a raw boot_id string.
+            // PREFER the kernel boot_id where SELinux lets us read it: it changes only when the kernel boots (a power cycle), while BOOT_COUNT is also bumped by a userspace restart (the framework restarting without a reboot) — Jeff's phone, 14 days up, lost its session to one and had to re-attest (2026-10-21). These are the same bytes tohu reads itself.
+            val bootCount: ByteArray? = try {
+                "bootcount:${android.provider.Settings.Global.getInt(contentResolver, "boot_count", 0)}".toByteArray()
+            } catch (e: Exception) { null }
+            val bootId: ByteArray? = try {
+                java.io.File("/proc/sys/kernel/random/boot_id").readText().trim().takeIf { it.isNotEmpty() }?.toByteArray()
+            } catch (e: Throwable) { null }
+            val bootSecret = bootId ?: bootCount ?: run {
+                // No boot_id and no BOOT_COUNT (pre-API-24 or a stripped ROM): fall back to a per-install random persisted in prefs. Stable across restarts AND reboots (so a reboot won't force re-attest), which is a weaker forward-secrecy posture than the boot-lock but strictly better than being logged out constantly.
                 val prefs = getSharedPreferences("photon_boot", MODE_PRIVATE)
                 var s = prefs.getString("secret", null)
                 if (s == null) { s = java.util.UUID.randomUUID().toString(); prefs.edit().putString("secret", s).apply() }
                 "installsecret:$s".toByteArray()
             }
+            // The count an earlier build sealed the session under: tohu opens that capsule with it once and re-seals it under boot_id, so this update costs nobody a re-attest. A real reboot changes the count too.
+            val legacyBootSecret = if (bootId != null && bootCount != null) bootCount else ByteArray(0)
             // Initialize network stack
-            networkPtr = nativeNetworkInit(fingerprint, dataDir, shadowDir, bootSecret)
+            networkPtr = nativeNetworkInit(fingerprint, dataDir, shadowDir, bootSecret, legacyBootSecret)
             if (networkPtr != 0L) {
                 devicePubkeyHex = nativeGetDevicePubkey(networkPtr)
                 PhotonLog.d(TAG, "Network initialized, device: ${devicePubkeyHex.take(16)}...")

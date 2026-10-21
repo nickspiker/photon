@@ -1683,24 +1683,33 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeNetwor
     data_dir: JString<'_>,
     shadow_dir: JString<'_>,
     boot_secret: JByteArray<'_>,
+    legacy_boot_secret: JByteArray<'_>,
 ) -> jlong {
     // FIRST log line on Android: which build is this? Ends the "is this phone even on the new APK?" guesswork.
     crate::log_version();
     info!("PhotonConnectionService: Initializing network stack");
 
-    // Set the session-capsule boot secret BEFORE anything reads or writes the session (NetworkContext::new wires the session dir, and query_resume reads it). Kotlin derives it from Settings.Global.BOOT_COUNT — per-boot-stable and readable on every ROM — so a device whose SELinux blocks /proc/sys/kernel/random/boot_id (Samsung, chiefly) no longer loses its session on every app restart. Without this override tohu falls back to the blocked /proc read, boot_secret() returns None, the wairua can't derive, and the session never persists (the recurring "not signed in").
+    // Set the session-capsule boot secret BEFORE anything reads or writes the session (NetworkContext::new wires the session dir, and query_resume reads it). Kotlin hands the kernel boot_id where SELinux allows (it changes only on a power cycle), else Settings.Global.BOOT_COUNT (readable on every ROM, so a Samsung whose SELinux blocks /proc/sys/kernel/random/boot_id still keeps its session across app restarts — but the count also moves on a userspace restart). Without an override tohu falls back to the /proc read, which on a blocked ROM returns None: the wairua can't derive and the session never persists.
+    let legacy = env.convert_byte_array(&legacy_boot_secret).ok().filter(|b| !b.is_empty());
     match env.convert_byte_array(&boot_secret) {
         Ok(bytes) if !bytes.is_empty() => {
             tohu::set_boot_secret_override(&bytes);
-            // The boot COUNT is no secret (a small per-boot integer, the capsule's protection is the app sandbox) and is exactly what says whether the phone restarted between two logs; an install-secret fallback is never printed.
-            match std::str::from_utf8(&bytes).ok().filter(|t| t.starts_with("bootcount:")) {
-                Some(t) => info!("session boot secret = {} (device up {})", t, crate::platform::uptime_text()),
-                None => info!("session boot-secret override set ({} bytes, device up {})", bytes.len(), crate::platform::uptime_text()),
-            }
+            // The boot COUNT is no secret (a small per-boot integer, the capsule's protection is the app sandbox) and is exactly what says whether the phone restarted between two logs; the boot_id is named, not printed, and an install-secret fallback is never printed.
+            let source = match std::str::from_utf8(&bytes).ok() {
+                Some(t) if t.starts_with("bootcount:") => t.to_string(),
+                Some(t) if t.len() == 36 && t.matches('-').count() == 4 => "kernel boot_id".to_string(),
+                _ => format!("an install secret ({} bytes)", bytes.len()),
+            };
+            info!("session boot secret = {} (device up {})", source, crate::platform::uptime_text());
         }
         _ => error!(
             "nativeNetworkInit: empty/unreadable boot secret — session may not persist on this ROM"
         ),
+    }
+    // The secret an earlier build sealed the session under (the boot count, before boot_id): tohu opens that capsule with it once and re-seals it under the current secret, so the move costs nobody a re-attest.
+    if let Some(l) = legacy {
+        tohu::set_boot_secret_legacy(&l);
+        info!("session legacy boot secret = {}", std::str::from_utf8(&l).ok().filter(|t| t.starts_with("bootcount:")).unwrap_or("(set)"));
     }
 
     // Register the service as the message-notification sink. nativeNetworkInit is an INSTANCE method on the Kotlin side, so the second JNI parameter is the service `this` — a global ref of it (+ the JavaVM) lets the RX thread post "new message" notifications up thru Kotlin regardless of Activity lifecycle (the Choreographer poll bridge stops when the app backgrounds, which is exactly when notifications matter).

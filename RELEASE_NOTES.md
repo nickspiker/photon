@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Phones stay signed in when Android restarts itself.** Android sometimes restarts its own framework in the background, for example to finish a system update, without restarting the phone; Photon took that for a reboot and asked you to type your handle again. It now only asks after a real restart of the phone. Updating to this version keeps you signed in.
 
 ## v122
 - **Photon draws in HDR on phones that can show it.** On an HDR phone such as a Pixel 8 Pro, highlights brighter than white, like the bright parts of an HDR photo, can now really glow, while the rest of Photon looks exactly as before. Photon asks the screen for extra brightness only while something on screen is brighter than white, and only as much as it needs, so an ordinary screen of messages never boosts the display. It needs the phone's own HDR brightness setting (Settings → Display) switched on, and battery saver off.
