@@ -14,3 +14,7 @@ OPEN (item 3): the new device's stale view of a friend's fleet, the MacBook key 
 
 **Why:** Nick 2026-10-21: "Stuck on testing the secure channel even tho it works fine… then it went back to amber on my side."
 **How to apply:** evidence = Emma's submitted log (photonlog --pull --handle, see [[reference_log_pull]]) + the desktop's /tmp/photon-nick log; related [[project_history_recovery]], [[project_braid_v2]].
+
+Item 3 findings so far (2026-10-21):
+- Nick's fleet chain is FINE: `pid-probe <handle>` folds 4 members (90e571bf desktop, 1be949c1, fe46a74b MacBook, cacbc223 Pixel). So Emma's new device was working from a stale / never-refreshed copy of Nick's device list ("ping from unknown device … stale fold on OUR side" for both the desktop and the MacBook at 21:22). A friend-fold success path logs nothing (protocol.rs drain), so whether/when it refreshed is invisible — add a log.
+- NEW, possibly systemic: every phonebook record of Nick's devices fails verification — pid-probe "registry record: Unverified" ×4 and "pb_devices: fetch failed: record failed verification"; desktop log 268× "PHONEBOOK: seed lookup failed (record failed verification)" since at least 2026-10-20 19:34 (log start), Emma 5×. Raised by fgtw phonebook `view.verify(handle_proof)` (photon src/network/fgtw/phonebook_client.rs ~L153). No fgtw phonebook commits since 10-15, so possibly older. Address lookup feeds direct paths — a candidate for "no direct connection".
