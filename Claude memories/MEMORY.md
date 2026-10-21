@@ -54,8 +54,8 @@
 - [Wave fishtank on cellular](project_wave_fishtank_cellular.md) — 2026-10-02 L rule; BUILT
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb; raw reader to v134
-- [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit extended surface MERGED 2026-10-21; peak metric open
-- [New-device history walk](project_new_device_history_walk.md) — 2026-10-21 Emma: strand miss + walk blocked 3 ways; relay-twin amber fixed
+- [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit surface merged; peak metric open
+- [New-device history walk](project_new_device_history_walk.md) — Emma: strand miss, walk blocked 3 ways; amber fixed
 - [Removal safety](project_device_removal_safety.md) — 2026-10-17 phases 2-3 BUILT: at-risk lines, copy-then-release; 4-5 open
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — fetch asked one friend device (fixed)
