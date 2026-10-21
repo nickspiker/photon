@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v122
 - **Photon draws in HDR on phones that can show it.** On an HDR phone such as a Pixel 8 Pro, highlights brighter than white, like the bright parts of an HDR photo, can now really glow, while the rest of Photon looks exactly as before. Photon asks the screen for extra brightness only while something on screen is brighter than white, and only as much as it needs, so an ordinary screen of messages never boosts the display. It needs the phone's own HDR brightness setting (Settings → Display) switched on, and battery saver off.
 - **HDR pictures keep their highlights.** An HDR photo you send or receive now keeps the light above white in its preview instead of flattening it, and profile pictures can carry HDR too.
 - **Colours are defined with room above white.** Every colour in Photon is now described in a way that leaves headroom for HDR; on an ordinary screen they look the same as before. On Macs, profile pictures and previews were being colour-converted twice, which shifted their colours slightly; that's fixed.
