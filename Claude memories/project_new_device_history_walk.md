@@ -10,7 +10,8 @@ Incident 2026-10-20/21 (Emma's new Android device `34addd91` on Nick's LAN 192.1
 - The strand miss DOES arm an urgent history walk, but it was blocked: (1) the new device rejected the MacBook: "device fe46a74b unknown to every friend contact (stale fold / era split)" — its view of Nick's fleet was stale; (2) MacBook pages failed: "page open failed … ours key#aa2b1faa theirs key#d7124177" → "walk PARKED … resumes when the key changes" (era/key split, cf. the open Mac era stall); (3) desktop pages arrived after 95 requests had expired → "DROPPED — rid unmatched and sender is not a fold-trusted sibling".
 - AMBER (FIXED c69e838a): senders send ceremony frames direct AND relayed; the relayed twin (~130 ms later, from 0.0.0.0) set reached_via_relay unconditionally in the offer/KEM/proof handlers (status.rs) — now only when validated_path is None, like the pong handler.
 
-OPEN (item 3): the new device's stale view of a friend's fleet, the MacBook key split, and late history pages dropped after expiry.
+FIXED 2026-10-21: stale friend fold → an unknown device answering for a known one (mismatched pong) refreshes that friend's fold, once per responder (photon 4459eee2, plus a "FLEET: X's fleet folded — grew to N" log); late history pages → the rid registry keeps minted rids 8× the 45 s in-flight timeout (2aaa55f5). The phonebook was dead too: see [[project_phonebook_strict_anchor]].
+OPEN: the MacBook ↔ new-device history key split (ours key#aa2b1faa, theirs key#d7124177, walk parked) needs a fresh repro log; a "catching up on history with X" label for the strand-miss hold.
 
 **Why:** Nick 2026-10-21: "Stuck on testing the secure channel even tho it works fine… then it went back to amber on my side."
 **How to apply:** evidence = Emma's submitted log (photonlog --pull --handle, see [[reference_log_pull]]) + the desktop's /tmp/photon-nick log; related [[project_history_recovery]], [[project_braid_v2]].
