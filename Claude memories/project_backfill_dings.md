@@ -29,3 +29,12 @@ metadata:
 - One friend's expired temporary IPv6 address: 2,741 retransmits, serial per-address queue delays everything behind it.
 - Ghost 1be949c1 still pinged every cycle (437 locked-out).
 - Mac notifications go via osascript, unlogged; Dock reopen (fluor host/app.rs) never calls set_window_visible(true).
+
+**2026-10-21 batch 2 BUILT (photon dcf04ebe + fluor 00991ee):** PT sender identity + dead addresses, busy loop, retention v1, camera off UI thread, encoder release-before-send (unproven — read the `slots:` line in Emma's next log), lock testimony Option, parked siblings, history twins, photon-attach worker, refusal save off-thread.
+**Still OPEN from these logs:**
+- Vault: commits pay TractFull reap/rescue/grow inside the caller (3.3 s / 5.7 s on Emma's phone); `LIVE-LAP AVERTED at lba 19` = the clean invariant broke somewhere (reap or grow realign) — needs `manifestus inspect` of her vault; direction = reap when the librarian is idle.
+- PT: a lost SUCCESS COMPLETE leaves the sender in AwaitingComplete forever (stale sweep skips that state).
+- Attach re-ask rotates devices on a 20 s timer → two siblings stream the same blob; should move on only when the asked device goes quiet.
+- UI-thread vault reads remain: attach_fetch_retry_tick (blob_manifest), attach_fetch (blob_chunks_held), send_attach_blob (blob_load).
+- Android camera grant still asked late (startBeamCapture); beam decode thread's 250 ms stop wait at hangup.
+- Skipped on purpose: limiting the 5-min history backstop to non-digest-covered conversations (presence is demand-driven now, so pongs are rare on idle devices).
