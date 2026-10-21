@@ -56,6 +56,7 @@
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb; raw reader to v134
 - [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit surface merged; peak metric open
 - [New-device history walk](project_new_device_history_walk.md) — Emma: strand miss, walk blocked 3 ways; amber fixed
+- [Phonebook strict anchor](project_phonebook_strict_anchor.md) — 2026-10-21 FIXED: records failed verification a month (strict eggs rule)
 - [Removal safety](project_device_removal_safety.md) — 2026-10-17 phases 2-3 BUILT: at-risk lines, copy-then-release; 4-5 open
 - [Fleet holds everything](project_fleet_holds_everything.md) — DOCTRINE 2026-10-07: every device copies photons/waves/pigeons/beams; pull one device at a time; sane on metered
 - [Pigeon fetch reach](project_pigeon_fetch_reach.md) — fetch asked one friend device (fixed)
@@ -77,13 +78,13 @@
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 CONVICTED: head-page early-stop hid older divergences; per-page chirps; vault re-encode per row; all fixed
+- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 head-page early-stop hid older divergences; fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
 - [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26 CONVICTED: media render at 7% while the rocker bound VOICE_CALL
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while rate-saturated; FIXED 2026-09-28
 - [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, NO hardcoded timings
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
-- [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S = spaghettify(time ‖ text), agreed per era at CLUTCH, heavy-weave migration; unlocks real delete; field verify pending
+- [Braid v2](project_braid_v2.md) — 2026-09-27 BUILT: per-strand S, agreed per era at CLUTCH; field verify pending
 - [Audio picker + levels](project_audio_picker_levels.md) — 2026-09-28: wave FIELD BUILT (ripples from avatars, level-coloured rings); mic/speaker pickers
 - [project_log_sweep_eats_fresh.md](project_log_sweep_eats_fresh.md) — 2026-08-21 log vanish never convicted; sweep ages by the key's eagle osc
 - [project_party_colour_perceptual.md](project_party_colour_perceptual.md) — CLOSED 2026-10-06: Y=0.5 physical; uniform-by-area draw
