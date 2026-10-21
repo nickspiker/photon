@@ -530,6 +530,8 @@ fn create_context(env: &mut JNIEnv<'_>, width: jint, height: jint, network_ptr: 
         }
     }
     fluor::host::android::surface::set_samsung_mode(is_samsung != JNI_FALSE);
+    // HDR (2026-10-20): frames go to fluor's extended-range F16 surface where this Android supports it, the 8-bit window where it does not (fluor::host::android::hdr_surface).
+    fluor::host::android::hdr_surface::enable();
     let network = unsafe { &*(network_ptr as *const NetworkContext) };
     let context = Box::new(PhotonContext::new(width.max(1) as u32, height.max(1) as u32, network));
     Box::into_raw(context) as jlong
@@ -2130,4 +2132,11 @@ impl crate::network::wfd::WfdPlatform for AndroidWfd {
 #[cfg(target_os = "android")]
 pub fn android_wfd_platform() -> Box<dyn crate::network::wfd::WfdPlatform> {
     Box::new(AndroidWfd)
+}
+
+/// The display's granted HDR/SDR ratio (Kotlin: `Display.getHdrSdrRatio` at start and from its change listener) → fluor's extended-range surface, which rebuilds its table and repaints on the next frame.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetHdrHeadroom(_env: JNIEnv<'_>, _class: JClass<'_>, ratio: jni::sys::jfloat) {
+    fluor::host::android::hdr_surface::set_display_headroom(ratio);
 }

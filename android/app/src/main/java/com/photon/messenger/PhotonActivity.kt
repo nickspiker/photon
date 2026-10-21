@@ -196,6 +196,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private var multiTouch = false
     private val frameHandler = Handler(Looper.getMainLooper())
     private val idleFrameRunnable = Runnable { Choreographer.getInstance().postFrameCallback(this) }
+    /// The display's HDR/SDR ratio listener (API 34+), unregistered in onDestroy.
+    private var hdrRatioListener: java.util.function.Consumer<android.view.Display>? = null
     private fun scheduleNextFrame() {
         frameHandler.removeCallbacks(idleFrameRunnable)
         Choreographer.getInstance().removeFrameCallback(this)
@@ -285,6 +287,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollApkInstall(contextPtr: Long): String?  // Per-frame poll: staged self-update APK path (one-shot) — fire the system installer with it
     private external fun nativePollClipboardCopy(contextPtr: Long): String?  // Per-frame poll: text to place on the OS clipboard (one-shot) — copy-words / copy-name affordances
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
+    private external fun nativeSetHdrHeadroom(ratio: Float)  // the display's granted HDR/SDR ratio (Display.getHdrSdrRatio + its listener) → fluor::host::android::hdr_surface
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeRestoreSessionFromVsf(vsfBytes: ByteArray): Int  // Restore session from sticky broadcast VSF capsule — call before nativeInitWithNetwork; returns 1 on success
     private external fun nativeDestroy(contextPtr: Long)
@@ -512,6 +515,19 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             window.colorMode = ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
+            // HDR (2026-10-20): an HDR window is what lets the display raise its headroom for the extended-range surface (fluor::host::android::hdr_surface). No window-level headroom: each frame asks for its own brightest light, so a frame that never passes white asks for nothing.
+            window.colorMode = ActivityInfo.COLOR_MODE_HDR
+            if (Build.VERSION.SDK_INT >= 34) {
+                display?.let { d ->
+                    if (d.isHdrSdrRatioAvailable) {
+                        nativeSetHdrHeadroom(d.hdrSdrRatio)
+                        hdrRatioListener = java.util.function.Consumer<android.view.Display> { changed ->
+                            nativeSetHdrHeadroom(changed.hdrSdrRatio)
+                            wakeFrames()
+                        }.also { d.registerHdrSdrRatioChangedListener(mainExecutor, it) }
+                    }
+                }
+            }
             // Push the device's actual display primaries down to Rust. `preferredWideGamutColorSpace` returns the ColorSpace.Rgb the panel claims (Display P3 on the Pixel 8 Pro). Its `transform` is the 9-float RGB→XYZ_D50 matrix in row-major order; `primaries` is `[Rx Ry Gx Gy Bx By]` in CIE 1931 xy chromaticity. Photon composes these with its own LMS→XYZ to drive the chromatic wave with native panel coordinates instead of a hardcoded REC2020 approximation that's outside the display's gamut anyway.
             val cs = display?.preferredWideGamutColorSpace
             if (cs is android.graphics.ColorSpace.Rgb) {
@@ -949,6 +965,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
 
     override fun onDestroy() {
         super.onDestroy()
+        if (Build.VERSION.SDK_INT >= 34) hdrRatioListener?.let { display?.unregisterHdrSdrRatioChangedListener(it) }
+        hdrRatioListener = null
         if (live === this) live = null // drop the Service's back-reference to this (possibly recreated) Activity
         Choreographer.getInstance().removeFrameCallback(this)
         frameHandler.removeCallbacks(idleFrameRunnable)
