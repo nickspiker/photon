@@ -3725,7 +3725,7 @@ dependencies = [
 
 [[package]]
 name = "kete"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "blake3",
  "chacha20poly1305 0.11.0-rc.3",
@@ -3969,7 +3969,7 @@ dependencies = [
 
 [[package]]
 name = "manifestus"
-version = "0.0.3"
+version = "0.0.4"
 dependencies = [
  "blake3",
  "hashbrown 0.15.5",

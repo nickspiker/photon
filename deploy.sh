@@ -273,24 +273,38 @@ timed "android-arm64" ./scripts/android/build.sh
 # Every binary exists + is signed. Read the Windows hash (for the .ps1 installer) and BUILD the signed manifest now — it only reads local files + hashes them, so it belongs in the build phase. Publishing it is the last upload in the publish phase, so a running client never sees a manifest whose binaries aren't up yet.
 WINDOWS_SHA256=$(cat target/x86_64-pc-windows-gnu/release/photon-messenger.exe.sha256)
 
+# THE RELEASE'S OWN FOLDER (2026-10-22, Nick: "I'd prefer not to have half uploads"): the binaries land under v<n>/, which nothing names until the manifest and the installers do.
+# A failure partway thru the uploads changes no live file — the manifest, the installers and the site switch to the new folder together, at the end.
+REL_PATH="$R2_PATH/v$SHIP_VERSION"
+REL_URL="$R2_URL/v$SHIP_VERSION"
+RELEASE_FILES=(photon-messenger-linux-x86_64-release photon-messenger-linux-arm64-release photon-messenger-windows-release.exe photon-messenger-windows-arm64-release.exe photon-messenger-macos-x86_64-release photon-messenger-macos-arm64-release photon-messenger-android-release.apk)
+
 echo ""
 echo "Building signed release manifest..."
 MANIFEST_TOOL=target/release/photon-manifest
 b3() { b3sum "$1" | cut -d' ' -f1; }
 COMMIT="$TIP_COMMIT"
 "$MANIFEST_TOOL" --channel release --out /tmp/manifest-release.vsf \
-    --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(manifest_size target/release/photon-messenger)" \
-    --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(manifest_size target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
-    --artefact Windows x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-release.exe"   "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" "$(manifest_size target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
-    --artefact Windows arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-windows-arm64-release.exe" "$(b3 target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" "$(manifest_size target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" \
-    --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-x86_64-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
-    --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(manifest_size target/aarch64-apple-darwin/release/photon-messenger)" \
-    --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$R2_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)"
+    --artefact Linux   x86_64 "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-linux-x86_64-release"  "$(b3 target/release/photon-messenger)" "$(manifest_size target/release/photon-messenger)" \
+    --artefact Linux   arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-linux-arm64-release"   "$(b3 target/aarch64-unknown-linux-gnu/release/photon-messenger)" "$(manifest_size target/aarch64-unknown-linux-gnu/release/photon-messenger)" \
+    --artefact Windows x86_64 "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-windows-release.exe"   "$(b3 target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" "$(manifest_size target/x86_64-pc-windows-gnu/release/photon-messenger.exe)" \
+    --artefact Windows arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-windows-arm64-release.exe" "$(b3 target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" "$(manifest_size target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe)" \
+    --artefact macOS   x86_64 "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-macos-x86_64-release"   "$(b3 target/x86_64-apple-darwin/release/photon-messenger)" "$(manifest_size target/x86_64-apple-darwin/release/photon-messenger)" \
+    --artefact macOS   arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-macos-arm64-release"   "$(b3 target/aarch64-apple-darwin/release/photon-messenger)" "$(manifest_size target/aarch64-apple-darwin/release/photon-messenger)" \
+    --artefact Android arm64  "$FULL_VERSION" "$COMMIT" "$REL_URL/photon-messenger-android-release.apk"   "$(b3 android/app/build/outputs/apk/release/app-release.apk)" "$(manifest_size android/app/build/outputs/apk/release/app-release.apk)"
 
 # Patch the Windows installer with the correct per-arch hashes NOW (a build-phase transform, no upload).
 sed "s/\$expectedHashX64 = \"[A-F0-9]*\"/\$expectedHashX64 = \"$WINDOWS_SHA256\"/" installers/install-release.ps1 > /tmp/install-release.ps1
 WINARM_SHA256=$(cat target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe.sha256)
 sed -i "s/\$expectedHashArm64 = \"[A-F0-9]*\"/\$expectedHashArm64 = \"$WINARM_SHA256\"/" /tmp/install-release.ps1
+
+# Both installers download from the release's own folder (see REL_PATH), patched here like the hashes above; a pattern that no longer matches fails the build now, never a half-switched publish.
+sed -i "s|https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-windows|$REL_URL/photon-messenger-windows|g" /tmp/install-release.ps1
+sed "s|^DOWNLOAD_URL=\"https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-|DOWNLOAD_URL=\"$REL_URL/photon-messenger-|" installers/install-release.sh > /tmp/install-release.sh
+if [ "$(grep -c "$REL_URL/photon-messenger-windows" /tmp/install-release.ps1)" -ne 2 ] || ! grep -q "^DOWNLOAD_URL=\"$REL_URL/" /tmp/install-release.sh; then
+    echo "ERROR: an installer's download URL did not patch to $REL_URL — the installer templates changed; fix the patterns above."
+    exit 1
+fi
 
 echo ""
 echo "BUILD PHASE complete — all 8 platforms + signed manifest built. Nothing public yet."
@@ -303,39 +317,59 @@ echo ""
 echo "Uploading to R2 ($R2_BUCKET/$R2_PATH)..."
 PHASE_T0=$SECONDS
 
-# TIMEOUT + RETRY on every put (field 2026-08-28): wrangler holds a dead HTTP stream FOREVER — a deploy sat 20 minutes on install-release.ps1, a few-KB text file, after all eight binaries had uploaded fine. 10 minutes covers the biggest binary on the slowest sane uplink; three attempts covers the transient-connection class; a genuinely dead network still fails LOUDLY into the trap instead of hanging.
+# TIMEOUT + RETRY on every put (field 2026-08-28): wrangler holds a dead HTTP stream FOREVER — a deploy sat 20 minutes on install-release.ps1, a few-KB text file, after all eight binaries had uploaded fine. 10 minutes covers the biggest binary on the slowest sane uplink; three attempts covers the transient-connection class.
+# AN OUTAGE IS WAITED OUT, NOT COUNTED (2026-10-22: five minutes of upstream DNS failure spent all three attempts in 40 s and threw away a fully built release): a failed put while Cloudflare is unreachable waits for it to answer again, then retries without spending an attempt.
+# Only an hour with no network fails the deploy; a put that fails while the network is fine still spends its attempts and fails LOUDLY into the trap.
+cf_reachable() {
+    curl -s -o /dev/null --max-time 10 https://api.cloudflare.com/client/v4/
+}
 r2_put() {
-    local attempt
-    for attempt in 1 2 3; do
+    local attempt=1 waited
+    while [ "$attempt" -le 3 ]; do
         if timeout 600 wrangler r2 object put "$@"; then
             return 0
         fi
+        if ! cf_reachable; then
+            echo "  ⏸ Cloudflare is unreachable — waiting for the network before retrying: $1" >&2
+            waited=0
+            until cf_reachable; do
+                if [ "$waited" -ge 3600 ]; then
+                    echo "  ✗ no network for an hour — giving up: $1" >&2
+                    return 1
+                fi
+                sleep 15
+                waited=$((waited + 15))
+            done
+            echo "  ▶ the network is back after ~${waited}s — retrying (an outage spends no attempt): $1" >&2
+            continue
+        fi
         echo "  ⚠ upload attempt $attempt failed/timed out — retrying: $1" >&2
+        attempt=$((attempt + 1))
     done
     echo "  ✗ upload failed after 3 attempts: $1" >&2
     return 1
 }
 
-# Upload all release binaries to R2 (flat naming with -release suffix)
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-x86_64-release" \
+# The binaries go to the release's own folder first (REL_PATH): no live file changes until the manifest names them.
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-linux-x86_64-release" \
     --file target/release/photon-messenger --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-linux-arm64-release" \
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-linux-arm64-release" \
     --file target/aarch64-unknown-linux-gnu/release/photon-messenger --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-release.exe" \
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-windows-release.exe" \
     --file target/x86_64-pc-windows-gnu/release/photon-messenger.exe --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-windows-arm64-release.exe" \
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-windows-arm64-release.exe" \
     --file target/aarch64-pc-windows-gnullvm/release/photon-messenger.exe --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-x86_64-release" \
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-macos-x86_64-release" \
     --file target/x86_64-apple-darwin/release/photon-messenger --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-macos-arm64-release" \
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-macos-arm64-release" \
     --file target/aarch64-apple-darwin/release/photon-messenger --remote
-r2_put "$R2_BUCKET/$R2_PATH/photon-messenger-android-release.apk" \
+r2_put "$R2_BUCKET/$REL_PATH/photon-messenger-android-release.apk" \
     --file android/app/build/outputs/apk/release/app-release.apk \
     --content-type application/vnd.android.package-archive --remote
 
-# Upload install scripts and assets
+# THE SWITCH: the installers (patched to the folder above, which is now fully up), then the manifest — a few small files, so the new release goes live together.
 r2_put "$R2_BUCKET/$R2_PATH/install-release.sh" \
-    --file installers/install-release.sh --content-type text/plain --remote
+    --file /tmp/install-release.sh --content-type text/plain --remote
 # The resilient-launch shim (docs/resilient-launch.md): the installer fetches this to $HOME/.local/bin/photon-launch and points the .desktop at it.
 r2_put "$R2_BUCKET/$R2_PATH/photon-launch.sh" \
     --file installers/photon-launch.sh --content-type text/plain --remote
@@ -393,6 +427,13 @@ WEBSITE_DIR="/mnt/Chiton/MEGA/holdmyoscilloscope/photon"
 DEPLOY_DATE=$(date +%Y-%m-%d)
 sed_i "s/Version: [^·]*· Updated: [^<]*/Version: $DOZENAL_VERSION · Updated: $DEPLOY_DATE/" "$WEBSITE_DIR/index.html"
 echo "Updated website: Version $DOZENAL_VERSION, Date $DEPLOY_DATE"
+# The download links follow the release into its own folder (REL_PATH); a link already pointing at an older v<n>/ moves too, and the development APK's link is left alone.
+sed_i -E "s#(holdmyoscilloscope\.com/photon/)(v[0-9]+/)?(photon-messenger-[a-z0-9_-]+-release(\.exe|\.apk)?)\"#\1v$SHIP_VERSION/\3\"#g" "$WEBSITE_DIR/index.html"
+echo "Updated website: download links → v$SHIP_VERSION/"
+# Keep the newest three release folders: the one three back goes now (best-effort, after the release is live — a miss only leaves an unreferenced folder).
+for name in "${RELEASE_FILES[@]}"; do
+    timeout 120 wrangler r2 object delete "$R2_BUCKET/$R2_PATH/v$((SHIP_VERSION - 3))/$name" --remote >/dev/null 2>&1 || true
+done
 # WHAT'S NEW on the page (Nick 2026-09-09): the newest three shipped sections of RELEASE_NOTES.md rendered between the RELEASE-NOTES markers — from the SNAPSHOT tree, where Upcoming already reads v${SHIP_VERSION}.
 # Headings read as dozenal names (v108 → Stel Zil), the same words as the page's Version line; RELEASE_NOTES.md keeps `## vN` because the app and this parser match on it.
 render_release_notes_html() {

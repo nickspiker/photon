@@ -159,7 +159,7 @@ curl -sSfL https://brobdingnagian.holdmyoscilloscope.com/photon/install-release.
 powershell -ExecutionPolicy Bypass -c "irm https://brobdingnagian.holdmyoscilloscope.com/photon/install-release.ps1 | iex"
 ```
 
-**Android:** [Download APK](https://brobdingnagian.holdmyoscilloscope.com/photon/photon-messenger-android-release.apk) — enable "Install unknown apps" in Settings if prompted.
+**Android:** [Download APK](https://github.com/nickspiker/photon/releases/latest/download/photon-messenger-android-release.apk) — enable "Install unknown apps" in Settings if prompted.
 
 ### Development
 
