@@ -23,6 +23,12 @@ One sentence per line, however long; plain language for the person who installs 
 - **A friend no longer flashes offline when you open their conversation** over a slow relayed connection.
 - **History catch-up stops tripping over its own echoes.** Every page of history arrives twice by design, and the second copy was being thrown away as unexpected; it is now recognised quietly, and a page from a friend's second device is kept. Big file transfers also no longer queue in front of history.
 - **Mac: reopening Photon from the Dock** now counts as the window being back, so the open conversation doesn't ding and the screen updates.
+- **Safer, faster storage on a busy device.** Photon's storage engine had two rare bugs that could lose a just-saved item when the storage file was nearly full and being tidied at the same moment; both are fixed, along with the inconsistency behind a "live-lap" warning. Tidying now happens when Photon is idle instead of in the middle of a save, so a phone taking in lots of files no longer stalls for seconds, and incoming file pieces are saved in batches.
+- **Files are fetched without waiting around.** A device asked for a file that it doesn't have now says so, and Photon asks the next device at once instead of waiting 20 seconds; a device that can't be reached ends the wait the same way. A device that is sending you a file is never abandoned for another.
+- **History uses the relay only when needed.** A device sends history through the relay only when it has no proven direct path to you, or after a direct answer went missing; file transfers follow the same rule.
+- **"End beam" when video is on.** The end button says End beam while either side's camera is on.
+- **Phones ask for the camera when you press Beam,** not once the wave is already live.
+- **Transfers that lose their last confirmation recover.** A sender no longer waits forever when the receiver's final "got it" goes missing, and hanging up a beam no longer pauses for a quarter second.
 
 ## v122
 - **Photon draws in HDR on phones that can show it.** On an HDR phone such as a Pixel 8 Pro, highlights brighter than white, like the bright parts of an HDR photo, can now really glow, while the rest of Photon looks exactly as before. Photon asks the screen for extra brightness only while something on screen is brighter than white, and only as much as it needs, so an ordinary screen of messages never boosts the display. It needs the phone's own HDR brightness setting (Settings → Display) switched on, and battery saver off.

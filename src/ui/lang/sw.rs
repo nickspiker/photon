@@ -31,6 +31,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Weka".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Cheza".into(),
         Msg::EndWave => "Maliza wimbi".into(),
+        Msg::EndBeam => "Maliza mwale".into(),
         Msg::HangUp => "Kata".into(),
         Msg::Attest => "Thibitisha".into(),
         Msg::Cancel => "Ghairi".into(),

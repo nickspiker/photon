@@ -402,11 +402,21 @@ pub fn take_frames() -> Vec<Frame> {
     std::mem::take(&mut *BEAM_FRAMES.lock().unwrap())
 }
 
-/// The blocking form: waits up to `timeout` for a frame to complete (the frame is the edge; the timeout only lets a stop flag be seen), then takes everything queued.
-pub fn take_frames_wait(timeout: std::time::Duration) -> Vec<Frame> {
+/// The blocking form: waits for a frame to complete or for `stop` to rise, then takes everything queued.
+/// No timeout: a completed frame is one edge and the stop is the other, signalled by [`wake_frames`].
+pub fn take_frames_wait(stop: &std::sync::atomic::AtomicBool) -> Vec<Frame> {
     let guard = BEAM_FRAMES.lock().unwrap();
-    let (mut guard, _) = BEAM_FRAMES_CV.wait_timeout_while(guard, timeout, |q| q.is_empty()).unwrap();
+    let mut guard = BEAM_FRAMES_CV
+        .wait_while(guard, |q| q.is_empty() && !stop.load(std::sync::atomic::Ordering::Relaxed))
+        .unwrap();
     std::mem::take(&mut *guard)
+}
+
+/// The stop edge for a decoder parked in [`take_frames_wait`]: the caller raises its stop flag first, then calls this.
+/// Taking the queue's lock between the flag and the signal is what makes it race-free: a waiter is either before its predicate check (it will see the flag) or parked (it gets the signal).
+pub fn wake_frames() {
+    drop(BEAM_FRAMES.lock().unwrap());
+    BEAM_FRAMES_CV.notify_all();
 }
 
 pub fn current_info() -> Option<Info> {
@@ -443,8 +453,8 @@ pub fn start_rx(wave_secret: &[u8; 32], dir: Direction) -> RxHandle {
         .name("beam-rx".into())
         .spawn(move || {
             while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-                // A blocking recv with a timeout is the thread's only wait: datagrams are the edges, the timeout only lets the stop flag be seen.
-                match rx.recv_timeout(std::time::Duration::from_millis(250)) {
+                // A blocking recv is the thread's only wait: datagrams are the edges, and the handle's drop clearing `BEAM_SINK` drops the only sender, so the recv returns at once with the stop.
+                match rx.recv() {
                     Ok(bytes) => {
                         if let Some(frame) = brx.push(&bytes) {
                             let mut q = BEAM_FRAMES.lock().unwrap();
@@ -459,8 +469,7 @@ pub fn start_rx(wave_secret: &[u8; 32], dir: Direction) -> RxHandle {
                         }
                         BEAM_ROTATION.store(brx.rotation, std::sync::atomic::Ordering::Relaxed);
                     }
-                    Err(mpsc::RecvTimeoutError::Timeout) => {}
-                    Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                    Err(mpsc::RecvError) => break,
                 }
             }
             crate::logf!(

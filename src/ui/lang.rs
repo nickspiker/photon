@@ -222,6 +222,7 @@ pub enum Msg<'a> {
     Keep,
     Play,
     EndWave,
+    EndBeam,
     HangUp,
     Attest,
     Cancel,

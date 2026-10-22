@@ -2242,6 +2242,8 @@ pub struct HistoryRequestPayload {
     pub request_id: [u8; 32],
     /// Header creation time (eagle oscillations) — the responder's staleness check.
     pub sent_osc: i64,
+    /// The asker wants the page's relay copy too. None = an asker from before the flag, which always got one.
+    pub relay_copy: Option<bool>,
 }
 
 /// Build a signed `hist_req` frame (~200 bytes).
@@ -2423,6 +2425,7 @@ pub fn build_history_request_vsf(
     before_osc: i64,
     limit: u32,
     request_id: &[u8; 32],
+    relay_copy: bool,
     device_pubkey: &[u8; 32],
     device_secret: &[u8; 32],
 ) -> Result<Vec<u8>, String> {
@@ -2434,6 +2437,8 @@ pub fn build_history_request_vsf(
     section.add_field("before", VsfType::e(vsf::types::EtType::e6(before_osc)));
     section.add_field("limit", VsfType::u(limit as usize, false));
     section.add_field("rid", VsfType::hb(request_id.to_vec()));
+    // Whether the answer should ALSO ride the relay: only when this asker has no proof the direct path answers (its last ask here expired unanswered, or no direct path is trusted). Absent = an older asker, served the relay copy as before.
+    section.add_field("relay", VsfType::u0(relay_copy));
 
     let unsigned = VsfBuilder::new()
         .creation_time_oscillations(vsf::eagle_time_oscillations())
@@ -2485,6 +2490,14 @@ pub fn parse_history_request_vsf(
         .ok_or("hist_req missing limit")?;
     let request_id = field_hash32(fields, "rid", |v| matches!(v, VsfType::hb(_)))
         .ok_or("hist_req missing rid")?;
+    let relay_copy = fields
+        .iter()
+        .find(|f| f.name == "relay")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::u0(b) => Some(*b),
+            _ => None,
+        });
 
     Ok((
         HistoryRequestPayload {
@@ -2493,6 +2506,7 @@ pub fn parse_history_request_vsf(
             limit,
             request_id,
             sent_osc,
+            relay_copy,
         },
         sender_pubkey,
     ))
@@ -3238,6 +3252,48 @@ pub fn build_attach_have_vsf(
     crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
 }
 
+/// Build an `attach_none` frame — a server's answer to an `attach_req` for a blob it does not hold (Nick 2026-10-21: "I don't like timers"): every ask gets an answer, so the asker moves on at this edge instead of waiting out a silence.
+pub fn build_attach_none_vsf(
+    conversation_token: &[u8; 32],
+    content_hash: &[u8; 32],
+    device_pubkey: &[u8; 32],
+    device_secret: &[u8; 32],
+) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("attach_none");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("hash", VsfType::hb(content_hash.to_vec()));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build attach_none VSF: {}", e))?;
+
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify an `attach_none` frame. Returns ((conversation_token, content_hash), sender_pubkey).
+pub fn parse_attach_none_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
+        .map_err(|e| format!("attach_none verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "attach_none" {
+        return Err(format!("Expected 'attach_none' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_)))
+        .ok_or("attach_none missing tok")?;
+    let content_hash = field_hash32(fields, "hash", |v| matches!(v, VsfType::hb(_)))
+        .ok_or("attach_none missing hash")?;
+    Ok(((conversation_token, content_hash), sender_pubkey))
+}
+
 /// Parse + verify an `attach_have` frame. Returns ((conversation_token, content_hash), sender_pubkey).
 pub fn parse_attach_have_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32]), [u8; 32]), String> {
     let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None)
@@ -3771,13 +3827,14 @@ mod history_frame_tests {
         let (pubkey, secret) = keypair(7);
         let tok = [0xA1u8; 32];
         let rid = [0xB2u8; 32];
-        let bytes = build_history_request_vsf(&tok, i64::MAX, 50, &rid, &pubkey, &secret).unwrap();
+        let bytes = build_history_request_vsf(&tok, i64::MAX, 50, &rid, true, &pubkey, &secret).unwrap();
         let (payload, signer) = parse_history_request_vsf(&bytes).unwrap();
         assert_eq!(signer, pubkey);
         assert_eq!(payload.conversation_token, tok);
         assert_eq!(payload.request_id, rid);
         assert_eq!(payload.before_osc, i64::MAX);
         assert_eq!(payload.limit, 50);
+        assert_eq!(payload.relay_copy, Some(true));
         assert!(payload.sent_osc > 0);
     }
 
@@ -3885,7 +3942,7 @@ mod history_frame_tests {
     fn hist_req_bit_flip_rejected() {
         let (pubkey, secret) = keypair(7);
         let mut bytes =
-            build_history_request_vsf(&[0xA1u8; 32], 1000, 10, &[0xB2u8; 32], &pubkey, &secret)
+            build_history_request_vsf(&[0xA1u8; 32], 1000, 10, &[0xB2u8; 32], false, &pubkey, &secret)
                 .unwrap();
         let mid = bytes.len() / 2;
         bytes[mid] ^= 0x01;
@@ -4299,6 +4356,18 @@ mod pong_seal_tests {
         }
         let other = build_attach_have_vsf(&[1u8; 32], &[2u8; 32], &pk, kp.secret.as_bytes()).unwrap();
         assert!(parse_holdings_vsf(&other).is_err());
+    }
+
+    /// "Not held here" round-trips, and is never mistaken for the delivered confirmation (nor the reverse).
+    #[test]
+    fn attach_none_round_trips_and_is_not_attach_have() {
+        let kp = fgtw::keys::Keypair::from_seed(&[0x4Eu8; 32]);
+        let pk = kp.public.to_bytes();
+        let none = build_attach_none_vsf(&[1u8; 32], &[2u8; 32], &pk, kp.secret.as_bytes()).unwrap();
+        assert_eq!(parse_attach_none_vsf(&none).unwrap(), (([1u8; 32], [2u8; 32]), pk));
+        assert!(parse_attach_have_vsf(&none).is_err());
+        let have = build_attach_have_vsf(&[1u8; 32], &[2u8; 32], &pk, kp.secret.as_bytes()).unwrap();
+        assert!(parse_attach_none_vsf(&have).is_err());
     }
 
     /// The derive flagship's migration guarantee: DepartReqBody's section is BYTE-IDENTICAL to the retired hand codec (same fields, same order, same variants), and the full signed build/parse round-trips thru the derive with intent/commitment surviving and pre-intent absence defaulting.

@@ -1025,6 +1025,8 @@ class PhotonConnectionService : Service() {
     private external fun nativeBeamOrient(quarterTurns: Int, front: Boolean)
 
     @Volatile private var beamRunning = false
+    // A beam asked for while the CAMERA grant was missing: the grant's edge starts it. An early ask (askCameraEarly) leaves it false, so a grant given before the wave connects starts nothing.
+    @Volatile private var beamWanted = false
     private var beam: PhotonBeam? = null
 
     /** Called from Rust when the Beam button is pressed on an active wave: the camera + encoder pipeline, if CAMERA is granted — else the prompt, and Rust tries again on the grant edge. */
@@ -1033,9 +1035,11 @@ class PhotonConnectionService : Service() {
         val granted = checkSelfPermission(android.Manifest.permission.CAMERA) == android.content.pm.PackageManager.PERMISSION_GRANTED
         if (!granted) {
             PhotonLog.w(TAG, "beam: CAMERA not granted — prompting")
+            beamWanted = true
             PhotonActivity.live?.requestCameraPermission()
             return
         }
+        beamWanted = false
         beamRunning = true
         promoteForeground(waveAudioRunning)
         val b = PhotonBeam(this,
@@ -1048,12 +1052,26 @@ class PhotonConnectionService : Service() {
         PhotonLog.i(TAG, "beam: capture started")
     }
 
+    /** Called from Rust at the first beam intent (the Beam slat, Beam back, the in-wave Beam button): the CAMERA prompt goes up while the wave connects instead of after it (field 2026-10-21, Nick's MacBook asked 0.7 s into the live wave). Starts nothing. */
+    fun askCameraEarly() {
+        if (checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            PhotonLog.i(TAG, "beam: asking for the camera at the first beam intent")
+            PhotonActivity.live?.requestCameraPermission()
+        }
+    }
+
+    /** The CAMERA grant's edge, from the Activity's prompt: a beam that was waiting on it starts now. */
+    fun onCameraGranted() {
+        if (beamWanted) startBeamCapture()
+    }
+
     /** Called from Rust when the beam's self-view is tapped: the next camera, in flight (PhotonBeam.switchCamera). */
     fun cycleBeamCamera() {
         beam?.switchCamera()
     }
 
     fun stopBeamCapture() {
+        beamWanted = false
         if (!beamRunning) return
         beamRunning = false
         beam?.stop()

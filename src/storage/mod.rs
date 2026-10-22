@@ -364,6 +364,25 @@ pub fn blob_store(
     vault.write_addr(&addr, plaintext).map_err(|e| e.to_string())
 }
 
+/// [`blob_store`] for many blobs under ONE vault batch — one librarian commit for the lot instead of one durable round trip each.
+/// The attachment intake hands over every chunk that gathered while the previous batch was on the platter (photon_app's ChunkIntake), so a burst of 256 KiB chunks pays one commit's fsync rounds instead of one set per chunk.
+pub fn blob_store_many(identity_seed: &[u8; 32], items: Vec<([u8; 32], Vec<u8>)>) -> Result<(), String> {
+    if items.is_empty() {
+        return Ok(());
+    }
+    if BLOB_NAME_KEY.lock().unwrap().is_none() {
+        blob_init_names(identity_seed);
+    }
+    let vault = device_vault().ok_or("blob: vault unavailable")?;
+    let mut ops = Vec::with_capacity(items.len());
+    for (content_hash, plaintext) in items {
+        let addr = blob_addr(&content_hash).ok_or("blob: no session name key")?;
+        blob_presence_forget(&content_hash);
+        ops.push((addr, Some(plaintext)));
+    }
+    vault.apply_addr_batch(ops).map_err(|e| e.to_string())
+}
+
 
 // CHUNKED BLOBS (typed attachments Phase 1, 2026-09-10): anything past BLOB_CHUNK_SIZE is stored as content-addressed CHUNKS (each a vault value at its own chunk-hash address — the same keyed address scheme) plus a MANIFEST at a separate keyed address under the whole-file hash. The wire carries the manifest then chunks, a fetch resumes from whatever chunks are held, and Save streams the chunks to the file with a running hash — the whole file is never rebuilt in RAM on the receiving side.
 pub const BLOB_CHUNK_SIZE: usize = 256 * 1024;

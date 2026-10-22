@@ -42,6 +42,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Залишити".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Відтворити".into(),
         Msg::EndWave => "Завершити хвилю".into(),
+        Msg::EndBeam => "Завершити промінь".into(),
         Msg::HangUp => "Обірвати".into(),
         Msg::Attest => "Засвідчити".into(),
         Msg::Cancel => "Скасувати".into(),

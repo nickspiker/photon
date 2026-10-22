@@ -29,6 +29,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Pupuri".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Whakatangi".into(),
         Msg::EndWave => "Whakamutu".into(),
+        Msg::EndBeam => "Whakamutu te hihi".into(),
         Msg::HangUp => "Whakamutua".into(),
         Msg::Attest => "Whakaū".into(),
         Msg::Cancel => "Whakakore".into(),

@@ -148,6 +148,8 @@ pub struct Receiver {
 impl Drop for Receiver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        // The stop is an edge, not a poll: wake the decoder parked on the frame queue so the join returns at once (it used to wait out a 250 ms timeout at every hangup, on the thread hanging up).
+        beam::wake_frames();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
@@ -216,7 +218,7 @@ fn decode_loop(stop: Arc<AtomicBool>) {
     let mut next: Option<u32> = None;
     const REORDER: u32 = 6;
     while !stop.load(Ordering::Relaxed) {
-        let frames = beam::take_frames_wait(std::time::Duration::from_millis(250));
+        let frames = beam::take_frames_wait(&stop);
         if frames.is_empty() {
             continue;
         }
@@ -878,6 +880,13 @@ pub fn ask_camera_once() {
 /// Ask at the first beam intent — the Beam slat, Beam back, the in-wave Beam button — so the system prompt is up while the wave connects (field 2026-10-21, Nick's MacBook: asked 0.7 s into the live wave, granted 6.4 s later, the beam waited on it).
 /// Nothing where no prompt exists: `camera_ready` is true there.
 pub fn ask_camera_early() {
+    // Android's grant lives with the service, which prompts only when it is missing.
+    #[cfg(target_os = "android")]
+    {
+        let _ = crate::platform::jni_android::wave_service_void("askCameraEarly");
+        return;
+    }
+    #[cfg(not(target_os = "android"))]
     if !camera_ready() {
         ask_camera_once();
     }

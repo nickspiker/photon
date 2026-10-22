@@ -29,6 +29,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Simpan".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Putar".into(),
         Msg::EndWave => "Akhiri gelombang".into(),
+        Msg::EndBeam => "Akhiri pancaran".into(),
         Msg::HangUp => "Putuskan".into(),
         Msg::Attest => "Sahkan".into(),
         Msg::Cancel => "Batal".into(),

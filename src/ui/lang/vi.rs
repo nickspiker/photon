@@ -31,6 +31,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Giữ".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Phát".into(),
         Msg::EndWave => "Kết thúc sóng".into(),
+        Msg::EndBeam => "Kết thúc chùm".into(),
         Msg::HangUp => "Cắt".into(),
         Msg::Attest => "Chứng thực".into(),
         Msg::Cancel => "Hủy".into(),

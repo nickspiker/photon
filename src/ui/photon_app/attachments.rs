@@ -5,6 +5,17 @@ use super::*;
 /// The send cap (typed attachments Phase 1): the picker still hands the bytes over whole, so RAM at pick time is the bound — 256 MB, up from the 25 MB one-frame limit the chunked wire no longer needs.
 pub(super) const MAX_ATTACH: usize = 256 * 1024 * 1024;
 
+impl FetchAsk {
+    /// Asks in a row that brought none of the blob, counting the last one once it has gone quiet: an ask that brought some of it starts the count again, and an armed fetch never asked counts nothing.
+    fn fruitless_after(&self) -> u8 {
+        match (self.asked, self.progressed) {
+            (None, _) => self.fruitless,
+            (Some(_), true) => 0,
+            (Some(_), false) => self.fruitless.saturating_add(1),
+        }
+    }
+}
+
 /// A RAW's temp copy for limbus (file-only reader): written into the runtime dir under the content hash, None for every other kind or on a write failure. The caller removes it once the decode has landed.
 /// A temp copy of any picked/held image for the opsin viewer path (its readers want a path). opsin recognises the file by its bytes, so the extension is only for the human who sees the name in the viewer's title; it is the original's when there is one, else what the bytes' magic says. Lives in runtime_dir beside the RAW temp; the caller removes it after the render.
 pub(super) fn view_temp_path(name: &str, hash: &[u8; 32], bytes: &[u8]) -> Option<std::path::PathBuf> {
@@ -239,15 +250,12 @@ impl PhotonApp {
     }
 
     /// Seal + push the blob for `content_hash` to contact `ci`'s device over PT (skips self/sibling contacts — they fetch lazily).
+    /// The load, the seal and the dispatch run on the attach worker: the UI thread makes no vault call (2026-09-18 ANR).
     pub(super) fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32]) {
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
         let bar = self.raw_name_of(content_hash);
-        let Some(plain) = crate::storage::blob_load(&seed, content_hash) else {
-            crate::log("attach: blob missing locally — nothing to push");
-            return;
-        };
         let (device, addr_pair, relay_to, token) = {
             let Some(c) = self.contacts.get(ci) else {
                 return;
@@ -282,34 +290,37 @@ impl PhotonApp {
             crate::log("attach: no wire key (history key not derived yet)");
             return;
         };
-        let Ok(sealed) = kete::encrypt_bytes(&plain, &wire_key) else {
-            return;
-        };
         let (Some(kp), Some(checker)) =
             (self.device_keypair.as_ref(), self.status_checker.as_ref())
         else {
             return;
         };
-        match crate::network::fgtw::protocol::build_attach_blob_vsf(
-            &token,
-            content_hash,
-            sealed,
-            kp.public.as_bytes(),
-            kp.secret.as_bytes(),
-        ) {
-            Ok(vsf_bytes) => {
-                checker.send_history(crate::network::status::HistorySendRequest {
-                    peer_addr,
-                    alt_addr,
-                    recipient_pubkey: device,
-                    vsf_bytes,
-                    relay_to,
-                    tag: Some(bar), // the bar for THIS blob reads its transfer by this tag (the row's raw hash, also for a wrapper)
-                });
-                crate::log("attach: blob dispatched over PT");
+        let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
+        let dispatch = checker.history_dispatch();
+        let content_hash = *content_hash;
+        queue_job(&self.attach_job_tx, move || {
+            let Some(plain) = crate::storage::blob_load(&seed, &content_hash) else {
+                crate::log("attach: blob missing locally — nothing to push");
+                return;
+            };
+            let Ok(sealed) = kete::encrypt_bytes(&plain, &wire_key) else {
+                return;
+            };
+            match crate::network::fgtw::protocol::build_attach_blob_vsf(&token, &content_hash, sealed, &kp_pub, &kp_sec) {
+                Ok(vsf_bytes) => {
+                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                        peer_addr,
+                        alt_addr,
+                        recipient_pubkey: device,
+                        vsf_bytes,
+                        relay_to,
+                        tag: Some(bar), // the bar for THIS blob reads its transfer by this tag (the row's raw hash, also for a wrapper)
+                    });
+                    crate::log("attach: blob dispatched over PT");
+                }
+                Err(e) => crate::logf!("attach: blob frame build failed: {}", e),
             }
-            Err(e) => crate::logf!("attach: blob frame build failed: {}", e),
-        }
+        });
     }
 
     /// Push a CHUNKED blob to the friend: the sealed manifest, then every chunk, each its own PT frame — sealed and dispatched from the worker (256 seals of 256 KB do not belong on the render thread).
@@ -397,6 +408,13 @@ impl PhotonApp {
     pub(super) fn attach_fetch(&mut self, sci: usize, content_hash: &[u8; 32]) {
         // Automatic paths gate on recording_wanted before calling, so reaching here is a deliberate fetch.
         self.space_unevict(content_hash);
+        // A STREAMING DEVICE IS NEVER ABANDONED (Emma 2026-10-21: 432 re-asks in eight minutes, two devices streaming the same blobs): an ask whose device is not quiet and has answered since stands, so a tap or a second caller waits on it instead of asking another device to stream the same blob alongside.
+        // An ask with no answer yet does not block a deliberate fetch: with no timer to end a silence, a tap is the edge that moves it on.
+        let streaming = |f: &&FetchAsk| f.asked.is_some_and(|d| self.attach_heard.get(&d).is_some_and(|h| *h > f.at));
+        if let Some(dev) = self.attach_fetch_inflight.get(content_hash).filter(|f| !self.fetch_quiet(f)).filter(streaming).and_then(|f| f.asked) {
+            crate::logf!("attach: {}… already asked of device {}, which is not quiet — waiting on it", hex::encode(&content_hash[..4]), crate::fp(&dev));
+            return;
+        }
         // Token: the friendship token when one exists; else (self-conversation — no chains) the handle hash. Sibling exchanges seal under the FLEET key regardless of token, so the fallback only ever reaches sibling responders, where it's a plain discriminator.
         let Some(token) = ({
             let c = self.contacts.get(sci);
@@ -417,30 +435,13 @@ impl PhotonApp {
         };
         // THE ASK (storage/wrapped.rs, until v134): a row naming a WRAPPER (`fw`) asks for it by its hb; a holder still on an older build knows only the raw hash, so the rounds alternate — whichever form answers is stored, and every load by the row's raw hash reads either. The in-flight bookkeeping stays keyed by the raw hash.
         let wrap = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.hash == *content_hash).and_then(|f| f.wrap));
-        let round = self.attach_fetch_inflight.get(content_hash).map_or(0, |(_, _, n)| *n);
+        let round = self.attach_fetch_inflight.get(content_hash).map_or(0, |f| f.tries);
         let ask = match wrap {
             Some(hb) if round % 2 == 0 => hb,
             _ => *content_hash,
         };
-        // Resume: the manifest is here and some chunks are not → ask only for those.
-        let want: Option<Vec<u8>> = crate::storage::blob_chunks_held(&ask)
-            .filter(|held| held.iter().any(|h| !h))
-            .map(|held| crate::storage::BlobManifest::want_bitmap(&held));
-        if let Some(w) = want.as_ref() {
-            let missing = w.iter().map(|b| b.count_ones()).sum::<u32>();
-            crate::logf!("attach: resuming — {} chunk(s) still wanted", missing);
-        }
-        let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_want_vsf(
-            &token,
-            &ask,
-            want.as_deref(),
-            kp.public.as_bytes(),
-            kp.secret.as_bytes(),
-        ) else {
-            return;
-        };
-        // ONE DEVICE PER ASK (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): the request used to fan out to the friend's every device AND all our siblings at once, and every holder answered with the whole blob — a 142 MB pigeon served in full by three devices, ~300 KB pigeons landing nine times each. Now the candidates are ranked — the friend's devices with a proven direct path first, then the friend's other online devices, then our online siblings, then the rest — one is asked, and each 20 s re-ask (attach_fetch_retry_tick) moves to the next.
-        let tries = self.attach_fetch_inflight.get(content_hash).map_or(0, |(_, _, n)| *n);
+        // ONE DEVICE PER ASK (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): the request used to fan out to the friend's every device AND all our siblings at once, and every holder answered with the whole blob — a 142 MB pigeon served in full by three devices, ~300 KB pigeons landing nine times each. Now the candidates are ranked — the friend's devices with a proven direct path first, then the friend's other online devices, then our online siblings, then the rest — one is asked, and each re-ask (attach_fetch_retry_tick, once the asked device goes quiet) moves to the next.
+        let tries = round;
         let mut targets: Vec<(
             u8,
             std::net::SocketAddr,
@@ -495,20 +496,118 @@ impl PhotonApp {
             return;
         }
         let (rank, peer_addr, alt_addr, recipient_pubkey, relay_to) = targets[tries as usize % targets.len()].clone();
-        checker.send_history(crate::network::status::HistorySendRequest {
-            peer_addr,
-            alt_addr,
-            recipient_pubkey,
-            vsf_bytes: vsf_bytes.clone(),
-            relay_to,
-            tag: None,
+        let (kp_pub, kp_sec) = (*kp.public.as_bytes(), *kp.secret.as_bytes());
+        let dispatch = checker.history_dispatch();
+        let candidate = format!("rank {}, candidate {} of {}", rank, tries as usize % targets.len() + 1, targets.len());
+        // OFF THE UI THREAD: the resume's want bitmap is a manifest read plus one read per chunk, so the worker builds the ask and dispatches it; on the attach worker it also sees every chunk already queued there for storing.
+        queue_job(&self.attach_job_tx, move || {
+            // Resume: the manifest is here and some chunks are not → ask only for those.
+            let want: Option<Vec<u8>> = crate::storage::blob_chunks_held(&ask)
+                .filter(|held| held.iter().any(|h| !h))
+                .map(|held| crate::storage::BlobManifest::want_bitmap(&held));
+            if let Some(w) = want.as_ref() {
+                let missing = w.iter().map(|b| b.count_ones()).sum::<u32>();
+                crate::logf!("attach: resuming — {} chunk(s) still wanted", missing);
+            }
+            let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_req_want_vsf(&token, &ask, want.as_deref(), &kp_pub, &kp_sec) else {
+                return;
+            };
+            let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                peer_addr,
+                alt_addr,
+                recipient_pubkey,
+                vsf_bytes,
+                relay_to,
+                tag: None,
+            });
+            crate::logf!("attach: fetch request dispatched to device {} ({})", crate::fp(&recipient_pubkey), candidate);
         });
-        crate::logf!("attach: fetch request dispatched to device {} (rank {}, candidate {} of {})", crate::fp(&recipient_pubkey), rank, tries as usize % targets.len() + 1, targets.len());
         let Some(conv_id) = self.contacts.get(sci).map(|c| c.id) else { return };
-        self.attach_fetch_inflight.insert(*content_hash, (conv_id, std::time::Instant::now(), tries.saturating_add(1))); // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
+        let fruitless = self.attach_fetch_inflight.get(content_hash).map_or(0, |f| f.fruitless_after());
+        let asked_online = self.device_online(&recipient_pubkey) == Some(true);
+        self.attach_fetch_inflight.insert(
+            *content_hash,
+            FetchAsk {
+                conv: conv_id,
+                asked: Some(recipient_pubkey),
+                at: std::time::Instant::now(),
+                asked_online,
+                tries: tries.saturating_add(1), // WHY/PROOF: a u8 of fetch rounds for a blob no device answers — it outlives 255, and saturating keeps the candidate rotation from wrapping back to rank 0's first try
+                fruitless,
+                progressed: false,
+                ended: false,
+            },
+        );
     }
 
-    /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07: "if I have five devices, all five should get copies of waves, pigeons, beams, photons, all of it… be sane"). One pass per edge (`replicate_dirty`: rows arrived, presence answers landed, the network went unmetered): every live file row in every conversation whose bytes this device is KNOWN not to hold — pigeons, wave recordings, wave envelopes, previews' originals — is armed ONCE per session in the fetch map, and the retry tick asks one device at a time (friend's devices and our siblings, easiest first) until it lands. Arming instead of asking at once leaves a fresh row's own push its window. A row whose presence is not known yet queues its probe here and is picked up on the edge its answer raises. Sane: a metered network arms nothing (Android reports it; desktops are never metered here).
+    /// The device's online verdict as this device holds it — a contact's own device, or one of a friend's other known devices; None when no contact names it.
+    fn device_online(&self, dev: &[u8; 32]) -> Option<bool> {
+        self.contacts.iter().find_map(|c| {
+            if c.device_key() == Some(*dev) {
+                return Some(c.is_online);
+            }
+            c.device_endpoints.iter().find(|ep| ep.pubkey == *dev).map(|ep| ep.online)
+        })
+    }
+
+    /// QUIET, from edges alone (Nick 2026-10-21: "I don't like timers"): every ask ends in an event — the blob's frames (progress), "not held" (attach_none), the transport giving up on the device (a dead address, the relay's offline word), or the device's offline verdict.
+    /// An armed fetch never asked is due at once: a friend's live attachment row records its pushing device as already asked (fetch_expect_push), so no push window is needed.
+    /// Progress is per DEVICE, not per blob: a holder serves our asks one after another, so an ask queued behind other blobs shows nothing of its own until its turn, and the device streaming them is not quiet.
+    fn fetch_quiet(&self, f: &FetchAsk) -> bool {
+        let Some(dev) = f.asked else {
+            return true;
+        };
+        if f.ended {
+            return true;
+        }
+        // The offline verdict ends an ask made while the device was up, or one it had started answering.
+        let heard = self.attach_heard.get(&dev).is_some_and(|h| *h > f.at);
+        self.device_online(&dev) == Some(false) && (f.asked_online || heard)
+    }
+
+    /// The asked device does not hold the blob: that ask is over (one fruitless ask), and the tick asks the next device.
+    pub(super) fn fetch_answered_none(&mut self, hash: &[u8; 32], from: &[u8; 32]) {
+        if let Some(f) = self.attach_fetch_inflight.get_mut(hash).filter(|f| f.asked == Some(*from)) {
+            f.ended = true;
+            crate::logf!("attach: device {} holds none of {}… — asking the next", crate::fp(from), hex::encode(&hash[..4]));
+        }
+    }
+
+    /// The transport gave up on a device (by key, or by an address one of its endpoints carries): every ask aimed there is over.
+    pub(super) fn fetch_peer_unreachable(&mut self, addr: Option<std::net::SocketAddr>, device: Option<[u8; 32]>) {
+        let same = |a: std::net::SocketAddr, b: std::net::SocketAddr| a.ip().to_canonical() == b.ip().to_canonical() && a.port() == b.port();
+        let devs: std::collections::HashSet<[u8; 32]> = self
+            .attach_fetch_inflight
+            .values()
+            .filter_map(|f| f.asked)
+            .filter(|d| {
+                device == Some(*d)
+                    || addr.is_some_and(|a| {
+                        self.contacts.iter().any(|c| {
+                            (c.device_key() == Some(*d) && (c.ip.is_some_and(|i| same(i, a)) || c.validated_path.is_some_and(|(p, _)| same(p, a))))
+                                || c.device_endpoints.iter().any(|ep| ep.pubkey == *d && (ep.lan.is_some_and(|l| same(l, a)) || ep.public.is_some_and(|p| same(p, a))))
+                        })
+                    })
+            })
+            .collect();
+        for f in self.attach_fetch_inflight.values_mut().filter(|f| f.asked.is_some_and(|d| devs.contains(&d)) && !f.ended) {
+            f.ended = true;
+        }
+        for d in &devs {
+            crate::logf!("attach: device {} is unreachable — its asks move on", crate::fp(d));
+        }
+    }
+
+    /// A friend's live attachment row: the device that sent it pushes the blob right behind it, so that device counts as asked — its frames are the answer, and replication does not ask anyone else meanwhile.
+    pub(super) fn fetch_expect_push(&mut self, hash: [u8; 32], conv: ContactId, from: [u8; 32]) {
+        if self.attach_fetch_inflight.contains_key(&hash) || crate::storage::blob_present_known(&hash) == Some(true) {
+            return;
+        }
+        let asked_online = self.device_online(&from) != Some(false);
+        self.attach_fetch_inflight.insert(hash, FetchAsk { conv, asked: Some(from), at: std::time::Instant::now(), asked_online, tries: 1, fruitless: 0, progressed: false, ended: false });
+    }
+
+    /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07: "if I have five devices, all five should get copies of waves, pigeons, beams, photons, all of it… be sane"). One pass per edge (`replicate_dirty`: rows arrived, presence answers landed, the network went unmetered): every live file row in every conversation whose bytes this device is KNOWN not to hold — pigeons, wave recordings, wave envelopes, previews' originals — is armed ONCE per session in the fetch map, and the retry tick asks one device at a time (friend's devices and our siblings, easiest first) until it lands. An armed fetch is asked on the next tick; a friend's live attachment row is already recorded as asked of the device pushing it (fetch_expect_push), so nobody else is asked while that push runs. A row whose presence is not known yet queues its probe here and is picked up on the edge its answer raises. Sane: a metered network arms nothing (Android reports it; desktops are never metered here).
     pub(super) fn replicate_sweep(&mut self) {
         let rows: usize = self.conversations.iter().map(|c| c.messages.len()).sum();
         if rows != self.replicate_rows_seen {
@@ -552,7 +651,7 @@ impl PhotonApp {
                 }
                 if crate::storage::blob_present_known(&h) == Some(false) {
                     self.attach_auto_fetched.insert(h);
-                    self.attach_fetch_inflight.insert(h, (cid, now, 0));
+                    self.attach_fetch_inflight.insert(h, FetchAsk { conv: cid, asked: None, at: now, asked_online: false, tries: 0, fruitless: 0, progressed: false, ended: false });
                     armed += 1;
                 }
             }
@@ -562,36 +661,36 @@ impl PhotonApp {
         }
     }
 
-    /// Re-ask for fetches nobody answered: every 20 s while nothing has landed (no blob, no manifest), up to eight times, then let go. Landed fetches leave the map at once.
+    /// Move each fetch whose asked device went QUIET ([`Self::fetch_quiet`]) to the next candidate, and let go after MAX_TRIES asks in a row that brought none of the blob. A device still sending is never left for another, and a blob that lands leaves the map on its own edge (drain_attach_installed).
     pub(super) fn attach_fetch_retry_tick(&mut self) {
-        const RETRY_AFTER: std::time::Duration = std::time::Duration::from_secs(20);
         const MAX_TRIES: u8 = 8;
-        let now = std::time::Instant::now();
-        let due: Vec<([u8; 32], ContactId, u8)> = self
-            .attach_fetch_inflight
-            .iter()
-            .filter(|(_, (_, at, _))| now.duration_since(*at) >= RETRY_AFTER)
-            .map(|(h, (id, _, n))| (*h, *id, *n))
-            .collect();
-        for (hash, id, tries) in due {
-            if crate::storage::blob_present(&hash) || crate::storage::blob_manifest(&hash).is_some() {
-                self.attach_fetch_inflight.remove(&hash);
-                if crate::storage::blob_present(&hash) {
+        for (hash, conv, from) in std::mem::take(&mut self.attach_expect_pushes) {
+            self.fetch_expect_push(hash, conv, from);
+        }
+        let due: Vec<[u8; 32]> = self.attach_fetch_inflight.iter().filter(|(_, f)| self.fetch_quiet(f)).map(|(h, _)| *h).collect();
+        for hash in due {
+            // Presence from the cache alone (the UI thread makes no vault call): held → done; not known yet → its probe is queued, and the tick its answer raises looks again.
+            match crate::storage::blob_present_known(&hash) {
+                Some(true) => {
+                    self.attach_fetch_inflight.remove(&hash);
                     self.holdings_pull_settled(&hash, true);
+                    continue;
                 }
-                continue;
+                None => continue,
+                Some(false) => {}
             }
+            let Some(f) = self.attach_fetch_inflight.get(&hash) else { continue };
+            let (id, tries, fruitless, asked) = (f.conv, f.tries, f.fruitless_after(), f.asked);
             // The conversation's contact may be gone since the ask — its fetch is let go, never re-aimed at whoever took its row.
-            let Some(sci) = self.ci_of(&id).filter(|_| tries < MAX_TRIES) else {
-                crate::logf!("attach: fetch of {}… let go after {} asks — nobody answered, or its contact was removed", hex::encode(&hash[..4]), tries);
+            let Some(sci) = self.ci_of(&id).filter(|_| fruitless < MAX_TRIES) else {
+                crate::logf!("attach: fetch of {}… let go after {} asks — {} in a row brought none of it, or its contact was removed", hex::encode(&hash[..4]), tries, fruitless);
                 self.attach_fetch_inflight.remove(&hash);
                 self.holdings_pull_settled(&hash, false);
                 continue;
             };
-            if tries == 0 {
-                crate::logf!("attach: replicating {}… — first ask", hex::encode(&hash[..4]));
-            } else {
-                crate::logf!("attach: fetch of {}… unanswered for {}s — asking again ({} of {})", hex::encode(&hash[..4]), RETRY_AFTER.as_secs(), tries + 1, MAX_TRIES);
+            match asked {
+                None => crate::logf!("attach: replicating {}… — first ask", hex::encode(&hash[..4])),
+                Some(dev) => crate::logf!("attach: fetch of {}… — device {} went quiet, asking the next ({} of {} fruitless)", hex::encode(&hash[..4]), crate::fp(&dev), fruitless, MAX_TRIES),
             }
             self.attach_fetch(sci, &hash);
         }
@@ -704,6 +803,10 @@ impl PhotonApp {
             if let Some(raw) = self.conversations.iter().flat_map(|c| c.messages.iter()).find_map(|m| m.file.as_ref().filter(|f| f.wrap == Some(r.content_hash)).map(|f| f.hash)) {
                 r.content_hash = raw;
             }
+            // A piece of a blob we asked for landed: the ask brought something, so it does not count toward letting go (attach_fetch_retry_tick).
+            if let Some(f) = self.attach_fetch_inflight.get_mut(&r.content_hash) {
+                f.progressed = true;
+            }
             // A manifest landed: seed the progress bar and repaint; nothing is installed yet.
             if let Some((held, total)) = r.manifest {
                 self.attach_chunk_progress.insert(r.content_hash, (held, total));
@@ -752,6 +855,8 @@ impl PhotonApp {
             if !complete {
                 continue;
             }
+            // The landing is the fetch's end edge: nothing re-asks for a blob that is here.
+            self.attach_fetch_inflight.remove(&r.content_hash);
             // A blob a leaver asked us to take (holdings.rs): one fewer item at risk on its screen.
             self.holdings_pull_settled(&r.content_hash, true);
             // A recording landing is the disk's edge (space.rs).
@@ -806,5 +911,23 @@ mod land_tests {
         assert_eq!(std::fs::read(&second).unwrap(), b"pigeon body two", "and holds the new bytes");
         assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1, "no second file was minted");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod fetch_tests {
+    use super::super::FetchAsk;
+
+    fn ask(asked: bool, fruitless: u8, progressed: bool) -> FetchAsk {
+        FetchAsk { conv: crate::types::ContactId::from_bytes([7; 32]), asked: asked.then_some([9; 32]), at: std::time::Instant::now(), asked_online: true, tries: 3, fruitless, progressed, ended: false }
+    }
+
+    /// The let-go count: an ask that brought none of the blob adds one, an ask that brought any of it starts over, and an armed fetch nobody has asked yet adds nothing.
+    #[test]
+    fn fruitless_counts_only_asks_that_brought_nothing() {
+        assert_eq!(ask(true, 4, false).fruitless_after(), 5, "a quiet ask with nothing landed counts");
+        assert_eq!(ask(true, 4, true).fruitless_after(), 0, "a quiet ask that brought chunks starts the count again");
+        assert_eq!(ask(false, 0, false).fruitless_after(), 0, "an armed fetch was never asked");
+        assert_eq!(ask(true, u8::MAX, false).fruitless_after(), u8::MAX, "the count saturates");
     }
 }

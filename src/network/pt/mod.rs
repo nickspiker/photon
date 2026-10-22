@@ -94,6 +94,21 @@ pub struct PTManager {
     /// Addresses whose reliable-packet head exhausted every retry without one ACK: dead until a datagram arrives FROM them (`heard_from`, the revival edge).
     /// Small sends to a dead address go to a live alternate or are refused, so one expired address can't hold a growing queue (2026-10-20 Nick: an expired temporary IPv6 took 2741 retransmits and 548 give-ups over three and a half hours).
     dead_addrs: Vec<SocketAddr>,
+    /// Addresses that died since the network loop last asked ([`Self::take_newly_dead`]) — each one is an unreachable-peer edge for the app.
+    newly_dead: Vec<SocketAddr>,
+    /// Inbound transfers already answered with a COMPLETE, oldest first, capped at `SPEC_SENDERS_CAP`: a COMPLETE is one unacknowledged datagram, so the sender's probe (its final chunk again) is answered from here when it was lost.
+    /// An entry leaves when its sender opens a new transfer on the same letter (the sender has retired the old one by then), or off the cap.
+    answered: Vec<Answered>,
+}
+
+/// One inbound transfer this receiver has answered: whose it was and what the answer said.
+struct Answered {
+    stream_id: u8,
+    sender: Option<[u8; 32]>,
+    paths: Vec<SocketAddr>,
+    complete: PTComplete,
+    /// Whether a probe has been answered from this entry yet, so the re-answer logs once.
+    reanswered: bool,
 }
 
 /// How a peer is told apart for the send window and its stream-id rotation: by device key when the caller gave one (a retarget moves the address, the window must not care), else by address.
@@ -154,6 +169,8 @@ impl PTManager {
             window_parked: std::collections::HashSet::new(),
             spec_senders: Vec::new(),
             dead_addrs: Vec::new(),
+            answered: Vec::new(),
+            newly_dead: Vec::new(),
         }
     }
 
@@ -190,7 +207,7 @@ impl PTManager {
     pub const SINGLE_PACKET_MAX: usize = 1024;
     /// Retry cap for a reliable small packet before the stop-and-wait head is dropped and the per-peer FIFO advances. With 1→2→…→60s backoff, ~5 retries ≈ 30-60s of trying — long enough to ride out a brief blip, short enough that an undeliverable head (dead avatar request) can't blackhole the chat queued behind it. The higher layer re-queues (chat retransmit / avatar→FGTW), so a drop is a deferral, not a loss.
     pub const MAX_PACKET_RETRIES: u32 = 5;
-    /// How many addresses `spec_senders` and `dead_addrs` each remember: tens of friend devices times their few addresses, with headroom for rotating temporary IPv6 addresses.
+    /// How many addresses `spec_senders` and `dead_addrs` each remember (and how many transfers `answered` does): tens of friend devices times their few addresses, with headroom for rotating temporary IPv6 addresses.
     /// The oldest falls off first.
     const SPEC_SENDERS_CAP: usize = 256;
 
@@ -222,6 +239,11 @@ impl PTManager {
 
     /// The revival edge: any datagram FROM an address proves it answers again, so sends to it resume.
     /// The receive loop calls this for every datagram; it is a no-op while nothing is dead.
+    /// The addresses that died since the last call, for the network loop to report as unreachable-peer edges.
+    pub fn take_newly_dead(&mut self) -> Vec<SocketAddr> {
+        std::mem::take(&mut self.newly_dead)
+    }
+
     pub fn heard_from(&mut self, addr: SocketAddr) {
         if let Some(i) = self.dead_addrs.iter().position(|d| same_addr(*d, addr)) {
             self.dead_addrs.swap_remove(i);
@@ -465,6 +487,15 @@ impl PTManager {
             };
             !(same_sender && t.stream_id == stream_id && !t.is_complete())
         });
+        // The same sender reusing the letter for other bytes has retired that letter's earlier transfer (its window keeps a letter's holders thirteen releases apart), so the earlier answer is no longer anyone's to probe for.
+        // Same bytes is a late copy of the answered SPEC, not a new transfer: that answer stays.
+        self.answered.retain(|a| {
+            let same_sender = match (sender, a.sender) {
+                (Some(x), Some(y)) => x == y,
+                _ => a.paths.iter().any(|p| same_addr(*p, peer_addr)),
+            };
+            !(same_sender && a.stream_id == stream_id && a.complete.final_hash != spec.data_hash)
+        });
 
         let mut transfer = InboundTransfer::new(peer_addr, &spec);
         transfer.sender = sender;
@@ -511,6 +542,10 @@ impl PTManager {
                 }
             });
         if let Some(transfer) = matched.map(|i| &mut self.outbound[i]) {
+            // A repeat SPEC ACK (the SPEC ladder fired again before the first ACK was back) changes nothing: it must not pull a transfer that is already waiting on its COMPLETE, or already has it, back to Transferring.
+            if transfer.spec_acked {
+                return packets;
+            }
             if !same_addr(transfer.peer_addr, peer_addr) {
                 crate::logf!("PT: SPEC ACK arrived on alternate path {} (was {}) for stream '{}' - locking onto it", peer_addr, transfer.peer_addr, stream_id as char);
                 transfer.peer_addr = peer_addr;
@@ -643,8 +678,25 @@ impl PTManager {
 
                 return Some(ack.to_vsf_bytes(&self.keypair));
             }
+            return None;
         }
-        None
+        // No live transfer claims it: a chunk of a transfer already answered is the sender's probe for a COMPLETE it never got (or a retransmit that crossed its last ACK), so the answer is that COMPLETE again.
+        // Newest first, by the transfer's paths or by the device that signed SPECs from this address; a stale match names a hash the sender no longer holds and is ignored there.
+        let speaker = self.spec_sender_at(peer_addr);
+        let a = self.answered.iter_mut().rev().find(|a| {
+            a.stream_id == data.stream_id
+                && (a.paths.iter().any(|p| same_addr(*p, peer_addr)) || (speaker.is_some() && a.sender == speaker))
+        })?;
+        if !a.reanswered {
+            a.reanswered = true;
+            crate::logf!(
+                "PT: a chunk of answered stream '{}' from {} — its COMPLETE was lost, answering again (hash {})",
+                data.stream_id as char,
+                peer_addr,
+                hex::encode(&a.complete.final_hash[..4])
+            );
+        }
+        Some(a.complete.to_vsf_bytes(&self.keypair))
     }
 
     /// Handle received ACK Routes by (peer_addr, stream_id) to support concurrent transfers
@@ -775,9 +827,11 @@ impl PTManager {
 
     /// Handle received COMPLETE
     pub fn handle_complete(&mut self, peer_addr: SocketAddr, complete: PTComplete) {
-        // Find transfer by peer and final_hash
+        // Find transfer by peer and final_hash; one already settled ignores a repeat (a probe and a straggler can each draw the same COMPLETE).
         if let Some(transfer) = self.outbound.iter_mut().find(|t| {
-            same_addr(t.peer_addr, peer_addr) && t.send_buffer.data_hash() == complete.final_hash
+            same_addr(t.peer_addr, peer_addr)
+                && t.send_buffer.data_hash() == complete.final_hash
+                && !matches!(t.state, TransferState::Complete | TransferState::Failed)
         }) {
             let (packets, bytes, retransmits, duration_ms, max_window, rtt_ms, packet_size) =
                 transfer.stats();
@@ -832,9 +886,21 @@ impl PTManager {
             if !complete.success {
                 transfer.state = TransferState::Failed;
             }
-            return Some(complete.to_vsf_bytes(&self.keypair));
+            let bytes = complete.to_vsf_bytes(&self.keypair);
+            let answered = Answered { stream_id, sender: transfer.sender, paths: transfer.paths.clone(), complete, reanswered: false };
+            self.note_answered(answered);
+            return Some(bytes);
         }
         None
+    }
+
+    /// Remember an answered transfer for the sender's probe (see `answered`), replacing any earlier answer for the same letter and bytes.
+    fn note_answered(&mut self, a: Answered) {
+        self.answered.retain(|o| !(o.stream_id == a.stream_id && o.complete.final_hash == a.complete.final_hash && o.sender == a.sender));
+        self.answered.push(a);
+        if self.answered.len() > Self::SPEC_SENDERS_CAP {
+            self.answered.remove(0);
+        }
     }
 
     /// Get inbound transfer stats (before taking data) Returns: (total_packets, total_bytes, duplicates, duration_ms)
@@ -933,11 +999,27 @@ impl PTManager {
 
         // Check outbound transfers
         for transfer in &mut self.outbound {
-            // A transfer whose data already fully delivered (all packets ACK'd → AwaitingComplete/Complete) has done its job — don't let the stale sweep fire a spurious "timed out" on it 30 s later (observed: an offer that delivered fine still logged a timeout because the completed handle lingered in `outbound` past its last-activity window). Failed ones are already done too.
-            if matches!(
-                transfer.state,
-                TransferState::AwaitingComplete | TransferState::Complete | TransferState::Failed
-            ) {
+            // Complete and Failed are done; the sweep below removes them.
+            if matches!(transfer.state, TransferState::Complete | TransferState::Failed) {
+                continue;
+            }
+            // Every chunk ACK'd, the COMPLETE not yet heard: the probe rides the DATA retransmit ladder (see `OutboundTransfer::handle_ack`), and the receiver answers it with the COMPLETE again.
+            // This state used to be skipped outright, so a lost COMPLETE held a window slot forever (2026-10-21).
+            // When the ladder runs out unanswered the receiver has forgotten the transfer (restarted, or its memory moved on): every chunk was ACK'd, so the transfer retires quietly instead of logging a timeout, and the higher layer's re-ask is the retry, as for any failure.
+            if transfer.state == TransferState::AwaitingComplete {
+                if transfer.is_stale(self.stale_timeout) {
+                    crate::logf!(
+                        "PT: stream '{}' to {} — every chunk ACK'd but no COMPLETE answered {} probe(s); retiring it unconfirmed",
+                        transfer.stream_id as char,
+                        transfer.peer_addr,
+                        transfer.retries
+                    );
+                    transfer.state = TransferState::Failed;
+                    continue;
+                }
+                for data in transfer.check_timeouts() {
+                    to_send.push(TickSend { peer_addr: transfer.peer_addr, wire_bytes: data.to_bytes(), tcp_payload: None, relay: None });
+                }
                 continue;
             }
             if transfer.is_stale(self.stale_timeout) {
@@ -1061,6 +1143,7 @@ impl PTManager {
             if !self.is_dead(dead) {
                 crate::logf!("PT: {} never answered — dead until heard from; small sends to it are refused", dead);
                 self.dead_addrs.push(canon_addr(dead));
+                self.newly_dead.push(dead);
                 // An expired temporary address is never heard from again, so the list is capped: the oldest falls off and, if anyone still aims at it, dies again after one more ladder.
                 if self.dead_addrs.len() > Self::SPEC_SENDERS_CAP {
                     self.dead_addrs.remove(0);
@@ -1578,7 +1661,10 @@ mod tests {
 
         // A opens its own 'c'; B's late duplicate arrives before any of A's DATA.
         rx.handle_spec(addr_a, spec_c(&data_a), Some(dev_a));
-        assert!(rx.handle_data(addr_b, chunk_c(&data_b, 0)).is_none(), "B's straggler must not be accepted into A's transfer");
+        // B's straggler is not accepted into A's transfer: B's own transfer was answered, so it draws B's COMPLETE again.
+        let reply = rx.handle_data(addr_b, chunk_c(&data_b, 0)).expect("B's straggler draws B's own COMPLETE");
+        let (provenance, values) = parse_pt_header_field(&reply).unwrap();
+        assert_eq!(PTComplete::from_vsf_header(provenance, &values).unwrap().final_hash, *blake3::hash(&data_b).as_bytes());
         assert!(same_addr(rx.inbound[0].peer_addr, addr_a), "A's transfer keeps A's address");
         assert_eq!(rx.inbound[0].progress().0, 0, "nothing of B's landed in A's buffer");
 
@@ -1624,6 +1710,70 @@ mod tests {
         assert!(rx.check_inbound_complete(peer, b'c').is_none(), "answered once, then retired");
         rx.tick();
         assert!(rx.inbound.is_empty(), "the tick sweeps the retired assembly");
+    }
+
+    /// 2026-10-21: the receiver's COMPLETE is lost on the wire, and the sender's transfer used to hold one of the peer's window slots forever.
+    /// The chunk that finished the set stays in flight as a probe; the receiver, which drained the transfer long ago, answers the probe with the same COMPLETE, and the slot comes free.
+    #[test]
+    fn a_lost_complete_is_answered_again_when_the_sender_probes() {
+        let mut sender = PTManager::new(test_keypair());
+        let mut receiver = PTManager::new(test_keypair());
+        let peer: SocketAddr = "192.168.1.156:4383".parse().unwrap();
+        let pk = [0x5Au8; 32];
+        let data = vec![0xAB; 3000];
+
+        let spec_bytes = sender.send_with_pubkey(peer, data.clone(), Some(pk));
+        let spec = PTSpec::from_vsf_fields(&parse_vsf_section_fields(&spec_bytes)).unwrap();
+        receiver.handle_spec(peer, spec.clone(), Some([0xA1; 32]));
+        let mut wire = sender.handle_spec_ack(peer, spec.stream_id, spec.data_hash);
+        let mut answered = false;
+        while !wire.is_empty() {
+            let mut next = Vec::new();
+            for bytes in wire {
+                let ack_bytes = receiver.handle_data(peer, PTData::from_bytes(&bytes).unwrap()).unwrap();
+                // The COMPLETE goes out and is lost; the receiver drains the transfer as it always does.
+                if receiver.check_inbound_complete(peer, spec.stream_id).is_some() {
+                    answered = true;
+                    assert_eq!(receiver.take_inbound_data(peer, spec.stream_id), Some(data.clone()));
+                }
+                let (provenance, values) = parse_pt_header_field(&ack_bytes).unwrap();
+                next.extend(sender.handle_ack(peer, PTAck::from_vsf_header(provenance, &values).unwrap()));
+            }
+            wire = next;
+        }
+        assert!(answered && receiver.inbound.is_empty());
+        assert_eq!(sender.outbound[0].state, TransferState::AwaitingComplete);
+        assert_eq!(sender.outbound[0].flight.count(), 1, "the chunk that finished the set stays in flight as the probe");
+        // A repeat SPEC ACK must not pull it back to Transferring.
+        assert!(sender.handle_spec_ack(peer, spec.stream_id, spec.data_hash).is_empty());
+        assert_eq!(sender.outbound[0].state, TransferState::AwaitingComplete);
+        sender.tick();
+        assert_eq!(sender.in_flight_for(peer_key(Some(pk), peer)), 1, "still waiting, not retired: the ladder has budget left");
+
+        // The probe (what the ladder re-sends; built here because the ladder's timing is not under test) draws the COMPLETE again.
+        let last = sender.outbound[0].send_buffer.total_packets() - 1;
+        let probe = PTData { stream_id: spec.stream_id, sequence: last, payload: sender.outbound[0].send_buffer.get_packet(last).unwrap().to_vec() };
+        let answer = receiver.handle_data(peer, probe).expect("an answered transfer's chunk draws its COMPLETE");
+        let (provenance, values) = parse_pt_header_field(&answer).unwrap();
+        let complete = PTComplete::from_vsf_header(provenance, &values).unwrap();
+        assert!(complete.success);
+        assert_eq!(complete.final_hash, spec.data_hash);
+        sender.handle_complete(peer, complete);
+        sender.tick();
+        assert!(sender.outbound.is_empty(), "completed and swept");
+        assert_eq!(sender.in_flight_for(peer_key(Some(pk), peer)), 0, "the window slot is free");
+
+        // A receiver that has forgotten (restarted) never answers: when the ladder runs out the transfer retires instead of waiting forever.
+        let _ = sender.send_with_pubkey(peer, vec![0xCD; 3000], Some(pk));
+        sender.outbound[0].state = TransferState::AwaitingComplete;
+        sender.outbound[0].retries = 11; // forced: the ladder's timing is not under test
+        sender.tick();
+        assert!(sender.outbound.is_empty(), "an unanswered probe ladder frees the slot");
+
+        // The same sender reusing the letter for other bytes retires the old answer.
+        let other = vec![0xEE; 64];
+        receiver.handle_spec(peer, PTSpec { stream_id: spec.stream_id, total_packets: 1, packet_size: 1024, total_size: 64, data_hash: *blake3::hash(&other).as_bytes() }, Some([0xA1; 32]));
+        assert!(receiver.answered.is_empty());
     }
 
     /// 2026-10-20 Nick: an expired temporary IPv6 took 548 give-ups in a row.

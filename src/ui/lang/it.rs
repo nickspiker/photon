@@ -32,6 +32,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Conserva".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Riproduci".into(),
         Msg::EndWave => "Chiudi l’onda".into(),
+        Msg::EndBeam => "Chiudi il raggio".into(),
         Msg::HangUp => "Interrompi".into(),
         Msg::Attest => "Attesta".into(),
         Msg::Cancel => "Annulla".into(),

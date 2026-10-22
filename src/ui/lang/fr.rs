@@ -42,6 +42,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Garder".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Lire".into(),
         Msg::EndWave => "Terminer l\u{2019}onde".into(),
+        Msg::EndBeam => "Terminer le faisceau".into(),
         Msg::HangUp => "Terminer".into(),
         Msg::Attest => "Attester".into(),
         Msg::Cancel => "Annuler".into(),

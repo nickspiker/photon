@@ -482,6 +482,17 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
     },
+    /// A device we asked for a blob does not hold it: the fetch moves to the next device on this edge.
+    AttachNoneReceived {
+        content_hash: [u8; 32],
+        sender_pubkey: DevicePubkey,
+    },
+    /// The transport gave up on reaching a device: PT marked an address dead (a head packet exhausted its retries), or the relay said the recipient is offline.
+    /// An ask aimed there will not be answered, so the fetch moves on at this edge.
+    PeerUnreachable {
+        addr: Option<SocketAddr>,
+        device: Option<[u8; 32]>,
+    },
     /// A sibling's departure have-set frame (protocol::HoldingsKind): a leaving device's ask or pull, or the answer to OURS. `sealed` = the hash list under the fleet key; the UI gates on sibling membership before opening it.
     HoldingsReceived {
         kind: crate::network::fgtw::protocol::HoldingsKind,
@@ -570,6 +581,8 @@ pub enum StatusUpdate {
         request_id: [u8; 32],
         /// Header creation time — the UI's staleness check.
         sent_osc: i64,
+        /// The asker wants the page's relay copy too (None = an asker from before the flag, which always got one).
+        relay_copy: Option<bool>,
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
@@ -699,6 +712,9 @@ impl StatusUpdate {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::AttachHaveReceived { sender_pubkey, .. } => {
+                Some(sender_pubkey.as_bytes())
+            }
+            StatusUpdate::AttachNoneReceived { sender_pubkey, .. } => {
                 Some(sender_pubkey.as_bytes())
             }
             StatusUpdate::HoldingsReceived { sender_pubkey, .. } => Some(sender_pubkey.as_bytes()),
@@ -2071,6 +2087,7 @@ async fn run_checker(
                                                 limit: payload.limit,
                                                 request_id: payload.request_id,
                                                 sent_osc: payload.sent_osc,
+                                                relay_copy: payload.relay_copy,
                                                 sender_pubkey: DevicePubkey::from_bytes(
                                                     sender_pubkey,
                                                 ),
@@ -2532,6 +2549,7 @@ async fn run_checker(
                                         limit: payload.limit,
                                         request_id: payload.request_id,
                                         sent_osc: payload.sent_osc,
+                                        relay_copy: payload.relay_copy,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },
@@ -2935,6 +2953,27 @@ async fn run_checker(
                                 send_status_update(
                                     &status_tx_recv,
                                     StatusUpdate::AttachHaveReceived {
+                                        content_hash,
+                                        sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
+                                    },
+                                    &event_proxy_recv,
+                                );
+                                continue;
+                            }
+                            // "Not held here" — the answer to our ask when that device has none of the blob; same mandatory packet-ack.
+                            if let Ok(((_tok, content_hash), sender_pubkey)) =
+                                crate::network::fgtw::protocol::parse_attach_none_vsf(msg_bytes)
+                            {
+                                {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                }
+                                send_status_update(
+                                    &status_tx_recv,
+                                    StatusUpdate::AttachNoneReceived {
                                         content_hash,
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                     },
@@ -4490,11 +4529,16 @@ async fn run_checker(
                 let kp = keypair.clone();
                 let dev = *dev;
                 let bytes = request.vsf_bytes.clone();
+                let (tx, proxy) = (status_tx.clone(), event_proxy.clone());
                 tokio::spawn(async move {
                     if let Err(e) =
                         crate::network::fgtw::relay::send_via_relay(&kp, &dev, &bytes).await
                     {
                         crate::logf!("RELAY: history to {} failed: {}", hex::encode(&dev[..4]), e);
+                        // The relay's word is authoritative: a waiting ask aimed at this device moves on.
+                        if e.contains("recipient offline") {
+                            send_status_update(&tx, StatusUpdate::PeerUnreachable { addr: None, device: Some(dev) }, &proxy);
+                        }
                     }
                 });
             }
@@ -4939,8 +4983,13 @@ async fn run_checker(
                 }
             }
             let to_send = pt_mgr.tick();
+            let newly_dead = pt_mgr.take_newly_dead();
             let keypair_for_relay = pt_mgr.keypair().clone();
             drop(pt_mgr);
+            // A dead address is the edge a waiting ask needs: nothing sent there will be answered.
+            for addr in newly_dead {
+                send_status_update(&status_tx, StatusUpdate::PeerUnreachable { addr: Some(addr), device: None }, &event_proxy);
+            }
 
             for tick in to_send {
                 // Always send UDP first — UDP is the preferred path (PT shards over it).
@@ -4967,6 +5016,7 @@ async fn run_checker(
                     let kp = keypair_for_relay.clone();
                     let pt_for_park = pt.clone();
                     let peer_addr = tick.peer_addr;
+                    let (tx, proxy) = (status_tx.clone(), event_proxy.clone());
                     tokio::spawn(async move {
                         match crate::network::fgtw::relay::send_via_relay(
                             &kp,
@@ -4984,6 +5034,7 @@ async fn run_checker(
                                     let mut pt_mgr = pt_for_park.lock().unwrap();
                                     pt_mgr.clear_outbound(&peer_addr);
                                     crate::logf!("PT: relay says recipient offline — parking the ladder to {} (re-serves on the came-online edge)", peer_addr);
+                                    send_status_update(&tx, StatusUpdate::PeerUnreachable { addr: Some(peer_addr), device: Some(relay_info.recipient_pubkey) }, &proxy);
                                 } else {
                                     crate::logf!("PT: Relay send failed: {}", e);
                                 }

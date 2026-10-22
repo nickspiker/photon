@@ -30,6 +30,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Itago".into(),
         Msg::Play => "\u{25B6}\u{FE0E} I-play".into(),
         Msg::EndWave => "Tapusin ang alon".into(),
+        Msg::EndBeam => "Tapusin ang sinag".into(),
         Msg::HangUp => "Putulin".into(),
         Msg::Attest => "Patotohanan".into(),
         Msg::Cancel => "Kanselahin".into(),

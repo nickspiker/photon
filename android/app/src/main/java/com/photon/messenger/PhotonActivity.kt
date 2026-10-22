@@ -340,7 +340,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         ActivityResultContracts.RequestPermission()
     ) { isGranted ->
         if (isGranted) {
-            connectionService?.startBeamCapture()
+            // Only a beam that was waiting on the grant starts; an early ask's grant just leaves the camera ready.
+            connectionService?.onCameraGranted()
         } else {
             PhotonLog.w(TAG, "CAMERA denied — no beam from this device")
         }

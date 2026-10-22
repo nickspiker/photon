@@ -1760,6 +1760,7 @@ impl PhotonApp {
                 }
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
+                let contact_id = contact.id;
                 let sender_name = contact.display_name();
                 // BRIDGE host capture, TYPED (2026-08-23): a row runs as a command iff it carries RefKind::BridgeCmd — the mark rides the wire's reference field, never the content (the old any-plain-sibling-row-executes gate with its stripped `$ ` prefix was content-as-trigger, the exact class the typed-reference rework exists to kill). A bare untyped sibling row still runs for ONE transition era, loudly, so a not-yet-updated client keeps its bridge until the fleet converges. Promotion to an actual run stays gated on is_new_row below — a re-served/duplicate/history-backfilled command must never re-execute (Nick 2026-08-22).
                 // A BridgeReset row (the peer opened the bridge) drops our shell for them; a BridgeCtl row is the operator's Stop press (signal number in the typed bsig field) — both hidden control rows, never commands.
@@ -2012,6 +2013,12 @@ impl PhotonApp {
                 // Persist (async — see persist_hashes)
                 persist_ci = Some(contact_idx);
 
+                // A friend's attachment row: its device pushes the blob right behind it, so that push is this device's answer and nobody else is asked meanwhile (no push window to wait out).
+                if !contact_is_sibling && is_new_row {
+                    if let Some(h) = msg.file.as_ref().map(|f| f.hash) {
+                        self.attach_expect_pushes.push((h, contact_id, sender_pubkey.key));
+                    }
+                }
                 if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !molecule_muted && !behind_held {
                     // A real friend message landed while nobody was looking — bump the persistent unread counter (contacts-list inner ring + float-to-top; cleared at conversation-open). Written after the loop via the coalescing conv-state writer.
                     conv.unread_count += 1;

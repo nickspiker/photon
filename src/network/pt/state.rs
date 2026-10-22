@@ -247,8 +247,13 @@ impl OutboundTransfer {
         }
 
         // Check if complete
-        if self.send_buffer.is_complete() {
+        if self.state == TransferState::Transferring && self.send_buffer.is_complete() {
             self.state = TransferState::AwaitingComplete;
+            // THE COMPLETE PROBE (2026-10-21): the receiver's COMPLETE is one unacknowledged datagram, and when it was lost the transfer sat here forever, holding one of the peer's thirteen window slots.
+            // The chunk that finished the set stays in flight as the probe: the DATA retransmit ladder (RTO, doubling, until `is_stale`) re-sends it, and a receiver that already answered this transfer answers the probe with its COMPLETE again (`PTManager::handle_data`).
+            // Nothing else is in flight once every chunk is ACK'd, so the probe is the only thing the ladder carries.
+            self.flight.clear();
+            self.flight.sent(ack.sequence);
         }
 
         true

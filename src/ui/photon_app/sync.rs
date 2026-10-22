@@ -1868,6 +1868,8 @@ impl PhotonApp {
             if let Some((_, sent_osc, _)) = rec.in_flight {
                 if now_osc - sent_osc > HIST_INFLIGHT_TIMEOUT_OSC { // our own request's stamp
                     rec.in_flight = None;
+                    // The answer may be dying on a one-way reverse path: the next asks to this device want the relay copy too.
+                    self.hist_relay_wanted.insert(recipient_pubkey);
                     rec.expire_streak += 1; // u32, one per expired request — the doubling it drives is capped at 1 << 5 below
                     let backoff_mult = 1i64 << rec.expire_streak.min(5);
                     rec.next_request_osc = now_osc + HIST_TRICKLE_OSC * backoff_mult;
@@ -1888,11 +1890,14 @@ impl PhotonApp {
 
             let rid: [u8; 32] = rand::random();
             let before = rec.oldest_recovered_osc;
+            // The relay copy only when needed: no trusted direct path (the ask itself rides the relay), or an earlier ask to this device went unanswered.
+            let relay_copy = !relay_to.is_empty() || self.hist_relay_wanted.contains(&recipient_pubkey);
             match crate::network::fgtw::protocol::build_history_request_vsf(
                 &token,
                 before,
                 crate::network::history_pages::MAX_PAGE_ROWS as u32,
                 &rid,
+                relay_copy,
                 &device_pubkey,
                 &device_secret,
             ) {

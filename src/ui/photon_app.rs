@@ -699,6 +699,26 @@ struct AttachPrepared {
     wrap: Option<[u8; 32]>,
 }
 
+/// One attachment fetch in flight (attachments.rs): who was asked, and the edges its next ask reads.
+struct FetchAsk {
+    /// The conversation whose row names the blob.
+    conv: ContactId,
+    /// The device asked last; None = armed by the replication sweep and not asked yet.
+    asked: Option<[u8; 32]>,
+    /// When the ask went out (or the sweep armed it): frames heard from the asked device after this count as its progress (an ORDER, never a deadline).
+    at: std::time::Instant,
+    /// The asked device read online when asked, so its offline verdict is an edge for this ask; a fallback ask at an offline device has no such edge.
+    asked_online: bool,
+    /// Asks so far: the candidate rotation's index and the wrapper/raw alternation's parity.
+    tries: u8,
+    /// Asks in a row that went quiet with nothing of this blob landing; at MAX_TRIES the fetch is let go.
+    fruitless: u8,
+    /// A manifest or chunk of this blob landed since the last ask (drain_attach_installed).
+    progressed: bool,
+    /// The asked device answered "not held", or the transport gave up reaching it: this ask is over, the next goes elsewhere.
+    ended: bool,
+}
+
 struct AttachInstalled {
     /// The receiver's own sniff of the stored bytes (None when the name was unknown to the worker).
     sniffed: Option<crate::types::AttachKind>,
@@ -711,6 +731,146 @@ struct AttachInstalled {
     sender_pubkey: crate::types::DevicePubkey,
     sender_addr: std::net::SocketAddr,
     len: usize,
+}
+
+/// One attachment chunk waiting for the attach worker's next drain (see [`ChunkIntake`]).
+struct PendingChunk {
+    conversation_token: [u8; 32],
+    content_hash: [u8; 32],
+    index: u32,
+    sealed: Vec<u8>,
+    sender_pubkey: crate::types::DevicePubkey,
+    sender_addr: std::net::SocketAddr,
+    wire_key: [u8; 32],
+    seed: [u8; 32],
+    sniff_name: String,
+    is_wrapper_fetch: bool,
+    tx: std::sync::mpsc::Sender<AttachInstalled>,
+}
+
+/// CHUNK INTAKE (2026-10-21): the status pass pushes each arriving chunk here and queues ONE drain on the attach worker at the edge where no drain is pending; the drain takes what has gathered (up to CHUNK_DRAIN_MAX) and stores it under one vault batch.
+/// A chunk stored alone costs a whole commit — furrows, leaf, index path and spine, each round fsynced on both mirrors — and Emma's new phone took in 139 of them in eight minutes, one commit each.
+/// The batch size is set by arrival rate against commit time, never by a timer: a lone chunk drains alone, a burst drains together.
+#[derive(Default)]
+struct ChunkIntake {
+    chunks: Vec<PendingChunk>,
+    /// A drain is queued or running; a push while this holds rides that drain (or the one it re-queues).
+    queued: bool,
+}
+
+/// Chunks per drain: 4 MiB under one commit keeps any other vault caller's wait behind it short.
+const CHUNK_DRAIN_MAX: usize = 16;
+
+/// Queue a chunk for the attach worker, queueing the drain only at the no-drain-pending edge.
+fn intake_chunk(intake: &std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job_tx: &std::sync::mpsc::Sender<Job>, chunk: PendingChunk) {
+    let first = {
+        let mut g = intake.lock().unwrap();
+        g.chunks.push(chunk);
+        !std::mem::replace(&mut g.queued, true)
+    };
+    if first {
+        let (intake, tx) = (intake.clone(), job_tx.clone());
+        queue_job(job_tx, move || drain_chunk_intake(intake, tx));
+    }
+}
+
+/// The attach worker's drain: open and verify every gathered chunk, store the good ones under ONE vault batch, then report each landing — completeness probed once per blob, and only that blob's last chunk in the drain carries the complete edge.
+fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job_tx: std::sync::mpsc::Sender<Job>) {
+    let batch: Vec<PendingChunk> = {
+        let mut g = intake.lock().unwrap();
+        let n = g.chunks.len().min(CHUNK_DRAIN_MAX);
+        g.chunks.drain(..n).collect()
+    };
+    let mut manifests: std::collections::HashMap<[u8; 32], Option<crate::storage::BlobManifest>> = std::collections::HashMap::new();
+    // Per seed (one session in practice): the stores, and the chunks to report once they are durable — (pending, total chunks, sniff, bytes); total None = an early chunk.
+    let mut groups: Vec<([u8; 32], Vec<([u8; 32], Vec<u8>)>, Vec<(PendingChunk, Option<u32>, Option<crate::types::AttachKind>, usize)>)> = Vec::new();
+    for pc in batch {
+        let m = manifests.entry(pc.content_hash).or_insert_with(|| crate::storage::blob_manifest(&pc.content_hash)).clone();
+        let plain = match kete::decrypt_bytes(&pc.sealed, &pc.wire_key) {
+            Ok(p) => p,
+            Err(e) => {
+                crate::logf!("ATTACH: chunk seal open failed: {}", e);
+                continue;
+            }
+        };
+        let (addr, total, sniffed) = match m {
+            // EARLY CHUNK (2026-10-07): chunks are content-addressed and authenticated, so one that overtakes its manifest is stored at its OWN hash — the manifest finds it held when it lands.
+            None if plain.len() <= crate::storage::BLOB_CHUNK_SIZE => (*blake3::hash(&plain).as_bytes(), None, None),
+            None => {
+                crate::log("ATTACH: early chunk larger than a chunk — dropped");
+                continue;
+            }
+            Some(m) => {
+                let Some(expect) = m.chunks.get(pc.index as usize).copied() else {
+                    crate::log("ATTACH: chunk index beyond the manifest — dropped");
+                    continue;
+                };
+                if *blake3::hash(&plain).as_bytes() != expect {
+                    crate::log("ATTACH: chunk hash mismatch against the manifest — dropped");
+                    continue;
+                }
+                // A wrapper's chunk 0 is its VSF header, so it is never sniffed (the head carries the kind).
+                let sniffed = (pc.index == 0 && !pc.is_wrapper_fetch).then(|| crate::types::sniff(&plain, &pc.sniff_name));
+                (expect, Some(m.chunks.len() as u32), sniffed)
+            }
+        };
+        let len = plain.len();
+        let slot = match groups.iter().position(|g| g.0 == pc.seed) {
+            Some(i) => i,
+            None => {
+                groups.push((pc.seed, Vec::new(), Vec::new()));
+                groups.len() - 1
+            }
+        };
+        groups[slot].1.push((addr, plain));
+        groups[slot].2.push((pc, total, sniffed, len));
+    }
+    for (seed, stores, landed) in groups {
+        let n = stores.len();
+        if let Err(e) = crate::storage::blob_store_many(&seed, stores) {
+            crate::logf!("ATTACH: chunk store failed ({} chunk(s) in the batch): {}", n, e);
+            continue;
+        }
+        // The chunk stores forgot the CHUNKS' presence; the blob each belongs to is what the render asks about — probed once per blob, after the whole batch is durable.
+        let mut verdicts: std::collections::HashMap<[u8; 32], (bool, Option<[u8; 32]>)> = std::collections::HashMap::new();
+        let last_of: std::collections::HashMap<[u8; 32], usize> = landed.iter().enumerate().filter(|(_, l)| l.1.is_some()).map(|(i, l)| (l.0.content_hash, i)).collect();
+        for (i, (pc, total, sniffed, len)) in landed.into_iter().enumerate() {
+            let Some(total) = total else {
+                crate::logf!("ATTACH: chunk {} before its manifest — stored at its own hash, the manifest will find it", pc.index);
+                continue;
+            };
+            let (complete, raw_of_wrapper) = *verdicts.entry(pc.content_hash).or_insert_with(|| {
+                crate::storage::blob_presence_forget(&pc.content_hash);
+                let complete = crate::storage::blob_present_probe_now(&pc.content_hash);
+                // The last chunk of a WRAPPER: aliased and reported under the row's raw hash.
+                (complete, if complete { crate::storage::alias_if_wrapper(&seed, &pc.content_hash) } else { None })
+            });
+            let complete = complete && last_of.get(&pc.content_hash) == Some(&i);
+            let content_hash = if complete { raw_of_wrapper.unwrap_or(pc.content_hash) } else { pc.content_hash };
+            let _ = pc.tx.send(AttachInstalled {
+                sniffed,
+                manifest: None,
+                chunk: Some((pc.index, total, complete)),
+                conversation_token: pc.conversation_token,
+                content_hash,
+                sender_pubkey: pc.sender_pubkey,
+                sender_addr: pc.sender_addr,
+                len,
+            });
+        }
+    }
+    // Whatever gathered while this drain ran rides the next one; the pending flag drops only when nothing is left.
+    let again = {
+        let mut g = intake.lock().unwrap();
+        if g.chunks.is_empty() {
+            g.queued = false;
+        }
+        g.queued
+    };
+    if again {
+        let tx = job_tx.clone();
+        queue_job(&job_tx, move || drain_chunk_intake(intake, tx));
+    }
 }
 
 /// Greedy word-wrap for the message list: split `s` into lines that each measure ≤ `max_w` under `style`. Word widths are measured individually and summed (kerning across a space is negligible at chat sizes), so the cost is O(words), not O(words²) re-shapes. A single word wider than the line hard-breaks by chars — a pasted URL/hash must wrap, not vanish off-screen. Empty input yields one empty line so the row keeps its height.
@@ -1482,6 +1642,8 @@ pub struct PhotonApp {
     seal_job_tx: std::sync::mpsc::Sender<Job>,
     /// The attachment worker: blob serves (manifest + every chunk), chunk/manifest/blob stores and blob deletes — bulk work that must never queue ahead of a history page's build or open (Emma 2026-10-21: her walk stalled behind a replication flood on both ends).
     attach_job_tx: std::sync::mpsc::Sender<Job>,
+    /// Attachment chunks gathered for the attach worker's next drain (see ChunkIntake) — a burst lands under one vault commit instead of one each.
+    attach_chunk_intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>,
     /// The braid-crypto worker: memory-hard scratch decrypts + encrypts. ONE worker on purpose — the lockstep already serialized same-lane frames; serializing across lanes trades a few ms of queue latency for zero render-thread contention.
     braid_job_tx: std::sync::mpsc::Sender<Job>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
@@ -1491,6 +1653,8 @@ pub struct PhotonApp {
     /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc, the device whose page answered it). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today.
     /// An answered entry stays until the sweep, so the twin every page has (PT plus the relay copy) is recognised and dropped silently; drive_history_recovery sweeps answered entries after one in-flight timeout and unanswered ones after eight.
     hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64, Option<[u8; 32]>)>,
+    /// Devices whose history answers have not proven they reach us directly: an ask to one expired unanswered, so the next asks want the relay copy too, until a page from it lands direct. RAM only.
+    hist_relay_wanted: std::collections::HashSet<[u8; 32]>,
     /// Fleet-first keygen gate edge state — true while the gate is actively holding friend keygens (logs the hold and the release ONCE each, not per tick).
     keygen_fleet_gate_holding: bool,
     /// Blind-deposit flip-flop detector, keyed (contact hp, depositor device): (hash of the blob the CURRENT stored deposit replaced, consecutive A-B-A flips). Two photon installs sharing one device key wage an S-war — each twin's deposit replaces the other's forever (field 2026-08-21: 400 deposits from ONE device in an afternoon log, each a ~1.5s durable commit, wall-to-wall vault load). At 3 consecutive flips the commits DECIMATE 8:1 (drop-unacked; pure counter, no timer) — the war's write load collapses, a GENUINE re-key still lands within 8 retries, and a byte-identical (stable) deposit resets the detector. Runtime-only: a restart re-arms detection, which is fine.
@@ -1645,8 +1809,12 @@ pub struct PhotonApp {
     resume_vault_rx: Option<(std::sync::mpsc::Receiver<Result<std::sync::Arc<crate::storage::FlatStorage>, crate::storage::StorageError>>, tohu::SessionIdentity, std::time::Instant)>,
     /// The last frame the ACTIVE wave screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "wave screen should update at most every second").
     last_wave_redraw: Option<std::time::Instant>,
-    /// Attachment fetches in flight: content hash → (conversation contact id, when last asked, how many times). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick re-asks on a cadence and gives up after a bounded run (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
-    attach_fetch_inflight: std::collections::HashMap<[u8; 32], (ContactId, std::time::Instant, u8)>,
+    /// Attachment fetches in flight, by content hash (see [`FetchAsk`]). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick moves an ask whose device went quiet to the next device and lets go after a bounded run of fruitless asks (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
+    attach_fetch_inflight: std::collections::HashMap<[u8; 32], FetchAsk>,
+    /// The last attachment frame (blob, manifest or chunk) heard from each device, stamped as it arrives: a device streaming ANY of our asks is not quiet, so none of its queued asks moves on (it serves them one after another).
+    attach_heard: std::collections::HashMap<[u8; 32], std::time::Instant>,
+    /// Friend attachment rows just landed: (blob, conversation, the device pushing it) — the fetch tick records each as already asked of that device.
+    attach_expect_pushes: Vec<([u8; 32], ContactId, [u8; 32])>,
     /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07): the replication sweep's edges — rows arrived (the total row count moved), presence probes landed, the network went unmetered — each sets this, and one sweep runs per edge. `replicate_rows_seen` / `replicate_metered` are the remembered sides of the first and last edge.
     replicate_dirty: bool,
     replicate_rows_seen: usize,
@@ -2621,6 +2789,7 @@ impl PhotonApp {
             send_encrypt_busy: std::collections::HashSet::new(),
             seal_job_tx: spawn_job_worker("photon-seal"),
             attach_job_tx: spawn_job_worker("photon-attach"),
+            attach_chunk_intake: std::sync::Arc::new(std::sync::Mutex::new(ChunkIntake::default())),
             braid_job_tx: spawn_job_worker("photon-braid"),
             fleet_heal_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             fanout_grow_pending: false,
@@ -2634,6 +2803,7 @@ impl PhotonApp {
             avatar_dl_started: std::collections::HashSet::new(),
             avatar_req_pending: crate::linear_map::LinearMap::new(),
             hist_rid_map: crate::linear_map::LinearMap::new(),
+            hist_relay_wanted: std::collections::HashSet::new(),
             keygen_fleet_gate_holding: false,
             blind_flip: crate::linear_map::LinearMap::new(),
             history_serve: crate::linear_map::LinearMap::new(),
@@ -2723,6 +2893,8 @@ impl PhotonApp {
             resume_vault_rx: None,
             last_wave_redraw: None,
             attach_fetch_inflight: std::collections::HashMap::new(),
+            attach_heard: std::collections::HashMap::new(),
+            attach_expect_pushes: Vec::new(),
             replicate_dirty: true,
             replicate_rows_seen: 0,
             replicate_metered: false,

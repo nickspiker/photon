@@ -334,6 +334,8 @@ impl PhotonApp {
                 StatusUpdate::AttachBlobReceived { .. } => "AttachBlobReceived",
                 StatusUpdate::AttachProgress { .. } => "AttachProgress",
                 StatusUpdate::AttachHaveReceived { .. } => "AttachHaveReceived",
+                StatusUpdate::AttachNoneReceived { .. } => "AttachNoneReceived",
+                StatusUpdate::PeerUnreachable { .. } => "PeerUnreachable",
                 StatusUpdate::HoldingsReceived { .. } => "HoldingsReceived",
                 StatusUpdate::ForeignResponder { .. } => "ForeignResponder",
                 StatusUpdate::AttachManifestReceived { .. } => "AttachManifestReceived",
@@ -427,6 +429,9 @@ impl PhotonApp {
         let mut depart_reqs_after: Vec<(i64, Vec<u8>, [u8; 32], u8, Option<[u8; 32]>)> = Vec::new();
         // Departure have-set frames (holdings.rs), handled after the drain: (kind, nonce, sealed, sender device, sender addr).
         let mut holdings_after: Vec<(crate::network::fgtw::protocol::HoldingsKind, [u8; 32], Vec<u8>, [u8; 32], std::net::SocketAddr)> = Vec::new();
+        // Fetch edges (attach_none, an unreachable peer) wait for the loop to end: the fetch state is &mut self, and the loop holds the checker.
+        let mut fetch_none_after: Vec<([u8; 32], [u8; 32])> = Vec::new();
+        let mut fetch_unreachable_after: Vec<(Option<std::net::SocketAddr>, Option<[u8; 32]>)> = Vec::new();
         // Friend folds proven stale by a ForeignResponder (an unknown device answered for one of their devices): refreshed after the drain.
         let mut stale_folds_after: Vec<[u8; 32]> = Vec::new();
         // Wi-Fi Direct credential provisioning, collected on came-online edges (after releasing the checker borrow): the elected-GO side mints/re-offers the pair's group credential once per session (docs/offgrid.md).
@@ -3241,6 +3246,7 @@ impl PhotonApp {
                     limit,
                     request_id,
                     sent_osc,
+                    relay_copy,
                     sender_pubkey,
                     sender_addr,
                 } => {
@@ -3330,6 +3336,7 @@ impl PhotonApp {
                             let device_pubkey = *kp.public.as_bytes();
                             let device_secret = *kp.secret.as_bytes();
                             let recipient = *sender_pubkey.as_bytes();
+                            let via_relay = sender_addr == crate::network::status::RELAY_ADDR;
                             queue_job(&self.seal_job_tx, move || {
                                 use crate::network::history_pages::{
                                     seal_history_page, HistoryPagePlain, HistoryRow,
@@ -3380,8 +3387,9 @@ impl PhotonApp {
                                                         peer_addr: sender_addr,
                                                         alt_addr: None,
                                                         recipient_pubkey: recipient,
-                                                        // The response ALWAYS carries its one-device relay copy: requests arrive fine while responses die on one-directional reverse paths (2322 re-requests in one field session) — one relayed page is cheaper than the re-request storm.
-                                                        relay_to: vec![recipient],
+                                                        // THE RELAY ONLY WHEN NEEDED (Nick 2026-10-21: "shouldn't be using the relay unless it's absolutely necessary"): the asker knows whether our answers reach it, so it asks for the relay copy after one went unanswered (one-directional reverse paths: 2322 re-requests in one field session) or when no direct path is trusted.
+                                                        // A request that came thru the relay is answered thru it, and an asker from before the flag keeps the copy it always got.
+                                                        relay_to: if relay_copy.unwrap_or(true) || via_relay { vec![recipient] } else { Vec::new() },
                                                         vsf_bytes,
                                                         tag: None,
                                                     },
@@ -3460,6 +3468,10 @@ impl PhotonApp {
                         .any(|c| c.knows_device(&sender_pubkey.key));
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    // The sender is not quiet: every ask aimed at it waits on (attach_fetch_retry_tick).
+                    if known {
+                        self.attach_heard.insert(sender_pubkey.key, std::time::Instant::now());
+                    }
                     if !known {
                         crate::log("ATTACH: blob from unknown device — dropped");
                     } else if let (Some(wire_key), Some(seed)) = (wire_key, seed) {
@@ -3516,6 +3528,9 @@ impl PhotonApp {
                     let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    if known {
+                        self.attach_heard.insert(sender_pubkey.key, std::time::Instant::now());
+                    }
                     if !known {
                         crate::log("ATTACH: manifest from unknown device — dropped");
                     } else if crate::storage::blob_present(&content_hash) {
@@ -3594,6 +3609,9 @@ impl PhotonApp {
                     let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
+                    if known {
+                        self.attach_heard.insert(sender_pubkey.key, std::time::Instant::now());
+                    }
                     if !known {
                         crate::log("ATTACH: chunk from unknown device — dropped");
                     } else if crate::storage::blob_present(&content_hash) {
@@ -3608,55 +3626,12 @@ impl PhotonApp {
                             .unwrap_or_default();
                         // A chunk of a WRAPPER this device asked for (a row names it as its `fw`).
                         let is_wrapper_fetch = self.conversations.iter().flat_map(|c| c.messages.iter()).any(|m| m.file.as_ref().is_some_and(|f| f.wrap == Some(content_hash)));
-                        queue_job(&self.attach_job_tx, move || {
-                            let Some(m) = crate::storage::blob_manifest(&content_hash) else {
-                                // EARLY CHUNK (2026-10-07): chunks are content-addressed and authenticated, so one that overtakes its manifest is stored at its OWN hash — no bookkeeping, nothing to park; the manifest finds it held when it lands (it used to be dropped and cost a 20 s re-ask).
-                                match kete::decrypt_bytes(&sealed, &wire_key) {
-                                    Ok(plain) if plain.len() <= crate::storage::BLOB_CHUNK_SIZE => {
-                                        let own = *blake3::hash(&plain).as_bytes();
-                                        match crate::storage::blob_store(&seed, &own, &plain) {
-                                            Ok(()) => crate::logf!("ATTACH: chunk {} before its manifest — stored at its own hash, the manifest will find it", index),
-                                            Err(e) => crate::logf!("ATTACH: early chunk store failed: {}", e),
-                                        }
-                                    }
-                                    Ok(_) => crate::log("ATTACH: early chunk larger than a chunk — dropped"),
-                                    Err(e) => crate::logf!("ATTACH: early chunk seal open failed: {}", e),
-                                }
-                                return;
-                            };
-                            let Some(expect) = m.chunks.get(index as usize).copied() else {
-                                crate::log("ATTACH: chunk index beyond the manifest — dropped");
-                                return;
-                            };
-                            match kete::decrypt_bytes(&sealed, &wire_key) {
-                                Ok(plain) if *blake3::hash(&plain).as_bytes() == expect => {
-                                    match crate::storage::blob_store(&seed, &expect, &plain) {
-                                        Ok(()) => {
-                                            // The chunk store forgot the CHUNK's presence; the blob it belongs to is what the render asks about.
-                                            crate::storage::blob_presence_forget(&content_hash);
-                                            let complete = crate::storage::blob_present_probe_now(&content_hash);
-                                            // The last chunk of a WRAPPER: aliased and reported under the row's raw hash; a wrapper's chunk 0 is its VSF header, so it is never sniffed (the head carries the kind).
-                                            let raw_of_wrapper = if complete { crate::storage::alias_if_wrapper(&seed, &content_hash) } else { None };
-                                            let sniffed = (index == 0 && !is_wrapper_fetch).then(|| crate::types::sniff(&plain, &sniff_name));
-                                            let content_hash = raw_of_wrapper.unwrap_or(content_hash);
-                                            let _ = tx.send(AttachInstalled {
-                                                sniffed,
-                                                manifest: None,
-                                                chunk: Some((index, m.chunks.len() as u32, complete)),
-                                                conversation_token,
-                                                content_hash,
-                                                sender_pubkey,
-                                                sender_addr,
-                                                len: plain.len(),
-                                            });
-                                        }
-                                        Err(e) => crate::logf!("ATTACH: chunk store failed: {}", e),
-                                    }
-                                }
-                                Ok(_) => crate::log("ATTACH: chunk hash mismatch against the manifest — dropped"),
-                                Err(e) => crate::logf!("ATTACH: chunk seal open failed: {}", e),
-                            }
-                        });
+                        // Gathered, not stored one by one: the attach worker's drain lands every chunk that arrived meanwhile under one vault commit (see ChunkIntake).
+                        intake_chunk(
+                            &self.attach_chunk_intake,
+                            &self.attach_job_tx,
+                            PendingChunk { conversation_token, content_hash, index, sealed, sender_pubkey, sender_addr, wire_key, seed, sniff_name, is_wrapper_fetch, tx },
+                        );
                     } else {
                         crate::log("ATTACH: no wire key / no session for the chunk's conversation — dropped");
                     }
@@ -3697,6 +3672,12 @@ impl PhotonApp {
                         self.scene_dirty = true;
                         changed = true;
                     }
+                }
+                StatusUpdate::AttachNoneReceived { content_hash, sender_pubkey } => {
+                    fetch_none_after.push((content_hash, sender_pubkey.key));
+                }
+                StatusUpdate::PeerUnreachable { addr, device } => {
+                    fetch_unreachable_after.push((addr, device));
                 }
                 // An unknown device answered for a device we know: whoever owns `pinged` has a fleet our fold has not caught up with — refresh that one fold, once per responder (the edge that would have healed Emma's new device in seconds instead of hours, 2026-10-21).
                 StatusUpdate::ForeignResponder { responder, pinged } => {
@@ -3831,7 +3812,8 @@ impl PhotonApp {
                                             alt_addr: None,
                                             recipient_pubkey: sender_pubkey.key,
                                             vsf_bytes,
-                                            relay_to: vec![sender_pubkey.key],
+                                            // The relay only when needed (Nick 2026-10-21), the same rule as the chunks below.
+                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
                                             tag: None,
                                         });
                                     }
@@ -3858,11 +3840,35 @@ impl PhotonApp {
                                     }
                                 }
                                 crate::logf!("ATTACH: served chunked request — {} of {} chunk(s){}{}", sent, m.chunks.len(), if want.is_some() { " (resume)" } else { " + manifest" }, if relay_needed { " (direct + relay copy)" } else { " (direct only)" });
+                                // A resume we hold none of the wanted chunks for would otherwise get silence: answer "not held" so the asker moves on.
+                                if sent == 0 && want.is_some() {
+                                    if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_none_vsf(&conversation_token, &content_hash, &kp_pub, &kp_sec) {
+                                        let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                            peer_addr: sender_addr,
+                                            alt_addr: None,
+                                            recipient_pubkey: sender_pubkey.key,
+                                            vsf_bytes,
+                                            relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
+                                            tag: None,
+                                        });
+                                    }
+                                }
                                 return;
                             }
                             let Some(plain) = crate::storage::blob_load(&seed, &content_hash)
                             else {
-                                crate::log("ATTACH: requested blob not held here");
+                                // EVERY ASK GETS AN ANSWER (Nick 2026-10-21: "I don't like timers"): "not held" is the edge the asker moves on at, where it used to wait out a silence.
+                                crate::log("ATTACH: requested blob not held here — answering so");
+                                if let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_attach_none_vsf(&conversation_token, &content_hash, &kp_pub, &kp_sec) {
+                                    let _ = dispatch.send(crate::network::status::HistorySendRequest {
+                                        peer_addr: sender_addr,
+                                        alt_addr: None,
+                                        recipient_pubkey: sender_pubkey.key,
+                                        vsf_bytes,
+                                        relay_to: if relay_needed { vec![sender_pubkey.key] } else { Vec::new() },
+                                        tag: None,
+                                    });
+                                }
                                 return;
                             };
                             match kete::encrypt_bytes(&plain, &wire_key).and_then(|sealed| {
@@ -4391,8 +4397,12 @@ impl PhotonApp {
                     sealer_key_fp,
                     sealed,
                     sender_pubkey,
-                    sender_addr: _,
+                    sender_addr,
                 } => {
+                    // A page that came straight to us proves the direct path answers: this device's asks stop wanting the relay copy.
+                    if sender_addr != crate::network::status::RELAY_ADDR && self.hist_relay_wanted.remove(&sender_pubkey.key) {
+                        crate::logf!("HISTORY: a page from {} arrived direct — its answers ride the direct path only again", crate::fp(&sender_pubkey.key));
+                    }
                     let from_sibling = self.contacts.iter().any(|c| {
                         c.is_sibling && !c.locked_out && c.knows_device(&sender_pubkey.key)
                     });
@@ -5450,6 +5460,13 @@ impl PhotonApp {
             stale_folds_after.sort_unstable();
             stale_folds_after.dedup();
             self.spawn_contact_fleet_refresh(stale_folds_after);
+        }
+
+        for (hash, from) in fetch_none_after {
+            self.fetch_answered_none(&hash, &from);
+        }
+        for (addr, device) in fetch_unreachable_after {
+            self.fetch_peer_unreachable(addr, device);
         }
 
         for (kind, nonce, sealed, sender, addr) in holdings_after {

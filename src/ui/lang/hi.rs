@@ -31,6 +31,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "रखो".into(),
         Msg::Play => "\u{25B6}\u{FE0E} चलाओ".into(),
         Msg::EndWave => "लहर ख़त्म".into(),
+        Msg::EndBeam => "किरण ख़त्म".into(),
         Msg::HangUp => "काटो".into(),
         Msg::Attest => "अटेस्ट".into(),
         Msg::Cancel => "रद्द".into(),

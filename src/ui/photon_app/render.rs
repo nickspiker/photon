@@ -1063,7 +1063,10 @@ impl PhotonApp {
                         if let Some(b) = self.wave_action_btn.as_mut() {
                             b.set_rect(cx, by, bw, bh);
                             b.set_font_size(bfont);
-                            b.set_label(tr(Msg::EndWave));
+                            // A wave with video in it is a beam (Nick 2026-10-21: "when your camera is on it still has an End wave"): our camera on or opening, or the far side's picture up.
+                            let beaming = crate::wave::beam_session::showing()
+                                || self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some() || w.beam_opening.is_some());
+                            b.set_label(tr(if beaming { Msg::EndBeam } else { Msg::EndWave }));
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
                             b.set_hover_fill(Some(*theme::WAVE_DANGER_HOVER));

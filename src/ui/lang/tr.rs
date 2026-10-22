@@ -30,6 +30,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Keep => "Sakla".into(),
         Msg::Play => "\u{25B6}\u{FE0E} Oynat".into(),
         Msg::EndWave => "Dalgayı bitir".into(),
+        Msg::EndBeam => "Işını bitir".into(),
         Msg::HangUp => "Sonlandır".into(),
         Msg::Attest => "Tasdikle".into(),
         Msg::Cancel => "İptal".into(),
