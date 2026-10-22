@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Linux: Photon survives screen changes.** After plugging in or unplugging a monitor, or changing the resolution, Photon could paint the whole screen black or not show up when clicked until you closed and reopened it. It now picks up the new screen layout right away.
 
 ## v123
 - **Phones stay signed in when Android restarts itself.** Android sometimes restarts its own framework in the background, for example to finish a system update, without restarting the phone; Photon took that for a reboot and asked for your handle again. It now asks only after a real restart, and updating to this version keeps you signed in.
