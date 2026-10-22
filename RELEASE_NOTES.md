@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v124
 - **Linux: Photon survives screen changes.** After plugging in or unplugging a monitor, or changing the resolution, Photon could paint the whole screen black or not show up when clicked until you closed and reopened it. It now picks up the new screen layout right away.
 
 ## v123
