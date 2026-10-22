@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v123
 - **Phones stay signed in when Android restarts itself.** Android sometimes restarts its own framework in the background, for example to finish a system update, without restarting the phone; Photon took that for a reboot and asked for your handle again. It now asks only after a real restart, and updating to this version keeps you signed in.
 - **A new device no longer rings for old photons.** While a new phone or computer catches up on a conversation, a friend's devices send it the older photons it's missing, and each one used to ring as if it had just arrived. Those now arrive quietly; a photon that was genuinely held up still rings.
 - **Safer, faster storage.** Photon's storage engine had two rare bugs that could lose a just-saved item when storage was nearly full and being tidied at the same moment; both are fixed. Tidying now happens while Photon is idle instead of in the middle of a save, and incoming file pieces are saved in batches, so a phone taking in lots of files no longer stalls for seconds.
