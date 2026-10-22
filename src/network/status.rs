@@ -547,6 +547,8 @@ pub enum StatusUpdate {
         content_hash: [u8; 32],
         /// Resume bitmap (bit i = chunk i wanted); None = everything.
         want: Option<Vec<u8>>,
+        /// BLAKE3 of the signed frame: the direct and relay copies of ONE ask carry identical bytes, so the server answers an ask once by this, never by a time window.
+        frame_hash: [u8; 32],
         sender_pubkey: DevicePubkey,
         sender_addr: SocketAddr,
     },
@@ -2334,6 +2336,7 @@ async fn run_checker(
                                                 conversation_token,
                                                 content_hash,
                                                 want,
+                                                frame_hash: *blake3::hash(&data).as_bytes(),
                                                 sender_pubkey: DevicePubkey::from_bytes(
                                                     sender_pubkey,
                                                 ),
@@ -3042,6 +3045,7 @@ async fn run_checker(
                                         conversation_token,
                                         content_hash,
                                         want,
+                                        frame_hash: *blake3::hash(msg_bytes).as_bytes(),
                                         sender_pubkey: DevicePubkey::from_bytes(sender_pubkey),
                                         sender_addr: src_addr,
                                     },

@@ -3714,6 +3714,7 @@ impl PhotonApp {
                     conversation_token,
                     content_hash,
                     want,
+                    frame_hash,
                     sender_pubkey,
                     sender_addr,
                 } => {
@@ -3725,17 +3726,23 @@ impl PhotonApp {
                     // THE RELAY COPY ONLY WHERE THE DIRECT LEG IS UNPROVEN (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): every served chunk went out twice — PT direct AND a Cloudflare relay copy, unconditionally — so a 142 MB pigeon cost 284 MB and every relay byte. A requester we hold a punch-validated path to gets the direct leg alone (PT is reliable on it); a relay-injected request, or a requester with no validated path, still gets the relay copy — that is the one-directional-reverse-path case the copy existed for.
                     let relay_needed = crate::network::traverse::gather::is_bogus_addr(&sender_addr)
                         || !self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key) && c.validated_path.is_some());
-                    // The same request landing twice within ten seconds (the direct and relay copies of one ask, or two asks racing) is served once — the second serve of 262 chunks three seconds after the first was the log's biggest re-upload.
+                    // ONE ASK, ONE ANSWER, WITH NO WINDOW (Nick 2026-10-21; it was "the same request within 10 s", which also dropped a real re-ask after a fast failure and re-served a relay copy landing late): the direct and relay copies of one ask are the same signed bytes, so a frame already seen is a copy; a whole-blob ask racing a serve of the same blob to the same device is answered by that serve, until its job ends (the second serve of 262 chunks three seconds after the first was the log's biggest re-upload).
+                    const ASKS_SEEN_CAP: usize = 512;
+                    let copy = self.attach_asks_seen.contains(&frame_hash);
                     let served_key = (sender_pubkey.key, content_hash);
-                    let duplicate = want.is_none() && self.attach_served_recent.get(&served_key).is_some_and(|at| at.elapsed() < std::time::Duration::from_secs(10));
-                    if known && !duplicate && want.is_none() {
-                        self.attach_served_recent.retain(|_, at| at.elapsed() < std::time::Duration::from_secs(60));
-                        self.attach_served_recent.insert(served_key, std::time::Instant::now());
+                    let racing = !copy && want.is_none() && self.attach_serving.lock().is_ok_and(|s| s.contains(&served_key));
+                    if known && !copy {
+                        self.attach_asks_seen.push_back(frame_hash);
+                        if self.attach_asks_seen.len() > ASKS_SEEN_CAP {
+                            self.attach_asks_seen.pop_front();
+                        }
                     }
                     if !known {
                         crate::log("ATTACH: request from unknown device — ignored");
-                    } else if duplicate {
-                        crate::log("ATTACH: the same request again within 10 s — already being served, ignored");
+                    } else if copy {
+                        crate::log("ATTACH: a second copy of an ask already answered (direct + relay) — dropped");
+                    } else if racing {
+                        crate::log("ATTACH: a serve of this blob to that device is still running — it answers this ask");
                     } else if let (Some(seed), Some(wire_key), Some(kp)) = (
                         seed,
                         self.attach_wire_key(&sender_pubkey.key, &conversation_token),
@@ -3745,7 +3752,15 @@ impl PhotonApp {
                         let kp_pub = *kp.public.as_bytes();
                         let kp_sec = *kp.secret.as_bytes();
                         let dispatch = checker.history_dispatch();
+                        // A whole-blob serve holds its place in `attach_serving` until its job ends, however it returns.
+                        let serving = want.is_none().then(|| {
+                            if let Ok(mut s) = self.attach_serving.lock() {
+                                s.insert(served_key);
+                            }
+                            super::AttachServing { set: self.attach_serving.clone(), key: served_key }
+                        });
                         queue_job(&self.attach_job_tx, move || {
+                            let _serving = serving;
                             // A RAW request for content held WRAPPED (an older build asking by `fh`, until v134): the original is unwrapped thru the verified load and served FROM MEMORY — an in-memory manifest and slices — never re-stored, so the wrapper stays the one copy at rest.
                             let held_wrapped_raw = if crate::storage::blob_manifest(&content_hash).is_none() && crate::storage::wrap_alias(&content_hash).is_some_and(|hb| hb != content_hash) {
                                 crate::storage::blob_load(&seed, &content_hash)

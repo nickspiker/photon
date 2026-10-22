@@ -699,6 +699,20 @@ struct AttachPrepared {
     wrap: Option<[u8; 32]>,
 }
 
+/// A whole-blob serve's place in `attach_serving`, held by its job: dropped when the job ends, whichever way it returns.
+struct AttachServing {
+    set: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>>,
+    key: ([u8; 32], [u8; 32]),
+}
+
+impl Drop for AttachServing {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.set.lock() {
+            s.remove(&self.key);
+        }
+    }
+}
+
 /// One attachment fetch in flight (attachments.rs): who was asked, and the edges its next ask reads.
 struct FetchAsk {
     /// The conversation whose row names the blob.
@@ -1819,8 +1833,10 @@ pub struct PhotonApp {
     replicate_dirty: bool,
     replicate_rows_seen: usize,
     replicate_metered: bool,
-    /// Blob requests served lately, by (requesting device, hash) — a second copy of the same ask within ten seconds is not served again (status.rs AttachReqReceived).
-    attach_served_recent: std::collections::HashMap<([u8; 32], [u8; 32]), std::time::Instant>,
+    /// Blob asks already answered, by the hash of the signed frame: the direct and relay copies of one ask carry the same bytes, so the second copy is dropped however late it lands. Capped by count, never aged.
+    attach_asks_seen: std::collections::VecDeque<[u8; 32]>,
+    /// Whole-blob serves queued or running, by (requesting device, hash): an ask racing one is answered by it. Each serve job removes its own entry when it ends ([`AttachServing`]), the edge after which a new ask is a real new ask.
+    attach_serving: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
     last_keygen_pickup: Option<std::time::Instant>,
     /// Our identity party id, memoized per seed: it is an ed25519 public-key derivation, and the tick asked for it once per contact per vsync (thirty-odd scalar multiplications a frame on an idle phone, 2026-09-10 profile).
@@ -2898,7 +2914,8 @@ impl PhotonApp {
             replicate_dirty: true,
             replicate_rows_seen: 0,
             replicate_metered: false,
-            attach_served_recent: std::collections::HashMap::new(),
+            attach_asks_seen: std::collections::VecDeque::new(),
+            attach_serving: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
             express_seen: Vec::new(),
             identity_pid_cache: std::cell::Cell::new(None),
             last_peer_harvest: None,
