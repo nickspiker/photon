@@ -85,6 +85,26 @@ impl std::fmt::Debug for CeremonyId {
     }
 }
 
+/// A BOND's id (docs/conversations.md §0, §7): one per pair of people, the secure channel adding a friend creates, never a listed conversation.
+/// `BLAKE3-derive_key("photon.bond.id.v1", lower party ‖ higher party)` — domain-separated from every conversation id, so a pair's bond and the pair's two-member conversation can never collide.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct BondId(pub [u8; 32]);
+
+impl BondId {
+    /// The bond between two parties — the same value whichever side computes it.
+    pub fn derive(a: &[u8; 32], b: &[u8; 32]) -> Self {
+        let (lo, hi) = if a <= b { (a, b) } else { (b, a) };
+        let mut h = blake3::Hasher::new_derive_key("photon.bond.id.v1");
+        h.update(lo);
+        h.update(hi);
+        BondId(*h.finalize().as_bytes())
+    }
+    /// The bond's wire token (the `conversation_token` role on its frames): only the two parties can compute it.
+    pub fn token(&self) -> [u8; 32] {
+        *blake3::Hasher::new_derive_key("photon.bond.token.v1").update(&self.0).finalize().as_bytes()
+    }
+}
+
 /// Friendship ID: deterministic conversation identifier.
 ///
 /// Derived as `BLAKE3("PHOTON_FRIENDSHIP_v1" || sorted_handle_hashes)` Same value on all participants' devices.
@@ -593,6 +613,18 @@ impl FriendshipChains {
             molecule_kems: Vec::new(),
             molecule_roster: Vec::new(),
         }
+    }
+
+    /// The BOND this friendship's chains split off (docs/conversations.md §7): fresh chain state under the bond's id and token, its lane root and history key derived one-way from the era these chains hold right now (`derive_bond_split`), the same parties and braid.
+    /// Both sides call this on the same era and land on the same bond. `None` when these chains hold no lane root yet (nothing to split from).
+    pub fn bond_split_of(&self, bond_id: BondId) -> Option<Self> {
+        let root = self.lane_root?;
+        let (bond_root, bond_hk) = crate::crypto::era::derive_bond_split(&bond_id.0, &root, self.history_key.as_ref());
+        let mut bond = Self::from_molecule_root(crate::types::molecule::MoleculeId(bond_id.0), &self.participants, bond_root, bond_hk, 0, crate::crypto::clutch::era_lineage(&bond_root));
+        bond.conversation_token = bond_id.token();
+        bond.braid = self.braid;
+        bond.molecule = false;
+        Some(bond)
     }
 
     /// Create from serialized data (for loading from storage).
@@ -2114,6 +2146,28 @@ mod tests {
         for (g, w) in got.iter().zip(want) {
             assert_eq!(g, w, "a conversation derivation moved");
         }
+    }
+
+    /// The bond split (docs/conversations.md §7): both sides land on one bond from the era they share, and nothing about the bond equals the conversation it split from.
+    #[test]
+    fn a_bond_splits_identically_on_both_sides_and_shares_nothing_with_its_conversation() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let bond_id = BondId::derive(&a, &b);
+        assert_eq!(bond_id, BondId::derive(&b, &a), "the same bond whichever side computes it");
+        assert_ne!(bond_id.0, FriendshipId::derive(&[a, b]).0, "a bond id never collides with the pair's conversation id");
+        let conv = FriendshipChains::from_molecule_root(crate::types::molecule::MoleculeId(FriendshipId::derive(&[a, b]).0), &[a, b], [7u8; 32], [8u8; 32], 3, [9u8; 32]);
+        let (ours, theirs) = (conv.bond_split_of(bond_id).expect("a rooted era splits"), conv.clone().bond_split_of(bond_id).expect("a rooted era splits"));
+        assert_eq!(ours.lane_root(), theirs.lane_root());
+        assert_eq!(ours.history_key(), theirs.history_key());
+        assert_ne!(ours.lane_root(), conv.lane_root(), "the bond's root is not the conversation's");
+        assert_ne!(ours.history_key(), conv.history_key());
+        assert_eq!(ours.conversation_token, bond_id.token());
+        assert_ne!(ours.conversation_token, conv.conversation_token);
+        assert_eq!(*ours.id(), FriendshipId::from_bytes(bond_id.0));
+        assert!(!ours.molecule && ours.era_index == 0);
+        // A different conversation era splits a different bond: the split binds to the era it ran on.
+        let later = FriendshipChains::from_molecule_root(crate::types::molecule::MoleculeId(FriendshipId::derive(&[a, b]).0), &[a, b], [17u8; 32], [8u8; 32], 4, [9u8; 32]);
+        assert_ne!(later.bond_split_of(bond_id).unwrap().lane_root(), ours.lane_root());
     }
 
     #[test]

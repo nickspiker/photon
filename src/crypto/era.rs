@@ -276,6 +276,14 @@ pub fn derive_era_transcript(token: &[u8; 32], era_next: u64, nonce: &[u8; 32], 
     *h.finalize().as_bytes()
 }
 
+/// SPLIT a friendship's BOND off the era its two-member conversation holds (docs/conversations.md §7): `derive_era_keys` under the bond's own id, from the conversation's root and history key, with a fixed bond-split transcript.
+/// Both sides hold the same conversation era, so both land on the same bond with no wire exchange; the derivation is one-way, so the bond reveals nothing about the conversation.
+/// The converse is the rule callers keep: anyone holding the era this ran on could run it too, so that era is never handed to anyone else (a join into the conversation mints past it first).
+pub fn derive_bond_split(bond_id: &[u8; 32], conv_root: &[u8; 32], conv_history_key: Option<&[u8; 32]>) -> ([u8; 32], [u8; 32]) {
+    let transcript = *blake3::Hasher::new_derive_key("photon.bond.split.v1").update(bond_id).finalize().as_bytes();
+    derive_era_keys(bond_id, 0, conv_root, conv_history_key, &[0u8; 32], &transcript)
+}
+
 /// Derive the next era's (lane_root, history_key). body = friendship_id ‖ era_index ‖ old_lane_root ‖ hk_present ‖ old_history_key|zeros ‖ fresh_len ‖ fresh ‖ transcript — injective, both keys from one body under two domains, the body zeroized after.
 pub fn derive_era_keys(friendship_id: &[u8; 32], era_index: u64, old_lane_root: &[u8; 32], old_history_key: Option<&[u8; 32]>, fresh: &[u8; 32], transcript: &[u8; 32]) -> ([u8; 32], [u8; 32]) {
     let mut body = Vec::with_capacity(32 + 8 + 32 + 1 + 32 + 4 + 32 + 32);
