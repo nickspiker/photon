@@ -372,6 +372,12 @@ impl PhotonApp {
         if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && self.bond_chains_id(c) == Some(fid)) {
             let them = self.contacts[ci].handle_hash;
             let fp = crate::fp(&self.contacts[ci].handle_proof);
+            // §4.2: one device of our fleet owns the ceremonies with this friend — the heal runs there, never on a parked sibling (its round would be dropped the moment its keygen landed).
+            if super::ceremony_parked_by(&self.contacts[ci], self.device_keypair.as_ref().map(|k| *k.public.as_bytes()), &super::sibling_presence_snapshot(&self.contacts)) {
+                crate::logf!("ERA: {} disagrees with us about era#{:08x} — the fleet's ceremony owner for them heals it", fp, peer_tag);
+                self.pull_era_from_fleet(fid);
+                return true;
+            }
             if us > them {
                 crate::logf!("ERA: {}'s bond advertises era#{:08x}, one ours never held — the lower party re-keys it; waiting", fp, peer_tag);
                 return true;
@@ -385,6 +391,12 @@ impl PhotonApp {
         if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && c.friendship_id == Some(fid)) {
             let them = self.contacts[ci].handle_hash;
             let fp = crate::fp(&self.contacts[ci].handle_proof);
+            // §4.2: one device of our fleet owns the ceremonies with this friend — the heal runs there, never on a parked sibling (its round would be dropped the moment its keygen landed).
+            if super::ceremony_parked_by(&self.contacts[ci], self.device_keypair.as_ref().map(|k| *k.public.as_bytes()), &super::sibling_presence_snapshot(&self.contacts)) {
+                crate::logf!("ERA: {} disagrees with us about era#{:08x} — the fleet's ceremony owner for them heals it", fp, peer_tag);
+                self.pull_era_from_fleet(fid);
+                return true;
+            }
             if us > them {
                 crate::logf!("ERA: our conversation with {} advertises era#{:08x}, one we never held — the lower party re-delivers it; waiting", fp, peer_tag);
                 return true;
@@ -410,6 +422,26 @@ impl PhotonApp {
         let seen: Vec<u32> = self.peer_era_seen.iter().filter(|((f, dev), _)| *f == conv && self.contacts[ci].knows_device(dev)).map(|(_, (_, tag))| *tag).collect();
         for tag in seen {
             self.heal_era_mismatch(conv, tag);
+        }
+    }
+}
+
+impl PhotonApp {
+    /// Ask our own siblings for an era of these chains newer than ours (the era_pull): a device behind its own fleet catches up from its siblings by chain-sync, never by re-keying anything with the friend. Once per held era.
+    pub(super) fn pull_era_from_fleet(&mut self, fid: crate::types::FriendshipId) {
+        let Some((token, held, held_tag)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| (c.conversation_token, c.era_index, c.era_tag())) else {
+            return;
+        };
+        if self.era_pull_sent.get(&token) == Some(&held) {
+            return;
+        }
+        let Some(kp) = self.device_keypair.as_ref() else {
+            return;
+        };
+        if let Ok(frame) = crate::network::fgtw::protocol::build_chain_pull_vsf(&token, kp.public.as_bytes(), kp.secret.as_bytes(), Some(held), held_tag) {
+            self.era_pull_sent.insert(token, held);
+            self.dispatch_frame_to_siblings(frame);
+            crate::logf!("ERA: era_pull for {} — asking our own devices for an era newer than #{}", hex::encode(&fid.as_bytes()[..4]), held);
         }
     }
 }
