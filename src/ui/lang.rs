@@ -5,7 +5,7 @@
 // Multi-line passages (About prose, join instructions, the riddle) are ONE variant joined with '\n'; call sites iterate .lines() so translators see whole passages.
 // Adding a string = add a Msg variant; every language file then fails to build until its arm exists, so no English can silently leak into a translated UI.
 
-use super::state::{ContactPage, SettingsPage};
+use super::state::SettingsPage;
 use std::borrow::Cow;
 
 pub mod de;
@@ -230,9 +230,8 @@ pub enum Msg<'a> {
     Disarm,
     Add,
     Update,
-    // ---- page names (nav rail + contact tabs) ----
+    // ---- page names (nav rail) ----
     PageName(SettingsPage),
-    ContactPageName(ContactPage),
     // ---- wave screen ----
     SpeakerToggleOn,
     SpeakerToggleOff,
@@ -530,12 +529,10 @@ pub enum Msg<'a> {
     DeletingPill,
     StopPill,
     // ---- contact panel (About / Stats / Manage) ----
-    OwnNotesConversation,
     NameNotShared,
     NameShared(&'a str),
     AvatarNotShared,
     AvatarShared,
-    SelfNoCeremony,
     ReclaimedStranger,
     IdentityEndedByOwner,
     IdentityNotFolded,
@@ -548,15 +545,11 @@ pub enum Msg<'a> {
     AlwaysReachableSelf,
     MessagesSentReceived { total: usize, sent: usize, recv: usize },
     RowsShouldMatch,
-    /// The Manage page's note under Boot on your OWN notes row (Nick 2026-10-01: "you cannot even leave that thread"): it removes the notes from every device and nothing is lost that matters — your own handle can be added again any time.
-    OwnNotesRemoveNote,
     /// The ceremony status while OUR add awaits theirs (consent gate): nothing is being made yet, and "making keys 0/12" said otherwise (Nick 2026-10-01).
     ClutchWaitingTheirAdd,
     SiblingSignsItselfOut,
     BootPill { armed: bool },
     // ---- groups (docs/molecules.md §10.5) ----
-    /// The Manage page pill that opens the bind picker (atoms and molecules we stand in).
-    BindIntoMolecule,
     /// The Ready list's filter strip (FilterAll is the stream filter's, shared).
     /// The Ready strip pill for group invitations waiting on us (a count follows it).
     FilterInvitations,
@@ -569,15 +562,8 @@ pub enum Msg<'a> {
     BondWillWithdraw,
     /// "atom" — the header suffix and the picker's count for a molecule of one.
     AtomLabel,
-    /// The atom panel's one becoming.
-    CreateMoleculePill,
-    CreateMoleculeNote,
     /// The picker's "start a new group" row.
     NewAtom,
-    /// The New-group title box hint.
-    AtomTitlePrompt,
-    /// The New-group commit pill.
-    FoundAtomPill,
     /// History policy pills, fixed at birth (D5).
     HistoryFromGenesis,
     HistoryFromJoin,
@@ -591,11 +577,10 @@ pub enum Msg<'a> {
     PendingMember,
     /// The compose bar's honest label while group sends are not yet wired.
     MoleculeComposeSoon,
-    /// Group panel (docs/molecules.md §10.5).
-    MoleculePageName(crate::ui::state::MoleculePage),
-    Members,
-    MemberStanding,
-    MemberDeparted,
+    /// The conversation panel's pages (docs/conversations.md Phase 1).
+    ConversationPageName(crate::ui::state::ConversationPage),
+    /// How many of a conversation's other members are online (the In numbers page, more than one other).
+    MembersOnline { online: usize, total: usize },
     MemberPendingName,
     /// Our own row in a member list.
     YouLabel,
@@ -885,7 +870,6 @@ pub enum Msg<'a> {
     // ---- you / profile ----
     YouAddCustomField,
     YouIdentity,
-    YouNote,
     ChangeAvatar,
     DragDropAvatar,
     ProfileSaved,
@@ -934,7 +918,6 @@ pub enum Msg<'a> {
     RecordingPlaying { pct: u32 },
     FileBubble { glyph: &'a str, name: &'a str, size: &'a str, held: bool },
     // ---- attachment viewer / reader ----
-    OpenPill,
     ViewerBack,
     ViewerDecoding,
     /// The wave panel's live line: rung name (a proper noun, untranslated), round trip as a frequency, loss of 256, buffer frames.

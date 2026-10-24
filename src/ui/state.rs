@@ -23,10 +23,8 @@ pub enum AppState {
     /// Settings / About / Help panel — the orb's real destination on Ready. Carries the currently-selected page so the render + layout know which page body to draw. STUB: every page + control renders, but no behaviour is wired.
     Settings(SettingsPage),
 
-    /// Per-contact panel — the orb's destination inside a Conversation (where it already wears the friend's avatar). Mirrors the Settings screen exactly: same layout, nav rail with pages, scrolling content. Carries the selected page; the open conversation rides `active_conversation`, same as Conversation; the rail's pinned Back returns to the conversation.
-    ContactPanel(ContactPage),
-    /// Per-GROUP panel (docs/molecules.md §10.5) — the orb's destination inside a group conversation. Same shape as the contact panel: About (title, members by phase, policy), Add (contacts not yet standing), Manage (mute, leave).
-    MoleculePanel(MoleculePage),
+    /// The conversation panel — the orb's destination inside ANY conversation, whatever its size (docs/conversations.md Phase 1). Mirrors the Settings screen: same layout, nav rail with pages, scrolling content. The open conversation rides `active_conversation`; the rail's pinned Back returns to it (from a Person page, back to Bonds).
+    ConversationPanel(ConversationPage),
 
     /// Active P2P conversation (legacy - may remove)
     Connected { peer_handle: String },
@@ -116,48 +114,22 @@ impl SettingsPage {
     }
 }
 
-/// Pages of the per-contact panel — the Settings screen's structure, contact-scoped.
+/// Pages of the conversation panel — one set for every conversation at any size (docs/conversations.md Phase 1).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ContactPage {
-    /// Avatar + everything they've shared with us + identity/trust detail (pinned genesis, their fleet, the loud superseded/ended states).
-    About,
-    /// The conversation in numbers — counts, span, delivery, history/chain/connection state. These rows should CONVERGE across our fleet devices; divergence is a sync bug made visible.
-    Stats,
-    /// Actions on the relationship: Boot (remove + fleet-wide tombstone; ostracism, not erasure). Petname edit and friends land here later.
-    Manage,
-}
-
-impl ContactPage {
-    /// All pages in rail order.
-    pub const ALL: [ContactPage; 3] = [ContactPage::About, ContactPage::Stats, ContactPage::Manage];
-
-    /// Human-readable rail label for this page.
-    pub fn label(self) -> &'static str {
-        match self {
-            ContactPage::About => "About",
-            ContactPage::Stats => "Between you",
-            ContactPage::Manage => "Manage",
-        }
-    }
-}
-
-/// Pages of the per-group panel (docs/molecules.md §10.5) — the contact panel's structure, group-scoped. Two pages since 2026-10-24 (Nick: "only have manage and bonds").
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MoleculePage {
-    /// Title (editable by anyone — a roster record), the history policy and era, mute, Leave.
-    Manage,
-    /// Everyone in it and everyone you could bring in, as a contacts-style list with a checkbox each; edits go out when you leave the page.
+pub enum ConversationPage {
+    /// Everyone in it and everyone you could bring in, as a contacts-style list with a checkbox each; tapping a member opens their Person page. Invite edits go out when you leave the page.
     Bonds,
+    /// The conversation in numbers — counts, span, delivery, history, the key ladder, connection. These rows should CONVERGE across our fleet devices; divergence is a sync bug made visible.
+    Stats,
+    /// The title, the history policy and era, mute, clearing, and leaving.
+    Manage,
+    /// One person in it (drilled into from Bonds, never on the rail): their avatar, what they share with us, their identity, and the friendship's own actions.
+    Person([u8; 32]),
 }
 
-impl MoleculePage {
-    pub const ALL: [MoleculePage; 2] = [MoleculePage::Manage, MoleculePage::Bonds];
-    pub fn label(self) -> &'static str {
-        match self {
-            MoleculePage::Manage => "Manage",
-            MoleculePage::Bonds => "Bonds",
-        }
-    }
+impl ConversationPage {
+    /// The rail's pages, in order.
+    pub const RAIL: [ConversationPage; 3] = [ConversationPage::Bonds, ConversationPage::Stats, ConversationPage::Manage];
 }
 
 /// Sub-states for the launch screen

@@ -6,7 +6,7 @@
 // Tiếng Việt không đánh dấu số nhiều bằng hình thái từ: ở đâu tiếng Anh tách nhánh một/nhiều thì ở đây chỉ còn một dạng, còn lời gọi fmt_num vẫn giữ nguyên như en.rs.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Vỏ bọc có dấu cho những giá trị hiếm hoi mang dấu (mã thoát của cầu nối); chữ số thập nhị phân không có dấu, dấu trừ đi trước.
@@ -56,12 +56,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Ngôn ngữ",
             SettingsPage::Dozenal => "Cơ số",
             SettingsPage::About => "Giới thiệu",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Giới thiệu",
-            ContactPage::Stats => "Giữa hai người",
-            ContactPage::Manage => "Quản lý",
         }
         .into(),
         // ---- wave screen ----
@@ -301,12 +295,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "đang xóa\u{2026}".into(),
         Msg::StopPill => "dừng".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "cuộc trò chuyện ghi chú cho chính mình của bạn".into(),
         Msg::NameNotShared => "tên: chưa chia sẻ".into(),
         Msg::NameShared(name) => format!("tên: \u{201c}{name}\u{201d} (tên họ công bố)").into(),
         Msg::AvatarNotShared => "avatar: chưa chia sẻ".into(),
         Msg::AvatarShared => "avatar: đã chia sẻ với bạn".into(),
-        Msg::SelfNoCeremony => "không nghi thức, không chuỗi \u{2014} các dòng đi bằng khóa đội của bạn".into(),
         Msg::ReclaimedStranger => "\u{26a0} cái tên này đã bị người khác nhận lại \u{2014} đang hiện ra một người lạ".into(),
         Msg::IdentityEndedByOwner => "danh tính do chính chủ chấm dứt".into(),
         Msg::IdentityNotFolded => "danh tính chưa gấp xong (lần gặp đầu vẫn đang lắng xuống)".into(),
@@ -319,10 +311,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "luôn liên lạc được (đây chính là bạn)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} tin nhắn \u{00b7} {} đã gửi \u{00b7} {} đã nhận", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "những dòng này phải khớp trên mọi thiết bị của bạn".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "một thiết bị trong đội chỉ rời đi theo yêu cầu của chính nó \u{2014} xem Cài đặt \u{2192} Đội".into(),
         Msg::BootPill { armed } => if armed { "Chạm lần nữa \u{2014} đuổi họ" } else { "Đuổi" }.into(),
-        Msg::BindIntoMolecule => "Liên kết vào một phân tử".into(),
         Msg::FilterAll => "Tất cả".into(),
         Msg::FilterInvitations => "Lời mời".into(),
         Msg::InvitedWaiting { names } => format!("đã mời: {} · đang chờ", names).into(),
@@ -331,11 +322,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "sẽ mời".into(),
         Msg::BondWillWithdraw => "lời mời sẽ bị rút lại".into(),
         Msg::AtomLabel => "nguyên tử".into(),
-        Msg::CreateMoleculePill => "Tạo một phân tử!".into(),
-        Msg::CreateMoleculeNote => "Chọn người để liên kết. Ngay khi ai đó liên kết, nguyên tử này là một phân tử.".into(),
         Msg::NewAtom => "Nguyên tử mới".into(),
-        Msg::AtomTitlePrompt => "Tên nguyên tử".into(),
-        Msg::FoundAtomPill => "Lập".into(),
         Msg::HistoryFromGenesis => "Người mới thấy tất cả".into(),
         Msg::HistoryFromJoin => "Người mới thấy từ lúc liên kết".into(),
         Msg::JoiningStatus => "đang liên kết\u{2026}".into(),
@@ -343,10 +330,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "bạn đã rời".into(),
         Msg::PendingMember => "Đang chờ\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Tin nhắn phân tử sẽ có trong bản dựng tới".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Liên kết", crate::ui::state::MoleculePage::Manage => "Quản lý" }.into(),
-        Msg::Members => "Thành viên".into(),
-        Msg::MemberStanding => "đã liên kết".into(),
-        Msg::MemberDeparted => "đã rời".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Liên kết",
+            crate::ui::state::ConversationPage::Stats => "Bằng con số",
+            crate::ui::state::ConversationPage::Manage => "Quản lý",
+            crate::ui::state::ConversationPage::Person(_) => "Giới thiệu",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} trên {} trực tuyến", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Đang chờ\u{2026}".into(),
         Msg::YouLabel => "bạn".into(),
         Msg::EraIndex { n } => format!("kỷ nguyên {}", n).into(),
@@ -610,7 +601,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Thêm một trường tự đặt".into(),
         Msg::YouIdentity => "Danh tính".into(),
-        Msg::YouNote => "Handle của bạn CHÍNH LÀ danh tính của bạn — bạn không bắt buộc phải điền gì ở đây.".into(),
         Msg::ChangeAvatar => "Đổi avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Kéo thả một tấm ảnh vào cửa sổ Photon".into(),
         Msg::ProfileSaved => "Đã lưu hồ sơ \u{221a}".into(),
@@ -665,7 +655,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Mở".into(),
         Msg::ViewerBack => "\u{2039} Quay lại".into(),
         Msg::ViewerDecoding => "đang giải mã\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} mất {loss} trên {} \u{00B7} đệm {buf}", fmt_num(256)).into(),

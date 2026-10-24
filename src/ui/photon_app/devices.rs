@@ -1351,7 +1351,7 @@ impl PhotonApp {
                         self.contact_boot_armed = false;
                         if matches!(
                             self.state,
-                            AppState::Conversation | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
+                            AppState::Conversation | AppState::ConversationPanel(_)
                         ) {
                             self.state = AppState::Ready;
                         }

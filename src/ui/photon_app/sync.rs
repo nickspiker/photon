@@ -3,13 +3,11 @@
 use super::*;
 
 impl PhotonApp {
-    /// Boot the open contact — THE first roster-tombstone writer (the receive side has honoured tombstones since the roster CRDT shipped; nothing ever minted one until now). Ostracism, not erasure: WE drop the contact + chains locally and push a sticky tombstone so every device of OUR fleet drops it too — the other side is never signalled and keeps its own records (device-sovereignty doctrine). A tombstone outranks any concurrent re-add by LWW stamp, and re-adding later mints a fresh entry with a newer stamp, so boot→re-add works.
-    pub(super) fn boot_active_contact(&mut self) {
-        let Some(ci) = self.active_contact() else {
-            return;
-        };
-        if self.contacts[ci].is_sibling {
-            return; // device removal is chain consent (self-departure), never a contact boot
+    /// Boot a person — THE first roster-tombstone writer (the receive side has honoured tombstones since the roster CRDT shipped; nothing ever minted one until now). Ostracism, not erasure: WE drop the contact + chains locally and push a sticky tombstone so every device of OUR fleet drops it too — the other side is never signalled and keeps its own records (device-sovereignty doctrine). A tombstone outranks any concurrent re-add by LWW stamp, and re-adding later mints a fresh entry with a newer stamp, so boot→re-add works.
+    /// Reached from a Person page in any conversation (docs/conversations.md Phase 1); the caller decides where the screen goes next. Returns whether anyone was booted.
+    pub(super) fn boot_contact(&mut self, ci: usize) -> bool {
+        if self.contacts.get(ci).is_none_or(|c| c.is_sibling) {
+            return false; // device removal is chain consent (self-departure), never a contact boot
         }
         // The booted ledger FIRST: this device remembers the boot, re-emits it on every roster push, and refuses every path that could mint the contact again (manage.rs). The one-shot push below is only the fast path.
         let boot_at = vsf::eagle_time_oscillations();
@@ -106,10 +104,19 @@ impl PhotonApp {
                 }
             });
         }
-        self.set_active_conversation(None);
         self.reseed_contact_pubkeys();
         self.update_sync_records();
-        self.state = AppState::Ready;
+        true
+    }
+
+    /// Boot the open conversation's contact and leave it — the conversation it was is gone with the friendship (until the pair conversation outlives its bond, docs/conversations.md Phase 3).
+    pub(super) fn boot_active_contact(&mut self) {
+        if let Some(ci) = self.active_contact() {
+            if self.boot_contact(ci) {
+                self.set_active_conversation(None);
+                self.state = AppState::Ready;
+            }
+        }
     }
 
     /// A NEW own avatar just landed (picked, or recovered after a wipe): push it onto every zero-remote row NOW. Edge-driven — `settle_self_display` only fills an EMPTY slot, deliberately, because noticing staleness there would mean comparing full pixel buffers every pass; the install edge is the one place that KNOWS the picture changed (live 2026-08-02: a new avatar picked, notes-to-self kept the old face).

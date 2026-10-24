@@ -4,7 +4,7 @@
 // Keluaran fmt_num jatuh ke muka Oxanium +glyphs dari keluarga utama mana pun (fluor menamainya paling depan dalam rantai cadangannya) — tidak ada tempat gambar yang perlu meminta muka itu.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Pembungkus sadar-tanda untuk nilai bertanda yang jarang muncul (kode keluar jembatan); digit duodesimal tidak bertanda, tanda minus berjalan di depan.
@@ -54,12 +54,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Bahasa",
             SettingsPage::Dozenal => "Basis",
             SettingsPage::About => "Tentang",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Tentang",
-            ContactPage::Stats => "Antara kalian",
-            ContactPage::Manage => "Kelola",
         }
         .into(),
         // ---- wave screen ----
@@ -301,12 +295,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "menghapus\u{2026}".into(),
         Msg::StopPill => "hentikan".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "percakapan catatanmu sendiri".into(),
         Msg::NameNotShared => "nama: belum dibagikan".into(),
         Msg::NameShared(name) => format!("nama: \u{201c}{name}\u{201d} (nama yang dia terbitkan)").into(),
         Msg::AvatarNotShared => "avatar: belum dibagikan".into(),
         Msg::AvatarShared => "avatar: dibagikan kepadamu".into(),
-        Msg::SelfNoCeremony => "tanpa upacara, tanpa rantai \u{2014} barisnya menumpang kunci armadamu".into(),
         Msg::ReclaimedStranger => "\u{26a0} nama ini diklaim ulang oleh orang lain \u{2014} yang tampil di sini orang asing".into(),
         Msg::IdentityEndedByOwner => "identitas diakhiri oleh pemiliknya".into(),
         Msg::IdentityNotFolded => "identitasnya belum terlipat (kontak pertama masih mengendap)".into(),
@@ -319,10 +311,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "selalu terjangkau (ini kamu sendiri)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} pesan \u{00b7} {} terkirim \u{00b7} {} diterima", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "baris ini seharusnya sama di setiap perangkatmu".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "perangkat armada keluar atas permintaannya sendiri \u{2014} lihat Pengaturan \u{2192} Armada".into(),
         Msg::BootPill { armed } => if armed { "Ketuk lagi \u{2014} usir dia" } else { "Usir" }.into(),
-        Msg::BindIntoMolecule => "Ikat ke molekul".into(),
         Msg::FilterAll => "Semua".into(),
         Msg::FilterInvitations => "Undangan".into(),
         Msg::InvitedWaiting { names } => format!("diundang: {} · menunggu", names).into(),
@@ -331,11 +322,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "akan diundang".into(),
         Msg::BondWillWithdraw => "undangan akan ditarik".into(),
         Msg::AtomLabel => "atom".into(),
-        Msg::CreateMoleculePill => "Buat molekul!".into(),
-        Msg::CreateMoleculeNote => "Pilih siapa yang diikat. Begitu seseorang terikat, atom ini menjadi molekul.".into(),
         Msg::NewAtom => "Atom baru".into(),
-        Msg::AtomTitlePrompt => "Nama atom".into(),
-        Msg::FoundAtomPill => "Dirikan".into(),
         Msg::HistoryFromGenesis => "Pendatang baru melihat semuanya".into(),
         Msg::HistoryFromJoin => "Pendatang baru melihat sejak terikat".into(),
         Msg::JoiningStatus => "mengikat\u{2026}".into(),
@@ -343,10 +330,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "kamu keluar".into(),
         Msg::PendingMember => "Menunggu\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Pesan molekul hadir di rilis berikutnya".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Ikatan", crate::ui::state::MoleculePage::Manage => "Kelola" }.into(),
-        Msg::Members => "Anggota".into(),
-        Msg::MemberStanding => "terikat".into(),
-        Msg::MemberDeparted => "keluar".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Ikatan",
+            crate::ui::state::ConversationPage::Stats => "Dalam angka",
+            crate::ui::state::ConversationPage::Manage => "Kelola",
+            crate::ui::state::ConversationPage::Person(_) => "Tentang",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} dari {} daring", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Menunggu\u{2026}".into(),
         Msg::YouLabel => "kamu".into(),
         Msg::EraIndex { n } => format!("era {}", n).into(),
@@ -610,7 +601,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Tambah kolom kustom".into(),
         Msg::YouIdentity => "Identitas".into(),
-        Msg::YouNote => "Handle-mu ADALAH identitasmu — kamu tidak harus mengisi apa pun di sini.".into(),
         Msg::ChangeAvatar => "Ganti avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Seret & lepas sebuah gambar ke jendela Photon".into(),
         Msg::ProfileSaved => "Profil tersimpan \u{221a}".into(),
@@ -665,7 +655,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Buka".into(),
         Msg::ViewerBack => "\u{2039} Kembali".into(),
         Msg::ViewerDecoding => "mendekode\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} hilang {loss} dari {} \u{00B7} buffer {buf}", fmt_num(256)).into(),

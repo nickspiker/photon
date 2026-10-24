@@ -6,7 +6,7 @@
 // Словник кованих метафор: wave = хвиля, beam = промінь, braid = коса, lane = смуга, fold = згортання, vault = сейф (а storage = сховище), fleet = флот, chain = ланцюг, attest = засвідчити, revoke = відкликати, custodian = зберігач, brand = тавро.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Обгортка зі знаком для рідкісного знакового значення (коди виходу моста); дюжинні цифри знаку не мають, мінус їде попереду.
@@ -67,12 +67,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Мова",
             SettingsPage::Dozenal => "Основа",
             SettingsPage::About => "Про",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Про",
-            ContactPage::Stats => "Між вами",
-            ContactPage::Manage => "Керування",
         }
         .into(),
         // ---- wave screen ----
@@ -315,12 +309,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "видаляю\u{2026}".into(),
         Msg::StopPill => "зупинити".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "твоя власна розмова з нотатками собі".into(),
         Msg::NameNotShared => "ім'я: ще не поділилися".into(),
         Msg::NameShared(name) => format!("ім'я: \u{201c}{name}\u{201d} (їхнє опубліковане ім'я)").into(),
         Msg::AvatarNotShared => "аватар: ще не поділилися".into(),
         Msg::AvatarShared => "аватар: з тобою поділилися".into(),
-        Msg::SelfNoCeremony => "без церемонії, без ланцюга \u{2014} рядки їдуть на ключі твого флоту".into(),
         Msg::ReclaimedStranger => "\u{26a0} це ім'я перебрав хтось інший \u{2014} перед тобою чужа людина".into(),
         Msg::IdentityEndedByOwner => "ідентичність завершив її власник".into(),
         Msg::IdentityNotFolded => "ідентичність ще не згорнуто (перший контакт іще осідає)".into(),
@@ -333,10 +325,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "завжди на зв'язку (це ти)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} надіслано \u{00b7} {} отримано", fmt_mag(total as u64), plural(total as u64, "повідомлення", "повідомлення", "повідомлень"), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ці рядки мають збігатися на кожному твоєму пристрої".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "пристрій флоту йде за власним проханням \u{2014} дивись Налаштування \u{2192} Флот".into(),
         Msg::BootPill { armed } => if armed { "Торкнись ще раз \u{2014} вигнати" } else { "Вигнати" }.into(),
-        Msg::BindIntoMolecule => "Зв'язати в молекулу".into(),
         Msg::FilterAll => "Усе".into(),
         Msg::FilterInvitations => "Запрошення".into(),
         Msg::InvitedWaiting { names } => format!("запрошені: {} · чекаємо", names).into(),
@@ -345,11 +336,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "буде запрошений".into(),
         Msg::BondWillWithdraw => "запрошення буде відкликано".into(),
         Msg::AtomLabel => "атом".into(),
-        Msg::CreateMoleculePill => "Створити молекулу!".into(),
-        Msg::CreateMoleculeNote => "Обери, кого зв'язати. Щойно хтось зв'яжеться, цей атом — молекула.".into(),
         Msg::NewAtom => "Новий атом".into(),
-        Msg::AtomTitlePrompt => "Назва атома".into(),
-        Msg::FoundAtomPill => "Заснувати".into(),
         Msg::HistoryFromGenesis => "Новачки бачать усе".into(),
         Msg::HistoryFromJoin => "Новачки бачать від моменту зв'язку".into(),
         Msg::JoiningStatus => "зв'язуюсь\u{2026}".into(),
@@ -357,10 +344,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "ти вийшов".into(),
         Msg::PendingMember => "Очікує\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Повідомлення в молекулах з'являться в наступній збірці".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Зв’язки", crate::ui::state::MoleculePage::Manage => "Керування" }.into(),
-        Msg::Members => "Учасники".into(),
-        Msg::MemberStanding => "зв'язаний".into(),
-        Msg::MemberDeparted => "вийшов".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Зв’язки",
+            crate::ui::state::ConversationPage::Stats => "У цифрах",
+            crate::ui::state::ConversationPage::Manage => "Керування",
+            crate::ui::state::ConversationPage::Person(_) => "Про",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} з {} у мережі", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Очікує\u{2026}".into(),
         Msg::YouLabel => "ти".into(),
         Msg::EraIndex { n } => format!("ера {}", n).into(),
@@ -625,7 +616,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Додати власне поле".into(),
         Msg::YouIdentity => "Ідентичність".into(),
-        Msg::YouNote => "Твій handle І Є твоя ідентичність — нічого з цього заповнювати не треба.".into(),
         Msg::ChangeAvatar => "Змінити аватар\u{2026}".into(),
         Msg::DragDropAvatar => "Перетягни й кинь зображення на вікно Photon".into(),
         Msg::ProfileSaved => "Профіль збережено \u{221a}".into(),
@@ -680,7 +670,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Відкрити".into(),
         Msg::ViewerBack => "\u{2039} Назад".into(),
         Msg::ViewerDecoding => "розбираю\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} втрати {loss} з {} \u{00B7} буфер {buf}", fmt_num(256)).into(),

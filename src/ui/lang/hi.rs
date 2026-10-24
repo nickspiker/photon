@@ -6,7 +6,7 @@
 // संबोधन तुम/तुम्हारा है, और क्रियाएँ जान-बूझकर हुक्मिया ("लिखो") या अकर्तृक ("भेजा जा रहा है") रखी गई हैं — हिन्दी क्रिया कर्ता के लिंग से सहमति करती है, और न पढ़ने वाले का लिंग पता है न किसी interpolate हुए नाम का।
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // चिह्न-सजग लपेट, उस विरले मान के लिए जिस पर चिह्न होता है (पुल के exit कोड); दर्जनी अंक बिना चिह्न के होते हैं, माइनस आगे चलता है।
@@ -56,12 +56,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "भाषा",
             SettingsPage::Dozenal => "गिनती",
             SettingsPage::About => "बारे में",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "बारे में",
-            ContactPage::Stats => "तुम दोनों के बीच",
-            ContactPage::Manage => "इंतज़ाम",
         }
         .into(),
         // ---- wave screen ----
@@ -308,12 +302,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "मिटाया जा रहा है\u{2026}".into(),
         Msg::StopPill => "रोको".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "अपने लिए लिखे नोट की अपनी ही बातचीत".into(),
         Msg::NameNotShared => "नाम: अभी साझा नहीं".into(),
         Msg::NameShared(name) => format!("नाम: \u{201c}{name}\u{201d} (उनका प्रकाशित नाम)").into(),
         Msg::AvatarNotShared => "अवतार: अभी साझा नहीं".into(),
         Msg::AvatarShared => "अवतार: तुम्हारे साथ साझा".into(),
-        Msg::SelfNoCeremony => "कोई रस्म नहीं, कोई ज़ंजीर नहीं \u{2014} पंक्तियाँ तुम्हारे बेड़े की चाबी पर चलती हैं".into(),
         Msg::ReclaimedStranger => "\u{26a0} यह नाम किसी और ने दोबारा ले लिया \u{2014} यहाँ जो दिख रहा है वह अजनबी है".into(),
         Msg::IdentityEndedByOwner => "पहचान उसके मालिक ने ख़त्म कर दी".into(),
         Msg::IdentityNotFolded => "पहचान अभी तह नहीं हुई (पहला संपर्क अभी जम रहा है)".into(),
@@ -327,10 +319,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // "संदेश" सीधे बहुवचन में नहीं बदलता, इसलिए en.rs वाली शाखा यहाँ नहीं चाहिए।
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} संदेश \u{00b7} {} भेजे \u{00b7} {} मिले", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ये पंक्तियाँ तुम्हारे हर डिवाइस पर एक जैसी होनी चाहिए".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "बेड़े का डिवाइस अपनी ही दरख़्वास्त पर जाता है \u{2014} देखो सेटिंग्स \u{2192} बेड़ा".into(),
         Msg::BootPill { armed } => if armed { "दोबारा टैप \u{2014} बाहर करो" } else { "बाहर करो" }.into(),
-        Msg::BindIntoMolecule => "किसी अणु में बाँधें".into(),
         Msg::FilterAll => "सब".into(),
         Msg::FilterInvitations => "निमंत्रण".into(),
         Msg::InvitedWaiting { names } => format!("आमंत्रित: {} · प्रतीक्षा", names).into(),
@@ -339,11 +330,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "आमंत्रित होगा".into(),
         Msg::BondWillWithdraw => "निमंत्रण वापस होगा".into(),
         Msg::AtomLabel => "परमाणु".into(),
-        Msg::CreateMoleculePill => "अणु बनाओ!".into(),
-        Msg::CreateMoleculeNote => "चुनो किसे बाँधना है। जैसे ही कोई बँधता है, यह परमाणु अणु बन जाता है।".into(),
         Msg::NewAtom => "नया परमाणु".into(),
-        Msg::AtomTitlePrompt => "परमाणु का नाम".into(),
-        Msg::FoundAtomPill => "बनाएँ".into(),
         Msg::HistoryFromGenesis => "नए लोग सब देखते हैं".into(),
         Msg::HistoryFromJoin => "नए लोग बँधने के बाद से देखते हैं".into(),
         Msg::JoiningStatus => "बँध रहे हैं\u{2026}".into(),
@@ -351,10 +338,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "तुम निकल गए".into(),
         Msg::PendingMember => "प्रतीक्षा में\u{2026}".into(),
         Msg::MoleculeComposeSoon => "अणु संदेश अगले बिल्ड में आएँगे".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "बंधन", crate::ui::state::MoleculePage::Manage => "प्रबंध" }.into(),
-        Msg::Members => "सदस्य".into(),
-        Msg::MemberStanding => "बँधे हुए".into(),
-        Msg::MemberDeparted => "निकल गए".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "बंधन",
+            crate::ui::state::ConversationPage::Stats => "आँकड़ों में",
+            crate::ui::state::ConversationPage::Manage => "इंतज़ाम",
+            crate::ui::state::ConversationPage::Person(_) => "बारे में",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} में से {} ऑनलाइन", fmt_mag(total as u64), fmt_mag(online as u64)).into(),
         Msg::MemberPendingName => "प्रतीक्षा में\u{2026}".into(),
         Msg::YouLabel => "तुम".into(),
         Msg::EraIndex { n } => format!("युग {}", n).into(),
@@ -621,7 +612,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "अपना कोई ख़ाना जोड़ो".into(),
         Msg::YouIdentity => "पहचान".into(),
-        Msg::YouNote => "तुम्हारा हैंडल ही तुम्हारी पहचान है — इनमें से कुछ भी भरना ज़रूरी नहीं।".into(),
         Msg::ChangeAvatar => "अवतार बदलो\u{2026}".into(),
         Msg::DragDropAvatar => "Photon की खिड़की पर कोई तस्वीर खींचकर छोड़ो".into(),
         Msg::ProfileSaved => "प्रोफ़ाइल सेव हो गई \u{221a}".into(),
@@ -676,7 +666,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "खोलो".into(),
         Msg::ViewerBack => "\u{2039} वापस".into(),
         Msg::ViewerDecoding => "डिकोड हो रहा है\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} {} में से {loss} खोए \u{00B7} बफ़र {buf}", fmt_num(256)).into(),

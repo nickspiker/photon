@@ -543,30 +543,9 @@ impl PhotonApp {
                 self.state = AppState::Settings(SettingsPage::About);
                 true
             }
-            // In a Conversation the orb wears the friend's avatar — it opens the friend panel (same doctrine: the orb is a panel entry, never a direct action).
-            AppState::Conversation => {
-                // A GROUP conversation's orb opens the group panel (docs/molecules.md §10.5).
-                if self.active_contact().is_none() {
-                    if let Some(gi) = self.active_molecule() {
-                        self.change_focus(None);
-                        self.molecule_leave_armed = false;
-                        self.settings_content_scroll = 0.0;
-                        let title = self.molecule_rosters[gi].1.title();
-                        if let Some(tb) = self.molecule_title_textbox.as_mut() {
-                            tb.set_text(&title, text);
-                        }
-                        self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::Manage);
-                        return true;
-                    }
-                    return false;
-                }
-                self.change_focus(None);
-                self.contact_boot_armed = false;
-                self.molecule_pick_open = false;
-                self.state = AppState::ContactPanel(ContactPage::About);
-                true
-            }
-            // Settings / AddDevice / ContactPanel fall thru: navigation off those screens is a dedicated control (back button), never the orb.
+            // In a Conversation the orb opens the conversation's panel — the same panel at every size (docs/conversations.md Phase 1; the orb is a panel entry, never a direct action).
+            AppState::Conversation => self.open_conversation_panel(text),
+            // Settings / AddDevice / the conversation panel fall thru: navigation off those screens is a dedicated control (back button), never the orb.
             _ => false,
         }
     }

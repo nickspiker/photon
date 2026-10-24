@@ -37,7 +37,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::Update => "Update".into(),
         // ---- page names ----
         Msg::PageName(p) => p.label().into(),
-        Msg::ContactPageName(p) => p.label().into(),
         // ---- wave screen ----
         Msg::SpeakerToggleOn => "\u{1F50A} On".into(),
         Msg::SpeakerToggleOff => "\u{1F50A} Speaker".into(),
@@ -393,12 +392,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "deleting\u{2026}".into(),
         Msg::StopPill => "stop".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "your own notes-to-self conversation".into(),
         Msg::NameNotShared => "name: not shared yet".into(),
         Msg::NameShared(name) => format!("name: \u{201c}{name}\u{201d} (their published name)").into(),
         Msg::AvatarNotShared => "avatar: not shared yet".into(),
         Msg::AvatarShared => "avatar: shared with you".into(),
-        Msg::SelfNoCeremony => "no ceremony, no chain \u{2014} rows ride your fleet key".into(),
         Msg::ReclaimedStranger => "\u{26a0} this name was re-claimed by someone else \u{2014} rendering a stranger".into(),
         Msg::IdentityEndedByOwner => "identity ended by its owner".into(),
         Msg::IdentityNotFolded => "identity not yet folded (first contact still settling)".into(),
@@ -412,10 +409,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} sent \u{00b7} {} received", fmt_mag(total as u64), if total == 1 { "message" } else { "messages" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "these rows should match on every one of your devices".into(),
         Msg::ClutchWaitingTheirAdd => "waiting for them to add you".into(),
-        Msg::OwnNotesRemoveNote => "removes your notes from every device; add your own handle again any time to start a new one".into(),
         Msg::SiblingSignsItselfOut => "a fleet device leaves by its own request \u{2014} see Settings \u{2192} Fleet".into(),
         Msg::BootPill { armed } => if armed { "Tap again \u{2014} boot them" } else { "Boot" }.into(),
-        Msg::BindIntoMolecule => "Bind into a molecule".into(),
         Msg::FilterAll => "All".into(),
         Msg::FilterInvitations => "Invitations".into(),
         Msg::InvitedWaiting { names } => format!("invited: {} · waiting", names).into(),
@@ -424,11 +419,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "will invite".into(),
         Msg::BondWillWithdraw => "invite will be withdrawn".into(),
         Msg::AtomLabel => "atom".into(),
-        Msg::CreateMoleculePill => "Create a molecule!".into(),
-        Msg::CreateMoleculeNote => "Pick who to bind. The moment they bind, this atom is a molecule.".into(),
         Msg::NewAtom => "New atom".into(),
-        Msg::AtomTitlePrompt => "Atom title".into(),
-        Msg::FoundAtomPill => "Found it".into(),
         Msg::HistoryFromGenesis => "Newcomers see everything".into(),
         Msg::HistoryFromJoin => "Newcomers see from when they bind".into(),
         Msg::JoiningStatus => "binding\u{2026}".into(),
@@ -436,10 +427,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "you left".into(),
         Msg::PendingMember => "Pending\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Molecule messages arrive in the next build".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Bonds", crate::ui::state::MoleculePage::Manage => "Manage" }.into(),
-        Msg::Members => "Members".into(),
-        Msg::MemberStanding => "bound".into(),
-        Msg::MemberDeparted => "left".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Bonds",
+            crate::ui::state::ConversationPage::Stats => "In numbers",
+            crate::ui::state::ConversationPage::Manage => "Manage",
+            crate::ui::state::ConversationPage::Person(_) => "About",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} of {} online", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Pending\u{2026}".into(),
         Msg::YouLabel => "you".into(),
         Msg::EraIndex { n } => format!("era {}", n).into(),
@@ -713,7 +708,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Add a custom field".into(),
         Msg::YouIdentity => "Identity".into(),
-        Msg::YouNote => "Your handle IS your identity — you don't have to set any of this.".into(),
         Msg::ChangeAvatar => "Change avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Drag & drop an image onto the Photon window".into(),
         Msg::ProfileSaved => "Profile saved \u{221a}".into(),
@@ -768,7 +762,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Open".into(),
         Msg::ViewerBack => "\u{2039} Back".into(),
         Msg::ViewerDecoding => "decoding\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} loss {loss} of {} \u{00B7} buffer {buf}", fmt_num(256)).into(),

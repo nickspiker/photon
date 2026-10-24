@@ -6,7 +6,7 @@
 // Русский требует падежей и трёхформенного числа, поэтому там, где вариант несёт счёт, внутри него стоит настоящий match по count — это и есть причина, по которой каталог написан кодом, а не лежит в таблице.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Обёртка со знаком для редкого знакового значения (коды выхода моста); дюжинные цифры беззнаковые, минус едет впереди.
@@ -59,12 +59,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         }
         .into(),
         // «Между вами» — это множественное «вы» о двух людях, а не вежливое обращение: тыканье сохраняется.
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "О человеке",
-            ContactPage::Stats => "Между вами",
-            ContactPage::Manage => "Управление",
-        }
-        .into(),
         // ---- wave screen ----
         Msg::SpeakerToggleOn => "\u{1F50A} Вкл".into(),
         Msg::SpeakerToggleOff => "\u{1F50A} Динамик".into(),
@@ -323,12 +317,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "удаляем\u{2026}".into(),
         Msg::StopPill => "стоп".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "твой собственный разговор с заметками себе".into(),
         Msg::NameNotShared => "имя: пока не раскрыто".into(),
         Msg::NameShared(name) => format!("имя: \u{201c}{name}\u{201d} (опубликованное имя этого человека)").into(),
         Msg::AvatarNotShared => "аватар: пока не раскрыт".into(),
         Msg::AvatarShared => "аватар: раскрыт тебе".into(),
-        Msg::SelfNoCeremony => "ни церемонии, ни цепочки \u{2014} строки едут на ключе твоего флота".into(),
         Msg::ReclaimedStranger => "\u{26a0} это имя заново занял другой человек \u{2014} на экране незнакомец".into(),
         Msg::IdentityEndedByOwner => "личность завершена её владельцем".into(),
         Msg::IdentityNotFolded => "личность ещё не свёрнута (первый контакт ещё улаживается)".into(),
@@ -344,10 +336,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             format!("{} {word} \u{00b7} отправлено {} \u{00b7} получено {}", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into()
         }
         Msg::RowsShouldMatch => "эти строки должны совпадать на каждом твоём устройстве".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "устройство флота уходит по собственному запросу \u{2014} см. Настройки \u{2192} Флот".into(),
         Msg::BootPill { armed } => if armed { "Коснись ещё раз \u{2014} выгнать" } else { "Выгнать" }.into(),
-        Msg::BindIntoMolecule => "Связать в молекулу".into(),
         Msg::FilterAll => "Всё".into(),
         Msg::FilterInvitations => "Приглашения".into(),
         Msg::InvitedWaiting { names } => format!("приглашены: {} · ждём", names).into(),
@@ -356,11 +347,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "будет приглашён".into(),
         Msg::BondWillWithdraw => "приглашение будет отозвано".into(),
         Msg::AtomLabel => "атом".into(),
-        Msg::CreateMoleculePill => "Создать молекулу!".into(),
-        Msg::CreateMoleculeNote => "Выбери, кого связать. Как только кто-то свяжется, этот атом — молекула.".into(),
         Msg::NewAtom => "Новый атом".into(),
-        Msg::AtomTitlePrompt => "Название атома".into(),
-        Msg::FoundAtomPill => "Основать".into(),
         Msg::HistoryFromGenesis => "Новички видят всё".into(),
         Msg::HistoryFromJoin => "Новички видят с момента связи".into(),
         Msg::JoiningStatus => "связываюсь\u{2026}".into(),
@@ -368,10 +355,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "ты вышел".into(),
         Msg::PendingMember => "Ожидание\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Сообщения в молекулах появятся в следующей сборке".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Связи", crate::ui::state::MoleculePage::Manage => "Управление" }.into(),
-        Msg::Members => "Участники".into(),
-        Msg::MemberStanding => "связан".into(),
-        Msg::MemberDeparted => "вышел".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Связи",
+            crate::ui::state::ConversationPage::Stats => "В цифрах",
+            crate::ui::state::ConversationPage::Manage => "Управление",
+            crate::ui::state::ConversationPage::Person(_) => "О человеке",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} из {} в сети", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Ожидание\u{2026}".into(),
         Msg::YouLabel => "ты".into(),
         Msg::EraIndex { n } => format!("эра {}", n).into(),
@@ -649,7 +640,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Добавить своё поле".into(),
         Msg::YouIdentity => "Личность".into(),
-        Msg::YouNote => "Твой handle И ЕСТЬ твоя личность — заполнять всё это не обязательно.".into(),
         Msg::ChangeAvatar => "Сменить аватар\u{2026}".into(),
         Msg::DragDropAvatar => "Перетащи картинку на окно Photon".into(),
         Msg::ProfileSaved => "Профиль сохранён \u{221a}".into(),
@@ -705,7 +695,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Открыть".into(),
         Msg::ViewerBack => "\u{2039} Назад".into(),
         Msg::ViewerDecoding => "декодируем\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} потери {loss} из {} \u{00B7} буфер {buf}", fmt_num(256)).into(),

@@ -122,8 +122,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::Conversations) => "Settings:Conversations",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
-                AppState::ContactPanel(_) => "ContactPanel",
-                AppState::MoleculePanel(_) => "MoleculePanel",
+                AppState::ConversationPanel(_) => "ConversationPanel",
             },
             Vec::new(),
             false
@@ -215,7 +214,7 @@ impl PhotonApp {
             String::new()
         } else if matches!(
             self.state,
-            AppState::Conversation | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
+            AppState::Conversation | AppState::ConversationPanel(_)
         ) {
             active_ci
                 .and_then(|ci| self.contacts.get(ci))
@@ -379,20 +378,11 @@ impl PhotonApp {
                 self.settings_content_scroll = self.settings_content_extent;
             }
             (self.settings_rail_scroll, self.settings_content_scroll)
-        } else if let AppState::ContactPanel(cpage) = self.state {
-            // The contact panel rides the SAME scroll fields + extents machinery as settings (it's the structural mirror). Rail = pinned Back + 3 page rows; content rows are fixed per page (About carries the avatar block's extra height as virtual rows).
+        } else if let AppState::ConversationPanel(page) = self.state {
+            // The conversation panel rides the SAME scroll fields + extents machinery as settings (it's the structural mirror). Rail = pinned Back + the rail pages; content rows come from the one budget the render arm also reads (Bonds sized by the rows as last drawn).
             let sl = SettingsLayout::compute(&ctx.viewport);
-            self.settings_rail_extent = (sl.nav_row_h() * (ContactPage::ALL.len() as Coord + 1.0)
-                - sl.rail_inset().h)
-                .max(0.0); // (no scroll when it fits)
-            let n = if cpage == ContactPage::Manage { self.manage_page_rows() } else { contact_page_rows(cpage) };
-            self.settings_content_extent =
-                (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0); // (no scroll when it fits)
-            (self.settings_rail_scroll, self.settings_content_scroll)
-        } else if let AppState::MoleculePanel(gpage) = self.state {
-            let sl = SettingsLayout::compute(&ctx.viewport);
-            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::MoleculePage::ALL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0); // (no scroll when it fits)
-            let n = self.molecule_page_rows(gpage);
+            self.settings_rail_extent = (sl.nav_row_h() * (crate::ui::state::ConversationPage::RAIL.len() as Coord + 1.0) - sl.rail_inset().h).max(0.0); // (no scroll when it fits)
+            let n = conversation_page_rows(page, self.bond_rows.len());
             self.settings_content_extent = (sl.content_line_h() * n as Coord - sl.content_inset().h).max(0.0); // (no scroll when it fits)
             (self.settings_rail_scroll, self.settings_content_scroll)
         } else {
@@ -589,7 +579,7 @@ impl PhotonApp {
                                // Background texture origin + per-half scroll. On Settings the noise mirror-axis sits ON the rail|content divider (1/3 width), and each half scrolls with ITS pane — rail-scroll drives the left half, content-scroll the right — so the background tracks the scroll of whatever you're reading. Every other screen keeps the centred origin with both halves locked together (unified scroll).
         let (bg_split_x, bg_left_scroll, bg_right_scroll) = if matches!(
             self.state,
-            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
+            AppState::Settings(_) | AppState::ConversationPanel(_)
         ) {
             let sl = SettingsLayout::compute(&ctx.viewport);
             (
@@ -2336,607 +2326,108 @@ impl PhotonApp {
             // (The Security / Recovery posture meters that used to sit bottom-right were removed — the security posture belongs on a dedicated Security page, not as ambient bottom-strip dots that read as noise. identity_posture/posture_colour/POSTURE_PIPS stay defined for that page.)
         }
 
-        // Conversation screen — shows the selected contact's name, clutch state, and (eventually) messages.
-        // Contact panel — the Settings screen's exact structure, contact-scoped: same SettingsLayout, pinned-Back nav rail with page rows (About / Between you / Manage), hairline divider, scrolled natural-height content. Rides the SAME scroll fields/extents as settings.
-        if let AppState::ContactPanel(cpage) = self.state {
+        // THE CONVERSATION PANEL (docs/conversations.md Phase 1): ONE panel for every conversation at any size — the Settings screen's structure, conversation-scoped: same SettingsLayout, pinned-Back nav rail with Bonds / In numbers / Manage, hairline divider, scrolled natural-height content, and a Person page drilled into from Bonds. Rides the SAME scroll fields/extents as settings.
+        // The conversation's members and keys still come from one of two sources (a contact's pair, or a roster) until Phase 2 makes them one; everything below reads the merged view, so a two-member conversation and a twelve-member one draw thru the same rows.
+        if let AppState::ConversationPanel(page) = self.state {
+            use crate::ui::state::ConversationPage;
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            if let Some(ci) = active_ci {
+            if active_ci.is_some() || active_gi.is_some() {
                 // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches).
-                restamp_hit_rect(
-                    &mut chrome.hit_test_map,
-                    buf_w,
-                    buf_h,
-                    0,
-                    layout.rail.y as isize,
-                    buf_w as isize,
-                    buf_h as isize,
-                    HIT_NONE,
-                );
-
-                // Avatar cache at the About-page diameter, rebuilt BEFORE the immutable contact borrow.
+                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, layout.rail.y as isize, buf_w as isize, buf_h as isize, HIT_NONE);
+                // Our pid keys the colours below — a keyed colour, not a self-check. "Is this only me" is the participant count.
+                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+                let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
+                // The person a Person page shows, as a contact row when they are one of ours.
+                let person = if let ConversationPage::Person(p) = page { Some(p) } else { None };
+                let person_ci = person.and_then(|p| self.contacts.iter().position(|c| c.handle_hash == p && !c.is_sibling));
+                // Avatar cache at the Person-page diameter, rebuilt BEFORE the immutable borrows below.
                 let avatar_r = layout.unit * 2.0;
                 let diam = (avatar_r * 2.0) as usize;
-                if cpage == ContactPage::About
-                    && self.contacts[ci].avatar_pixels.is_some()
-                    && (self.contacts[ci].avatar_scaled.is_none()
-                        || self.contacts[ci].avatar_scaled_diameter != diam)
-                {
-                    let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
-                    let scaled = crate::ui::avatar_render::update_avatar_scaled(
-                        base,
-                        crate::ui::avatar::AVATAR_SIZE,
-                        diam,
-                    );
-                    self.contacts[ci].avatar_scaled = Some(scaled);
-                    self.contacts[ci].avatar_scaled_diameter = diam;
+                if let Some(ci) = person_ci {
+                    if self.contacts[ci].avatar_pixels.is_some() && (self.contacts[ci].avatar_scaled.is_none() || self.contacts[ci].avatar_scaled_diameter != diam) {
+                        let scaled = crate::ui::avatar_render::update_avatar_scaled(self.contacts[ci].avatar_pixels.as_ref().unwrap(), crate::ui::avatar::AVATAR_SIZE, diam);
+                        self.contacts[ci].avatar_scaled = Some(scaled);
+                        self.contacts[ci].avatar_scaled_diameter = diam;
+                    }
                 }
-                // The Manage page's row budget (grows with the group picker) — a method call, so it is bound before the `contact` borrow.
-                let manage_rows = contact_page_rows(ContactPage::Manage) + if self.molecule_pick_open { 1 + self.molecule_rosters.len().max(1) } else { 0 }; // with no groups the picker still draws its one "no groups yet" row
-                let contact = &self.contacts[ci];
-                // Our pid feeds the relationship digest below — a keyed colour, not a self-check. "Is this me" is the participant count.
-                let our_hh = self
-                    .session
-                    .as_ref()
-                    .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
-                    .unwrap_or([0u8; 32]);
-                let is_self = contact.remote_count(&our_hh) == 0;
-
-                // --- Header: the contact's name, centred on the rail|content divider — the panel's "Settings" slot. ---
-                let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-                let name_colour = if is_self {
-                    self_colour()
-                } else {
-                    party_colour(&relationship_digest(&contact.handle_hash, &our_hh))
+                // The roster, when the conversation carries one.
+                let roster_src = active_gi.map(|gi| {
+                    let (gid, roster) = &self.molecule_rosters[gi];
+                    let local = self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l);
+                    (*gid, roster, local.map(|l| l.phase).unwrap_or_default(), local.is_some_and(|l| l.muted), local.map(|l| l.offered.iter().map(|(p, _)| *p).collect::<Vec<_>>()).unwrap_or_default())
+                });
+                let pair_ci = if roster_src.is_none() { active_ci } else { None };
+                let pair_is_sibling = pair_ci.is_some_and(|ci| self.contacts[ci].is_sibling);
+                // Only us in it: the general rule on an empty remote set, never a self-check.
+                let remote = match (&roster_src, pair_ci) {
+                    (Some((_, r, ..)), _) => r.standing().iter().filter(|p| **p != our_hh).count(),
+                    (None, Some(ci)) => self.contacts[ci].remote_count(&our_hh),
+                    _ => 0,
                 };
-                // A chosen name's line returns are honoured (Nathan's has one on purpose): the lines stack centred on the header row.
-                let panel_name = super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
-                let panel_lines: Vec<&str> = panel_name.split('\n').collect();
+
+                // --- THE BONDS LIST (Nick 2026-10-24: "that screen should look just like the contacts list"): built once per frame and kept in `bond_rows` for the tap handler, so the drawn rows are exactly the tappable rows. Order: you, the members, then your open invites, then the friends you could bring in. ---
+                let mut bonds: Vec<super::BondRow> = Vec::new();
+                let member_name = |party: &[u8; 32], ci: Option<usize>, granted: &str| -> String {
+                    if *party == our_hh {
+                        tr(Msg::YouLabel).into_owned()
+                    } else if let Some(ci) = ci {
+                        super::contact_visible_name(&self.contacts[ci], seed_ref.as_ref(), self.fleet_settings.as_ref())
+                    } else if granted.is_empty() {
+                        tr(Msg::MemberPendingName).into_owned()
+                    } else {
+                        granted.to_string()
+                    }
+                };
+                match (&roster_src, pair_ci) {
+                    (Some((_, roster, ..)), _) => {
+                        let mut standing_members: Vec<&crate::types::molecule::MemberRecord> = roster.members.values().filter(|m| roster.is_standing(&m.party)).collect();
+                        standing_members.sort_unstable_by_key(|m| (m.party != our_hh, m.signed_osc));
+                        for m in standing_members {
+                            let ci = self.contacts.iter().position(|c| c.handle_hash == m.party && !c.is_sibling);
+                            let kind = if m.party == our_hh { super::BondKind::You } else { super::BondKind::Member };
+                            bonds.push(super::BondRow { party: m.party, ci, kind, name: member_name(&m.party, ci, &m.name) });
+                        }
+                    }
+                    (None, Some(ci)) => {
+                        bonds.push(super::BondRow { party: our_hh, ci: None, kind: super::BondKind::You, name: member_name(&our_hh, None, "") });
+                        if remote > 0 && !pair_is_sibling {
+                            let them = self.contacts[ci].handle_hash;
+                            bonds.push(super::BondRow { party: them, ci: Some(ci), kind: super::BondKind::Member, name: member_name(&them, Some(ci), "") });
+                        }
+                    }
+                    _ => {}
+                }
+                let first_outside = bonds.len();
+                if !pair_is_sibling {
+                    let offered: &[[u8; 32]] = roster_src.as_ref().map_or(&[], |(.., o)| o.as_slice());
+                    for (ci, c) in self.contacts.iter().enumerate() {
+                        if c.is_sibling || c.friendship_id.is_none() || c.remote_count(&our_hh) == 0 || bonds.iter().any(|b| b.party == c.handle_hash) {
+                            continue;
+                        }
+                        let kind = if offered.contains(&c.handle_hash) { super::BondKind::Invited } else { super::BondKind::Friend };
+                        bonds.push(super::BondRow { party: c.handle_hash, ci: Some(ci), kind, name: super::contact_visible_name(c, seed_ref.as_ref(), self.fleet_settings.as_ref()) });
+                    }
+                    bonds[first_outside..].sort_by_key(|b| b.kind != super::BondKind::Invited);
+                }
+
+                // --- Header: the conversation's name, centred on the rail|content divider — the panel's "Settings" slot. A chosen name's line returns are honoured (Nathan's has one on purpose): the lines stack centred on the header row. ---
+                let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
+                let (title, name_colour) = match (&roster_src, pair_ci) {
+                    (Some((gid, roster, ..)), _) => (roster.display_title(), party_colour(&molecule_digest(gid, &our_hh))),
+                    (None, Some(ci)) => {
+                        let c = &self.contacts[ci];
+                        (super::contact_visible_name(c, seed_ref.as_ref(), self.fleet_settings.as_ref()), if remote == 0 { self_colour() } else { party_colour(&relationship_digest(&c.handle_hash, &our_hh)) })
+                    }
+                    _ => (String::new(), *theme::CONTACT_NAME_COLOUR),
+                };
+                let panel_lines: Vec<&str> = title.split('\n').collect();
                 let panel_step = hspan * 1.15;
                 for (k, line) in panel_lines.iter().enumerate() {
-                    ctx.text.draw_text_center(
-                        &mut canvas,
-                        line,
-                        layout.content.x,
-                        layout.header.center_y() - (panel_lines.len() as f32 - 1.0) * 0.5 * panel_step + k as f32 * panel_step,
-                        &TextStyle::new(hspan, name_colour)
-                            .weight(600)
-                            .font("Oxanium"),
-                        None,
-                        None,
-                    );
+                    ctx.text.draw_text_center(&mut canvas, line, layout.content.x, layout.header.center_y() - (panel_lines.len() as f32 - 1.0) * 0.5 * panel_step + k as f32 * panel_step, &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
                 }
 
-                // --- Nav rail: pinned Back (returns to the conversation), then the page rows scrolling below — the settings rail verbatim. ---
-                let rail_inset = layout.rail_inset();
-                let nav_h = layout.nav_row_h();
-                let rspan = layout.unit * 0.58;
-                {
-                    let r =
-                        fluor::region::Region::new(rail_inset.x, rail_inset.y, rail_inset.w, nav_h);
-                    let back_held =
-                        ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
-                    ctx.text.draw_text_left(
-                        &mut canvas,
-                        &tr(Msg::SettingsBack),
-                        r.x + rspan * 0.6,
-                        r.center_y(),
-                        &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR)
-                            .weight(600)
-                            .font("Oxanium"),
-                        None,
-                        None,
-                    );
-                    let fill = if back_held {
-                        fluor::theme::BUTTON_HELD
-                    } else {
-                        theme::BACK_BUTTON_IDLE_FILL
-                    };
-                    // Full rail column, up to the rail's true top — no padding (Nick 2026-09-02).
-                    paint::fill_rect(
-                        &mut canvas,
-                        layout.rail.x as isize,
-                        layout.rail.y as isize,
-                        layout.rail.w as isize,
-                        (r.bottom() - layout.rail.y) as isize,
-                        fill,
-                        None,
-                        None,
-                    );
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        layout.rail.x as isize,
-                        layout.rail.y as isize,
-                        layout.rail.right() as isize,
-                        r.bottom() as isize,
-                        self.back_btn_hit_id,
-                    );
-                }
-                let pages_top = rail_inset.y + nav_h;
-                let pages_clip = fluor::paint::Clip::new(
-                    layout.rail.x as usize,
-                    pages_top.max(layout.rail.y) as usize,
-                    layout.rail.right() as usize,
-                    layout.rail.bottom() as usize,
-                );
-                for (i, p) in ContactPage::ALL.iter().enumerate() {
-                    let r = fluor::region::Region::new(
-                        rail_inset.x,
-                        pages_top - settings_rail_scroll + i as Coord * nav_h,
-                        rail_inset.w,
-                        nav_h,
-                    );
-                    if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
-                        continue;
-                    }
-                    let active = *p == cpage;
-                    let held = ctx.pressed_hit != HIT_NONE
-                        && ctx.pressed_hit == (self.contact_nav_base + i as HitId);
-                    let colour = if active {
-                        *theme::CONTACT_NAME_COLOUR
-                    } else {
-                        *theme::LABEL_COLOUR
-                    };
-                    ctx.text.draw_text_left(
-                        &mut canvas,
-                        &tr(Msg::ContactPageName(*p)),
-                        r.x + rspan * 0.6,
-                        r.center_y(),
-                        &TextStyle::new(rspan, colour)
-                            .weight(if active { 600 } else { 400 })
-                            .font("Oxanium"),
-                        Some(pages_clip),
-                        None,
-                    );
-                    if held {
-                        // Full rail column, edge to edge (Nick 2026-09-02).
-                        paint::fill_rect(
-                            &mut canvas,
-                            layout.rail.x as isize,
-                            r.y as isize,
-                            layout.rail.w as isize,
-                            r.h as isize,
-                            fluor::theme::BUTTON_HELD,
-                            Some(pages_clip),
-                            None,
-                        );
-                    } else if active {
-                        // Half the old separator opacity — the bright hint read too loud.
-                        paint::fill_rect(
-                            &mut canvas,
-                            layout.rail.x as isize,
-                            r.y as isize,
-                            layout.rail.w as isize,
-                            r.h as isize,
-                            theme::RAIL_ACTIVE_COLOUR,
-                            Some(pages_clip),
-                            None,
-                        );
-                    }
-                    restamp_hit_rect(
-                        &mut chrome.hit_test_map,
-                        buf_w,
-                        buf_h,
-                        r.x as isize,
-                        r.y.max(pages_top) as isize,
-                        r.right() as isize,
-                        r.bottom().min(layout.rail.bottom()) as isize,
-                        self.contact_nav_base + i as HitId,
-                    );
-                }
-                paint::fill_rect(
-                    &mut canvas,
-                    layout.content.x as isize,
-                    layout.content.y as isize,
-                    1,
-                    layout.content.h as isize,
-                    theme::SEPARATOR_COLOUR,
-                    None,
-                    None,
-                );
-
-                // --- Selected page body: natural-height rows over the shared content scroll, clipped to the reading column. ---
-                let inset = layout.content_inset();
-                let content_clip = fluor::paint::Clip::new(
-                    inset.x as usize,
-                    inset.y as usize,
-                    inset.right() as usize,
-                    inset.bottom() as usize,
-                );
-                let tspan = layout.unit * 0.72;
-                let hspan2 = tspan * 0.75;
-                // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
-                match cpage {
-                    ContactPage::About => {
-                        let n = contact_page_rows(ContactPage::About);
-                        let rows = layout
-                            .content_scrolled(n, settings_content_scroll)
-                            .split_v([1.0; 12]);
-                        // Avatar block spans the first 5 rows: presence-tier ring under the picture, centred in the column.
-                        let block = fluor::region::Region::new(
-                            rows[0].x,
-                            rows[0].y,
-                            rows[0].w,
-                            rows[0].h * 5.0,
-                        );
-                        let (cx, cy) = (block.center_x(), block.center_y());
-                        let ring = row_ring_tier_in(&self.contacts, contact, !is_self);
-                        if let Some(scaled) = contact.avatar_scaled.as_ref() {
-                            crate::ui::avatar_render::draw_avatar(
-                                &mut canvas,
-                                cx,
-                                cy,
-                                avatar_r,
-                                scaled,
-                                diam,
-                                Some(content_clip),
-                            );
-                        } else {
-                            let gd = diam.max(1); // an avatar is at least one pixel across — see `disk_px`
-                            let seed = proof_gradient_seed(&contact.handle_proof);
-                            crate::ui::avatar_render::draw_avatar(
-                                &mut canvas,
-                                cx,
-                                cy,
-                                avatar_r,
-                                &gradient_avatar_rgb(seed, gd),
-                                gd,
-                                Some(content_clip),
-                            );
-                        }
-                        paint::draw_circle(
-                            &mut canvas,
-                            cx,
-                            cy,
-                            // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
-                            avatar_r + super::ring_thickness(avatar_r),
-                            ring,
-                            Some(content_clip),
-                        );
-                        let shared_name = if is_self {
-                            tr(Msg::OwnNotesConversation)
-                        } else if contact.published_name.is_empty() {
-                            tr(Msg::NameNotShared)
-                        } else {
-                            tr(Msg::NameShared(&contact.published_name))
-                        };
-                        let shared_avatar: std::borrow::Cow<'_, str> = if is_self {
-                            "".into()
-                        } else if contact.avatar_pin == [0u8; 64] {
-                            tr(Msg::AvatarNotShared)
-                        } else {
-                            tr(Msg::AvatarShared)
-                        };
-                        let identity_line = if is_self {
-                            tr(Msg::SelfNoCeremony)
-                        } else if contact.identity_superseded {
-                            tr(Msg::ReclaimedStranger)
-                        } else if contact.identity_ended {
-                            tr(Msg::IdentityEndedByOwner)
-                        } else if contact.pinned_genesis != [0u8; 32] {
-                            tr(Msg::ContactFleetPinned(contact.fleet_members.len().max(1))) // WHY/PROOF: a pinned genesis whose roster has not folded yet still names the one device it was pinned from
-                        } else {
-                            tr(Msg::IdentityNotFolded)
-                        };
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[5],
-                            &tr(Msg::WhatTheyShare),
-                            tspan,
-                            *theme::CONTACT_NAME_COLOUR,
-                            600,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[6],
-                            &shared_name,
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        if !shared_avatar.is_empty() {
-                            settings_line(
-                                &mut canvas,
-                                ctx.text,
-                                rows[7],
-                                &shared_avatar,
-                                hspan2,
-                                *theme::LABEL_COLOUR,
-                                400,
-                            );
-                        }
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[9],
-                            &tr(Msg::YouIdentity),
-                            tspan,
-                            *theme::CONTACT_NAME_COLOUR,
-                            600,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[10],
-                            &identity_line,
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        // The deterministic two-word voca pseudonym, always shown even when a published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the contact).
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[11],
-                            &tr(Msg::PublishedNameExplainer(&crate::network::fgtw::fleet::keyed_pseudonym(&contact.handle_hash))),
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                    }
-                    ContactPage::Stats => {
-                        let n = contact_page_rows(ContactPage::Stats);
-                        let rows = layout
-                            .content_scrolled(n, settings_content_scroll)
-                            .split_v([1.0; 9]);
-                        // Hidden probe rows are bookkeeping, not conversation — keep them out of every human-facing count.
-                        let conv = dm_conversation(&self.conversations, &our_hh, contact);
-                        let human: Vec<&crate::types::ChatMessage> = conv
-                            .map(|v| v.messages.as_slice())
-                            .unwrap_or(&[])
-                            .iter()
-                            .filter(|m| !m.is_control() && !m.deleted)
-                            .collect();
-                        let sent = human.iter().filter(|m| m.is_outgoing).count();
-                        let recv = human.len() - sent;
-                        let delivered = human
-                            .iter()
-                            .filter(|m| m.is_outgoing && m.delivered)
-                            .count();
-                        let span_days = {
-                            let first = human.iter().map(|m| m.timestamp).min();
-                            let last = human.iter().map(|m| m.timestamp).max();
-                            match (first, last) {
-                                (Some(a), Some(b)) if b > a => {
-                                    ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400))
-                                        .max(0) as usize // WHY/PROOF: a negative isize before a usize cast — see the row band above
-                                }
-                                _ => 0,
-                            }
-                        };
-                        let history_line = match conv
-                            .and_then(|v| v.history_recovery.as_ref())
-                            .map(|r| r.complete)
-                        {
-                            Some(true) => tr(Msg::HistoryComplete),
-                            Some(false) => tr(Msg::HistorySyncing),
-                            None => tr(Msg::HistoryIdle),
-                        };
-                        let chain_line = if is_self {
-                            tr(Msg::SelfNoChain)
-                        } else if contact.chain_woven {
-                            tr(Msg::ChainWoven)
-                        } else {
-                            contact_status_line(
-                                contact,
-                                self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()),
-                                self.session.as_ref().map(|se| &se.identity_seed),
-                                self.contacts.iter().any(|s| s.is_sibling),
-                                self.fleet_settings.as_ref(),
-                            )
-                            .replace('\n', " \u{00b7} ")
-                            .into()
-                        };
-                        // NAME the path, don't just colour the avatar ring with it (Nick 2026-09-08). Same resolution the ring uses, so the word and the colour are one fact — and the legend line below turns the whole scheme from folklore into something the screen explains.
-                        // The word and its colour are one fact: the path's colour (cyan LAN, green WAN, amber relay) on the online line, the label grey otherwise — the same rule the Fleet page's status line follows (Nick 2026-09-18).
-                        let (connection_line, connection_colour) = if is_self {
-                            (tr(Msg::AlwaysReachableSelf), *theme::LABEL_COLOUR)
-                        } else if contact.is_online {
-                            let shown = super::path_tier_shown(contact, true);
-                            (
-                                match super::tier_label(shown).as_deref() {
-                                    Some(w) => tr(Msg::OnlineVia(w)),
-                                    None => tr(Msg::Online),
-                                },
-                                super::shown_tier_colour(shown).unwrap_or(*theme::LABEL_COLOUR),
-                            )
-                        } else {
-                            (tr(Msg::Offline), *theme::LABEL_COLOUR)
-                        };
-                        // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[0],
-                            &tr(Msg::ContactPageName(cpage)),
-                            tspan,
-                            *theme::CONTACT_NAME_COLOUR,
-                            600,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[1],
-                            &tr(Msg::MessagesSentReceived { total: human.len(), sent, recv }),
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[2],
-                            &tr(Msg::MessagesDelivered(delivered)),
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[3],
-                            &tr(Msg::ChatDaysSpan(span_days)),
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[4],
-                            &history_line,
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[5],
-                            &chain_line,
-                            hspan2,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[6],
-                            &connection_line,
-                            hspan2,
-                            connection_colour,
-                            400,
-                        );
-                        if !is_self && contact.is_online {
-                            settings_line(
-                                &mut canvas,
-                                ctx.text,
-                                rows[7],
-                                &tr(Msg::TierLegend),
-                                hspan2 * 0.8,
-                                *theme::LABEL_COLOUR,
-                                400,
-                            );
-                        }
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[8],
-                            &tr(Msg::RowsShouldMatch),
-                            hspan2 * 0.9,
-                            *theme::LABEL_COLOUR,
-                            400,
-                        );
-                    }
-                    ContactPage::Manage => {
-                        let n = manage_rows;
-                        let all_rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
-                        let rows = &all_rows[..9];
-                        settings_line(
-                            &mut canvas,
-                            ctx.text,
-                            rows[0],
-                            &tr(Msg::ContactPageName(cpage)),
-                            tspan,
-                            *theme::CONTACT_NAME_COLOUR,
-                            600,
-                        );
-                        if contact.is_sibling {
-                            settings_line(
-                                &mut canvas,
-                                ctx.text,
-                                rows[1],
-                                &tr(Msg::SiblingSignsItselfOut),
-                                hspan2,
-                                *theme::LABEL_COLOUR,
-                                400,
-                            );
-                        } else if is_self {
-                            // YOUR OWN NOTES can be removed like any contact (Nick 2026-10-01: "you cannot even leave that thread"): the same two-tap Boot, slot 0 — a roster tombstone drops the row on every device, and adding your own handle again starts a fresh one (the add path lifts the boot). Clearing stays too.
-                            let pill = fluor::region::Region::new(rows[2].x + rows[2].w * 0.1, rows[2].y, rows[2].w * 0.5, rows[2].h * 0.95);
-                            let label = tr(Msg::BootPill { armed: self.contact_boot_armed });
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &label, self.contact_panel_btn_base, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::OwnNotesRemoveNote), hspan2, *theme::LABEL_COLOUR, 400);
-                            Self::draw_clear_pills(self.contact_clear_armed, self.contact_panel_btn_base, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows, hspan2, ctx.pressed_hit);
-                        } else {
-                            let pill = fluor::region::Region::new(
-                                rows[2].x + rows[2].w * 0.1,
-                                rows[2].y,
-                                rows[2].w * 0.5,
-                                rows[2].h * 0.95,
-                            );
-                            let label = tr(Msg::BootPill { armed: self.contact_boot_armed });
-                            draw_stub_pill(
-                                &mut canvas,
-                                ctx.text,
-                                &mut chrome.hit_test_map,
-                                buf_w,
-                                buf_h,
-                                pill,
-                                &label,
-                                self.contact_panel_btn_base,
-                                ctx.pressed_hit,
-                            );
-                            settings_line(
-                                &mut canvas,
-                                ctx.text,
-                                rows[3],
-                                &tr(Msg::BootRemovesEverywhere),
-                                hspan2,
-                                *theme::LABEL_COLOUR,
-                                400,
-                            );
-                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
-                            // BRING INTO A GROUP (docs/molecules.md §10.5): pill slot 1. Opens the picker below: New group (title box, the history policy fixed at birth, Found) and every group we stand in.
-                            let pill2 = fluor::region::Region::new(rows[8].x + rows[8].w * 0.1, rows[8].y, rows[8].w * 0.5, rows[8].h * 0.95);
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill2, &tr(Msg::BindIntoMolecule), self.contact_panel_btn_base + 1, ctx.pressed_hit);
-                            // CLEAR (manage.rs): pill slots 2 (waves) and 3 (everything), both two-tap, then the note that says whose copies they touch.
-                            Self::draw_clear_pills(self.contact_clear_armed, self.contact_panel_btn_base, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, rows, hspan2, ctx.pressed_hit);
-                            if self.molecule_pick_open && all_rows.len() >= 10 {
-                                let pick = |i: u16| self.molecule_pick_base + i as HitId;
-                                settings_line(&mut canvas, ctx.text, all_rows[9], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
-                                // Rows 7..: every atom and molecule we stand in — one tap offers this contact a bond into it (already standing there = drawn disabled).
-                                let contact_pid = contact.handle_hash;
-                                if self.molecule_rosters.is_empty() {
-                                    if let Some(r) = all_rows.get(10) {
-                                        settings_line(&mut canvas, ctx.text, *r, &tr(Msg::NoAtomsYet), hspan2, *theme::LABEL_COLOUR, 400);
-                                    }
-                                }
-                                for (gi, (_, roster)) in self.molecule_rosters.iter().enumerate() {
-                                    let Some(r) = all_rows.get(10 + gi) else { break };
-                                    let n_standing = roster.standing().len();
-                                    let already = roster.is_standing(&contact_pid);
-                                    let label = format!("{} \u{00b7} {}", roster.display_title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_mag(n_standing as u64) });
-                                    let hid = if already || gi + 4 >= 16 { HIT_NONE } else { pick((4 + gi) as u16) };
-                                    draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * 0.8, r.h * 0.9), &label, hid, ctx.pressed_hit, !already, None, "Oxanium");
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        // ── GROUP PANEL (docs/molecules.md §10.5): the contact panel's shape — header = the shared title, rail = Back + About/Add/Manage, content = the page. ──
-        if let AppState::MoleculePanel(gpage) = self.state {
-            use crate::ui::state::MoleculePage;
-            let layout = SettingsLayout::compute(&ctx.viewport);
-            let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
-            if let Some(gi) = active_gi {
-                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, layout.rail.y as isize, buf_w as isize, buf_h as isize, HIT_NONE);
-                let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-                let (gid, roster) = &self.molecule_rosters[gi];
-                let gid = *gid;
-                let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-                let muted = self.molecule_locals.iter().find(|(g, _)| *g == gid).map_or(false, |(_, l)| l.muted);
-                let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
-                let name_colour = party_colour(&molecule_digest(&gid, &our_hh));
-                ctx.text.draw_text_center(&mut canvas, &roster.display_title(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
-                // Rail: pinned Back, then the three pages.
+                // --- Nav rail: pinned Back (returns to the conversation, or from a Person page to Bonds), then the page rows scrolling below — the settings rail verbatim. ---
                 let rail_inset = layout.rail_inset();
                 let nav_h = layout.nav_row_h();
                 let rspan = layout.unit * 0.58;
@@ -2945,102 +2436,59 @@ impl PhotonApp {
                     let back_held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == self.back_btn_hit_id;
                     ctx.text.draw_text_left(&mut canvas, &tr(Msg::SettingsBack), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, *theme::SEARCH_FOUND_COLOUR).weight(600).font("Oxanium"), None, None);
                     let fill = if back_held { fluor::theme::BUTTON_HELD } else { theme::BACK_BUTTON_IDLE_FILL };
+                    // Full rail column, up to the rail's true top — no padding (Nick 2026-09-02).
                     paint::fill_rect(&mut canvas, layout.rail.x as isize, layout.rail.y as isize, layout.rail.w as isize, (r.bottom() - layout.rail.y) as isize, fill, None, None);
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, layout.rail.y as isize, layout.rail.right() as isize, r.bottom() as isize, self.back_btn_hit_id);
                 }
                 let pages_top = rail_inset.y + nav_h;
                 let pages_clip = fluor::paint::Clip::new(layout.rail.x as usize, pages_top.max(layout.rail.y) as usize, layout.rail.right() as usize, layout.rail.bottom() as usize);
-                for (i, p) in MoleculePage::ALL.iter().enumerate() {
+                for (i, p) in ConversationPage::RAIL.iter().enumerate() {
                     let r = fluor::region::Region::new(rail_inset.x, pages_top - settings_rail_scroll + i as Coord * nav_h, rail_inset.w, nav_h);
                     if r.bottom() <= pages_top || r.y >= layout.rail.bottom() {
                         continue;
                     }
-                    let active = *p == gpage;
-                    let hid = self.molecule_nav_base + i as HitId;
+                    // A Person page sits under Bonds, so Bonds stays lit while one is open.
+                    let active = *p == page || (person.is_some() && *p == ConversationPage::Bonds);
+                    let hid = self.conv_nav_base + i as HitId;
                     let held = ctx.pressed_hit != HIT_NONE && ctx.pressed_hit == hid;
                     let colour = if active { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
-                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::MoleculePageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
+                    ctx.text.draw_text_left(&mut canvas, &tr(Msg::ConversationPageName(*p)), r.x + rspan * 0.6, r.center_y(), &TextStyle::new(rspan, colour).weight(if active { 600 } else { 400 }).font("Oxanium"), Some(pages_clip), None);
                     if held {
+                        // Full rail column, edge to edge (Nick 2026-09-02).
                         paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, fluor::theme::BUTTON_HELD, Some(pages_clip), None);
                     } else if active {
                         paint::fill_rect(&mut canvas, layout.rail.x as isize, r.y as isize, layout.rail.w as isize, r.h as isize, theme::RAIL_ACTIVE_COLOUR, Some(pages_clip), None);
                     }
                     restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, layout.rail.x as isize, r.y.max(pages_top) as isize, layout.rail.right() as isize, r.bottom().min(layout.rail.bottom()) as isize, hid);
                 }
-                // Content.
-                let tspan = layout.unit * 0.9;
-                let hspan2 = layout.unit * 0.62;
-                // THE BONDS LIST (Nick 2026-10-24: "that screen should look just like the contacts list"): built once per frame and kept in `bond_rows` for the tap handler, so the drawn rows are exactly the tappable rows.
-                // Order: you, the standing members, then your open invites, then the friends you could bring in.
-                let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
-                let offered: Vec<[u8; 32]> = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.offered.iter().map(|(p, _)| *p).collect()).unwrap_or_default();
-                let mut bonds: Vec<super::BondRow> = Vec::new();
-                let mut standing_members: Vec<&crate::types::molecule::MemberRecord> = roster.members.values().filter(|m| roster.is_standing(&m.party)).collect();
-                standing_members.sort_unstable_by_key(|m| (m.party != our_hh, m.signed_osc));
-                for m in standing_members {
-                    let ci = self.contacts.iter().position(|c| c.handle_hash == m.party && !c.is_sibling);
-                    let name = if m.party == our_hh {
-                        tr(Msg::YouLabel).into_owned()
-                    } else if let Some(ci) = ci {
-                        super::contact_visible_name(&self.contacts[ci], seed_ref.as_ref(), self.fleet_settings.as_ref())
-                    } else if m.name.is_empty() {
-                        tr(Msg::MemberPendingName).into_owned()
-                    } else {
-                        m.name.clone()
-                    };
-                    let kind = if m.party == our_hh { super::BondKind::You } else { super::BondKind::Member };
-                    bonds.push(super::BondRow { party: m.party, ci, kind, name });
-                }
-                let first_outside = bonds.len();
-                for (ci, c) in self.contacts.iter().enumerate() {
-                    if c.is_sibling || c.friendship_id.is_none() || c.remote_count(&our_hh) == 0 || roster.is_standing(&c.handle_hash) {
-                        continue;
-                    }
-                    let kind = if offered.contains(&c.handle_hash) { super::BondKind::Invited } else { super::BondKind::Friend };
-                    bonds.push(super::BondRow { party: c.handle_hash, ci: Some(ci), kind, name: super::contact_visible_name(c, seed_ref.as_ref(), self.fleet_settings.as_ref()) });
-                }
-                bonds[first_outside..].sort_by_key(|b| b.kind != super::BondKind::Invited);
-                // The same sum molecule_page_rows computes (field-wise: the chrome borrow is live).
-                let n = match gpage {
-                    MoleculePage::Manage => 6,
-                    MoleculePage::Bonds => 2 + bonds.len() + usize::from(bonds.len() == first_outside),
-                };
+                paint::fill_rect(&mut canvas, layout.content.x as isize, layout.content.y as isize, 1, layout.content.h as isize, theme::SEPARATOR_COLOUR, None, None);
+
+                // --- Selected page body: natural-height rows over the shared content scroll, clipped to the reading column. ---
+                let inset = layout.content_inset();
+                let content_clip = fluor::paint::Clip::new(inset.x as usize, inset.y as usize, inset.right() as usize, inset.bottom() as usize);
+                let tspan = layout.unit * 0.72;
+                let hspan2 = tspan * 0.75;
+                let n = super::conversation_page_rows(page, bonds.len());
                 let rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
                 let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
-                settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::MoleculePageName(gpage)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
-                match gpage {
-                    MoleculePage::Manage => {
-                        // Row 1: the title box + Rename (a roster record anyone may post).
-                        let r1 = rows[1];
-                        if let Some(tb) = self.molecule_title_textbox.as_mut() {
-                            let tb_left = r1.x + r1.w * 0.05;
-                            let tb_w = (r1.w * 0.55).max(hspan2 * 6.0);
-                            tb.set_rect(tb_left + tb_w * 0.5, r1.center_y(), tb_w, r1.h * 0.85);
-                            tb.set_font_size(hspan2, ctx.text);
-                            let id = tb.hit_id();
-                            tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
-                        }
-                        let has_title = self.molecule_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::molecule::MoleculePhase::Left { self.molecule_panel_btn_base + 2 } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
-                        // Row 2: the history policy and the era.
-                        let policy = if roster.genesis.as_ref().map_or(false, |g| g.history_from_genesis) { tr(Msg::HistoryFromGenesis) } else { tr(Msg::HistoryFromJoin) };
-                        let era = self.friendship_chains.iter().find(|(id, _)| id.as_bytes() == &gid.0).map(|(_, c)| c.era_index).unwrap_or(0);
-                        settings_line(&mut canvas, ctx.text, rows[2], &format!("{} \u{00b7} {}", policy, tr(Msg::EraIndex { n: &crate::fmt_num64(era) })), hspan2, *theme::LABEL_COLOUR, 400);
-                        // Mute (this device only), then Leave (two-tap) with its note — leaving is the only way out (Nick 2026-10-24: nobody removes anyone).
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::MutePill { muted }), self.molecule_panel_btn_base + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
-                        if phase == crate::storage::molecule::MoleculePhase::Left {
-                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
-                        } else {
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[4], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), self.molecule_panel_btn_base, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[5], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
-                        }
-                    }
-                    MoleculePage::Bonds => {
+                let btn = self.conv_panel_btn_base;
+                let conv = self.active_conversation.and_then(|id| self.conversations.iter().find(|v| v.id() == id));
+                let era = match (&roster_src, pair_ci) {
+                    (Some((gid, ..)), _) => self.friendship_chains.iter().find(|(id, _)| id.as_bytes() == &gid.0).map(|(_, c)| c.era_index),
+                    (None, Some(ci)) => self.contacts[ci].friendship_id.and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.era_index)),
+                    _ => None,
+                };
+                // Display doctrine (matches clutch_status_detail): dozenal is the acclimation surface for VERSION + REPUTATION only — counters stay in current mixed arabic units for now.
+                match page {
+                    ConversationPage::Bonds => {
+                        settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                         settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
-                        let editable = phase == crate::storage::molecule::MoleculePhase::Standing;
+                        // Inviting needs the conversation's own key to outlive the pair's bond: a roster-backed conversation can grow today, a pair-keyed one once its keys split from the bond (docs/conversations.md Phase 3).
+                        let editable = roster_src.as_ref().is_some_and(|(_, _, phase, ..)| *phase == crate::storage::molecule::MoleculePhase::Standing);
+                        let gid = roster_src.as_ref().map(|(g, ..)| *g);
                         for (k, b) in bonds.iter().enumerate() {
                             let Some(r) = rows.get(2 + k).copied() else { break };
-                            let staged = self.bonds_staged.contains(&(gid, b.party));
+                            let staged = gid.is_some_and(|g| self.bonds_staged.contains(&(g, b.party)));
                             // Members are locked in (they leave on their own); an open invite is checked until you stage its withdrawal; a friend is unchecked until you stage an invite.
                             let checked = match b.kind {
                                 super::BondKind::You | super::BondKind::Member => true,
@@ -3054,8 +2502,12 @@ impl PhotonApp {
                                 (super::BondKind::Friend, true) => Some(tr(Msg::BondWillInvite)),
                                 _ => None,
                             };
-                            let tappable = editable && matches!(b.kind, super::BondKind::Invited | super::BondKind::Friend) && k < 32;
-                            let hid = if tappable { self.molecule_panel_btn_base + 8 + k as HitId } else { HIT_NONE };
+                            // A member's row opens their Person page; an invite or a friend toggles a staged edit where the conversation can grow.
+                            let tappable = k < 40 && match b.kind {
+                                super::BondKind::You | super::BondKind::Member => true,
+                                super::BondKind::Invited | super::BondKind::Friend => editable,
+                            };
+                            let hid = if tappable { btn + 8 + k as HitId } else { HIT_NONE };
                             // Avatar: the contact's own picture as the contacts list draws it, else its deterministic gradient (a member we never friended: their party's).
                             let ar = r.h * 0.36;
                             let acx = r.x + r.h * 0.55;
@@ -3077,7 +2529,7 @@ impl PhotonApp {
                                 None => b.name.clone(),
                             };
                             ctx.text.draw_text_left(&mut canvas, &label, name_x, acy, &TextStyle::new(hspan2, colour).weight(if checked { 700 } else { 400 }).font("Oxanium"), None, None);
-                            // The checkbox at the row's right edge — fluor's own, claiming the row's id (a locked member's stamps nothing).
+                            // The checkbox at the row's right edge — fluor's own, claiming the row's id (a row that cannot be tapped stamps nothing).
                             let side = r.h * 0.5;
                             let mut id_slot = hid;
                             let mut cb = fluor::widgets::checkbox::Checkbox::new(&mut id_slot, "", r.right() - side * 1.5, acy, side, side, hspan2, checked);
@@ -3090,6 +2542,176 @@ impl PhotonApp {
                             if let Some(r) = rows.get(2 + bonds.len()) {
                                 settings_line(&mut canvas, ctx.text, *r, &tr(Msg::NobodyToAdd), hspan2, *theme::LABEL_COLOUR, 400);
                             }
+                        }
+                    }
+                    ConversationPage::Stats => {
+                        // Hidden probe rows are bookkeeping, not conversation — keep them out of every human-facing count.
+                        let human: Vec<&crate::types::ChatMessage> = conv.map(|v| v.messages.as_slice()).unwrap_or(&[]).iter().filter(|m| !m.is_control() && !m.deleted).collect();
+                        let sent = human.iter().filter(|m| m.is_outgoing).count();
+                        let recv = human.len() - sent;
+                        let delivered = human.iter().filter(|m| m.is_outgoing && m.delivered).count();
+                        let span_days = {
+                            let first = human.iter().map(|m| m.timestamp).min();
+                            let last = human.iter().map(|m| m.timestamp).max();
+                            match (first, last) {
+                                (Some(a), Some(b)) if b > a => ((b - a) / (vsf::OSCILLATIONS_PER_SECOND as i64 * 86_400)).max(0) as usize, // WHY/PROOF: a negative isize before a usize cast — see the row band above
+                                _ => 0,
+                            }
+                        };
+                        let history_line = match conv.and_then(|v| v.history_recovery.as_ref()).map(|r| r.complete) {
+                            Some(true) => tr(Msg::HistoryComplete),
+                            Some(false) => tr(Msg::HistorySyncing),
+                            None => tr(Msg::HistoryIdle),
+                        };
+                        // THE KEY LADDER, the same line at every size: where this conversation's keys stand.
+                        let era_note = |s: std::borrow::Cow<'static, str>| -> String {
+                            match era {
+                                Some(e) => format!("{} \u{00b7} {}", s, tr(Msg::EraIndex { n: &crate::fmt_num64(e) })),
+                                None => s.into_owned(),
+                            }
+                        };
+                        let chain_line: String = match (&roster_src, pair_ci) {
+                            (Some((_, _, phase, ..)), _) => match phase {
+                                crate::storage::molecule::MoleculePhase::Joining => tr(Msg::JoiningStatus).into_owned(),
+                                crate::storage::molecule::MoleculePhase::CatchingUp => era_note(tr(Msg::CatchingUpStatus)),
+                                crate::storage::molecule::MoleculePhase::Left => tr(Msg::LeftStatus).into_owned(),
+                                _ => era_note(tr(Msg::ChainWoven)),
+                            },
+                            (None, Some(ci)) => {
+                                let contact = &self.contacts[ci];
+                                if remote == 0 {
+                                    tr(Msg::SelfNoChain).into_owned()
+                                } else if contact.chain_woven {
+                                    era_note(tr(Msg::ChainWoven))
+                                } else {
+                                    contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed), self.contacts.iter().any(|s| s.is_sibling), self.fleet_settings.as_ref()).replace('\n', " \u{00b7} ")
+                                }
+                            }
+                            _ => String::new(),
+                        };
+                        // NAME the path, don't just colour the avatar ring with it (Nick 2026-09-08): with one other person, their path in its colour (cyan LAN, green WAN, amber relay); with more, how many of them are online.
+                        let others: Vec<usize> = bonds.iter().filter(|b| b.kind == super::BondKind::Member).filter_map(|b| b.ci).collect();
+                        let members_total = bonds.iter().filter(|b| b.kind == super::BondKind::Member).count();
+                        let (connection_line, connection_colour, path_shown) = if remote == 0 {
+                            (tr(Msg::AlwaysReachableSelf).into_owned(), *theme::LABEL_COLOUR, false)
+                        } else if members_total == 1 && others.len() == 1 {
+                            let contact = &self.contacts[others[0]];
+                            if contact.is_online {
+                                let shown = super::path_tier_shown(contact, true);
+                                (match super::tier_label(shown).as_deref() { Some(w) => tr(Msg::OnlineVia(w)), None => tr(Msg::Online) }.into_owned(), super::shown_tier_colour(shown).unwrap_or(*theme::LABEL_COLOUR), true)
+                            } else {
+                                (tr(Msg::Offline).into_owned(), *theme::LABEL_COLOUR, false)
+                            }
+                        } else {
+                            let online = others.iter().filter(|ci| self.contacts[**ci].is_online).count();
+                            (tr(Msg::MembersOnline { online, total: members_total }).into_owned(), *theme::LABEL_COLOUR, false)
+                        };
+                        // These rows should CONVERGE across your fleet devices — two devices showing different numbers here IS the sync bug, made visible.
+                        settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::MessagesSentReceived { total: human.len(), sent, recv }), hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[2], &tr(Msg::MessagesDelivered(delivered)), hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::ChatDaysSpan(span_days)), hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[4], &history_line, hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[5], &chain_line, hspan2, *theme::LABEL_COLOUR, 400);
+                        settings_line(&mut canvas, ctx.text, rows[6], &connection_line, hspan2, connection_colour, 400);
+                        if path_shown {
+                            settings_line(&mut canvas, ctx.text, rows[7], &tr(Msg::TierLegend), hspan2 * 0.8, *theme::LABEL_COLOUR, 400);
+                        }
+                        settings_line(&mut canvas, ctx.text, rows[8], &tr(Msg::RowsShouldMatch), hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    }
+                    ConversationPage::Manage => {
+                        settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::ConversationPageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        let left = roster_src.as_ref().is_some_and(|(_, _, phase, ..)| *phase == crate::storage::molecule::MoleculePhase::Left);
+                        // Row 1: the title box + Rename (a roster record anyone may post), where the conversation carries a shared title.
+                        if roster_src.is_some() {
+                            let r1 = rows[1];
+                            if let Some(tb) = self.molecule_title_textbox.as_mut() {
+                                let tb_left = r1.x + r1.w * 0.05;
+                                let tb_w = (r1.w * 0.55).max(hspan2 * 6.0);
+                                tb.set_rect(tb_left + tb_w * 0.5, r1.center_y(), tb_w, r1.h * 0.85);
+                                tb.set_font_size(hspan2, ctx.text);
+                                let id = tb.hit_id();
+                                tb.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, Some(&mut chrome.hit_test_map), id);
+                            }
+                            let has_title = self.molecule_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && !left { btn + 2 } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
+                        }
+                        // Row 2: the history policy and the era.
+                        let policy = roster_src.as_ref().map(|(_, roster, ..)| if roster.genesis.as_ref().map_or(false, |g| g.history_from_genesis) { tr(Msg::HistoryFromGenesis) } else { tr(Msg::HistoryFromJoin) });
+                        let era_line = era.map(|e| tr(Msg::EraIndex { n: &crate::fmt_num64(e) }).into_owned());
+                        let line2 = match (policy, era_line) {
+                            (Some(p), Some(e)) => format!("{} \u{00b7} {}", p, e),
+                            (Some(p), None) => p.into_owned(),
+                            (None, Some(e)) => e,
+                            (None, None) => String::new(),
+                        };
+                        settings_line(&mut canvas, ctx.text, rows[2], &line2, hspan2, *theme::LABEL_COLOUR, 400);
+                        // Row 3: Mute (this device only).
+                        if let Some((.., muted, _)) = roster_src.as_ref() {
+                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::MutePill { muted: *muted }), btn + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        }
+                        // Rows 4–6: clearing, two-tap each, then the note that says whose copies they touch.
+                        if !pair_is_sibling {
+                            Self::draw_clear_pills(self.contact_clear_armed, btn + 4, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, [rows[4], rows[5], rows[6]], hspan2, ctx.pressed_hit);
+                        }
+                        // Rows 7–8: leaving — the only way out (Nick 2026-10-24: nobody removes anyone).
+                        if pair_is_sibling {
+                            settings_line(&mut canvas, ctx.text, rows[7], &tr(Msg::SiblingSignsItselfOut), hspan2, *theme::LABEL_COLOUR, 400);
+                        } else if left {
+                            settings_line(&mut canvas, ctx.text, rows[7], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        } else if roster_src.is_some() || remote == 0 {
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[7], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), btn, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[8], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                    }
+                    ConversationPage::Person(party) => {
+                        // Avatar block spans the first 5 rows: presence-tier ring under the picture, centred in the column.
+                        let block = fluor::region::Region::new(rows[0].x, rows[0].y, rows[0].w, rows[0].h * 5.0);
+                        let (cx, cy) = (block.center_x(), block.center_y());
+                        let contact = person_ci.map(|ci| &self.contacts[ci]);
+                        let peer = self.molecule_peers.iter().find(|p| p.party == party);
+                        let granted = roster_src.as_ref().and_then(|(_, r, ..)| r.members.get(&party)).map(|m| m.name.clone()).unwrap_or_default();
+                        match contact.and_then(|c| c.avatar_scaled.as_ref()) {
+                            Some(scaled) => crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, scaled, diam, Some(content_clip)),
+                            None => {
+                                let gd = diam.max(1); // an avatar is at least one pixel across — see `disk_px`
+                                let seed = contact.map_or_else(|| proof_gradient_seed(&party), |c| proof_gradient_seed(&c.handle_proof));
+                                crate::ui::avatar_render::draw_avatar(&mut canvas, cx, cy, avatar_r, &gradient_avatar_rgb(seed, gd), gd, Some(content_clip));
+                            }
+                        }
+                        if let Some(c) = contact {
+                            // +1 keeps the presence ring visible at small avatar sizes (see the contacts-row `ring_thickness`).
+                            paint::draw_circle(&mut canvas, cx, cy, avatar_r + super::ring_thickness(avatar_r), row_ring_tier_in(&self.contacts, c, true), Some(content_clip));
+                        }
+                        let name = member_name(&party, person_ci, &granted);
+                        settings_line(&mut canvas, ctx.text, rows[5], &name, tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                        if let Some(c) = contact {
+                            let shared_name = if c.published_name.is_empty() { tr(Msg::NameNotShared) } else { tr(Msg::NameShared(&c.published_name)) };
+                            let shared_avatar = if c.avatar_pin == [0u8; 64] { tr(Msg::AvatarNotShared) } else { tr(Msg::AvatarShared) };
+                            settings_line(&mut canvas, ctx.text, rows[6], &tr(Msg::WhatTheyShare), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                            settings_line(&mut canvas, ctx.text, rows[7], &shared_name, hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[8], &shared_avatar, hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                        let identity_line = match contact {
+                            Some(c) if c.identity_superseded => tr(Msg::ReclaimedStranger),
+                            Some(c) if c.identity_ended => tr(Msg::IdentityEndedByOwner),
+                            Some(c) if c.pinned_genesis != [0u8; 32] => tr(Msg::ContactFleetPinned(c.fleet_members.len().max(1))), // WHY/PROOF: a pinned genesis whose roster has not folded yet still names the one device it was pinned from
+                            Some(_) => tr(Msg::IdentityNotFolded),
+                            None if party == our_hh => tr(Msg::ContactFleetPinned(1 + self.contacts.iter().filter(|c| c.is_sibling).count())),
+                            None => match peer {
+                                Some(p) if !p.devices.is_empty() => tr(Msg::ContactFleetPinned(p.devices.len())),
+                                _ => tr(Msg::IdentityNotFolded),
+                            },
+                        };
+                        settings_line(&mut canvas, ctx.text, rows[9], &tr(Msg::YouIdentity), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
+                        settings_line(&mut canvas, ctx.text, rows[10], &identity_line, hspan2, *theme::LABEL_COLOUR, 400);
+                        // The deterministic two-word voca pseudonym, always shown even when a published name renders elsewhere: it derives from the party id, so it's the one name that can't be changed or spoofed — the human-checkable identity anchor (compare it out-of-band and you've verified the person).
+                        settings_line(&mut canvas, ctx.text, rows[11], &tr(Msg::PublishedNameExplainer(&crate::network::fgtw::fleet::keyed_pseudonym(&party))), hspan2, *theme::LABEL_COLOUR, 400);
+                        // The friendship's own action: Boot (two-tap) — ostracism, not erasure.
+                        if contact.is_some() {
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[12], 0.5), &tr(Msg::BootPill { armed: self.contact_boot_armed }), btn + 3, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[13], &tr(Msg::BootRemovesEverywhere), hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[14], &tr(Msg::BootOstracism), hspan2, *theme::LABEL_COLOUR, 400);
                         }
                     }
                 }

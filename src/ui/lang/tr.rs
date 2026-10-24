@@ -5,7 +5,7 @@
 // Ses uyumu kuralı: çevrilen hiçbir cümlede ek, araya giren bir değerin (ad, handle, sürüm) sonuna yapışmaz — son ünlüsü derleme anında bilinemez, bu yüzden cümle o değerin yalın kalacağı biçimde kurulur.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Nadir görülen işaretli değer için (köprü çıkış kodları) işaret duyarlı sarmalayıcı; onikilik basamaklar işaretsizdir, eksi işareti önde gider.
@@ -55,12 +55,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Dil",
             SettingsPage::Dozenal => "Taban",
             SettingsPage::About => "Hakkında",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Hakkında",
-            ContactPage::Stats => "Aranızda",
-            ContactPage::Manage => "Yönet",
         }
         .into(),
         // ---- wave screen ----
@@ -304,12 +298,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "siliniyor\u{2026}".into(),
         Msg::StopPill => "durdur".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "kendine not tuttuğun sohbet".into(),
         Msg::NameNotShared => "ad: henüz paylaşılmadı".into(),
         Msg::NameShared(name) => format!("ad: \u{201c}{name}\u{201d} (yayımladığı ad)").into(),
         Msg::AvatarNotShared => "avatar: henüz paylaşılmadı".into(),
         Msg::AvatarShared => "avatar: seninle paylaşıldı".into(),
-        Msg::SelfNoCeremony => "tören yok, zincir yok \u{2014} satırlar filo anahtarınla gider".into(),
         Msg::ReclaimedStranger => "\u{26a0} bu adı başka biri yeniden aldı \u{2014} ekranda bir yabancı var".into(),
         Msg::IdentityEndedByOwner => "kimlik sahibi tarafından sonlandırıldı".into(),
         Msg::IdentityNotFolded => "kimlik henüz katlanmadı (ilk temas hâlâ oturuyor)".into(),
@@ -322,10 +314,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "her zaman ulaşılabilir (bu sensin)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} mesaj \u{00b7} {} gönderildi \u{00b7} {} alındı", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "bu satırlar bütün cihazlarında aynı olmalı".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "bir filo cihazı kendi isteğiyle ayrılır \u{2014} Ayarlar \u{2192} Filo sayfasına bak".into(),
         Msg::BootPill { armed } => if armed { "Tekrar dokun \u{2014} kov" } else { "Kov" }.into(),
-        Msg::BindIntoMolecule => "Bir moleküle bağla".into(),
         Msg::FilterAll => "Tümü".into(),
         Msg::FilterInvitations => "Davetler".into(),
         Msg::InvitedWaiting { names } => format!("davet edilenler: {} · bekleniyor", names).into(),
@@ -334,11 +325,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "davet edilecek".into(),
         Msg::BondWillWithdraw => "davet geri çekilecek".into(),
         Msg::AtomLabel => "atom".into(),
-        Msg::CreateMoleculePill => "Bir molekül yarat!".into(),
-        Msg::CreateMoleculeNote => "Kimi bağlayacağını seç. Biri bağlandığı anda bu atom bir moleküldür.".into(),
         Msg::NewAtom => "Yeni atom".into(),
-        Msg::AtomTitlePrompt => "Atom adı".into(),
-        Msg::FoundAtomPill => "Kur".into(),
         Msg::HistoryFromGenesis => "Yeni gelenler her şeyi görür".into(),
         Msg::HistoryFromJoin => "Yeni gelenler bağlandıkları andan itibaren görür".into(),
         Msg::JoiningStatus => "bağlanıyor\u{2026}".into(),
@@ -346,10 +333,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "ayrıldın".into(),
         Msg::PendingMember => "Bekliyor\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Molekül mesajları bir sonraki derlemede geliyor".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Bağlar", crate::ui::state::MoleculePage::Manage => "Yönet" }.into(),
-        Msg::Members => "Üyeler".into(),
-        Msg::MemberStanding => "bağlı".into(),
-        Msg::MemberDeparted => "ayrıldı".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Bağlar",
+            crate::ui::state::ConversationPage::Stats => "Rakamlarla",
+            crate::ui::state::ConversationPage::Manage => "Yönet",
+            crate::ui::state::ConversationPage::Person(_) => "Hakkında",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} / {} çevrimiçi", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Bekliyor\u{2026}".into(),
         Msg::YouLabel => "sen".into(),
         Msg::EraIndex { n } => format!("çağ {}", n).into(),
@@ -615,7 +606,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Özel bir alan ekle".into(),
         Msg::YouIdentity => "Kimlik".into(),
-        Msg::YouNote => "Handle'ın zaten senin kimliğin — bunların hiçbirini doldurmak zorunda değilsin.".into(),
         Msg::ChangeAvatar => "Avatarı değiştir\u{2026}".into(),
         Msg::DragDropAvatar => "Photon penceresine bir resim sürükleyip bırak".into(),
         Msg::ProfileSaved => "Profil kaydedildi \u{221a}".into(),
@@ -670,7 +660,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Aç".into(),
         Msg::ViewerBack => "\u{2039} Geri".into(),
         Msg::ViewerDecoding => "çözülüyor\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} {} içinde {loss} kayıp \u{00B7} tampon {buf}", fmt_num(256)).into(),

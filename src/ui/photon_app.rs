@@ -8,7 +8,7 @@ use super::launch_layout::{AttestBlockLayout, LaunchLayout};
 use super::photon_logo::{paint_photon_logo, paint_photon_logo_clipped};
 use super::ready_layout::ReadyLayout;
 use super::settings_layout::SettingsLayout;
-use super::state::{AppState, ContactPage, LaunchState, SettingsPage};
+use super::state::{AppState, LaunchState, SettingsPage};
 use super::theme;
 use super::PhotonEvent;
 #[cfg(not(target_os = "android"))]
@@ -47,6 +47,7 @@ mod wave_field;
 mod ceremony;
 mod era;
 mod conversation;
+mod conv_panel;
 mod drafts;
 mod molecules;
 mod devices;
@@ -2191,17 +2192,10 @@ pub struct PhotonApp {
     contact_hit_base: HitId,
     /// Ready-list GROUP rows: hit ids in [molecule_hit_base, +64) index `molecule_rosters` (docs/molecules.md §10.5). Allocated at the END of the id run.
     molecule_hit_base: HitId,
-    /// The group-picker inside a contact panel's Manage page ("Bring into a group"): rows in [molecule_pick_base, +16): 0 = New group, 1 = found (the New-group commit), 2 = from-genesis pill, 3 = from-join pill, 4.. = existing groups.
-    molecule_pick_base: HitId,
     /// Wrapped title lines per group row (index = position in `molecule_rosters`), refreshed on the Ready pre-pass like `contact_row_lines`.
     molecule_row_lines: Vec<Vec<String>>,
-    /// The Manage page's group picker is open for the panel's contact.
-    molecule_pick_open: bool,
     /// The New-group title box — registered in visit_app_widgets + textboxes_mut only. Doubles as the group panel's rename box.
     molecule_title_textbox: Option<Textbox>,
-    /// Group panel rail rows [molecule_nav_base, +3) and pills [molecule_panel_btn_base, +8): 0 = Leave (two-tap), 1 = Mute, 2 = Rename; the Add page's contact rows use [molecule_panel_btn_base + 8, +32).
-    molecule_nav_base: HitId,
-    molecule_panel_btn_base: HitId,
     /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
     molecule_leave_armed: bool,
     /// The Ready list's filter strip (docs/conversations.md D2). Hit ids [ready_filter_base, +3): 0 = All, 1 = New atom, 2 = Invitations.
@@ -2258,10 +2252,9 @@ pub struct PhotonApp {
     // --- Settings panel (STUB) ---
     /// Base hit id for the settings nav-rail rows. Row `i` (page `SettingsPage::ALL[i]`) stamps `settings_nav_base + i`. Allocated in `init`.
     settings_nav_base: HitId,
-    /// Contact-panel action pills (slot 0 = Boot). Allocated alongside the settings blocks.
-    contact_panel_btn_base: HitId,
-    /// Contact-panel nav-rail rows. Row `i` (page `ContactPage::ALL[i]`) stamps `contact_nav_base + i`.
-    contact_nav_base: HitId,
+    /// The conversation panel (docs/conversations.md Phase 1): rail rows [conv_nav_base, +3) are `ConversationPage::RAIL`; pills and rows [conv_panel_btn_base, +48): 0 = Leave (two-tap), 1 = Mute, 2 = Rename, 3 = Boot (two-tap, a Person page), 4 = Clear waves, 5 = Clear everything (two-tap each), 8.. = the Bonds rows.
+    conv_panel_btn_base: HitId,
+    conv_nav_base: HitId,
     /// Boot two-tap arm (event-shown, interaction-cleared — any other press on the panel disarms).
     contact_boot_armed: bool,
     /// One-shot residency bypass: Shift+Escape sets it so the next close-requested actually exits instead of hiding.
@@ -3065,12 +3058,8 @@ impl PhotonApp {
             active_conversation: None,
             contact_hit_base: HIT_NONE,
             molecule_hit_base: HIT_NONE,
-            molecule_pick_base: HIT_NONE,
             molecule_row_lines: Vec::new(),
-            molecule_pick_open: false,
             molecule_title_textbox: None,
-            molecule_nav_base: HIT_NONE,
-            molecule_panel_btn_base: HIT_NONE,
             molecule_leave_armed: false,
             ready_filter: ReadyFilter::All,
             ready_filter_base: HIT_NONE,
@@ -3103,8 +3092,8 @@ impl PhotonApp {
             last_click_time: None,
             click_streak: 0,
             settings_nav_base: HIT_NONE,
-            contact_panel_btn_base: HIT_NONE,
-            contact_nav_base: HIT_NONE,
+            conv_panel_btn_base: HIT_NONE,
+            conv_nav_base: HIT_NONE,
             contact_boot_armed: false,
             exit_requested: false,
             shift_held: false,
@@ -3867,7 +3856,8 @@ impl PhotonApp {
                 }
             }
         }
-        if matches!(self.state, AppState::MoleculePanel(crate::ui::state::MoleculePage::Manage)) {
+        // The title box sits on the Manage page of any conversation that carries a shared title (a roster-backed one until the pair conversations gain rosters, docs/conversations.md Phase 2).
+        if matches!(self.state, AppState::ConversationPanel(crate::ui::state::ConversationPage::Manage)) && self.active_molecule().is_some() {
             if let Some(tb) = self.molecule_title_textbox.as_mut() {
                 f(tb);
             }
@@ -4136,33 +4126,15 @@ fn settings_page_rows(page: SettingsPage) -> usize {
     }
 }
 
-/// Natural row count per contact-panel page — the scroll-extent input, mirroring [`settings_page_rows`]. About's first rows are consumed by the avatar block (drawn at row height ×N, not text).
-fn contact_page_rows(page: ContactPage) -> usize {
+/// Natural row count per conversation-panel page — the scroll-extent input, mirroring [`settings_page_rows`], one budget for every conversation at any size (docs/conversations.md Phase 1).
+/// Bonds = heading + note + one row per member, invite and friend + one spare; a Person page's first rows are consumed by the avatar block (drawn at row height ×N, not text). The render arm calls the same function, so the drawn rows and the scroll extent can never disagree.
+fn conversation_page_rows(page: crate::ui::state::ConversationPage, bond_rows: usize) -> usize {
+    use crate::ui::state::ConversationPage;
     match page {
-        ContactPage::About => 12,
-        ContactPage::Stats => 9,
-        ContactPage::Manage => 9,
-    }
-}
-
-impl PhotonApp {
-    /// The group panel's row budget per page (docs/molecules.md §10.5): Manage = fixed; Bonds = heading + note + one row per member, invite and friend (the rows as last drawn).
-    fn molecule_page_rows(&self, page: crate::ui::state::MoleculePage) -> usize {
-        use crate::ui::state::MoleculePage;
-        let gi = self.active_molecule();
-        match page {
-            MoleculePage::Manage => 6,
-            MoleculePage::Bonds => 3 + gi.map_or(0, |_| self.bond_rows.len()),
-        }
-    }
-
-    /// The Manage page's row budget grows when the group picker is open: the fixed six, plus the New-group form (three rows) and one row per group we stand in (docs/molecules.md §10.5). The render arm computes the same sum field-wise (it runs under the chrome borrow).
-    fn manage_page_rows(&self) -> usize {
-        let base = contact_page_rows(ContactPage::Manage);
-        if !self.molecule_pick_open {
-            return base;
-        }
-        base + 1 + self.molecule_rosters.len()
+        ConversationPage::Bonds => 3 + bond_rows,
+        ConversationPage::Stats => 9,
+        ConversationPage::Manage => 9,
+        ConversationPage::Person(_) => 15,
     }
 }
 

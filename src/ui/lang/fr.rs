@@ -6,7 +6,7 @@
 // La sortie de fmt_num se résout dans la fonte Oxanium +glyphs depuis n'importe quelle famille primaire (fluor la nomme en premier dans sa chaîne de repli) — aucun site de dessin n'a à le demander.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Enveloppe signée pour la rare valeur signée (codes de sortie du pont) ; les chiffres duodécimaux sont non signés, le moins passe devant.
@@ -67,12 +67,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Langue",
             SettingsPage::Dozenal => "Base",
             SettingsPage::About => "À propos",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "À propos",
-            ContactPage::Stats => "Entre vous deux",
-            ContactPage::Manage => "Gérer",
         }
         .into(),
         // ---- wave screen ----
@@ -313,12 +307,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "suppression\u{2026}".into(),
         Msg::StopPill => "arrêter".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "ta propre conversation de notes pour toi".into(),
         Msg::NameNotShared => "nom : pas encore partagé".into(),
         Msg::NameShared(name) => format!("nom : \u{201c}{name}\u{201d} (son nom publié)").into(),
         Msg::AvatarNotShared => "avatar : pas encore partagé".into(),
         Msg::AvatarShared => "avatar : partagé avec toi".into(),
-        Msg::SelfNoCeremony => "pas de cérémonie, pas de chaîne \u{2014} les lignes voyagent avec la clé de ta flotte".into(),
         Msg::ReclaimedStranger => "\u{26a0} ce nom a été re-revendiqué par quelqu\u{2019}un d\u{2019}autre \u{2014} c\u{2019}est un inconnu qui s\u{2019}affiche".into(),
         Msg::IdentityEndedByOwner => "identité terminée par son propriétaire".into(),
         Msg::IdentityNotFolded => "identité pas encore pliée (le premier contact se pose encore)".into(),
@@ -331,10 +323,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "toujours joignable (c\u{2019}est toi)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} envoyés \u{00b7} {} reçus", fmt_mag(total as u64), if total == 1 { "message" } else { "messages" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "ces lignes devraient concorder sur chacun de tes appareils".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "un appareil de la flotte part de sa propre demande \u{2014} voir Réglages \u{2192} Flotte".into(),
         Msg::BootPill { armed } => if armed { "Touche encore \u{2014} l\u{2019}écarter" } else { "Écarter" }.into(),
-        Msg::BindIntoMolecule => "Lier dans une molécule".into(),
         Msg::FilterAll => "Tout".into(),
         Msg::FilterInvitations => "Invitations".into(),
         Msg::InvitedWaiting { names } => format!("invités : {} · en attente", names).into(),
@@ -343,11 +334,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "sera invité".into(),
         Msg::BondWillWithdraw => "invitation retirée".into(),
         Msg::AtomLabel => "atome".into(),
-        Msg::CreateMoleculePill => "Créer une molécule !".into(),
-        Msg::CreateMoleculeNote => "Choisis qui lier. Dès que quelqu'un se lie, cet atome est une molécule.".into(),
         Msg::NewAtom => "Nouvel atome".into(),
-        Msg::AtomTitlePrompt => "Titre de l'atome".into(),
-        Msg::FoundAtomPill => "Fonder".into(),
         Msg::HistoryFromGenesis => "Les nouveaux voient tout".into(),
         Msg::HistoryFromJoin => "Les nouveaux voient depuis leur liaison".into(),
         Msg::JoiningStatus => "liaison\u{2026}".into(),
@@ -355,10 +342,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "tu es parti".into(),
         Msg::PendingMember => "En attente\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Les messages de molécule arrivent avec la prochaine version".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Liens", crate::ui::state::MoleculePage::Manage => "Gérer" }.into(),
-        Msg::Members => "Membres".into(),
-        Msg::MemberStanding => "lié".into(),
-        Msg::MemberDeparted => "parti".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Liens",
+            crate::ui::state::ConversationPage::Stats => "En chiffres",
+            crate::ui::state::ConversationPage::Manage => "Gérer",
+            crate::ui::state::ConversationPage::Person(_) => "À propos",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} sur {} en ligne", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "En attente\u{2026}".into(),
         Msg::YouLabel => "toi".into(),
         Msg::EraIndex { n } => format!("ère {}", n).into(),
@@ -622,7 +613,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Ajouter un champ personnalisé".into(),
         Msg::YouIdentity => "Identité".into(),
-        Msg::YouNote => "Ton handle EST ton identité — tu n\u{2019}as rien à remplir ici.".into(),
         Msg::ChangeAvatar => "Changer d\u{2019}avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Glisse-dépose une image sur la fenêtre Photon".into(),
         Msg::ProfileSaved => "Profil enregistré \u{221a}".into(),
@@ -677,7 +667,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Ouvrir".into(),
         Msg::ViewerBack => "\u{2039} Retour".into(),
         Msg::ViewerDecoding => "décodage\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} perte {loss} sur {} \u{00B7} tampon {buf}", fmt_num(256)).into(),

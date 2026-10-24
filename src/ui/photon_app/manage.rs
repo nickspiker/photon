@@ -53,17 +53,18 @@ impl PhotonApp {
         self.booted.iter().any(|b| b.party_id == *party_id)
     }
 
-    /// Clear the ACTIVE contact's conversation across our fleet: every row (or only the waves and their recordings), marked deleted and pushed to every sibling; recordings and attachments deleted from the vault.
+    /// Clear the ACTIVE conversation across our fleet, whatever its size: every row (or only the waves and their recordings), marked deleted and pushed to every sibling; recordings and attachments deleted from the vault. The other members' copies are theirs.
     pub(super) fn clear_active_history(&mut self, waves_only: bool) {
-        let Some(ci) = self.active_contact() else {
+        let Some(conv_id) = self.active_conversation else {
             return;
         };
-        if self.contacts[ci].is_sibling {
+        let ci = self.active_contact();
+        if ci.is_some_and(|ci| self.contacts[ci].is_sibling) {
             return; // a sibling's conversation is the bridge terminal — it keeps no history to clear
         }
         let mut cleared: Vec<ChatMessage> = Vec::new();
         let mut discard_blobs: Vec<[u8; 32]> = Vec::new();
-        if let Some(conv) = self.conv_mut_of(ci) {
+        if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == conv_id) {
             for m in conv.messages.iter_mut() {
                 // Control rows are machinery, never shown and never a thing the human cleared; a row already deleted needs nothing.
                 if m.deleted || m.is_control() {
@@ -85,19 +86,35 @@ impl PhotonApp {
                 conv.invalidate_digest(); // tombstones drop rows from the syncable set
             }
         }
+        let label = match ci {
+            Some(ci) => crate::fp(&self.contacts[ci].handle_proof).to_string(),
+            None => hex::encode(&conv_id.as_bytes()[..4]),
+        };
         crate::logf!(
-            "MANAGE: cleared {} row(s) ({}) with {} across our fleet — {} recording/attachment blob(s) discarded; the friend's copy is theirs",
+            "MANAGE: cleared {} row(s) ({}) in {} across our fleet — {} recording/attachment blob(s) discarded; the other members' copies are theirs",
             cleared.len(),
             if waves_only { "waves" } else { "all history" },
-            crate::fp(&self.contacts[ci].handle_proof),
+            label,
             discard_blobs.len()
         );
         if cleared.is_empty() {
             return;
         }
-        self.persist_messages_async(ci);
-        for batch in cleared.chunks(CLEAR_PUSH_BATCH) {
-            self.push_rows_to_siblings(ci, batch, None);
+        // The pair-keyed path while a two-member conversation still rides its friendship's token; every other conversation pushes under its own (docs/conversations.md Phase 2 makes this one path).
+        match ci {
+            Some(ci) => {
+                self.persist_messages_async(ci);
+                for batch in cleared.chunks(CLEAR_PUSH_BATCH) {
+                    self.push_rows_to_siblings(ci, batch, None);
+                }
+            }
+            None => {
+                self.persist_conversation_async(conv_id);
+                let token = crate::types::molecule::MoleculeId(*conv_id.as_bytes()).token();
+                for batch in cleared.chunks(CLEAR_PUSH_BATCH) {
+                    self.push_rows_to_siblings_token(token, &label, batch, None);
+                }
+            }
         }
         // Each blob is a distinct vault object: delete it outright, off the UI thread (a kept recording is chunked, one vault commit per chunk). Idempotent, and every sibling applying the tombstones deletes its own copies.
         if !discard_blobs.is_empty() {
@@ -114,7 +131,7 @@ impl PhotonApp {
 }
 
 impl PhotonApp {
-    /// The Manage page's clear pills on rows 5 and 6 (slots 2 and 3 of the contact panel's pill ids) and their note on row 7.
+    /// The Manage page's clear pills on `rows[0]` (waves, `pill_base`) and `rows[1]` (everything, `pill_base + 1`), and their note on `rows[2]`.
     #[allow(clippy::too_many_arguments)]
     pub(super) fn draw_clear_pills(
         armed_state: Option<bool>,
@@ -124,17 +141,17 @@ impl PhotonApp {
         hit_map: &mut [HitId],
         buf_w: usize,
         buf_h: usize,
-        rows: &[fluor::region::Region],
+        rows: [fluor::region::Region; 3],
         span: Coord,
         pressed_hit: HitId,
     ) {
-        for (row, slot, all) in [(rows[5], 2, false), (rows[6], 3, true)] {
+        for (row, slot, all) in [(rows[0], 0, false), (rows[1], 1, true)] {
             let pill = fluor::region::Region::new(row.x + row.w * 0.1, row.y, row.w * 0.5, row.h * 0.95);
             let armed = armed_state == Some(all);
             let label = if all { tr(Msg::ClearHistoryPill { armed }) } else { tr(Msg::ClearWavesPill { armed }) };
             draw_stub_pill(canvas, text, hit_map, buf_w, buf_h, pill, &label, pill_base + slot, pressed_hit);
         }
-        settings_line(canvas, text, rows[7], &tr(Msg::ClearHistoryNote), span, *theme::LABEL_COLOUR, 400);
+        settings_line(canvas, text, rows[2], &tr(Msg::ClearHistoryNote), span, *theme::LABEL_COLOUR, 400);
     }
 }
 

@@ -5,7 +5,7 @@
 // Mga piniling salita: alon = wave, sinag = beam, kadena = chain, hinabi = braided/woven, armada = fleet, kaban = vault, tupi = fold, patotoo = attestation, seremonya = ceremony, bawiin = revoke, kalakip = attachment, kapantay = peer, tulay = bridge.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Pambalot na may kamalayan sa tanda para sa bihirang halagang may tanda (mga exit code ng tulay); walang tanda ang mga duodesimal na digit, nauuna ang minus.
@@ -55,12 +55,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Wika",
             SettingsPage::Dozenal => "Base",
             SettingsPage::About => "Tungkol",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Tungkol",
-            ContactPage::Stats => "Sa pagitan ninyo",
-            ContactPage::Manage => "Pamahalaan",
         }
         .into(),
         // ---- wave screen ----
@@ -302,12 +296,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "binubura\u{2026}".into(),
         Msg::StopPill => "itigil".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "sarili mong usapan ng mga tala sa sarili".into(),
         Msg::NameNotShared => "pangalan: hindi pa ibinabahagi".into(),
         Msg::NameShared(name) => format!("pangalan: \u{201c}{name}\u{201d} (ang inilathala nilang pangalan)").into(),
         Msg::AvatarNotShared => "avatar: hindi pa ibinabahagi".into(),
         Msg::AvatarShared => "avatar: ibinahagi sa iyo".into(),
-        Msg::SelfNoCeremony => "walang seremonya, walang kadena \u{2014} ang susi ng armada mo ang nagdadala sa mga hanay".into(),
         Msg::ReclaimedStranger => "\u{26a0} muling inangkin ng iba ang pangalang ito \u{2014} isang estranghero ang ipinapakita".into(),
         Msg::IdentityEndedByOwner => "tinapos ng may-ari ang pagkakakilanlan".into(),
         Msg::IdentityNotFolded => "hindi pa natutupi ang pagkakakilanlan (umaayos pa ang unang pagkikita)".into(),
@@ -320,10 +312,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "laging maaabot (ikaw ito)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} mensahe \u{00b7} {} ipinadala \u{00b7} {} natanggap", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "dapat magkatugma ang mga hanay na ito sa bawat isa sa mga device mo".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "ang device ng armada ay umaalis sa sarili nitong kahilingan \u{2014} tingnan ang Mga Setting \u{2192} Armada".into(),
         Msg::BootPill { armed } => if armed { "Pindutin ulit \u{2014} itaboy sila" } else { "Itaboy" }.into(),
-        Msg::BindIntoMolecule => "Ibigkis sa isang molekula".into(),
         Msg::FilterAll => "Lahat".into(),
         Msg::FilterInvitations => "Mga imbitasyon".into(),
         Msg::InvitedWaiting { names } => format!("inimbitahan: {} · naghihintay", names).into(),
@@ -332,11 +323,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "iimbitahan".into(),
         Msg::BondWillWithdraw => "babawiin ang imbitasyon".into(),
         Msg::AtomLabel => "atomo".into(),
-        Msg::CreateMoleculePill => "Lumikha ng molekula!".into(),
-        Msg::CreateMoleculeNote => "Piliin kung sino ang ibibigkis. Sa sandaling may bumigkis, molekula na ang atomong ito.".into(),
         Msg::NewAtom => "Bagong atomo".into(),
-        Msg::AtomTitlePrompt => "Pangalan ng atomo".into(),
-        Msg::FoundAtomPill => "Itatag".into(),
         Msg::HistoryFromGenesis => "Nakikita ng mga bago ang lahat".into(),
         Msg::HistoryFromJoin => "Nakikita ng mga bago mula nang bumigkis".into(),
         Msg::JoiningStatus => "bumibigkis\u{2026}".into(),
@@ -344,10 +331,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "umalis ka".into(),
         Msg::PendingMember => "Naghihintay\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Darating ang mga mensahe ng molekula sa susunod na build".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Mga ugnayan", crate::ui::state::MoleculePage::Manage => "Pamahalaan" }.into(),
-        Msg::Members => "Mga miyembro".into(),
-        Msg::MemberStanding => "nakabigkis".into(),
-        Msg::MemberDeparted => "umalis".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Mga ugnayan",
+            crate::ui::state::ConversationPage::Stats => "Sa bilang",
+            crate::ui::state::ConversationPage::Manage => "Pamahalaan",
+            crate::ui::state::ConversationPage::Person(_) => "Tungkol",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} sa {} ang online", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Naghihintay\u{2026}".into(),
         Msg::YouLabel => "ikaw".into(),
         Msg::EraIndex { n } => format!("panahon {}", n).into(),
@@ -611,7 +602,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Magdagdag ng sariling field".into(),
         Msg::YouIdentity => "Pagkakakilanlan".into(),
-        Msg::YouNote => "Ang handle mo mismo ANG pagkakakilanlan mo — hindi mo kailangang punan ang alinman dito.".into(),
         Msg::ChangeAvatar => "Palitan ang avatar\u{2026}".into(),
         Msg::DragDropAvatar => "I-drag at i-drop ang larawan sa bintana ng Photon".into(),
         Msg::ProfileSaved => "Na-save ang profile \u{221a}".into(),
@@ -666,7 +656,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Buksan".into(),
         Msg::ViewerBack => "\u{2039} Balik".into(),
         Msg::ViewerDecoding => "dini-decode\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} nawala {loss} sa {} \u{00B7} buffer {buf}", fmt_num(256)).into(),

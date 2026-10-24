@@ -61,7 +61,7 @@ impl PhotonApp {
             }
         }
         let target: Option<usize> = match self.state {
-            AppState::Conversation | AppState::ContactPanel(_) => self.active_contact(),
+            AppState::Conversation | AppState::ConversationPanel(_) => self.active_contact(),
             _ => None,
         };
         // The diff key must cover EVERYTHING the orb renders from, because this early-return is the only thing between a state change and a stale orb: contact, avatar presence, the avatar PIN (a new picture always rotates it, so pixel churn needs no hashing), and the ring colour + brighten flag (connection tier — validated_path and the relay flag mutate with no event of their own). Keying on (contact, has-avatar) alone left the ring and a re-picked avatar frozen until a screen change rebuilt the orb (field, 2026-08-05).
@@ -452,7 +452,7 @@ impl PhotonApp {
         if self.active_conversation.is_some()
             && matches!(
                 self.state,
-                AppState::Conversation | AppState::ContactPanel(_)
+                AppState::Conversation | AppState::ConversationPanel(_)
             )
             && crate::platform::attended_here()
         {
@@ -1836,7 +1836,7 @@ impl PhotonApp {
                 // Unread gate: is the user plausibly looking at THIS conversation right now? "Looking" = this contact's conversation (or its contact-scoped panel) is the active view AND, on desktop, the window is visible + focused. Event-shown, interaction-cleared doctrine: the counter only ever moves on a message landing or the user opening the conversation — no timers anywhere. Computed BEFORE the insert so the fleet alert-duty flag can ride the row into the sibling push.
                 let conversation_open = matches!(
                     self.state,
-                    AppState::Conversation | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
+                    AppState::Conversation | AppState::ConversationPanel(_)
                 ) && self.active_conversation
                     == Some(self.conversations[conv_pos].id());
                 // A MUTED group (docs/molecules.md D12, this device only) never dings and never bumps the unread ring.

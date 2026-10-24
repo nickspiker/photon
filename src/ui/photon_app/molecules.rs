@@ -735,7 +735,7 @@ impl PhotonApp {
         if self.bonds_staged.is_empty() {
             return;
         }
-        let still_here = matches!(self.state, crate::ui::AppState::MoleculePanel(crate::ui::state::MoleculePage::Bonds)) && crate::platform::app_watching();
+        let still_here = matches!(self.state, crate::ui::AppState::ConversationPanel(crate::ui::state::ConversationPage::Bonds)) && crate::platform::app_watching();
         if still_here {
             return;
         }

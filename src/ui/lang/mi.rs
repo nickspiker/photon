@@ -4,7 +4,7 @@
 // EVERY numeral renders thru crate::fmt_num, exactly as in en.rs.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Sign-aware wrapper for the rare signed value (bridge exit codes); dozenal digits are unsigned, the minus sign rides in front.
@@ -54,12 +54,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Reo",
             SettingsPage::Dozenal => "Pūtake",
             SettingsPage::About => "Mō",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Mō",
-            ContactPage::Stats => "I waenganui i a kōrua",
-            ContactPage::Manage => "Whakahaere",
         }
         .into(),
         // ---- wave screen ----
@@ -304,12 +298,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "e muku ana\u{2026}".into(),
         Msg::StopPill => "kati".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "tō kōrerorero pitopito māu anō".into(),
         Msg::NameNotShared => "ingoa: kāore anō kia tohaina".into(),
         Msg::NameShared(name) => format!("ingoa: \u{201c}{name}\u{201d} (tō rātou ingoa kua whakaputaina)").into(),
         Msg::AvatarNotShared => "avatar: kāore anō kia tohaina".into(),
         Msg::AvatarShared => "avatar: kua tohaina ki a koe".into(),
-        Msg::SelfNoCeremony => "kāore he kawa, kāore he mekameka \u{2014} ka waha ngā rārangi e tō kī kāhui".into(),
         Msg::ReclaimedStranger => "\u{26a0} kua riro tēnei ingoa i tētahi atu \u{2014} he tauhou tēnei e whakaaturia nei".into(),
         Msg::IdentityEndedByOwner => "i whakamutua te tuakiri e tōna rangatira".into(),
         Msg::IdentityNotFolded => "kāore anō te tuakiri kia whatua (kei te tau tonu te hononga tuatahi)".into(),
@@ -322,10 +314,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "e taea tonutia (ko koe tēnei)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => if total == 1 { format!("{} karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_mag(1), fmt_mag(sent as u64), fmt_mag(recv as u64)) } else { format!("{} ngā karere \u{00b7} {} i tukuna \u{00b7} {} i tae mai", fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)) }.into(),
         Msg::RowsShouldMatch => "me ōrite ēnei rārangi i ō pūrere katoa".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "mā te pūrere kāhui anō ia e wehe \u{2014} tirohia Tautuhinga \u{2192} Kāhui".into(),
         Msg::BootPill { armed } => if armed { "Pāwhiritia anō \u{2014} panaia rātou" } else { "Pana" }.into(),
-        Msg::BindIntoMolecule => "Herea ki tētahi ngota-rahi".into(),
         Msg::FilterAll => "Katoa".into(),
         Msg::FilterInvitations => "Ngā pōhiri".into(),
         Msg::InvitedWaiting { names } => format!("kua pōhiritia: {} · e tatari ana", names).into(),
@@ -334,11 +325,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "ka pōhiritia".into(),
         Msg::BondWillWithdraw => "ka unuhia te pōhiri".into(),
         Msg::AtomLabel => "ngota".into(),
-        Msg::CreateMoleculePill => "Hangaia he ngota-rahi!".into(),
-        Msg::CreateMoleculeNote => "Kōwhiria te tangata hei here. Ka herea ana, he ngota-rahi tēnei ngota.".into(),
         Msg::NewAtom => "Ngota hou".into(),
-        Msg::AtomTitlePrompt => "Taitara ngota".into(),
-        Msg::FoundAtomPill => "Whakatūria".into(),
         Msg::HistoryFromGenesis => "Ka kite ngā mema hou i ngā mea katoa".into(),
         Msg::HistoryFromJoin => "Ka kite ngā mema hou mai i tō rātou herenga".into(),
         Msg::JoiningStatus => "e here ana\u{2026}".into(),
@@ -346,10 +333,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "kua wehe koe".into(),
         Msg::PendingMember => "E tatari ana\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Ka tae mai ngā karere ngota-rahi i te hanga e whai ake nei".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Ngā here", crate::ui::state::MoleculePage::Manage => "Whakahaere" }.into(),
-        Msg::Members => "Ngā mema".into(),
-        Msg::MemberStanding => "kua herea".into(),
-        Msg::MemberDeparted => "kua wehe".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Ngā here",
+            crate::ui::state::ConversationPage::Stats => "Ngā tatauranga",
+            crate::ui::state::ConversationPage::Manage => "Whakahaere",
+            crate::ui::state::ConversationPage::Person(_) => "Mō",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} o te {} kei te tuihono", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "E tatari ana\u{2026}".into(),
         Msg::YouLabel => "koe".into(),
         Msg::EraIndex { n } => format!("wā {}", n).into(),
@@ -613,7 +604,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Tāpiri he āpure ake".into(),
         Msg::YouIdentity => "Tuakiri".into(),
-        Msg::YouNote => "Ko tō handle TŌU tuakiri — ehara i te mea me whakakī ēnei.".into(),
         Msg::ChangeAvatar => "Huri avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Tōia he whakaahua ki te matapihi o Photon".into(),
         Msg::ProfileSaved => "Kua tiakina te kōtaha \u{221a}".into(),
@@ -667,7 +657,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Whakatuwhera".into(),
         Msg::ViewerBack => "\u{2039} Hoki".into(),
         Msg::ViewerDecoding => "e wetewete ana\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} ngaro {loss} o te {} \u{00B7} pūkete {buf}", fmt_num(256)).into(),

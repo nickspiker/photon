@@ -7,7 +7,7 @@
 // L’uscita di fmt_num si risolve nella faccia Oxanium +glyphs da qualunque famiglia primaria (fluor la nomina per prima nella sua catena di ripiego) — nessun sito di disegno deve chiederla.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Involucro con segno per il raro valore con segno (codici di uscita del ponte); le cifre duodecimali sono senza segno, il meno passa davanti.
@@ -57,12 +57,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Lingua",
             SettingsPage::Dozenal => "Base",
             SettingsPage::About => "Informazioni",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Informazioni",
-            ContactPage::Stats => "Tra voi",
-            ContactPage::Manage => "Gestisci",
         }
         .into(),
         // ---- wave screen ----
@@ -305,12 +299,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "eliminazione\u{2026}".into(),
         Msg::StopPill => "ferma".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "la tua conversazione di appunti per te".into(),
         Msg::NameNotShared => "nome: non ancora condiviso".into(),
         Msg::NameShared(name) => format!("nome: \u{201c}{name}\u{201d} (il nome che pubblica)").into(),
         Msg::AvatarNotShared => "avatar: non ancora condiviso".into(),
         Msg::AvatarShared => "avatar: condiviso con te".into(),
-        Msg::SelfNoCeremony => "nessuna cerimonia, nessuna catena \u{2014} le righe viaggiano con la chiave della tua flotta".into(),
         Msg::ReclaimedStranger => "\u{26a0} questo nome è stato ripreso da un’altra persona \u{2014} qui vedi un estraneo".into(),
         Msg::IdentityEndedByOwner => "identità conclusa da chi la possedeva".into(),
         Msg::IdentityNotFolded => "identità non ancora piegata (il primo contatto si sta ancora assestando)".into(),
@@ -323,11 +315,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::AlwaysReachableSelf => "sempre raggiungibile (questa persona sei tu)".into(),
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} {} inviati \u{00b7} {} ricevuti", fmt_mag(total as u64), if total == 1 { "messaggio" } else { "messaggi" }, fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "queste righe dovrebbero coincidere su ognuno dei tuoi dispositivi".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "un dispositivo della flotta esce su sua richiesta \u{2014} vedi Impostazioni \u{2192} Flotta".into(),
         // L’inglese dice "boot them": il pronome oggetto italiano (lo/la) dovrebbe concordare con una persona di genere ignoto, quindi l’imperativo resta senza oggetto e ripete l’etichetta della pillola a riposo.
         Msg::BootPill { armed } => if armed { "Tocca di nuovo \u{2014} caccia" } else { "Caccia" }.into(),
-        Msg::BindIntoMolecule => "Lega in una molecola".into(),
         Msg::FilterAll => "Tutto".into(),
         Msg::FilterInvitations => "Inviti".into(),
         Msg::InvitedWaiting { names } => format!("invitati: {} · in attesa", names).into(),
@@ -336,11 +327,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "sarà invitato".into(),
         Msg::BondWillWithdraw => "invito ritirato".into(),
         Msg::AtomLabel => "atomo".into(),
-        Msg::CreateMoleculePill => "Crea una molecola!".into(),
-        Msg::CreateMoleculeNote => "Scegli chi legare. Appena qualcuno si lega, questo atomo è una molecola.".into(),
         Msg::NewAtom => "Nuovo atomo".into(),
-        Msg::AtomTitlePrompt => "Titolo dell'atomo".into(),
-        Msg::FoundAtomPill => "Fonda".into(),
         Msg::HistoryFromGenesis => "I nuovi vedono tutto".into(),
         Msg::HistoryFromJoin => "I nuovi vedono da quando si legano".into(),
         Msg::JoiningStatus => "legame in corso\u{2026}".into(),
@@ -348,10 +335,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "sei uscito".into(),
         Msg::PendingMember => "In attesa\u{2026}".into(),
         Msg::MoleculeComposeSoon => "I messaggi di molecola arrivano con la prossima versione".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Legami", crate::ui::state::MoleculePage::Manage => "Gestisci" }.into(),
-        Msg::Members => "Membri".into(),
-        Msg::MemberStanding => "legato".into(),
-        Msg::MemberDeparted => "uscito".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Legami",
+            crate::ui::state::ConversationPage::Stats => "In numeri",
+            crate::ui::state::ConversationPage::Manage => "Gestisci",
+            crate::ui::state::ConversationPage::Person(_) => "Informazioni",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} su {} online", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "In attesa\u{2026}".into(),
         Msg::YouLabel => "tu".into(),
         Msg::EraIndex { n } => format!("era {}", n).into(),
@@ -615,7 +606,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Aggiungi un campo tuo".into(),
         Msg::YouIdentity => "Identità".into(),
-        Msg::YouNote => "Il tuo handle È la tua identità — non devi riempire niente di tutto questo.".into(),
         Msg::ChangeAvatar => "Cambia avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Trascina un’immagine sulla finestra di Photon".into(),
         Msg::ProfileSaved => "Profilo salvato \u{221a}".into(),
@@ -670,7 +660,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Apri".into(),
         Msg::ViewerBack => "\u{2039} Indietro".into(),
         Msg::ViewerDecoding => "decodifica\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} perdita {loss} su {} \u{00B7} buffer {buf}", fmt_num(256)).into(),

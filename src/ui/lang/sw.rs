@@ -6,7 +6,7 @@
 // Matokeo ya fmt_num hupatikana katika uso wa Oxanium +glyphs kutoka familia yoyote ya msingi (fluor huiweka kwanza katika mnyororo wake wa kurudia) — hakuna mahali pa kuchora panapohitaji kuomba.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Kifuniko kinachotambua alama kwa thamani adimu yenye alama (misimbo ya kutoka ya daraja); tarakimu za kumi na mbili hazina alama, alama ya kutoa hupanda mbele.
@@ -56,12 +56,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Lugha",
             SettingsPage::Dozenal => "Msingi",
             SettingsPage::About => "Kuhusu",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Kumhusu",
-            ContactPage::Stats => "Kati yenu",
-            ContactPage::Manage => "Simamia",
         }
         .into(),
         // ---- wave screen ----
@@ -307,12 +301,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "inafuta\u{2026}".into(),
         Msg::StopPill => "simamisha".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "mazungumzo yako mwenyewe ya madokezo".into(),
         Msg::NameNotShared => "jina: bado halijashirikishwa".into(),
         Msg::NameShared(name) => format!("jina: \u{201c}{name}\u{201d} (jina lake lililochapishwa)").into(),
         Msg::AvatarNotShared => "avatar: bado haijashirikishwa".into(),
         Msg::AvatarShared => "avatar: imeshirikishwa nawe".into(),
-        Msg::SelfNoCeremony => "hakuna utaratibu, hakuna mnyororo \u{2014} safu husafiri kwa ufunguo wa kundi lako".into(),
         Msg::ReclaimedStranger => "\u{26a0} jina hili limedaiwa upya na mtu mwingine \u{2014} unayemwona ni mgeni".into(),
         Msg::IdentityEndedByOwner => "utambulisho umemalizwa na mwenyewe".into(),
         Msg::IdentityNotFolded => "utambulisho bado haujakunjwa (mkutano wa kwanza bado unatulia)".into(),
@@ -326,10 +318,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // Kichwa pekee ndicho hubadilika kwa idadi (ujumbe/jumbe); hesabu za kutuma na kupokea hurejelea "jumbe" kwa ujumla, hivyo hubaki katika ngeli ya zi-.
         Msg::MessagesSentReceived { total, sent, recv } => format!("{} {} \u{00b7} zilizotumwa {} \u{00b7} zilizopokelewa {}", if total == 1 { "ujumbe" } else { "jumbe" }, fmt_mag(total as u64), fmt_mag(sent as u64), fmt_mag(recv as u64)).into(),
         Msg::RowsShouldMatch => "safu hizi zinapaswa kufanana kwenye kila kifaa chako".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "kifaa cha kundi huondoka kwa ombi lake lenyewe \u{2014} angalia Mipangilio \u{2192} Kundi".into(),
         Msg::BootPill { armed } => if armed { "Gusa tena \u{2014} mfukuze" } else { "Fukuza" }.into(),
-        Msg::BindIntoMolecule => "Funga kwenye molekuli".into(),
         Msg::FilterAll => "Zote".into(),
         Msg::FilterInvitations => "Mialiko".into(),
         Msg::InvitedWaiting { names } => format!("walioalikwa: {} · tunasubiri", names).into(),
@@ -338,11 +329,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "ataalikwa".into(),
         Msg::BondWillWithdraw => "mwaliko utaondolewa".into(),
         Msg::AtomLabel => "atomu".into(),
-        Msg::CreateMoleculePill => "Unda molekuli!".into(),
-        Msg::CreateMoleculeNote => "Chagua wa kumfunga. Mara tu mtu anapofungwa, atomu hii ni molekuli.".into(),
         Msg::NewAtom => "Atomu mpya".into(),
-        Msg::AtomTitlePrompt => "Jina la atomu".into(),
-        Msg::FoundAtomPill => "Anzisha".into(),
         Msg::HistoryFromGenesis => "Wapya wanaona yote".into(),
         Msg::HistoryFromJoin => "Wapya wanaona tangu wafungwe".into(),
         Msg::JoiningStatus => "inafunga\u{2026}".into(),
@@ -350,10 +337,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "umeondoka".into(),
         Msg::PendingMember => "Inasubiri\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Ujumbe wa molekuli utakuja katika toleo lijalo".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Vifungo", crate::ui::state::MoleculePage::Manage => "Simamia" }.into(),
-        Msg::Members => "Wanachama".into(),
-        Msg::MemberStanding => "amefungwa".into(),
-        Msg::MemberDeparted => "ameondoka".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Vifungo",
+            crate::ui::state::ConversationPage::Stats => "Kwa takwimu",
+            crate::ui::state::ConversationPage::Manage => "Simamia",
+            crate::ui::state::ConversationPage::Person(_) => "Kumhusu",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} kati ya {} mtandaoni", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Inasubiri\u{2026}".into(),
         Msg::YouLabel => "wewe".into(),
         Msg::EraIndex { n } => format!("enzi {}", n).into(),
@@ -619,7 +610,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Ongeza sehemu yako mwenyewe".into(),
         Msg::YouIdentity => "Utambulisho".into(),
-        Msg::YouNote => "Utambulisho wako NI handle yako — huhitaji kujaza chochote hapa.".into(),
         Msg::ChangeAvatar => "Badilisha avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Buruta na udondoshe picha kwenye dirisha la Photon".into(),
         Msg::ProfileSaved => "Wasifu umehifadhiwa \u{221a}".into(),
@@ -674,7 +664,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Fungua".into(),
         Msg::ViewerBack => "\u{2039} Rudi".into(),
         Msg::ViewerDecoding => "inasimbua\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} upotevu {loss} kati ya {} \u{00B7} bafa {buf}", fmt_num(256)).into(),

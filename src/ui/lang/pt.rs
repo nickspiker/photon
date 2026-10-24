@@ -5,7 +5,7 @@
 // Vocabulário cunhado pelo photon, uma escolha só para o catálogo inteiro: wave = onda (o verbo é "mandar onda"), beam = feixe, braid/woven = tecer, chain = cadeia, lane = faixa, fold = dobra, vault = cofre, fleet = frota, seal = selar, attest = atestar, relay = relé, peer = par, era = era.
 use super::Msg;
 use crate::{fmt_mag, fmt_num};
-use crate::ui::state::{ContactPage, SettingsPage};
+use crate::ui::state::SettingsPage;
 use std::borrow::Cow;
 
 // Envoltório com sinal para o raro valor com sinal (códigos de saída da ponte); os dígitos duodecimais não têm sinal, o menos vai na frente.
@@ -55,12 +55,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Language => "Idioma",
             SettingsPage::Dozenal => "Base",
             SettingsPage::About => "Sobre",
-        }
-        .into(),
-        Msg::ContactPageName(p) => match p {
-            ContactPage::About => "Sobre",
-            ContactPage::Stats => "Entre vocês",
-            ContactPage::Manage => "Gerenciar",
         }
         .into(),
         // ---- wave screen ----
@@ -301,12 +295,10 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeletingPill => "apagando\u{2026}".into(),
         Msg::StopPill => "parar".into(),
         // ---- contact panel (About / Stats / Manage) ----
-        Msg::OwnNotesConversation => "sua própria conversa de notas para você".into(),
         Msg::NameNotShared => "nome: ainda não compartilhado".into(),
         Msg::NameShared(name) => format!("nome: \u{201c}{name}\u{201d} (o nome publicado dessa pessoa)").into(),
         Msg::AvatarNotShared => "avatar: ainda não compartilhado".into(),
         Msg::AvatarShared => "avatar: compartilhado com você".into(),
-        Msg::SelfNoCeremony => "sem cerimônia, sem cadeia \u{2014} as linhas viajam com a chave da sua frota".into(),
         Msg::ReclaimedStranger => "\u{26a0} este nome foi re-reivindicado por outra pessoa \u{2014} quem aparece aqui é um estranho".into(),
         Msg::IdentityEndedByOwner => "identidade encerrada pelo dono dela".into(),
         Msg::IdentityNotFolded => "identidade ainda não dobrada (o primeiro contato ainda está assentando)".into(),
@@ -328,10 +320,9 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         )
         .into(),
         Msg::RowsShouldMatch => "estas linhas devem bater em cada um dos seus dispositivos".into(),
-        Msg::OwnNotesRemoveNote | Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
+        Msg::ClutchWaitingTheirAdd | Msg::BlobHereSuffix | Msg::PigeonStalled(_) | Msg::MicSilent | Msg::MicDenied | Msg::IncomingBeam | Msg::MicRelaunch | Msg::BeamingName(_) | Msg::BeamBarBeaming(_) | Msg::Calibrate | Msg::CalScanning | Msg::Calibrated(_) | Msg::CalFailed(_) | Msg::VoiceDsp | Msg::IdeasIntro | Msg::IdeasSendIdea | Msg::IdeasSendFix | Msg::IdeasYours | Msg::IdeasNone | Msg::IdeasNothingTyped | Msg::IdeasSending | Msg::IdeasSent | Msg::IdeasSendFailed(_) => super::en::text(msg),
         Msg::SiblingSignsItselfOut => "um dispositivo da frota sai a pedido dele mesmo \u{2014} veja Ajustes \u{2192} Frota".into(),
         Msg::BootPill { armed } => if armed { "Toque de novo \u{2014} expulsar" } else { "Expulsar" }.into(),
-        Msg::BindIntoMolecule => "Ligar a uma molécula".into(),
         Msg::FilterAll => "Tudo".into(),
         Msg::FilterInvitations => "Convites".into(),
         Msg::InvitedWaiting { names } => format!("convidados: {} · aguardando", names).into(),
@@ -340,11 +331,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondWillInvite => "será convidado".into(),
         Msg::BondWillWithdraw => "convite será retirado".into(),
         Msg::AtomLabel => "átomo".into(),
-        Msg::CreateMoleculePill => "Crie uma molécula!".into(),
-        Msg::CreateMoleculeNote => "Escolha quem ligar. Assim que alguém se liga, este átomo é uma molécula.".into(),
         Msg::NewAtom => "Novo átomo".into(),
-        Msg::AtomTitlePrompt => "Título do átomo".into(),
-        Msg::FoundAtomPill => "Fundar".into(),
         Msg::HistoryFromGenesis => "Novatos veem tudo".into(),
         Msg::HistoryFromJoin => "Novatos veem desde que se ligam".into(),
         Msg::JoiningStatus => "ligando\u{2026}".into(),
@@ -352,10 +339,14 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::LeftStatus => "você saiu".into(),
         Msg::PendingMember => "Pendente\u{2026}".into(),
         Msg::MoleculeComposeSoon => "Mensagens de molécula chegam na próxima versão".into(),
-        Msg::MoleculePageName(p) => match p { crate::ui::state::MoleculePage::Bonds => "Vínculos", crate::ui::state::MoleculePage::Manage => "Gerenciar" }.into(),
-        Msg::Members => "Membros".into(),
-        Msg::MemberStanding => "ligado".into(),
-        Msg::MemberDeparted => "saiu".into(),
+        Msg::ConversationPageName(p) => match p {
+            crate::ui::state::ConversationPage::Bonds => "Vínculos",
+            crate::ui::state::ConversationPage::Stats => "Em números",
+            crate::ui::state::ConversationPage::Manage => "Gerenciar",
+            crate::ui::state::ConversationPage::Person(_) => "Sobre",
+        }
+        .into(),
+        Msg::MembersOnline { online, total } => format!("{} de {} online", fmt_mag(online as u64), fmt_mag(total as u64)).into(),
         Msg::MemberPendingName => "Pendente\u{2026}".into(),
         Msg::YouLabel => "você".into(),
         Msg::EraIndex { n } => format!("era {}", n).into(),
@@ -619,7 +610,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         // ---- you / profile ----
         Msg::YouAddCustomField => "Adicionar um campo personalizado".into(),
         Msg::YouIdentity => "Identidade".into(),
-        Msg::YouNote => "Seu handle É sua identidade — você não precisa preencher nada disto.".into(),
         Msg::ChangeAvatar => "Trocar avatar\u{2026}".into(),
         Msg::DragDropAvatar => "Arraste e solte uma imagem sobre a janela do Photon".into(),
         Msg::ProfileSaved => "Perfil salvo \u{221a}".into(),
@@ -674,7 +664,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             let name_part = if name.is_empty() { String::new() } else { format!(" {name}") };
             format!("{glyph}{name_part} \u{00B7} {size}{state}").into()
         }
-        Msg::OpenPill => "Abrir".into(),
         Msg::ViewerBack => "\u{2039} Voltar".into(),
         Msg::ViewerDecoding => "decodificando\u{2026}".into(),
         Msg::WaveLiveStats { rung, freq, loss, buf } => format!("{rung} \u{00B7} {freq} \u{00B7} perda {loss} de {} \u{00B7} buffer {buf}", fmt_num(256)).into(),

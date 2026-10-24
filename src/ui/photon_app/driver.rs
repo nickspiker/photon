@@ -124,7 +124,7 @@ impl FluorApp for PhotonApp {
                 && self.active_conversation.is_some()
                 && matches!(
                     self.state,
-                    AppState::Conversation | AppState::ContactPanel(_)
+                    AppState::Conversation | AppState::ConversationPanel(_)
                 )
             {
                 self.broadcast_focus_claim(true);
@@ -135,7 +135,7 @@ impl FluorApp for PhotonApp {
         } else {
             // Blur is a write edge for the open draft: a backgrounded app may never come back to write it.
             self.flush_draft();
-            if self.active_conversation.is_some() && matches!(self.state, AppState::Conversation | AppState::ContactPanel(_)) {
+            if self.active_conversation.is_some() && matches!(self.state, AppState::Conversation | AppState::ConversationPanel(_)) {
                 self.broadcast_focus_claim(false);
             }
         }
@@ -314,11 +314,11 @@ impl FluorApp for PhotonApp {
         self.settings_btn_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, SETTINGS_PILL_SLOTS); // the Fleet page's slot map runs to 56 + six rows; the dispatch windows below read the SAME constant (the 2026-10-06 sweep found 39 reserved against pills stamped at 56+ — the Lock-out pill bug)
         reserve_hits(&mut self.hit_counter, 1);
-        self.contact_panel_btn_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 3); // contact-panel pills 0..=3 (0 = Boot)
+        self.conv_panel_btn_base = self.hit_counter;
+        reserve_hits(&mut self.hit_counter, super::conv_panel::CONV_PANEL_SLOTS); // conversation-panel pills 0..8 and 40 Bonds rows
         reserve_hits(&mut self.hit_counter, 1);
-        self.contact_nav_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 3); // contact-panel rail rows 0..=3
+        self.conv_nav_base = self.hit_counter;
+        reserve_hits(&mut self.hit_counter, crate::ui::state::ConversationPage::RAIL.len() as HitId); // conversation-panel rail rows
         reserve_hits(&mut self.hit_counter, 1);
         self.msg_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, super::MSG_HIT_SPAN); // message rows 0..MSG_HIT_SPAN
@@ -362,15 +362,9 @@ impl FluorApp for PhotonApp {
         reserve_hits(&mut self.hit_counter, 2); // confirm / cancel
         self.locked_retry_hit = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 1);
-        // GROUPS (docs/molecules.md §10.5): Ready-list group rows (64) and the Manage-page group picker (16) — appended here, never mid-run (the contiguous-id contract).
+        // GROUPS (docs/molecules.md §10.5): Ready-list group rows (64) — appended here, never mid-run (the contiguous-id contract).
         self.molecule_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 64);
-        self.molecule_pick_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 16);
-        self.molecule_nav_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 3);
-        self.molecule_panel_btn_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 40); // 8 pills + 32 Add-page contact rows
         self.ready_filter_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 3); // All / New atom / Invitations
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
@@ -633,7 +627,7 @@ impl FluorApp for PhotonApp {
             AppState::Ready => {
                 self.contacts_scroll = top_hung(self.contacts_scroll as f32).round() as isize;
             }
-            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_) => {
+            AppState::Settings(_) | AppState::ConversationPanel(_) => {
                 self.settings_rail_scroll = top_hung(self.settings_rail_scroll);
                 self.settings_content_scroll = top_hung(self.settings_content_scroll);
             }
@@ -805,27 +799,12 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Back button — Conversation and Add-device both return to the contact list; the contact panel returns to its conversation. Navigation is a dedicated control; the orb is settings-only.
+        // Back button — Conversation and Add-device both return to the contact list; the conversation panel returns to its conversation (a Person page to Bonds). Navigation is a dedicated control; the orb is settings-only.
         if hit_id == self.back_btn_hit_id && self.back_btn_hit_id != HIT_NONE {
             // Leaving a screen deselects whatever textbox held focus (clears its glow + selection) — page changes never carry focus across.
             self.change_focus(None);
-            if matches!(self.state, AppState::ContactPanel(_)) {
-                self.contact_boot_armed = false;
-                self.state = AppState::Conversation;
-                self.reset_contact_ping_backoff();
-                // The conversation is the active view again — clear any unread that slipped in (no-op when already 0).
-                if let Some(ci) = self.active_contact() {
-                    self.clear_unread(ci);
-                }
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-            if matches!(self.state, AppState::MoleculePanel(_)) {
-                self.molecule_leave_armed = false;
-                self.state = AppState::Conversation;
-                if let Some(gi) = self.active_molecule() {
-                    self.clear_molecule_unread(gi);
-                }
+            if matches!(self.state, AppState::ConversationPanel(_)) {
+                self.leave_conversation_panel();
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -860,162 +839,10 @@ impl FluorApp for PhotonApp {
             }
         }
 
-        // Group panel (docs/molecules.md §10.5): rail rows switch the page; pills: 0 = Leave (two-tap), 1 = Mute, 2 = Rename; 8.. = offer a contact from the Add page.
-        if matches!(self.state, AppState::MoleculePanel(_)) {
-            if self.molecule_leave_armed && hit_id != self.molecule_panel_btn_base {
-                self.molecule_leave_armed = false;
-                self.scene_dirty = true;
-            }
-            if self.molecule_nav_base != HIT_NONE && hit_id >= self.molecule_nav_base && hit_id < (self.molecule_nav_base + 3) {
-                let idx = (hit_id - self.molecule_nav_base) as usize;
-                if let Some(p) = crate::ui::state::MoleculePage::ALL.get(idx).copied() { // WHY/PROOF: the hit span is sized for the longest page list; a hit past this list's end names no page
-                    self.change_focus(None);
-                    self.settings_content_scroll = 0.0;
-                    self.state = AppState::MoleculePanel(p);
-                    ctx.window.request_redraw();
-                }
-                return EventResponse::Handled;
-            }
-            if self.molecule_panel_btn_base != HIT_NONE && hit_id >= self.molecule_panel_btn_base && hit_id < (self.molecule_panel_btn_base + 40) {
-                let slot = hit_id - self.molecule_panel_btn_base;
-                if let Some(gi) = self.active_molecule() {
-                    let gid = self.molecule_rosters[gi].0;
-                    match slot {
-                        0 => {
-                            if self.molecule_leave_armed {
-                                self.molecule_leave_armed = false;
-                                if self.leave_molecule(gid) {
-                                    // Left means gone from the list: back to the contacts, nothing to look at here any more.
-                                    self.change_focus(None);
-                                    self.set_active_conversation(None);
-                                    self.state = AppState::Ready;
-                                }
-                            } else {
-                                self.molecule_leave_armed = true;
-                            }
-                        }
-                        1 => self.toggle_molecule_mute(gid),
-                        3 => {
-                            // Create a molecule! — the Add page, where binding someone in makes it one.
-                            self.change_focus(None);
-                            self.settings_content_scroll = 0.0;
-                            self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::Bonds);
-                        }
-                        2 => {
-                            let title: String = self.molecule_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
-                            self.rename_molecule(gid, &title);
-                            self.change_focus(None);
-                        }
-                        // A BONDS row (Nick 2026-10-24): toggle a STAGED edit — an invite for a friend, a withdrawal for an open invite. Nothing is sent until the page is left (commit_bonds), so selecting and unselecting is free.
-                        k if k >= 8 => {
-                            let row = self.bond_rows.get((k - 8) as usize).cloned();
-                            if let Some(b) = row.filter(|b| matches!(b.kind, super::BondKind::Invited | super::BondKind::Friend)) {
-                                let key = (gid, b.party);
-                                if let Some(i) = self.bonds_staged.iter().position(|s| *s == key) {
-                                    self.bonds_staged.remove(i);
-                                } else {
-                                    self.bonds_staged.push(key);
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
-        }
-
-        // Contact panel: nav rail rows switch the page (settings-mirror), pills act (slot 0 = Boot).
-        if matches!(self.state, AppState::ContactPanel(_)) {
-            // Any press that isn't the Boot pill disarms it (event-shown, interaction-cleared).
-            if self.contact_boot_armed && hit_id != self.contact_panel_btn_base {
-                self.contact_boot_armed = false;
-                ctx.window.request_redraw();
-            }
-            // The same for an armed clear: only a second press on the SAME pill fires it.
-            if let Some(all) = self.contact_clear_armed {
-                if hit_id != self.contact_panel_btn_base + if all { 3 } else { 2 } {
-                    self.contact_clear_armed = None;
-                    self.scene_dirty = true;
-                    ctx.window.request_redraw();
-                }
-            }
-            if self.contact_nav_base != HIT_NONE
-                && hit_id >= self.contact_nav_base
-                && hit_id < (self.contact_nav_base + 4)
-            {
-                let idx = (hit_id - self.contact_nav_base) as usize;
-                if let Some(p) = ContactPage::ALL.get(idx).copied() { // (hit past the list — see above)
-                    self.change_focus(None);
-                    // Fresh page starts at the top, same rule as settings.
-                    self.settings_content_scroll = 0.0;
-                    self.state = AppState::ContactPanel(p);
-                    ctx.window.request_redraw();
-                }
-                return EventResponse::Handled;
-            }
-            if self.contact_panel_btn_base != HIT_NONE
-                && hit_id >= self.contact_panel_btn_base
-                && hit_id < (self.contact_panel_btn_base + 4)
-            {
-                let slot = hit_id - self.contact_panel_btn_base;
-                if slot == 0 {
-                    // Boot (two-tap): first press arms, second fires. Removal is unilateral and local-plus-fleet only — ostracism, not erasure.
-                    if self.contact_boot_armed {
-                        self.contact_boot_armed = false;
-                        self.boot_active_contact();
-                    } else {
-                        self.contact_boot_armed = true;
-                    }
-                    self.scene_dirty = true;
-                    ctx.window.request_redraw();
-                } else if slot == 2 || slot == 3 {
-                    // Clear waves (2) or all history (3), two-tap like Boot: across our fleet, recordings discarded, the friend's copy untouched (manage.rs).
-                    let all = slot == 3;
-                    if self.contact_clear_armed == Some(all) {
-                        self.contact_clear_armed = None;
-                        self.clear_active_history(all == false);
-                    } else {
-                        self.contact_clear_armed = Some(all);
-                    }
-                    self.scene_dirty = true;
-                    ctx.window.request_redraw();
-                } else if slot == 1 {
-                    // Bind into a molecule (docs/molecules.md §10.5): toggle the picker of atoms and molecules we stand in.
-                    self.molecule_pick_open = !self.molecule_pick_open;
-                    self.change_focus(None);
-                    self.scene_dirty = true;
-                    ctx.window.request_redraw();
-                }
-                return EventResponse::Handled;
-            }
-            // The group picker's rows (docs/molecules.md §10.5): 1 = Found (new group with this contact), 2/3 = the history policy, 4.. = offer this contact into an existing group.
-            if self.molecule_pick_open
-                && self.molecule_pick_base != HIT_NONE
-                && hit_id >= self.molecule_pick_base
-                && hit_id < (self.molecule_pick_base + 16)
-            {
-                let pick = (hit_id - self.molecule_pick_base) as usize;
-                if let Some(ci) = self.active_contact() {
-                    match pick {
-                        // Slots 1..=3 were the New-group form; an atom is founded on the Ready screen now (docs/molecules.md §0), so the picker only binds into what exists.
-                        k if k >= 4 => {
-                            let gi = k - 4;
-                            if let Some(gid) = self.molecule_rosters.get(gi).map(|(g, _)| *g) {
-                                self.send_bond_offer(gid, ci);
-                                self.molecule_pick_open = false;
-                                self.change_focus(None);
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                self.scene_dirty = true;
-                ctx.window.request_redraw();
-                return EventResponse::Handled;
-            }
+        // The conversation panel (docs/conversations.md Phase 1): the rail, the pills, and the Bonds rows — conv_panel.rs.
+        if self.on_conversation_panel_hit(hit_id) {
+            ctx.window.request_redraw();
+            return EventResponse::Handled;
         }
 
         if let AppState::Settings(page) = self.state {
@@ -2808,20 +2635,9 @@ impl FluorApp for PhotonApp {
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
-                        if matches!(self.state, AppState::MoleculePanel(_)) {
-                            self.molecule_leave_armed = false;
-                            self.state = AppState::Conversation;
-                            ctx.window.request_redraw();
-                            return EventResponse::Handled;
-                        }
-                        if matches!(self.state, AppState::ContactPanel(_)) {
-                            self.contact_boot_armed = false;
-                            self.state = AppState::Conversation;
-                            self.reset_contact_ping_backoff();
-                            // Same re-entry clear as the Back button — the conversation is front-of-eyes again.
-                            if let Some(ci) = self.active_contact() {
-                                self.clear_unread(ci);
-                            }
+                        if matches!(self.state, AppState::ConversationPanel(_)) {
+                            // Same as the Back button — a Person page to Bonds, any other page to the conversation, front-of-eyes again.
+                            self.leave_conversation_panel();
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -4244,7 +4060,7 @@ impl PhotonApp {
                 }
             } else if matches!(
                 self.state,
-                AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_)
+                AppState::Settings(_) | AppState::ConversationPanel(_)
             ) {
                 // Settings + the contact panel (its structural mirror): the wheel scrolls the nav rail when the cursor is over it, else the content pane. Down-scroll (negative dy) reveals lower rows → add.
                 let over_rail = {
@@ -4372,7 +4188,7 @@ impl PhotonApp {
     fn pane_offset_and_max(&self) -> Option<(f32, f32)> {
         match self.state {
             AppState::Ready => Some((self.contacts_scroll as f32, self.contacts_scroll_extent as f32)),
-            AppState::Settings(_) | AppState::ContactPanel(_) | AppState::MoleculePanel(_) => Some((self.settings_content_scroll, self.settings_content_extent)),
+            AppState::Settings(_) | AppState::ConversationPanel(_) => Some((self.settings_content_scroll, self.settings_content_extent)),
             AppState::Conversation => self
                 .active_conversation
                 .and_then(|id| self.conversations.iter().find(|v| v.id() == id))
