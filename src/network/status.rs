@@ -4015,6 +4015,12 @@ async fn run_checker(
                                             src_addr,
                                             target
                                         );
+                                        // A signed ack to OUR OWN probe is the device answering directly — liveness as strong as a pong, so it clears the miss count too.
+                                        // Mom 2026-10-23: her validated path acked every cycle while no direct pong ever came back, so three missed pings marked her offline, the offline verdict dropped the path, and the next cycle restarted at relay — amber again.
+                                        {
+                                            let mut failures = failed_pings_recv.lock().unwrap();
+                                            failures.retain(|(k, _)| k != responder_pubkey.as_bytes());
+                                        }
                                         send_status_update(
                                             &status_tx_recv,
                                             StatusUpdate::PathValidated {
