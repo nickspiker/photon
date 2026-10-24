@@ -71,6 +71,7 @@
 - [Notification tap unwired](project_notification_tap_unwired.md) — OPEN: a notification tap opens nothing on any platform; Android plan = intent extra + JNI latch drained in tick
 - [Strip selection model](project_strip_selection_model.md) — v110: selection manual only, never stolen, cleared on entry
 - [Ready first paint](project_ready_first_paint.md) — v110: hit stamps ride the paint decision; dirty flag survives its render
+- [Hit wipe inside damage](project_hit_wipe_damage.md) — 2026-10-24: per-frame HIT_NONE wipes stay inside ctx.damage_clip, or pills die on narrow frames
 - [One conversation model](project_conversation_convergence.md) — docs/conversations.md; phase 0 BUILT, phase 1 UI next
 - [project-molecules-build.md](project-molecules-build.md) — MOLECULES phase 1 BUILT 2026-09-15; join-by-replay SCOPED 2026-10-01
 - [project_clutch_completion_rebroadcast.md](project_clutch_completion_rebroadcast.md) — 2026-09-18 sibling churn CONVICTED + fixed; ghost 1be949c1 retire open
