@@ -713,6 +713,26 @@ impl Drop for AttachServing {
     }
 }
 
+/// Where a person stands on a molecule's Bonds page (Nick 2026-10-24: nobody removes anyone — members are locked, you leave from Manage).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BondKind {
+    You,
+    Member,
+    /// Offered and not joined yet — the checkbox withdraws the invite.
+    Invited,
+    /// A friend not in the molecule — the checkbox invites them.
+    Friend,
+}
+
+/// One row of the Bonds page.
+#[derive(Clone, Debug)]
+struct BondRow {
+    party: [u8; 32],
+    ci: Option<usize>,
+    kind: BondKind,
+    name: String,
+}
+
 /// One attachment fetch in flight (attachments.rs): who was asked, and the edges its next ask reads.
 struct FetchAsk {
     /// The conversation whose row names the blob.
@@ -1689,6 +1709,10 @@ pub struct PhotonApp {
     molecule_locals: Vec<(crate::types::molecule::MoleculeId, crate::storage::molecule::MoleculeLocal)>,
     /// Parked offers (§10.1 Offered): a friend's snapshot awaiting our Join. Persisted; no secret rides here.
     bond_offers: Vec<crate::storage::molecule::BondOffer>,
+    /// The molecule panel's Bonds rows as last drawn (render builds them, the tap handler reads them — one list, so the drawn rows and the tap map never disagree).
+    bond_rows: Vec<BondRow>,
+    /// Bonds edits not sent yet, (group, party): an invite to send, or an open invite to withdraw. They go out when the Bonds page is left (Nick 2026-10-24), so selecting and unselecting is free until then.
+    bonds_staged: Vec<(crate::types::molecule::MoleculeId, [u8; 32])>,
     /// Group-scoped trust source (§2): never-friended members' folded devices, consulted only for frames carrying that group's token. Runtime, re-folded at boot (step 5 wires the fold).
     molecule_peers: Vec<crate::types::molecule::MoleculePeer>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
@@ -2831,6 +2855,8 @@ impl PhotonApp {
             molecule_rosters: Vec::new(),
             molecule_locals: Vec::new(),
             bond_offers: Vec::new(),
+            bond_rows: Vec::new(),
+            bonds_staged: Vec::new(),
             molecule_peers: Vec::new(),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
@@ -3838,7 +3864,7 @@ impl PhotonApp {
                 }
             }
         }
-        if matches!(self.state, AppState::MoleculePanel(crate::ui::state::MoleculePage::About)) {
+        if matches!(self.state, AppState::MoleculePanel(crate::ui::state::MoleculePage::Manage)) {
             if let Some(tb) = self.molecule_title_textbox.as_mut() {
                 f(tb);
             }
@@ -4117,14 +4143,13 @@ fn contact_page_rows(page: ContactPage) -> usize {
 }
 
 impl PhotonApp {
-    /// The group panel's row budget per page (docs/molecules.md §10.5): About = title row + policy + "Members" header + one row per member record; Add = note + one row per candidate contact; Manage = fixed.
+    /// The group panel's row budget per page (docs/molecules.md §10.5): Manage = fixed; Bonds = heading + note + one row per member, invite and friend (the rows as last drawn).
     fn molecule_page_rows(&self, page: crate::ui::state::MoleculePage) -> usize {
         use crate::ui::state::MoleculePage;
         let gi = self.active_molecule();
         match page {
-            MoleculePage::About => 6 + gi.map_or(0, |gi| self.molecule_rosters[gi].1.members.len()),
-            MoleculePage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
             MoleculePage::Manage => 6,
+            MoleculePage::Bonds => 3 + gi.map_or(0, |_| self.bond_rows.len()),
         }
     }
 

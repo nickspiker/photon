@@ -899,19 +899,23 @@ impl FluorApp for PhotonApp {
                             // Create a molecule! — the Add page, where binding someone in makes it one.
                             self.change_focus(None);
                             self.settings_content_scroll = 0.0;
-                            self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::Add);
+                            self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::Bonds);
                         }
                         2 => {
                             let title: String = self.molecule_title_textbox.as_ref().map(|t| t.chars.iter().collect()).unwrap_or_default();
                             self.rename_molecule(gid, &title);
                             self.change_focus(None);
                         }
+                        // A BONDS row (Nick 2026-10-24): toggle a STAGED edit — an invite for a friend, a withdrawal for an open invite. Nothing is sent until the page is left (commit_bonds), so selecting and unselecting is free.
                         k if k >= 8 => {
-                            let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
-                            let roster_standing = self.molecule_rosters[gi].1.standing();
-                            let candidates: Vec<usize> = self.contacts.iter().enumerate().filter(|(_, c)| !c.is_sibling && c.friendship_id.is_some() && c.remote_count(&our_hh) > 0 && roster_standing.binary_search(&c.handle_hash).is_err()).map(|(i, _)| i).collect();
-                            if let Some(ci) = candidates.get((k - 8) as usize).copied() {
-                                self.send_bond_offer(gid, ci);
+                            let row = self.bond_rows.get((k - 8) as usize).cloned();
+                            if let Some(b) = row.filter(|b| matches!(b.kind, super::BondKind::Invited | super::BondKind::Friend)) {
+                                let key = (gid, b.party);
+                                if let Some(i) = self.bonds_staged.iter().position(|s| *s == key) {
+                                    self.bonds_staged.remove(i);
+                                } else {
+                                    self.bonds_staged.push(key);
+                                }
                             }
                         }
                         _ => {}
@@ -3802,6 +3806,8 @@ impl FluorApp for PhotonApp {
             ctx.window.request_redraw();
         }
         self.drain_space();
+        // Bonds edits go out on the edge of leaving the page (molecules.rs).
+        self.commit_bonds_if_left();
         if self.drain_wave_env() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }

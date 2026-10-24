@@ -2933,7 +2933,6 @@ impl PhotonApp {
                 let gid = *gid;
                 let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
                 let muted = self.molecule_locals.iter().find(|(g, _)| *g == gid).map_or(false, |(_, l)| l.muted);
-                let standing = roster.standing();
                 let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
                 let name_colour = party_colour(&molecule_digest(&gid, &our_hh));
                 ctx.text.draw_text_center(&mut canvas, &roster.title(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
@@ -2971,17 +2970,46 @@ impl PhotonApp {
                 // Content.
                 let tspan = layout.unit * 0.9;
                 let hspan2 = layout.unit * 0.62;
+                // THE BONDS LIST (Nick 2026-10-24: "that screen should look just like the contacts list"): built once per frame and kept in `bond_rows` for the tap handler, so the drawn rows are exactly the tappable rows.
+                // Order: you, the standing members, then your open invites, then the friends you could bring in.
+                let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
+                let offered: Vec<[u8; 32]> = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.offered.iter().map(|(p, _)| *p).collect()).unwrap_or_default();
+                let mut bonds: Vec<super::BondRow> = Vec::new();
+                let mut standing_members: Vec<&crate::types::molecule::MemberRecord> = roster.members.values().filter(|m| roster.is_standing(&m.party)).collect();
+                standing_members.sort_unstable_by_key(|m| (m.party != our_hh, m.signed_osc));
+                for m in standing_members {
+                    let ci = self.contacts.iter().position(|c| c.handle_hash == m.party && !c.is_sibling);
+                    let name = if m.party == our_hh {
+                        tr(Msg::YouLabel).into_owned()
+                    } else if let Some(ci) = ci {
+                        super::contact_visible_name(&self.contacts[ci], seed_ref.as_ref(), self.fleet_settings.as_ref())
+                    } else if m.name.is_empty() {
+                        tr(Msg::MemberPendingName).into_owned()
+                    } else {
+                        m.name.clone()
+                    };
+                    let kind = if m.party == our_hh { super::BondKind::You } else { super::BondKind::Member };
+                    bonds.push(super::BondRow { party: m.party, ci, kind, name });
+                }
+                let first_outside = bonds.len();
+                for (ci, c) in self.contacts.iter().enumerate() {
+                    if c.is_sibling || c.friendship_id.is_none() || c.remote_count(&our_hh) == 0 || roster.is_standing(&c.handle_hash) {
+                        continue;
+                    }
+                    let kind = if offered.contains(&c.handle_hash) { super::BondKind::Invited } else { super::BondKind::Friend };
+                    bonds.push(super::BondRow { party: c.handle_hash, ci: Some(ci), kind, name: super::contact_visible_name(c, seed_ref.as_ref(), self.fleet_settings.as_ref()) });
+                }
+                bonds[first_outside..].sort_by_key(|b| b.kind != super::BondKind::Invited);
                 // The same sum molecule_page_rows computes (field-wise: the chrome borrow is live).
                 let n = match gpage {
-                    MoleculePage::About => 6 + roster.members.len(),
-                    MoleculePage::Add => 3 + self.contacts.iter().filter(|c| !c.is_sibling && c.friendship_id.is_some()).count().min(32),
                     MoleculePage::Manage => 6,
+                    MoleculePage::Bonds => 2 + bonds.len() + usize::from(bonds.len() == first_outside),
                 };
                 let rows = rows_n(layout.content_scrolled(n, settings_content_scroll), n);
                 let pill = |r: fluor::region::Region, frac: f32| fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * frac, r.h * 0.9);
                 settings_line(&mut canvas, ctx.text, rows[0], &tr(Msg::MoleculePageName(gpage)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
                 match gpage {
-                    MoleculePage::About => {
+                    MoleculePage::Manage => {
                         // Row 1: the title box + Rename (a roster record anyone may post).
                         let r1 = rows[1];
                         if let Some(tb) = self.molecule_title_textbox.as_mut() {
@@ -2994,59 +3022,78 @@ impl PhotonApp {
                         }
                         let has_title = self.molecule_title_textbox.as_ref().is_some_and(|t| t.chars.iter().any(|c| !c.is_whitespace()));
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r1.x + r1.w * 0.64, r1.y, r1.w * 0.3, r1.h * 0.9), &tr(Msg::RenamePill), if has_title && phase != crate::storage::molecule::MoleculePhase::Left { self.molecule_panel_btn_base + 2 } else { HIT_NONE }, ctx.pressed_hit, has_title, None, "Oxanium");
-                        // Row 2: an ATOM offers its one becoming — "Create a molecule!" — which is the Add page; the line beneath says what binding does.
-                        if standing.len() <= 1 && phase == crate::storage::molecule::MoleculePhase::Standing {
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[2], 0.6), &tr(Msg::CreateMoleculePill), self.molecule_panel_btn_base + 3, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
-                            settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::CreateMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
-                        }
+                        // Row 2: the history policy and the era.
                         let policy = if roster.genesis.as_ref().map_or(false, |g| g.history_from_genesis) { tr(Msg::HistoryFromGenesis) } else { tr(Msg::HistoryFromJoin) };
                         let era = self.friendship_chains.iter().find(|(id, _)| id.as_bytes() == &gid.0).map(|(_, c)| c.era_index).unwrap_or(0);
-                        settings_line(&mut canvas, ctx.text, rows[4], &format!("{} \u{00b7} {}", policy, tr(Msg::EraIndex { n: &crate::fmt_num64(era) })), hspan2, *theme::LABEL_COLOUR, 400);
-                        // Row 5: "Members"; rows 6..: one per member record, standing or left, in the member's colour.
-                        settings_line(&mut canvas, ctx.text, rows[5], &tr(Msg::Members), hspan2, *theme::CONTACT_NAME_COLOUR, 600);
-                        let mut members: Vec<&crate::types::molecule::MemberRecord> = roster.members.values().collect();
-                        members.sort_unstable_by_key(|m| (!roster.is_standing(&m.party), m.signed_osc));
-                        for (k, m) in members.iter().enumerate() {
-                            let Some(r) = rows.get(6 + k) else { break };
-                            let is_standing = standing.binary_search(&m.party).is_ok();
-                            let name = if m.party == our_hh {
-                                tr(Msg::YouLabel).into_owned()
-                            } else if m.name.is_empty() {
-                                tr(Msg::MemberPendingName).into_owned()
-                            } else {
-                                m.name.clone()
-                            };
-                            let state = if is_standing { tr(Msg::MemberStanding) } else { tr(Msg::MemberDeparted) };
-                            let colour = if is_standing { party_colour(&molecule_digest(&gid, &m.party)) } else { theme::dim_colour(*theme::LABEL_COLOUR) };
-                            settings_line(&mut canvas, ctx.text, *r, &format!("{} \u{00b7} {}", name, state), hspan2, colour, if is_standing { 500 } else { 400 });
-                        }
-                    }
-                    MoleculePage::Add => {
-                        settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
-                        let candidates: Vec<usize> = self.contacts.iter().enumerate().filter(|(_, c)| !c.is_sibling && c.friendship_id.is_some() && c.remote_count(&our_hh) > 0 && !roster.is_standing(&c.handle_hash)).map(|(i, _)| i).collect();
-                        if candidates.is_empty() {
-                            settings_line(&mut canvas, ctx.text, rows[2], &tr(Msg::NobodyToAdd), hspan2, *theme::LABEL_COLOUR, 400);
-                        }
-                        for (k, ci) in candidates.iter().enumerate().take(32) {
-                            let Some(r) = rows.get(2 + k) else { break };
-                            let name = super::contact_visible_name(&self.contacts[*ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
-                            let already = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.offered.iter().any(|(p, _)| *p == self.contacts[*ci].handle_hash));
-                            let label = if already { format!("{} \u{00b7} \u{2026}", name) } else { name };
-                            let hid = if phase == crate::storage::molecule::MoleculePhase::Standing { self.molecule_panel_btn_base + 8 + k as HitId } else { HIT_NONE };
-                            draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(*r, 0.8), &label, hid, ctx.pressed_hit, hid != HIT_NONE, None, "Oxanium");
-                        }
-                    }
-                    MoleculePage::Manage => {
-                        // Mute (this device only), then Leave (two-tap) with its note.
-                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[1], 0.5), &tr(Msg::MutePill { muted }), self.molecule_panel_btn_base + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
+                        settings_line(&mut canvas, ctx.text, rows[2], &format!("{} \u{00b7} {}", policy, tr(Msg::EraIndex { n: &crate::fmt_num64(era) })), hspan2, *theme::LABEL_COLOUR, 400);
+                        // Mute (this device only), then Leave (two-tap) with its note — leaving is the only way out (Nick 2026-10-24: nobody removes anyone).
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::MutePill { muted }), self.molecule_panel_btn_base + 1, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         if phase == crate::storage::molecule::MoleculePhase::Left {
-                            settings_line(&mut canvas, ctx.text, rows[3], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
+                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::YouLeftNote), hspan2, *theme::LABEL_COLOUR, 400);
                         } else {
-                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[3], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), self.molecule_panel_btn_base, ctx.pressed_hit);
-                            settings_line(&mut canvas, ctx.text, rows[4], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
+                            draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill(rows[4], 0.5), &tr(Msg::LeaveMoleculePill { armed: self.molecule_leave_armed }), self.molecule_panel_btn_base, ctx.pressed_hit);
+                            settings_line(&mut canvas, ctx.text, rows[5], &tr(Msg::LeaveMoleculeNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        }
+                    }
+                    MoleculePage::Bonds => {
+                        settings_line(&mut canvas, ctx.text, rows[1], &tr(Msg::BindNote), hspan2, *theme::LABEL_COLOUR, 400);
+                        let editable = phase == crate::storage::molecule::MoleculePhase::Standing;
+                        for (k, b) in bonds.iter().enumerate() {
+                            let Some(r) = rows.get(2 + k).copied() else { break };
+                            let staged = self.bonds_staged.contains(&(gid, b.party));
+                            // Members are locked in (they leave on their own); an open invite is checked until you stage its withdrawal; a friend is unchecked until you stage an invite.
+                            let checked = match b.kind {
+                                super::BondKind::You | super::BondKind::Member => true,
+                                super::BondKind::Invited => !staged,
+                                super::BondKind::Friend => staged,
+                            };
+                            let tag = match (b.kind, staged) {
+                                (super::BondKind::Member, _) => Some(tr(Msg::BondMember)),
+                                (super::BondKind::Invited, false) => Some(tr(Msg::BondInvited)),
+                                (super::BondKind::Invited, true) => Some(tr(Msg::BondWillWithdraw)),
+                                (super::BondKind::Friend, true) => Some(tr(Msg::BondWillInvite)),
+                                _ => None,
+                            };
+                            let tappable = editable && matches!(b.kind, super::BondKind::Invited | super::BondKind::Friend) && k < 32;
+                            let hid = if tappable { self.molecule_panel_btn_base + 8 + k as HitId } else { HIT_NONE };
+                            // Avatar: the contact's own picture as the contacts list draws it, else its deterministic gradient (a member we never friended: their party's).
+                            let ar = r.h * 0.36;
+                            let acx = r.x + r.h * 0.55;
+                            let acy = r.center_y();
+                            let own = b.ci.and_then(|ci| self.contacts[ci].avatar_scaled.as_ref().map(|a| (a, self.contacts[ci].avatar_scaled_diameter)));
+                            match own {
+                                Some((a, d)) => crate::ui::avatar_render::draw_avatar(&mut canvas, acx, acy, ar, a, d, None),
+                                None => {
+                                    let gd = disk_px(ar * 2.0);
+                                    let seed = b.ci.map_or_else(|| super::proof_gradient_seed(&b.party), |ci| super::proof_gradient_seed(&self.contacts[ci].handle_proof));
+                                    crate::ui::avatar_render::draw_avatar(&mut canvas, acx, acy, ar, &super::gradient_avatar_rgb(seed, gd), gd, None);
+                                }
+                            }
+                            // Name, bold while selected (Nick: "it turns bold/normal"), then its tag dimmer.
+                            let name_x = acx + ar * 1.7;
+                            let colour = if checked { *theme::CONTACT_NAME_COLOUR } else { *theme::LABEL_COLOUR };
+                            let label = match &tag {
+                                Some(t) => format!("{} \u{00b7} {}", b.name, t),
+                                None => b.name.clone(),
+                            };
+                            ctx.text.draw_text_left(&mut canvas, &label, name_x, acy, &TextStyle::new(hspan2, colour).weight(if checked { 700 } else { 400 }).font("Oxanium"), None, None);
+                            // The checkbox at the row's right edge — fluor's own, claiming the row's id (a locked member's stamps nothing).
+                            let side = r.h * 0.5;
+                            let mut id_slot = hid;
+                            let mut cb = fluor::widgets::checkbox::Checkbox::new(&mut id_slot, "", r.right() - side * 1.5, acy, side, side, hspan2, checked);
+                            cb.render_content_into(&mut canvas, ctx.text, None, if hid != HIT_NONE { Some(&mut chrome.hit_test_map[..]) } else { None });
+                            if hid != HIT_NONE {
+                                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, r.x as isize, r.y as isize, r.right() as isize, r.bottom() as isize, hid);
+                            }
+                        }
+                        if bonds.len() == first_outside {
+                            if let Some(r) = rows.get(2 + bonds.len()) {
+                                settings_line(&mut canvas, ctx.text, *r, &tr(Msg::NobodyToAdd), hspan2, *theme::LABEL_COLOUR, 400);
+                            }
                         }
                     }
                 }
+                self.bond_rows = bonds;
             }
         }
 

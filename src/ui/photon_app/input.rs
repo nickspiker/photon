@@ -557,7 +557,7 @@ impl PhotonApp {
                         if let Some(tb) = self.molecule_title_textbox.as_mut() {
                             tb.set_text(&title, text);
                         }
-                        self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::About);
+                        self.state = AppState::MoleculePanel(crate::ui::state::MoleculePage::Manage);
                         return true;
                     }
                     return false;

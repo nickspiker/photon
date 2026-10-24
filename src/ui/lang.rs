@@ -565,6 +565,11 @@ pub enum Msg<'a> {
     FilterInvitations,
     /// The sponsor's line under an atom or molecule row: the friends invited who have not joined yet.
     InvitedWaiting { names: &'a str },
+    /// Bonds-page row tags: a standing member (locked), an invite out and not answered, and the two edits staged until the page is left.
+    BondMember,
+    BondInvited,
+    BondWillInvite,
+    BondWillWithdraw,
     /// "atom" — the header suffix and the picker's count for a molecule of one.
     AtomLabel,
     /// The atom panel's one becoming.

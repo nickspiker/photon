@@ -141,24 +141,21 @@ impl ContactPage {
     }
 }
 
-/// Pages of the per-group panel (docs/molecules.md §10.5) — the contact panel's structure, group-scoped.
+/// Pages of the per-group panel (docs/molecules.md §10.5) — the contact panel's structure, group-scoped. Two pages since 2026-10-24 (Nick: "only have manage and bonds").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MoleculePage {
-    /// Title (editable by anyone — a roster record), members by phase, the history policy, the era index.
-    About,
-    /// Your contacts not yet standing — one tap offers.
-    Add,
-    /// Mute, Leave.
+    /// Title (editable by anyone — a roster record), the history policy and era, mute, Leave.
     Manage,
+    /// Everyone in it and everyone you could bring in, as a contacts-style list with a checkbox each; edits go out when you leave the page.
+    Bonds,
 }
 
 impl MoleculePage {
-    pub const ALL: [MoleculePage; 3] = [MoleculePage::About, MoleculePage::Add, MoleculePage::Manage];
+    pub const ALL: [MoleculePage; 2] = [MoleculePage::Manage, MoleculePage::Bonds];
     pub fn label(self) -> &'static str {
         match self {
-            MoleculePage::About => "About",
-            MoleculePage::Add => "Add",
             MoleculePage::Manage => "Manage",
+            MoleculePage::Bonds => "Bonds",
         }
     }
 }

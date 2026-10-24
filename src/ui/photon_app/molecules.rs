@@ -654,11 +654,16 @@ impl PhotonApp {
             crate::log("MOLECULE: decline without a group id — ignored");
             return;
         };
+        self.undo_invite(ci, gid, "declined");
+    }
+
+    /// SPONSOR: UNDO an invite we sent — on the invitee's decline, or our own withdrawal from the Bonds page. Forget it, tombstone our offer row, and delete that row for everyone (the marker clears the card from each of the invitee's devices). Nothing new lands in either chat.
+    pub(super) fn undo_invite(&mut self, ci: usize, gid: MoleculeId, why: &str) -> bool {
         let invitee = self.contacts[ci].handle_hash;
         let row_ts = self.molecule_locals.iter().find(|(g, _)| *g == gid).and_then(|(_, l)| l.offered.iter().find(|(p, _)| *p == invitee).map(|(_, t)| *t));
         let Some(row_ts) = row_ts else {
-            crate::logf!("MOLECULE: decline of {} from {} — no invite of ours (another of our devices sent it, or it is already undone)", hex::encode(&gid.0[..4]), crate::fp(&self.contacts[ci].handle_proof));
-            return;
+            crate::logf!("MOLECULE: invite of {} into {} {} — no invite of ours (another of our devices sent it, or it is already undone)", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), why);
+            return false;
         };
         self.set_molecule_local(&gid, |l| l.offered.retain(|(p, _)| *p != invitee));
         if let Some(conv) = self.conv_mut_of(ci) {
@@ -668,8 +673,34 @@ impl PhotonApp {
         }
         self.persist_messages_async(ci);
         let deleted = self.send_control(ci, crate::types::RowControl::Delete { target: row_ts }, crate::network::time_base::stamp_osc());
-        crate::logf!("MOLECULE: {} declined {} — invite undone{}", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), if deleted { ", offer deleted for everyone" } else { " here (no chain for the delete marker)" });
+        crate::logf!("MOLECULE: invite of {} into {} {} — undone{}", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), why, if deleted { ", offer deleted for everyone" } else { " here (no chain for the delete marker)" });
         self.scene_dirty = true;
+        true
+    }
+
+    /// SEND THE BONDS EDITS when the Bonds page is left (Nick 2026-10-24: "Don't send out any invites until the user has navigated away so they can select/unselect").
+    /// Leaving the page — another page, Back, the panel closed, the app sent to the background — is the edge; a staged invite goes out as an offer, a staged withdrawal undoes its invite. An app killed first sends nothing, the safe way round.
+    pub(super) fn commit_bonds_if_left(&mut self) {
+        if self.bonds_staged.is_empty() {
+            return;
+        }
+        let still_here = matches!(self.state, crate::ui::AppState::MoleculePanel(crate::ui::state::MoleculePage::Bonds)) && crate::platform::app_watching();
+        if still_here {
+            return;
+        }
+        let staged = std::mem::take(&mut self.bonds_staged);
+        crate::logf!("MOLECULE: Bonds page left — sending {} staged edit(s)", staged.len());
+        for (gid, party) in staged {
+            let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == party && !c.is_sibling) else {
+                continue;
+            };
+            let invited = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.offered.iter().any(|(p, _)| *p == party));
+            if invited {
+                self.undo_invite(ci, gid, "withdrawn");
+            } else {
+                self.send_bond_offer(gid, ci);
+            }
+        }
     }
 
     /// FOUND an ATOM (docs/molecules.md §0: you can only ever create an atom): a conversation with you alone in it, titled or not. Nothing is offered to anyone; binding people in later makes it a molecule.
