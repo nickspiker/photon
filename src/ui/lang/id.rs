@@ -317,6 +317,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAll => "Semua".into(),
         Msg::FilterInvitations => "Undangan".into(),
         Msg::FilterPeople => "Orang".into(),
+        Msg::FilterAtoms => "Atom".into(),
+        Msg::FilterMolecules => "Molekul".into(),
         Msg::InvitedWaiting { names } => format!("diundang: {} · menunggu", names).into(),
         Msg::BondMember => "anggota".into(),
         Msg::BondInvited => "diundang · menunggu".into(),

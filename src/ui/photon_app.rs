@@ -1035,11 +1035,28 @@ pub(crate) enum ReadyFilter {
     All,
     /// The PEOPLE you have added — a person is not a conversation; tapping one is Message (open or found your two-member conversation).
     People,
-    /// Invitations waiting on us (Nick 2026-10-24) — the pill shows only while there are any.
+    /// Conversations with only you in them.
+    Atoms,
+    /// Conversations with anyone else in them — two members or twenty.
+    Molecules,
+    /// Invitations waiting on us (Nick 2026-10-24) — in the cycle only while there are any.
     Invitations,
 }
 
-/// Does the Ready list show contact `c` under `rf` (docs/conversations.md D8)? All lists conversations — your own, and a friend's two-member one once it exists; People lists the people you have added; Invitations lists neither. A fleet sibling is never listed.
+impl ReadyFilter {
+    /// The ONE filter pill's cycle (Nick 2026-10-25: two buttons — the filter, and New atom): All → People → Atoms → Molecules → (Invitations, while any wait) → All.
+    pub(crate) fn next(self, invitations_waiting: bool) -> ReadyFilter {
+        match self {
+            ReadyFilter::All => ReadyFilter::People,
+            ReadyFilter::People => ReadyFilter::Atoms,
+            ReadyFilter::Atoms => ReadyFilter::Molecules,
+            ReadyFilter::Molecules if invitations_waiting => ReadyFilter::Invitations,
+            ReadyFilter::Molecules | ReadyFilter::Invitations => ReadyFilter::All,
+        }
+    }
+}
+
+/// Does the Ready list show contact `c` under `rf` (docs/conversations.md D8)? All lists conversations — your own, and a friend's two-member one once it exists; People lists the people you have added; Atoms your own; Molecules the two-member ones. A fleet sibling is never listed.
 fn ready_admits_contact(rf: ReadyFilter, c: &crate::types::Contact, us: &[u8; 32]) -> bool {
     if c.is_sibling {
         return false;
@@ -1048,7 +1065,38 @@ fn ready_admits_contact(rf: ReadyFilter, c: &crate::types::Contact, us: &[u8; 32
     match rf {
         ReadyFilter::All => alone || c.friendship_id.is_some(),
         ReadyFilter::People => !alone,
+        ReadyFilter::Atoms => alone,
+        ReadyFilter::Molecules => !alone && c.friendship_id.is_some(),
         ReadyFilter::Invitations => false,
+    }
+}
+
+/// Does the Ready list show a group with `standing` members under `rf`? An atom is a conversation of one; a molecule has anyone else in it.
+fn ready_admits_group(rf: ReadyFilter, standing: usize) -> bool {
+    match rf {
+        ReadyFilter::All => true,
+        ReadyFilter::Atoms => standing <= 1,
+        ReadyFilter::Molecules => standing > 1,
+        ReadyFilter::People | ReadyFilter::Invitations => false,
+    }
+}
+
+#[cfg(test)]
+mod ready_filter_tests {
+    use super::ReadyFilter;
+
+    /// The one filter pill cycles All → People → Atoms → Molecules → All, passing thru Invitations only while any wait.
+    #[test]
+    fn the_filter_pill_cycles_and_visits_invitations_only_while_any_wait() {
+        let mut f = ReadyFilter::All;
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            f = f.next(false);
+            seen.push(f);
+        }
+        assert_eq!(seen, vec![ReadyFilter::People, ReadyFilter::Atoms, ReadyFilter::Molecules, ReadyFilter::All]);
+        assert_eq!(ReadyFilter::Molecules.next(true), ReadyFilter::Invitations);
+        assert_eq!(ReadyFilter::Invitations.next(true), ReadyFilter::All);
     }
 }
 
@@ -2226,7 +2274,7 @@ pub struct PhotonApp {
     molecule_title_textbox: Option<Textbox>,
     /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
     molecule_leave_armed: bool,
-    /// The Ready list's filter strip (docs/conversations.md D2, D8). Hit ids [ready_filter_base, +4): 0 = All, 1 = New atom, 2 = Invitations, 3 = People.
+    /// The Ready list's filter strip (docs/conversations.md D2, D8): two buttons. Hit ids [ready_filter_base, +2): 0 = the filter (cycles All → People → Atoms → Molecules → Invitations while any wait), 1 = New atom.
     ready_filter: ReadyFilter,
     ready_filter_base: HitId,
     /// NEW ATOM mode on the Ready screen: the search box is the title box, the plus founds the atom instead of searching a handle.

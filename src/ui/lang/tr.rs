@@ -320,6 +320,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAll => "Tümü".into(),
         Msg::FilterInvitations => "Davetler".into(),
         Msg::FilterPeople => "Kişiler".into(),
+        Msg::FilterAtoms => "Atomlar".into(),
+        Msg::FilterMolecules => "Moleküller".into(),
         Msg::InvitedWaiting { names } => format!("davet edilenler: {} · bekleniyor", names).into(),
         Msg::BondMember => "üye".into(),
         Msg::BondInvited => "davet edildi · bekleniyor".into(),

@@ -307,11 +307,11 @@ impl PhotonApp {
                     .molecule_rosters
                     .iter()
                     .enumerate()
-                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && rf == ReadyFilter::All && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
+                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>()
                 // Invitations show under All and alone under Invitations — never among the people.
-                + if rf == ReadyFilter::People { 0 } else { lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>() };
+                + if !matches!(rf, ReadyFilter::All | ReadyFilter::Invitations) { 0 } else { lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>() };
             self.contact_row_lines = lines_by_ci;
             self.molecule_row_lines = lines_by_gi;
             self.offer_row_lines = lines_by_oi;
@@ -2036,11 +2036,11 @@ impl PhotonApp {
                         .iter()
                         .enumerate()
                         // A molecule we LEFT is off the list (its records stay on disk, read-only). Read the field, not the method: the chrome borrow is live here.
-                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && rf == ReadyFilter::All && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
+                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && super::ready_admits_group(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 // INVITATIONS (docs/conversations.md): every open offer, under All and alone under Invitations — the pre-pass sized exactly these.
-                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty() && rf != ReadyFilter::People).map(|(oi, _)| ReadyRow::Offer(oi)))
+                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty() && matches!(rf, ReadyFilter::All | ReadyFilter::Invitations)).map(|(oi, _)| ReadyRow::Offer(oi)))
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
             let our_handle_hash = self
@@ -2094,19 +2094,25 @@ impl PhotonApp {
             // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
             let ring_thickness = super::ring_thickness(avatar_r);
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
-            // THE FILTER STRIP (docs/conversations.md D2, D8): All, People, New atom, and Invitations while any wait — a pseudo-row at the top of the block that scrolls with it.
+            // THE FILTER STRIP (docs/conversations.md D2, D8): the one filter pill and New atom — a pseudo-row at the top of the block that scrolls with it.
             let strip_now: isize = {
                 let strip_top = rows.y0 as f32 - scroll as f32;
                 let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
-                // Each pill carries its hit slot: 0 All, 3 People, 1 New atom, 2 Invitations (drawn only while an offer waits on us, with its count).
+                // Each pill carries its hit slot: 0 the filter, 1 New atom.
                 let open_invites = self.bond_offers.iter().filter(|o| !o.accepted).count();
-                let mut labels: Vec<(std::borrow::Cow<'static, str>, HitId)> = vec![(tr(Msg::FilterAll), 0), (tr(Msg::FilterPeople), 3), (tr(Msg::NewAtom), 1)];
-                if open_invites > 0 {
-                    labels.push((format!("{} \u{00b7} {}", tr(Msg::FilterInvitations), open_invites).into(), 2));
-                }
-                let chosen = |slot: HitId| match (slot, self.ready_filter) {
-                    (0, ReadyFilter::All) | (2, ReadyFilter::Invitations) | (3, ReadyFilter::People) => Some(*theme::PILL_GREEN),
-                    (1, _) if self.atom_naming => Some(*theme::PILL_GREEN),
+                // TWO BUTTONS (Nick 2026-10-25): the filter, which names the view it shows and cycles All → People → Atoms → Molecules (→ Invitations while any wait, with their count), and New atom.
+                let filter_label: std::borrow::Cow<'static, str> = match self.ready_filter {
+                    ReadyFilter::All if open_invites > 0 => format!("{} \u{00b7} {} {}", tr(Msg::FilterAll), open_invites, tr(Msg::FilterInvitations)).into(),
+                    ReadyFilter::All => tr(Msg::FilterAll),
+                    ReadyFilter::People => tr(Msg::FilterPeople),
+                    ReadyFilter::Atoms => tr(Msg::FilterAtoms),
+                    ReadyFilter::Molecules => tr(Msg::FilterMolecules),
+                    ReadyFilter::Invitations => format!("{} \u{00b7} {}", tr(Msg::FilterInvitations), open_invites).into(),
+                };
+                let labels: Vec<(std::borrow::Cow<'static, str>, HitId)> = vec![(filter_label, 0), (tr(Msg::NewAtom), 1)];
+                let chosen = |slot: HitId| match slot {
+                    0 if self.ready_filter != ReadyFilter::All => Some(*theme::PILL_GREEN),
+                    1 if self.atom_naming => Some(*theme::PILL_GREEN),
                     _ => None,
                 };
                 let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().map(|(l, slot)| (l.as_ref(), (self.ready_filter_base + *slot), true, chosen(*slot))).collect();

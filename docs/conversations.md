@@ -79,7 +79,7 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 ## 6. Owner decisions
 
 - D1. DECIDED (2026-10-24): the key rides the bonds (§0) — no per-conversation key exchange, O(N) per era; no contributory entropy; the minter delivers directly to anyone it is bonded with that has not ACKed.
-- D2. DECIDED: Ready filters are `All · Invitations`.
+- D2. DECIDED, then refined (Nick 2026-10-25): TWO buttons on the Ready strip — one filter pill cycling All → People → Atoms → Molecules (→ Invitations while any wait), and New atom. An atom is a conversation of one; a molecule has anyone else in it.
 - D3. DECIDED: a person's colour is keyed on the pair (you, them), so it is the same for that friend on your devices in every conversation; on someone else's screen it differs. A conversation row draws its members in their pair colours.
 - D4. Bridge terminal moves to the device page (not yet asked).
 - D5. DECIDED: hold Phase 1 for Phase 3 — the convergence ships together, every capability working at every size on day one. Phases are still built in order.

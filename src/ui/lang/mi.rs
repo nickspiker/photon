@@ -320,6 +320,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAll => "Katoa".into(),
         Msg::FilterInvitations => "Ngā pōhiri".into(),
         Msg::FilterPeople => "Ngā tāngata".into(),
+        Msg::FilterAtoms => "Ngota".into(),
+        Msg::FilterMolecules => "Ngota-rahi".into(),
         Msg::InvitedWaiting { names } => format!("kua pōhiritia: {} · e tatari ana", names).into(),
         Msg::BondMember => "mema".into(),
         Msg::BondInvited => "kua pōhiritia · e tatari ana".into(),

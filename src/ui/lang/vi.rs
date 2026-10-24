@@ -317,6 +317,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAll => "Tất cả".into(),
         Msg::FilterInvitations => "Lời mời".into(),
         Msg::FilterPeople => "Mọi người".into(),
+        Msg::FilterAtoms => "Nguyên tử".into(),
+        Msg::FilterMolecules => "Phân tử".into(),
         Msg::InvitedWaiting { names } => format!("đã mời: {} · đang chờ", names).into(),
         Msg::BondMember => "thành viên".into(),
         Msg::BondInvited => "đã mời · đang chờ".into(),

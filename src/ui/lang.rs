@@ -555,6 +555,8 @@ pub enum Msg<'a> {
     FilterInvitations,
     /// The Ready view of the people you have added (docs/conversations.md D8).
     FilterPeople,
+    FilterAtoms,
+    FilterMolecules,
     /// The sponsor's line under an atom or molecule row: the friends invited who have not joined yet.
     InvitedWaiting { names: &'a str },
     /// Bonds-page row tags: a standing member (locked), an invite out and not answered, and the two edits staged until the page is left.
