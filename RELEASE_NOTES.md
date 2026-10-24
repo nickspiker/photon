@@ -6,6 +6,16 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Update your friends too.** This version changes how Photon keeps each friendship's keys, so a chat with someone still on an older version can pause until they update; every device updates itself, so it sorts itself out within the day.
+- **Every conversation works the same, whatever its size.** Just you, you and one friend, or a whole group: the same panel opens from the orb, with the people in it (Bonds), the conversation in numbers, and Manage. Tap anyone in Bonds to see their page.
+- **People and conversations are separate.** Adding a friend no longer starts a chat by itself. Everyone you've added is under People; tap one to message them, and your conversation with them starts right there.
+- **Invitations have their own row.** An invitation to a molecule sits at the top of your list with Bind and Decline, instead of a card inside your chat with whoever sent it. Decline undoes it on their side too, as if it was never sent.
+- **Molecules can do everything a chat can.** React, edit, reply, resend, delete for everyone, star, send and open pictures and files, and clear history all work in molecules now, and their files copy to all your devices.
+- **Start as many atoms as you like, named or not.** An atom without a title shows the names of the people in it, and any number of atoms or molecules can share a title.
+- **One colour per friend.** A friend wears the same colour on your devices in every conversation they're in.
+- **A molecule shows where it stands.** While you're joining or catching up, the line under its name says so, the same way a new friendship shows its progress.
+- **Keys stop getting stuck.** Each friendship now has its own secure channel, and when two devices disagree about a conversation's keys the one that should fix it does, right away, instead of each side waiting for the other.
+- **Safer molecules.** A molecule's member list now only accepts changes signed by the member's own devices, a member can only delete their own messages, and new keys for a conversation are only accepted from someone in it.
 
 ## v125
 - **Molecules reach all your devices.** A molecule you start now shows up on your other phones and computers straight away, so any of them can let a friend in. Before, it stayed on the device that made it until someone posted in it, so a friend's join could wait on a device that was asleep.

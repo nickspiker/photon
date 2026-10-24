@@ -1775,7 +1775,12 @@ impl PhotonApp {
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(era_row);
                 persist_ci = Some(contact_idx);
-                era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
+                // Era rows belong to the BOND (docs/conversations.md §7): one arriving on a conversation is an older build's light ratchet — kept as a hidden row for its ACK, never applied (conversation eras are minted and delivered over the bond; the era-mismatch heal converges the two sides).
+                if chains.bond || self.contacts.get(contact_idx).is_some_and(|c| c.is_sibling) {
+                    era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
+                } else {
+                    crate::logf!("ERA: an era row on conversation {} (an older build's ratchet) — kept for its ACK, not applied; conversation eras ride the bond", hex::encode(&chains.friendship_id.as_bytes()[..4]));
+                }
             } else if let Some(crate::types::RowControl::Molecule(sig)) = wire_control.clone() {
                 // Group control row (docs/molecules.md §4): an INVITE rides a friendship conversation, RECORDS ride the group's own — both land as hidden rows (ACK durability, the probe pattern) and dispatch after the borrow.
                 let row = ChatMessage::control(crate::types::RowControl::Molecule(sig), false, timestamp)
