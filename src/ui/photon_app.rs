@@ -1719,6 +1719,8 @@ pub struct PhotonApp {
     deliveries_in_flight: Vec<(crate::types::FriendshipId, i64, crate::types::FriendshipId)>,
     /// Who minted each conversation's pending era — two members minting the same index converge on the LOWER party's.
     pending_minter: std::collections::HashMap<crate::types::FriendshipId, [u8; 32]>,
+    /// Era disagreements already acted on: (chains id, the peer's era tag, our bond's era tag or 0) — each heals once, a re-keyed bond tries again.
+    era_heals: std::collections::HashSet<(crate::types::FriendshipId, u32, u32)>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
     pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -2864,6 +2866,7 @@ impl PhotonApp {
             bonds_checked: (0, 0),
             deliveries_in_flight: Vec::new(),
             pending_minter: std::collections::HashMap::new(),
+            era_heals: std::collections::HashSet::new(),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,

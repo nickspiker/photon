@@ -401,6 +401,8 @@ impl PhotonApp {
         let mut rotated_flush: Vec<crate::types::friendship::FriendshipId> = Vec::new();
         // ACKs that landed on a BOND (docs/conversations.md §0): the minter's cutover edge for a conversation era it delivered — run after the drain, where &mut self is free.
         let mut bond_acks_after: Vec<(crate::types::friendship::FriendshipId, i64)> = Vec::new();
+        // Era observations with the DEVICE that advertised them: the mismatch heal acts only on a friend's own devices, never on a sibling of ours that lags (docs/conversations.md §7).
+        let mut era_heals_after: Vec<(crate::types::friendship::FriendshipId, [u8; 32], u32)> = Vec::new();
         // Sender-side re-serve jobs (Nick's go, 2026-08-20): (contact idx, rows as (eagle_time, content, reference)) collected during the drain — chain_transmit needs &mut self, so execution waits for the checker borrow to release, same as rotated_flush.
         let mut reserve_jobs: Vec<(
             usize,
@@ -523,6 +525,7 @@ impl PhotonApp {
                                     let ours_s = ours_tag.map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
                                     crate::logf!("ERA: {} advertises era#{:08x} (index {}) for a friendship we hold at era#{} (index {})", crate::fp(&peer_pubkey.key), record.era_tag, record.era_index, ours_s, chains.era_index);
                                     era_triggers_after.push((*fid, super::era::RepairTrigger::StaleEraObserved { peer_index: record.era_index, peer_tag: record.era_tag }));
+                                    era_heals_after.push((*fid, peer_pubkey.key, record.era_tag));
                                 }
                                 // RETIRE EDGE: the peer is on our era and has already delivered a current-era frame — everything it still had on the old era re-serves on the new one, so the retired era has nothing left to decrypt.
                                 if ours_tag == Some(record.era_tag) && chains.retired_era().is_some() && chains.rows_since_ratchet >= 1 {
@@ -5408,6 +5411,15 @@ impl PhotonApp {
         if owner_edge {
             self.recompute_ceremony_owners("presence verdict");
         }
+        // THE ERA-MISMATCH HEAL first (bonds.rs): a friend's device advertising an era our chains never held is healed by the lower party, no handshake to wait on; what it takes, the ordinary repair below leaves alone.
+        let mut healed: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+        for (fid, device, tag) in era_heals_after {
+            let friends_device = self.contacts.iter().any(|c| !c.is_sibling && c.knows_device(&device) && (c.friendship_id == Some(fid) || self.bond_chains_id(c) == Some(fid)));
+            if friends_device && self.heal_era_mismatch(fid, tag) {
+                healed.push(fid);
+            }
+        }
+        let era_triggers_after: Vec<_> = era_triggers_after.into_iter().filter(|(fid, _)| !healed.contains(fid)).collect();
         for (fid, trigger) in era_triggers_after {
             // Era observations name a BOND (docs/conversations.md §7) — a conversation record's era is a mint's business, never the ratchet's.
             if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && self.bond_chains_id(c) == Some(fid)) {

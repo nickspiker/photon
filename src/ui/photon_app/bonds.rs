@@ -100,6 +100,8 @@ impl PhotonApp {
             }
         }
         self.found_pair_conversation(ci);
+        // A disagreement the old bond could not carry gets its heal again over this one.
+        self.reheal_after_bond(ci);
     }
 
     /// FOUND the pair's two-member conversation over a fresh bond (docs/conversations.md §7): the LOWER party (by party id) mints its era 0 and delivers it whole on the bond; the other side installs it when it lands (`on_era_delivery`). A friend who already holds a conversation with us keeps it.
@@ -324,7 +326,9 @@ impl PhotonApp {
         let Some((era, lineage)) = self.friendship_chains.iter().find(|(id, _)| *id == conv).map(|(_, c)| (c.era_index, c.era_lineage)) else {
             return false;
         };
-        let next = era + 1;
+        // Past BOTH sides: a whole era must land beyond the index the other party holds too, or a peer ahead of us refuses it as not new.
+        let peer_index = self.peer_era_seen.iter().filter(|((f, _), _)| *f == conv).map(|(_, (idx, _))| *idx).max().unwrap_or(0);
+        let next = era.max(peer_index) + 1;
         let (root, hk): ([u8; 32], [u8; 32]) = (rand::random(), rand::random());
         if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == conv) {
             chains.install_pending(crate::types::friendship::PendingEra { era_index: next, lane_root: root, history_key: Some(hk), tag: crate::crypto::clutch::era_tag(&root), resp_osc: None });
@@ -342,5 +346,65 @@ impl PhotonApp {
         }
         crate::logf!("ERA: {} — era#{} re-delivered WHOLE over the bond ({}) — {}", hex::encode(&conv.as_bytes()[..4]), next, why, if sent { "sent" } else { "queued" });
         true
+    }
+}
+
+impl PhotonApp {
+    /// Do these chains know the era `tag` — current, pending, or retired? An era they know is a straggler or a cutover in flight; one they do not is a real disagreement.
+    fn chains_know_era(&self, fid: crate::types::FriendshipId, tag: u32) -> bool {
+        self.friendship_chains.iter().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.era_tag() == Some(tag) || c.pending_era().is_some_and(|p| p.tag == tag) || c.retired_era().is_some_and(|r| r.tag == tag))
+    }
+
+    /// THE ERA-MISMATCH HEAL (docs/conversations.md §7; Nick 2026-10-25, the Emma stall: one side waited on an answer that never came, the other waited on a repair the first never ran). A peer advertising an era our chains do not know at all is healed by the LOWER party, with nothing to wait for on either side:
+    /// a BOND re-runs a fresh CLUTCH; a two-member CONVERSATION has its era re-delivered whole over the bond. The higher party just takes what arrives. Each disagreement acts once (per era seen, and per bond era for a conversation, so a re-keyed bond tries again). Returns whether this was a heal case (the caller's ordinary repair handles the rest).
+    pub(super) fn heal_era_mismatch(&mut self, fid: crate::types::FriendshipId, peer_tag: u32) -> bool {
+        if self.chains_know_era(fid, peer_tag) {
+            return false;
+        }
+        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            return false;
+        };
+        if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && self.bond_chains_id(c) == Some(fid)) {
+            let them = self.contacts[ci].handle_hash;
+            let fp = crate::fp(&self.contacts[ci].handle_proof);
+            if us > them {
+                crate::logf!("ERA: {}'s bond advertises era#{:08x}, one ours never held — the lower party re-keys it; waiting", fp, peer_tag);
+                return true;
+            }
+            if self.era_heals.insert((fid, peer_tag, 0)) {
+                crate::logf!("ERA: {}'s bond advertises era#{:08x}, one ours never held — we are the lower party: a fresh CLUTCH re-keys the bond", fp, peer_tag);
+                self.rekey_without_chains(ci);
+            }
+            return true;
+        }
+        if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && c.friendship_id == Some(fid)) {
+            let them = self.contacts[ci].handle_hash;
+            let fp = crate::fp(&self.contacts[ci].handle_proof);
+            if us > them {
+                crate::logf!("ERA: our conversation with {} advertises era#{:08x}, one we never held — the lower party re-delivers it; waiting", fp, peer_tag);
+                return true;
+            }
+            let bond_tag = self.bond_fid_of(ci).and_then(|b| self.friendship_chains.iter().find(|(id, _)| *id == b)).and_then(|(_, c)| c.era_tag()).unwrap_or(0);
+            if self.friendship_chains.iter().any(|(id, c)| *id == fid && c.pending_era().is_some()) || self.deliveries_in_flight.iter().any(|(_, _, c)| *c == fid) {
+                return true; // a re-delivery is already on its way
+            }
+            if self.era_heals.insert((fid, peer_tag, bond_tag)) {
+                crate::logf!("ERA: our conversation with {} advertises era#{:08x}, one we never held — we are the lower party: its era goes whole over the bond", fp, peer_tag);
+                self.redeliver_pair_era(fid, "era mismatch");
+            }
+            return true;
+        }
+        false
+    }
+
+    /// A bond just (re-)completed: every conversation disagreement already observed gets its heal again over the fresh bond — observations fire on a change only, so nothing else would re-raise them.
+    pub(super) fn reheal_after_bond(&mut self, ci: usize) {
+        let Some(conv) = self.contacts.get(ci).and_then(|c| c.friendship_id) else {
+            return;
+        };
+        let seen: Vec<u32> = self.peer_era_seen.iter().filter(|((f, dev), _)| *f == conv && self.contacts[ci].knows_device(dev)).map(|(_, (_, tag))| *tag).collect();
+        for tag in seen {
+            self.heal_era_mismatch(conv, tag);
+        }
     }
 }
