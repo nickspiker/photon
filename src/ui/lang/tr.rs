@@ -324,7 +324,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondInvited => "davet edildi · bekleniyor".into(),
         Msg::BondWillInvite => "davet edilecek".into(),
         Msg::BondWillWithdraw => "davet geri çekilecek".into(),
-        Msg::AtomLabel => "atom".into(),
         Msg::NewAtom => "Yeni atom".into(),
         Msg::HistoryFromGenesis => "Yeni gelenler her şeyi görür".into(),
         Msg::HistoryFromJoin => "Yeni gelenler bağlandıkları andan itibaren görür".into(),

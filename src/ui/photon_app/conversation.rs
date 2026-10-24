@@ -314,21 +314,15 @@ impl PhotonApp {
         // Focus claims are a friendship-token affair today (the token derives from the pair); a group claim rides the group token once the fleet notification design lands for groups.
     }
 
-    /// The transient contact the conversation screen paints a group thru (`Contact::molecule_view`): the shared title, the standing count minus us, and online = any standing member's contact row is online.
+    /// The transient contact the conversation screen paints a group thru (`Contact::molecule_view`): the shared title (its members' names when untitled), the standing count minus us, online = any standing member's contact row is online, and woven only once the conversation stands — so the status line under the header reads exactly as a pair's does (docs/conversations.md Phase 1). The phase is that line's business, never the title's.
     pub(super) fn molecule_view_of(&self, gi: usize) -> Option<crate::types::Contact> {
         let (gid, roster) = self.molecule_rosters.get(gi)?;
         let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
         let standing = roster.standing();
         let remote = standing.iter().filter(|p| Some(**p) != us).count();
         let online = standing.iter().any(|p| Some(*p) != us && self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p && c.is_online));
-        let title = match self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase) {
-            Some(crate::storage::molecule::MoleculePhase::Joining) => format!("{} · {}", roster.display_title(), tr(Msg::JoiningStatus)),
-            Some(crate::storage::molecule::MoleculePhase::CatchingUp) => format!("{} · {}", roster.display_title(), tr(Msg::CatchingUpStatus)),
-            Some(crate::storage::molecule::MoleculePhase::Left) => format!("{} · {}", roster.display_title(), tr(Msg::LeftStatus)),
-            _ if remote == 0 => format!("{} · {}", roster.display_title(), tr(Msg::AtomLabel)),
-            _ => format!("{} · {}", roster.display_title(), crate::fmt_num64((remote + 1) as u64)),
-        };
-        Some(crate::types::Contact::molecule_view(*gid, &title, remote, online))
+        let phase = self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+        Some(crate::types::Contact::molecule_view(*gid, &roster.display_title(), remote, online, phase == crate::storage::molecule::MoleculePhase::Standing))
     }
 
     /// Open the conversation this contact row stands for.

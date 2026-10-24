@@ -322,7 +322,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondInvited => "inimbitahan · naghihintay".into(),
         Msg::BondWillInvite => "iimbitahan".into(),
         Msg::BondWillWithdraw => "babawiin ang imbitasyon".into(),
-        Msg::AtomLabel => "atomo".into(),
         Msg::NewAtom => "Bagong atomo".into(),
         Msg::HistoryFromGenesis => "Nakikita ng mga bago ang lahat".into(),
         Msg::HistoryFromJoin => "Nakikita ng mga bago mula nang bumigkis".into(),

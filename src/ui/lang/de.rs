@@ -323,7 +323,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondInvited => "eingeladen · ausstehend".into(),
         Msg::BondWillInvite => "wird eingeladen".into(),
         Msg::BondWillWithdraw => "Einladung wird zurückgezogen".into(),
-        Msg::AtomLabel => "Atom".into(),
         Msg::NewAtom => "Neues Atom".into(),
         Msg::HistoryFromGenesis => "Neue sehen alles".into(),
         Msg::HistoryFromJoin => "Neue sehen ab ihrer Bindung".into(),

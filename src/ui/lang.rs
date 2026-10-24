@@ -560,8 +560,6 @@ pub enum Msg<'a> {
     BondInvited,
     BondWillInvite,
     BondWillWithdraw,
-    /// "atom" — the header suffix and the picker's count for a molecule of one.
-    AtomLabel,
     /// The picker's "start a new group" row.
     NewAtom,
     /// History policy pills, fixed at birth (D5).

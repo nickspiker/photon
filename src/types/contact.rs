@@ -887,7 +887,7 @@ impl Contact {
     }
 
     /// The GROUP VIEW: a transient contact the conversation screen paints a group thru. Title as the published name (so the title bar and header read it, and "Pending…" never shows for a titled group), the group id as the gradient seed and the party id (the header colour), the standing count as the remote count. Runtime-only — never pushed into `contacts`, never persisted, never pinged.
-    pub fn molecule_view(gid: crate::types::molecule::MoleculeId, title: &str, remote: usize, online: bool) -> Self {
+    pub fn molecule_view(gid: crate::types::molecule::MoleculeId, title: &str, remote: usize, online: bool, standing: bool) -> Self {
         let mut c = Self::from_pin([0u8; 64], gid.0, gid.0, None);
         c.published_name = title.to_string();
         c.molecule = Some(gid);
@@ -895,7 +895,7 @@ impl Contact {
         c.is_online = online;
         c.friendship_id = Some(crate::types::FriendshipId::from_bytes(gid.0));
         c.clutch_state = ClutchState::Complete;
-        c.chain_woven = true;
+        c.chain_woven = standing;
         c
     }
 

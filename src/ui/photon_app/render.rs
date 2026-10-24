@@ -159,6 +159,8 @@ impl PhotonApp {
         let active_gi = self.active_molecule();
         let molecule_view: Option<crate::types::Contact> = active_gi.and_then(|gi| self.molecule_view_of(gi));
         let active_gid: Option<crate::types::molecule::MoleculeId> = active_gi.map(|gi| self.molecule_rosters[gi].0);
+        // Where a roster-backed conversation stands (Joining, CatchingUp, Standing, Left) — the status line under its header reads it, as a pair's reads its CLUTCH step.
+        let active_phase: Option<crate::storage::molecule::MoleculePhase> = active_gid.map(|g| self.molecule_locals.iter().find(|(lg, _)| *lg == g).map(|(_, l)| l.phase).unwrap_or_default());
         // A member's name grant by party id, for the author line above each incoming group row ("Pending…" until their fold names them).
         let molecule_names: Vec<([u8; 32], String)> = active_gi
             .map(|gi| self.molecule_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
@@ -3078,39 +3080,26 @@ impl PhotonApp {
                             .shear(0.2126)
                     };
 
-                    // CLUTCH/lifecycle status — computed here, DRAWN inside stream entry #0 (under the name, at genesis). End-of-identity states outrank the ceremony line; a woven chain shows no line at all (the working conversation is its own proof); self shows one only while empty.
-                    // A conversation with nobody else in it (your own notes, an atom you stand in alone) has nothing pending and gets NO line — it used to read "notes to self", which named a solo atom wrong and named you as if you were not a person (Nick 2026-10-01: self is a contact like anyone).
+                    // THE STATUS LINE — the same rule at every size (docs/conversations.md Phase 1): computed here, DRAWN inside stream entry #0 (under the name, at genesis). End-of-identity states outrank the key line; a secured conversation shows no line at all (the working conversation is its own proof).
+                    // A pair shows its CLUTCH step until the chain is woven; a roster-backed conversation shows binding / catching up / you left until it stands. A conversation with nobody else in it has nothing pending and gets NO line (Nick 2026-10-01: self is a contact like anyone).
                     let show_status = contact.identity_superseded
                         || contact.identity_ended
                         || (!is_self_contact && !contact.chain_woven);
                     let status_in_stream: Option<(String, u32)> = if show_status {
                         Some(if contact.identity_superseded {
-                            (
-                                tr(Msg::NameReclaimed).into_owned(),
-                                *theme::ERROR_TEXT_COLOUR,
-                            )
+                            (tr(Msg::NameReclaimed).into_owned(), *theme::ERROR_TEXT_COLOUR)
                         } else if contact.identity_ended {
-                            (
-                                tr(Msg::IdentityEndedFrozen).into_owned(),
-                                *theme::LABEL_COLOUR,
-                            )
+                            (tr(Msg::IdentityEndedFrozen).into_owned(), *theme::LABEL_COLOUR)
+                        } else if let (Some(phase), true) = (active_phase, contact.molecule.is_some()) {
+                            match phase {
+                                crate::storage::molecule::MoleculePhase::Left => (tr(Msg::LeftStatus).into_owned(), *theme::LABEL_COLOUR),
+                                crate::storage::molecule::MoleculePhase::CatchingUp => (tr(Msg::CatchingUpStatus).into_owned(), *theme::HOURGLASS_COLOUR),
+                                _ => (tr(Msg::JoiningStatus).into_owned(), *theme::HOURGLASS_COLOUR),
+                            }
                         } else {
                             (
-                                tr(Msg::ClutchStatus(&contact_status_line(
-                                    contact,
-                                    self.device_keypair
-                                        .as_ref()
-                                        .map(|kp| *kp.public.as_bytes()),
-                                    self.session.as_ref().map(|se| &se.identity_seed),
-                                    self.contacts.iter().any(|s| s.is_sibling),
-                                    self.fleet_settings.as_ref(),
-                                )))
-                                .into_owned(),
-                                if contact.clutch_state == crate::types::ClutchState::Complete {
-                                    *theme::SEARCH_FOUND_COLOUR
-                                } else {
-                                    *theme::HOURGLASS_COLOUR
-                                },
+                                tr(Msg::ClutchStatus(&contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed), self.contacts.iter().any(|s| s.is_sibling), self.fleet_settings.as_ref()))).into_owned(),
+                                if contact.clutch_state == crate::types::ClutchState::Complete { *theme::SEARCH_FOUND_COLOUR } else { *theme::HOURGLASS_COLOUR },
                             )
                         })
                     } else {

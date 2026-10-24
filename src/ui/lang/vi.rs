@@ -321,7 +321,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondInvited => "đã mời · đang chờ".into(),
         Msg::BondWillInvite => "sẽ mời".into(),
         Msg::BondWillWithdraw => "lời mời sẽ bị rút lại".into(),
-        Msg::AtomLabel => "nguyên tử".into(),
         Msg::NewAtom => "Nguyên tử mới".into(),
         Msg::HistoryFromGenesis => "Người mới thấy tất cả".into(),
         Msg::HistoryFromJoin => "Người mới thấy từ lúc liên kết".into(),

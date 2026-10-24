@@ -328,7 +328,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BondInvited => "amealikwa · tunasubiri".into(),
         Msg::BondWillInvite => "ataalikwa".into(),
         Msg::BondWillWithdraw => "mwaliko utaondolewa".into(),
-        Msg::AtomLabel => "atomu".into(),
         Msg::NewAtom => "Atomu mpya".into(),
         Msg::HistoryFromGenesis => "Wapya wanaona yote".into(),
         Msg::HistoryFromJoin => "Wapya wanaona tangu wafungwe".into(),
