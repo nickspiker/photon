@@ -22,3 +22,5 @@ Decisions: shrink (revoke/release) → a FULL CLUTCH woven with the old roots fo
 - Ceremony ownership is claim-first now ([[project_ceremony_claim_first]]).
 
 **NEXT:** stage 5 consent/banner/pinned_genesis, stage 6 timers→edges + soak. Field tells: "ERA: …" lines, "Init sent", "Resp sent", "cut over …", supersede index N+1. Related: [[project_braid_v2]], [[project_clutch_completion_rebroadcast]].
+
+**2026-10-24 STRANDED-ERA DEADLOCK (Emma ↔ Nick, fixed 45bbebfa, Android dev v0.125.2):** an era step agreed with a device that never replicated it (dead Pixel) left Emma on era#1, Nick's desktop+MacBook on era#0. Behind side: StaleEraObserved → PullFleet → FleetAllMissed → LightRatchet Init from era#0. Ahead side dropped it ("peer on our RETIRED era") and Held ("its own repair moves it") → permanent mutual wait, all frames dropped as unknown era. Fix: ahead side treats an Init from its retired era as proof the peer's fleet lost the era → rekey_without_chains once per contact per session (era_reclutched). Nick asked "why old encrypt schemes floating around?" — eras are key GENERATIONS, not schemes; explain it that way.
