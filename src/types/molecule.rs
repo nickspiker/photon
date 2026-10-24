@@ -493,6 +493,8 @@ pub enum MoleculeSignal {
     Wrap,
     /// Records posted INSIDE the group — genesis, member, vouch, bundle, title, leave, in any mix — as a roster-codec blob in `gpl`. History re-serve REBUILDS the blob from the roster at serve time (records never delete, so the roster always holds them).
     Records,
+    /// The invitee's DECLINE ("Not now"), back over the friendship braid: the group id in `gpl`. The sponsor treats it as an UNDO (Nick 2026-10-24: "like I never sent it") — it forgets the invite and deletes its offer row for everyone, which also clears the invite from every device of the invitee's.
+    Decline,
 }
 
 /// Mint a member record for a JOIN (§4: consent IS this record, posted into the group as the joiner's first frame) or a re-grant (name/avatar change re-signs at a newer stamp — newest-wins in the merge).

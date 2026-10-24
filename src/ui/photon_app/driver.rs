@@ -325,7 +325,7 @@ impl FluorApp for PhotonApp {
         self.msg_copy_id = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 1);
         self.msg_action_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 16); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join (a group offer card, docs/molecules.md)
+        reserve_hits(&mut self.hit_counter, 17); // reply/edit/resend/delete/open-or-fetch/stop/wave back/export/replicate/music play/star/wave play/loft/join, decline at 16 (a group offer card, docs/molecules.md)
         self.react_strip_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 10); // reaction glyph pills 0..=8 + the "+" (custom) at 9
         self.conv_filter_hit = self.hit_counter;
@@ -372,7 +372,7 @@ impl FluorApp for PhotonApp {
         self.molecule_panel_btn_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 40); // 8 pills + 32 Add-page contact rows
         self.ready_filter_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 5); // All / Friends / Atoms / Molecules / New atom
+        reserve_hits(&mut self.hit_counter, 6); // All / Friends / Atoms / Molecules / New atom / Invitations
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.wave_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.wave_start_btn = Some(Button::new(
@@ -1506,7 +1506,7 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Ready)
             && self.ready_filter_base != HIT_NONE
             && hit_id >= self.ready_filter_base
-            && hit_id < (self.ready_filter_base + 5)
+            && hit_id < (self.ready_filter_base + 6)
         {
             let k = hit_id - self.ready_filter_base;
             match k {
@@ -1514,6 +1514,7 @@ impl FluorApp for PhotonApp {
                 1 => self.ready_filter = super::ReadyFilter::Friends,
                 2 => self.ready_filter = super::ReadyFilter::Atoms,
                 3 => self.ready_filter = super::ReadyFilter::Molecules,
+                5 => self.ready_filter = super::ReadyFilter::Invitations,
                 _ => {
                     // NEW ATOM: the search box becomes the title box; the plus (or Enter) founds it. Tapping again cancels.
                     self.atom_naming = !self.atom_naming;
@@ -1655,9 +1656,23 @@ impl FluorApp for PhotonApp {
             // Details-strip action row: reply / edit / resend / delete on the selected message.
             if self.msg_action_base != HIT_NONE
                 && hit_id >= self.msg_action_base
-                && hit_id < (self.msg_action_base + 16)
+                && hit_id < (self.msg_action_base + 17)
             {
                 let slot = hit_id - self.msg_action_base;
+                // NOT NOW (slot 16, a group offer card): the decline, which undoes the invite on both sides (molecules.rs decline_offer).
+                if slot == 16 {
+                    if let (Some(ci), Some((_, ts, false))) = (self.active_contact(), self.strip_target()) {
+                        let sponsor = self.contacts[ci].handle_hash;
+                        let gid = self.bond_offers.iter().find(|o| o.sponsor == sponsor && o.row_osc == ts && !o.accepted).map(|o| o.molecule_id);
+                        if let Some(gid) = gid {
+                            self.decline_offer(gid);
+                            self.selected_msg = None;
+                        }
+                    }
+                    self.scene_dirty = true;
+                    ctx.window.request_redraw();
+                    return EventResponse::Handled;
+                }
                 // JOIN (slot 13, a group offer card — docs/molecules.md §10.1): the consent. The parked offer under the selected row names the group.
                 if slot == 13 {
                     if let (Some(ci), Some((_, ts, false))) = (self.active_contact(), self.strip_target()) {

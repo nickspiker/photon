@@ -1241,6 +1241,8 @@ impl PhotonApp {
         let mut fork_sibling_reset: Option<usize> = None;
         let mut fork_friend_rekey: Option<usize> = None;
         let mut sibling_push: Option<(usize, ChatMessage)> = None;
+        // A friend deleted their group offer (their undo of an invite we declined): the offer row's eagle time, so the parked offer is forgotten after the borrow.
+        let mut offer_undone: Option<(usize, i64)> = None;
         // Wave signal deferred past the `chains` borrow — the state machine takes &mut self (docs/waves.md).
         let mut wave_signal_evt: Option<(usize, crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
@@ -1698,14 +1700,18 @@ impl PhotonApp {
                 {
                     let conv = &mut self.conversations[conv_pos];
                     let mut tombstoned: Option<ChatMessage> = None;
+                    // The one control row a friend may delete is their group OFFER: their undo of an invite we declined (or that they withdrew) — the card goes, and the parked offer with it, below.
                     if let Some(m) = conv.messages.iter_mut().find(|m| {
                         m.timestamp == target_ts
                             && !m.is_outgoing
                             && m.wave.is_none()
-                            && !m.is_control()
+                            && (!m.is_control() || super::is_bond_offer_row(m))
                     }) {
                         if !m.deleted {
                             m.deleted = true;
+                            if super::is_bond_offer_row(m) {
+                                offer_undone = Some((contact_idx, target_ts));
+                            }
                             tombstoned = Some(m.clone());
                         }
                     }
@@ -2137,6 +2143,14 @@ impl PhotonApp {
         }
         if let Some(pos) = conv_state_pos {
             self.persist_conv_state_async(pos);
+        }
+        // The friend undid their group offer: forget the parked offer it carried (the card is already tombstoned above).
+        if let Some((ci, row_osc)) = offer_undone {
+            let sponsor = self.contacts.get(ci).map(|c| c.handle_hash);
+            if let Some(gid) = self.bond_offers.iter().find(|o| Some(o.sponsor) == sponsor && o.row_osc == row_osc).map(|o| o.molecule_id) {
+                crate::logf!("MOLECULE: offer {} undone by its sponsor — forgotten here", hex::encode(&gid.0[..4]));
+                self.forget_offer(Some(ci), gid, row_osc);
+            }
         }
         if let Some((idx, m)) = sibling_push {
             match persist_molecule_conv {

@@ -561,6 +561,10 @@ pub enum Msg<'a> {
     FilterFriends,
     FilterAtoms,
     FilterMolecules,
+    /// The Ready strip pill for group invitations waiting on us (a count follows it).
+    FilterInvitations,
+    /// The sponsor's line under an atom or molecule row: the friends invited who have not joined yet.
+    InvitedWaiting { names: &'a str },
     /// "atom" — the header suffix and the picker's count for a molecule of one.
     AtomLabel,
     /// The atom panel's one becoming.

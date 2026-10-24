@@ -330,6 +330,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterFriends => "Arkadaşlar".into(),
         Msg::FilterAtoms => "Atomlar".into(),
         Msg::FilterMolecules => "Moleküller".into(),
+        Msg::FilterInvitations => "Davetler".into(),
+        Msg::InvitedWaiting { names } => format!("davet edilenler: {} · bekleniyor", names).into(),
         Msg::AtomLabel => "atom".into(),
         Msg::CreateMoleculePill => "Bir molekül yarat!".into(),
         Msg::CreateMoleculeNote => "Kimi bağlayacağını seç. Biri bağlandığı anda bu atom bir moleküldür.".into(),

@@ -1016,6 +1016,8 @@ pub(crate) enum ReadyFilter {
     Friends,
     Atoms,
     Molecules,
+    /// Group invitations waiting on us (Nick 2026-10-24): the friends whose offer is parked and unanswered — the pill shows only while there are any.
+    Invitations,
 }
 
 /// The conversation stream filter — the cycling pill in the top bar (all → waves → text → all). Session state, never persisted; resets to All on every conversation open.

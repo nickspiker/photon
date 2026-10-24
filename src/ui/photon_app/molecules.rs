@@ -33,6 +33,7 @@ impl PhotonApp {
             (MoleculeSignal::Wrap, false) => self.install_bind_wrap(ci, wire, kem),
             (MoleculeSignal::Wrap, true) => self.install_molecule_wrap(cp, wire, kem),
             (MoleculeSignal::Records, true) => self.merge_molecule_records(ci, cp, blob),
+            (MoleculeSignal::Decline, false) => self.on_decline(ci, blob),
             (other, _) => {
                 let sender = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
                 crate::logf!("MOLECULE: {} row from {} landed {} a group conversation — ignored", format!("{other:?}"), sender, if in_group { "inside" } else { "outside" });
@@ -599,6 +600,76 @@ impl PhotonApp {
         });
         crate::logf!("MOLECULE: offer for {} {} to {}", hex::encode(&gid.0[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" }, fp);
         sent
+    }
+
+    /// NOT NOW — the invitee's decline, which is an UNDO (Nick 2026-10-24: "if they decline … undo the invite and remove it from my end so it's like I never sent it").
+    /// The parked offer and its card go from this device now; the sponsor's device, on our Decline, forgets the invite and deletes its offer row for everyone, and that delete clears the card from our other devices too.
+    pub(super) fn decline_offer(&mut self, gid: MoleculeId) -> bool {
+        let Some(offer) = self.bond_offers.iter().find(|o| o.molecule_id == gid && !o.accepted).cloned() else {
+            crate::logf!("MOLECULE: decline of {} — no open offer", hex::encode(&gid.0[..4]));
+            return false;
+        };
+        let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == offer.sponsor && !c.is_sibling) else {
+            crate::logf!("MOLECULE: decline of {} — the sponsor is no longer a contact; forgotten here", hex::encode(&gid.0[..4]));
+            self.forget_offer(None, gid, offer.row_osc);
+            return false;
+        };
+        self.forget_offer(Some(ci), gid, offer.row_osc);
+        let Some(our_pid) = self.our_party_id(&self.contacts[ci]) else {
+            return false;
+        };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(gid.0.to_vec()), wrap: None };
+        let ts = crate::network::time_base::stamp_osc();
+        let control = crate::types::RowControl::Molecule(MoleculeSignal::Decline);
+        if let Some(conv) = self.conv_mut_of(ci) {
+            conv.insert_message_sorted(crate::types::ChatMessage::control(control.clone(), true, ts));
+        }
+        self.persist_messages_async(ci);
+        let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&control));
+        crate::logf!("MOLECULE: declined {} — {} {}", hex::encode(&gid.0[..4]), if sent { "the undo sent to" } else { "the undo NOT sent (the next edge retries) to" }, crate::fp(&self.contacts[ci].handle_proof));
+        sent
+    }
+
+    /// Forget a parked offer on this device: off the list, off the vault, and its card tombstoned in the sponsor's conversation (when that conversation is known).
+    pub(super) fn forget_offer(&mut self, ci: Option<usize>, gid: MoleculeId, row_osc: i64) {
+        self.bond_offers.retain(|o| o.molecule_id != gid);
+        if let Some(storage) = self.storage.as_ref() {
+            if let Err(e) = crate::storage::molecule::unpark_bond_offer(&gid, storage) {
+                crate::logf!("MOLECULE: offer {} unpark failed: {}", hex::encode(&gid.0[..4]), e);
+            }
+        }
+        let Some(ci) = ci else { return };
+        if let Some(conv) = self.conv_mut_of(ci) {
+            if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == row_osc && super::is_bond_offer_row(m) && !m.deleted) {
+                m.deleted = true;
+            }
+        }
+        self.persist_messages_async(ci);
+        self.scene_dirty = true;
+    }
+
+    /// SPONSOR, on the invitee's Decline: the undo — forget the invite, tombstone our offer row, and delete it for everyone (the marker clears the card from each of the invitee's devices).
+    fn on_decline(&mut self, ci: usize, blob: Option<Vec<u8>>) {
+        let Some(gid) = blob.and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()).map(MoleculeId) else {
+            crate::log("MOLECULE: decline without a group id — ignored");
+            return;
+        };
+        let invitee = self.contacts[ci].handle_hash;
+        let row_ts = self.molecule_locals.iter().find(|(g, _)| *g == gid).and_then(|(_, l)| l.offered.iter().find(|(p, _)| *p == invitee).map(|(_, t)| *t));
+        let Some(row_ts) = row_ts else {
+            crate::logf!("MOLECULE: decline of {} from {} — no invite of ours (another of our devices sent it, or it is already undone)", hex::encode(&gid.0[..4]), crate::fp(&self.contacts[ci].handle_proof));
+            return;
+        };
+        self.set_molecule_local(&gid, |l| l.offered.retain(|(p, _)| *p != invitee));
+        if let Some(conv) = self.conv_mut_of(ci) {
+            if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == row_ts && super::is_bond_offer_row(m)) {
+                m.deleted = true;
+            }
+        }
+        self.persist_messages_async(ci);
+        let deleted = self.send_control(ci, crate::types::RowControl::Delete { target: row_ts }, crate::network::time_base::stamp_osc());
+        crate::logf!("MOLECULE: {} declined {} — invite undone{}", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), if deleted { ", offer deleted for everyone" } else { " here (no chain for the delete marker)" });
+        self.scene_dirty = true;
     }
 
     /// FOUND an ATOM (docs/molecules.md §0: you can only ever create an atom): a conversation with you alone in it, titled or not. Nothing is offered to anyone; binding people in later makes it a molecule.

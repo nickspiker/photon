@@ -328,6 +328,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterFriends => "Mga kaibigan".into(),
         Msg::FilterAtoms => "Mga atomo".into(),
         Msg::FilterMolecules => "Mga molekula".into(),
+        Msg::FilterInvitations => "Mga imbitasyon".into(),
+        Msg::InvitedWaiting { names } => format!("inimbitahan: {} · naghihintay", names).into(),
         Msg::AtomLabel => "atomo".into(),
         Msg::CreateMoleculePill => "Lumikha ng molekula!".into(),
         Msg::CreateMoleculeNote => "Piliin kung sino ang ibibigkis. Sa sandaling may bumigkis, molekula na ang atomong ito.".into(),

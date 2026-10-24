@@ -327,6 +327,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterFriends => "Bạn bè".into(),
         Msg::FilterAtoms => "Nguyên tử".into(),
         Msg::FilterMolecules => "Phân tử".into(),
+        Msg::FilterInvitations => "Lời mời".into(),
+        Msg::InvitedWaiting { names } => format!("đã mời: {} · đang chờ", names).into(),
         Msg::AtomLabel => "nguyên tử".into(),
         Msg::CreateMoleculePill => "Tạo một phân tử!".into(),
         Msg::CreateMoleculeNote => "Chọn người để liên kết. Ngay khi ai đó liên kết, nguyên tử này là một phân tử.".into(),

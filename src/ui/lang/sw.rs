@@ -334,6 +334,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterFriends => "Marafiki".into(),
         Msg::FilterAtoms => "Atomu".into(),
         Msg::FilterMolecules => "Molekuli".into(),
+        Msg::FilterInvitations => "Mialiko".into(),
+        Msg::InvitedWaiting { names } => format!("walioalikwa: {} · tunasubiri", names).into(),
         Msg::AtomLabel => "atomu".into(),
         Msg::CreateMoleculePill => "Unda molekuli!".into(),
         Msg::CreateMoleculeNote => "Chagua wa kumfunga. Mara tu mtu anapofungwa, atomu hii ni molekuli.".into(),

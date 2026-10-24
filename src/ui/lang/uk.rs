@@ -341,6 +341,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterFriends => "Друзі".into(),
         Msg::FilterAtoms => "Атоми".into(),
         Msg::FilterMolecules => "Молекули".into(),
+        Msg::FilterInvitations => "Запрошення".into(),
+        Msg::InvitedWaiting { names } => format!("запрошені: {} · чекаємо", names).into(),
         Msg::AtomLabel => "атом".into(),
         Msg::CreateMoleculePill => "Створити молекулу!".into(),
         Msg::CreateMoleculeNote => "Обери, кого зв'язати. Щойно хтось зв'яжеться, цей атом — молекула.".into(),

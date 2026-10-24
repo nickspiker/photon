@@ -283,12 +283,33 @@ impl PhotonApp {
             }
             // GROUP rows (docs/molecules.md §10.5) wrap their shared title the same way; the filter matches on the title.
             let mut lines_by_gi: Vec<Vec<String>> = Vec::with_capacity(self.molecule_rosters.len());
-            for (_, roster) in &self.molecule_rosters {
+            for (gid, roster) in &self.molecule_rosters {
                 let mut lines = wrap_text_lines(ctx.text, &roster.title(), &wrap_style, name_w);
                 if lines.is_empty() {
                     lines.push(String::new());
                 }
+                // The SPONSOR'S VIEW of its open invites (Nick 2026-10-24): who was offered and has not joined yet, under the title — the atom moves to Molecules the moment one joins.
+                let waiting: Vec<String> = self
+                    .molecule_locals
+                    .iter()
+                    .find(|(g, _)| g == gid)
+                    .map(|(_, l)| {
+                        l.offered
+                            .iter()
+                            .filter(|(p, _)| !roster.is_standing(p))
+                            .filter_map(|(p, _)| self.contacts.iter().find(|c| c.handle_hash == *p && !c.is_sibling))
+                            .map(|c| super::contact_visible_name(c, seed.as_ref(), self.fleet_settings.as_ref()))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                if !waiting.is_empty() {
+                    lines.extend(wrap_text_lines(ctx.text, &tr(Msg::InvitedWaiting { names: &waiting.join(", ") }), &wrap_style, name_w));
+                }
                 lines_by_gi.push(lines);
+            }
+            // An Invitations view with nothing left in it (the last one answered) falls back to All.
+            if self.ready_filter == ReadyFilter::Invitations && !self.bond_offers.iter().any(|o| !o.accepted) {
+                self.ready_filter = ReadyFilter::All;
             }
             let rf = self.ready_filter;
             let show_friends = matches!(rf, ReadyFilter::All | ReadyFilter::Friends);
@@ -301,7 +322,7 @@ impl PhotonApp {
                     .enumerate()
                     .filter(|(_, c)| {
                         // Must mirror the render pass's `matching` filter exactly (siblings hidden, the strip's filter) or the two clamps disagree within a frame.
-                        show_friends
+                        (show_friends || (rf == ReadyFilter::Invitations && self.bond_offers.iter().any(|o| !o.accepted && o.sponsor == c.handle_hash)))
                             && !c.is_sibling
                             && (filter.is_empty() || self.atom_naming || c.display_name().to_lowercase().contains(&filter))
                     })
@@ -2036,7 +2057,7 @@ impl PhotonApp {
                 .enumerate()
                 .filter(|(_, c)| {
                     // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
-                    show_friends
+                    (show_friends || (rf == ReadyFilter::Invitations && self.bond_offers.iter().any(|o| !o.accepted && o.sponsor == c.handle_hash)))
                         && !c.is_sibling
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
@@ -2104,9 +2125,14 @@ impl PhotonApp {
             let strip_now: isize = {
                 let strip_top = rows.y0 as f32 - scroll as f32;
                 let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
-                let labels = [tr(Msg::FilterAll), tr(Msg::FilterFriends), tr(Msg::FilterAtoms), tr(Msg::FilterMolecules), tr(Msg::NewAtom)];
+                // INVITATIONS (slot 5, after New atom so the old slots keep their ids): drawn only while an offer waits on us, with its count.
+                let open_invites = self.bond_offers.iter().filter(|o| !o.accepted).count();
+                let mut labels: Vec<std::borrow::Cow<'static, str>> = vec![tr(Msg::FilterAll), tr(Msg::FilterFriends), tr(Msg::FilterAtoms), tr(Msg::FilterMolecules), tr(Msg::NewAtom)];
+                if open_invites > 0 {
+                    labels.push(format!("{} \u{00b7} {}", tr(Msg::FilterInvitations), open_invites).into());
+                }
                 let chosen = |i: usize| match (i, self.ready_filter) {
-                    (0, ReadyFilter::All) | (1, ReadyFilter::Friends) | (2, ReadyFilter::Atoms) | (3, ReadyFilter::Molecules) => Some(*theme::PILL_GREEN),
+                    (0, ReadyFilter::All) | (1, ReadyFilter::Friends) | (2, ReadyFilter::Atoms) | (3, ReadyFilter::Molecules) | (5, ReadyFilter::Invitations) => Some(*theme::PILL_GREEN),
                     (4, _) if self.atom_naming => Some(*theme::PILL_GREEN),
                     _ => None,
                 };
@@ -4144,6 +4170,8 @@ impl PhotonApp {
                                     let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
                                     if joinable.is_some() {
                                         v.push((tr(Msg::BindPill), *theme::SEARCH_FOUND_COLOUR, (self.msg_action_base + 13)));
+                                        // Not now (Nick 2026-10-24): undoes the invite on both sides, as if it was never sent.
+                                        v.push((tr(Msg::Decline), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 16)));
                                     }
                                     v
                                 } else {
@@ -7659,6 +7687,7 @@ fn ready_filter_admits(f: ReadyFilter, standing: usize) -> bool {
         ReadyFilter::Friends => false,
         ReadyFilter::Atoms => standing <= 1,
         ReadyFilter::Molecules => standing > 1,
+        ReadyFilter::Invitations => false,
     }
 }
 

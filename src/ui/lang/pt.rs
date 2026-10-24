@@ -336,6 +336,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterFriends => "Amigos".into(),
         Msg::FilterAtoms => "Átomos".into(),
         Msg::FilterMolecules => "Moléculas".into(),
+        Msg::FilterInvitations => "Convites".into(),
+        Msg::InvitedWaiting { names } => format!("convidados: {} · aguardando", names).into(),
         Msg::AtomLabel => "átomo".into(),
         Msg::CreateMoleculePill => "Crie uma molécula!".into(),
         Msg::CreateMoleculeNote => "Escolha quem ligar. Assim que alguém se liga, este átomo é uma molécula.".into(),
