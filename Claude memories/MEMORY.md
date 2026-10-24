@@ -25,6 +25,7 @@
 - [Wave, never call](project_wave_beam_transition.md) — HARD: wave = audio (sound wave), beam = video (beam of light); the word "call" only in the docs/waves.md + lexicon passage that retires it
 - [feedback_stops_not_db.md](feedback_stops_not_db.md) — STOPS not dB: 1 stop = ×2 amplitude
 - [feedback_self_is_a_contact.md](feedback_self_is_a_contact.md) — HARD: self and bob are both people
+- [Any-size conversation](feedback_any_size_conversation.md) — HARD: 1, 2 or N members = ONE model, one CLUTCH, one UI; the friendship/molecule split is debt, never design
 - [feedback_handles_byte_precise.md](feedback_handles_byte_precise.md) — HARD: handles BYTE-PRECISE full-Unicode (whitespace-only valid)
 - [feedback_vsf_readers_width_agnostic.md](feedback_vsf_readers_width_agnostic.md) — VSF ints: writers auto-size, readers widen (as_u64/as_i64), never exact-match
 - [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log); display Arabic mostly, dozenal = the app's Base setting (DMS)
@@ -47,8 +48,8 @@
 ## Active / open
 - [Android dark in background](project_android_headless_dark.md) — 2026-10-13: Activity destroy freed the app; fix BUILT, verify pending
 - [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port; FIXED
-- [Backfill dings](project_backfill_dings.md) — 2026-10-21: re-serve rang per old photon; + v122 field list
-- [Hotplug abort](project_hotplug_abort.md) — 2026-10-15 SIGABRT x2 on monitor plug = 0-px avatar expect, CONVICTED; fixed post-v120
+- [Backfill dings](project_backfill_dings.md) — 2026-10-21 re-serve rang per old photon
+- [Hotplug abort](project_hotplug_abort.md) — 0-px avatar SIGABRT; fixed
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next non-mainstream OS
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device
 - [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned
@@ -79,7 +80,7 @@
 - [project_windows_dark_theme_bug.md](project_windows_dark_theme_bug.md) — PINNED: install corrupted dark-theme search text
 - [project_doorbell.md](project_doorbell.md) — v1 BUILT; OPEN: sibling bell overwrite
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
-- [History early-stop blindness](project_history_early_stop_blindness.md) — 2026-09-24 early-stop hid divergences; fixed
+- [History early-stop blindness](project_history_early_stop_blindness.md) — early-stop hid divergences; fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
 - [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26: media at 7% while rocker bound VOICE_CALL
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while rate-saturated; FIXED 2026-09-28
