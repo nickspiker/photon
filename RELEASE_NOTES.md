@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v125
 - **Molecules reach all your devices.** A molecule you start now shows up on your other phones and computers straight away, so any of them can let a friend in. Before, it stayed on the device that made it until someone posted in it, so a friend's join could wait on a device that was asleep.
 - **A molecule you've joined shows up right away.** It appears in your contacts list, marked as joining, the moment you tap Join, instead of only once your friend's device answers.
 - **Friends on a phone network stay direct.** A friend whose direct connection worked could still flip back to the relay every minute or so, because their replies only ever came back through it; the working direct connection now keeps them green.
