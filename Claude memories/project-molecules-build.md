@@ -14,3 +14,5 @@ Open: live strand pull (molecules send ANCHOR-ONLY until it lands); the never-fr
 
 **Why:** Nick's ruling chain of 2026-09-15.
 **How to apply:** never flip `anchor_only` before (a)–(c) and the strand pull; never re-serve a MOLECULE_PREFIX row bare (its payload rode the package only).
+
+**2026-10-24 field (strawberry, Nick → Emma):** (1) a roster edge never replicated — chain-sync pushes only advanced lanes, a fresh atom has none → fixed: lane-less frame when the roster digest changed (molecule_roster_pushed). (2) the joiner's group was invisible until the wrap → now listed as Joining at the Join tap. (3) The join answer (wrap) needs a standing device of the sponsor's fleet holding the root — with replication fixed any sibling can answer. OPEN, proposed not built: Add page as a contacts-style tap-to-offer picker, the offer as a distinct card (Join / Not now, state in place), and an "invited" dashed row on the contacts list.
