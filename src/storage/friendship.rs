@@ -53,6 +53,8 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
     let uint = |v: u64| VsfType::u(v as usize, false); // WHY/PROOF: every photon target is 64-bit, so usize holds a u64 whole
     let f = |name: &str, v: VsfType| (name.to_string(), v);
     let mut main: Vec<(String, VsfType)> = vec![f("version", uint(CHAINS_VERSION as u64)), f("friendship_id", VsfType::hb(chains.id().as_bytes().to_vec()))];
+    // The wire token, stored as data (docs/conversations.md §7): a conversation keeps its token while its membership moves and a bond carries its own, so neither can be re-derived from the participants. A blob written before the field derives it as before (below).
+    main.push(f("token", VsfType::hb(chains.conversation_token.to_vec())));
     // Identity participants — a LIST of one kind (conversation membership), not a column zipped against another.
     for participant in chains.participants() {
         main.push(f("participant", VsfType::hb(participant.to_vec())));
@@ -356,6 +358,10 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             chains.set_molecule_roster(b);
         }
     }
+    // The stored token outranks every derivation above: membership moves, the token never does.
+    if let Some(token) = main.h32("token") {
+        chains.conversation_token = token;
+    }
     Ok(chains)
 }
 
@@ -400,6 +406,18 @@ fn braid_of(v: Option<u64>) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The token is stored data (docs/conversations.md §7): a bond keeps its own through the codec, never the pair-derived one its participants would give.
+    #[test]
+    fn a_stored_token_outranks_every_derivation() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let conv = FriendshipChains::from_molecule_root(crate::types::molecule::MoleculeId(FriendshipId::derive(&[a, b]).0), &[a, b], [7u8; 32], [8u8; 32], 0, [9u8; 32]);
+        let bond_id = crate::types::friendship::BondId::derive(&a, &b);
+        let bond = conv.bond_split_of(bond_id).expect("a rooted era splits");
+        let back = chains_from_vsf_bytes(&chains_to_vsf_bytes(&bond).expect("encode")).expect("decode");
+        assert_eq!(back.conversation_token, bond_id.token());
+        assert_ne!(back.conversation_token, crate::crypto::clutch::derive_conversation_token(&[a, b]), "never re-derived from the pair");
+    }
 
     /// The canonical chain bytes must be a COMPLETE VSF FILE (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These same bytes are sealed under the fleet key and pushed to siblings, whose adopt path parses them back into live ratchet state — so the payload needs its own provenance anchor, not just the AEAD (which proves only "someone in the fleet wrote this").
     #[test]
