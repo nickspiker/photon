@@ -39,17 +39,19 @@ pub fn roster_to_vsf_bytes(molecule_id: &MoleculeId, roster: &Roster) -> Result<
         vec![f("version", VsfType::u(ROSTER_VERSION as usize, false)), f("molecule_id", hb(&molecule_id.0))],
     );
     if let Some(g) = roster.genesis.as_ref() {
-        doc = doc.add_section(
-            GENESIS_SECTION,
-            vec![
-                f("founder", hb(&g.founder)),
-                f("osc", e6(g.genesis_osc)),
-                f("from_genesis", VsfType::u(g.history_from_genesis as usize, false)),
-                f("title", VsfType::x(g.title.clone())),
-                f("sig", hb(&g.signature)),
-                f("signer", hb(&g.signer_device)),
-            ],
-        );
+        let mut fields = vec![
+            f("founder", hb(&g.founder)),
+            f("osc", e6(g.genesis_osc)),
+            f("from_genesis", VsfType::u(g.history_from_genesis as usize, false)),
+            f("title", VsfType::x(g.title.clone())),
+            f("sig", hb(&g.signature)),
+            f("signer", hb(&g.signer_device)),
+        ];
+        // A DERIVED genesis names its founders (docs/conversations.md §7): the sorted party ids, concatenated, one field.
+        if g.is_derived() {
+            fields.push(f("founders", hb(&g.founders.concat())));
+        }
+        doc = doc.add_section(GENESIS_SECTION, fields);
     }
     let mut members: Vec<&MemberRecord> = roster.members.values().collect();
     members.sort_unstable_by_key(|m| m.party);
@@ -140,6 +142,8 @@ pub fn roster_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<(MoleculeId, Roster), S
             title: g.text("title").unwrap_or_default(),
             signature,
             signer_device,
+            // A derived genesis's founders, 32 bytes each; a field of any other length is no founder list at all.
+            founders: g.bytes("founders").filter(|b| !b.is_empty() && b.len() % 32 == 0).map(|b| b.chunks_exact(32).map(|c| <[u8; 32]>::try_from(c).unwrap()).collect()).unwrap_or_default(),
         });
     }
     for m in of(MEMBER_SECTION) {
@@ -596,6 +600,21 @@ mod tests {
         assert!(verify_record(&g.signing_bytes(), &g.signature, &g.signer_device));
         assert!(verify_record(&m.signing_bytes(), &m.signature, &m.signer_device));
         assert_eq!(g.signer_device, device_pubkey(&seed));
+    }
+
+    /// A derived genesis (docs/conversations.md §7) round-trips with its founders and still certifies itself.
+    #[test]
+    fn a_derived_genesis_round_trips_with_its_founders() {
+        let g = GenesisRecord::derived(&[[0x0B; 32], [0x0A; 32]]);
+        let mut roster = Roster::default();
+        assert!(roster.merge_genesis(g.clone()));
+        let bytes = roster_to_vsf_bytes(&g.molecule_id, &roster).expect("encode");
+        let (gid, back) = roster_from_vsf_bytes(&bytes).expect("decode");
+        assert_eq!(gid, g.molecule_id);
+        let bg = back.genesis.as_ref().expect("genesis rides");
+        assert_eq!(bg, &g);
+        assert!(bg.self_certifies());
+        assert_eq!(back.standing(), vec![[0x0A; 32], [0x0B; 32]]);
     }
 
     /// One section per record: a torn record (a field missing) is dropped ALONE — the other records of its kind still load, where parallel columns would have shifted every later row onto the wrong fields.

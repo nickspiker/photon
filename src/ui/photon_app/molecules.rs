@@ -66,7 +66,7 @@ impl PhotonApp {
             crate::logf!("MOLECULE: offer from {} for {} — the sponsor is not standing in its own snapshot; refused", sponsor_fp, hex::encode(&gid.0[..4]));
             return;
         }
-        if snapshot.genesis.as_ref().is_some_and(|g| self.record_signer_verdict(&g.founder, &g.signer_device) == Some(false)) {
+        if snapshot.genesis.as_ref().is_some_and(|g| !g.is_derived() && self.record_signer_verdict(&g.founder, &g.signer_device) == Some(false)) {
             crate::logf!("MOLECULE: offer from {} for {} — its genesis is signed outside the founder's fold; refused", sponsor_fp, hex::encode(&gid.0[..4]));
             return;
         }
@@ -96,7 +96,8 @@ impl PhotonApp {
     /// The genesis must be present, name this group, and verify under its own signer before anything persists. Returns the title suggestion.
     fn verify_snapshot_birth(gid: &MoleculeId, snapshot: &Roster) -> Option<String> {
         let g = snapshot.genesis.as_ref()?;
-        if g.molecule_id != *gid || !crate::types::molecule::verify_record(&g.signing_bytes(), &g.signature, &g.signer_device) {
+        let born = if g.is_derived() { g.self_certifies() } else { crate::types::molecule::verify_record(&g.signing_bytes(), &g.signature, &g.signer_device) };
+        if g.molecule_id != *gid || !born {
             return None;
         }
         Some(snapshot.title())

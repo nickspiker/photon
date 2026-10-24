@@ -96,9 +96,38 @@ pub struct GenesisRecord {
     pub title: String,
     pub signature: [u8; 64],
     pub signer_device: [u8; 32],
+    /// A DERIVED genesis (docs/conversations.md §7) names its founders instead of signing: the conversation's id is `FriendshipId::derive(founders)`, every founder stands by construction, and the record certifies itself by that equality (no signature, no stamp). Empty for a minted genesis.
+    pub founders: Vec<PartyId>,
 }
 
 impl GenesisRecord {
+    /// The DERIVED genesis of the conversation these parties share by being who they are — a pair's two-member conversation, or your own one-member one (docs/conversations.md §7): the id is `FriendshipId::derive(parties)`, the founders are the sorted parties, nothing is signed.
+    pub fn derived(parties: &[PartyId]) -> Self {
+        let mut founders = parties.to_vec();
+        founders.sort_unstable();
+        founders.dedup();
+        GenesisRecord {
+            molecule_id: MoleculeId(crate::types::FriendshipId::derive(&founders).0),
+            founder: founders.first().copied().unwrap_or_default(), // WHY/PROOF: a derived genesis always names at least one party; an empty set derives a conversation nobody stands in, which the standing rule then reads as empty
+            genesis_osc: 0,
+            history_from_genesis: false,
+            title: String::new(),
+            signature: [0u8; 64],
+            signer_device: [0u8; 32],
+            founders,
+        }
+    }
+    /// Is this a derived genesis (founders named, nothing signed)?
+    pub fn is_derived(&self) -> bool {
+        !self.founders.is_empty()
+    }
+    /// A derived genesis certifies itself: its id must be exactly the derivation of its founders, so nobody can name a founder into a conversation that is not theirs.
+    pub fn self_certifies(&self) -> bool {
+        let mut sorted = self.founders.clone();
+        sorted.sort_unstable();
+        sorted.dedup();
+        self.is_derived() && sorted == self.founders && crate::types::FriendshipId::derive(&self.founders).0 == self.molecule_id.0
+    }
     pub fn signing_bytes(&self) -> Vec<u8> {
         let mut b = Vec::with_capacity(32 * 3 + 16 + self.title.len());
         b.extend_from_slice(b"PHOTON_MOLECULE_GENESIS_v\x01");
@@ -289,17 +318,22 @@ impl Roster {
         }
         self.standing().iter().filter_map(|p| self.members.get(p)).map(|m| m.name.as_str()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")
     }
-    /// A party has JOINED when its member record outdates any leave it signed — a re-join is a fresh member record newer than the old leave.
+    /// Is this party a founder named by a DERIVED genesis (a pair's conversation, your own)?
+    pub fn is_derived_founder(&self, party: &PartyId) -> bool {
+        self.genesis.as_ref().is_some_and(|g| g.founders.contains(party))
+    }
+    /// A party has JOINED when its member record outdates any leave it signed — a re-join is a fresh member record newer than the old leave. A derived founder joined at genesis, until a leave it signed outdates any re-join.
     pub fn has_joined(&self, party: &PartyId) -> bool {
         match (self.members.get(party), self.leaves.get(party)) {
             (Some(m), Some(l)) => m.signed_osc > l.signed_osc,
             (Some(_), None) => true,
-            _ => false,
+            (None, None) => self.is_derived_founder(party),
+            (None, Some(_)) => false,
         }
     }
     /// Does a vouch record COUNT: signed by a party that had joined and had not yet left when it signed (a departed voucher's later withdrawal is ignored the same way — the record is judged against the voucher's own leave stamp, so order of arrival never matters).
     fn vouch_counts(&self, v: &VouchRecord) -> bool {
-        if !self.members.contains_key(&v.voucher) {
+        if !self.members.contains_key(&v.voucher) && !self.is_derived_founder(&v.voucher) {
             return false;
         }
         match self.leaves.get(&v.voucher) {
@@ -310,17 +344,22 @@ impl Roster {
             _ => true,
         }
     }
-    /// STANDING (the A5 rule): joined, not left, and at least one unwithdrawn vouch that counts. The founder stands on its genesis self-vouch.
+    /// STANDING (the A5 rule): joined, not left, and at least one unwithdrawn vouch that counts. The founder of a minted genesis stands on its genesis self-vouch; a derived founder stands on the genesis itself until it leaves (a re-join after that needs a vouch like anyone).
     pub fn is_standing(&self, party: &PartyId) -> bool {
         if !self.has_joined(party) {
             return false;
         }
+        if self.is_derived_founder(party) && !self.leaves.contains_key(party) {
+            return true;
+        }
         self.vouches.keys().any(|(voucher, subject)| subject == party && self.live_vouch(voucher, subject))
     }
-    /// The standing set, sorted — what the next era wraps to, what the UI lists, what `Conversation::set_participants` mirrors.
+    /// The standing set, sorted — what the next era is delivered to, what the UI lists, what `Conversation::set_participants` mirrors.
     pub fn standing(&self) -> Vec<PartyId> {
-        let mut v: Vec<PartyId> = self.members.keys().filter(|p| self.is_standing(p)).copied().collect();
+        let founders = self.genesis.iter().flat_map(|g| g.founders.iter());
+        let mut v: Vec<PartyId> = self.members.keys().chain(founders).filter(|p| self.is_standing(p)).copied().collect();
         v.sort_unstable();
+        v.dedup();
         v
     }
     /// The newest published bundle for a device, if any member's device published one.
@@ -408,7 +447,17 @@ pub fn partition_by_fold(snapshot: Roster, held_genesis: Option<&GenesisRecord>,
     // The parked set keeps the genesis beside its records, only so the founder self-vouch rule can hold them; a later judgement verifies that genesis again.
     out.parked.genesis = snapshot.genesis.clone().or_else(|| held_genesis.cloned());
     if let Some(g) = snapshot.genesis {
-        match judge(&g.founder, &g.signer_device, &g.signing_bytes(), &g.signature, g.genesis_osc) {
+        // A derived genesis signs nothing: it certifies itself by its id being exactly the derivation of its founders (docs/conversations.md §7).
+        let verdict = if g.is_derived() {
+            if g.self_certifies() {
+                Verdict::Take
+            } else {
+                Verdict::Refuse("names founders its id does not derive from")
+            }
+        } else {
+            judge(&g.founder, &g.signer_device, &g.signing_bytes(), &g.signature, g.genesis_osc)
+        };
+        match verdict {
             Verdict::Take => out.verified.genesis = Some(g),
             Verdict::Park => {}
             Verdict::Refuse(why) => out.refused.push(format!("genesis {why}")),
@@ -691,6 +740,7 @@ pub fn found_atom(founder: PartyId, founder_proof: [u8; 32], name_grant: &str, a
         title: title.to_string(),
         signature: [0u8; 64],
         signer_device,
+        founders: Vec::new(),
     };
     genesis.signature = sign_record(&genesis.signing_bytes(), device_seed);
     let mut founder_member = MemberRecord {
@@ -724,7 +774,7 @@ mod tests {
     /// A roster whose founder [1;32] stands on its genesis self-vouch, so tests can vouch others in from it.
     fn founded() -> Roster {
         let mut r = Roster::default();
-        r.merge_genesis(GenesisRecord { molecule_id: MoleculeId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: "t".into(), signature: [0; 64], signer_device: [0; 32] });
+        r.merge_genesis(GenesisRecord { molecule_id: MoleculeId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: "t".into(), signature: [0; 64], signer_device: [0; 32], founders: Vec::new() });
         r.merge_member(rec(1, 1));
         r.merge_vouch(vouch(1, 1, 1, false));
         r
@@ -827,7 +877,7 @@ mod tests {
     #[test]
     fn an_untitled_conversation_reads_as_its_members() {
         let mut r = Roster::default();
-        r.merge_genesis(GenesisRecord { molecule_id: MoleculeId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: String::new(), signature: [0; 64], signer_device: [0; 32] });
+        r.merge_genesis(GenesisRecord { molecule_id: MoleculeId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: String::new(), signature: [0; 64], signer_device: [0; 32], founders: Vec::new() });
         r.merge_member(rec(1, 1));
         r.merge_vouch(vouch(1, 1, 1, false));
         assert_eq!(r.display_title(), "m1", "an untitled atom of you alone reads as your own name");
@@ -907,6 +957,44 @@ mod tests {
         let mut want = vec![founder, x];
         want.sort_unstable();
         assert_eq!(held.standing(), want);
+    }
+
+    /// A pair's conversation (docs/conversations.md §7): both founders stand on the genesis alone, a third party stands once a founder vouches, a founder leaves like anyone, and a genesis naming founders its id does not derive from is refused.
+    #[test]
+    fn a_derived_genesis_seats_its_founders_and_grows_like_any_conversation() {
+        let (a_seed, c_seed) = ([0x01u8; 32], [0x03u8; 32]);
+        let (a, b, c) = ([0x0Au8; 32], [0x0Bu8; 32], [0x0Cu8; 32]);
+        let g = GenesisRecord::derived(&[b, a]);
+        assert!(g.self_certifies());
+        assert_eq!(g.molecule_id.0, crate::types::FriendshipId::derive(&[a, b]).0, "the pair's conversation keeps the pair's id");
+        assert_eq!(g.founders, vec![a, b]);
+        let mut r = Roster::default();
+        r.merge_genesis(g.clone());
+        assert_eq!(r.standing(), vec![a, b], "both founders stand on the genesis alone");
+        // A third party joins exactly as into any conversation: its own member record, a founder's vouch.
+        r.merge_member(join_record(c, [0x1C; 32], "c", [0; 32], a, &c_seed));
+        assert!(!r.is_standing(&c), "joined but not yet vouched");
+        r.merge_vouch(vouch_record(a, c, false, &a_seed));
+        assert_eq!(r.standing(), vec![a, b, c]);
+        // A founder leaves like anyone; the one it vouched in stays (the vouch was signed before the leave).
+        let mut leave = LeaveRecord { party: a, signed_osc: vsf::eagle_time_oscillations() + 10, signature: [0; 64], signer_device: device_pubkey(&a_seed) };
+        leave.signature = sign_record(&leave.signing_bytes(), &a_seed);
+        r.merge_leave(leave);
+        assert_eq!(r.standing(), vec![b, c]);
+        // Self-certification: a genesis claiming a founder its id was not derived from is refused by the fold check.
+        let mut forged = g.clone();
+        forged.founders = vec![a, c];
+        assert!(!forged.self_certifies());
+        let mut snapshot = Roster::default();
+        snapshot.merge_genesis(forged);
+        let part = partition_by_fold(snapshot, None, |_, _| Some(true), |_| false);
+        assert!(part.verified.genesis.is_none() && part.refused.iter().any(|w| w.starts_with("genesis")), "{:?}", part.refused);
+        // One party alone: your own conversation.
+        let solo = GenesisRecord::derived(&[a]);
+        assert!(solo.self_certifies());
+        let mut s = Roster::default();
+        s.merge_genesis(solo);
+        assert_eq!(s.standing(), vec![a]);
     }
 
     #[test]
