@@ -12,4 +12,5 @@ metadata:
 **How to apply:**
 - Never describe or build "friendship vs molecule" as different kinds. If code has the split (it does: friendship CLUTCH + eras vs molecule roster + KEM wraps, ContactPanel vs MoleculePanel), treat it as debt to converge, and say so — never present it as the design.
 - Any new feature (crypto status, invites, Bonds, stats) lands for every conversation size at once, not per kind.
+- There is NO singleton "notes" conversation: you can found as many you-only atoms as you like (Nick 2026-10-24). The old self-contact (search your own handle → a forced-Complete Contact) is the last singleton and folds into atoms.
 - Related: [[project_fleet_routing_scale]] (the same invariant for fleets), [[feedback_self_is_a_contact]], [[project-molecules-build]].
