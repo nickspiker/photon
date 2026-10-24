@@ -294,15 +294,40 @@ impl PhotonApp {
         self.chain_transmit_with(ci, "", eagle_time, None, None, None, None, Some(&control))
     }
 
-    /// Persist a conversation's message table WITHOUT blocking the UI thread — the no-signal wrapper for saves nothing waits on.
+    /// Persist a contact's conversation WITHOUT blocking the UI thread — the no-signal wrapper for saves nothing waits on.
     pub(super) fn persist_messages_async(&mut self, ci: usize) {
         self.persist_messages_signalled(ci, Vec::new());
     }
 
-    /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed. `signal_rows` names rows whose bright flip + sibling push WAIT on this write (the zero-remote path): their verdict rides back over `persist_done`, and every early exit below answers it immediately — a row waiting on a write that never starts must fail LOUDLY, not sit faint forever.
-    /// Persist a conversation by ID (a group, or any conversation the caller already resolved) — the conversation-keyed twin of `persist_messages_async`, sharing the same hydration gate and coalescing writer.
+    /// Persist a conversation by ID WITHOUT blocking the UI thread — any conversation at any size (docs/conversations.md), the no-signal form.
     pub(super) fn persist_conversation_async(&mut self, conv_id: crate::types::ConversationId) {
-        // A group conversation materialized empty (lazy) may hold rows the vault still has — same late-hydration rescue as the contact path.
+        self.persist_conversation_signalled(conv_id, Vec::new());
+    }
+
+    /// A contact's conversation, by the id it resolves to — the contact-index door into [`Self::persist_conversation_signalled`]. A contact whose conversation does not resolve answers its signal rows loudly.
+    pub(super) fn persist_messages_signalled(&mut self, ci: usize, signal_rows: Vec<i64>) {
+        let Some(conv_id) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) else {
+            crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
+            if !signal_rows.is_empty() {
+                let _ = self.persist_done.0.send(MessagesDurableVerdict { conv_id: crate::types::friendship::FriendshipId([0u8; 32]), rows: signal_rows, err: Some("no conversation object resolves".to_string()) });
+            }
+            return;
+        };
+        self.persist_conversation_signalled(conv_id, signal_rows);
+    }
+
+    /// Persist a conversation's message table WITHOUT blocking the UI thread. Snapshots the conversation and hands it to one background writer that coalesces bursts (latest snapshot per conversation id wins — an older snapshot can never clobber a newer one because the drain keeps only the last). The write itself is the same `save_messages` full-table rewrite; only the thread changed. `signal_rows` names rows whose bright flip + sibling push WAIT on this write (the zero-remote path): their verdict rides back over `persist_done`, and every early exit below answers it immediately — a row waiting on a write that never starts must fail LOUDLY, not sit faint forever.
+    pub(super) fn persist_conversation_signalled(&mut self, conv_id: crate::types::ConversationId, signal_rows: Vec<i64>) {
+        // BRIDGE rows are EPHEMERAL — the terminal keeps NO history at rest. Safe because sibling frames are anchor-only (see the braid selection in send_chain_message): nothing weaves against a bridge row, so not persisting it can't produce a strand miss (the earlier ephemeral attempt DID break the braid precisely because frames still wove strands — field 2026-08-22, one reply resent 12× and never ACKed). Chain durability is untouched: lane positions, pending, and last_received_times live in friendship_chains (persisted separately), so retransmit/ACK/dedup and the is_new_row replay guard all still hold; only the display rows are transient.
+        let is_sibling_conv = self.contacts.iter().any(|c| c.is_sibling && self.our_party_id(c).is_some_and(|us| c.conversation(&us).id() == conv_id));
+        if is_sibling_conv {
+            // Only the zero-remote branch passes signal rows and a self contact is never a sibling — this line firing means a caller broke that invariant, and its rows will sit faint.
+            if !signal_rows.is_empty() {
+                crate::logf!("STORAGE: signalled persist on a SIBLING conversation ({} row(s)) — bridge rows are ephemeral by policy; rows stay faint", signal_rows.len());
+            }
+            return;
+        }
+        // LATE HYDRATION RESCUE: an un-hydrated conversation (the boot loader hit a load error, or the vault opened after materialize) re-attempts the load here and merges the disk rows UNDER the RAM rows via the (timestamp, content) collapse — a transient vault error costs one retry, not a whole session of refused persists whose RAM rows would then die at relaunch.
         if self.conversations.iter().any(|v| v.id() == conv_id && !v.hydrated) {
             if let Some(storage) = self.storage.as_ref().cloned() {
                 if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == conv_id) {
@@ -312,64 +337,22 @@ impl PhotonApp {
                         crate::types::Conversation::new(conv.participants().iter().copied())
                     };
                     if crate::storage::contacts::load_messages(&mut fresh, &storage).is_ok() {
+                        let disk_rows = fresh.messages.len();
                         for m in conv.messages.drain(..) {
                             fresh.insert_message_sorted(m);
                         }
                         conv.messages = std::mem::take(&mut fresh.messages);
                         conv.hydrated = true;
-                    }
-                }
-            }
-        }
-        let Some(conv) = self.conversations.iter().find(|v| v.id() == conv_id).cloned() else {
-            crate::logf!("STORAGE: message persist SKIPPED — no conversation {} (rows live in RAM only)", hex::encode(&conv_id.as_bytes()[..4]));
-            return;
-        };
-        self.persist_conversation_snapshot(conv, Vec::new());
-    }
-
-    pub(super) fn persist_messages_signalled(&mut self, ci: usize, signal_rows: Vec<i64>) {
-        // BRIDGE rows are EPHEMERAL — the terminal keeps NO history at rest. Safe now because sibling frames are anchor-only (see the braid selection in send_chain_message): nothing weaves against a bridge row, so not persisting it can't produce a strand miss (the earlier ephemeral attempt DID break the braid precisely because frames still wove strands — field 2026-08-22, one reply resent 12× and never ACKed). Chain durability is untouched: lane positions, pending, and last_received_times live in friendship_chains (persisted separately), so retransmit/ACK/dedup and the is_new_row replay guard all still hold; only the display rows are transient.
-        if self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
-            // Only the zero-remote branch passes signal rows and a self contact is never a sibling — this line firing means a caller broke that invariant, and its rows will sit faint.
-            if !signal_rows.is_empty() {
-                crate::logf!("STORAGE: signalled persist on a SIBLING conversation ({} row(s)) — bridge rows are ephemeral by policy; rows stay faint", signal_rows.len());
-            }
-            return;
-        }
-        // LATE HYDRATION RESCUE: an un-hydrated conversation (the boot loader hit a load error, or the vault opened after materialize) re-attempts the load here and merges the disk rows UNDER the RAM rows via the (timestamp, content) collapse — a transient vault error costs one retry, not a whole session of refused persists whose RAM rows would then die at relaunch.
-        if self.conv_of(ci).is_some_and(|v| !v.hydrated) {
-            if let Some(storage) = self.storage.as_ref().cloned() {
-                if let Some(conv) = self.conv_mut_of(ci) {
-                    if !conv.hydrated {
-                        let mut fresh =
-                            crate::types::Conversation::new(conv.participants().iter().copied());
-                        if crate::storage::contacts::load_messages(&mut fresh, &storage).is_ok() {
-                            let disk_rows = fresh.messages.len();
-                            for m in conv.messages.drain(..) {
-                                fresh.insert_message_sorted(m);
-                            }
-                            conv.messages = std::mem::take(&mut fresh.messages);
-                            conv.hydrated = true;
-                            crate::logf!(
-                                "STORAGE: late hydration merged {} disk row(s) under the RAM rows for conversation {}",
-                                disk_rows,
-                                hex::encode(&conv.id().as_bytes()[..4])
-                            );
-                        }
+                        crate::logf!("STORAGE: late hydration merged {} disk row(s) under the RAM rows for conversation {}", disk_rows, hex::encode(&conv_id.as_bytes()[..4]));
                     }
                 }
             }
         }
         // EVERY exit below is LOUD (field 2026-08-21: a run's later sends vanished at relaunch while earlier ones persisted — three silent failure modes on the one path whose failure IS data loss, and the log couldn't say which fired).
-        let Some(conv) = self.conv_of(ci).cloned() else {
-            crate::logf!("STORAGE: message persist SKIPPED — no conversation object resolves for contact index {} (rows live in RAM only until this is fixed)", ci);
+        let Some(conv) = self.conversations.iter().find(|v| v.id() == conv_id).cloned() else {
+            crate::logf!("STORAGE: message persist SKIPPED — no conversation {} (rows live in RAM only)", hex::encode(&conv_id.as_bytes()[..4]));
             if !signal_rows.is_empty() {
-                let _ = self.persist_done.0.send(MessagesDurableVerdict {
-                    conv_id: crate::types::friendship::FriendshipId([0u8; 32]),
-                    rows: signal_rows,
-                    err: Some("no conversation object resolves".to_string()),
-                });
+                let _ = self.persist_done.0.send(MessagesDurableVerdict { conv_id, rows: signal_rows, err: Some("no conversation object resolves".to_string()) });
             }
             return;
         };

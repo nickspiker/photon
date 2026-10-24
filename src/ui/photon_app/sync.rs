@@ -1323,23 +1323,38 @@ impl PhotonApp {
     }
 
     /// Live fleet propagation: push just-written conversation rows for the friend/self contact at `idx` to EVERY sibling (reachable-or-not — direct legs race, relay covers the rest) as an unsolicited hist_page under the FLEET key. The receiving sibling merges them verbatim (an unmatched rid from a sibling IS the push signature) and re-pushes anything genuinely fresh, so a message hops the whole fleet even when only one device can reach its origin. Probe rows are filtered; a lost push self-heals via the sibling-online history sweep. `exclude_device` keeps a gossip hop from echoing straight back at its sender.
-    pub(super) fn push_rows_to_siblings(
-        &self,
-        idx: usize,
-        rows: &[crate::types::ChatMessage],
-        exclude_device: Option<[u8; 32]>,
-    ) {
+    pub(super) fn push_rows_to_siblings(&self, idx: usize, rows: &[crate::types::ChatMessage], exclude_device: Option<[u8; 32]>) {
         let contact = &self.contacts[idx];
         if contact.is_sibling {
             return; // sibling↔sibling chatter stays device-pair-local
         }
-        let Some(session) = self.session.as_ref() else {
+        if let Some(conv_id) = self.our_party_id(contact).map(|us| contact.conversation(&us).id()) {
+            self.push_conversation_rows_to_siblings(conv_id, rows, exclude_device);
+        }
+    }
+
+    /// The wire token of any conversation (docs/conversations.md §7): the token its keys carry as data; a group's from its id; one with no keys yet (your own) the token its participants derive — `[us, us]` for a conversation of one, the exact bytes it has always used.
+    pub(super) fn conversation_token_of(&self, conv_id: crate::types::ConversationId) -> Option<[u8; 32]> {
+        if let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == conv_id) {
+            return Some(chains.conversation_token);
+        }
+        let conv = self.conversations.iter().find(|v| v.id() == conv_id)?;
+        if conv.is_molecule() {
+            return Some(crate::types::molecule::MoleculeId(*conv_id.as_bytes()).token());
+        }
+        let parties = conv.participants();
+        Some(match parties {
+            [only] => crate::crypto::clutch::derive_conversation_token(&[*only, *only]),
+            _ => crate::crypto::clutch::derive_conversation_token(parties),
+        })
+    }
+
+    /// Push rows of any conversation to our siblings under its own token — the conversation-keyed door every caller converges on.
+    pub(super) fn push_conversation_rows_to_siblings(&self, conv_id: crate::types::ConversationId, rows: &[crate::types::ChatMessage], exclude_device: Option<[u8; 32]>) {
+        let Some(token) = self.conversation_token_of(conv_id) else {
             return;
         };
-        let our_pid = crate::crypto::clutch::identity_party_id(&session.identity_seed);
-        let token = crate::crypto::clutch::derive_conversation_token(&[our_pid, contact.handle_hash]);
-        let label = crate::fp(&contact.handle_proof);
-        self.push_rows_to_siblings_token(token, &label, rows, exclude_device);
+        self.push_rows_to_siblings_token(token, &hex::encode(&conv_id.as_bytes()[..4]), rows, exclude_device);
     }
 
     /// The token-keyed core of the sibling row push (docs/molecules.md step 6): a GROUP pushes under its own token (`MoleculeId::token`), a friendship under the pair's. `label` is only for the log line.

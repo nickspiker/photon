@@ -100,21 +100,9 @@ impl PhotonApp {
         if cleared.is_empty() {
             return;
         }
-        // The pair-keyed path while a two-member conversation still rides its friendship's token; every other conversation pushes under its own (docs/conversations.md Phase 2 makes this one path).
-        match ci {
-            Some(ci) => {
-                self.persist_messages_async(ci);
-                for batch in cleared.chunks(CLEAR_PUSH_BATCH) {
-                    self.push_rows_to_siblings(ci, batch, None);
-                }
-            }
-            None => {
-                self.persist_conversation_async(conv_id);
-                let token = crate::types::molecule::MoleculeId(*conv_id.as_bytes()).token();
-                for batch in cleared.chunks(CLEAR_PUSH_BATCH) {
-                    self.push_rows_to_siblings_token(token, &label, batch, None);
-                }
-            }
+        self.persist_conversation_async(conv_id);
+        for batch in cleared.chunks(CLEAR_PUSH_BATCH) {
+            self.push_conversation_rows_to_siblings(conv_id, batch, None);
         }
         // Each blob is a distinct vault object: delete it outright, off the UI thread (a kept recording is chunked, one vault commit per chunk). Idempotent, and every sibling applying the tombstones deletes its own copies.
         if !discard_blobs.is_empty() {

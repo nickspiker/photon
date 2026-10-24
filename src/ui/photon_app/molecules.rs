@@ -970,7 +970,7 @@ impl PhotonApp {
                 }
                 // Our own row exists only on this device until a sibling hears of it — the group's token carries it (docs/molecules.md step 6).
                 if let Some(row) = self.conversations.iter().find(|v| v.id() == fid).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == ts).cloned()) {
-                    self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), std::slice::from_ref(&row), None);
+                    self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), std::slice::from_ref(&row), None);
                 }
             } else {
                 // Held: keep the post (with its stamp, so a control row re-sends as the SAME row) for the next drain edge.

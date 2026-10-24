@@ -2151,7 +2151,7 @@ impl PhotonApp {
                 // A GROUP row rides its own token to our siblings (docs/molecules.md step 6), never the sender's friendship token.
                 Some(id) => {
                     let gid = crate::types::molecule::MoleculeId(*id.as_bytes());
-                    self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), std::slice::from_ref(&m), None);
+                    self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), std::slice::from_ref(&m), None);
                 }
                 None => self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None),
             }
@@ -2432,7 +2432,7 @@ impl PhotonApp {
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows);
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);
-                            self.push_rows_to_siblings_token(gid.token(), &hex::encode(&gid.0[..4]), &fresh, Some(sender_pubkey.key));
+                            self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), &fresh, Some(sender_pubkey.key));
                         }
                     }
                     continue;
