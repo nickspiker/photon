@@ -1436,6 +1436,18 @@ impl PhotonApp {
                         self.conversations.len() - 1
                     }
                 }
+            } else if chains.bond {
+                // A BOND's frames land in its hidden conversation (docs/conversations.md §7) — control rows only, kept for re-ACK durability, never listed.
+                persist_molecule_conv = Some(chains.friendship_id);
+                match self.conversations.iter().position(|v| v.id() == chains.friendship_id) {
+                    Some(p) => p,
+                    None => {
+                        let bc = crate::types::Conversation::new_bond(crate::types::friendship::BondId(chains.friendship_id.0), chains.participants().iter().copied());
+                        // Unhydrated: the boot loaders and ensure_bonds create every bond's conversation, so this is the rare miss — the persist path's late-hydration rescue reads the disk rows before anything writes over them.
+                        self.conversations.push(bc);
+                        self.conversations.len() - 1
+                    }
+                }
             } else {
                 let conv_our_pid = if self.contacts[contact_idx].is_sibling {
                     match our_sibling_pid {

@@ -146,7 +146,7 @@ impl PhotonApp {
         };
         let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None };
         let ts = vsf::eagle_time_oscillations();
-        let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Join)));
+        let sent = self.bond_transmit_with(ci, ts, None, Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Join));
         if sent {
             self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Joining);
             // THE JOINING ROW (docs/molecules.md §10.5, "dashed while Joining"; Emma 2026-10-24: "once bonded, doesn't show up on contact screen"): the group joins our list now, from the offer's snapshot.
@@ -270,7 +270,7 @@ impl PhotonApp {
         let wrap = crate::network::message_package::BondWrapWire { recipient_device: bundle.device, bundle_id: bundle.pubkeys().bundle_id(), era, era_lineage: lineage, nonce, sealed };
         let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: Some(wrap) };
         let ts = vsf::eagle_time_oscillations();
-        let sent = self.chain_transmit_with(ci, "", ts, None, None, Some(&cts), Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Wrap)));
+        let sent = self.bond_transmit_with(ci, ts, Some(&cts), Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Wrap));
         crate::logf!("MOLECULE: wrap (era {}) for device {} {} over the friendship", era, hex::encode(&bundle.device[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" });
         sent
     }
@@ -639,13 +639,9 @@ impl PhotonApp {
         };
         let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None };
         let ts = crate::network::time_base::stamp_osc();
-        // The offer row lands in the friendship conversation FIRST (the sponsor-side card: "you brought … into …"), then rides the wire.
+        // The offer rides the BOND (docs/conversations.md §7): its row lands in the bond's hidden conversation first, then goes on the wire — nothing lands in any chat; the invitee sees it as an invitation row.
         let invitee = self.contacts[ci].handle_hash;
-        if let Some(conv) = self.conv_mut_of(ci) {
-            conv.insert_message_sorted(crate::types::ChatMessage::control(crate::types::RowControl::Molecule(MoleculeSignal::Offer), true, ts));
-        }
-        self.persist_messages_async(ci);
-        let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Offer)));
+        let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Offer), Some(&wire), ts);
         self.set_molecule_local(&gid, |l| {
             l.offered.retain(|(p, _)| *p != invitee);
             l.offered.push((invitee, ts));
@@ -672,12 +668,7 @@ impl PhotonApp {
         };
         let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(gid.0.to_vec()), wrap: None };
         let ts = crate::network::time_base::stamp_osc();
-        let control = crate::types::RowControl::Molecule(MoleculeSignal::Decline);
-        if let Some(conv) = self.conv_mut_of(ci) {
-            conv.insert_message_sorted(crate::types::ChatMessage::control(control.clone(), true, ts));
-        }
-        self.persist_messages_async(ci);
-        let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&control));
+        let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Decline), Some(&wire), ts);
         crate::logf!("MOLECULE: declined {} — {} {}", hex::encode(&gid.0[..4]), if sent { "the undo sent to" } else { "the undo NOT sent (the next edge retries) to" }, crate::fp(&self.contacts[ci].handle_proof));
         sent
     }
@@ -691,12 +682,14 @@ impl PhotonApp {
             }
         }
         let Some(ci) = ci else { return };
-        if let Some(conv) = self.conv_mut_of(ci) {
+        if let Some(conv) = self.bond_conv_mut(ci) {
             if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == row_osc && super::is_bond_offer_row(m) && !m.deleted) {
                 m.deleted = true;
             }
         }
-        self.persist_messages_async(ci);
+        if let Some(bfid) = self.bond_fid_of(ci) {
+            self.persist_conversation_async(bfid);
+        }
         self.scene_dirty = true;
     }
 
@@ -718,13 +711,13 @@ impl PhotonApp {
             return false;
         };
         self.set_molecule_local(&gid, |l| l.offered.retain(|(p, _)| *p != invitee));
-        if let Some(conv) = self.conv_mut_of(ci) {
+        // The offer row lives in the bond's hidden conversation (docs/conversations.md §7): tombstone it there, and delete it for everyone on the bond.
+        if let Some(conv) = self.bond_conv_mut(ci) {
             if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == row_ts && super::is_bond_offer_row(m)) {
                 m.deleted = true;
             }
         }
-        self.persist_messages_async(ci);
-        let deleted = self.send_control(ci, crate::types::RowControl::Delete { target: row_ts }, crate::network::time_base::stamp_osc());
+        let deleted = self.send_bond_row(ci, crate::types::RowControl::Delete { target: row_ts }, None, crate::network::time_base::stamp_osc());
         crate::logf!("MOLECULE: invite of {} into {} {} — undone{}", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&gid.0[..4]), why, if deleted { ", offer deleted for everyone" } else { " here (no chain for the delete marker)" });
         self.scene_dirty = true;
         true

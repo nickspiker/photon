@@ -974,10 +974,12 @@ mod tests {
         // A third party joins exactly as into any conversation: its own member record, a founder's vouch.
         r.merge_member(join_record(c, [0x1C; 32], "c", [0; 32], a, &c_seed));
         assert!(!r.is_standing(&c), "joined but not yet vouched");
-        r.merge_vouch(vouch_record(a, c, false, &a_seed));
+        let vouch_c = vouch_record(a, c, false, &a_seed);
+        let vouched_at = vouch_c.signed_osc;
+        r.merge_vouch(vouch_c);
         assert_eq!(r.standing(), vec![a, b, c]);
         // A founder leaves like anyone; the one it vouched in stays (the vouch was signed before the leave).
-        let mut leave = LeaveRecord { party: a, signed_osc: vsf::eagle_time_oscillations() + 10, signature: [0; 64], signer_device: device_pubkey(&a_seed) };
+        let mut leave = LeaveRecord { party: a, signed_osc: vouched_at + 10, signature: [0; 64], signer_device: device_pubkey(&a_seed) };
         leave.signature = sign_record(&leave.signing_bytes(), &a_seed);
         r.merge_leave(leave);
         assert_eq!(r.standing(), vec![b, c]);

@@ -419,7 +419,7 @@ pub struct BondOffer {
     pub molecule_id: MoleculeId,
     /// The sponsor's party id (a contact's handle_hash).
     pub sponsor: crate::types::PartyId,
-    /// The eagle time of the offer row in the friendship conversation — the card the Join pill lives on.
+    /// The eagle time of the offer row in the bond's hidden conversation (docs/conversations.md §7) — the row the sponsor's undo deletes; the invitation itself is a Ready row.
     pub row_osc: i64,
     pub snapshot: Roster,
     /// Join was tapped: the offer stays parked (it names the group the row is about) but the pill reads "joined" and no second Join goes out.

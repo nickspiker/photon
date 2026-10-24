@@ -165,43 +165,6 @@ impl PhotonApp {
         let molecule_names: Vec<([u8; 32], String)> = active_gi
             .map(|gi| self.molecule_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
             .unwrap_or_default();
-        // OFFER CARDS in the open friendship conversation (docs/molecules.md §10.5): per offer row, its label and — for an unaccepted incoming offer — the group a Join would enter.
-        let bond_cards: Vec<(i64, bool, String, Option<crate::types::molecule::MoleculeId>)> = active_ci
-            .and_then(|ci| self.contacts.get(ci).map(|c| (ci, c.handle_hash)))
-            .map(|(ci, party)| {
-                let their_name = super::contact_visible_name(&self.contacts[ci], self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
-                let mut cards = Vec::new();
-                if let Some(conv) = self.conv_of(ci) {
-                    for m in conv.messages.iter().filter(|m| is_bond_offer_row(m)) {
-                        if m.is_outgoing {
-                            // Sponsor side: which group we offered this contact into, and whether they stand yet.
-                            let found = self.molecule_locals.iter().find(|(_, l)| l.offered.iter().any(|(p, ts)| *p == party && *ts == m.timestamp)).map(|(g, _)| *g);
-                            let (title, joined) = found
-                                .and_then(|g| self.molecule_rosters.iter().find(|(id, _)| *id == g))
-                                .map(|(_, r)| (r.display_title(), r.is_standing(&party)))
-                                .unwrap_or_else(|| (String::new(), false));
-                            let label = if joined { tr(Msg::BondAccepted { name: &their_name, title: &title }).into_owned() } else { tr(Msg::BondWaiting { name: &their_name, title: &title }).into_owned() };
-                            cards.push((m.timestamp, true, label, None));
-                        } else {
-                            let offer = self.bond_offers.iter().find(|o| o.sponsor == party && o.row_osc == m.timestamp).or_else(|| self.bond_offers.iter().find(|o| o.sponsor == party));
-                            let (title, n, gid, accepted) = offer.map(|o| (o.snapshot.display_title(), o.snapshot.standing().len(), o.molecule_id, o.accepted)).unwrap_or_else(|| (String::new(), 0, crate::types::molecule::MoleculeId([0u8; 32]), false));
-                            let held = self.molecule_rosters.iter().any(|(g, _)| *g == gid);
-                            let expired = offer.is_none() || self.contacts[ci].identity_ended || self.contacts[ci].identity_superseded;
-                            let label = if held || accepted {
-                                tr(Msg::BondBound { title: &title }).into_owned()
-                            } else if expired {
-                                tr(Msg::BondExpired).into_owned()
-                            } else {
-                                tr(Msg::BondOfferLine { sponsor: &their_name, title: &title, n: &crate::fmt_mag(n as u64) }).into_owned()
-                            };
-                            let joinable = (!held && !accepted && !expired && offer.is_some()).then_some(gid);
-                            cards.push((m.timestamp, false, label, joinable));
-                        }
-                    }
-                }
-                cards
-            })
-            .unwrap_or_default();
         let compose_ready = self.compose_ready();
         // Prompt-gate snapshot (same pre-chrome discipline): bridge command in flight → the send arrow dims and submit refuses.
         let bridge_held = active_ci.map_or(false, |ci| {
@@ -308,6 +271,18 @@ impl PhotonApp {
                 }
                 lines_by_gi.push(lines);
             }
+            // INVITATION rows (docs/conversations.md): who offers us which conversation and how many stand in it, then one line for the Bind and Decline pills. An answered offer has no row.
+            let mut lines_by_oi: Vec<Vec<String>> = Vec::with_capacity(self.bond_offers.len());
+            for o in &self.bond_offers {
+                if o.accepted {
+                    lines_by_oi.push(Vec::new());
+                    continue;
+                }
+                let sponsor = self.contacts.iter().find(|c| c.handle_hash == o.sponsor && !c.is_sibling).map(|c| super::contact_visible_name(c, seed.as_ref(), self.fleet_settings.as_ref())).unwrap_or_else(|| tr(Msg::MemberPendingName).into_owned());
+                let mut lines = wrap_text_lines(ctx.text, &tr(Msg::BondOfferLine { sponsor: &sponsor, title: &o.snapshot.display_title(), n: &crate::fmt_mag(o.snapshot.standing().len() as u64) }), &wrap_style, name_w);
+                lines.push(String::new());
+                lines_by_oi.push(lines);
+            }
             // An Invitations view with nothing left in it (the last one answered) falls back to All.
             if self.ready_filter == ReadyFilter::Invitations && !self.bond_offers.iter().any(|o| !o.accepted) {
                 self.ready_filter = ReadyFilter::All;
@@ -323,7 +298,7 @@ impl PhotonApp {
                     .enumerate()
                     .filter(|(_, c)| {
                         // Must mirror the render pass's `matching` filter exactly (siblings hidden, the strip's filter) or the two clamps disagree within a frame.
-                        (show_friends || (rf == ReadyFilter::Invitations && self.bond_offers.iter().any(|o| !o.accepted && o.sponsor == c.handle_hash)))
+                        show_friends
                             && !c.is_sibling
                             && (filter.is_empty() || self.atom_naming || c.display_name().to_lowercase().contains(&filter))
                     })
@@ -335,9 +310,12 @@ impl PhotonApp {
                     .enumerate()
                     .filter(|(_, (g, r))| !self.molecule_is_left(g) && rf == ReadyFilter::All && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
-                    .sum::<isize>();
+                    .sum::<isize>()
+                // Invitations show under All and alone under Invitations.
+                + lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>();
             self.contact_row_lines = lines_by_ci;
             self.molecule_row_lines = lines_by_gi;
+            self.offer_row_lines = lines_by_oi;
             let block_bottom_at_zero = rl.rows.y0 as isize + block_h;
             // The version footer rides the block one row-height past the last row; extend the scroll extent past it (footer gap + a row-height of bottom margin) so the user can scroll the version fully into view instead of the bottom edge swallowing it.
             let block_end = block_bottom_at_zero + row_h * 2;
@@ -2049,7 +2027,7 @@ impl PhotonApp {
                 .enumerate()
                 .filter(|(_, c)| {
                     // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
-                    (show_friends || (rf == ReadyFilter::Invitations && self.bond_offers.iter().any(|o| !o.accepted && o.sponsor == c.handle_hash)))
+                    show_friends
                         && !c.is_sibling
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
@@ -2063,6 +2041,8 @@ impl PhotonApp {
                         .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && rf == ReadyFilter::All && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
+                // INVITATIONS (docs/conversations.md): every open offer, under All and alone under Invitations — the pre-pass sized exactly these.
+                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty()).map(|(oi, _)| ReadyRow::Offer(oi)))
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
             let our_handle_hash = self
@@ -2074,6 +2054,8 @@ impl PhotonApp {
                 let conv = match *row {
                     ReadyRow::Contact(ci) => dm_conversation(&self.conversations, &our_handle_hash, &self.contacts[ci]),
                     ReadyRow::Group(gi) => self.conversations.iter().find(|v| v.id().as_bytes() == &self.molecule_rosters[gi].0 .0),
+                    // An invitation waits on us: it sits above everything, newest offer first.
+                    ReadyRow::Offer(oi) => return (0u8, std::cmp::Reverse(self.bond_offers.get(oi).map_or(i64::MIN, |o| o.row_osc))),
                 };
                 let last_activity = conv
                     .map(|v| v.messages.as_slice())
@@ -2084,7 +2066,7 @@ impl PhotonApp {
                     .max()
                     .unwrap_or(i64::MIN);
                 (
-                    u8::from(conv.is_none_or(|v| v.unread_count == 0)),
+                    1 + u8::from(conv.is_none_or(|v| v.unread_count == 0)),
                     std::cmp::Reverse(last_activity),
                 )
             });
@@ -2097,6 +2079,7 @@ impl PhotonApp {
                     .map(|row| match *row {
                         ReadyRow::Contact(ci) => contact_row_height(row_h, self.contact_row_lines.get(ci).map_or(1, |l| l.len())), // WHY/PROOF: the name-wrap cache is from the last layout — a contact added since has no entry yet
                         ReadyRow::Group(gi) => contact_row_height(row_h, self.molecule_row_lines.get(gi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
+                        ReadyRow::Offer(oi) => contact_row_height(row_h, self.offer_row_lines.get(oi).map_or(1, |l| l.len())), // (stale wrap cache — see above)
                     })
                     .sum::<isize>();
             let block_bottom_at_zero = rows.y0 as isize + block_h;
@@ -2152,12 +2135,15 @@ impl PhotonApp {
                     molecule_rosters: &self.molecule_rosters,
                     molecule_locals: &self.molecule_locals,
                     molecule_row_lines: &self.molecule_row_lines,
+                    bond_offers: &self.bond_offers,
+                    offer_row_lines: &self.offer_row_lines,
                     contact_hit_base: self.contact_hit_base,
                     molecule_hit_base: self.molecule_hit_base,
                 };
                 let view: RowView = match *row {
                     ReadyRow::Contact(ci) => RowView::of_contact(&rctx, ci, &our_handle_hash),
                     ReadyRow::Group(gi) => RowView::of_group(&rctx, gi, &our_handle_hash),
+                    ReadyRow::Offer(oi) => RowView::of_offer(&rctx, oi, &our_handle_hash),
                 };
                 let name_lines: Vec<String> = view.name_lines.clone();
                 let rh = contact_row_height(row_h, name_lines.len()); // contact_row_height already reads an empty name as one row
@@ -2282,6 +2268,19 @@ impl PhotonApp {
                         Some(rows_clip),
                         None,
                     );
+                }
+                // An INVITATION's verbs on its last line (docs/conversations.md): Bind — the consent — and Decline — the undo, as if it was never sent. Drawn only while the band sits wholly inside the list, so a row scrolling under the strip never leaves a live pill over it.
+                if let (ReadyRow::Offer(oi), Some(last)) = (*row, name_lines.len().checked_sub(1)) {
+                    let band_y = line_cy(last);
+                    let ph = line_step * 0.85;
+                    let pw = text_size * 4.2;
+                    let inside = band_y - ph * 0.5 >= rows.y0 as f32 && band_y + ph * 0.5 <= rows.y1 as f32;
+                    if inside && oi < 16 {
+                        let bind = fluor::region::Region::new(text_x, band_y - ph * 0.5, pw, ph);
+                        let decline = fluor::region::Region::new(text_x + pw * 1.15, band_y - ph * 0.5, pw, ph);
+                        draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, bind, &tr(Msg::BindPill), self.invite_hit_base + 2 * oi as HitId, ctx.pressed_hit, true, Some(*theme::PILL_GREEN), "Oxanium");
+                        draw_stub_pill(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, decline, &tr(Msg::Decline), self.invite_hit_base + 2 * oi as HitId + 1, ctx.pressed_hit);
+                    }
                 }
                 if row_pressed {
                     // Press = the wordmark's halo, scoped to this row — composited AFTER the name (under() = topmost paints first, so program-order-later lands BENEATH the glyphs; the logo calls its glow last for the same reason — glow-first blew the text out to white). Full-width band like the wordmark, so the shared blur math holds.
@@ -3249,9 +3248,6 @@ impl PhotonApp {
                             if m.head_pending().is_some() {
                                 return "\u{2026}".to_string();
                             }
-                            if is_bond_offer_row(m) {
-                                return bond_cards.iter().find(|(ts, out, _, _)| *ts == m.timestamp && *out == m.is_outgoing).map(|(_, _, l, _)| l.clone()).unwrap_or_else(|| tr(Msg::BondExpired).into_owned());
-                            }
                             if m.file_parts().is_none() {
                                 if let Some((_, b)) = edit_over.get(&(m.timestamp, m.is_outgoing)) {
                                     return b.clone();
@@ -3821,16 +3817,6 @@ impl PhotonApp {
                                             }
                                         }
                                         v.push((tr(Msg::ReplicatePill), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 8)));
-                                    }
-                                    v
-                                } else if is_bond_offer_row(msg) {
-                                    // An OFFER card's one verb (docs/molecules.md §10.1): Join, live only while the offer is parked and unanswered; a joined or expired card shows its state in the label and offers nothing.
-                                    let joinable = bond_cards.iter().find(|(ts, out, _, _)| *ts == msg.timestamp && *out == msg.is_outgoing).and_then(|(_, _, _, j)| *j);
-                                    let mut v: Vec<(std::borrow::Cow<'static, str>, u32, HitId)> = Vec::new();
-                                    if joinable.is_some() {
-                                        v.push((tr(Msg::BindPill), *theme::SEARCH_FOUND_COLOUR, (self.msg_action_base + 13)));
-                                        // Not now (Nick 2026-10-24): undoes the invite on both sides, as if it was never sent.
-                                        v.push((tr(Msg::Decline), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 16)));
                                     }
                                     v
                                 } else {
@@ -7339,11 +7325,13 @@ fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
     (0..n).map(|i| fluor::region::Region::new(r.x, r.y + band_h * i as f32, r.w, if i + 1 == n { r.bottom() - (r.y + band_h * i as f32) } else { band_h })).collect()
 }
 
-/// One entry of the Ready list (docs/molecules.md §10.5): a contact row or a group row, in ONE sorted list.
+/// One entry of the Ready list (docs/molecules.md §10.5): a contact row, a group row, or an INVITATION waiting on us (docs/conversations.md: a conversation we were offered, with its Bind and Decline), in ONE sorted list.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum ReadyRow {
     Contact(usize),
     Group(usize),
+    /// An index into `bond_offers` — an open offer, not yet answered.
+    Offer(usize),
 }
 
 /// What the Ready row loop needs to paint a row, resolved once per row from either source so the geometry below is source-blind.
@@ -7367,11 +7355,29 @@ struct ReadyCtx<'a> {
     molecule_rosters: &'a [(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)],
     molecule_locals: &'a [(crate::types::molecule::MoleculeId, crate::storage::molecule::MoleculeLocal)],
     molecule_row_lines: &'a [Vec<String>],
+    bond_offers: &'a [crate::storage::molecule::BondOffer],
+    offer_row_lines: &'a [Vec<String>],
     contact_hit_base: HitId,
     molecule_hit_base: HitId,
 }
 
 impl RowView {
+    /// An INVITATION row (docs/conversations.md): the offered conversation's title and who invited us, sheared like any name not yet ours, its members' pie as the avatar; the row body takes no tap — its Join and Not now pills do.
+    fn of_offer(app: &ReadyCtx, oi: usize, our_handle_hash: &[u8; 32]) -> Self {
+        let o = &app.bond_offers[oi];
+        let members: Vec<[u8; 32]> = o.snapshot.standing().into_iter().filter(|p| p != our_handle_hash).collect();
+        RowView {
+            name_lines: app.offer_row_lines.get(oi).cloned().unwrap_or_default(), // (stale wrap cache — see above)
+            has_real_name: false,
+            colour: party_colour(&molecule_digest(&o.molecule_id, our_handle_hash)),
+            unread: true,
+            ring: *theme::RING_OFFLINE_COLOUR,
+            hit: HIT_NONE,
+            pie: Some(members.iter().map(|p| proof_gradient_seed(&o.snapshot.members.get(p).map_or(*p, |m| m.handle_proof))).collect()),
+            gradient_seed: proof_gradient_seed(&o.molecule_id.0),
+        }
+    }
+
     fn of_contact(app: &ReadyCtx, ci: usize, our_handle_hash: &[u8; 32]) -> Self {
         let c = &app.contacts[ci];
         let colour = if c.remote_count(our_handle_hash) == 0 {

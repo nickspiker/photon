@@ -971,10 +971,7 @@ fn display_content(msg: &crate::types::ChatMessage) -> String {
 
 /// Is this row a BUBBLE in the stream? One source of truth for the renderer's visible-list filter AND the tap-to-jump scroll walk — the two must count identically or a jump lands off-target. Control rows and tombstones never draw; reaction rows resolve onto their target; an edit row hides while its target exists (renders standalone only when the target never synced).
 fn chat_row_visible(raw: &[crate::types::ChatMessage], m: &crate::types::ChatMessage, filter: ChatFilter) -> bool {
-    // A group OFFER row is the one control row that renders (docs/molecules.md §10.5): the card the Join pill lives on.
-    if is_bond_offer_row(m) {
-        return !m.deleted && filter != ChatFilter::Waves;
-    }
+    // Control rows — a group offer included (it is an invitation row on the Ready screen now, docs/conversations.md) — and tombstones never draw.
     if m.is_control() || m.deleted {
         return false;
     }
@@ -2197,6 +2194,10 @@ pub struct PhotonApp {
     molecule_hit_base: HitId,
     /// Wrapped title lines per group row (index = position in `molecule_rosters`), refreshed on the Ready pre-pass like `contact_row_lines`.
     molecule_row_lines: Vec<Vec<String>>,
+    /// Wrapped lines per INVITATION row (index = position in `bond_offers`; empty for an answered offer), refreshed on the Ready pre-pass like `molecule_row_lines`. The last line is the band the Bind and Decline pills sit on.
+    offer_row_lines: Vec<Vec<String>>,
+    /// Invitation rows' pills: [invite_hit_base, +32) — row k's Bind at 2k, its Decline at 2k + 1 (16 open invitations drawn).
+    invite_hit_base: HitId,
     /// The New-group title box — registered in visit_app_widgets + textboxes_mut only. Doubles as the group panel's rename box.
     molecule_title_textbox: Option<Textbox>,
     /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
@@ -3063,6 +3064,8 @@ impl PhotonApp {
             contact_hit_base: HIT_NONE,
             molecule_hit_base: HIT_NONE,
             molecule_row_lines: Vec::new(),
+            offer_row_lines: Vec::new(),
+            invite_hit_base: HIT_NONE,
             molecule_title_textbox: None,
             molecule_leave_armed: false,
             ready_filter: ReadyFilter::All,

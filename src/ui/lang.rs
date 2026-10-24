@@ -598,16 +598,8 @@ pub enum Msg<'a> {
     NoAtomsYet,
     /// The offer card (docs/molecules.md §10.1), invitee side: "<sponsor> brought you into <title> · <n>".
     BondOfferLine { sponsor: &'a str, title: &'a str, n: &'a str },
-    /// The card once joined.
-    BondBound { title: &'a str },
-    /// The card once the sponsor is gone.
-    BondExpired,
     /// The Join pill.
     BindPill,
-    /// Sponsor side: waiting on the invitee.
-    BondWaiting { name: &'a str, title: &'a str },
-    /// Sponsor side: the invitee stands.
-    BondAccepted { name: &'a str, title: &'a str },
     BootRemovesEverywhere,
     BootOstracism,
     /// Manage page (2026-09-27): two-tap pills that discard this conversation's waves, or its whole history, on every device of ours — the friend's copy is theirs.

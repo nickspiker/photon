@@ -921,6 +921,29 @@ impl PhotonApp {
         self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, molecule, control)
     }
 
+    /// Transmit a CONTROL row on the BOND with contact `ci` (docs/conversations.md §7): an invitation, a join, a join's era, a decline — never chat. The bond's own chains, token and hidden conversation; the route is the contact's, exactly as a pair send. Anchor-only: a bond's rows are control rows, nothing to weave against.
+    pub(super) fn bond_transmit_with(
+        &mut self,
+        ci: usize,
+        eagle_time: i64,
+        era_kem: Option<&crate::crypto::era::EraKemWire>,
+        molecule: Option<&crate::network::message_package::MoleculeWire>,
+        control: &crate::types::RowControl,
+    ) -> bool {
+        let Some(bfid) = self.bond_fid_of(ci) else {
+            crate::logf!("BOND: cannot send — no bond with {} yet (it splits once their conversation holds a woven era)", self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default());
+            return false;
+        };
+        let (_, route, _) = match self.route_for_contact(ci) {
+            Ok(v) => v,
+            Err(why) => {
+                crate::logf!("BOND: cannot send — {}", why);
+                return false;
+            }
+        };
+        self.transmit_core(bfid, bfid, vec![route], true, "", eagle_time, None, None, era_kem, molecule, Some(control))
+    }
+
     /// The recipient half of a friendship send, split from the crypto (docs/molecules.md step 4): the one route a contact resolves to, plus the ids the core needs. Every refusal names its reason.
     pub(super) fn route_for_contact(&self, ci: usize) -> Result<(crate::types::FriendshipId, Route, crate::types::ConversationId), &'static str> {
         let Some(contact) = self.contacts.get(ci) else {

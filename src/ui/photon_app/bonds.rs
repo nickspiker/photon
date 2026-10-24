@@ -14,6 +14,23 @@ impl PhotonApp {
         self.friendship_chains.iter().any(|(id, _)| *id == fid).then_some(fid)
     }
 
+    /// The hidden conversation of our bond with contact `ci` — where the bond's control rows (an offer we sent, a decline) live for re-ACK durability.
+    pub(super) fn bond_conv_mut(&mut self, ci: usize) -> Option<&mut crate::types::Conversation> {
+        let bfid = self.bond_fid_of(ci)?;
+        self.conversations.iter_mut().find(|v| v.id() == bfid)
+    }
+
+    /// Land one of OUR control rows in the bond's hidden conversation, persist it, and send it on the bond: the offer / decline / undo pattern.
+    pub(super) fn send_bond_row(&mut self, ci: usize, control: crate::types::RowControl, molecule: Option<&crate::network::message_package::MoleculeWire>, ts: i64) -> bool {
+        if let Some(conv) = self.bond_conv_mut(ci) {
+            conv.insert_message_sorted(crate::types::ChatMessage::control(control.clone(), true, ts));
+        }
+        if let Some(bfid) = self.bond_fid_of(ci) {
+            self.persist_conversation_async(bfid);
+        }
+        self.bond_transmit_with(ci, ts, None, molecule, &control)
+    }
+
     /// SPLIT every missing bond (docs/conversations.md §7): a friend whose two-member conversation holds a woven era and who has no bond yet gets one, derived one-way from that era (`bond_split_of`); the conversation records the split era, which it never hands to anyone else.
     /// Both sides derive the same bond from the era they share; a pair that split from different eras (one side cut over while the other upgraded) finds the bond's frames do not open, and the bond re-keys like any broken bond.
     /// Pure computation plus async persists — no vault call on the UI thread. Runs when the chains registry or the contact list changes size (the edge a load, an add or a ceremony raises).
