@@ -101,3 +101,12 @@ Phases 2 and 3 ship as one migration, so there is one flag day and no intermedia
 **Molecules** keep their ids and rosters; their control traffic (offers, joins, wraps, declines) moves from the friendship chains to the bond, and their era deliveries move from KEM bundles to the bond graph (§0), after which bundle records are deleted.
 
 **Notes** (the self contact) become a one-member conversation `Derived{[us]}` with the same rows table; the self Contact row is deleted.
+
+**Build order (2026-10-24, from the inventory, docs/conversations-inventory.md).** Flipping pair conversations onto the roster path first would strand their probe / era / CLUTCH traffic, which is bond business, so the bond comes first:
+
+- A. Bonds exist: `Contact.bond_id`, split from the pair's chains at load (`bond_split_of`, `bond_split_era` recorded on the conversation's chains), persisted; each bond has a hidden Conversation (id = bond id, never listed) that holds its control rows for re-ACK durability, exactly as a pair conversation holds its hidden rows today.
+- B. A bond transmit path (the pairwise route + lanes, on the bond's chains and token); frames on a bond token commit thru the pairwise receive path and carry control rows only.
+- C. Molecule invites, joins, join wraps and declines ride the bond; an invitation becomes its own Ready row (phase Offered) instead of a card inside the sponsor's conversation.
+- D. CLUTCH completion, the light ratchet, heavy weaves, probes and the woven seal operate on the bond.
+- E. Pair conversations flip to the roster path (`Derived` genesis, molecule flag), the receive / ACK / history / unread parity gaps close, and every conversation's eras are minted and delivered over bonds.
+- F. KEM bundles and their records are deleted; docs rewritten (clutch.md, molecules.md, lanes.md, braid.md).
