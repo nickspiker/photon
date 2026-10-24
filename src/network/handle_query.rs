@@ -741,6 +741,8 @@ impl HandleQuery {
                             &friendship_ids,
                             &storage,
                         );
+                        // BONDS (docs/conversations.md §7): every friend's bond loads beside its conversation's chains, by the id both parties derive.
+                        friendships.extend(crate::storage::friendship::load_bonds(&contacts, &crate::crypto::clutch::identity_party_id(&identity_seed), &storage));
                         crate::logf!("Network: Loaded {} friendships", friendships.len());
 
                         // Load local avatar
@@ -871,6 +873,14 @@ impl HandleQuery {
                                 );
                             }
                             conversations.push(conv);
+                            // The bond's hidden conversation: its control rows, for re-ACK durability.
+                            if let Some(b) = contact.bond_id(&our_pid) {
+                                let mut bc = crate::types::Conversation::new_bond(b, [our_pid, contact.handle_hash]);
+                                if let Err(e) = crate::storage::contacts::load_messages(&mut bc, &storage) {
+                                    crate::logf!("Network: failed to load bond rows for {}: {}", crate::fp(&contact.handle_proof).as_str(), e);
+                                }
+                                conversations.push(bc);
+                            }
                         }
                         // GROUPS (docs/molecules.md §5): enumerate thru the index — chains and conversations ride the same vectors the UI already adopts, rosters ride beside.
                         let mut groups: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster, crate::storage::molecule::MoleculeLocal)> = Vec::new();

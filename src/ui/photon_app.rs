@@ -46,6 +46,7 @@ mod wave_ui;
 mod wave_field;
 mod ceremony;
 mod era;
+mod bonds;
 mod conversation;
 mod conv_panel;
 mod drafts;
@@ -1715,6 +1716,8 @@ pub struct PhotonApp {
     molecule_peers: Vec<crate::types::molecule::MoleculePeer>,
     /// Roster records waiting on a fold we do not hold yet (verify-or-withhold, docs/conversations.md Phase 0): re-merged on every fold landing. RAM only — the folds are fetched the moment a record parks, and the records ride every later snapshot.
     molecule_parked: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)>,
+    /// (chains registry size, contact count) at the last bond check — `ensure_bonds` runs on the edge either moves.
+    bonds_checked: (usize, usize),
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
     pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -2853,6 +2856,7 @@ impl PhotonApp {
             bonds_staged: Vec::new(),
             molecule_peers: Vec::new(),
             molecule_parked: Vec::new(),
+            bonds_checked: (0, 0),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,

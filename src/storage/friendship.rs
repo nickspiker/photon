@@ -55,6 +55,13 @@ pub fn chains_to_vsf_bytes(chains: &FriendshipChains) -> Result<Vec<u8>, Storage
     let mut main: Vec<(String, VsfType)> = vec![f("version", uint(CHAINS_VERSION as u64)), f("friendship_id", VsfType::hb(chains.id().as_bytes().to_vec()))];
     // The wire token, stored as data (docs/conversations.md §7): a conversation keeps its token while its membership moves and a bond carries its own, so neither can be re-derived from the participants. A blob written before the field derives it as before (below).
     main.push(f("token", VsfType::hb(chains.conversation_token.to_vec())));
+    // A bond, and the era a conversation's bond was split from (docs/conversations.md §7) — absent on every other blob.
+    if chains.bond {
+        main.push(f("bond", uint(1)));
+    }
+    if let Some(e) = chains.bond_split_era {
+        main.push(f("bond_split_era", uint(e)));
+    }
     // Identity participants — a LIST of one kind (conversation membership), not a column zipped against another.
     for participant in chains.participants() {
         main.push(f("participant", VsfType::hb(participant.to_vec())));
@@ -358,6 +365,8 @@ pub fn chains_from_vsf_bytes(vsf_bytes: &[u8]) -> Result<FriendshipChains, Stora
             chains.set_molecule_roster(b);
         }
     }
+    chains.bond = main.uint("bond").is_some_and(|v| v != 0);
+    chains.bond_split_era = main.uint("bond_split_era");
     // The stored token outranks every derivation above: membership moves, the token never does.
     if let Some(token) = main.h32("token") {
         chains.conversation_token = token;
@@ -390,6 +399,23 @@ pub fn load_all_friendships(
     result
 }
 
+/// Load the BONDS of these contacts (docs/conversations.md §7), by the id each pair derives: a bond not yet on disk is no error — the app splits it from the pair's conversation and persists it — so a miss is silent and only an unreadable bond is logged.
+pub fn load_bonds(contacts: &[crate::types::Contact], our_party_id: &[u8; 32], storage: &FlatStorage) -> Vec<(FriendshipId, FriendshipChains)> {
+    let mut result = Vec::new();
+    for b in contacts.iter().filter_map(|c| c.bond_id(our_party_id)) {
+        let fid = FriendshipId::from_bytes(b.0);
+        match storage.read_addr(&chains_key(&fid)) {
+            Ok(Some(bytes)) => match chains_from_vsf_bytes(&bytes) {
+                Ok(chains) => result.push((fid, chains)),
+                Err(e) => crate::logf!("BOND: {} failed to load: {} — it splits afresh from its conversation", hex::encode(&fid.as_bytes()[..4]), e),
+            },
+            Ok(None) => {}
+            Err(e) => crate::logf!("BOND: {} unreadable: {}", hex::encode(&fid.as_bytes()[..4]), e),
+        }
+    }
+    result
+}
+
 /// Delete friendship chains from disk (used on re-key)
 pub fn delete_friendship_chains(
     friendship_id: &FriendshipId,
@@ -417,6 +443,12 @@ mod tests {
         let back = chains_from_vsf_bytes(&chains_to_vsf_bytes(&bond).expect("encode")).expect("decode");
         assert_eq!(back.conversation_token, bond_id.token());
         assert_ne!(back.conversation_token, crate::crypto::clutch::derive_conversation_token(&[a, b]), "never re-derived from the pair");
+        assert!(back.bond, "the bond flag rides");
+        let mut split = conv.clone();
+        split.bond_split_era = Some(4);
+        let back = chains_from_vsf_bytes(&chains_to_vsf_bytes(&split).expect("encode")).expect("decode");
+        assert_eq!(back.bond_split_era, Some(4), "the split era rides");
+        assert!(!back.bond);
     }
 
     /// The canonical chain bytes must be a COMPLETE VSF FILE (AGENT.md: "VSF Transport Rule: COMPLETE FILES ONLY"). These same bytes are sealed under the fleet key and pushed to siblings, whose adopt path parses them back into live ratchet state — so the payload needs its own provenance anchor, not just the AEAD (which proves only "someone in the fleet wrote this").

@@ -293,6 +293,12 @@ pub struct FriendshipChains {
     molecule_roster: Vec<u8>,
     /// OUR device's published group-scoped KEM decapsulation bundles (docs/molecules.md §3): a group era's fresh secret arrives as a wrap encapsulated to the bundle we published in our member record, possibly minted while we slept — so unlike a friendship's RAM-only EraEphemeral these persist here, the same custody class as the lane links beside them. Newest-last; superseded bundles zeroize on rotation.
     molecule_kems: Vec<crate::crypto::era::EraDecapKeys>,
+
+    // ==================== BOND STATE (docs/conversations.md §7) ====================
+    /// TRUE when this blob is a BOND: the secure channel a pair of friends holds, never a listed conversation — it carries control rows only (invitations, joins, era deliveries), and its id and token are the bond's own.
+    pub bond: bool,
+    /// On a two-member conversation's chains: the era its bond was split from. Anyone holding that era could derive the bond, so it is NEVER handed to anyone else — a join mints past it first. `None` = no bond was split from these chains.
+    pub bond_split_era: Option<u64>,
 }
 
 /// A retired era: root + history key held only so straggler frames on its lanes still decrypt and ACK. Dropped (zeroized) on an observed edge — never a timer.
@@ -573,6 +579,8 @@ impl FriendshipChains {
             molecule: false,
             molecule_kems: Vec::new(),
             molecule_roster: Vec::new(),
+            bond: false,
+            bond_split_era: None,
         }
     }
 
@@ -612,6 +620,8 @@ impl FriendshipChains {
             molecule: true,
             molecule_kems: Vec::new(),
             molecule_roster: Vec::new(),
+            bond: false,
+            bond_split_era: None,
         }
     }
 
@@ -624,6 +634,7 @@ impl FriendshipChains {
         bond.conversation_token = bond_id.token();
         bond.braid = self.braid;
         bond.molecule = false;
+        bond.bond = true;
         Some(bond)
     }
 
@@ -708,6 +719,8 @@ impl FriendshipChains {
             molecule: false,
             molecule_kems: Vec::new(),
             molecule_roster: Vec::new(),
+            bond: false,
+            bond_split_era: None,
         })
     }
 
@@ -791,6 +804,8 @@ impl FriendshipChains {
             molecule: false,
             molecule_kems: Vec::new(),
             molecule_roster: Vec::new(),
+            bond: false,
+            bond_split_era: None,
         })
     }
 
@@ -1524,6 +1539,8 @@ impl FriendshipChains {
             // Per-DEVICE, like our_label: every device publishes its own bundle in its member record, so a sibling never adopts ours.
             molecule_kems: Vec::new(),
             molecule_roster: self.molecule_roster.clone(),
+            bond: self.bond,
+            bond_split_era: self.bond_split_era,
         }
     }
 

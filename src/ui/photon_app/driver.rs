@@ -3578,6 +3578,8 @@ impl FluorApp for PhotonApp {
         self.drain_space();
         // Bonds edits go out on the edge of leaving the page (molecules.rs).
         self.commit_bonds_if_left();
+        // Every friend holds a bond beside its conversation (docs/conversations.md §7): split the missing ones on the edge the registry moved.
+        self.ensure_bonds();
         if self.drain_wave_env() {
             { needs_redraw = true; self.note_redraw(line!() + 100_000); }
         }
@@ -4520,6 +4522,20 @@ impl PhotonApp {
                                 );
                             }
                         }
+                        // The bonds' hidden conversations: their control rows, for re-ACK durability (docs/conversations.md §7).
+                        if let Some(us) = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed)) {
+                            let bonds: Vec<(crate::types::friendship::BondId, [u8; 32])> = self.contacts.iter().filter_map(|c| c.bond_id(&us).map(|b| (b, c.handle_hash))).collect();
+                            for (b, them) in bonds {
+                                if self.conversations.iter().any(|v| v.id().as_bytes() == &b.0) {
+                                    continue;
+                                }
+                                let mut bc = crate::types::Conversation::new_bond(b, [us, them]);
+                                if let Err(e) = crate::storage::contacts::load_messages(&mut bc, &s) {
+                                    crate::logf!("UI: resume failed to load bond rows {}: {}", hex::encode(&b.0[..4]), e);
+                                }
+                                self.conversations.push(bc);
+                            }
+                        }
                         let ms_messages = t_phase.elapsed().as_millis();
                         crate::logf!(
                             "UI: loaded {} contact(s) from local vault on resume",
@@ -4644,6 +4660,10 @@ impl PhotonApp {
                             .collect();
                         let loaded_chains =
                             crate::storage::friendship::load_all_friendships(&friendship_ids, &s);
+                        // BONDS (docs/conversations.md §7): every friend's bond loads beside its conversation's chains, by the id both parties derive.
+                        let bond_pid = self.session.as_ref().map(|se| crate::crypto::clutch::identity_party_id(&se.identity_seed));
+                        let loaded_bonds = bond_pid.map(|us| crate::storage::friendship::load_bonds(&self.contacts, &us, &s)).unwrap_or_default();
+                        let loaded_chains: Vec<_> = loaded_chains.into_iter().chain(loaded_bonds).collect();
                         for (fid, chains) in loaded_chains {
                             if !self.friendship_chains.iter().any(|(id, _)| *id == fid) {
                                 self.friendship_chains.push((fid, chains));

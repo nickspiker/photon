@@ -941,6 +941,14 @@ impl Contact {
         self.conversation(our_party_id).remote_count(our_party_id)
     }
 
+    /// The BOND we hold with this person (docs/conversations.md §7): derived from the two party ids, so every device of either fleet names the same one. `None` for a fleet sibling (its chains already are the bond between our own devices), for nobody but us, and for a group view.
+    pub fn bond_id(&self, our_party_id: &crate::types::PartyId) -> Option<crate::types::friendship::BondId> {
+        if self.is_sibling || self.molecule.is_some() || self.handle_hash == *our_party_id {
+            return None;
+        }
+        Some(crate::types::friendship::BondId::derive(our_party_id, &self.handle_hash))
+    }
+
     /// The name this contact renders as everywhere: their published profile name → the keyed two-word voca pseudonym from the party id. No handle: the string that derives an identity exists at rest nowhere (docs/identity-profile.md). Names carry ZERO trust — the pinned key does.
     pub fn display_name(&self) -> String {
         if !self.published_name.is_empty() {

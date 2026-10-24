@@ -34,6 +34,8 @@ pub struct Conversation {
     id: ConversationId,
     /// TRUE = the id is stable and the participant set may move (a group); FALSE = the id derives from the set, which is therefore immutable.
     molecule: bool,
+    /// TRUE = the hidden conversation of a BOND (docs/conversations.md §7): it holds the bond's control rows for re-ACK durability, is never listed, and carries no chat.
+    bond: bool,
     /// Messages, oldest first.
     pub messages: Vec<ChatMessage>,
     /// Count of real inbound rows that landed while this conversation was NOT front-of-eyes. Drives the contacts-list unread treatment (inner coloured ring + heavier name + float-to-top — never a count glyph). Cleared and re-persisted the moment the conversation becomes the active view.
@@ -63,6 +65,7 @@ impl Conversation {
             participants,
             id,
             molecule: false,
+            bond: false,
             messages: Vec::new(),
             unread_count: 0,
             scroll_offset: 0.0,
@@ -82,6 +85,7 @@ impl Conversation {
             participants,
             id: FriendshipId(molecule_id.0),
             molecule: true,
+            bond: false,
             messages: Vec::new(),
             unread_count: 0,
             scroll_offset: 0.0,
@@ -90,6 +94,18 @@ impl Conversation {
             hydrated: false,
             peer_ahead: false,
         }
+    }
+
+    /// The hidden conversation of a BOND: the bond's own id, its two parties, never listed (docs/conversations.md §7).
+    pub fn new_bond(bond_id: crate::types::friendship::BondId, parties: impl IntoIterator<Item = PartyId>) -> Self {
+        let mut c = Self::new(parties);
+        c.id = FriendshipId(bond_id.0);
+        c.bond = true;
+        c
+    }
+
+    pub fn is_bond(&self) -> bool {
+        self.bond
     }
 
     pub fn is_molecule(&self) -> bool {
