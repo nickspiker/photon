@@ -251,6 +251,8 @@ impl PhotonApp {
         let mut molecule_acks: Vec<(crate::types::molecule::MoleculeId, [u8; 32], i64)> = Vec::new();
         // GROUPS whose current-era frames we could not open (a mint we slept thru) — flipped to Catching up after the loop.
         let mut catching_up: Vec<crate::types::molecule::MoleculeId> = Vec::new();
+        // GROUP MEMBERS still writing on an era we retired (a wrap that never reached them): (conversation, their party), each handed the current era whole over our bond after the loop.
+        let mut molecule_stragglers: Vec<(crate::types::FriendshipId, [u8; 32])> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -1269,12 +1271,18 @@ impl PhotonApp {
                                 continue;
                             }
                         };
-                        if slot == crate::types::friendship::EraSlot::Pending {
+                        // A MINTER whose own wraps for the pending era are still queued must not cut over yet (Emma 2026-10-24: a joiner's first frame on era 3 cut her over 0.8 s after the mint, the queued wraps then went out under era 3, and every member still on era 2 was stranded). The frame still opens on the pending era's lane; the cutover waits for the wraps to leave on the era they come from.
+                        let own_wraps_queued = chains.molecule
+                            && self.pending_molecule_posts.iter().any(|p| p.gid.0 == *fid_ref.as_bytes() && p.signal == crate::types::molecule::MoleculeSignal::Wrap);
+                        if slot == crate::types::friendship::EraSlot::Pending && !own_wraps_queued {
                             // The peer's first frame on the era we hold as pending IS the cutover edge (two-phase, edge-gated). Undelivered rows re-serve on the fresh lane via the deferred flush.
                             if let Some((old_tag, new_tag, retired_pendings)) = chains.cut_over_to_pending() {
                                 crate::logf!("ERA: cut over {:08x} → {:08x} on the peer's first frame — {} pending(s) re-serve on the fresh lane", old_tag, new_tag, retired_pendings);
                                 rotated_flush.push(*fid_ref);
                             }
+                        }
+                        if chains.molecule && slot == crate::types::friendship::EraSlot::Retired {
+                            molecule_stragglers.push((*fid_ref, from_handle_hash));
                         }
                         if chains.ensure_lane_era(&lane, slot).is_none() {
                             crate::log("CHAT: frame for pre-lane chains (no root) — dropped; re-clutch re-mints");
@@ -5644,6 +5652,13 @@ impl PhotonApp {
         }
         catching_up.sort_unstable_by_key(|g| g.0);
         catching_up.dedup();
+        for (fid, party) in molecule_stragglers {
+            self.deliver_era_to_straggler(fid, party);
+        }
+        for gid in catching_up.iter().copied() {
+            // Our own devices may already hold the era we cannot open: ask them first, once per held era.
+            self.pull_era_from_fleet(crate::types::FriendshipId::from_bytes(gid.0));
+        }
         for gid in catching_up {
             let was = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
             if was == crate::storage::molecule::MoleculePhase::Standing {

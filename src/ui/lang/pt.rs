@@ -329,6 +329,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAtoms => "Átomos".into(),
         Msg::FilterMolecules => "Moléculas".into(),
         Msg::InvitedWaiting { names } => format!("convidados: {} · aguardando", names).into(),
+        Msg::InvitedYouTo { title } => format!("convidou você para {}", title).into(),
         Msg::BondMember => "membro".into(),
         Msg::BondInvited => "convidado · aguardando".into(),
         Msg::BondWillInvite => "será convidado".into(),

@@ -72,7 +72,7 @@ impl PhotonApp {
     }
 
     /// Send a dropped/picked file as an attachment (path entry — desktop drop). Reads and forwards to [`Self::send_attachment_from_bytes`].
-    pub(super) fn send_attachment_from_path(&mut self, ci: usize, path: &str) {
+    pub(super) fn send_attachment_from_path(&mut self, conv: crate::types::ConversationId, path: &str) {
         let bytes = match std::fs::read(path) {
             Ok(b) => b,
             Err(e) => {
@@ -84,20 +84,18 @@ impl PhotonApp {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "file".to_string());
-        self.send_attachment_from_bytes(ci, name, bytes);
+        self.send_attachment_from_bytes(conv, name, bytes);
     }
 
     /// Byte entry (Android picker + desktop drop converge here). Every file — images included — sends BYTE-EXACT: no re-encode exists in this codebase (house doctrine; the JPEG resample overlay was excised 2026-08-20, the attachments rework is parked).
-    pub(super) fn send_attachment_from_bytes(&mut self, ci: usize, name: String, bytes: Vec<u8>) {
+    /// Any conversation at any size (docs/conversations.md): the prepared send re-resolves the conversation, never a contact index.
+    pub(super) fn send_attachment_from_bytes(&mut self, conv: crate::types::ConversationId, name: String, bytes: Vec<u8>) {
         if bytes.is_empty() || bytes.len() > MAX_ATTACH {
             self.ready_toast = Some(tr(Msg::AttachmentLimit).into_owned());
             self.ready_toast_screen = None;
             crate::logf!("attach: rejected ({} bytes)", bytes.len());
             return;
         }
-        let Some(peer) = self.contacts.get(ci).map(|c| c.handle_hash) else {
-            return;
-        };
         // PREPARE OFF-THREAD (typed attachments 2026-09-10): the kind sniff is cheap, but an image's decode for the previews is hundreds of ms on a phone photo and the AV1 encode more — the worker hands back the typed extras and the drain sends the row (re-resolving the contact by handle, the index may have moved). A RAW gets a temp copy for limbus (file-only reader), minted in the worker and removed by the drain.
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
@@ -138,17 +136,17 @@ impl PhotonApp {
                     }
                 }
             });
-            let _ = tx.send(super::AttachPrepared { peer, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash, wrap });
+            let _ = tx.send(super::AttachPrepared { conv, name, bytes, meta: p.meta, preview: p.preview, blob: p.blob, raw_tmp, hash, manifest, head: head_hash, wrap });
         });
     }
 
     /// Drain prepared picks: stage the typed extras for the row and send (attach_send_now).
     pub(super) fn drain_attach_prepared(&mut self) {
         while let Ok(p) = self.attach_prepared_rx.try_recv() {
-            let Some(ci) = self.contacts.iter().position(|c| c.handle_hash == p.peer) else {
-                crate::log("attach: prepared pick has no contact any more — dropped");
+            if self.conv_by_id(p.conv).is_none() {
+                crate::log("attach: prepared pick's conversation is gone — dropped");
                 continue;
-            };
+            }
             if let Some(t) = p.raw_tmp.as_ref() {
                 let _ = std::fs::remove_file(t);
             }
@@ -170,12 +168,12 @@ impl PhotonApp {
                     }
                 }
             }
-            self.attach_send_now(ci, p.name, p.bytes, meta, p.preview, p.hash, p.manifest, p.head, p.wrap);
+            self.attach_send_now(p.conv, p.name, p.bytes, meta, p.preview, p.hash, p.manifest, p.head, p.wrap);
         }
     }
 
     /// The actual send: cap 25MB, blob sealed to disk, the row = an ATTACHMENT_PREFIX content string riding the ordinary chain send (bubble, ACK, fleet sync, tombstones all inherited), then the blob itself pushed over PT.
-    pub(super) fn attach_send_now(&mut self, ci: usize, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>, head: Option<[u8; 32]>, wrap: Option<[u8; 32]>) {
+    pub(super) fn attach_send_now(&mut self, conv: crate::types::ConversationId, name: String, bytes: Vec<u8>, meta: crate::types::AttachMeta, preview: Vec<u8>, hash: [u8; 32], manifest: Option<crate::storage::BlobManifest>, head: Option<[u8; 32]>, wrap: Option<[u8; 32]>) {
         // Images and music travel NAMELESS (Nick: "the user typed nothing. just an image" / "no name, just the waveform") — a filename is metadata nobody chose to send; the receiver derives extensions from the bytes' own magic.
         let wire_name = if meta.kind.is_image() || meta.kind == crate::types::AttachKind::Audio { "" } else { name.as_str() };
         // HEADED (flag day 2026-10-07): the chain row is two pointers; THIS device's row is hydrated at once from what it just built (runtime fields the writers never carry for a headed row), so the sender sees its picture and name without reading the head back.
@@ -190,31 +188,42 @@ impl PhotonApp {
         let file = crate::types::AttachRef { wrap, ..file };
         // The row: ordinary chain send (or fleet-forward on a chainless device) — everything downstream treats it as a normal message. Its typed extras are STAGED so the minted row carries them before the transmit reads it.
         self.attach_stage = Some((meta, preview, file));
-        if !self.send_chain_message(ci, "", false, None, None) {
+        if !self.send_in_conversation(conv, "", None) {
             self.attach_stage = None;
             crate::log("attach: row send failed (no chain, no fleet) — attachment stays local");
         }
         if head.is_some() {
-            if let Some(conv) = self.conv_mut_of(ci) {
-                if let Some(m) = conv.messages.iter_mut().rev().find(|m| m.is_outgoing && m.file.as_ref().is_some_and(|f| f.hash == hash)) {
+            if let Some(view) = self.conv_by_id_mut(conv) {
+                if let Some(m) = view.messages.iter_mut().rev().find(|m| m.is_outgoing && m.file.as_ref().is_some_and(|f| f.hash == hash)) {
                     m.head_name = name.clone();
                 }
             }
         }
-        // The head (or, unheaded, the preview blob) first — small, the name and the picture the friend sees before the file lands — then the original: one frame for a small file, manifest + chunks for a large one.
-        match head {
-            Some(hh) => self.send_attach_blob(ci, &hh),
-            None => {
-                if let Some(ph) = meta.preview_hash {
-                    self.send_attach_blob(ci, &ph);
-                }
+        // WHO GETS THE PUSH: a pair's friend under the pair's own token; in a roster conversation every friend standing in it, under the conversation's token (its history key seals the blob, so any member opens it). A member we never friended has no address here and fetches by attach_req.
+        let targets: Vec<(usize, Option<[u8; 32]>)> = match self.roster_id_of(conv) {
+            Some(gid) => {
+                let token = self.conversation_token_of(conv);
+                let standing = self.molecule_rosters.iter().find(|(g, _)| *g == gid).map(|(_, r)| r.standing()).unwrap_or_default();
+                (0..self.contacts.len()).filter(|&ci| !self.contacts[ci].is_sibling && standing.contains(&self.contacts[ci].handle_hash)).map(|ci| (ci, token)).collect()
             }
-        }
+            None => self.pair_contact_of(conv).map(|ci| (ci, None)).into_iter().collect(),
+        };
         // The original goes out as the WRAPPER under its hb when it was stored wrapped (`manifest` is then the wrapper's chunks); a wrapper-aware friend verifies and keeps it as is, an older build refuses the unfamiliar name and fetches by `fh`, which the serve path answers unwrapped.
         let original = wrap.unwrap_or(hash);
-        match manifest {
-            Some(m) => self.send_attach_chunks(ci, &original, m),
-            None => self.send_attach_blob(ci, &original),
+        for (ci, token) in targets {
+            // The head (or, unheaded, the preview blob) first — small, the name and the picture the friend sees before the file lands — then the original: one frame for a small file, manifest + chunks for a large one.
+            match head {
+                Some(hh) => self.send_attach_blob(ci, &hh, token),
+                None => {
+                    if let Some(ph) = meta.preview_hash {
+                        self.send_attach_blob(ci, &ph, token);
+                    }
+                }
+            }
+            match manifest.clone() {
+                Some(m) => self.send_attach_chunks(ci, &original, m, token),
+                None => self.send_attach_blob(ci, &original, token),
+            }
         }
         self.msg_wrap = None;
         self.scene_dirty = true;
@@ -251,7 +260,9 @@ impl PhotonApp {
 
     /// Seal + push the blob for `content_hash` to contact `ci`'s device over PT (skips self/sibling contacts — they fetch lazily).
     /// The load, the seal and the dispatch run on the attach worker: the UI thread makes no vault call (2026-09-18 ANR).
-    pub(super) fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32]) {
+    /// `token` names the conversation the blob belongs to when it is not the pair's own (a roster conversation's push to one of its members).
+    pub(super) fn send_attach_blob(&mut self, ci: usize, content_hash: &[u8; 32], token: Option<[u8; 32]>) {
+        let token_for = token;
         let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
             return;
         };
@@ -268,12 +279,12 @@ impl PhotonApp {
             {
                 return;
             }
-            let Some(token) = self
-                .friendship_chains
-                .iter()
-                .find(|(id, _)| Some(*id) == c.friendship_id)
-                .map(|(_, ch)| ch.conversation_token)
-            else {
+            let Some(token) = token_for.or_else(|| {
+                self.friendship_chains
+                    .iter()
+                    .find(|(id, _)| Some(*id) == c.friendship_id)
+                    .map(|(_, ch)| ch.conversation_token)
+            }) else {
                 crate::log("attach: no chains yet — blob waits for attach_req");
                 return;
             };
@@ -324,7 +335,8 @@ impl PhotonApp {
     }
 
     /// Push a CHUNKED blob to the friend: the sealed manifest, then every chunk, each its own PT frame — sealed and dispatched from the worker (256 seals of 256 KB do not belong on the render thread).
-    pub(super) fn send_attach_chunks(&mut self, ci: usize, content_hash: &[u8; 32], m: crate::storage::BlobManifest) {
+    pub(super) fn send_attach_chunks(&mut self, ci: usize, content_hash: &[u8; 32], m: crate::storage::BlobManifest, token: Option<[u8; 32]>) {
+        let token_for = token;
         let (device, addr_pair, relay_to, token) = {
             let Some(c) = self.contacts.get(ci) else {
                 return;
@@ -332,12 +344,12 @@ impl PhotonApp {
             if self.our_party_id(c).is_none_or(|us| c.remote_count(&us) == 0) || c.is_sibling {
                 return;
             }
-            let Some(token) = self
-                .friendship_chains
-                .iter()
-                .find(|(id, _)| Some(*id) == c.friendship_id)
-                .map(|(_, ch)| ch.conversation_token)
-            else {
+            let Some(token) = token_for.or_else(|| {
+                self.friendship_chains
+                    .iter()
+                    .find(|(id, _)| Some(*id) == c.friendship_id)
+                    .map(|(_, ch)| ch.conversation_token)
+            }) else {
                 crate::log("attach: no chains yet — chunks wait for attach_req");
                 return;
             };

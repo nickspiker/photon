@@ -320,6 +320,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAtoms => "Atom".into(),
         Msg::FilterMolecules => "Molekul".into(),
         Msg::InvitedWaiting { names } => format!("diundang: {} · menunggu", names).into(),
+        Msg::InvitedYouTo { title } => format!("mengundangmu ke {}", title).into(),
         Msg::BondMember => "anggota".into(),
         Msg::BondInvited => "diundang · menunggu".into(),
         Msg::BondWillInvite => "akan diundang".into(),

@@ -683,7 +683,7 @@ struct ChainSyncOpened {
 /// A verified+stored attachment blob, posted from the off-thread worker back to the UI drain. Carries only what the drain needs to confirm receipt (attach_have) and refresh the view; the plaintext is already on disk.
 /// A picked file the preparation worker finished (kind sniffed, dims read, micro preview minted): the UI thread stages the typed extras and sends the row + blob (attachments.rs).
 struct AttachPrepared {
-    peer: [u8; 32],
+    conv: crate::types::ConversationId,
     name: String,
     bytes: Vec<u8>,
     meta: crate::types::AttachMeta,
@@ -2305,6 +2305,8 @@ pub struct PhotonApp {
     avatar_hovered: bool,
     /// Hit id currently under the cursor, tracked across `CursorMoved` so hover only re-walks the widgets (and repaints) when it actually changes. Also the source of truth for [`Self::cursor_for`]'s I-beam decision.
     hover_hit: HitId,
+    /// The pointer is over the window (set on every `CursorMoved`, cleared on `CursorLeft`): the post-render hover re-resolve runs only then.
+    cursor_in_window: bool,
     /// Whether `hover_hit` is a text-entry widget (drives the I-beam). Set by the hover walk via `Widget::is_text_input`, so it covers every textbox on every screen with no hand-list.
     hover_is_textbox: bool,
     /// Left button currently held. Gates the textbox text-pan in `CursorMoved`.
@@ -3163,6 +3165,7 @@ impl PhotonApp {
             hints_dismissed: false,
             avatar_hovered: false,
             hover_hit: HIT_NONE,
+            cursor_in_window: false,
             hover_is_textbox: false,
             pointer_down: false,
             press_held: false,
@@ -3391,8 +3394,8 @@ impl PhotonApp {
     /// Android picker result: a file's name + bytes for the ACTIVE conversation (no-op outside one).
     pub fn attach_picked(&mut self, name: String, bytes: Vec<u8>) {
         if matches!(self.state, AppState::Conversation) {
-            if let Some(ci) = self.active_contact() {
-                self.send_attachment_from_bytes(ci, name, bytes);
+            if let Some(id) = self.active_conversation {
+                self.send_attachment_from_bytes(id, name, bytes);
             }
         }
     }

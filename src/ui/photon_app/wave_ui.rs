@@ -1787,7 +1787,7 @@ impl PhotonApp {
                                 if let Some(conv) = self.conv_mut_of(ci) {
                                     conv.insert_message_sorted(erow);
                                 }
-                                self.send_attach_blob(ci, &eh);
+                                self.send_attach_blob(ci, &eh, None);
                             }
                         }
                         if let Some(conv) = self.conv_mut_of(ci) {

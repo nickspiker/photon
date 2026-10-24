@@ -1370,7 +1370,20 @@ fn trim_log_file(now_osc: i64) -> Option<(std::fs::File, u64, i64)> {
         lf // held until this fn returns (drop closes the fd → releases the lock)
     };
 
-    let bytes = std::fs::read(&path).ok()?;
+    // A file far past the cap is read from its TAIL only (resynced at the first header there): the front is dropped anyway, and reading it whole put hundreds of MB in a phone's RAM.
+    let len = std::fs::metadata(&path).ok()?.len();
+    let bytes = if len > 2 * LOG_CAP_BYTES {
+        use std::io::{Read, Seek};
+        let mut f = std::fs::File::open(&path).ok()?;
+        f.seek(std::io::SeekFrom::Start(len - LOG_CAP_BYTES)).ok()?;
+        let mut tail = Vec::with_capacity(LOG_CAP_BYTES as usize);
+        f.read_to_end(&mut tail).ok()?;
+        let start = resync_log_record(&tail, 0).unwrap_or(tail.len());
+        tail.drain(..start);
+        tail
+    } else {
+        std::fs::read(&path).ok()?
+    };
     let age_cutoff = now_osc - jitter(LOG_AGE_KEEP_BASE_OSC); // keep a random 12–24h
     let (keep, new_oldest) = log_keep_offset(&bytes, LOG_TRIM_TO_BYTES, age_cutoff);
     let kept = &bytes[keep..]; // log_keep_offset returns an offset inside the buffer, or exactly its length
@@ -1403,18 +1416,23 @@ fn log_keep_offset(bytes: &[u8], trim_to_size: u64, age_cutoff_osc: i64) -> (usi
     let mut offset = 0usize;
     while offset < total {
         let rest = &bytes[offset..];
-        let (header, header_end) = match vsf::file_format::VsfHeader::decode(rest) {
-            Ok(h) => h,
-            Err(_) => return (offset, i64::MAX),
+        let parsed = vsf::file_format::VsfHeader::decode(rest).ok().and_then(|(header, header_end)| {
+            let mut ptr = 0usize;
+            vsf::file_format::VsfSection::parse(&rest[header_end..], &mut ptr).ok()?;
+            (header_end + ptr > 0).then_some((header, header_end + ptr))
+        });
+        let Some((header, rec)) = parsed else {
+            // AN UNDECODABLE RECORD (a write torn by a kill, a flash hiccup): resync at the next header magic past it, dropping only the damage.
+            // Stopping here instead kept the whole file on every trim, so a phone log passed 364 MB while each new line re-read and rewrote it (Nick's Pixel, 2026-10-24).
+            // No magic after it = a torn TAIL: keep from here, a mid-record cut never happens.
+            match resync_log_record(bytes, offset + 1) {
+                Some(next) => {
+                    offset = next;
+                    continue;
+                }
+                None => return (offset, i64::MAX),
+            }
         };
-        let mut ptr = 0usize;
-        if vsf::file_format::VsfSection::parse(&rest[header_end..], &mut ptr).is_err() {
-            return (offset, i64::MAX);
-        }
-        let rec = header_end + ptr;
-        if rec == 0 {
-            return (offset, i64::MAX);
-        }
         let t = match &header.creation_time {
             Some(vsf::VsfType::e(et)) => et_to_osc_log(et),
             _ => i64::MIN, // no/odd timestamp → treat as ancient so it's eligible to drop
@@ -1426,6 +1444,13 @@ fn log_keep_offset(bytes: &[u8], trim_to_size: u64, age_cutoff_osc: i64) -> (usi
         offset += rec;
     }
     (total, i64::MAX) // everything dropped → empty
+}
+
+// The next VSF header magic ("RÅ<") at or after `from`, the resync point past an undecodable log record.
+#[cfg(feature = "logging")]
+fn resync_log_record(bytes: &[u8], from: usize) -> Option<usize> {
+    const MAGIC: &[u8] = &[0x52, 0xC3, 0x85, b'<'];
+    bytes.get(from..)?.windows(MAGIC.len()).position(|w| w == MAGIC).map(|p| from + p)
 }
 
 // Eagle oscillations from a log record's creation-time field.
@@ -1544,6 +1569,22 @@ mod log_cap_tests {
             "kept tail must end exactly on a record boundary"
         );
         assert!(n > 0);
+    }
+
+    #[test]
+    fn trim_resyncs_past_a_corrupt_record() {
+        // Junk where a record should be, then valid records: the trim must skip the damage and keep cutting by size, never keep the whole file.
+        let mut bytes = "RÅ<garbage that is no header".as_bytes().to_vec();
+        let first_good = bytes.len();
+        let mut starts = vec![first_good];
+        for i in 0..40 {
+            bytes.extend_from_slice(&record(&format!("message number {i}")));
+            starts.push(bytes.len());
+        }
+        let trim_to = ((bytes.len() - first_good) / 4) as u64;
+        let (keep, _oldest) = log_keep_offset(&bytes, trim_to, i64::MIN);
+        assert!(starts.contains(&keep), "cut at {keep} is not a record boundary");
+        assert!((bytes.len() - keep) as u64 <= trim_to, "the size cap still applies past the corrupt record");
     }
 
     #[test]

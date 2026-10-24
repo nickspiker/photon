@@ -15,6 +15,12 @@ One sentence per line, however long; plain language for the person who installs 
 - **One colour per friend.** A friend wears the same colour on your devices in every conversation they're in.
 - **A molecule shows where it stands.** While you're joining or catching up, the line under its name says so, the same way a new friendship shows its progress.
 - **Keys stop getting stuck.** Each friendship now has its own secure channel, and when two devices disagree about a conversation's keys the one that should fix it does, right away, instead of each side waiting for the other.
+- **Invitations ding.** An invitation to a molecule rings and shows a notification, the same as a message from that friend.
+- **Bind once for all your devices.** Binding on one device brings the molecule to every device you own, and the invitation shows as answered everywhere.
+- **No more missing messages in molecules.** When someone joined, the new keys could go out locked with themselves and leave members unable to read anything after; they now go out readable, and a member who falls behind is handed the current keys by the next person who hears from them.
+- **Files send in molecules.** Dropping or picking a file in a molecule sends it to everyone in it.
+- **Buttons answer right after a page change.** A button under the pointer lights up and works straight away, without moving the mouse first.
+- **Phone logs stay small.** A damaged spot in the diagnostics log stopped it from ever trimming, so it grew without limit; it now skips the damage and trims as it should.
 - **Safer molecules.** A molecule's member list now only accepts changes signed by the member's own devices, a member can only delete their own messages, and new keys for a conversation are only accepted from someone in it.
 
 ## v125

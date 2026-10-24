@@ -323,6 +323,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAtoms => "Ngota".into(),
         Msg::FilterMolecules => "Ngota-rahi".into(),
         Msg::InvitedWaiting { names } => format!("kua pōhiritia: {} · e tatari ana", names).into(),
+        Msg::InvitedYouTo { title } => format!("i pōhiri i a koe ki {}", title).into(),
         Msg::BondMember => "mema".into(),
         Msg::BondInvited => "kua pōhiritia · e tatari ana".into(),
         Msg::BondWillInvite => "ka pōhiritia".into(),

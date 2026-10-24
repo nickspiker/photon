@@ -84,6 +84,7 @@ impl PhotonApp {
         }
         let members = snapshot.standing().len();
         let offer = BondOffer { molecule_id: gid, sponsor, row_osc, snapshot, accepted: false };
+        let fresh = !self.bond_offers.iter().any(|o| o.molecule_id == gid);
         self.bond_offers.retain(|o| o.molecule_id != gid);
         self.bond_offers.push(offer.clone());
         if let Some(storage) = self.storage.as_ref() {
@@ -92,6 +93,35 @@ impl PhotonApp {
             }
         }
         crate::logf!("MOLECULE: offered \"{}\" ({}) by {} — {} standing — Join is the consent", title, hex::encode(&gid.0[..4]), sponsor_fp, members);
+        if fresh {
+            self.alert_invitation(ci, gid, row_osc, &title);
+        }
+        self.scene_dirty = true;
+    }
+
+    /// An invitation is something a person sent us: it rings and alerts like a photon from them (Nick 2026-10-24: "it didn't ding for the recipients"), with the sponsor's own chirp and their name as the title.
+    fn alert_invitation(&mut self, ci: usize, gid: MoleculeId, row_osc: i64, title: &str) {
+        let Some(c) = self.contacts.get(ci) else {
+            return;
+        };
+        let sender = c.display_name();
+        let named = if title.is_empty() { crate::ui::lang::tr(crate::ui::lang::Msg::ConversationTitle).into_owned() } else { title.to_string() };
+        let body = crate::ui::lang::tr(crate::ui::lang::Msg::InvitedYouTo { title: &named }).into_owned();
+        let mut key = gid.0.to_vec();
+        key.extend_from_slice(&row_osc.to_le_bytes());
+        let alert_hp = *blake3::hash(&key).as_bytes();
+        let us = self.our_party_id(c).unwrap_or([0u8; 32]);
+        let digest = super::relationship_digest(&c.handle_hash, &us);
+        crate::logf!("NOTIFY: invitation to {} from {}", hex::encode(&gid.0[..4]), crate::fp(&c.handle_proof));
+        #[cfg(target_os = "android")]
+        crate::platform::jni_android::notify_new_message(&alert_hp, &digest, &sender, &body);
+        #[cfg(not(target_os = "android"))]
+        {
+            crate::platform::desktop_notify::notify_new_message(&alert_hp, &sender, &body);
+            std::thread::spawn(move || {
+                chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
+            });
+        }
     }
 
     /// The genesis must be present, name this group, and verify under its own signer before anything persists. Returns the title suggestion.
@@ -110,6 +140,13 @@ impl PhotonApp {
             crate::logf!("MOLECULE: join of {} — no parked offer", hex::encode(&gid.0[..4]));
             return false;
         };
+        // A sibling already bound and its keys reached us: joining again would replace them with a placeholder and make the sponsor mint the group a needless era.
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        if self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root()) {
+            crate::logf!("MOLECULE: join of {} — our fleet already holds its keys; nothing to send", hex::encode(&gid.0[..4]));
+            self.fleet_holds_molecule(gid);
+            return false;
+        }
         // Joined = the group is held AND past Joining: a joining group is listed from the moment Join is pressed (below), and a re-tap while the wrap is lost must send the join again, not report it done.
         let joining = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Joining);
         if offer.accepted && !joining && self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
@@ -221,6 +258,8 @@ impl PhotonApp {
             crate::logf!("MOLECULE: join from {} for {} — we are not standing; cannot vouch", joiner_fp, hex::encode(&gid.0[..4]));
             return;
         }
+        // ANOTHER DEVICE OF A MEMBER already standing: the party has read every era already, so it takes the current one whole like a from-genesis join — a from-join mint here only forked the era away from that member's other devices.
+        let already_standing = self.molecule_rosters[pos].1.is_standing(&joiner);
         let vouch = crate::types::molecule::vouch_record(our_pid, joiner, false, &seed);
         let mut posted = Roster::default();
         posted.merge_member(member.clone());
@@ -241,7 +280,7 @@ impl PhotonApp {
         let from_genesis = self.molecule_rosters[pos].1.genesis.as_ref().map_or(false, |g| g.history_from_genesis);
         // The records go into the group for everyone; the joiner is standing from the merge above, so the fan-out reaches it too once it holds the era.
         self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob: Some(crate::storage::molecule::roster_to_vsf_bytes(&gid, &posted).ok().unwrap_or_default()), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
-        if from_genesis {
+        if from_genesis || already_standing {
             // Re-wrap the CURRENT era whole to each of the joiner's devices, over the friendship.
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let Some((era, lineage, root, hk)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| Some((c.era_index, c.era_lineage, *c.lane_root()?, *c.history_key()?))) else {
@@ -943,7 +982,8 @@ impl PhotonApp {
             let gid = post.gid;
             let fid = crate::types::FriendshipId::from_bytes(gid.0);
             let (text, ts, reference, control) = match post.text.as_ref() {
-                Some((t, ts, r)) => (t.clone(), *ts, *r, None),
+                // A HELD control row re-sends as the same control row: dropping its kind sent a wrap as an empty chat row, and the era it carried never reached anyone.
+                Some((t, ts, r)) => (t.clone(), *ts, *r, post.control.then(|| crate::types::RowControl::Molecule(post.signal))),
                 None => {
                     // A control row: it lands in the group conversation as a hidden outgoing row FIRST (re-ACK durability, the era-row pattern), then rides the wire.
                     let ts = crate::network::time_base::stamp_osc();
@@ -1133,6 +1173,29 @@ impl PhotonApp {
         }
     }
 
+    /// OUR FLEET HOLDS THIS GROUP (a sibling's replication carried its roster): the invitation is answered on every device, never bound twice, and the group is Standing wherever its keys have landed — Joining until then (Nick 2026-10-24: a bind showed on one device only, and a second device's own Bind minted the group an extra era).
+    pub(super) fn fleet_holds_molecule(&mut self, gid: MoleculeId) {
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let keyed = self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root());
+        let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase);
+        match phase {
+            None | Some(MoleculePhase::Joining) if keyed => self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing),
+            None => self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Joining),
+            _ => {}
+        }
+        if !self.conversations.iter().any(|v| v.id() == fid) {
+            let standing = self.molecule_rosters.iter().find(|(g, _)| *g == gid).map(|(_, r)| r.standing()).unwrap_or_default();
+            self.conversations.push(crate::types::Conversation::new_molecule(gid, standing));
+        }
+        if let Some(o) = self.bond_offers.iter_mut().find(|o| o.molecule_id == gid && !o.accepted) {
+            o.accepted = true;
+            if let Some(storage) = self.storage.as_ref() {
+                let _ = crate::storage::molecule::save_bond_offer(o, storage);
+            }
+            self.scene_dirty = true;
+        }
+    }
+
     /// A SIBLING's replicated group blob landed (docs/molecules.md step 6): merge the roster it carries; if this device never held the group, boot it — index, conversation, local state — so a phone that slept thru a join wakes holding the group. Returns whether the roster changed.
     pub(super) fn adopt_replicated_molecule(&mut self, gid: MoleculeId, roster_bytes: &[u8]) -> bool {
         if roster_bytes.is_empty() {
@@ -1161,12 +1224,12 @@ impl PhotonApp {
                 if !self.conversations.iter().any(|v| v.id() == fid) {
                     self.conversations.push(crate::types::Conversation::new_molecule(gid, std::iter::empty()));
                 }
-                self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing);
                 self.molecule_rosters.len() - 1
             }
         };
         let mut changed = self.merge_snapshot_into(pos, snapshot);
         changed |= self.sync_molecule_conversation(&gid);
+        self.fleet_holds_molecule(gid);
         if changed {
             self.persist_molecule(&gid);
         } else if let Some(storage) = self.storage.as_ref() {

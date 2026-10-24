@@ -2015,35 +2015,8 @@ impl FluorApp for PhotonApp {
                         changed = true;
                     }
                 }
-                // Hover only re-walks (and repaints) when the hit under the cursor actually changes — one walk over EVERY active widget, so every textbox/button on every screen inherits hover + the I-beam with no hand-list. Frozen (busy) widgets return `None` from `hover()`, so they stay inert for free.
-                if new_hit != self.hover_hit {
-                    // Contact-row hover tint is CONTENT (painted into the canvas, not an overlay delta), so entering/leaving a row needs the full frame the widget-overlay path avoids.
-                    let row_hover = |hit: HitId| {
-                        (self.contact_hit_base != HIT_NONE
-                            && hit >= self.contact_hit_base
-                            && hit < (self.contact_hit_base + 256))
-                            || (self.back_btn_hit_id != HIT_NONE && hit == self.back_btn_hit_id)
-                            // Settings pill band: stub pills brighten and the About passless.org link BOLDS on hover — all CONTENT-pass paint (not overlay deltas), so entering/leaving needs the full frame (the link's bold didn't appear until something else forced a redraw, field 2026-09-02).
-                            || (self.settings_btn_base != HIT_NONE
-                                && hit >= self.settings_btn_base
-                                && hit < (self.settings_btn_base + SETTINGS_PILL_SLOTS))
-                    };
-                    // Not while a finger (or button) drags the pane: the rows passing under it are not being hovered, and the full repaint would defeat the scroll memmove every frame.
-                    if (row_hover(new_hit) || row_hover(self.hover_hit)) && !self.press_held {
-                        self.scene_dirty = true;
-                    }
-                    self.hover_hit = new_hit;
-                    let mut is_tb = false;
-                    self.visit_app_widgets(&mut |w| {
-                        let over = new_hit == w.id();
-                        if over && w.is_text_input() {
-                            is_tb = true;
-                        }
-                        if let Some(h) = w.hover() {
-                            h.set_hovered(over);
-                        }
-                    });
-                    self.hover_is_textbox = is_tb;
+                self.cursor_in_window = true;
+                if self.apply_hover(new_hit, false) {
                     changed = true;
                 }
                 {
@@ -2062,6 +2035,8 @@ impl FluorApp for PhotonApp {
             }
             Event::CursorLeft { .. } => {
                 self.press_held = false;
+                self.cursor_in_window = false;
+                self.hover_hit = HIT_NONE;
                 let mut changed = false;
                 if let Some(chrome) = self.chrome.as_mut() {
                     changed |= chrome.set_hover(HIT_NONE);
@@ -2884,13 +2859,15 @@ impl FluorApp for PhotonApp {
                     return EventResponse::Handled;
                 }
                 if matches!(self.state, AppState::Conversation) {
-                    if let Some(ci) = self.active_contact() {
-                        // A drop on a BRIDGE (a sibling's shell) is a pigeon: ephemeral, lands in the host's cwd, never a fleet attachment (docs/PT.md spooled receive).
-                        if self.contacts.get(ci).is_some_and(|c| c.is_sibling) {
-                            self.send_bridge_pigeon(ci, std::path::Path::new(path));
-                        } else {
-                            self.send_attachment_from_path(ci, path);
-                        }
+                    // A drop on a BRIDGE (a sibling's shell) is a pigeon: ephemeral, lands in the host's cwd, never a fleet attachment (docs/PT.md spooled receive).
+                    if let Some(ci) = self.active_contact().filter(|&ci| self.contacts.get(ci).is_some_and(|c| c.is_sibling)) {
+                        self.send_bridge_pigeon(ci, std::path::Path::new(path));
+                        ctx.window.request_redraw();
+                        return EventResponse::Handled;
+                    }
+                    // Any other open conversation, at any size: a roster conversation has no contact, and keying the send on one dropped every attachment in it.
+                    if let Some(id) = self.active_conversation {
+                        self.send_attachment_from_path(id, path);
                         ctx.window.request_redraw();
                         return EventResponse::Handled;
                     }
@@ -3791,6 +3768,16 @@ impl FluorApp for PhotonApp {
 
     fn render(&mut self, target: &mut [u32], ctx: &mut Context) {
         self.render_frame(target, ctx);
+        // RE-RESOLVE HOVER against the map this frame just stamped (Nick 2026-10-24: after a page change no button lit or answered until the mouse moved — hover only re-walked on motion, so the new page's widgets never learned the pointer sat on them).
+        // The forced walk is idempotent; only a moved id asks for another frame, so a still pointer settles after one.
+        #[cfg(not(target_os = "android"))]
+        if self.cursor_in_window {
+            let hit = self.chrome.as_ref().map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y)).unwrap_or(HIT_NONE);
+            let chrome_moved = self.chrome.as_mut().is_some_and(|c| c.set_hover(hit));
+            if self.apply_hover(hit, true) || chrome_moved {
+                ctx.window.request_redraw();
+            }
+        }
     }
 
     fn hit_test_map(&self) -> Option<(&[HitId], usize, usize)> {
@@ -3944,6 +3931,43 @@ fn open_url_in_browser(url: &str) {
 
 // The display-free startup half lives OUTSIDE the FluorApp impl so the lifeline can call it with no host at all.
 impl PhotonApp {
+    /// THE ONE HOVER WALK: flip every active widget's hover to `new_hit` (`force` re-walks even when the id under the cursor did not change, since a page change can put a different widget under the same id). Returns whether the hovered id moved.
+    fn apply_hover(&mut self, new_hit: HitId, force: bool) -> bool {
+        // Hover only re-walks (and repaints) when the hit under the cursor actually changes — one walk over EVERY active widget, so every textbox/button on every screen inherits hover + the I-beam with no hand-list. Frozen (busy) widgets return `None` from `hover()`, so they stay inert for free.
+        if new_hit != self.hover_hit || force {
+            let moved = new_hit != self.hover_hit;
+            // Contact-row hover tint is CONTENT (painted into the canvas, not an overlay delta), so entering/leaving a row needs the full frame the widget-overlay path avoids.
+            let row_hover = |hit: HitId| {
+                (self.contact_hit_base != HIT_NONE
+                    && hit >= self.contact_hit_base
+                    && hit < (self.contact_hit_base + 256))
+                    || (self.back_btn_hit_id != HIT_NONE && hit == self.back_btn_hit_id)
+                    // Settings pill band: stub pills brighten and the About passless.org link BOLDS on hover — all CONTENT-pass paint (not overlay deltas), so entering/leaving needs the full frame (the link's bold didn't appear until something else forced a redraw, field 2026-09-02).
+                    || (self.settings_btn_base != HIT_NONE
+                        && hit >= self.settings_btn_base
+                        && hit < (self.settings_btn_base + SETTINGS_PILL_SLOTS))
+            };
+            // Not while a finger (or button) drags the pane: the rows passing under it are not being hovered, and the full repaint would defeat the scroll memmove every frame.
+            if (row_hover(new_hit) || row_hover(self.hover_hit)) && !self.press_held {
+                self.scene_dirty = true;
+            }
+            self.hover_hit = new_hit;
+            let mut is_tb = false;
+            self.visit_app_widgets(&mut |w| {
+                let over = new_hit == w.id();
+                if over && w.is_text_input() {
+                    is_tb = true;
+                }
+                if let Some(h) = w.hover() {
+                    h.set_hovered(over);
+                }
+            });
+            self.hover_is_textbox = is_tb;
+            return moved;
+        }
+        false
+    }
+
     /// Every live reading on screen right now, as the text it would draw, concatenated: the Base page's clock and since-opened counter, or a selected message's age. Pure function of now and state; tick() compares it with the last one and repaints on a change.
     fn live_readings(&self) -> String {
         // Nobody watching, nothing live (Nick's MacBook 2026-10-20: 13,227 Conversation frames overnight, one per second, for a message age no one saw). The focus or reveal edge repaints, and the reading lands fresh there.

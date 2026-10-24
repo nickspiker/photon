@@ -559,6 +559,8 @@ pub enum Msg<'a> {
     FilterMolecules,
     /// The sponsor's line under an atom or molecule row: the friends invited who have not joined yet.
     InvitedWaiting { names: &'a str },
+    /// The notification body when a friend invites us into a molecule.
+    InvitedYouTo { title: &'a str },
     /// Bonds-page row tags: a standing member (locked), an invite out and not answered, and the two edits staged until the page is left.
     BondMember,
     BondInvited,

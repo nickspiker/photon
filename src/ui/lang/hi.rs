@@ -328,6 +328,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAtoms => "परमाणु".into(),
         Msg::FilterMolecules => "अणु".into(),
         Msg::InvitedWaiting { names } => format!("आमंत्रित: {} · प्रतीक्षा", names).into(),
+        Msg::InvitedYouTo { title } => format!("ने आपको {} में आमंत्रित किया", title).into(),
         Msg::BondMember => "सदस्य".into(),
         Msg::BondInvited => "आमंत्रित · प्रतीक्षा".into(),
         Msg::BondWillInvite => "आमंत्रित होगा".into(),

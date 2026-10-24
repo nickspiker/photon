@@ -1382,7 +1382,13 @@ impl FriendshipChains {
 
     /// True when the two blobs grew from DIFFERENT lane roots — a re-key minted a new era. Era-divergent blobs must never lane-merge: the merge adopts a root only where one is absent, so it would strand the old-era holder on dead chains while stacking new-era labels it derives garbage for.
     pub fn differs_in_era_from(&self, other: &FriendshipChains) -> bool {
-        self.lane_root.is_some() && other.lane_root.is_some() && self.lane_root != other.lane_root
+        !self.awaiting_root() && !other.awaiting_root() && self.lane_root != other.lane_root
+    }
+
+    /// A group JOIN placeholder: the chains a device holds between tapping Bind and the wrap's arrival, carrying only its KEM decapsulation keys under an all-zero root (or none).
+    /// It is no era at all — any real root supersedes it, and it never supersedes anything.
+    pub fn awaiting_root(&self) -> bool {
+        self.lane_root.map_or(true, |r| r == [0u8; 32])
     }
 
     /// A sibling blob whose CURRENT root is our PENDING root has cut over ahead of us — not a supersede, a "cut over now" (merge_lanes_from handles it).
@@ -1408,6 +1414,16 @@ impl FriendshipChains {
 
     /// Merge a sibling's replicated copy, LANE-WISE (docs/lanes.md checkpoints): a lane we lack is taken whole; a lane we hold is replaced iff the incoming position is STRICTLY greater — a fast-forward of the same deterministic replay, always safe. Device-local state (our label, pendings, send tip, weave view) stays OURS untouched; the root and history key adopt only where we lack them. Replaces whole-blob newest-wins, whose fork window was both devices overwriting each other's live lanes. Returns whether anything changed. SAME-ERA ONLY: the caller must judge `differs_in_era_from` first — a re-keyed root never merges, it supersedes wholesale.
     pub fn merge_lanes_from(&mut self, other: &FriendshipChains) -> bool {
+        // A JOIN PLACEHOLDER meeting the group's real keys (a sibling bound first, or its wrap landed there): take the era wholesale, keeping our own KEM keys for the next mint's wrap to this device.
+        if self.molecule && self.awaiting_root() && !other.awaiting_root() {
+            let kems = std::mem::take(&mut self.molecule_kems);
+            self.lane_root = None;
+            self.supersede_with(other);
+            for k in kems {
+                self.push_molecule_kem(k);
+            }
+            return true;
+        }
         // ERA SUPERSEDE: different lane_roots are different CEREMONIES over one friendship — a re-key happened, and lane-merging across eras is meaningless (labels derive under different roots). Keeping an existing root forever left a parked sibling on yesterday's era pushing stale frames the friend's gap repair read as a fork — it discarded a freshly-woven chain 15 seconds after completion (live pair, 2026-08-05). The newer genesis adopts WHOLESALE and the superseded era's lanes, pendings, and send state die with it; the older side keeps ours and converges when our push reaches it.
         if self.other_is_our_pending(other) {
             // The sibling cut over to the era we were holding as pending: follow it, then take its lanes like any same-era merge.
@@ -2138,6 +2154,24 @@ impl std::fmt::Debug for FriendshipChains {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A device that tapped Bind holds a rootless JOIN PLACEHOLDER; a sibling's real group keys must replace it, and it must never replace them (Nick's desktop 2026-10-24 refused the Mac's keys as an "elder era" and bound a second time).
+    #[test]
+    fn join_placeholder_yields_to_real_keys() {
+        let gid = crate::types::molecule::MoleculeId([7u8; 32]);
+        let parties = [[1u8; 32], [2u8; 32]];
+        let mut holder = FriendshipChains::from_molecule_root(gid, &parties, [0u8; 32], [0u8; 32], 0, [7u8; 32]);
+        let real = FriendshipChains::from_molecule_root(gid, &parties, [9u8; 32], [8u8; 32], 2, [5u8; 32]);
+        assert!(holder.awaiting_root() && !real.awaiting_root());
+        assert!(!holder.differs_in_era_from(&real), "a placeholder is no era to compare");
+        let mut kept = real.clone();
+        assert!(!kept.merge_lanes_from(&holder) || kept.lane_root() == Some(&[9u8; 32]), "a placeholder never replaces real keys");
+        assert_eq!(kept.lane_root(), Some(&[9u8; 32]));
+        assert!(holder.merge_lanes_from(&real));
+        assert_eq!(holder.lane_root(), Some(&[9u8; 32]));
+        assert_eq!(holder.era_index, 2);
+        assert!(holder.retired_era().is_none(), "the placeholder leaves no retired era behind");
+    }
 
     /// GOLDEN (docs/conversations.md Phase 0): the derivations every stored conversation and every live wire token rest on.
     /// The convergence moves code around them; if one of these values changes, a stored row table or a token moved with it.

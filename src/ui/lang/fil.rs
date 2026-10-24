@@ -321,6 +321,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::FilterAtoms => "Mga atomo".into(),
         Msg::FilterMolecules => "Mga molekula".into(),
         Msg::InvitedWaiting { names } => format!("inimbitahan: {} · naghihintay", names).into(),
+        Msg::InvitedYouTo { title } => format!("inimbitahan ka sa {}", title).into(),
         Msg::BondMember => "miyembro".into(),
         Msg::BondInvited => "inimbitahan · naghihintay".into(),
         Msg::BondWillInvite => "iimbitahan".into(),

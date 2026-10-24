@@ -2389,6 +2389,8 @@ impl PhotonApp {
                 }
                 Some((_, local)) => local.merge_lanes_from(&incoming),
                 // A friendship with someone we booted is never re-adopted from a sibling that has not yet applied the boot: it would leave an orphan chain, and a live chain is the first step back to a live contact.
+                // A sibling's JOIN PLACEHOLDER is no group yet: its wrap goes to that device's own bundle, and the keys reach us by this same sync once it lands.
+                None if incoming.molecule && incoming.awaiting_root() => false,
                 None if booted_orphan => {
                     crate::logf!("BOOT: chain-sync for booted friendship {} refused", crate::fp(&fid.0));
                     false

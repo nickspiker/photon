@@ -427,6 +427,35 @@ impl PhotonApp {
 }
 
 impl PhotonApp {
+    /// A GROUP MEMBER still writing on an era we retired never received the wrap for the current one (lost, or sent under the era it was meant to replace): hand it the current era WHOLE over our bond with them, once per era per member.
+    /// Harmless to a member merely straggling thru its cutover: a whole era at an index it already holds is refused as not new.
+    pub(super) fn deliver_era_to_straggler(&mut self, fid: crate::types::FriendshipId, party: [u8; 32]) {
+        let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && c.handle_hash == party) else {
+            return;
+        };
+        let Some(us) = self.our_party_id(&self.contacts[ci]) else {
+            return;
+        };
+        if self.bond_fid_of(ci).is_none() {
+            return;
+        }
+        let Some((era, lineage, tag, root, hk)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| Some((c.era_index, c.era_lineage, c.era_tag()?, *c.lane_root()?, *c.history_key()?))) else {
+            return;
+        };
+        let mut who = [0u8; 4];
+        who.copy_from_slice(&party[..4]);
+        if !self.era_heals.insert((fid, tag, u32::from_le_bytes(who))) {
+            return;
+        }
+        let mut secret = Vec::with_capacity(64);
+        secret.extend_from_slice(&root);
+        secret.extend_from_slice(&hk);
+        let ts = crate::network::time_base::stamp_osc();
+        let wire = crate::network::message_package::MoleculeWire { from: us, woven_authors: Vec::new(), blob: None, wrap: None, deliver: Some(crate::network::message_package::EraDeliveryWire { conversation: fid.0, era, era_lineage: lineage, nonce: rand::random(), secret }) };
+        let sent = self.bond_transmit_with(ci, ts, None, Some(&wire), &crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Deliver));
+        crate::logf!("ERA: {} still writes {} on a retired era — era#{} handed over WHOLE on our bond ({})", crate::fp(&self.contacts[ci].handle_proof), hex::encode(&fid.as_bytes()[..4]), era, if sent { "sent" } else { "queued" });
+    }
+
     /// Ask our own siblings for an era of these chains newer than ours (the era_pull): a device behind its own fleet catches up from its siblings by chain-sync, never by re-keying anything with the friend. Once per held era.
     pub(super) fn pull_era_from_fleet(&mut self, fid: crate::types::FriendshipId) {
         let Some((token, held, held_tag)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| (c.conversation_token, c.era_index, c.era_tag())) else {
