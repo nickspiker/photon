@@ -896,6 +896,17 @@ impl PhotonApp {
                 Some((fid, primary, alt, recipient_key, relay_to))
             })
             .collect();
+        // BONDS (docs/conversations.md §7): a friend's bond rides the friend's own route, so every friend route has a bond twin — a lost invitation, join or decline retransmits like any pending.
+        let bond_twins: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = routes
+            .iter()
+            .filter_map(|(fid, primary, alt, key, relay)| {
+                let c = self.contacts.iter().find(|c| !c.is_sibling && c.friendship_id == Some(*fid))?;
+                let bfid = crate::types::FriendshipId::from_bytes(c.bond_id(&self.our_party_id(c)?)?.0);
+                self.friendship_chains.iter().any(|(id, ch)| *id == bfid && ch.has_pending_messages()).then(|| (bfid, *primary, *alt, *key, relay.clone()))
+            })
+            .collect();
+        let mut routes = routes;
+        routes.extend(bond_twins);
         // GROUP pass (docs/molecules.md step 4): one route per standing member's device, resolved from the roster at sweep time, and a pending re-sends only to the parties whose ACK is still missing.
         let molecule_routes: Vec<(crate::types::molecule::MoleculeId, Vec<super::Route>)> = self
             .molecule_rosters
