@@ -17,3 +17,5 @@ Found while mapping: the "withhold a short wrap set" tripwire the mint relies on
 
 **Why:** two code paths for one concept is where the divergence bugs live (Emma's join, the missing crypto status on molecules).
 **How to apply:** build each phase so the app works at every step; owner decisions D1–D7 are listed in the doc §6 — ask before Phase 3 crypto.
+
+Field round 3 (2026-10-24, v0.125.9-10): binding worked but showed on one device, members stranded, files never sent, no ding. Convicted + fixed in b0aab1a1: queued mint wraps drained AFTER cutover (sent under the new era) and a held control row re-sent as a chat row; a Bind placeholder (all-zero root) refused a sibling's real keys as an "elder era" (`awaiting_root` now yields); attach send keyed on a contact index, so `active_contact()` = None in a molecule dropped it. OPEN: a stranded member that never writes is only healed when it sends (retired-era frame trigger); group eras over bonds not built.
