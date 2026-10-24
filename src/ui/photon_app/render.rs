@@ -4855,10 +4855,15 @@ impl PhotonApp {
                             if let Some(btn) = self.compose_attach_btn.as_ref() {
                                 btn.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, btn.hit_id());
                             }
-                        } else if active_gid.is_some() {
-                            // A GROUP conversation before the fan-out send lands (docs/molecules.md step 4): the compose slot carries an honest label instead of a box that would swallow text.
+                        } else if let Some(gid) = active_gid {
+                            // A GROUP conversation we cannot write in right now: the compose slot says WHY (binding, catching up, left) instead of a box that would swallow text — it used to promise a "next build" that had long shipped (Emma 2026-10-24).
                             let label_y = buf_h as f32 - ime_lift - compose_margin - unit * 0.9;
-                            ctx.text.draw_text_center(&mut canvas, &tr(Msg::MoleculeComposeSoon), buf_w as f32 * 0.5, label_y, &TextStyle::new(unit * 0.55, *theme::LABEL_COLOUR).weight(500).font("Oxanium"), None, None);
+                            let why = match self.molecule_locals.iter().find(|(g, _)| g.0 == gid.0).map(|(_, l)| l.phase).unwrap_or_default() {
+                                crate::storage::molecule::MoleculePhase::Joining => tr(Msg::JoiningStatus),
+                                crate::storage::molecule::MoleculePhase::Left => tr(Msg::YouLeftNote),
+                                _ => tr(Msg::CatchingUpStatus),
+                            };
+                            ctx.text.draw_text_center(&mut canvas, &why, buf_w as f32 * 0.5, label_y, &TextStyle::new(unit * 0.55, *theme::LABEL_COLOUR).weight(500).font("Oxanium"), None, None);
                         } // end chain-woven compose gate
                     } // end CLUTCH-Complete gate (message list + compose box)
                 }

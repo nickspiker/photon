@@ -340,7 +340,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "पकड़ रहे हैं\u{2026}".into(),
         Msg::LeftStatus => "तुम निकल गए".into(),
         Msg::PendingMember => "प्रतीक्षा में\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "अणु संदेश अगले बिल्ड में आएँगे".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "बंधन",
             crate::ui::state::ConversationPage::Stats => "आँकड़ों में",

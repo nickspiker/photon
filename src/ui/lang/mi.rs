@@ -335,7 +335,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "e whai ake ana\u{2026}".into(),
         Msg::LeftStatus => "kua wehe koe".into(),
         Msg::PendingMember => "E tatari ana\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Ka tae mai ngā karere ngota-rahi i te hanga e whai ake nei".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Ngā here",
             crate::ui::state::ConversationPage::Stats => "Ngā tatauranga",

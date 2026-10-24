@@ -260,6 +260,11 @@ impl PhotonApp {
         }
         // ANOTHER DEVICE OF A MEMBER already standing: the party has read every era already, so it takes the current one whole like a from-genesis join — a from-join mint here only forked the era away from that member's other devices.
         let already_standing = self.molecule_rosters[pos].1.is_standing(&joiner);
+        // ONE DEVICE OF OUR FLEET ANSWERS: the Join rides the bond to all of them, and two answers minted the group two different eras at once (desktop and MacBook, 2026-10-24) — the rest learn the outcome by chain-sync.
+        if !self.fleet_device_acts(Some(ci)) {
+            crate::logf!("MOLECULE: join from {} for {} — another of our devices answers it", joiner_fp, hex::encode(&gid.0[..4]));
+            return;
+        }
         let vouch = crate::types::molecule::vouch_record(our_pid, joiner, false, &seed);
         let mut posted = Roster::default();
         posted.merge_member(member.clone());
@@ -397,16 +402,24 @@ impl PhotonApp {
         if w.recipient_device != our_device {
             return; // for a sibling of ours — it opens its own
         }
-        let Some(offer) = self.bond_offers.iter().find(|o| self.contacts.get(ci).map_or(false, |c| c.handle_hash == o.sponsor)).cloned() else {
+        // The wrap does not name its group: it belongs to whichever of this sponsor's offers holds the bundle it was sealed to (Emma 2026-10-24: the FIRST offer from the sponsor was taken — an old one she had left — and the new group's wrap was ignored as "does not open").
+        let sponsor = self.contacts.get(ci).map(|c| c.handle_hash);
+        let offers: Vec<BondOffer> = self.bond_offers.iter().filter(|o| Some(o.sponsor) == sponsor).cloned().collect();
+        if offers.is_empty() {
             crate::logf!("MOLECULE: wrap from {} but no parked offer from them — ignored", sponsor_fp);
+            return;
+        }
+        let opened = offers.into_iter().find_map(|offer| {
+            let fid = crate::types::FriendshipId::from_bytes(offer.molecule_id.0);
+            let secret = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.molecule_kems().iter().rev().find_map(|k| crate::crypto::era::unwrap_from_bundle(k, &w.bundle_id, cts, &our_device, w.era, &w.nonce, &w.sealed)))?;
+            Some((offer, secret))
+        });
+        let Some((offer, secret)) = opened else {
+            crate::logf!("MOLECULE: wrap from {} opens against none of our bundles for their offers — ignored", sponsor_fp);
             return;
         };
         let gid = offer.molecule_id;
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        let Some(secret) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.molecule_kems().iter().rev().find_map(|k| crate::crypto::era::unwrap_from_bundle(k, &w.bundle_id, cts, &our_device, w.era, &w.nonce, &w.sealed))) else {
-            crate::logf!("MOLECULE: wrap from {} for {} does not open against our bundle — ignored", sponsor_fp, hex::encode(&gid.0[..4]));
-            return;
-        };
         // A join answer always carries the era WHOLE (root ‖ history key): era N under from-genesis, the freshly minted N+1 under from-join — either way the joiner held nothing to derive from.
         if secret.len() != 64 {
             crate::logf!("MOLECULE: join wrap for {} must carry the era whole (got {} bytes) — ignored", hex::encode(&gid.0[..4]), secret.len());
@@ -433,6 +446,7 @@ impl PhotonApp {
         self.sync_molecule_conversation(&gid);
         // The offer stays parked, accepted: it is what names the group the friendship row is about (the card reads "joined" from here on).
         self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing);
+        self.unpark_molecule_posts(gid);
         self.persist_molecule(&gid);
         self.persist_chains_of(&fid);
         // Our first frame in the group: our own member record + bundle, so every member holds them even if the sponsor's records post is still in flight.
@@ -538,11 +552,34 @@ impl PhotonApp {
                 }
                 self.persist_conversation_async(fid);
             }
+            // ONE MINTER for the whole group: the lowest standing party, on one device of its fleet — every member's every device used to mint here, each a different era.
+            let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let mints_here = us.is_some() && us == standing_after.first().copied() && self.fleet_device_acts(None);
             for p in &departed {
-                crate::logf!("MOLECULE: {} left {} — {} standing remain; minting the next era", crate::fp(p), hex::encode(&gid.0[..4]), standing_after.len());
+                crate::logf!("MOLECULE: {} left {} — {} standing remain; {}", crate::fp(p), hex::encode(&gid.0[..4]), standing_after.len(), if mints_here { "minting the next era" } else { "the group's minter mints the next era" });
             }
-            self.mint_molecule_era(gid, None);
+            if mints_here {
+                self.mint_molecule_era(gid, None);
+            }
         }
+    }
+
+    /// Is THIS the one device of our fleet that acts on an event every device of ours sees (a join over a bond, a group's leave or cadence)?
+    /// For a friend's event it is our fleet's ceremony owner for them (§4.2) while that owner is present; otherwise, and for a group-wide event, the lowest device key among ours that are online.
+    pub(super) fn fleet_device_acts(&self, ci: Option<usize>) -> bool {
+        let Some(ours) = self.device_keypair.as_ref().map(|k| *k.public.as_bytes()) else {
+            return false;
+        };
+        let siblings = super::sibling_presence_snapshot(&self.contacts);
+        if let Some(owner) = ci.and_then(|ci| self.contacts.get(ci)).and_then(|c| c.ceremony_owner) {
+            if owner == ours {
+                return true;
+            }
+            if siblings.iter().any(|(pk, online, probed)| *pk == owner && (*online || !*probed)) {
+                return false;
+            }
+        }
+        siblings.iter().filter(|(_, online, _)| *online).all(|(pk, _, _)| *pk > ours)
     }
 
     /// Is `device` one of `party`'s folded devices: `Some(true)` it is, `Some(false)` it is not, `None` we hold no fold for them yet.
@@ -837,6 +874,14 @@ impl PhotonApp {
         self.pending_molecule_posts.push(post);
     }
 
+    /// The edge a parked group post waits for (keys landed, a cutover): every post parked for this group drains on the next tick.
+    pub(super) fn unpark_molecule_posts(&mut self, gid: MoleculeId) {
+        let serial = self.tick_serial;
+        for p in self.pending_molecule_posts.iter_mut().filter(|p| p.gid == gid && p.queued == u64::MAX) {
+            p.queued = serial;
+        }
+    }
+
     /// Mutate + persist this device's local state for a group.
     /// Have we LEFT this molecule (our leave record posted, phase Left)? A left molecule is out of the contact list (Nick 2026-10-01: "You left this molecule" and the row stayed) — its records stay on disk, read-only, exactly as the doctrine keeps every record, but nothing shows and nothing is posted.
     pub(super) fn molecule_is_left(&self, gid: &MoleculeId) -> bool {
@@ -968,7 +1013,7 @@ impl PhotonApp {
             return false;
         }
         let serial = self.tick_serial;
-        let (ready, keep): (Vec<MoleculePost>, Vec<MoleculePost>) = std::mem::take(&mut self.pending_molecule_posts).into_iter().partition(|p| p.queued + 1 < serial); // u64 tick serials — they never reach the ceiling
+        let (ready, keep): (Vec<MoleculePost>, Vec<MoleculePost>) = std::mem::take(&mut self.pending_molecule_posts).into_iter().partition(|p| p.queued.saturating_add(1) < serial); // u64 tick serials — a PARKED post (u64::MAX) waits for its edge
         self.pending_molecule_posts = keep;
         if ready.is_empty() {
             return false;
@@ -1007,13 +1052,20 @@ impl PhotonApp {
                     self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), std::slice::from_ref(&row), None);
                 }
             } else {
-                // Held: keep the post (with its stamp, so a control row re-sends as the SAME row) for the next drain edge.
+                // Held: keep the post (with its stamp, so a control row re-sends as the SAME row).
                 let mut held = post;
                 if held.text.is_none() {
                     held.text = Some((text, ts, None));
                     held.control = true;
                 }
-                held.queued = serial;
+                // A group we cannot send in yet (Joining, no root) or any more (Left) PARKS the post until the edge that changes that (`unpark_molecule_posts`): retrying it every tick was a busy loop. A left group whose root is already gone drops it — nothing will ever carry it.
+                let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+                let keyed = self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable() && !c.awaiting_root());
+                if phase == MoleculePhase::Left && !keyed {
+                    crate::logf!("MOLECULE: dropped a held post in {} — we left and hold no root", hex::encode(&gid.0[..4]));
+                    continue;
+                }
+                held.queued = if phase == MoleculePhase::Joining || !keyed { u64::MAX } else { serial };
                 self.pending_molecule_posts.push(held);
             }
         }
@@ -1124,6 +1176,7 @@ impl PhotonApp {
             self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob: crate::storage::molecule::roster_to_vsf_bytes(&gid, &posted).ok(), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
         }
         self.persist_chains_of(&fid);
+        self.unpark_molecule_posts(gid);
         self.resend_held_molecule_rows(gid);
     }
 
@@ -1176,7 +1229,24 @@ impl PhotonApp {
     /// OUR FLEET HOLDS THIS GROUP (a sibling's replication carried its roster): the invitation is answered on every device, never bound twice, and the group is Standing wherever its keys have landed — Joining until then (Nick 2026-10-24: a bind showed on one device only, and a second device's own Bind minted the group an extra era).
     pub(super) fn fleet_holds_molecule(&mut self, gid: MoleculeId) {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        // OUR LEAVE, made on a sibling: the roster carries our leave record and we no longer stand, so this device leaves too (Nick 2026-10-24: a leave stayed on the device it was made on).
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let we_left = us.is_some_and(|us| self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.leaves.contains_key(&us) && !r.is_standing(&us)));
+        if we_left {
+            if !self.molecule_is_left(&gid) {
+                self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Left);
+                self.zeroize_molecule_root(gid);
+                self.pending_molecule_posts.retain(|p| p.gid != gid);
+                self.reseed_molecule_pubkeys();
+                self.scene_dirty = true;
+                crate::logf!("MOLECULE: our fleet left {} on another device — left here too", hex::encode(&gid.0[..4]));
+            }
+            return;
+        }
         let keyed = self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root());
+        if keyed {
+            self.unpark_molecule_posts(gid);
+        }
         let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase);
         match phase {
             None | Some(MoleculePhase::Joining) if keyed => self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing),

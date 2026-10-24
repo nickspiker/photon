@@ -339,7 +339,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "inafuatilia\u{2026}".into(),
         Msg::LeftStatus => "umeondoka".into(),
         Msg::PendingMember => "Inasubiri\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Ujumbe wa molekuli utakuja katika toleo lijalo".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Vifungo",
             crate::ui::state::ConversationPage::Stats => "Kwa takwimu",

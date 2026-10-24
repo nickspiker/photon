@@ -2221,10 +2221,10 @@ impl PhotonApp {
         if let Some((ci, fid, is_bond, is_group)) = cadence_ci {
             let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
             if is_group {
-                // GROUP cadence (docs/molecules.md §10.4): the lowest standing party id mints; everyone else lets the edge pass (a race would still resolve by that same id).
+                // GROUP cadence (docs/molecules.md §10.4): the lowest standing party id mints, on one device of its fleet; everyone else lets the edge pass.
                 let gid = crate::types::molecule::MoleculeId(*fid.as_bytes());
                 let lowest = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.standing().first().copied());
-                if us.is_some() && us == lowest {
+                if us.is_some() && us == lowest && self.fleet_device_acts(None) {
                     crate::logf!("MOLECULE: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
                     self.mint_molecule_era(gid, None);
                 }
@@ -2363,6 +2363,7 @@ impl PhotonApp {
             // A GROUP blob carries its roster (docs/molecules.md step 6) — merged after the adopt, whatever the lane math decides.
             let molecule_roster: Option<Vec<u8>> = incoming.molecule.then(|| incoming.molecule_roster().to_vec());
             // A friendship with someone we booted is never re-adopted from a sibling that has not yet applied the boot (checked here, before the chains borrow).
+            let left_group = incoming.molecule && self.molecule_is_left(&crate::types::molecule::MoleculeId(*fid.as_bytes()));
             let booted_orphan = incoming.participants().iter().any(|p| self.is_booted_party(p))
                 && !self.contacts.iter().any(|c| c.friendship_id == Some(fid));
             let adopted = match self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) {
@@ -2391,6 +2392,8 @@ impl PhotonApp {
                 // A friendship with someone we booted is never re-adopted from a sibling that has not yet applied the boot: it would leave an orphan chain, and a live chain is the first step back to a live contact.
                 // A sibling's JOIN PLACEHOLDER is no group yet: its wrap goes to that device's own bundle, and the keys reach us by this same sync once it lands.
                 None if incoming.molecule && incoming.awaiting_root() => false,
+                // A group our fleet left: the leaver still holds its root until the leave row's first ACK, and a push in that window must not hand the keys back to a device that already let them go.
+                None if left_group => false,
                 None if booted_orphan => {
                     crate::logf!("BOOT: chain-sync for booted friendship {} refused", crate::fp(&fid.0));
                     false

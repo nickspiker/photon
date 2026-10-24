@@ -335,7 +335,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "yetişiyor\u{2026}".into(),
         Msg::LeftStatus => "ayrıldın".into(),
         Msg::PendingMember => "Bekliyor\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Molekül mesajları bir sonraki derlemede geliyor".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Bağlar",
             crate::ui::state::ConversationPage::Stats => "Rakamlarla",

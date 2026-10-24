@@ -332,7 +332,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "menyusul\u{2026}".into(),
         Msg::LeftStatus => "kamu keluar".into(),
         Msg::PendingMember => "Menunggu\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Pesan molekul hadir di rilis berikutnya".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Ikatan",
             crate::ui::state::ConversationPage::Stats => "Dalam angka",

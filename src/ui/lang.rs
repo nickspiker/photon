@@ -579,8 +579,6 @@ pub enum Msg<'a> {
     LeftStatus,
     /// A member whose fold has not yet succeeded — drawn as a contact without a name is.
     PendingMember,
-    /// The compose bar's honest label while group sends are not yet wired.
-    MoleculeComposeSoon,
     /// The conversation panel's pages (docs/conversations.md Phase 1).
     ConversationPageName(crate::ui::state::ConversationPage),
     /// How many of a conversation's other members are online (the In numbers page, more than one other).

@@ -1023,7 +1023,9 @@ impl PhotonApp {
     ) -> bool {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
         let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-        if matches!(phase, crate::storage::molecule::MoleculePhase::Joining | crate::storage::molecule::MoleculePhase::Left) {
+        // OUR LEAVE RECORD is the one row a Left group still sends (the root lives until its first ACK): refusing it kept every leave on the leaver's device alone, and the refused post retried every tick (Brittany and Emma 2026-10-24, fifteen refusals a second).
+        let leave_row = phase == crate::storage::molecule::MoleculePhase::Left && matches!(control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)));
+        if matches!(phase, crate::storage::molecule::MoleculePhase::Joining | crate::storage::molecule::MoleculePhase::Left) && !leave_row {
             crate::logf!("MOLECULE: cannot send in {} — phase {}", hex::encode(&gid.0[..4]), format!("{:?}", phase));
             return false;
         }

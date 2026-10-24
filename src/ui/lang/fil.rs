@@ -333,7 +333,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "humahabol\u{2026}".into(),
         Msg::LeftStatus => "umalis ka".into(),
         Msg::PendingMember => "Naghihintay\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Darating ang mga mensahe ng molekula sa susunod na build".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Mga ugnayan",
             crate::ui::state::ConversationPage::Stats => "Sa bilang",

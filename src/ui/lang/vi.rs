@@ -332,7 +332,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "đang bắt kịp\u{2026}".into(),
         Msg::LeftStatus => "bạn đã rời".into(),
         Msg::PendingMember => "Đang chờ\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Tin nhắn phân tử sẽ có trong bản dựng tới".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Liên kết",
             crate::ui::state::ConversationPage::Stats => "Bằng con số",

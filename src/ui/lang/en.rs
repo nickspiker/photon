@@ -429,7 +429,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "catching up\u{2026}".into(),
         Msg::LeftStatus => "you left".into(),
         Msg::PendingMember => "Pending\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Molecule messages arrive in the next build".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Bonds",
             crate::ui::state::ConversationPage::Stats => "In numbers",

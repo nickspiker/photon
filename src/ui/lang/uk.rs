@@ -346,7 +346,6 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::CatchingUpStatus => "наздоганяю\u{2026}".into(),
         Msg::LeftStatus => "ти вийшов".into(),
         Msg::PendingMember => "Очікує\u{2026}".into(),
-        Msg::MoleculeComposeSoon => "Повідомлення в молекулах з'являться в наступній збірці".into(),
         Msg::ConversationPageName(p) => match p {
             crate::ui::state::ConversationPage::Bonds => "Зв’язки",
             crate::ui::state::ConversationPage::Stats => "У цифрах",
