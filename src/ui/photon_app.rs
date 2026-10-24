@@ -2285,6 +2285,8 @@ pub struct PhotonApp {
     unknown_verdict_logged: std::collections::HashSet<[u8; 32]>,
     /// Responders already used to refresh a stale friend fold (StatusUpdate::ForeignResponder): one refresh per unknown device per session, never a storm.
     stale_fold_refreshed: std::collections::HashSet<[u8; 32]>,
+    /// Friends whose era deadlock this session already healed with a fresh ceremony (era.rs): the stranded-peer re-key runs once per contact, never in a loop.
+    era_reclutched: std::collections::HashSet<[u8; 32]>,
     /// Hit id for the selected message's "copy" pill inside the details strip.
     msg_copy_id: HitId,
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
@@ -3114,6 +3116,7 @@ impl PhotonApp {
             fleet_tip_pursuit: crate::linear_map::LinearMap::new(),
             unknown_verdict_logged: std::collections::HashSet::new(),
             stale_fold_refreshed: std::collections::HashSet::new(),
+            era_reclutched: std::collections::HashSet::new(),
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),

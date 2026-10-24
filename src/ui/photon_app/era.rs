@@ -376,6 +376,23 @@ impl PhotonApp {
                         return;
                     }
                 }
+                // THE STRANDED PEER (Emma ↔ Nick 2026-10-24, the molecule join that never landed): we are a step ahead, and the peer ratchets from our RETIRED era.
+                // A behind peer sends that only after its own fleet came up empty (FleetAllMissed → LightRatchet), so no device of theirs holds our era — and our rule ("the peer is behind — its own repair moves it") and theirs (that very Init, which we drop) wait on each other for ever, every frame dropped both ways.
+                // Heal with one fresh ceremony: a new root supersedes both eras on every device (the era supersede path), once per contact per session so it can never loop.
+                let stranded = {
+                    let chains = &self.friendship_chains[pos].1;
+                    chains.era_tag().is_some_and(|our| our != prior_tag) && chains.retired_era().is_some_and(|r| r.tag == prior_tag)
+                };
+                if stranded {
+                    let them = self.contacts[ci].handle_hash;
+                    if self.era_reclutched.insert(them) {
+                        crate::logf!("ERA: {} Init ratchets from our RETIRED era {:08x} — their fleet lost our era; healing with a fresh ceremony", fp, prior_tag);
+                        self.rekey_without_chains(ci);
+                    } else {
+                        crate::logf!("ERA: {} Init from our retired era again — the fresh ceremony is already under way", fp);
+                    }
+                    return;
+                }
                 let resp_ts = vsf::eagle_time_oscillations();
                 let (resp, new_tag, replaced) = {
                     let chains = &mut self.friendship_chains[pos].1;
