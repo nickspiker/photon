@@ -319,6 +319,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Pāwhiritia anō \u{2014} panaia rātou" } else { "Pana" }.into(),
         Msg::FilterAll => "Katoa".into(),
         Msg::FilterInvitations => "Ngā pōhiri".into(),
+        Msg::FilterPeople => "Ngā tāngata".into(),
         Msg::InvitedWaiting { names } => format!("kua pōhiritia: {} · e tatari ana", names).into(),
         Msg::BondMember => "mema".into(),
         Msg::BondInvited => "kua pōhiritia · e tatari ana".into(),

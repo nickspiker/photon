@@ -553,6 +553,8 @@ pub enum Msg<'a> {
     /// The Ready list's filter strip (FilterAll is the stream filter's, shared).
     /// The Ready strip pill for group invitations waiting on us (a count follows it).
     FilterInvitations,
+    /// The Ready view of the people you have added (docs/conversations.md D8).
+    FilterPeople,
     /// The sponsor's line under an atom or molecule row: the friends invited who have not joined yet.
     InvitedWaiting { names: &'a str },
     /// Bonds-page row tags: a standing member (locked), an invite out and not answered, and the two edits staged until the page is left.

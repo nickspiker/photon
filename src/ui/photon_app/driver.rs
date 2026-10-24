@@ -366,7 +366,7 @@ impl FluorApp for PhotonApp {
         self.molecule_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 64);
         self.ready_filter_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 3); // All / New atom / Invitations
+        reserve_hits(&mut self.hit_counter, 4); // All / New atom / Invitations / People
         self.invite_hit_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 32); // invitation rows: Bind + Decline for 16 open invitations
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
@@ -1353,12 +1353,13 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Ready)
             && self.ready_filter_base != HIT_NONE
             && hit_id >= self.ready_filter_base
-            && hit_id < (self.ready_filter_base + 3)
+            && hit_id < (self.ready_filter_base + 4)
         {
             let k = hit_id - self.ready_filter_base;
             match k {
                 0 => self.ready_filter = super::ReadyFilter::All,
                 2 => self.ready_filter = super::ReadyFilter::Invitations,
+                3 => self.ready_filter = super::ReadyFilter::People,
                 _ => {
                     // NEW ATOM: the search box becomes the title box; the plus (or Enter) founds it. Tapping again cancels.
                     self.atom_naming = !self.atom_naming;
@@ -1410,6 +1411,10 @@ impl FluorApp for PhotonApp {
                     "contact-tap: opening conversation with '{}'",
                     self.contacts[ci].display_name()
                 );
+                // MESSAGE (docs/conversations.md D8): a person tapped in People opens the conversation of exactly the two of you, founding it over the bond when there is none yet.
+                if self.contacts[ci].friendship_id.is_none() {
+                    self.found_pair_conversation(ci);
+                }
                 self.open_conversation_with(ci);
                 self.state = AppState::Conversation;
                 self.reset_contact_ping_backoff();

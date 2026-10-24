@@ -341,6 +341,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Коснись ещё раз \u{2014} выгнать" } else { "Выгнать" }.into(),
         Msg::FilterAll => "Всё".into(),
         Msg::FilterInvitations => "Приглашения".into(),
+        Msg::FilterPeople => "Люди".into(),
         Msg::InvitedWaiting { names } => format!("приглашены: {} · ждём", names).into(),
         Msg::BondMember => "участник".into(),
         Msg::BondInvited => "приглашён · ждём".into(),

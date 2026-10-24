@@ -318,6 +318,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Nochmal tippen \u{2014} rauswerfen" } else { "Rauswerfen" }.into(),
         Msg::FilterAll => "Alle".into(),
         Msg::FilterInvitations => "Einladungen".into(),
+        Msg::FilterPeople => "Personen".into(),
         Msg::InvitedWaiting { names } => format!("eingeladen: {} · ausstehend", names).into(),
         Msg::BondMember => "Mitglied".into(),
         Msg::BondInvited => "eingeladen · ausstehend".into(),

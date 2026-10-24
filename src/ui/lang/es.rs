@@ -315,6 +315,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Toca otra vez \u{2014} échalo" } else { "Echar" }.into(),
         Msg::FilterAll => "Todo".into(),
         Msg::FilterInvitations => "Invitaciones".into(),
+        Msg::FilterPeople => "Personas".into(),
         Msg::InvitedWaiting { names } => format!("invitados: {} · esperando", names).into(),
         Msg::BondMember => "miembro".into(),
         Msg::BondInvited => "invitado · esperando".into(),

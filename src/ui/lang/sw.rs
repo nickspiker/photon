@@ -323,6 +323,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Gusa tena \u{2014} mfukuze" } else { "Fukuza" }.into(),
         Msg::FilterAll => "Zote".into(),
         Msg::FilterInvitations => "Mialiko".into(),
+        Msg::FilterPeople => "Watu".into(),
         Msg::InvitedWaiting { names } => format!("walioalikwa: {} · tunasubiri", names).into(),
         Msg::BondMember => "mwanachama".into(),
         Msg::BondInvited => "amealikwa · tunasubiri".into(),

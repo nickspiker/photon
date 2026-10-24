@@ -1027,13 +1027,29 @@ pub(crate) enum VaultFilter {
     Kept,
 }
 
-/// The Ready list filter (docs/conversations.md D2): every conversation is one kind at any size, so the only narrowing is to the invitations waiting on us.
+/// The Ready list filter (docs/conversations.md D2, D8): every conversation is one kind at any size; the other views are the people you have added and the invitations waiting on us.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ReadyFilter {
+    /// Every CONVERSATION (docs/conversations.md D8): yours alone, each two-member one, every group, and the invitations waiting on us.
     #[default]
     All,
-    /// Group invitations waiting on us (Nick 2026-10-24): the friends whose offer is parked and unanswered — the pill shows only while there are any.
+    /// The PEOPLE you have added — a person is not a conversation; tapping one is Message (open or found your two-member conversation).
+    People,
+    /// Invitations waiting on us (Nick 2026-10-24) — the pill shows only while there are any.
     Invitations,
+}
+
+/// Does the Ready list show contact `c` under `rf` (docs/conversations.md D8)? All lists conversations — your own, and a friend's two-member one once it exists; People lists the people you have added; Invitations lists neither. A fleet sibling is never listed.
+fn ready_admits_contact(rf: ReadyFilter, c: &crate::types::Contact, us: &[u8; 32]) -> bool {
+    if c.is_sibling {
+        return false;
+    }
+    let alone = c.remote_count(us) == 0;
+    match rf {
+        ReadyFilter::All => alone || c.friendship_id.is_some(),
+        ReadyFilter::People => !alone,
+        ReadyFilter::Invitations => false,
+    }
 }
 
 /// The conversation stream filter — the cycling pill in the top bar (all → waves → text → all). Session state, never persisted; resets to All on every conversation open.
@@ -1721,6 +1737,8 @@ pub struct PhotonApp {
     pending_minter: std::collections::HashMap<crate::types::FriendshipId, [u8; 32]>,
     /// Era disagreements already acted on: (chains id, the peer's era tag, our bond's era tag or 0) — each heals once, a re-keyed bond tries again.
     era_heals: std::collections::HashSet<(crate::types::FriendshipId, u32, u32)>,
+    /// People whose Message tap came before our bond with them completed — their two-member conversation is founded on the completion edge (docs/conversations.md D8).
+    found_when_bonded: std::collections::HashSet<[u8; 32]>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
     pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -2208,7 +2226,7 @@ pub struct PhotonApp {
     molecule_title_textbox: Option<Textbox>,
     /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
     molecule_leave_armed: bool,
-    /// The Ready list's filter strip (docs/conversations.md D2). Hit ids [ready_filter_base, +3): 0 = All, 1 = New atom, 2 = Invitations.
+    /// The Ready list's filter strip (docs/conversations.md D2, D8). Hit ids [ready_filter_base, +4): 0 = All, 1 = New atom, 2 = Invitations, 3 = People.
     ready_filter: ReadyFilter,
     ready_filter_base: HitId,
     /// NEW ATOM mode on the Ready screen: the search box is the title box, the plus founds the atom instead of searching a handle.
@@ -2867,6 +2885,7 @@ impl PhotonApp {
             deliveries_in_flight: Vec::new(),
             pending_minter: std::collections::HashMap::new(),
             era_heals: std::collections::HashSet::new(),
+            found_when_bonded: std::collections::HashSet::new(),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,

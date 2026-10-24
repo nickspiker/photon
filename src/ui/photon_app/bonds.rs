@@ -85,7 +85,7 @@ impl PhotonApp {
 }
 
 impl PhotonApp {
-    /// A friend's BOND just completed its ceremony (docs/conversations.md §7): make sure its hidden conversation exists, and found the pair's own conversation over it when they have none yet.
+    /// A friend's BOND just completed its ceremony (docs/conversations.md §7): make sure its hidden conversation exists, and heal over it whatever the old bond could not carry. No conversation is founded here (D8).
     pub(super) fn bond_completed(&mut self, ci: usize) {
         let Some((b, them, fresh_friend)) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).and_then(|us| c.bond_id(&us)).map(|b| (b, c.handle_hash, c.friendship_id.is_none()))) else {
             return;
@@ -99,12 +99,15 @@ impl PhotonApp {
                 self.conversations.push(bc);
             }
         }
-        self.found_pair_conversation(ci);
+        // Adding a friend creates the bond only (docs/conversations.md D8): a conversation is founded when someone taps Message — now, if a Message tap was waiting on this bond.
+        if self.found_when_bonded.remove(&them) {
+            self.found_pair_conversation(ci);
+        }
         // A disagreement the old bond could not carry gets its heal again over this one.
         self.reheal_after_bond(ci);
     }
 
-    /// FOUND the pair's two-member conversation over a fresh bond (docs/conversations.md §7): the LOWER party (by party id) mints its era 0 and delivers it whole on the bond; the other side installs it when it lands (`on_era_delivery`). A friend who already holds a conversation with us keeps it.
+    /// FOUND the pair's two-member conversation (docs/conversations.md §7, D8 — Message on a person): whoever taps mints its era 0 and delivers it whole on the bond; the other side installs it when it lands (`on_era_delivery`), and two simultaneous foundings converge thru the era-mismatch heal. A friend who already holds a conversation with us keeps it.
     pub(super) fn found_pair_conversation(&mut self, ci: usize) {
         let Some(c) = self.contacts.get(ci) else {
             return;
@@ -124,8 +127,10 @@ impl PhotonApp {
             self.adopt_pair_conversation(ci, fid);
             return;
         }
-        if us > them {
-            crate::logf!("BOND: {} — waiting for their side to found our conversation", crate::fp(&c.handle_proof));
+        // The founding travels on the bond: tapped before the bond completed, it is remembered and runs on the completion edge.
+        if self.bond_fid_of(ci).is_none() {
+            crate::logf!("BOND: {} — Message waits for the secure channel; our conversation is founded the moment it completes", crate::fp(&self.contacts[ci].handle_proof));
+            self.found_when_bonded.insert(them);
             return;
         }
         let (root, hk, nonce): ([u8; 32], [u8; 32], [u8; 32]) = (rand::random(), rand::random(), rand::random());

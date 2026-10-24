@@ -324,6 +324,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "दोबारा टैप \u{2014} बाहर करो" } else { "बाहर करो" }.into(),
         Msg::FilterAll => "सब".into(),
         Msg::FilterInvitations => "निमंत्रण".into(),
+        Msg::FilterPeople => "लोग".into(),
         Msg::InvitedWaiting { names } => format!("आमंत्रित: {} · प्रतीक्षा", names).into(),
         Msg::BondMember => "सदस्य".into(),
         Msg::BondInvited => "आमंत्रित · प्रतीक्षा".into(),

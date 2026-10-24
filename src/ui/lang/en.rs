@@ -413,6 +413,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Tap again \u{2014} boot them" } else { "Boot" }.into(),
         Msg::FilterAll => "All".into(),
         Msg::FilterInvitations => "Invitations".into(),
+        Msg::FilterPeople => "People".into(),
         Msg::InvitedWaiting { names } => format!("invited: {} · waiting", names).into(),
         Msg::BondMember => "member".into(),
         Msg::BondInvited => "invited · waiting".into(),

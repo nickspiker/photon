@@ -323,6 +323,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Dotknij ponownie \u{2014} wyrzuć" } else { "Wyrzuć" }.into(),
         Msg::FilterAll => "Wszystko".into(),
         Msg::FilterInvitations => "Zaproszenia".into(),
+        Msg::FilterPeople => "Osoby".into(),
         Msg::InvitedWaiting { names } => format!("zaproszeni: {} · czekamy", names).into(),
         Msg::BondMember => "członek".into(),
         Msg::BondInvited => "zaproszony · czekamy".into(),

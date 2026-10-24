@@ -316,6 +316,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Chạm lần nữa \u{2014} đuổi họ" } else { "Đuổi" }.into(),
         Msg::FilterAll => "Tất cả".into(),
         Msg::FilterInvitations => "Lời mời".into(),
+        Msg::FilterPeople => "Mọi người".into(),
         Msg::InvitedWaiting { names } => format!("đã mời: {} · đang chờ", names).into(),
         Msg::BondMember => "thành viên".into(),
         Msg::BondInvited => "đã mời · đang chờ".into(),

@@ -319,6 +319,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Tekrar dokun \u{2014} kov" } else { "Kov" }.into(),
         Msg::FilterAll => "Tümü".into(),
         Msg::FilterInvitations => "Davetler".into(),
+        Msg::FilterPeople => "Kişiler".into(),
         Msg::InvitedWaiting { names } => format!("davet edilenler: {} · bekleniyor", names).into(),
         Msg::BondMember => "üye".into(),
         Msg::BondInvited => "davet edildi · bekleniyor".into(),

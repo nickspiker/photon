@@ -317,6 +317,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Pindutin ulit \u{2014} itaboy sila" } else { "Itaboy" }.into(),
         Msg::FilterAll => "Lahat".into(),
         Msg::FilterInvitations => "Mga imbitasyon".into(),
+        Msg::FilterPeople => "Mga tao".into(),
         Msg::InvitedWaiting { names } => format!("inimbitahan: {} · naghihintay", names).into(),
         Msg::BondMember => "miyembro".into(),
         Msg::BondInvited => "inimbitahan · naghihintay".into(),

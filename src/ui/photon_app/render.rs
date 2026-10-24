@@ -288,7 +288,7 @@ impl PhotonApp {
                 self.ready_filter = ReadyFilter::All;
             }
             let rf = self.ready_filter;
-            let show_friends = rf == ReadyFilter::All;
+            let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
             // The strip's height as last measured (wrapped pills push the first row down), one row until first drawn.
             let strip_h: isize = if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() as isize } else { row_h };
             let block_h: isize = strip_h
@@ -298,8 +298,7 @@ impl PhotonApp {
                     .enumerate()
                     .filter(|(_, c)| {
                         // Must mirror the render pass's `matching` filter exactly (siblings hidden, the strip's filter) or the two clamps disagree within a frame.
-                        show_friends
-                            && !c.is_sibling
+                        super::ready_admits_contact(rf, c, &us_pid)
                             && (filter.is_empty() || self.atom_naming || c.display_name().to_lowercase().contains(&filter))
                     })
                     .map(|(ci, _)| contact_row_height(row_h, lines_by_ci[ci].len()))
@@ -311,8 +310,8 @@ impl PhotonApp {
                     .filter(|(_, (g, r))| !self.molecule_is_left(g) && rf == ReadyFilter::All && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>()
-                // Invitations show under All and alone under Invitations.
-                + lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>();
+                // Invitations show under All and alone under Invitations — never among the people.
+                + if rf == ReadyFilter::People { 0 } else { lines_by_oi.iter().filter(|l| !l.is_empty()).map(|l| contact_row_height(row_h, l.len())).sum::<isize>() };
             self.contact_row_lines = lines_by_ci;
             self.molecule_row_lines = lines_by_gi;
             self.offer_row_lines = lines_by_oi;
@@ -2020,15 +2019,14 @@ impl PhotonApp {
             // NEW ATOM mode: the box holds a title, not a search — the list stays whole.
             let filter = if self.atom_naming { String::new() } else { filter };
             let rf = self.ready_filter;
-            let show_friends = rf == ReadyFilter::All;
+            let us_pid = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
             let mut matching: Vec<ReadyRow> = self
                 .contacts
                 .iter()
                 .enumerate()
                 .filter(|(_, c)| {
-                    // Fleet siblings are infrastructure, not conversations — never listed (device management gets its own page later).
-                    show_friends
-                        && !c.is_sibling
+                    // Conversations under All, people under People (docs/conversations.md D8); fleet siblings are infrastructure, never listed.
+                    super::ready_admits_contact(rf, c, &us_pid)
                         && (filter.is_empty() || c.display_name().to_lowercase().contains(&filter))
                 })
                 .map(|(i, _)| ReadyRow::Contact(i))
@@ -2042,7 +2040,7 @@ impl PhotonApp {
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 // INVITATIONS (docs/conversations.md): every open offer, under All and alone under Invitations — the pre-pass sized exactly these.
-                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty()).map(|(oi, _)| ReadyRow::Offer(oi)))
+                .chain(self.offer_row_lines.iter().enumerate().filter(|(_, l)| !l.is_empty() && rf != ReadyFilter::People).map(|(oi, _)| ReadyRow::Offer(oi)))
                 .collect();
             // ORDER: unread conversations float to the top, then everyone sorts by MOST-RECENT activity (last message either way — a fresh reply or a fresh receipt lifts the contact). `matching` is the ONE place display order exists — the row loop draws from it AND stamps each row's hit id with the TRUE contact index it holds, so the tap handler resolves taps with no knowledge of the permutation. The key is (unread-first, newest-activity-first); i64::MIN for a contact with no messages sinks it below any conversation.
             let our_handle_hash = self
@@ -2096,18 +2094,18 @@ impl PhotonApp {
             // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
             let ring_thickness = super::ring_thickness(avatar_r);
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
-            // THE FILTER STRIP (docs/conversations.md D2): All, New atom, and Invitations while any wait — a pseudo-row at the top of the block that scrolls with it.
+            // THE FILTER STRIP (docs/conversations.md D2, D8): All, People, New atom, and Invitations while any wait — a pseudo-row at the top of the block that scrolls with it.
             let strip_now: isize = {
                 let strip_top = rows.y0 as f32 - scroll as f32;
                 let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
-                // Each pill carries its hit slot: 0 All, 1 New atom, 2 Invitations (drawn only while an offer waits on us, with its count).
+                // Each pill carries its hit slot: 0 All, 3 People, 1 New atom, 2 Invitations (drawn only while an offer waits on us, with its count).
                 let open_invites = self.bond_offers.iter().filter(|o| !o.accepted).count();
-                let mut labels: Vec<(std::borrow::Cow<'static, str>, HitId)> = vec![(tr(Msg::FilterAll), 0), (tr(Msg::NewAtom), 1)];
+                let mut labels: Vec<(std::borrow::Cow<'static, str>, HitId)> = vec![(tr(Msg::FilterAll), 0), (tr(Msg::FilterPeople), 3), (tr(Msg::NewAtom), 1)];
                 if open_invites > 0 {
                     labels.push((format!("{} \u{00b7} {}", tr(Msg::FilterInvitations), open_invites).into(), 2));
                 }
                 let chosen = |slot: HitId| match (slot, self.ready_filter) {
-                    (0, ReadyFilter::All) | (2, ReadyFilter::Invitations) => Some(*theme::PILL_GREEN),
+                    (0, ReadyFilter::All) | (2, ReadyFilter::Invitations) | (3, ReadyFilter::People) => Some(*theme::PILL_GREEN),
                     (1, _) if self.atom_naming => Some(*theme::PILL_GREEN),
                     _ => None,
                 };

@@ -316,6 +316,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::BootPill { armed } => if armed { "Ketuk lagi \u{2014} usir dia" } else { "Usir" }.into(),
         Msg::FilterAll => "Semua".into(),
         Msg::FilterInvitations => "Undangan".into(),
+        Msg::FilterPeople => "Orang".into(),
         Msg::InvitedWaiting { names } => format!("diundang: {} · menunggu", names).into(),
         Msg::BondMember => "anggota".into(),
         Msg::BondInvited => "diundang · menunggu".into(),
