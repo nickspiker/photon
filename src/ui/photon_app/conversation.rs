@@ -322,11 +322,11 @@ impl PhotonApp {
         let remote = standing.iter().filter(|p| Some(**p) != us).count();
         let online = standing.iter().any(|p| Some(*p) != us && self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p && c.is_online));
         let title = match self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase) {
-            Some(crate::storage::molecule::MoleculePhase::Joining) => format!("{} · {}", roster.title(), tr(Msg::JoiningStatus)),
-            Some(crate::storage::molecule::MoleculePhase::CatchingUp) => format!("{} · {}", roster.title(), tr(Msg::CatchingUpStatus)),
-            Some(crate::storage::molecule::MoleculePhase::Left) => format!("{} · {}", roster.title(), tr(Msg::LeftStatus)),
-            _ if remote == 0 => format!("{} · {}", roster.title(), tr(Msg::AtomLabel)),
-            _ => format!("{} · {}", roster.title(), crate::fmt_num64((remote + 1) as u64)),
+            Some(crate::storage::molecule::MoleculePhase::Joining) => format!("{} · {}", roster.display_title(), tr(Msg::JoiningStatus)),
+            Some(crate::storage::molecule::MoleculePhase::CatchingUp) => format!("{} · {}", roster.display_title(), tr(Msg::CatchingUpStatus)),
+            Some(crate::storage::molecule::MoleculePhase::Left) => format!("{} · {}", roster.display_title(), tr(Msg::LeftStatus)),
+            _ if remote == 0 => format!("{} · {}", roster.display_title(), tr(Msg::AtomLabel)),
+            _ => format!("{} · {}", roster.display_title(), crate::fmt_num64((remote + 1) as u64)),
         };
         Some(crate::types::Contact::molecule_view(*gid, &title, remote, online))
     }

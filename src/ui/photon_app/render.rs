@@ -177,13 +177,13 @@ impl PhotonApp {
                             let found = self.molecule_locals.iter().find(|(_, l)| l.offered.iter().any(|(p, ts)| *p == party && *ts == m.timestamp)).map(|(g, _)| *g);
                             let (title, joined) = found
                                 .and_then(|g| self.molecule_rosters.iter().find(|(id, _)| *id == g))
-                                .map(|(_, r)| (r.title(), r.is_standing(&party)))
+                                .map(|(_, r)| (r.display_title(), r.is_standing(&party)))
                                 .unwrap_or_else(|| (String::new(), false));
                             let label = if joined { tr(Msg::BondAccepted { name: &their_name, title: &title }).into_owned() } else { tr(Msg::BondWaiting { name: &their_name, title: &title }).into_owned() };
                             cards.push((m.timestamp, true, label, None));
                         } else {
                             let offer = self.bond_offers.iter().find(|o| o.sponsor == party && o.row_osc == m.timestamp).or_else(|| self.bond_offers.iter().find(|o| o.sponsor == party));
-                            let (title, n, gid, accepted) = offer.map(|o| (o.snapshot.title(), o.snapshot.standing().len(), o.molecule_id, o.accepted)).unwrap_or_else(|| (String::new(), 0, crate::types::molecule::MoleculeId([0u8; 32]), false));
+                            let (title, n, gid, accepted) = offer.map(|o| (o.snapshot.display_title(), o.snapshot.standing().len(), o.molecule_id, o.accepted)).unwrap_or_else(|| (String::new(), 0, crate::types::molecule::MoleculeId([0u8; 32]), false));
                             let held = self.molecule_rosters.iter().any(|(g, _)| *g == gid);
                             let expired = offer.is_none() || self.contacts[ci].identity_ended || self.contacts[ci].identity_superseded;
                             let label = if held || accepted {
@@ -284,7 +284,7 @@ impl PhotonApp {
             // GROUP rows (docs/molecules.md §10.5) wrap their shared title the same way; the filter matches on the title.
             let mut lines_by_gi: Vec<Vec<String>> = Vec::with_capacity(self.molecule_rosters.len());
             for (gid, roster) in &self.molecule_rosters {
-                let mut lines = wrap_text_lines(ctx.text, &roster.title(), &wrap_style, name_w);
+                let mut lines = wrap_text_lines(ctx.text, &roster.display_title(), &wrap_style, name_w);
                 if lines.is_empty() {
                     lines.push(String::new());
                 }
@@ -332,7 +332,7 @@ impl PhotonApp {
                     .molecule_rosters
                     .iter()
                     .enumerate()
-                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.title().to_lowercase().contains(&filter)))
+                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>();
             self.contact_row_lines = lines_by_ci;
@@ -2068,7 +2068,7 @@ impl PhotonApp {
                         .iter()
                         .enumerate()
                         // A molecule we LEFT is off the list (its records stay on disk, read-only). Read the field, not the method: the chrome borrow is live here.
-                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || r.title().to_lowercase().contains(&filter)))
+                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 .collect();
@@ -2910,7 +2910,7 @@ impl PhotonApp {
                                     let Some(r) = all_rows.get(10 + gi) else { break };
                                     let n_standing = roster.standing().len();
                                     let already = roster.is_standing(&contact_pid);
-                                    let label = format!("{} \u{00b7} {}", roster.title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_mag(n_standing as u64) });
+                                    let label = format!("{} \u{00b7} {}", roster.display_title(), if n_standing <= 1 { tr(Msg::AtomLabel).into_owned() } else { crate::fmt_mag(n_standing as u64) });
                                     let hid = if already || gi + 4 >= 16 { HIT_NONE } else { pick((4 + gi) as u16) };
                                     draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, fluor::region::Region::new(r.x + r.w * 0.1, r.y, r.w * 0.8, r.h * 0.9), &label, hid, ctx.pressed_hit, !already, None, "Oxanium");
                                 }
@@ -2935,7 +2935,7 @@ impl PhotonApp {
                 let muted = self.molecule_locals.iter().find(|(g, _)| *g == gid).map_or(false, |(_, l)| l.muted);
                 let hspan = (layout.unit * 1.05).min(layout.header.h * 0.72);
                 let name_colour = party_colour(&molecule_digest(&gid, &our_hh));
-                ctx.text.draw_text_center(&mut canvas, &roster.title(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
+                ctx.text.draw_text_center(&mut canvas, &roster.display_title(), layout.content.x, layout.header.center_y(), &TextStyle::new(hspan, name_colour).weight(600).font("Oxanium"), None, None);
                 // Rail: pinned Back, then the three pages.
                 let rail_inset = layout.rail_inset();
                 let nav_h = layout.nav_row_h();
@@ -7070,7 +7070,7 @@ impl PhotonApp {
                         let muted = self.molecule_locals.iter().find(|(g, _)| g == gid).map_or(false, |(_, l)| l.muted);
                         let n = roster.standing().len();
                         let row = fluor::region::Region::new(inset.x, y, inset.w, line_h);
-                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&molecule_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
+                        ctx.text.draw_text_left(&mut canvas, &format!("{} \u{00b7} {}", roster.display_title(), crate::fmt_num64(n as u64)), row.x + line_h * 0.3, row.center_y(), &TextStyle::new(hspan2 * 0.85, party_colour(&molecule_digest(gid, &self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32])))).weight(500).font("Oxanium"), page_clip, None);
                         let pill = fluor::region::Region::new(row.x + row.w * 0.62, row.y + row.h * 0.08, row.w * 0.34, row.h * 0.84);
                         draw_stub_pill_filled(&mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, pill, &tr(Msg::MutePill { muted }), btn_base + 2 + gi as HitId, ctx.pressed_hit, true, muted.then_some(*theme::PILL_GREEN), "Oxanium");
                         y += line_h * 1.1;

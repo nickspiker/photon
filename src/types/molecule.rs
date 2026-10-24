@@ -27,15 +27,6 @@ impl MoleculeId {
     }
 }
 
-/// FOUNDER-SCOPED group proof (settled 2026-09-14): the group's registry face, unique PER FOUNDER — global squatting is impossible by construction ("I can't have three purple turtle groups but you could have one too"). Domain-separated from every personal proof so the knock router always knows what kind of thing it is routing. v1 registers nothing; this is the derivation the attach layer will use.
-pub fn founder_scoped_proof(founder_proof: &[u8; 32], name: &str) -> [u8; 32] {
-    let mut h = blake3::Hasher::new();
-    h.update(b"PHOTON_MOLECULE_v\x01");
-    h.update(founder_proof);
-    h.update(name.as_bytes());
-    *h.finalize().as_bytes()
-}
-
 /// One member's standing in the group — the subject-signed sovereign record (§4 Member). The device list is NEVER trusted from here: everyone folds the member's devices from the public membership chain under `handle_proof`.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MemberRecord {
@@ -288,6 +279,15 @@ impl Roster {
     /// The title everyone shares: the newest title record, else the genesis suggestion, else empty.
     pub fn title(&self) -> String {
         self.title.as_ref().map(|t| t.title.clone()).or_else(|| self.genesis.as_ref().map(|g| g.title.clone())).unwrap_or_default()
+    }
+    /// What a title-less conversation is called: its standing members' name grants, as any conversation is named by who is in it (an untitled atom of you alone reads as your own name).
+    /// A shared title, when anyone set one, wins.
+    pub fn display_title(&self) -> String {
+        let title = self.title();
+        if !title.is_empty() {
+            return title;
+        }
+        self.standing().iter().filter_map(|p| self.members.get(p)).map(|m| m.name.as_str()).filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ")
     }
     /// A party has JOINED when its member record outdates any leave it signed — a re-join is a fresh member record newer than the old leave.
     pub fn has_joined(&self, party: &PartyId) -> bool {
@@ -642,14 +642,6 @@ mod tests {
     }
 
     #[test]
-    fn founder_scoping_separates_namespaces() {
-        let nick = founder_scoped_proof(&[1; 32], "purple turtle");
-        let other = founder_scoped_proof(&[2; 32], "purple turtle");
-        assert_ne!(nick, other, "same name, different founders, different proofs");
-        assert_ne!(nick, founder_scoped_proof(&[1; 32], "purple turtles"));
-    }
-
-    #[test]
     fn roster_merge_is_union_newest_wins_and_standing_tracks_leaves() {
         let mut r = founded();
         assert!(r.merge_member(rec(2, 100)));
@@ -715,6 +707,20 @@ mod tests {
         assert!(r.merge_title(TitleRecord { party: [3; 32], title: "taco".into(), signed_osc: 80, signature: [0; 64], signer_device: [0; 32] }));
         assert!(!r.merge_title(TitleRecord { party: [1; 32], title: "old".into(), signed_osc: 79, signature: [0; 64], signer_device: [0; 32] }));
         assert_eq!(r.title(), "taco");
+    }
+
+    #[test]
+    fn an_untitled_conversation_reads_as_its_members() {
+        let mut r = Roster::default();
+        r.merge_genesis(GenesisRecord { molecule_id: MoleculeId::from_nonce(&[0; 32]), founder: [1; 32], genesis_osc: 1, history_from_genesis: false, title: String::new(), signature: [0; 64], signer_device: [0; 32] });
+        r.merge_member(rec(1, 1));
+        r.merge_vouch(vouch(1, 1, 1, false));
+        assert_eq!(r.display_title(), "m1", "an untitled atom of you alone reads as your own name");
+        r.merge_member(rec(2, 2));
+        r.merge_vouch(vouch(1, 2, 2, false));
+        assert_eq!(r.display_title(), "m1, m2");
+        assert!(r.merge_title(TitleRecord { party: [2; 32], title: "taco".into(), signed_osc: 3, signature: [0; 64], signer_device: [0; 32] }));
+        assert_eq!(r.display_title(), "taco", "a shared title, once anyone sets one, wins");
     }
 
     #[test]

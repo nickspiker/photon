@@ -206,14 +206,11 @@ impl PhotonApp {
         }
     }
 
-    /// Submit the contacts-page textbox contents as an FGTW handle search. Called from Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on empty input, on no `HandleQuery` available (init failure path), and on a search for the user's own attested handle (would just find their own device — no point). Successful Found results land in `tick()`'s drain loop and append to `self.contacts`. Persistence + UI transition into a search-in-flight visual state (the rotating-hourglass plus button) ride in subsequent slices.
-    /// NEW ATOM (docs/molecules.md §0): the typed title founds an atom — you alone in it — and opens it. Empty = nothing founded, the mode stays.
+    /// NEW ATOM (docs/molecules.md §0): the typed title founds an atom — you alone in it — and opens it.
+    /// A blank title founds an untitled atom, which reads as its members' names; naming mode is entered on purpose, so its submit is the deliberate act.
     pub(super) fn submit_new_atom(&mut self) {
         let title: String = self.contacts_textbox.as_ref().map(|tb| tb.chars.iter().collect::<String>()).unwrap_or_default();
         let title = title.trim().to_string();
-        if title.is_empty() {
-            return;
-        }
         let from_genesis = self.molecule_default_from_genesis();
         if self.found_atom_alone(&title, from_genesis).is_some() {
             self.atom_naming = false;
@@ -232,6 +229,7 @@ impl PhotonApp {
         }
     }
 
+    /// Submit the contacts-page textbox contents as an FGTW handle search. Called from Enter in `contacts_textbox` and from clicking `contacts_plus_btn`. Bails on empty input, on no `HandleQuery` available (init failure path), and on a search for the user's own attested handle (would just find their own device — no point). Successful Found results land in `tick()`'s drain loop and append to `self.contacts`. Persistence + UI transition into a search-in-flight visual state (the rotating-hourglass plus button) ride in subsequent slices.
     pub(super) fn submit_add_friend(&mut self) {
         let handle: String = match self.contacts_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
