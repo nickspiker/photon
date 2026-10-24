@@ -1417,7 +1417,7 @@ impl FluorApp for PhotonApp {
         if matches!(self.state, AppState::Conversation) && !self.wave_screen() && self.msg_hit_base != HIT_NONE {
             if hit_id == self.msg_copy_id && hit_id != HIT_NONE {
                 if let Some((sci, ts, out)) = self.strip_target() {
-                    let text_opt = self.conv_of(sci).and_then(|v| {
+                    let text_opt = self.conv_by_id(sci).and_then(|v| {
                         v.messages
                             .iter()
                             .find(|m| m.timestamp == ts && m.is_outgoing == out)
@@ -1456,20 +1456,14 @@ impl FluorApp for PhotonApp {
                         self.scene_dirty = true;
                     } else if let Some(glyph) = self.react_strip_glyphs.get(slot).cloned() {
                         let ours: Option<String> =
-                            self.conv_of(sci).and_then(|v| v.current_reaction(ts, true));
+                            self.conv_by_id(sci).and_then(|v| v.current_reaction(ts, true));
                         let toggled_off = ours.as_deref() == Some(glyph.as_str());
                         let body = if toggled_off {
                             String::new()
                         } else {
                             glyph.clone()
                         };
-                        if self.send_chain_message(
-                            sci,
-                            &body,
-                            false,
-                            Some((crate::types::RefKind::React, ts)),
-                            None,
-                        ) && !toggled_off
+                        if self.send_in_conversation(sci, &body, Some((crate::types::RefKind::React, ts))) && !toggled_off
                         {
                             self.stamp_react_used(&glyph);
                         }
@@ -1527,7 +1521,7 @@ impl FluorApp for PhotonApp {
                         // LOFT (slot 12): shred the LOCAL blob only — no tombstone, no marker, no sibling push; the row stays and its pill flips to fetch. Incoming pigeons only (the sender's fleet holds the original).
                         12 => {
                             let hash = self
-                                .conv_of(sci)
+                                .conv_by_id(sci)
                                 .and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.is_outgoing && !m.deleted))
                                 .and_then(|m| m.file_parts().map(|(h, _, _)| h));
                             if let Some(h) = hash {
@@ -1540,21 +1534,21 @@ impl FluorApp for PhotonApp {
                         // PLAY / STOP the wave's recording (slot 11): the only way a wave starts playing.
                         11 => {
                             // The RECORDING row specifically ("wave.audio") — three rows reference a wave (the recording, our wave.env, the PEER's wave.env off the friend chain), and the first-match finder used to grab an env row in the minute before the transcode landed, toasting "fetching from your devices" at a wave whose recording was right here (Nick, 2026-09-13).
-                            let rec_hash = self.conv_of(sci).and_then(|v| {
+                            let rec_hash = self.conv_by_id(sci).and_then(|v| {
                                 v.messages.iter().find(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts) && m.is_wave_recording()).and_then(|m| m.file_parts().map(|(h, _, _)| h))
                             });
                             if let Some(hash) = rec_hash {
                                 if crate::storage::blob_present(&hash) {
                                     self.toggle_recording_playback(hash);
                                 } else {
-                                    self.attach_fetch(sci, &hash);
+                                    self.attach_fetch_in(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                 }
                             }
                             self.scene_dirty = true;
                         }
                         9 => {
-                            if let Some(hash) = self.conv_of(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| m.file_parts()).map(|(h, _, _)| h) {
+                            if let Some(hash) = self.conv_by_id(sci).and_then(|c| c.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out)).and_then(|m| m.file_parts()).map(|(h, _, _)| h) {
                                 match self.music_play.as_ref().filter(|m| m.hash == hash) {
                                     Some(m) => m.toggle(),
                                     None => {
@@ -1568,14 +1562,13 @@ impl FluorApp for PhotonApp {
                         }
                         // ★ toggle (slot 10): stamp the toggle with now — larger |osc| wins the merge, so the latest choice propagates fleet-wide.
                         10 => {
-                            if let Some(conv) = self.conv_mut_of(sci) {
+                            if let Some(conv) = self.conv_by_id_mut(sci) {
                                 if let Some(m) = conv.messages.iter_mut().find(|m| m.timestamp == ts && m.is_outgoing == out) {
                                     let now = vsf::eagle_time_oscillations();
                                     m.star_osc = if m.star_osc > 0 { -now } else { now };
                                     let row = m.clone();
                                     conv.invalidate_digest();
-                                    self.persist_messages_async(sci);
-                                    self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
+                                    self.persist_and_push_rows(sci, std::slice::from_ref(&row));
                                 }
                             }
                             self.scene_dirty = true;
@@ -1594,7 +1587,7 @@ impl FluorApp for PhotonApp {
                         }
                         // EDIT = supersede-by-reference: prefill the box with the target's CURRENT body (respecting prior edits), arm the target, and the send button becomes a check mark. The original row never mutates — its content is braid key material (strands resolve stored content by eagle_time), so the correction rides as its own referencing row.
                         1 => {
-                            let body: Option<String> = self.conv_of(sci).and_then(|v| {
+                            let body: Option<String> = self.conv_by_id(sci).and_then(|v| {
                                 v.latest_edit_for(ts).map(|(_, b)| b).or_else(|| {
                                     v.messages
                                         .iter()
@@ -1613,60 +1606,29 @@ impl FluorApp for PhotonApp {
                                 self.scene_dirty = true;
                             }
                         }
-                        // RESEND: manually re-fire an undelivered outgoing on the chain with its ORIGINAL timestamp (identity preserved — the friend dedups + re-ACKs, so this is always safe); chainless devices re-push thru the fleet instead.
+                        // RESEND: manually re-fire an undelivered outgoing at its ORIGINAL timestamp (identity preserved — every member dedups + re-ACKs, so this is always safe), in any conversation; a device that cannot reach anyone re-pushes thru the fleet instead.
                         2 => {
-                            let text_opt = self.conv_of(sci).and_then(|v| {
-                                v.messages
-                                    .iter()
-                                    .find(|m| {
-                                        m.timestamp == ts && m.is_outgoing == out && !m.delivered
-                                    })
-                                    .map(|m| m.content.clone())
-                            });
-                            if let Some(text) = text_opt {
-                                // A zero-remote row's delivery IS the disk write (write-confirm-then-send, 2026-08-21): resend retries the SIGNALLED persist — the verdict flips it bright or toasts the refusal again. The chain/fleet branches below never fit this row; the old fall-thru re-pushed a never-durable row to siblings, which is exactly the amplification the law forbids.
-                                if self
-                                    .contacts
-                                    .get(sci)
-                                    .map_or(false, |c| self.is_zero_remote(c))
-                                {
-                                    self.persist_messages_signalled(sci, vec![ts]);
+                            let row = self.conv_by_id(sci).and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out && !m.delivered).cloned());
+                            if let Some(row) = row {
+                                // A conversation with nobody else in it: delivery IS the disk write (write-confirm-then-send, 2026-08-21), so resend retries the SIGNALLED persist — the verdict flips it bright or toasts the refusal again. Re-pushing a never-durable row to siblings is exactly the amplification the law forbids.
+                                let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                                let alone = us.is_some_and(|us| self.conv_by_id(sci).is_some_and(|v| v.remote_count(&us) == 0));
+                                if alone {
+                                    self.persist_conversation_signalled(sci, vec![ts]);
                                     self.ready_toast = Some(tr(Msg::RewritingVault).into_owned());
-                                    self.ready_toast_screen = None;
+                                } else if self.retransmit_row(sci, ts) {
+                                    self.ready_toast = Some(tr(Msg::ResentOnChain).into_owned());
                                 } else {
-                                    let re_ref = self.conv_of(sci).and_then(|v| {
-                                        v.messages
-                                            .iter()
-                                            .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                                            .and_then(|m| m.reference)
-                                    });
-                                    let bw = self.bridge_wire_for_row(sci, ts);
-                                    if self.chain_transmit(sci, &text, ts, re_ref, bw.as_ref()) {
-                                        self.ready_toast = Some(tr(Msg::ResentOnChain).into_owned());
-                                    } else {
-                                        let row = self.conv_of(sci).and_then(|v| {
-                                            v.messages
-                                                .iter()
-                                                .find(|m| m.timestamp == ts && m.is_outgoing == out)
-                                                .cloned()
-                                        });
-                                        if let Some(row) = row {
-                                            self.push_rows_to_siblings(
-                                                sci,
-                                                std::slice::from_ref(&row),
-                                                None,
-                                            );
-                                            self.ready_toast = Some(tr(Msg::RepushedFleet).into_owned());
-                                        }
-                                    }
-                                    self.ready_toast_screen = None;
+                                    self.push_conversation_rows_to_siblings(sci, std::slice::from_ref(&row), None);
+                                    self.ready_toast = Some(tr(Msg::RepushedFleet).into_owned());
                                 }
+                                self.ready_toast_screen = None;
                             }
                         }
                         // SAVE / FETCH (attachments): blob held → write to Downloads; missing → ask friend + siblings over PT.
                         4 => {
                             let att = self
-                                .conv_of(sci)
+                                .conv_by_id(sci)
                                 .and_then(|v| {
                                     v.messages
                                         .iter()
@@ -1674,11 +1636,11 @@ impl FluorApp for PhotonApp {
                                 })
                                 .and_then(|m| m.file_parts());
                             let kind = self
-                                .conv_of(sci)
+                                .conv_by_id(sci)
                                 .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
                                 .and_then(|m| m.attach.map(|a| a.kind));
                             let is_rec = self
-                                .conv_of(sci)
+                                .conv_by_id(sci)
                                 .and_then(|v| v.messages.iter().find(|m| m.timestamp == ts && m.is_outgoing == out))
                                 .is_some_and(|m| m.is_wave_recording());
                             if let Some((hash, name, _)) = att {
@@ -1686,7 +1648,7 @@ impl FluorApp for PhotonApp {
                                 let _ = kind;
                                 // Opening moved to a tap on the visual itself (2026-09-12); this pill is the file verb: fetch, play a standalone recording, or save.
                                 if !held {
-                                    self.attach_fetch(sci, &hash);
+                                    self.attach_fetch_in(sci, &hash);
                                     self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                 } else if is_rec {
                                     // A kept wave recording — tap toggles play/stop on this very bubble (wave/playback.rs); the bubble label shows ■ progress while it plays. No more force-close to stop (field 2026-09-08).
@@ -1709,24 +1671,24 @@ impl FluorApp for PhotonApp {
                         }
                         // DELETE: arm the deferred delete — the strip repaints "deleting…" THIS frame, and the tick performs the removal + mirror-verified persist after that frame painted (doing it synchronously here blocked the UI for the save's duration, reading as stuck). Tombstone caveat unchanged: until they exist, fleet sync can resurrect the row.
                         3 => {
-                            self.pending_delete = self.cid(sci).map(|id| ((id, ts, out), false));
+                            self.pending_delete = Some(((sci, ts, out), false));
                         }
                         // EXPORT FLAVOUR chosen (slots 14.. = ExportFormat::ALL): decode the recording off the UI thread and hand the file to Downloads.
                         14 | 15 => {
                             let fmt = crate::wave::export::ExportFormat::ALL[(slot - 14) as usize];
                             self.wave_export_choosing = None;
-                            self.wave_export_start(sci, ts, fmt);
+                            if let Some(ci) = self.pair_contact_of(sci) { self.wave_export_start(ci, ts, fmt); };
                         }
                         // WAVE BACK (the wave card's option): place a wave to this conversation's contact; the strip closes.
                         6 => {
                             self.selected_msg = None;
-                            self.start_wave(sci);
+                            if let Some(ci) = self.pair_contact_of(sci) { self.start_wave(ci); }
                             self.scene_dirty = true;
                         }
                         // The wave card's recording options: SAVE (blob held → Downloads) or FETCH (missing → ask the fleet), and REPLICATE (a fleet-internal fetch hint so every sibling holds the blob now, not on demand).
                         7 | 8 => {
                             // Same "wave.audio"-only selection as the play slot: export/replicate act on the recording, never a wave.env row that happens to reference the same wave.
-                            let rec = self.conv_of(sci).and_then(|v| {
+                            let rec = self.conv_by_id(sci).and_then(|v| {
                                 v.messages
                                     .iter()
                                     .filter(|m| !m.deleted && matches!(m.reference, Some((crate::types::RefKind::Wave, t)) if t == ts))
@@ -1739,7 +1701,7 @@ impl FluorApp for PhotonApp {
                                         // EXPORT asks which flavour (Nick 2026-09-28): the pill opens the format choice on this card; a second press closes it.
                                         self.wave_export_choosing = if self.wave_export_choosing == Some(ts) { None } else { Some(ts) };
                                     } else {
-                                        self.attach_fetch(sci, &hash);
+                                        self.attach_fetch_in(sci, &hash);
                                         self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                                     }
                                 } else {
@@ -1747,11 +1709,10 @@ impl FluorApp for PhotonApp {
                                     let mut hint = hint;
                                     hint.notified = true;
                                     hint.delivered = true;
-                                    if let Some(conv) = self.conv_mut_of(sci) {
+                                    if let Some(conv) = self.conv_by_id_mut(sci) {
                                         conv.insert_message_sorted(hint.clone());
                                     }
-                                    self.persist_messages_async(sci);
-                                    self.push_rows_to_siblings(sci, std::slice::from_ref(&hint), None);
+                                    self.persist_and_push_rows(sci, std::slice::from_ref(&hint));
                                     self.ready_toast = Some(tr(Msg::ReplicatingToFleet).into_owned());
                                     crate::logf!("WAVE: replicate hint pushed for recording {}…", hex::encode(&hash[..4]));
                                 }
@@ -1845,11 +1806,10 @@ impl FluorApp for PhotonApp {
                     if v.contains(px, py) {
                         // MUSIC PIGEON (Nick 2026-09-12): first tap opens the options (the strip below, stats above, the play twelfth on the band); the twelfth toggles play; while playing the rest of the band seeks; idle elsewhere closes the options.
                         if v.kind == crate::types::AttachKind::Audio {
-                            let row = self.active_contact().and_then(|ci| {
-                                self.conv_of(ci).and_then(|c| c.messages.iter().find(|m| m.file_parts().is_some_and(|(h, _, _)| h == v.hash)).map(|m| (ci, m.timestamp, m.is_outgoing)))
+                            let key = self.active_conversation.and_then(|id| {
+                                self.conv_by_id(id).and_then(|c| c.messages.iter().find(|m| m.file_parts().is_some_and(|(h, _, _)| h == v.hash)).map(|m| (id, m.timestamp, m.is_outgoing)))
                             });
-                            if let Some((ci, ts, out)) = row {
-                                let key = self.cid(ci).map(|id| (id, ts, out));
+                            if key.is_some() {
                                 if self.selected_msg != key {
                                     self.selected_msg = key;
                                     self.selected_msg_copied = false;
@@ -1870,16 +1830,16 @@ impl FluorApp for PhotonApp {
                                 return EventResponse::Handled;
                             }
                         }
-                        if let Some(ci) = self.active_contact() {
-                            let name = self.conv_of(ci).and_then(|c| c.messages.iter().find_map(|m| m.file_parts().filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
+                        if let Some(id) = self.active_conversation {
+                            let name = self.conv_by_id(id).and_then(|c| c.messages.iter().find_map(|m| m.file_parts().filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
                             if v.kind.is_image() || v.kind == crate::types::AttachKind::Document {
                                 // The in-app viewer IS opsin's view now — no separate window, on any platform. A document opens on its page one (the viewer's fallback decoder renders a PDF), Save exports the file itself.
                                 let _ = &name;
-                                self.open_viewer(ci, v.hash);
+                                self.open_viewer(id, v.hash);
                             } else if v.held {
                                 self.open_reader(v.hash, name);
                             } else {
-                                self.attach_fetch(ci, &v.hash);
+                                self.attach_fetch_conversation(id, &v.hash);
                                 self.ready_toast = Some(tr(Msg::FetchingFromDevices).into_owned());
                             }
                         }
@@ -1890,13 +1850,13 @@ impl FluorApp for PhotonApp {
                 // A tap inside a wave card's band: the glyph toggles play/stop (or fetches the blob); the waveform itself was handled as a scrub on the release edge — never a row select either way.
                 // A tap on a wave's band is a ROW tap (select / deselect) — never play (2026-09-12: play is the strip's button, two steps, and fluor's arbiter already drops the release after a scroll). A scrub while playing was handled on the release edge and never reaches here.
                 let _ = self.msg_wave_bands.get(vis);
-                if let (Some(ci), Some((ts, out, ref_band))) =
-                    (self.active_contact(), self.msg_hit_rows.get(vis).copied().flatten())
+                if let (Some(id), Some((ts, out, ref_band))) =
+                    (self.active_conversation, self.msg_hit_rows.get(vis).copied().flatten())
                 {
                     // Reference-line tap = JUMP to the source row, centered — the hint is a link, not part of the select band.
                     if let Some((band_y0, band_y1, target)) = ref_band {
                         if (ctx.cursor_y as f32) >= band_y0 && (ctx.cursor_y as f32) <= band_y1 {
-                            self.scroll_to_message(ci, target);
+                            self.scroll_to_message(id, target);
                             ctx.window.request_redraw();
                             return EventResponse::Handled;
                         }
@@ -1913,9 +1873,9 @@ impl FluorApp for PhotonApp {
                             }
                         }
                     }
-                    let key = (self.contacts[ci].id, ts, out); // PROOF: `ci` is this handler's active_contact()
+                    let key = (id, ts, out);
                     // Toggle: same message deselects; another message moves the strip. The NEWEST row shows its strip unasked, so a tap on it while nothing is selected CLOSES it (remembered by key until a newer row arrives). Event-shown, interaction-cleared — no timers.
-                    let newest = self.conv_of(ci).and_then(|v| {
+                    let newest = self.conv_by_id(id).and_then(|v| {
                         let raw: &[crate::types::ChatMessage] = &v.messages;
                         raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (m.timestamp, m.is_outgoing))
                     });
@@ -3087,8 +3047,8 @@ impl FluorApp for PhotonApp {
         let armed = match self.pending_delete {
             Some(((id, ts, out), true)) => {
                 self.pending_delete = None;
-                // The contact may have gone while the "deleting…" frame painted — nothing left to tombstone then.
-                self.ci_of(&id).map(|sci| (sci, ts, out))
+                // The conversation may have gone while the "deleting…" frame painted — nothing left to tombstone then.
+                self.conv_by_id(id).is_some().then_some((id, ts, out))
             }
             _ => None,
         };
@@ -3096,7 +3056,7 @@ impl FluorApp for PhotonApp {
             let mut tombstoned: Option<ChatMessage> = None;
             // Deleting a wave card deletes the wave: the recording row that references it goes too (its blob is shredded below like any attachment).
             let mut cascade: Vec<ChatMessage> = Vec::new();
-            if let Some(conv) = self.conv_mut_of(sci) {
+            if let Some(conv) = self.conv_by_id_mut(sci) {
                 let is_wave = conv.messages.iter().any(|m| m.timestamp == ts && m.is_outgoing == out && m.wave.is_some());
                 if let Some(m) = conv
                     .messages
@@ -3126,11 +3086,11 @@ impl FluorApp for PhotonApp {
                 }
             }
             if !cascade.is_empty() {
-                self.push_rows_to_siblings(sci, &cascade, None);
+                self.push_conversation_rows_to_siblings(sci, &cascade, None);
             }
             if tombstoned.is_some() {
                 // OFF-THREAD (ticket 2026-09-02): this was the last save_messages call still running synchronously on the UI thread — a delete froze the frame behind an encrypted table write (the delta gate shrank it, but the vault commit is still milliseconds the render loop doesn't have). The async writer's coalescing + quit drain cover it like any other persist.
-                self.persist_messages_async(sci);
+                self.persist_conversation_async(sci);
             }
             if let Some(row) = &tombstoned {
                 // Attachments truly shred: only ROW CONTENT is braid-bound (preserved) — the blob file has no weave duty, so the bytes themselves are deleted (off-thread, below) here and on every device that applies this tombstone.
@@ -3147,20 +3107,17 @@ impl FluorApp for PhotonApp {
             }
             if let Some(row) = tombstoned {
                 // Fleet-wide: the tombstoned row rides the ordinary sibling push (merge upgrades true-wins).
-                self.push_rows_to_siblings(sci, std::slice::from_ref(&row), None);
+                self.push_conversation_rows_to_siblings(sci, std::slice::from_ref(&row), None);
                 // Cross-party: the hidden delete marker on the chain (friend conversations with a local chain; a chainless device's fleet tombstone still reaches the chain owner, which is where a follow-up marker could ride — v1 logs the gap).
                 // Send the marker only where there is someone to send it TO. Zero remote participants (our own notes) means the row is already gone everywhere it exists; a sibling is our own fleet, which the push above already covered.
                 // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): the marker rides ONLY for a row WE authored — deleting the friend's message or a wave is decluttering OUR fleet, never a reach into theirs (a wave is a shared event; each side's archive is their own memory of it).
-                let has_remote = self
-                    .contacts
-                    .get(sci)
-                    .and_then(|c| self.our_party_id(c).map(|us| (c, us)))
-                    .is_some_and(|(c, us)| c.remote_count(&us) > 0);
-                let is_sib = self.contacts.get(sci).map(|c| c.is_sibling).unwrap_or(true);
+                let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                let has_remote = us.is_some_and(|us| self.conv_by_id(sci).is_some_and(|v| v.remote_count(&us) > 0));
+                let is_sib = self.pair_contact_of(sci).is_some_and(|ci| self.contacts[ci].is_sibling);
                 if has_remote && !is_sib && !row.is_outgoing {
                     crate::log("msg-details: their row (or a shared record) — fleet tombstone only, the friend keeps their copy");
                 } else if has_remote && !is_sib && row.wave.is_none() {
-                    if self.send_control(sci, crate::types::RowControl::Delete { target: ts }, crate::network::time_base::stamp_osc()) {
+                    if self.send_control_in_conversation(sci, crate::types::RowControl::Delete { target: ts }, crate::network::time_base::stamp_osc()) {
                         crate::log(
                             "msg-details: delete marker sent to the friend (delete-for-everyone)",
                         );
@@ -4847,11 +4804,10 @@ impl PhotonApp {
 
 impl PhotonApp {
     /// A wave row that stopped being the selection takes its playback with it — the band's play glyph is only shown while selected, so a playing wave with no visible stop would be a trap.
-    pub(super) fn stop_playback_if_row_left(&mut self, left: Option<(ContactId, i64, bool)>) {
+    pub(super) fn stop_playback_if_row_left(&mut self, left: Option<(crate::types::ConversationId, i64, bool)>) {
         let Some((id, ts, out)) = left else { return };
-        let Some(ci) = self.ci_of(&id) else { return };
         // The recording folds into the wave row by a Wave reference to the row's timestamp (the render's rec_over rule).
-        let Some(hash) = self.conv_of(ci).and_then(|c| {
+        let Some(hash) = self.conv_by_id(id).and_then(|c| {
             let raw: &[crate::types::ChatMessage] = &c.messages;
             let is_wave_row = raw.iter().any(|m| m.timestamp == ts && m.is_outgoing == out && m.wave.is_some());
             if !is_wave_row {

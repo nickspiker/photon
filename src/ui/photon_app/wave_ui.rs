@@ -1731,10 +1731,12 @@ impl PhotonApp {
     pub(super) fn drain_wave_env_wants(&mut self) {
         let wants = std::mem::take(&mut self.wave_env_wants);
         for (id, h) in wants {
-            // A want whose contact was removed since the render queued it has no one to ask.
-            let Some(ci) = self.ci_of(&id) else { continue };
+            // A want whose conversation was removed since the render queued it has no one to ask.
+            if self.conv_by_id(id).is_none() {
+                continue;
+            }
             if self.attach_auto_fetched.insert(h) {
-                self.attach_fetch(ci, &h);
+                self.attach_fetch_conversation(id, &h);
             }
         }
     }

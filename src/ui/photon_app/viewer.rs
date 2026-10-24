@@ -6,8 +6,8 @@ use super::*;
 
 /// The open image: which row, and opsin's view once the original is decoded.
 pub(super) struct Viewer {
-    /// The conversation's contact, by id: the viewer stays open across ticks, and an index would drift onto another contact after a removal.
-    pub contact: ContactId,
+    /// The conversation the picture belongs to, by id: the viewer stays open across ticks, and any conversation at any size can hold a picture.
+    pub conv: crate::types::ConversationId,
     pub hash: [u8; 32],
     pub preview_hash: Option<[u8; 32]>,
     pub name: String,
@@ -105,8 +105,8 @@ pub(super) fn viewer_pixels_of<'a>(v: &Viewer, cache: &'a ImgCache, msgs: &[crat
 
 impl PhotonApp {
     /// Open the viewer on an image row: the preview shows at once, the original's decode starts (or its fetch, when it is not held here).
-    pub(super) fn open_viewer(&mut self, ci: usize, hash: [u8; 32]) {
-        let Some((meta, name)) = self.conv_of(ci).and_then(|v| {
+    pub(super) fn open_viewer(&mut self, conv: crate::types::ConversationId, hash: [u8; 32]) {
+        let Some((meta, name)) = self.conv_by_id(conv).and_then(|v| {
             v.messages.iter().find_map(|m| {
                 let (h, n, _) = m.file_parts()?;
                 (h == hash).then_some((m.attach?, n))
@@ -114,8 +114,7 @@ impl PhotonApp {
         }) else {
             return;
         };
-        let Some(contact) = self.cid(ci) else { return };
-        self.viewer = Some(Viewer { contact, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false, decode_frac: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)), decode_frac_seen: 0 });
+        self.viewer = Some(Viewer { conv, hash, preview_hash: meta.preview_hash, name, kind: meta.kind, view: None, decoding: false, failed: false, decode_frac: std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0)), decode_frac_seen: 0 });
         self.reader = None;
         self.selected_msg = None;
         self.scene_dirty = true;
@@ -131,14 +130,12 @@ impl PhotonApp {
         if v.view.is_some() || v.decoding || v.failed {
             return;
         }
-        let (contact, hash, name, kind) = (v.contact, v.hash, v.name.clone(), v.kind);
+        let (conv, hash, name, kind) = (v.conv, v.hash, v.name.clone(), v.kind);
         match crate::storage::blob_present_known(&hash) {
             Some(true) => {}
             Some(false) => {
-                if let Some(ci) = self.ci_of(&contact) {
-                    if self.attach_auto_fetched.insert(hash) {
-                        self.attach_fetch(ci, &hash);
-                    }
+                if self.attach_auto_fetched.insert(hash) {
+                    self.attach_fetch_conversation(conv, &hash);
                 }
                 return;
             }
@@ -232,10 +229,9 @@ impl PhotonApp {
         let Some(v) = self.viewer.as_ref() else {
             return;
         };
-        let (contact, cur) = (v.contact, v.hash);
-        let Some(ci) = self.ci_of(&contact) else { return };
+        let (conv, cur) = (v.conv, v.hash);
         let images: Vec<[u8; 32]> = self
-            .conv_of(ci)
+            .conv_by_id(conv)
             .map(|c| {
                 c.messages
                     .iter()
@@ -252,7 +248,7 @@ impl PhotonApp {
         if j < 0 || j as usize >= images.len() {
             return;
         }
-        self.open_viewer(ci, images[j as usize]);
+        self.open_viewer(conv, images[j as usize]);
     }
 
     /// Open the reader on a text/code row (the blob must be held).

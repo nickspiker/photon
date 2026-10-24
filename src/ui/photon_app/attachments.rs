@@ -405,7 +405,22 @@ impl PhotonApp {
     }
 
     /// Ask for a missing blob: attach_req to the conversation's friend device AND every online sibling — whoever holds it answers with an attach_blob (or, for a chunked blob, the manifest + chunks; a held manifest turns the ask into a RESUME carrying the want bitmap of the chunks still missing).
+    /// Fetch a blob a row in ANY conversation names — the conversation-keyed door the row actions use (docs/conversations.md). A roster-backed conversation asks its members' devices and ours the way a pair asks its friend's.
+    pub(super) fn attach_fetch_in(&mut self, id: crate::types::ConversationId, content_hash: &[u8; 32]) {
+        match self.pair_contact_of(id) {
+            Some(ci) => self.attach_fetch(ci, content_hash),
+            None => self.attach_fetch_conversation(id, content_hash),
+        }
+    }
+
     pub(super) fn attach_fetch(&mut self, sci: usize, content_hash: &[u8; 32]) {
+        if let Some(id) = self.contacts.get(sci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) {
+            self.attach_fetch_conversation(id, content_hash);
+        }
+    }
+
+    /// Fetch a blob a row of conversation `id` names, from the conversation's other members' devices and our own siblings — one device per ask, ranked, rotating on each re-ask. Any conversation at any size (docs/conversations.md).
+    pub(super) fn attach_fetch_conversation(&mut self, id: crate::types::ConversationId, content_hash: &[u8; 32]) {
         // Automatic paths gate on recording_wanted before calling, so reaching here is a deliberate fetch.
         self.space_unevict(content_hash);
         // A STREAMING DEVICE IS NEVER ABANDONED (Emma 2026-10-21: 432 re-asks in eight minutes, two devices streaming the same blobs): an ask whose device is not quiet and has answered since stands, so a tap or a second caller waits on it instead of asking another device to stream the same blob alongside.
@@ -416,18 +431,12 @@ impl PhotonApp {
             return;
         }
         // Token: the friendship token when one exists; else (self-conversation — no chains) the handle hash. Sibling exchanges seal under the FLEET key regardless of token, so the fallback only ever reaches sibling responders, where it's a plain discriminator.
-        let Some(token) = ({
-            let c = self.contacts.get(sci);
-            c.map(|c| {
-                self.friendship_chains
-                    .iter()
-                    .find(|(id, _)| Some(*id) == c.friendship_id)
-                    .map(|(_, ch)| ch.conversation_token)
-                    .unwrap_or(c.handle_hash)
-            })
-        }) else {
+        // The conversation's own wire token (stored with its keys; your own conversation's is the [us, us] derivation). Sibling exchanges seal under the FLEET key regardless of token, so for a conversation with nobody else in it the token only ever reaches sibling responders, where it is a plain discriminator.
+        let Some(token) = self.conversation_token_of(id) else {
             return;
         };
+        // The other members: a device of theirs is asked like a friend's in a pair (a member we never friended has no address here yet, so only friends and our siblings are candidates).
+        let members: Vec<[u8; 32]> = self.conv_by_id(id).map(|v| v.participants().to_vec()).unwrap_or_default();
         let (Some(kp), Some(checker)) =
             (self.device_keypair.as_ref(), self.status_checker.as_ref())
         else {
@@ -453,7 +462,7 @@ impl PhotonApp {
         let prefer = self.attach_fetch_prefer.get(content_hash).copied();
         let ranked = |k: [u8; 32], rank: u8| if prefer == Some(k) { 0 } else { rank + 1 };
         for c in &self.contacts {
-            let is_friend = self.contacts.get(sci).map(|t| t.handle_hash) == Some(c.handle_hash);
+            let is_friend = !c.is_sibling && members.contains(&c.handle_hash);
             let is_target = c.is_sibling || is_friend;
             if !is_target {
                 continue;
@@ -522,7 +531,7 @@ impl PhotonApp {
             });
             crate::logf!("attach: fetch request dispatched to device {} ({})", crate::fp(&recipient_pubkey), candidate);
         });
-        let Some(conv_id) = self.contacts.get(sci).map(|c| c.id) else { return };
+        let conv_id = id;
         let fruitless = self.attach_fetch_inflight.get(content_hash).map_or(0, |f| f.fruitless_after());
         let asked_online = self.device_online(&recipient_pubkey) == Some(true);
         self.attach_fetch_inflight.insert(
@@ -599,7 +608,7 @@ impl PhotonApp {
     }
 
     /// A friend's live attachment row: the device that sent it pushes the blob right behind it, so that device counts as asked — its frames are the answer, and replication does not ask anyone else meanwhile.
-    pub(super) fn fetch_expect_push(&mut self, hash: [u8; 32], conv: ContactId, from: [u8; 32]) {
+    pub(super) fn fetch_expect_push(&mut self, hash: [u8; 32], conv: crate::types::ConversationId, from: [u8; 32]) {
         if self.attach_fetch_inflight.contains_key(&hash) || crate::storage::blob_present_known(&hash) == Some(true) {
             return;
         }
@@ -624,14 +633,13 @@ impl PhotonApp {
         }
         let now = std::time::Instant::now();
         let mut armed = 0usize;
-        for ci in 0..self.contacts.len() {
-            if self.contacts[ci].is_sibling {
-                continue;
-            }
-            let cid = self.contacts[ci].id;
+        // Every conversation at any size (docs/conversations.md) — a sibling's is the bridge terminal and holds no files.
+        let sibling_convs: Vec<crate::types::ConversationId> = self.contacts.iter().filter(|c| c.is_sibling).filter_map(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())).collect();
+        let conv_ids: Vec<crate::types::ConversationId> = self.conversations.iter().map(|v| v.id()).filter(|id| !sibling_convs.contains(id)).collect();
+        for cid in conv_ids {
             // Each row's ORIGINAL (unmetered only) and its HEAD (any network — a few KB, the name and the picture). A device that opted out of holding waves (`waves.hold` off — a watch) skips recordings.
             let hashes: Vec<[u8; 32]> = self
-                .conv_of(ci)
+                .conv_by_id(cid)
                 .map(|v| {
                     v.messages
                         .iter()
@@ -681,18 +689,18 @@ impl PhotonApp {
             }
             let Some(f) = self.attach_fetch_inflight.get(&hash) else { continue };
             let (id, tries, fruitless, asked) = (f.conv, f.tries, f.fruitless_after(), f.asked);
-            // The conversation's contact may be gone since the ask — its fetch is let go, never re-aimed at whoever took its row.
-            let Some(sci) = self.ci_of(&id).filter(|_| fruitless < MAX_TRIES) else {
-                crate::logf!("attach: fetch of {}… let go after {} asks — {} in a row brought none of it, or its contact was removed", hex::encode(&hash[..4]), tries, fruitless);
+            // The conversation may be gone since the ask — its fetch is let go, never re-aimed elsewhere.
+            if fruitless >= MAX_TRIES || self.conv_by_id(id).is_none() {
+                crate::logf!("attach: fetch of {}… let go after {} asks — {} in a row brought none of it, or its conversation was removed", hex::encode(&hash[..4]), tries, fruitless);
                 self.attach_fetch_inflight.remove(&hash);
                 self.holdings_pull_settled(&hash, false);
                 continue;
-            };
+            }
             match asked {
                 None => crate::logf!("attach: replicating {}… — first ask", hex::encode(&hash[..4])),
                 Some(dev) => crate::logf!("attach: fetch of {}… — device {} went quiet, asking the next ({} of {} fruitless)", hex::encode(&hash[..4]), crate::fp(&dev), fruitless, MAX_TRIES),
             }
-            self.attach_fetch(sci, &hash);
+            self.attach_fetch_conversation(id, &hash);
         }
     }
 
@@ -919,7 +927,7 @@ mod fetch_tests {
     use super::super::FetchAsk;
 
     fn ask(asked: bool, fruitless: u8, progressed: bool) -> FetchAsk {
-        FetchAsk { conv: crate::types::ContactId::from_bytes([7; 32]), asked: asked.then_some([9; 32]), at: std::time::Instant::now(), asked_online: true, tries: 3, fruitless, progressed, ended: false }
+        FetchAsk { conv: crate::types::FriendshipId::from_bytes([7; 32]), asked: asked.then_some([9; 32]), at: std::time::Instant::now(), asked_online: true, tries: 3, fruitless, progressed, ended: false }
     }
 
     /// The let-go count: an ask that brought none of the blob adds one, an ask that brought any of it starts over, and an armed fetch nobody has asked yet adds nothing.

@@ -737,7 +737,7 @@ struct BondRow {
 /// One attachment fetch in flight (attachments.rs): who was asked, and the edges its next ask reads.
 struct FetchAsk {
     /// The conversation whose row names the blob.
-    conv: ContactId,
+    conv: crate::types::ConversationId,
     /// The device asked last; None = armed by the replication sweep and not asked yet.
     asked: Option<[u8; 32]>,
     /// When the ask went out (or the sweep armed it): frames heard from the asked device after this count as its progress (an ORDER, never a deadline).
@@ -1854,7 +1854,7 @@ pub struct PhotonApp {
     /// The last attachment frame (blob, manifest or chunk) heard from each device, stamped as it arrives: a device streaming ANY of our asks is not quiet, so none of its queued asks moves on (it serves them one after another).
     attach_heard: std::collections::HashMap<[u8; 32], std::time::Instant>,
     /// Friend attachment rows just landed: (blob, conversation, the device pushing it) — the fetch tick records each as already asked of that device.
-    attach_expect_pushes: Vec<([u8; 32], ContactId, [u8; 32])>,
+    attach_expect_pushes: Vec<([u8; 32], crate::types::ConversationId, [u8; 32])>,
     /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07): the replication sweep's edges — rows arrived (the total row count moved), presence probes landed, the network went unmetered — each sets this, and one sweep runs per edge. `replicate_rows_seen` / `replicate_metered` are the remembered sides of the first and last edge.
     replicate_dirty: bool,
     replicate_rows_seen: usize,
@@ -2020,7 +2020,7 @@ pub struct PhotonApp {
     ended_waves: std::collections::HashSet<[u8; 16]>,
     rejected_offers: std::collections::HashSet<i64>,
     /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
-    strip_dismissed: Option<(ContactId, i64, bool)>,
+    strip_dismissed: Option<(crate::types::ConversationId, i64, bool)>,
     /// Conversation tokens of knocks that arrived from people we had NOT yet added (Jeff's log 2026-10-01: he added first, his knock reached us as a stranger's and was dropped; when we added him later our knock flipped his side but nothing came back, and the ceremony never armed). A token is a few bytes and proves nothing on its own, so remembering it is safe; an add whose token matches one is the mutuality edge in the other order. Session-only, bounded, oldest out.
     stranger_knocks: Vec<[u8; 32]>,
     /// The lane each signer device wrote to us on most recently, per conversation: (friendship id, signer device key) → lane label.
@@ -2289,16 +2289,16 @@ pub struct PhotonApp {
     msg_view_h: f32,
     /// Compose-box line count at the last frame — the growth edge: a change moves list_bottom, so the next frame reflows the whole scene while ordinary keystrokes stay on the narrow path.
     painted_compose_lines: usize,
-    /// The message whose details strip is open: (contact id, timestamp, is_outgoing). Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
-    selected_msg: Option<(ContactId, i64, bool)>,
+    /// The message whose details strip is open: (conversation id, timestamp, is_outgoing) — any conversation at any size. Keyed by identity, not list index, so backfills can't shift the selection. `None` = no strip.
+    selected_msg: Option<(crate::types::ConversationId, i64, bool)>,
     /// The selected message's wrapped META section height, measured at draw — the extent walk reads it (a frame late on selection change; settles like any overshoot).
     sel_meta_h: f32,
     /// Wrap overflow of the selected message's ACTION ROW (extra lines × pill height): measured in the pill loop, consumed by the next frame's detail_h — the sel_meta_h pattern.
     sel_action_extra_h: f32,
     /// The open strip's copy pill has fired (text on the clipboard): pill turns green + reads "copied". Event-cleared — reset whenever the selection moves or closes, never on a timer.
     selected_msg_copied: bool,
-    /// Deferred delete: ((contact id, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
-    pending_delete: Option<((ContactId, i64, bool), bool)>,
+    /// Deferred delete: ((conversation id, timestamp, is_outgoing), painted). The press only ARMS this and repaints — the strip shows "deleting…" on that frame — and the tick performs the actual removal + mirror-verified persist AFTER the feedback frame painted (the synchronous save blocked the UI for a beat, reading as stuck).
+    pending_delete: Option<((crate::types::ConversationId, i64, bool), bool)>,
     /// Armed reply target: the eagle_time the next send REFERENCES (a reply row, not a quote). Set by the strip's reply pill; the compose strip shows the referenced message at half alpha. Cleared on send, Esc, or conversation switch.
     compose_reply_to: Option<i64>,
     /// Armed edit target: the eagle_time of OUR row the next send SUPERSEDES. The compose box prefills with the current body and the send button trades its arrowhead for a check mark. Cleared on send, Esc (which also clears the prefill), or conversation switch.
@@ -2315,7 +2315,7 @@ pub struct PhotonApp {
     conv_blind_h: [f32; 3],
     conv_blind_edge: f32,
     /// Word-wrap cache for the conversation's message list: key (contact id, message count, avail_w bits, msg_size bits) + the wrapped line STRINGS per visible message (chronological, probes excluded) + the total line count. Rebuilt only when the key changes (resize / zoom / new message / conversation switch). Caching the STRINGS (not just counts) means scroll frames do ZERO text shaping — the per-frame re-wrap of drawn messages was the "glitches and sticks" scroll regression.
-    msg_wrap: Option<((Option<ContactId>, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
+    msg_wrap: Option<((Option<crate::types::ConversationId>, usize, usize, u32, u32, u8), Vec<Vec<String>>, usize)>,
     /// Last IME inset applied to the layout (Android) — the tick diffs the JNI mirror against this and relayouts on change, since the keyboard no longer produces resize events.
     #[cfg(target_os = "android")]
     last_ime_inset: i32,
@@ -2529,8 +2529,8 @@ pub struct PhotonApp {
     wave_env: std::collections::HashMap<[u8; 32], Option<Vec<std::sync::Arc<crate::wave::wave_env::WaveEnv>>>>,
     /// Loads in flight (one per hash).
     wave_env_pending: std::collections::HashSet<[u8; 32]>,
-    /// Far-party env blobs seen but not held: (contact id, hash) queued by the render, fetched once per session by drain_wave_env_wants.
-    wave_env_wants: Vec<(ContactId, [u8; 32])>,
+    /// Far-party env blobs seen but not held: (conversation id, hash) queued by the render, fetched once per session by drain_wave_env_wants.
+    wave_env_wants: Vec<(crate::types::ConversationId, [u8; 32])>,
     /// Finished band folds per (source hash, channel-in-source, width, rows): per-column-per-row VERTICAL COVERAGE 0..1 (the downscale-with-opacity-contributions fold) — built once, the per-frame loop is solid runs + graded contour pixels. Cleared wholesale past a small cap.
     wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
     /// The playing music pigeon, if any (desktop; Android stubs until music routes thru its audio engine).

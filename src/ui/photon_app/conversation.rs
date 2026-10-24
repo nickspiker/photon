@@ -278,6 +278,91 @@ impl PhotonApp {
         self.contacts.get(ci).map(|c| c.id)
     }
 
+    /// A conversation by id — no vault load (an open conversation always exists in memory).
+    pub(super) fn conv_by_id(&self, id: crate::types::ConversationId) -> Option<&crate::types::Conversation> {
+        self.conversations.iter().find(|v| v.id() == id)
+    }
+
+    /// A conversation by id, mutable — no vault load.
+    pub(super) fn conv_by_id_mut(&mut self, id: crate::types::ConversationId) -> Option<&mut crate::types::Conversation> {
+        self.conversations.iter_mut().find(|v| v.id() == id)
+    }
+
+    /// The contact a conversation is the two-member (or one-member) conversation OF, while those still ride their contact (docs/conversations.md §7 retires the split); `None` for a roster-backed conversation.
+    pub(super) fn pair_contact_of(&self, id: crate::types::ConversationId) -> Option<usize> {
+        if self.conv_by_id(id).is_some_and(|v| v.is_molecule()) {
+            return None;
+        }
+        (0..self.contacts.len()).find(|&ci| {
+            let c = &self.contacts[ci];
+            self.our_party_id(c).is_some_and(|us| c.conversation(&us).id() == id)
+        })
+    }
+
+    /// The roster a roster-backed conversation stands on, by its id.
+    pub(super) fn roster_id_of(&self, id: crate::types::ConversationId) -> Option<crate::types::molecule::MoleculeId> {
+        self.conv_by_id(id).filter(|v| v.is_molecule()).map(|_| crate::types::molecule::MoleculeId(*id.as_bytes()))
+    }
+
+    /// Send a row in ANY conversation (docs/conversations.md): a text, a reply, an edit, a reaction — the one door the row actions use, whatever the size.
+    pub(super) fn send_in_conversation(&mut self, id: crate::types::ConversationId, body: &str, reference: Option<(crate::types::RefKind, i64)>) -> bool {
+        if let Some(gid) = self.roster_id_of(id) {
+            return self.send_molecule_message(gid, body, reference);
+        }
+        match self.pair_contact_of(id) {
+            Some(ci) => self.send_chain_message(ci, body, false, reference, None),
+            None => false,
+        }
+    }
+
+    /// Send a hidden control row (a delete marker) in ANY conversation: it lands as our own hidden row first (re-ACK durability), then rides to every other member.
+    pub(super) fn send_control_in_conversation(&mut self, id: crate::types::ConversationId, control: crate::types::RowControl, eagle_time: i64) -> bool {
+        if let Some(gid) = self.roster_id_of(id) {
+            let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+                return false;
+            };
+            let mut row = crate::types::ChatMessage::control(control.clone(), true, eagle_time);
+            row.author = Some(our_pid);
+            if let Some(conv) = self.conv_by_id_mut(id) {
+                conv.insert_message_sorted(row);
+            }
+            self.persist_conversation_async(id);
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None };
+            return self.molecule_transmit(gid, "", eagle_time, None, None, Some(&wire), Some(&control));
+        }
+        match self.pair_contact_of(id) {
+            Some(ci) => self.send_control(ci, control, eagle_time),
+            None => false,
+        }
+    }
+
+    /// Re-fire one of our own rows on the wire at its ORIGINAL stamp, in any conversation (identity preserved — every member dedups and re-ACKs, so this is always safe). Returns whether it went out.
+    pub(super) fn retransmit_row(&mut self, id: crate::types::ConversationId, ts: i64) -> bool {
+        let Some(row) = self.conv_by_id(id).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == ts).cloned()) else {
+            return false;
+        };
+        if let Some(gid) = self.roster_id_of(id) {
+            let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+                return false;
+            };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None };
+            return self.molecule_transmit(gid, &row.content, ts, row.reference, None, Some(&wire), row.control.as_ref());
+        }
+        let Some(ci) = self.pair_contact_of(id) else {
+            return false;
+        };
+        let bw = self.bridge_wire_for_row(ci, ts);
+        self.chain_transmit(ci, &row.content, ts, row.reference, bw.as_ref())
+    }
+
+    /// One local edit to rows already held (a star, a fetch hint, a tombstone): persist the conversation and carry the rows to our siblings.
+    pub(super) fn persist_and_push_rows(&mut self, id: crate::types::ConversationId, rows: &[crate::types::ChatMessage]) {
+        self.persist_conversation_async(id);
+        if !rows.is_empty() {
+            self.push_conversation_rows_to_siblings(id, rows, None);
+        }
+    }
+
     pub(super) fn active_contact(&self) -> Option<usize> {
         let id = self.active_conversation?;
         (0..self.contacts.len()).find(|&ci| {
@@ -936,8 +1021,8 @@ impl PhotonApp {
     }
 
     /// Scroll the open conversation so the row at `target_ts` sits centered — the reply-reference tap's jump. Reuses the render's own wrap cache (line counts per visible row) and mirrors its height math exactly thru the SHARED helpers (chat_row_visible / build_react_over), so the landing can't drift from what the renderer draws. A stale cache (different conversation / no render yet) or a missing target no-ops — the tap just does nothing rather than jumping wrong.
-    pub(super) fn scroll_to_message(&mut self, ci: usize, target_ts: i64) {
-        let Some(conv) = self.conv_of(ci) else {
+    pub(super) fn scroll_to_message(&mut self, id: crate::types::ConversationId, target_ts: i64) {
+        let Some(conv) = self.conv_by_id(id) else {
             return;
         };
         let raw: &[crate::types::ChatMessage] = &conv.messages;
@@ -947,7 +1032,7 @@ impl PhotonApp {
             return;
         };
         if wrap_lines.len() != visible.len()
-            || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != self.cid(ci))
+            || self.msg_wrap.as_ref().is_some_and(|(k, _, _)| k.0 != Some(id))
         {
             return; // cache is for another conversation/row set — a jump from stale math lands wrong, so don't
         }
@@ -961,7 +1046,7 @@ impl PhotonApp {
         let intra = msg_size * 1.25;
         let sel_key = self
             .selected_msg
-            .filter(|(sid, _, _)| Some(*sid) == self.cid(ci))
+            .filter(|(sid, _, _)| Some(*sid) == self.active_conversation)
             .map(|(_, ts, out)| (ts, out));
         let mut dist_from_bottom = 0.0f32;
         let mut found: Option<f32> = None;
@@ -992,7 +1077,7 @@ impl PhotonApp {
         };
         // WHY/PROOF: centring a row near either end of the stream asks for a scroll past the content; the view stops at its ends, which is what the clamp to [0, max] is.
         let scroll = (center_dist - self.msg_view_h * 0.5).clamp(0.0, self.msg_max_scroll);
-        if let Some(v) = self.conv_mut_of(ci) {
+        if let Some(v) = self.conv_by_id_mut(id) {
             v.scroll_offset = scroll;
         }
         self.scene_dirty = true;
@@ -1066,15 +1151,14 @@ impl PhotonApp {
     }
 
     /// The row the details strip is FOR — the same resolution the render uses for `sel_key` (field 2026-09-15, "the play button shows but does nothing until I tap something else"): the explicit selection, else the NEWEST visible row of the open conversation, whose strip shows unasked (unless the user dismissed it). Every pill dispatch reads this, never `selected_msg` alone — a strip that is painted must answer.
-    pub(super) fn strip_target(&self) -> Option<(usize, i64, bool)> {
-        if let Some((id, ts, out)) = self.selected_msg {
-            return Some((self.ci_of(&id)?, ts, out));
+    pub(super) fn strip_target(&self) -> Option<(crate::types::ConversationId, i64, bool)> {
+        if let Some(sel) = self.selected_msg {
+            return Some(sel);
         }
-        let ci = self.active_contact()?;
-        let conv = self.conv_of(ci)?;
-        let raw: &[crate::types::ChatMessage] = &conv.messages;
-        let newest = raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (ci, m.timestamp, m.is_outgoing))?;
-        if self.strip_dismissed == self.cid(ci).map(|id| (id, newest.1, newest.2)) {
+        let id = self.active_conversation?;
+        let raw: &[crate::types::ChatMessage] = &self.conv_by_id(id)?.messages;
+        let newest = raw.iter().rev().find(|m| chat_row_visible(raw, m, self.conv_filter)).map(|m| (id, m.timestamp, m.is_outgoing))?;
+        if self.strip_dismissed == Some(newest) {
             return None;
         }
         Some(newest)
@@ -1700,6 +1784,8 @@ impl PhotonApp {
                             && !m.is_outgoing
                             && m.wave.is_none()
                             && (!m.is_control() || super::is_bond_offer_row(m))
+                            // In a conversation of more than two, the marker reaches only rows its own sender wrote — one member can never tombstone another's words (a pair's incoming rows are all the friend's already).
+                            && m.author.is_none_or(|a| a == from_handle_hash)
                     }) {
                         if !m.deleted {
                             m.deleted = true;
@@ -1760,7 +1846,6 @@ impl PhotonApp {
                 }
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
                 let contact_is_sibling = contact.is_sibling;
-                let contact_id = contact.id;
                 let sender_name = contact.display_name();
                 // BRIDGE host capture, TYPED (2026-08-23): a row runs as a command iff it carries RefKind::BridgeCmd — the mark rides the wire's reference field, never the content (the old any-plain-sibling-row-executes gate with its stripped `$ ` prefix was content-as-trigger, the exact class the typed-reference rework exists to kill). A bare untyped sibling row still runs for ONE transition era, loudly, so a not-yet-updated client keeps its bridge until the fleet converges. Promotion to an actual run stays gated on is_new_row below — a re-served/duplicate/history-backfilled command must never re-execute (Nick 2026-08-22).
                 // A BridgeReset row (the peer opened the bridge) drops our shell for them; a BridgeCtl row is the operator's Stop press (signal number in the typed bsig field) — both hidden control rows, never commands.
@@ -2016,7 +2101,7 @@ impl PhotonApp {
                 // A friend's attachment row: its device pushes the blob right behind it, so that push is this device's answer and nobody else is asked meanwhile (no push window to wait out).
                 if !contact_is_sibling && is_new_row {
                     if let Some(h) = msg.file.as_ref().map(|f| f.hash) {
-                        self.attach_expect_pushes.push((h, contact_id, sender_pubkey.key));
+                        self.attach_expect_pushes.push((h, conv.id(), sender_pubkey.key));
                     }
                 }
                 if !contact_is_sibling && !looking && !is_edit_row && is_new_row && !molecule_muted && !behind_held {
