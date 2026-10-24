@@ -23,6 +23,7 @@ One sentence per line, however long; plain language for the person who installs 
 - **Joining works when a friend has invited you before.** A new invitation from someone whose earlier molecule you left now joins properly.
 - **Files send in molecules.** Dropping or picking a file in a molecule sends it to everyone in it.
 - **Buttons answer right after a page change.** A button under the pointer lights up and works straight away, without moving the mouse first.
+- **Panel and settings buttons never go dead.** A button in a conversation’s panel or in Settings could stop lighting up and stop answering clicks after a small part of the screen redrew, such as a blinking text cursor; they now always respond.
 - **Phone logs stay small.** A damaged spot in the diagnostics log stopped it from ever trimming, so it grew without limit; it now skips the damage and trims as it should.
 - **Safer molecules.** A molecule's member list now only accepts changes signed by the member's own devices, a member can only delete their own messages, and new keys for a conversation are only accepted from someone in it.
 

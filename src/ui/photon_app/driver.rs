@@ -3946,6 +3946,12 @@ impl PhotonApp {
                     || (self.settings_btn_base != HIT_NONE
                         && hit >= self.settings_btn_base
                         && hit < (self.settings_btn_base + SETTINGS_PILL_SLOTS))
+                    // The conversation panel's pills, rows and rail, and the Ready strip's filter, group rows and invitation pills: all stub-painted CONTENT, so they brighten only on a full frame (Leave never lit on hover, 2026-10-24).
+                    || (self.conv_panel_btn_base != HIT_NONE && hit >= self.conv_panel_btn_base && hit < self.conv_panel_btn_base + super::conv_panel::CONV_PANEL_SLOTS)
+                    || (self.conv_nav_base != HIT_NONE && hit >= self.conv_nav_base && hit < self.conv_nav_base + crate::ui::state::ConversationPage::RAIL.len() as HitId)
+                    || (self.molecule_hit_base != HIT_NONE && hit >= self.molecule_hit_base && hit < self.molecule_hit_base + 64)
+                    || (self.ready_filter_base != HIT_NONE && hit >= self.ready_filter_base && hit < self.ready_filter_base + 2)
+                    || (self.invite_hit_base != HIT_NONE && hit >= self.invite_hit_base && hit < self.invite_hit_base + 32)
             };
             // Not while a finger (or button) drags the pane: the rows passing under it are not being hovered, and the full repaint would defeat the scroll memmove every frame.
             if (row_hover(new_hit) || row_hover(self.hover_hit)) && !self.press_held {

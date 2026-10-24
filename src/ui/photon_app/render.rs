@@ -2338,8 +2338,9 @@ impl PhotonApp {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
             if active_ci.is_some() || active_gi.is_some() {
-                // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches).
-                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, 0, layout.rail.y as isize, buf_w as isize, buf_h as isize, HIT_NONE);
+                // Clear the panel region's hit stamps before re-stamping this frame (immediate-mode stamps must not linger across page switches) — INSIDE THIS FRAME'S DAMAGE only: a pill re-stamps only pixels it paints, and outside the damage nothing paints, so a region-wide wipe on a caret-blink or chrome frame left every pill there dead (Nick 2026-10-24: Leave neither lit nor clicked).
+                let d = ctx.damage_clip;
+                restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (layout.rail.y as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, HIT_NONE);
                 // Our pid keys the colours below — a keyed colour, not a self-check. "Is this only me" is the participant count.
                 let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
                 let seed_ref = self.session.as_ref().map(|se| se.identity_seed);
@@ -5106,17 +5107,9 @@ impl PhotonApp {
             let layout = SettingsLayout::compute(&ctx.viewport);
             let mut canvas = Canvas::new(target, buf_w, buf_h, ctx.damage);
 
-            // Clear the whole settings region in the shared hit_test_map before re-stamping this frame's rail rows + pills — same reason as the launch block: immediate-mode stamps must not linger across page switches.
-            restamp_hit_rect(
-                &mut chrome.hit_test_map,
-                buf_w,
-                buf_h,
-                0,
-                layout.rail.y as isize,
-                buf_w as isize,
-                buf_h as isize,
-                HIT_NONE,
-            );
+            // Clear the settings region in the shared hit_test_map before re-stamping this frame's rail rows + pills — same reason as the launch block: immediate-mode stamps must not linger across page switches. Only inside this frame's damage: outside it nothing repaints, so nothing could re-stamp (the conversation panel's dead-Leave class).
+            let d = ctx.damage_clip;
+            restamp_hit_rect(&mut chrome.hit_test_map, buf_w, buf_h, d.x0 as isize, (layout.rail.y as isize).max(d.y0 as isize), d.x1 as isize, d.y1 as isize, HIT_NONE);
 
             // Open dropdown popup FIRST (under-blend: topmost content paints first) so it composites over everything painted after it.
             if page == SettingsPage::Appearance {
