@@ -2212,10 +2212,10 @@ impl PhotonApp {
                             Some(rows_clip),
                         );
                     }
-                    (_, Some((gid, members))) => {
+                    (_, Some(seeds)) => {
                         // The group's avatar: a pie of its members' gradients at the row diameter.
                         let gd = disk_px(avatar_r * 2.0);
-                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &molecule_avatar_rgb(gid, members, gd), gd, Some(rows_clip));
+                        crate::ui::avatar_render::draw_avatar(&mut canvas, avatar_cx, cy, avatar_r, &molecule_avatar_rgb(seeds, view.gradient_seed, gd), gd, Some(rows_clip));
                     }
                     _ => {
                         // Default unset avatar: the deterministic gradient (a contact's public proof; a group's id).
@@ -3051,10 +3051,11 @@ impl PhotonApp {
                     } else {
                         party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
                     };
-                    // A GROUP row's colour is its AUTHOR's (docs/molecules.md D14: the group id ‖ author digest, the same on every member's screen); a friendship row is the friend's.
+                    // A row's colour is its AUTHOR's, keyed on the pair (that person, us) exactly as a two-member conversation colours them (D3, docs/conversations.md: one colour per person on our devices, in every conversation; their colour on someone else's screen differs).
                     let author_colour = |m: &crate::types::ChatMessage| -> u32 {
                         match (active_gid.as_ref(), m.author.as_ref()) {
-                            (Some(gid), Some(a)) => party_colour(&molecule_digest(gid, a)),
+                            (Some(_), Some(a)) if *a == our_handle_hash => self_colour(),
+                            (Some(_), Some(a)) => party_colour(&relationship_digest(a, &our_handle_hash)),
                             _ => their_colour,
                         }
                     };
@@ -7353,8 +7354,8 @@ struct RowView {
     unread: bool,
     ring: u32,
     hit: HitId,
-    /// A group row's pie: the group id and its standing members other than us (painted at the row diameter in the loop); `None` = a contact's scaled cache or the gradient seed.
-    pie: Option<(crate::types::molecule::MoleculeId, Vec<[u8; 32]>)>,
+    /// A conversation row's pie: the gradient seed of each standing member other than us — the very gradient that person's own row wears (D3, docs/conversations.md: a person looks the same in every conversation on our devices), painted at the row diameter in the loop; `None` = a contact's scaled cache or the gradient seed.
+    pie: Option<Vec<u64>>,
     gradient_seed: u64,
 }
 
@@ -7414,7 +7415,7 @@ impl RowView {
             unread: conv.is_some_and(|v| v.unread_count > 0),
             ring,
             hit: if gi < 64 { app.molecule_hit_base + gi as HitId } else { HIT_NONE },
-            pie: Some((*gid, members)),
+            pie: Some(members.iter().map(|p| proof_gradient_seed(&roster.members.get(p).map_or(*p, |m| m.handle_proof))).collect()),
             gradient_seed: proof_gradient_seed(&gid.0),
         }
     }

@@ -436,12 +436,12 @@ fn molecule_digest(gid: &crate::types::molecule::MoleculeId, author: &[u8; 32]) 
     relationship_digest(&gid.0, author)
 }
 
-/// A group's list avatar: a pie of its standing members' gradients (each member's slice is `gradient_avatar_rgb` seeded from its group digest), so the row reads as "these people" without an orb of its own. One member = its whole gradient; none = the group id's.
-fn molecule_avatar_rgb(gid: &crate::types::molecule::MoleculeId, members: &[[u8; 32]], diam: usize) -> Vec<u8> {
-    if members.is_empty() {
-        return gradient_avatar_rgb(proof_gradient_seed(&gid.0), diam);
+/// A conversation's list avatar: a pie of its standing members' gradients — each slice is `gradient_avatar_rgb` from that person's own seed, the gradient their own row wears — so the row reads as "these people" without an orb of its own. One member = its whole gradient; none = the conversation's `fallback`.
+fn molecule_avatar_rgb(seeds: &[u64], fallback: u64, diam: usize) -> Vec<u8> {
+    if seeds.is_empty() {
+        return gradient_avatar_rgb(fallback, diam);
     }
-    let slices: Vec<Vec<u8>> = members.iter().map(|m| gradient_avatar_rgb(proof_gradient_seed(&molecule_digest(gid, m)), diam)).collect();
+    let slices: Vec<Vec<u8>> = seeds.iter().map(|s| gradient_avatar_rgb(*s, diam)).collect();
     if slices.len() == 1 {
         return slices.into_iter().next().unwrap();
     }
