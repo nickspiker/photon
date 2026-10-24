@@ -46,7 +46,7 @@
 - [Discard, not shred](feedback_discard_not_shred.md) — HARD: no shred/nuke/erase claims until we own the flash; delete = mark for discard, distinct file → OS delete; encrypted at rest anyway
 
 ## Active / open
-- [Android dark in background](project_android_headless_dark.md) — 2026-10-13: Activity destroy freed the app; fix BUILT, verify pending
+- [Android dark in background](project_android_headless_dark.md) — Activity destroy freed the app; fix built, verify pending
 - [Address ports](project_address_ports.md) — 2026-10-15 LAN candidates used the NAT port; FIXED
 - [Backfill dings](project_backfill_dings.md) — 2026-10-21 re-serve rang per old photon
 - [Hotplug abort](project_hotplug_abort.md) — 0-px avatar SIGABRT; fixed
@@ -82,7 +82,7 @@
 - [project_offgrid_wfd.md](project_offgrid_wfd.md) — Wi-Fi Direct off-grid v1 BUILT; field test PENDING
 - [History early-stop blindness](project_history_early_stop_blindness.md) — early-stop hid divergences; fixed
 - [AAudio ignores clockid](project_aaudio_clockid_ignored.md) — Pixel HALs stamp MONOTONIC even if asked BOOTTIME; map it
-- [Media fallback rocker](project_media_fallback_rocker.md) — 2026-09-26: media at 7% while rocker bound VOICE_CALL
+- [Media fallback rocker](project_media_fallback_rocker.md) — media at 7% while rocker bound VOICE_CALL
 - [Aligner windup](project_aligner_windup.md) — 2026-09-27 CONVICTED: TX slip integrator wound up while rate-saturated; FIXED 2026-09-28
 - [Playout L/l slips](project_playout_l_slips.md) — 2026-09-28: L = max age of last 256 RECEIVED + repair slack, NO hardcoded timings
 - [Contact manage](project_contact_nuke_gaps.md) — 2026-09-27 BUILT (v106): Boot sticks via booted ledger; Manage clears history fleet-wide; rest unbuilt
