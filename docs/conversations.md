@@ -85,3 +85,19 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 - D5. DECIDED: hold Phase 1 for Phase 3 — the convergence ships together, every capability working at every size on day one. Phases are still built in order.
 - D6. Moot: with the key riding the 12-primitive bonds there is no separate conversation KEM set.
 - D7. One header format for every size ("title or member names · n") (not yet asked).
+
+## 7. Phases 2–3 together: the split (2026-10-24, Nick: "I'd build all of it")
+
+Phases 2 and 3 ship as one migration, so there is one flag day and no intermediate model on disk.
+
+**An existing friendship splits in two:**
+
+- **Its conversation keeps everything it has.** The rows table stays `friendship_id`, the wire token stays `derive_conversation_token([us, them])` (now stored as data in the keys blob, not re-derived), and the current chains stay the conversation's keys — history, lanes and in-flight rows are untouched, and an unupgraded peer keeps chatting. It gains a roster whose genesis is `Derived{[us, them]}`: self-certifying (`id == FriendshipId::derive(parties)`), every party a founder, no signature needed.
+- **Its bond is new.** Both sides derive the bond keys from the conversation's era at migration — `root_B = KDF("PHOTON_BOND_v1" ‖ root_conv)`, the same for the history key — under a new id `BondId::derive(sorted pids)` and a new token; no network round trip, both sides land on the same bond independently. CLUTCH, the light ratchet (Init/Resp/Nudge), heavy weaves, the repair table and the stranded heal move to the bond; a new friendship's CLUTCH produces bond keys directly and then founds the pair's two-member conversation (era 0 delivered over the bond).
+- **The rule that keeps the bond secret:** anyone holding the era a bond was derived from could compute the bond, so a conversation NEVER hands out an era at or below its `bond_split_era`. A join into such a conversation always mints a fresh era first (whatever its history policy), and the conversation's first era trigger after migration retires the split era for good.
+
+**Mixed versions.** Chat keeps working across the flag day because the conversation's token and lanes do not change. Only a mint needs the peer upgraded: a conversation mints only when every member it must deliver to has been heard on its bond (the first frame on the bond token is the edge); until then it stays on its current era. Old clients ignore control rows on a token they do not know; new clients drop Init/Resp on conversations with a log line.
+
+**Molecules** keep their ids and rosters; their control traffic (offers, joins, wraps, declines) moves from the friendship chains to the bond, and their era deliveries move from KEM bundles to the bond graph (§0), after which bundle records are deleted.
+
+**Notes** (the self contact) become a one-member conversation `Derived{[us]}` with the same rows table; the self Contact row is deleted.
