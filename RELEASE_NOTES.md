@@ -6,6 +6,11 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Molecules reach all your devices.** A molecule you start now shows up on your other phones and computers straight away, so any of them can let a friend in. Before, it stayed on the device that made it until someone posted in it, so a friend's join could wait on a device that was asleep.
+- **A molecule you've joined shows up right away.** It appears in your contacts list, marked as joining, the moment you tap Join, instead of only once your friend's device answers.
+- **Friends on a phone network stay direct.** A friend whose direct connection worked could still flip back to the relay every minute or so, because their replies only ever came back through it; the working direct connection now keeps them green.
+- **Mac: clicks land the first time.** With Photon in front, a click could fall through to the window behind until you dragged the mouse; Photon now notices the pointer coming back over it.
+- **One corner shape everywhere.** Buttons, checkboxes, dropdowns and text boxes now share the window's own corner curve, so every surface has the same smooth edge.
 
 ## v124
 - **Linux: Photon survives screen changes.** After plugging in or unplugging a monitor, or changing the resolution, Photon could paint the whole screen black or not show up when clicked until you closed and reopened it. It now picks up the new screen layout right away.

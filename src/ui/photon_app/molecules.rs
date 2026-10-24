@@ -101,7 +101,9 @@ impl PhotonApp {
             crate::logf!("MOLECULE: join of {} — no parked offer", hex::encode(&gid.0[..4]));
             return false;
         };
-        if offer.accepted && self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
+        // Joined = the group is held AND past Joining: a joining group is listed from the moment Join is pressed (below), and a re-tap while the wrap is lost must send the join again, not report it done.
+        let joining = self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Joining);
+        if offer.accepted && !joining && self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
             crate::logf!("MOLECULE: join of {} — already joined", hex::encode(&gid.0[..4]));
             return false;
         }
@@ -139,6 +141,15 @@ impl PhotonApp {
         let sent = self.chain_transmit_with(ci, "", ts, None, None, None, Some(&wire), Some(&crate::types::RowControl::Molecule(MoleculeSignal::Join)));
         if sent {
             self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Joining);
+            // THE JOINING ROW (docs/molecules.md §10.5, "dashed while Joining"; Emma 2026-10-24: "once bonded, doesn't show up on contact screen"): the group joins our list now, from the offer's snapshot.
+            // It used to appear only when the wrap arrived, so a join whose answer was slow (the sponsor's only holding device asleep) left nothing on screen; install_bind_wrap replaces the snapshot and makes it Standing.
+            if !self.conversations.iter().any(|v| v.id() == fid) {
+                self.conversations.push(crate::types::Conversation::new_molecule(gid, offer.snapshot.standing()));
+            }
+            if !self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
+                self.molecule_rosters.push((gid, offer.snapshot.clone()));
+            }
+            self.persist_molecule(&gid);
             self.persist_chains_of(&fid);
             if let Some(o) = self.bond_offers.iter_mut().find(|o| o.molecule_id == gid) {
                 o.accepted = true;

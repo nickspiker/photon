@@ -1192,6 +1192,15 @@ impl PhotonApp {
                 })
                 .collect();
             if changed.is_empty() {
+                // A GROUP'S ROSTER EDGE moves no lane — and a freshly founded atom has no lanes at all — so the lane filter alone never carried it (Nick 2026-10-24: "strawberry" founded on the MacBook never reached the desktop, so Emma's join had one device to answer it and that one was asleep).
+                // The roster rides every chains frame; push a lane-less frame whenever it changed since the last push, and a sibling that never held the group adopts it whole, keys included.
+                if chains.molecule && !chains.molecule_roster().is_empty() {
+                    let digest = *blake3::hash(chains.molecule_roster()).as_bytes();
+                    if self.molecule_roster_pushed.get(&fid_bytes) != Some(&digest) {
+                        frames.push((fid_bytes, chains.mutated_osc, Vec::new(), Some(chains.replication_subset(&[]))));
+                        continue;
+                    }
+                }
                 // mutated_osc moved but no lane position did (e.g. a last_plaintext-only touch); record the coarse stamp so we don't re-scan every tick.
                 frames.push((fid_bytes, chains.mutated_osc, Vec::new(), None));
                 continue;
@@ -1246,7 +1255,10 @@ impl PhotonApp {
                 self.chain_pushed_osc.insert(fid_bytes, osc);
                 continue;
             };
-            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} to {} sibling(s) (per-lane checkpoint)", changed.len(), crate::fp(&fid_bytes), targets.len());
+            crate::logf!("CHAIN-SYNC: pushing {} changed lane(s) for {} to {} sibling(s) (per-lane checkpoint{})", changed.len(), crate::fp(&fid_bytes), targets.len(), if subset.molecule { ", group roster" } else { "" });
+            if subset.molecule {
+                self.molecule_roster_pushed.insert(fid_bytes, *blake3::hash(subset.molecule_roster()).as_bytes());
+            }
             // Positions record at DISPATCH — the same optimism as before this moved off-thread (send_history only ever queued; delivery was never confirmed here). A worker failure is loud and impossible-class (deterministic encode + seal with a held key); the lane re-pushes the moment it advances again.
             self.chain_pushed_osc.insert(fid_bytes, osc);
             for (label, pos) in &changed {
