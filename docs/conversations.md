@@ -62,10 +62,10 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 
 ## 6. Owner decisions
 
-- D1. The restatement in §0 (bond CLUTCH + per-conversation mint/join/wrap, one ladder).
-- D2. Ready filters: `All · Invitations`, or keep a pure size view.
-- D3. Colours keyed on the conversation id (friend colours change once).
-- D4. Bridge terminal moves to the device page.
-- D5. Phase 1 ships with invite/Leave refused in pair conversations until Phase 3, or waits for Phase 3.
-- D6. Add Frodo-976 to the conversation KEM set (~15 KB per bundle) for unstructured-lattice diversity.
-- D7. One header format for every size ("title or member names · n").
+- D1. OPEN (Nick 2026-10-24: "every member runs with every other member, sorted keys, everyone gets a deterministic same seed to init keys, then we cross keys — I swear we got it to O(N)"). No O(N) design is in docs, memory or history. docs/clutch.md §4.1–4.3 is O(N²) (every member encapsulates to every other) and its §4.3 seed derivation does not agree for N ≥ 3: each party hashes ITS OWN pairwise secrets, so Alice hashes A–B and A–C, Bob hashes A–B and B–C, and the seeds differ. Candidate O(N) shape under discussion: the STAR CLUTCH — members sorted, a deterministic leader, every member encapsulates a secret contribution to the leader (N−1), the leader combines them and encapsulates the result back to every member (N−1); N = 2 is today's cost, N = 1 is trivial.
+- D2. DECIDED: Ready filters are `All · Invitations`.
+- D3. DECIDED: a person's colour is keyed on the pair (you, them), so it is the same for that friend on your devices in every conversation; on someone else's screen it differs. A conversation row draws its members in their pair colours.
+- D4. Bridge terminal moves to the device page (not yet asked).
+- D5. DECIDED: hold Phase 1 for Phase 3 — the convergence ships together, every capability working at every size on day one. Phases are still built in order.
+- D6. Add Frodo-976 to the conversation KEM set (~15 KB per bundle) for unstructured-lattice diversity (not yet asked; moot if D1 lands on the full CLUTCH primitive set).
+- D7. One header format for every size ("title or member names · n") (not yet asked).
