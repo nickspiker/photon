@@ -29,7 +29,7 @@ Status: PLAN (2026-10-24). Phase 0 BUILT; Phase 1 next. Owner rule (HARD): a con
 
 **Devices.** A bond reaches every device of both fleets, so delivery to a member is delivery to their fleet. A device leaving a member's fleet re-keys that member's bonds (heavy weave, today) and then triggers a conversation mint, which reaches the remaining devices only.
 
-**Open (to settle with Nick).** (a) Contributory entropy: should every member also send a fresh contribution toward the minter (another N−1 hops, but an offline member then blocks the era), or is minter-fresh plus continuity from era e enough? (b) Forwarders see `fresh` — they are members and learn the era anyway, so nothing leaks, but a forwarder can delay or drop: the minter re-delivers directly to any member it is bonded to that has not ACKed.
+**Settled (Nick 2026-10-24).** No contributory entropy: members send nothing toward the minter and nobody waits on anyone — the bonds are strong enough to carry the era. The minter's own `fresh` stays, because it is what locks a leaver out: an era derived from era e alone would be derivable by anyone who held e. The minter also delivers directly to every member it is bonded with that has not ACKed, so a slow or dropping forwarder never strands anyone.
 
 ## 1. What is already shared
 
@@ -78,7 +78,7 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 
 ## 6. Owner decisions
 
-- D1. PROPOSED, awaiting Nick (2026-10-24): the key rides the bonds (§0) — no per-conversation key exchange, O(N) per era. Open details in §0: contributory entropy, and forwarding vs direct delivery.
+- D1. DECIDED (2026-10-24): the key rides the bonds (§0) — no per-conversation key exchange, O(N) per era; no contributory entropy; the minter delivers directly to anyone it is bonded with that has not ACKed.
 - D2. DECIDED: Ready filters are `All · Invitations`.
 - D3. DECIDED: a person's colour is keyed on the pair (you, them), so it is the same for that friend on your devices in every conversation; on someone else's screen it differs. A conversation row draws its members in their pair colours.
 - D4. Bridge terminal moves to the device page (not yet asked).
