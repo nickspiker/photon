@@ -322,6 +322,7 @@ impl PhotonApp {
         their_hqc_prefix: [u8; 8],
         prior: Option<crate::types::friendship::EraPrior>,
         braid: u8,
+        bond: Option<crate::types::friendship::BondId>,
     ) {
         use crate::crypto::clutch::clutch_complete_full;
 
@@ -356,12 +357,11 @@ impl PhotonApp {
             // Phase 2: Expand to 2MB and derive chains (slow - avalanche_expand)
             // WEAVE (stage 4): with a prior, the fresh eggs ratchet the prior era forward instead of opening a new lineage.
             let prior_tag = prior.as_ref().map(|p| crate::crypto::clutch::era_tag(&p.lane_root));
-            let friendship_chains = FriendshipChains::from_clutch_woven(
-                &[our_handle_hash, their_handle_hash],
-                result.eggs.as_slice(),
-                prior.as_ref(),
-                braid,
-            );
+            // A FRIEND's ceremony yields the pair's BOND (docs/conversations.md §7); a sibling's, the chains between our own devices.
+            let friendship_chains = match bond {
+                Some(b) => FriendshipChains::bond_from_clutch_woven(b, &[our_handle_hash, their_handle_hash], result.eggs.as_slice(), prior.as_ref(), braid),
+                None => FriendshipChains::from_clutch_woven(&[our_handle_hash, their_handle_hash], result.eggs.as_slice(), prior.as_ref(), braid),
+            };
             drop(prior);
 
             #[cfg(feature = "development")]
@@ -1028,6 +1028,7 @@ impl PhotonApp {
 
             // The chains write rides the durable writer (persist_chains_then, below) with the proof send attached — persist-before-proof kept, zero encrypt+IO on the UI thread (2026-08-15). Cloned because the in-memory cache takes the original; the writer coalesces per fid, so a queued older save of this friendship is superseded by these fresh chains, never the reverse.
             let chains_for_writer = result.friendship_chains.clone();
+            let chains_for_writer_is_bond = chains_for_writer.bond;
             let mut proof_action: Option<super::ChainsPostDurable> = None;
 
             // EVERY completed ceremony mints a durable pair secret with the other DEVICE, sibling or friend, and it is stored before anything else can fail. A sibling's is what lets it be wrapped into the egged fan-out; a FRIEND's is the key their scoped-blob slot is addressed and sealed with (docs/scoped-blobs.md), so without it there is no way to share a file with them at all.
@@ -1098,7 +1099,10 @@ impl PhotonApp {
                 // Pseudonymous log label — the display name is a REAL name in the field ("Theresa" in a submitted log, 2026-08-08); fp is the doctrine.
                 let contact_handle = crate::fp(&contact.handle_proof);
                 contact.clutch_ceremony_in_progress = false;
-                contact.friendship_id = Some(friendship_id);
+                // A sibling's chains are its conversation's keys and the bond in one; a FRIEND's ceremony yields the bond, and their friendship_id stays the conversation's (docs/conversations.md §7).
+                if !chains_for_writer.bond {
+                    contact.friendship_id = Some(friendship_id);
+                }
                 // The round's era-prior claim is spent with its completion.
                 contact.era_prior_claim = None;
 
@@ -1231,6 +1235,10 @@ impl PhotonApp {
 
             // If the early-proof branch just took this contact to Complete, fire the hidden chain-weave probe (once). Done after the mutable-borrow block above releases.
             if let Some(idx) = self.contacts.iter().position(|c| c.id == result.contact_id) {
+                // A friend's bond just landed (docs/conversations.md §7): its hidden conversation, and the pair's own conversation founded over it when there is none yet.
+                if chains_for_writer_is_bond {
+                    self.bond_completed(idx);
+                }
                 self.maybe_send_chain_probe(idx);
             }
         }
@@ -1422,7 +1430,8 @@ impl PhotonApp {
             contact.clutch_our_keypairs.as_ref().map_or(crate::crypto::chain::BRAID_V1, |k| k.braid),
             contact.get_slot(&their_handle_hash).and_then(|s| s.offer.as_ref()).map_or(crate::crypto::chain::BRAID_V1, |o| o.braid),
         );
-        let claim_fid = contact.friendship_id;
+        // The era a woven ceremony ratchets from is the BOND's (docs/conversations.md §7): a friend's ceremony re-keys the bond, never a conversation; a sibling's chains are the bond between our own devices.
+        let claim_fid = if contact_is_sibling { contact.friendship_id } else { Some(crate::types::FriendshipId::from_bytes(crate::types::friendship::BondId::derive(&our_handle_hash, &their_handle_hash).0)) };
 
         let our_device_pub = *self
             .device_keypair
@@ -1478,6 +1487,7 @@ impl PhotonApp {
             their_hqc_prefix,
             prior,
             braid,
+            (!contact_is_sibling).then(|| crate::types::friendship::BondId::derive(&our_handle_hash, &their_handle_hash)),
         );
     }
 }

@@ -1267,10 +1267,11 @@ impl PhotonApp {
         let should_send = match self.contacts.get(contact_idx) {
             Some(c) => {
                 c.clutch_state == crate::types::ClutchState::Complete
-                    && c.friendship_id.is_some()
+                    && self.bond_chains_id(c).is_some_and(|fid| self.friendship_chains.iter().any(|(id, _)| *id == fid))
                     && !c.probe_sent
                     // A LANE AT ITS WINDOW needs no probe: an un-ACKed message already in flight proves what the probe would, and it advances the chain. Without this the send window and the presence re-probe sweep spun against each other — probe attempted, held, never latched, re-attempted every frame (196 attempts in 3.4s on a phone, 2026-08-07). The probe fires later, from the same sweep, once a slot frees.
-                    && c.friendship_id.is_none_or(|fid| {
+                    // The probe proves the CLUTCH channel, which is the BOND (docs/conversations.md §7).
+                    && self.bond_chains_id(c).is_none_or(|fid| {
                         self.friendship_chains
                             .iter()
                             .find(|(id, _)| *id == fid)
@@ -1289,7 +1290,7 @@ impl PhotonApp {
         }
         crate::log("CHAIN-PROBE: sending hidden chain-weave probe");
         // Latch `probe_sent` only on an actual dispatch — if the contact had no address yet the send is a no-op and we retry on the next Complete transition / re-arm cycle rather than stalling.
-        if self.send_control(contact_idx, crate::types::RowControl::Probe, crate::network::time_base::stamp_osc()) {
+        if self.bond_transmit_with(contact_idx, crate::network::time_base::stamp_osc(), None, None, &crate::types::RowControl::Probe) {
             if let Some(c) = self.contacts.get_mut(contact_idx) {
                 c.probe_sent = true;
             }

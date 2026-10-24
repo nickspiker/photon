@@ -273,11 +273,6 @@ impl PhotonApp {
         self.contacts.iter().position(|c| c.id == *id)
     }
 
-    /// The stable id of the row `ci` names right now — what anything stored past this call keys on.
-    pub(super) fn cid(&self, ci: usize) -> Option<ContactId> {
-        self.contacts.get(ci).map(|c| c.id)
-    }
-
     /// A conversation by id — no vault load (an open conversation always exists in memory).
     pub(super) fn conv_by_id(&self, id: crate::types::ConversationId) -> Option<&crate::types::Conversation> {
         self.conversations.iter().find(|v| v.id() == id)
@@ -327,7 +322,7 @@ impl PhotonApp {
                 conv.insert_message_sorted(row);
             }
             self.persist_conversation_async(id);
-            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None };
             return self.molecule_transmit(gid, "", eagle_time, None, None, Some(&wire), Some(&control));
         }
         match self.pair_contact_of(id) {
@@ -345,7 +340,7 @@ impl PhotonApp {
             let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
                 return false;
             };
-            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None };
             return self.molecule_transmit(gid, &row.content, ts, row.reference, None, Some(&wire), row.control.as_ref());
         }
         let Some(ci) = self.pair_contact_of(id) else {
@@ -701,8 +696,10 @@ impl PhotonApp {
                 continue;
             }
             // Only a contact still NAMING a friendship whose chains are gone is the flag-day shape. One with no friendship id is already in its re-key posture — this sweep or an earlier one put it there (field v104, 2026-09-26: the resume-load and attest-load sweeps ran two seconds apart, the second threw away the round the first had started, the peer had already answered the first offer, and the pair wedged on mismatched ceremony ids).
+            // A friend re-clutches only when NEITHER its bond nor its conversation's keys are held: a held conversation whose bond is not split yet is ensure_bonds' business (docs/conversations.md §7), never a re-key.
+            let held = |fid: crate::types::FriendshipId| self.friendship_chains.iter().any(|(id, _)| *id == fid);
             let missing = match c.friendship_id {
-                Some(fid) => !self.friendship_chains.iter().any(|(id, _)| *id == fid),
+                Some(fid) => !held(fid) && (c.is_sibling || self.bond_chains_id(c).is_none_or(|b| !held(b))),
                 None => false,
             };
             if !missing {
@@ -723,6 +720,8 @@ impl PhotonApp {
         } else {
             self.our_party_id(c).is_some_and(|us| us < c.handle_hash)
         };
+        // A friend's re-key is the BOND's (docs/conversations.md §7): a conversation whose keys we hold stays named — only a sibling's (or a friend's whose conversation keys are gone too) id is cleared.
+        let keep_conversation = !c.is_sibling && c.friendship_id.is_some_and(|f| self.friendship_chains.iter().any(|(id, _)| *id == f));
         let c = &mut self.contacts[ci]; // PROOF: `get(ci)` returned Some above and nothing between shrinks the list
         crate::logf!(
             "LANE: {} — {} ({})",
@@ -745,7 +744,9 @@ impl PhotonApp {
         c.probe_sent = false;
         c.their_probe_seen = false;
         c.chain_advanced_by_ack = false;
-        c.friendship_id = None;
+        if !keep_conversation {
+            c.friendship_id = None;
+        }
         if let Some(storage) = self.storage.as_ref() {
             let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
         }
@@ -756,7 +757,7 @@ impl PhotonApp {
         let wedged: Vec<usize> = (0..self.contacts.len()).filter(|&ci| self.contacts[ci].ceremony_mismatch_streak >= CEREMONY_MISMATCH_LIMIT).collect();
         for ci in wedged {
             // A friendship with LIVE CHAINS keeps them (field 2026-09-28, Emma: the breaker's repose nulled friendship_id mid heavy-weave, stranding a healthy era — the phone then refused every weave offer as "no era" and messaging stopped both ways). Only the stuck round goes; the contact stays Complete on its chains, and any re-key it still owes re-arms on its own edge.
-            let has_chains = self.contacts[ci].friendship_id.is_some_and(|f| self.friendship_chains.iter().any(|(id, _)| *id == f));
+            let has_chains = self.bond_chains_id(&self.contacts[ci]).is_some_and(|f| self.friendship_chains.iter().any(|(id, _)| *id == f));
             if has_chains {
                 let c = &mut self.contacts[ci];
                 crate::logf!("CLUTCH: {} — ceremony wedged on repeated ceremony_id mismatches; round discarded, chains kept", crate::fp(&c.handle_proof));
@@ -810,8 +811,9 @@ impl PhotonApp {
                 && !c.locked_out
                 && !ceremony_parked_by(c, our_device, &siblings)
         }) {
-            let claim = self.contacts[i]
-                .friendship_id
+            // A heavy weave re-keys the BOND (docs/conversations.md §7): its claim names the bond's era.
+            let claim = self
+                .bond_chains_id(&self.contacts[i])
                 .and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f))
                 .and_then(|(_, ch)| ch.era_tag().map(|t| (t, ch.era_index)));
             let c = &mut self.contacts[i];
@@ -1318,6 +1320,8 @@ impl PhotonApp {
         let mut ack_enqueue: Option<(FriendshipChains, AckRequest)> = None;
         let mut fork_sibling_reset: Option<usize> = None;
         let mut fork_friend_rekey: Option<usize> = None;
+        // A two-member CONVERSATION whose keys diverged (docs/conversations.md §7): its era is re-delivered whole over the bond — a re-CLUTCH re-keys only the bond.
+        let mut fork_conversation: Option<crate::types::FriendshipId> = None;
         let mut sibling_push: Option<(usize, ChatMessage)> = None;
         // A friend deleted their group offer (their undo of an invite we declined): the offer row's eagle time, so the parked offer is forgotten after the borrow.
         let mut offer_undone: Option<(usize, i64)> = None;
@@ -1328,7 +1332,8 @@ impl PhotonApp {
         // Group control row landed (docs/molecules.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
         let mut molecule_signal_evt: Option<(usize, usize, crate::types::molecule::MoleculeSignal, Option<crate::network::message_package::MoleculeWire>, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // The 256-row cadence edge (crypto/era.rs): the contact whose peer-row count just crossed a multiple of the cadence.
-        let mut cadence_ci: Option<usize> = None;
+        // (contact, the chains id, is a bond, is a group) — the cadence edge acts by the chains' kind (docs/conversations.md §7).
+        let mut cadence_ci: Option<(usize, crate::types::FriendshipId, bool, bool)> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
         // A GROUP row persists by its conversation id, never by the sender's contact (whose own conversation is a different table) — docs/molecules.md step 4.
@@ -1532,7 +1537,11 @@ impl PhotonApp {
                             contact.chain_fail_streak = 0;
                         } else if contact.chain_fail_streak >= 3 && !contact.is_sibling {
                             crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
-                            fork_friend_rekey = Some(contact_idx);
+                            if chains.bond {
+                                fork_friend_rekey = Some(contact_idx);
+                            } else {
+                                fork_conversation = Some(chains.friendship_id);
+                            }
                         }
                     }
                     break 'commit;
@@ -1684,7 +1693,7 @@ impl PhotonApp {
                 }
                 // CADENCE EDGE (decision 5): every LIGHT_RATCHET_CADENCE_ROWS peer rows on one era, the owner proposes a light ratchet. A multiple (not ==) so a held edge (not owner, peer not capable) fires again a window later instead of never.
                 if chains.lane_is_writable(&lane) && chains.rows_since_ratchet > 0 && chains.rows_since_ratchet % crate::crypto::era::LIGHT_RATCHET_CADENCE_ROWS == 0 && chains.pending_era().is_none() {
-                    cadence_ci = Some(contact_idx);
+                    cadence_ci = Some((contact_idx, chains.friendship_id, chains.bond, chains.molecule));
                 }
             }
 
@@ -2204,19 +2213,22 @@ impl PhotonApp {
         if let Some((ci, cp, sig, wire, kem, ts)) = molecule_signal_evt {
             self.on_molecule_signal(ci, cp, sig, wire, kem, ts);
         }
-        if let Some(ci) = cadence_ci {
-            match persist_molecule_conv {
+        if let Some((ci, fid, is_bond, is_group)) = cadence_ci {
+            let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            if is_group {
                 // GROUP cadence (docs/molecules.md §10.4): the lowest standing party id mints; everyone else lets the edge pass (a race would still resolve by that same id).
-                Some(id) => {
-                    let gid = crate::types::molecule::MoleculeId(*id.as_bytes());
-                    let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-                    let lowest = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.standing().first().copied());
-                    if us.is_some() && us == lowest {
-                        crate::logf!("MOLECULE: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
-                        self.mint_molecule_era(gid, None);
-                    }
+                let gid = crate::types::molecule::MoleculeId(*fid.as_bytes());
+                let lowest = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.standing().first().copied());
+                if us.is_some() && us == lowest {
+                    crate::logf!("MOLECULE: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
+                    self.mint_molecule_era(gid, None);
                 }
-                None => self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached),
+            } else if is_bond || self.contacts.get(ci).is_some_and(|c| c.is_sibling) {
+                // A BOND (a sibling's chains included) ratchets itself (era.rs).
+                self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached);
+            } else if us.is_some_and(|us| self.contacts.get(ci).is_some_and(|c| us < c.handle_hash)) {
+                // A two-member CONVERSATION's next era is minted and delivered over the bond (docs/conversations.md §0) — by the lower party, so the two sides never race.
+                self.mint_pair_era(fid, "cadence");
             }
         }
         if let Some((snapshot, req)) = ack_enqueue {
@@ -2260,6 +2272,9 @@ impl PhotonApp {
         }
         if let Some(idx) = fork_sibling_reset {
             self.initiate_sibling_chain_reset(idx);
+        }
+        if let Some(conv) = fork_conversation {
+            self.redeliver_pair_era(conv, "garbage decrypts");
         }
         if let Some(idx) = fork_friend_rekey {
             self.initiate_friend_rekey(idx);
@@ -2397,6 +2412,8 @@ impl PhotonApp {
             if !adopted {
                 continue;
             }
+            // A replicated BOND (docs/conversations.md §7) completes the friend's ceremony on this device too, but never names their conversation: friendship_id stays the conversation's.
+            let adopted_bond = self.friendship_chains.iter().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.bond);
             // WIRE THE CONTACT AT THE CHAINS (per-device lanes): the adopt used to leave contact.friendship_id unset on every non-owner device — the chains sat adopted in RAM while chain_transmit bailed at "no friendship chain" and boot never re-loaded them (the vault load walks contact-referenced fids only). With the id wired and persisted, this device is transmit-capable on its own lane from the first replicated frame.
             if let Some(our_pid) = self
                 .session
@@ -2414,7 +2431,7 @@ impl PhotonApp {
                         .iter_mut()
                         .find(|c| !c.is_sibling && c.handle_hash == other)
                     {
-                        if c.friendship_id.is_none() {
+                        if c.friendship_id.is_none() && !adopted_bond {
                             c.friendship_id = Some(fid);
                             crate::logf!("CHAIN-SYNC: wired {} to its replicated chains — this device transmits on its own lane now", crate::fp(&c.handle_proof).as_str());
                             if let Some(storage) = self.storage.as_ref() {
@@ -2450,7 +2467,9 @@ impl PhotonApp {
                 let round_open = contact.clutch_state != crate::types::ClutchState::Complete
                     && (contact.clutch_our_keypairs.is_some() || contact.clutch_keygen_in_progress || contact.ceremony_id.is_some() || contact.clutch_offer_sent || !contact.clutch_slots.is_empty() || contact.era_prior_claim.is_some());
                 if round_open && !era_moved {
-                    contact.friendship_id = Some(fid);
+                    if !adopted_bond {
+                        contact.friendship_id = Some(fid);
+                    }
                     crate::logf!(
                         "CHAIN-SYNC: caught up chain for {} — a re-key round is open here and the era did not move; the round stays Pending so its completion lands",
                         crate::fp(&self.contacts[ci].handle_proof)
@@ -2464,9 +2483,11 @@ impl PhotonApp {
                     );
                     contact.discard_clutch_round();
                 }
-                let newly_enabled = contact.friendship_id != Some(fid)
+                let newly_enabled = (!adopted_bond && contact.friendship_id != Some(fid))
                     || contact.clutch_state != crate::types::ClutchState::Complete;
-                contact.friendship_id = Some(fid);
+                if !adopted_bond {
+                    contact.friendship_id = Some(fid);
+                }
                 if newly_enabled {
                     contact.clutch_state = crate::types::ClutchState::Complete;
                     contact.chain_woven = true;

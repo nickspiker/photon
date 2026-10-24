@@ -485,20 +485,25 @@ impl FriendshipChains {
 
     /// A ceremony WITH THE PRIOR WOVEN IN (stage 4, plan §2 heavy path): the birth root and history key are computed exactly as for a fresh ceremony, then folded thru `derive_era_keys` with the prior era's root and history key (`fresh` = birth_root ‖ birth_hk, `transcript` = the ceremony id). The result inherits the prior's lineage at index+1, so sibling replication orders it by index and a departed device holding the old era — and even the whole ceremony transcript — cannot derive it without the fresh eggs. `None` = a fresh channel: era 0 of a new lineage.
     pub fn from_clutch_woven(participants: &[[u8; 32]], eggs: &[[u8; 32]], prior: Option<&EraPrior>, braid: u8) -> Self {
-        use crate::crypto::clutch::{
-            avalanche_expand_eggs, derive_chain_from_avalanche, derive_conversation_token,
-            ClutchEggs,
-        };
+        let mut sorted = participants.to_vec();
+        sorted.sort();
+        Self::from_clutch_woven_as(FriendshipId::derive(&sorted), crate::crypto::clutch::derive_conversation_token(&sorted), participants, eggs, prior, braid)
+    }
+
+    /// A friend ceremony's output is the pair's BOND (docs/conversations.md §7): the same derivation as [`Self::from_clutch_woven`], born under the bond's id and token (so its lane root, history key and every era it weaves are bound to the bond), flagged a bond. The pair's conversations are keyed separately, by a mint delivered over this bond.
+    pub fn bond_from_clutch_woven(bond: BondId, participants: &[[u8; 32]], eggs: &[[u8; 32]], prior: Option<&EraPrior>, braid: u8) -> Self {
+        let mut chains = Self::from_clutch_woven_as(FriendshipId::from_bytes(bond.0), bond.token(), participants, eggs, prior, braid);
+        chains.bond = true;
+        chains
+    }
+
+    /// The ceremony derivation under an explicit id and token: the id is bound into the lane root, the history key and every woven era.
+    fn from_clutch_woven_as(friendship_id: FriendshipId, conversation_token: [u8; 32], participants: &[[u8; 32]], eggs: &[[u8; 32]], prior: Option<&EraPrior>, braid: u8) -> Self {
+        use crate::crypto::clutch::{avalanche_expand_eggs, derive_chain_from_avalanche, ClutchEggs};
 
         // Sort participants for canonical ordering
         let mut sorted_participants = participants.to_vec();
         sorted_participants.sort();
-
-        // Derive friendship ID
-        let friendship_id = FriendshipId::derive(&sorted_participants);
-
-        // Derive conversation token (privacy-preserving wire identifier)
-        let conversation_token = derive_conversation_token(&sorted_participants);
 
         // Step 1: Expand eggs to 2MB (memory-hard, no compression)
         let eggs_struct = ClutchEggs {

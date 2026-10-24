@@ -659,6 +659,8 @@ pub enum MoleculeSignal {
     Records,
     /// The invitee's DECLINE ("Not now"), back over the friendship braid: the group id in `gpl`. The sponsor treats it as an UNDO (Nick 2026-10-24: "like I never sent it") — it forgets the invite and deletes its offer row for everyone, which also clears the invite from every device of the invitee's.
     Decline,
+    /// A conversation ERA delivered over a BOND (docs/conversations.md §0, §7): the conversation's id, era and secret in typed fields (`EraDeliveryWire`), carried by the bond's own encryption — the one way a conversation of any size gets its keys, from its founding era to every mint after.
+    Deliver,
 }
 
 /// Mint a member record for a JOIN (§4: consent IS this record, posted into the group as the joiner's first frame) or a re-grant (name/avatar change re-signs at a newer stamp — newest-wins in the merge).

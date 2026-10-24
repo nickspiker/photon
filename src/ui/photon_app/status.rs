@@ -399,6 +399,8 @@ impl PhotonApp {
 
         // Friendships whose send lane the wedge heal rotated this pass — persisted and row-flushed after the drain loop, where &mut self is available again.
         let mut rotated_flush: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+        // ACKs that landed on a BOND (docs/conversations.md §0): the minter's cutover edge for a conversation era it delivered — run after the drain, where &mut self is free.
+        let mut bond_acks_after: Vec<(crate::types::friendship::FriendshipId, i64)> = Vec::new();
         // Sender-side re-serve jobs (Nick's go, 2026-08-20): (contact idx, rows as (eagle_time, content, reference)) collected during the drain — chain_transmit needs &mut self, so execution waits for the checker borrow to release, same as rotated_flush.
         let mut reserve_jobs: Vec<(
             usize,
@@ -1655,6 +1657,9 @@ impl PhotonApp {
 
                         // Process ACK: advance our chain and remove pending message
                         if chains.process_ack(acked_eagle_time, &plaintext_hash) {
+                            if chains.bond {
+                                bond_acks_after.push((ack_fid, acked_eagle_time));
+                            }
                             crate::logf!(
                                 "CHAT: Chain advanced for {} (ACK verified)",
                                 crate::fp(&from_handle_hash)
@@ -1904,7 +1909,8 @@ impl PhotonApp {
                     match payload.prior {
                         None => self.contacts[matched_ci].era_prior_claim = None,
                         Some((tag, idx)) => {
-                            let held = self.contacts[matched_ci].friendship_id.and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f).map(|(_, ch)| ch));
+                            // The era a claim names is the BOND's (docs/conversations.md §7).
+                            let held = self.bond_chains_id(&self.contacts[matched_ci]).and_then(|f| self.friendship_chains.iter().find(|(id, _)| *id == f).map(|(_, ch)| ch));
                             let verdict: Result<(), &str> = match held {
                                 Some(ch) if ch.era_tag() == Some(tag) && ch.era_index == idx => Ok(()),
                                 Some(ch) if ch.retired_era().is_some_and(|r| r.tag == tag) => Err("behind"),
@@ -1929,7 +1935,7 @@ impl PhotonApp {
                                 Err(why) => {
                                     crate::logf!("ERA: {} offers a weave from era#{} ({:08x}) — {}; offer not answered", crate::fp(&self.contacts[matched_ci].handle_proof), idx, tag, match why { "behind" => "that is our RETIRED era, the peer is behind (its pong shows it)", "unknown" => "an era we do not hold — asking the fleet", _ => "we hold no era for this friendship" });
                                     if why == "unknown" {
-                                        if let Some(f) = self.contacts[matched_ci].friendship_id {
+                                        if let Some(f) = self.bond_chains_id(&self.contacts[matched_ci]) {
                                             era_triggers_after.push((f, super::era::RepairTrigger::StaleEraObserved { peer_index: idx, peer_tag: tag }));
                                         }
                                     }
@@ -5258,6 +5264,9 @@ impl PhotonApp {
         }
 
         // Rotated-lane flush (after releasing the checker borrow): persist the rotation — a crash before the write just re-detects and re-rotates, the wedge evidence is durable on the peer — then re-serve every undelivered row thru the normal send path on the fresh lane. chain_transmit rebuilds fresh frames at the rows' ORIGINAL eagle_times; the in-flight window paces the burst and the ACK edges keep flushing the rest.
+        for (bond, acked) in bond_acks_after {
+            self.on_bond_ack(bond, acked);
+        }
         for fid in rotated_flush {
             self.persist_chains_async(&fid);
             if let Some(ci) = self
@@ -5400,7 +5409,8 @@ impl PhotonApp {
             self.recompute_ceremony_owners("presence verdict");
         }
         for (fid, trigger) in era_triggers_after {
-            if let Some(ci) = self.contacts.iter().position(|c| c.friendship_id == Some(fid) && !c.is_sibling) {
+            // Era observations name a BOND (docs/conversations.md §7) — a conversation record's era is a mint's business, never the ratchet's.
+            if let Some(ci) = self.contacts.iter().position(|c| !c.is_sibling && self.bond_chains_id(c) == Some(fid)) {
                 self.repair_dispatch(ci, trigger);
             }
         }

@@ -97,6 +97,7 @@ impl RowControl {
                     MoleculeSignal::Wrap => 3,
                     MoleculeSignal::Records => 4,
                     MoleculeSignal::Decline => 5,
+                    MoleculeSignal::Deliver => 6,
                 };
                 ControlSlots { kind: CTL_MOLECULE, sub, ..Default::default() }
             }
@@ -138,6 +139,7 @@ impl RowControl {
                     3 => MoleculeSignal::Wrap,
                     4 => MoleculeSignal::Records,
                     5 => MoleculeSignal::Decline,
+                    6 => MoleculeSignal::Deliver,
                     _ => return None,
                 };
                 Some(RowControl::Molecule(m))
@@ -433,6 +435,7 @@ mod tests {
             RowControl::Molecule(MoleculeSignal::Wrap),
             RowControl::Molecule(MoleculeSignal::Records),
             RowControl::Molecule(MoleculeSignal::Decline),
+            RowControl::Molecule(MoleculeSignal::Deliver),
         ]
     }
 

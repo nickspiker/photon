@@ -226,7 +226,8 @@ impl PhotonApp {
     /// Build the input, decide, log one line, and act on the verdicts built so far. The rest log their intent and nothing else — never a destructive fallback.
     pub(super) fn repair_dispatch(&mut self, ci: usize, trigger: RepairTrigger) {
         let Some(contact) = self.contacts.get(ci) else { return };
-        let Some(fid) = contact.friendship_id else { return };
+        // The era machinery runs on the BOND (docs/conversations.md §7); a conversation's eras are minted and delivered over bonds.
+        let Some(fid) = self.bond_chains_id(contact) else { return };
         let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) else { return };
         let classify = |peer_index: u64, peer_tag: u32| classify_peer_era(
             chains.era_index,
@@ -320,7 +321,7 @@ impl PhotonApp {
             crate::logf!("ERA: {} ratchet already in flight ({}) — waiting for the Resp", fp, format!("{e:?}"));
             return false;
         }
-        let Some(fid) = contact.friendship_id else { return false };
+        let Some(fid) = self.bond_chains_id(contact) else { return false };
         let Some(our_pid) = self.our_party_id(contact) else { return false };
         let Some((_, chains)) = self.friendship_chains.iter().find(|(id, _)| *id == fid) else { return false };
         let Some(tag) = chains.era_tag() else { return false };
@@ -333,7 +334,7 @@ impl PhotonApp {
         let ts = vsf::eagle_time_oscillations();
         if !initiator {
             let ctl = crate::types::RowControl::Era(EraSignal::Nudge { prior_tag: tag });
-            let sent = self.chain_transmit_with(ci, "", ts, None, None, None, None, Some(&ctl));
+            let sent = self.bond_transmit_with(ci, ts, None, None, &ctl);
             crate::logf!("ERA: {} is the initiating identity — Nudge {} from era#{} ({:08x})", fp, if sent { "sent" } else { "NOT sent" }, era_next - 1, tag);
             return sent;
         }
@@ -344,7 +345,7 @@ impl PhotonApp {
         let bytes = wire.mlkem.len() + wire.x25519.len() + wire.hqc.len();
         let nonce_s = hex::encode(&eph.nonce[..4]);
         self.contacts[ci].era_ephemeral = Some(eph);
-        let sent = self.chain_transmit_with(ci, "", ts, None, None, Some(&wire), None, Some(&ctl));
+        let sent = self.bond_transmit_with(ci, ts, Some(&wire), None, &ctl);
         if sent {
             crate::logf!("ERA: {} era#{} → era#{} Init sent on {:08x} (nonce {}…, {} B of public keys) — chatting on the current era until the Resp lands", fp, era_next - 1, era_next, tag, nonce_s, bytes);
         } else {
@@ -358,7 +359,8 @@ impl PhotonApp {
     pub(super) fn on_era_signal(&mut self, ci: usize, sig: EraSignal, kem: Option<EraKemWire>, ts: i64) {
         let Some(contact) = self.contacts.get(ci) else { return };
         let fp = crate::fp(&contact.handle_proof);
-        let Some(fid) = contact.friendship_id else { return };
+        // The era machinery runs on the BOND (docs/conversations.md §7); a conversation's eras are minted and delivered over bonds.
+        let Some(fid) = self.bond_chains_id(contact) else { return };
         let Some(pos) = self.friendship_chains.iter().position(|(id, _)| *id == fid) else { return };
         match sig {
             EraSignal::Init { era_next, nonce, prior_tag, kem_set } => {
@@ -371,7 +373,7 @@ impl PhotonApp {
                     if n == nonce {
                         let ctl = crate::types::RowControl::Era(EraSignal::Resp { era_next, nonce, prior_tag });
                         let resp_ts = self.friendship_chains[pos].1.pending_era().and_then(|p| p.resp_osc).unwrap_or_else(vsf::eagle_time_oscillations);
-                        let sent = self.chain_transmit_with(ci, "", resp_ts, None, None, Some(&cached), None, Some(&ctl));
+                        let sent = self.bond_transmit_with(ci, resp_ts, Some(&cached), None, &ctl);
                         crate::logf!("ERA: {} duplicate Init (nonce {}…) — cached Resp {}", fp, hex::encode(&nonce[..4]), if sent { "re-sent" } else { "not re-sent (in flight or window full)" });
                         return;
                     }
@@ -426,7 +428,7 @@ impl PhotonApp {
                 self.persist_chains_async(&fid);
                 self.contacts[ci].era_resp_cache = Some((nonce, resp.clone()));
                 let ctl = crate::types::RowControl::Era(EraSignal::Resp { era_next, nonce, prior_tag });
-                let sent = self.chain_transmit_with(ci, "", resp_ts, None, None, Some(&resp), None, Some(&ctl));
+                let sent = self.bond_transmit_with(ci, resp_ts, Some(&resp), None, &ctl);
                 crate::logf!(
                     "ERA: {} era#{} → era#{} Resp {} — {:08x} installed PENDING{}; cut over on its ACK or the peer's first tagged frame",
                     fp,
@@ -566,9 +568,10 @@ impl PhotonApp {
         self.chain_pull_misses.remove(&token);
         self.era_pull_sent.remove(&token);
         crate::logf!("ERA: every live sibling answered the era_pull with a miss — no era newer than #{} in the fleet", held);
+        // The token names a friend's BOND — the chains the era machinery runs on (docs/conversations.md §7).
         let ci = self.contacts.iter().position(|c| {
             !c.is_sibling
-                && c.friendship_id.is_some_and(|fid| self.friendship_chains.iter().any(|(id, ch)| *id == fid && ch.conversation_token == token))
+                && self.bond_chains_id(c).is_some_and(|fid| self.friendship_chains.iter().any(|(id, ch)| *id == fid && ch.conversation_token == token))
         });
         if let Some(ci) = ci {
             self.repair_dispatch(ci, RepairTrigger::FleetAllMissed);

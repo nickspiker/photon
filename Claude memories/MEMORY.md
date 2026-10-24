@@ -31,6 +31,7 @@
 - [feedback_numbers_binary_at_rest.md](feedback_numbers_binary_at_rest.md) — numbers binary at rest (wire/vault/log); display Arabic mostly, dozenal = the app's Base setting (DMS)
 - [feedback_sed_address_guard.md](feedback_sed_address_guard.md) — verify grep-derived line numbers non-empty before sed address ops
 - [Perl UTF-8 trap](feedback_perl_utf8_trap.md) — perl \x{..} without -CSD double-encodes the whole file; grep diffs for mojibake
+- [Perl pipe delimiter](feedback_perl_pipe_delimiter.md) — never s|..|..| when the pattern holds a closure; Edit tool or s{}{}
 - [pgrep self-match](feedback_pgrep_self_match.md) — pgrep/pkill -f matches your own bash -c; use exact pids + kill -0
 - [feedback_fgtw_deploy_freely.md](feedback_fgtw_deploy_freely.md) — deploy fgtw.org + toka.wasm freely, no confirmation
 - [feedback_terminal_clipboard.md](feedback_terminal_clipboard.md) — spaces around `=` in dev logs

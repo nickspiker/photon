@@ -34,6 +34,7 @@ impl PhotonApp {
             (MoleculeSignal::Wrap, true) => self.install_molecule_wrap(cp, wire, kem),
             (MoleculeSignal::Records, true) => self.merge_molecule_records(ci, cp, blob),
             (MoleculeSignal::Decline, false) => self.on_decline(ci, blob),
+            (MoleculeSignal::Deliver, false) => self.on_era_delivery(ci, wire),
             (other, _) => {
                 let sender = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
                 crate::logf!("MOLECULE: {} row from {} landed {} a group conversation — ignored", format!("{other:?}"), sender, if in_group { "inside" } else { "outside" });
@@ -144,7 +145,7 @@ impl PhotonApp {
                 return false;
             }
         };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None, deliver: None };
         let ts = vsf::eagle_time_oscillations();
         let sent = self.bond_transmit_with(ci, ts, None, Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Join));
         if sent {
@@ -268,7 +269,7 @@ impl PhotonApp {
             return false;
         };
         let wrap = crate::network::message_package::BondWrapWire { recipient_device: bundle.device, bundle_id: bundle.pubkeys().bundle_id(), era, era_lineage: lineage, nonce, sealed };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: Some(wrap) };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: Some(wrap), deliver: None };
         let ts = vsf::eagle_time_oscillations();
         let sent = self.bond_transmit_with(ci, ts, Some(&cts), Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Wrap));
         crate::logf!("MOLECULE: wrap (era {}) for device {} {} over the friendship", era, hex::encode(&bundle.device[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" });
@@ -637,7 +638,7 @@ impl PhotonApp {
                 }
             }
         };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(blob), wrap: None, deliver: None };
         let ts = crate::network::time_base::stamp_osc();
         // The offer rides the BOND (docs/conversations.md §7): its row lands in the bond's hidden conversation first, then goes on the wire — nothing lands in any chat; the invitee sees it as an invitation row.
         let invitee = self.contacts[ci].handle_hash;
@@ -666,7 +667,7 @@ impl PhotonApp {
         let Some(our_pid) = self.our_party_id(&self.contacts[ci]) else {
             return false;
         };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(gid.0.to_vec()), wrap: None };
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: Some(gid.0.to_vec()), wrap: None, deliver: None };
         let ts = crate::network::time_base::stamp_osc();
         let sent = self.send_bond_row(ci, crate::types::RowControl::Molecule(MoleculeSignal::Decline), Some(&wire), ts);
         crate::logf!("MOLECULE: declined {} — {} {}", hex::encode(&gid.0[..4]), if sent { "the undo sent to" } else { "the undo NOT sent (the next edge retries) to" }, crate::fp(&self.contacts[ci].handle_proof));
@@ -955,7 +956,7 @@ impl PhotonApp {
                     (String::new(), ts, None, Some(control))
                 }
             };
-            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: post.blob.clone(), wrap: post.wrap.clone() };
+            let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: post.blob.clone(), wrap: post.wrap.clone(), deliver: None };
             if self.molecule_transmit(gid, &text, ts, reference, post.kem.as_ref(), Some(&wire), control.as_ref()) {
                 sent_any = true;
                 if post.text.is_none() {

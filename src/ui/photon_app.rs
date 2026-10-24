@@ -1715,6 +1715,10 @@ pub struct PhotonApp {
     molecule_parked: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)>,
     /// (chains registry size, contact count) at the last bond check — `ensure_bonds` runs on the edge either moves.
     bonds_checked: (usize, usize),
+    /// Conversation eras we delivered over a bond and await the ACK of: (bond chains id, the Deliver row's eagle time, the conversation) — the first ACK is the minter's cutover edge (docs/conversations.md §0).
+    deliveries_in_flight: Vec<(crate::types::FriendshipId, i64, crate::types::FriendshipId)>,
+    /// Who minted each conversation's pending era — two members minting the same index converge on the LOWER party's.
+    pending_minter: std::collections::HashMap<crate::types::FriendshipId, [u8; 32]>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
     pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -2858,6 +2862,8 @@ impl PhotonApp {
             molecule_peers: Vec::new(),
             molecule_parked: Vec::new(),
             bonds_checked: (0, 0),
+            deliveries_in_flight: Vec::new(),
+            pending_minter: std::collections::HashMap::new(),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,

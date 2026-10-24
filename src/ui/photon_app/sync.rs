@@ -1124,10 +1124,11 @@ impl PhotonApp {
     pub(super) fn contact_idx_for_conversation_token(&self, token: &[u8; 32]) -> Option<usize> {
         let our_pid =
             crate::crypto::clutch::identity_party_id(&self.session.as_ref()?.identity_seed);
+        // The pair's conversation token, or its BOND's (docs/conversations.md §7) — both name exactly one friend.
         self.contacts.iter().position(|c| {
             !c.is_sibling
-                && crate::crypto::clutch::derive_conversation_token(&[our_pid, c.handle_hash])
-                    == *token
+                && (crate::crypto::clutch::derive_conversation_token(&[our_pid, c.handle_hash]) == *token
+                    || c.bond_id(&our_pid).is_some_and(|b| b.token() == *token))
         })
     }
 
@@ -1143,7 +1144,11 @@ impl PhotonApp {
         let them = self.contacts[ci].handle_hash;
         let id = self.contacts[ci].id.clone();
         self.contacts[ci].discard_clutch_round();
-        self.contacts[ci].friendship_id = None;
+        // A friend's re-key is the BOND's (docs/conversations.md §7): a conversation whose keys we hold stays named.
+        let keep_conversation = !self.contacts[ci].is_sibling && self.contacts[ci].friendship_id.is_some_and(|f| self.friendship_chains.iter().any(|(id, _)| *id == f));
+        if !keep_conversation {
+            self.contacts[ci].friendship_id = None;
+        }
         self.contacts[ci].init_clutch_slots(us);
         self.contacts[ci].clutch_keygen_in_progress = true;
         let progress = self.spawn_clutch_keygen(id, us, them);
