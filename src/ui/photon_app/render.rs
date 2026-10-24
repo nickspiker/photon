@@ -312,7 +312,7 @@ impl PhotonApp {
                 self.ready_filter = ReadyFilter::All;
             }
             let rf = self.ready_filter;
-            let show_friends = matches!(rf, ReadyFilter::All | ReadyFilter::Friends);
+            let show_friends = rf == ReadyFilter::All;
             // The strip's height as last measured (wrapped pills push the first row down), one row until first drawn.
             let strip_h: isize = if self.ready_strip_h > 0.0 { self.ready_strip_h.ceil() as isize } else { row_h };
             let block_h: isize = strip_h
@@ -332,7 +332,7 @@ impl PhotonApp {
                     .molecule_rosters
                     .iter()
                     .enumerate()
-                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
+                    .filter(|(_, (g, r))| !self.molecule_is_left(g) && rf == ReadyFilter::All && (filter.is_empty() || self.atom_naming || r.display_title().to_lowercase().contains(&filter)))
                     .map(|(gi, _)| contact_row_height(row_h, lines_by_gi[gi].len()))
                     .sum::<isize>();
             self.contact_row_lines = lines_by_ci;
@@ -2050,7 +2050,7 @@ impl PhotonApp {
             // NEW ATOM mode: the box holds a title, not a search — the list stays whole.
             let filter = if self.atom_naming { String::new() } else { filter };
             let rf = self.ready_filter;
-            let show_friends = matches!(rf, ReadyFilter::All | ReadyFilter::Friends);
+            let show_friends = rf == ReadyFilter::All;
             let mut matching: Vec<ReadyRow> = self
                 .contacts
                 .iter()
@@ -2068,7 +2068,7 @@ impl PhotonApp {
                         .iter()
                         .enumerate()
                         // A molecule we LEFT is off the list (its records stay on disk, read-only). Read the field, not the method: the chrome borrow is live here.
-                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && ready_filter_admits(rf, r.standing().len()) && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
+                        .filter(|(_, (g, r))| !self.molecule_locals.iter().any(|(lg, l)| lg == g && l.phase == crate::storage::molecule::MoleculePhase::Left) && rf == ReadyFilter::All && (filter.is_empty() || r.display_title().to_lowercase().contains(&filter)))
                         .map(|(gi, _)| ReadyRow::Group(gi)),
                 )
                 .collect();
@@ -2121,22 +2121,22 @@ impl PhotonApp {
             // +1 on top of the proportional thickness so the presence/online ring keeps a visible annulus at small avatar sizes (where `avatar_r * 0.0375` floors at the 1px min and the ring all but vanishes). One extra pixel is imperceptible on large avatars, load-bearing on tiny ones.
             let ring_thickness = super::ring_thickness(avatar_r);
             // Handle names render in each contact's relationship colour (spaghettify per visible row is microseconds; revisit with a cache if contact lists ever get huge). `our_handle_hash` is bound above the sort — one derivation for the ordering and the rows.
-            // THE FILTER STRIP (docs/molecules.md §10.5): All · Friends · Atoms · Molecules, then New atom — a pseudo-row at the top of the block that scrolls with it.
+            // THE FILTER STRIP (docs/conversations.md D2): All, New atom, and Invitations while any wait — a pseudo-row at the top of the block that scrolls with it.
             let strip_now: isize = {
                 let strip_top = rows.y0 as f32 - scroll as f32;
                 let strip = fluor::region::Region::new(rows.x0 as f32, strip_top + row_h as f32 * 0.1, (rows.x1 - rows.x0) as f32, row_h as f32 * 0.8);
-                // INVITATIONS (slot 5, after New atom so the old slots keep their ids): drawn only while an offer waits on us, with its count.
+                // Each pill carries its hit slot: 0 All, 1 New atom, 2 Invitations (drawn only while an offer waits on us, with its count).
                 let open_invites = self.bond_offers.iter().filter(|o| !o.accepted).count();
-                let mut labels: Vec<std::borrow::Cow<'static, str>> = vec![tr(Msg::FilterAll), tr(Msg::FilterFriends), tr(Msg::FilterAtoms), tr(Msg::FilterMolecules), tr(Msg::NewAtom)];
+                let mut labels: Vec<(std::borrow::Cow<'static, str>, HitId)> = vec![(tr(Msg::FilterAll), 0), (tr(Msg::NewAtom), 1)];
                 if open_invites > 0 {
-                    labels.push(format!("{} \u{00b7} {}", tr(Msg::FilterInvitations), open_invites).into());
+                    labels.push((format!("{} \u{00b7} {}", tr(Msg::FilterInvitations), open_invites).into(), 2));
                 }
-                let chosen = |i: usize| match (i, self.ready_filter) {
-                    (0, ReadyFilter::All) | (1, ReadyFilter::Friends) | (2, ReadyFilter::Atoms) | (3, ReadyFilter::Molecules) | (5, ReadyFilter::Invitations) => Some(*theme::PILL_GREEN),
-                    (4, _) if self.atom_naming => Some(*theme::PILL_GREEN),
+                let chosen = |slot: HitId| match (slot, self.ready_filter) {
+                    (0, ReadyFilter::All) | (2, ReadyFilter::Invitations) => Some(*theme::PILL_GREEN),
+                    (1, _) if self.atom_naming => Some(*theme::PILL_GREEN),
                     _ => None,
                 };
-                let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().enumerate().map(|(i, l)| (l.as_ref(), (self.ready_filter_base + i as HitId), true, chosen(i))).collect();
+                let pills: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = labels.iter().map(|(l, slot)| (l.as_ref(), (self.ready_filter_base + *slot), true, chosen(*slot))).collect();
                 let mut flow = Flow::new(fluor::region::Region::new(strip.x, strip.y + scroll as f32, strip.w, strip.h * 4.0), scroll as f32);
                 flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, text_size * 0.8, &pills, "Oxanium");
                 // Measure: the wrapped strip's real height (plus the row's top/bottom margin) drives the next frame's row offset and extent.
@@ -7725,17 +7725,6 @@ fn rows_n(r: fluor::region::Region, n: usize) -> Vec<fluor::region::Region> {
     let n = n.max(1); // WHY/PROOF: the region is divided into n rows, and a page with no rows asks for zero
     let band_h = r.h / n as f32;
     (0..n).map(|i| fluor::region::Region::new(r.x, r.y + band_h * i as f32, r.w, if i + 1 == n { r.bottom() - (r.y + band_h * i as f32) } else { band_h })).collect()
-}
-
-/// Does the Ready filter admit a molecule row with `standing` members? An atom is a molecule of one (docs/molecules.md §0).
-fn ready_filter_admits(f: ReadyFilter, standing: usize) -> bool {
-    match f {
-        ReadyFilter::All => true,
-        ReadyFilter::Friends => false,
-        ReadyFilter::Atoms => standing <= 1,
-        ReadyFilter::Molecules => standing > 1,
-        ReadyFilter::Invitations => false,
-    }
 }
 
 /// One entry of the Ready list (docs/molecules.md §10.5): a contact row or a group row, in ONE sorted list.

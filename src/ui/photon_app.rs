@@ -1028,14 +1028,11 @@ pub(crate) enum VaultFilter {
     Kept,
 }
 
-/// The Ready list filter (docs/molecules.md §10.5): friendships, atoms and molecules are three distinct things on one screen.
+/// The Ready list filter (docs/conversations.md D2): every conversation is one kind at any size, so the only narrowing is to the invitations waiting on us.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) enum ReadyFilter {
     #[default]
     All,
-    Friends,
-    Atoms,
-    Molecules,
     /// Group invitations waiting on us (Nick 2026-10-24): the friends whose offer is parked and unanswered — the pill shows only while there are any.
     Invitations,
 }
@@ -2207,7 +2204,7 @@ pub struct PhotonApp {
     molecule_panel_btn_base: HitId,
     /// Leave is a two-tap (the Boot pattern): first arms, the next fires.
     molecule_leave_armed: bool,
-    /// The Ready list's filter strip (docs/molecules.md §10.5): everything, friends, atoms, molecules. Hit ids [ready_filter_base, +5): 0..=3 the filters, 4 = New atom.
+    /// The Ready list's filter strip (docs/conversations.md D2). Hit ids [ready_filter_base, +3): 0 = All, 1 = New atom, 2 = Invitations.
     ready_filter: ReadyFilter,
     ready_filter_base: HitId,
     /// NEW ATOM mode on the Ready screen: the search box is the title box, the plus founds the atom instead of searching a handle.

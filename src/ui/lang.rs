@@ -558,9 +558,6 @@ pub enum Msg<'a> {
     /// The Manage page pill that opens the bind picker (atoms and molecules we stand in).
     BindIntoMolecule,
     /// The Ready list's filter strip (FilterAll is the stream filter's, shared).
-    FilterFriends,
-    FilterAtoms,
-    FilterMolecules,
     /// The Ready strip pill for group invitations waiting on us (a count follows it).
     FilterInvitations,
     /// The sponsor's line under an atom or molecule row: the friends invited who have not joined yet.

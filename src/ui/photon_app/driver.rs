@@ -372,7 +372,7 @@ impl FluorApp for PhotonApp {
         self.molecule_panel_btn_base = self.hit_counter;
         reserve_hits(&mut self.hit_counter, 40); // 8 pills + 32 Add-page contact rows
         self.ready_filter_base = self.hit_counter;
-        reserve_hits(&mut self.hit_counter, 6); // All / Friends / Atoms / Molecules / New atom / Invitations
+        reserve_hits(&mut self.hit_counter, 3); // All / New atom / Invitations
         // Wave controls (docs/waves.md) — retained Buttons with placeholder geometry; real rect/label/font-size land each frame in the render overlay block (phase-dependent). Registered cross-screen in `visit_app_widgets`, so hover/press/dispatch ride the same walk as every other Button. Construction order fixes the contiguous-id contract: status / start / action / decline. "Open Sans" matches the old hand-rolled pills' face.
         self.wave_status_btn = Some(Button::new(&mut self.hit_counter, 0., 0., 1., 1., 12., ""));
         self.wave_start_btn = Some(Button::new(
@@ -1506,19 +1506,16 @@ impl FluorApp for PhotonApp {
             return EventResponse::Handled;
         }
 
-        // Ready filter strip (docs/molecules.md §10.5): All / Friends / Atoms / Molecules, and New atom.
+        // Ready filter strip (docs/conversations.md D2): All, New atom, and Invitations while any wait — every conversation is one kind, so there is no size filter.
         if matches!(self.state, AppState::Ready)
             && self.ready_filter_base != HIT_NONE
             && hit_id >= self.ready_filter_base
-            && hit_id < (self.ready_filter_base + 6)
+            && hit_id < (self.ready_filter_base + 3)
         {
             let k = hit_id - self.ready_filter_base;
             match k {
                 0 => self.ready_filter = super::ReadyFilter::All,
-                1 => self.ready_filter = super::ReadyFilter::Friends,
-                2 => self.ready_filter = super::ReadyFilter::Atoms,
-                3 => self.ready_filter = super::ReadyFilter::Molecules,
-                5 => self.ready_filter = super::ReadyFilter::Invitations,
+                2 => self.ready_filter = super::ReadyFilter::Invitations,
                 _ => {
                     // NEW ATOM: the search box becomes the title box; the plus (or Enter) founds it. Tapping again cancels.
                     self.atom_naming = !self.atom_naming;
