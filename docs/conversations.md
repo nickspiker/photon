@@ -2,18 +2,34 @@
 
 Status: PLAN (2026-10-24). Phase 0 BUILT; Phase 1 next. Owner rule (HARD): a conversation of any size — you alone, you and one other, you and N — is treated identically: one model, one ceremony, one UI. Today's friendship/molecule split is debt being converged, never design.
 
-## 0. The honest restatement of "CLUTCH for any size"
+## 0. One ceremony at any size — the key rides the bonds (distilled 2026-10-24, Nick + Claude)
 
-CLUTCH as built is strictly pairwise: `collect_clutch_eggs` (src/crypto/clutch.rs) sorts exactly two device keys and two party ids, and its identity binding is one DH between two identity keys. A literal N-party 12-primitive CLUTCH (docs/clutch.md §4.1–4.3) is O(N²) in 550 KB offers and KEM ciphertexts, needs every member online until all slots fill, reruns on every membership change, and needs a full identity mesh — docs/molecules.md §1 already rejected it.
+**The insight (Nick):** before any conversation exists, every pair of friends already holds a secure channel — adding a friend runs the full pairwise CLUTCH (mutual consent, identity binding, all 12 primitives, braided per-message forward secrecy). That channel is the BOND. A conversation of any size never needs a key exchange of its own: its key travels over bonds that already exist.
 
-What does scale is what the molecule path already does: a signed ROSTER, an era root MINTED once, WRAPPED to each standing device's KEM bundle — O(devices) per era, asynchronous, no mesh.
+**Why not the documented N-party CLUTCH.** docs/clutch.md §4.1–4.3 has every member encapsulate to every other member — O(N²), everyone online until every slot fills, rerun on every membership change. Its §4.3 seed also does not agree for N ≥ 3: each party hashes only the pairwise secrets IT holds (Alice: A–B, A–C; Bob: A–B, B–C), so the seeds differ. It is superseded by the ceremony below.
 
-So the one model is:
+**Pieces.**
 
-- **Bond** — one per pair of people (and per pair of our own devices: siblings), never listed in the UI. Today's Contact plus the pairwise 12-primitive CLUTCH: mutual consent, identity binding, PQ breadth. It carries only control traffic (offers, joins, wraps, declines, the fleet plane, the bridge).
-- **Conversation** — ONE type for N = 1, 2, or more: a stable id, a signed roster, keys (today's `FriendshipChains`), a local phase, rows. Every conversation is keyed the same way (mint a root, wrap it to each standing device's bundle), and every member past the founders enters through the same JOIN, sponsored over a bond.
+- **Bond** — one per pair of people (siblings: one per pair of our own devices, today's fleet weave). Born when a friend is added (today's consent gate + pairwise CLUTCH), never listed as a conversation, reaches every device of both fleets (per-device lanes). It carries control traffic only: invitations, joins, declines, era deliveries, the fleet plane, the bridge.
+- **Conversation** — ONE type for N = 1, 2, or more: a stable random id, a signed roster, keys (today's `FriendshipChains`), rows. Adding a friend also founds a two-member conversation with them (the "required molecule" — listed, and it grows in place like any other, because the bond under it is separate).
+- **Bond graph of a conversation** — nodes = its standing members, edges = bonds between members. Connected by construction: every member past the founders joined thru a sponsor it is bonded to.
 
-"CLUTCH for any size" = per conversation, one ceremony (mint → offer → join → wrap) whose pairwise core is the sponsor↔joiner bond. The UI shows it as one ladder for every conversation.
+**The ceremony (any N), one per era:**
+
+1. **Mint.** Any standing member mints when the conversation needs a new era (founding, a join, a departure, a device leaving a member's fleet, the row cadence). Ties between simultaneous mints resolve to the lowest sorted (party, device). The next era derives exactly as today: `derive_era_keys(id, era, old_root, old_hk, fresh, transcript)` — everyone holding era e plus `fresh` lands on the same seed, so the lanes init identically ("deterministic same seed").
+2. **Announce.** The minter signs an era record: (conversation id, era index, the sorted standing set it minted for, a commitment to `fresh`). The signature verifies against the minter's fold (Phase 0's resolver).
+3. **Deliver over bonds.** `fresh` (or the era whole, for a joiner who never held e) goes to each member along a spanning tree of the bond graph rooted at the minter: N−1 deliveries, each one small row over an existing braid. A member that receives forwards to its children in the same tree (computed identically by everyone from the sorted roster and the bond edges they can see). Every hop is the full 12-primitive bond; no KEM bundle, no extra key material.
+4. **Check and cut over.** A member verifies the era record's signature, checks the standing set against its own roster (a short set is WITHHELD — the exclusion tripwire, built here for real), derives, and cuts over on the first frame tagged with the new era or its own next send (unchanged).
+
+**Cost.** N = 1: nothing to deliver. N = 2: one delivery over the pair's bond. N members: N−1 deliveries + the forwards along the tree — O(N), asynchronous (an offline member's subtree catches up when it wakes; nobody waits for everyone).
+
+**What this deletes.** KEM bundles in the roster, `wrap_to_bundle`/`unwrap_from_bundle` for conversations, the bundle records and their forgery class (Phase 0's worst case), the 3-KEM conversation set — every conversation key is protected by the full 12-primitive bonds.
+
+**Departure and bridges.** Leaving is self-only (no boot). The next era is delivered only over bonds among the remaining members, so the leaver never receives it; traffic between two remaining members rides their own bond, which the leaver is not an endpoint of. If the leaver was the only bond between two parts of the graph, the parts need a bond: two standing members who are not friends run a MEMBER BOND — the same pairwise CLUTCH, its consent being that both stand in the conversation (one-time, ~550 KB). The era waits for that bond only in the part it reaches.
+
+**Devices.** A bond reaches every device of both fleets, so delivery to a member is delivery to their fleet. A device leaving a member's fleet re-keys that member's bonds (heavy weave, today) and then triggers a conversation mint, which reaches the remaining devices only.
+
+**Open (to settle with Nick).** (a) Contributory entropy: should every member also send a fresh contribution toward the minter (another N−1 hops, but an offline member then blocks the era), or is minter-fresh plus continuity from era e enough? (b) Forwarders see `fresh` — they are members and learn the era anyway, so nothing leaks, but a forwarder can delay or drop: the minter re-delivers directly to any member it is bonded to that has not ACKed.
 
 ## 1. What is already shared
 
@@ -32,13 +48,13 @@ Conversation (any N) { id: ConversationId (stable), roster: Roster, keys: Option
   participants = roster.standing(); token stored in keys as data
   genesis = Derived{parties}  (self-certifying: id == FriendshipId::derive(parties); every party a founder)
           | Minted{founder, nonce, sig}
-  keys born by MINT, delivered by WRAP; eras by MINT/WRAP for every size
-  era triggers: 256-row cadence, standing loss, a device leaving any member's fold, a stranded member (re-wrap whole)
+  keys born by MINT, delivered over BONDS along the member bond graph (§0); eras the same for every size
+  era triggers: 256-row cadence, a join, standing loss, a device leaving any member's fold, a stranded member (re-deliver the era whole)
 ```
 
 Existing data maps without moving a row table: notes → `Derived{[us]}` (same id bytes), friendship → `Derived{[A,B]}` (same id bytes, existing chains inherited), molecule → `Minted` (unchanged). Siblings are bonds, never conversations.
 
-Security properties preserved: mutual consent before key material (no wrap to a party without a Join record or Derived membership); identity binding (every roster record verified against `fold(subject)`); PQ (bonds keep 12 primitives; conversation roots ride ML-KEM-1024 + X25519 + HQC-256 and are always carried inside an already-keyed braid, never bare); forward secrecy (unchanged lanes); continuity (`derive_era_keys`); post-compromise healing (one-shot bundles: zeroize the decaps on unwrap and republish at once, or healing is one era slower than the light ratchet); revocation (fold shrink of any standing member → mint, wrap set = bundles ∩ current folds). Also kept: secrets never ride row text, lanes stamped by era tag, claim-first single completion, wraps name their bundle and are matched before decapsulation (HQC aborts on a foreign key), re-clutch-never-store, and members withhold a mint whose wrap set is short against their own roster.
+Security properties preserved: mutual consent before key material (an era is delivered only to a standing member — a Join record or Derived membership — and only over a bond, which itself needed mutual consent); identity binding (every roster record verified against `fold(subject)`; era records signed by the minter's fold); PQ (every conversation key rides the full 12-primitive bonds — stronger than the 3-KEM bundles it replaces); forward secrecy (bond braids advance per message; conversation lanes unchanged); continuity (`derive_era_keys`); post-compromise healing (a compromised bond heals by its own light ratchet / heavy weave, and the next conversation era rides the healed bond); revocation (fold shrink of any standing member → that member's bonds re-key, then a conversation mint). Also kept: secrets never ride row text, lanes stamped by era tag, claim-first single completion, re-clutch-never-store, and members withhold an era whose standing set is short against their own roster.
 
 ## 4. Phases
 
@@ -50,7 +66,7 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 
 **Phase 2 — one model (types, storage, send/receive/ACK; wire-neutral).** `Conversation` embeds its roster and local state; `molecule: bool` and every gate on it go; `FriendshipChains` → `ConversationKeys` with a persisted token (codec v11); one `send_in_conversation`, one `routes_for_conversation`, one receive attribution (signer → party via folds over the standing set, which also commits never-friended members' frames), one ACK ledger, one retransmit pass, one sibling push keyed on the stored token, history recovery over conversations. One-shot migration at load: friends → `Derived{[us,them]}` keeping table and token; notes → `Derived{[us]}` with the self Contact deleted; molecules unchanged apart from renames; offers → invitations.
 
-**Phase 3 — one key agreement (flag day).** Bond split (`BondId`, bond keys under their own domain; each friend re-CLUTCHes once in the background); every conversation token = `ConversationId::token`; eras by mint/wrap for every size (Init/Resp/Nudge and the heavy weave retire from conversations, bonds keep the heavy weave); any standing device may mint, ties by lowest (party, device); one-shot bundles; new pairs found `Derived{[A,B]}` at bond completion; notes minted at "New atom", the self-handle add path deleted; invitations ride bonds, so invite and Leave work at every size; strand pull + join-by-replay (molecules.md §11) so every conversation weaves.
+**Phase 3 — one key agreement (flag day).** The ceremony of §0. Bond split: `BondId`, bond keys under their own domain, each existing friendship's chains become its bond (re-CLUTCH once in the background only if a clean split needs fresh keys); adding a friend runs the bond CLUTCH and founds the pair's two-member conversation, whose era 0 is delivered over that bond. Every conversation token = `ConversationId::token`. Eras for every size by mint → signed era record → delivery over the member bond graph → check (the short-set tripwire) → cutover; Init/Resp/Nudge and the heavy weave retire from conversations (bonds keep both). Roster KEM bundles, `wrap_to_bundle`/`unwrap_from_bundle` for conversations, and bundle records are deleted. Member bonds for graph bridges. Notes are founded at "New atom"; the self-handle add path is deleted. Invitations, joins and declines ride bonds, so invite and Leave work at every size. Strand pull + join-by-replay (molecules.md §11) so every conversation weaves.
 
 ## 5. Inventory of special cases
 
@@ -62,10 +78,10 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 
 ## 6. Owner decisions
 
-- D1. OPEN (Nick 2026-10-24: "every member runs with every other member, sorted keys, everyone gets a deterministic same seed to init keys, then we cross keys — I swear we got it to O(N)"). No O(N) design is in docs, memory or history. docs/clutch.md §4.1–4.3 is O(N²) (every member encapsulates to every other) and its §4.3 seed derivation does not agree for N ≥ 3: each party hashes ITS OWN pairwise secrets, so Alice hashes A–B and A–C, Bob hashes A–B and B–C, and the seeds differ. Candidate O(N) shape under discussion: the STAR CLUTCH — members sorted, a deterministic leader, every member encapsulates a secret contribution to the leader (N−1), the leader combines them and encapsulates the result back to every member (N−1); N = 2 is today's cost, N = 1 is trivial.
+- D1. PROPOSED, awaiting Nick (2026-10-24): the key rides the bonds (§0) — no per-conversation key exchange, O(N) per era. Open details in §0: contributory entropy, and forwarding vs direct delivery.
 - D2. DECIDED: Ready filters are `All · Invitations`.
 - D3. DECIDED: a person's colour is keyed on the pair (you, them), so it is the same for that friend on your devices in every conversation; on someone else's screen it differs. A conversation row draws its members in their pair colours.
 - D4. Bridge terminal moves to the device page (not yet asked).
 - D5. DECIDED: hold Phase 1 for Phase 3 — the convergence ships together, every capability working at every size on day one. Phases are still built in order.
-- D6. Add Frodo-976 to the conversation KEM set (~15 KB per bundle) for unstructured-lattice diversity (not yet asked; moot if D1 lands on the full CLUTCH primitive set).
+- D6. Moot: with the key riding the 12-primitive bonds there is no separate conversation KEM set.
 - D7. One header format for every size ("title or member names · n") (not yet asked).
