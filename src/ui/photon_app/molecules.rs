@@ -66,6 +66,12 @@ impl PhotonApp {
             crate::logf!("MOLECULE: offer from {} for {} — the sponsor is not standing in its own snapshot; refused", sponsor_fp, hex::encode(&gid.0[..4]));
             return;
         }
+        if snapshot.genesis.as_ref().is_some_and(|g| self.record_signer_verdict(&g.founder, &g.signer_device) == Some(false)) {
+            crate::logf!("MOLECULE: offer from {} for {} — its genesis is signed outside the founder's fold; refused", sponsor_fp, hex::encode(&gid.0[..4]));
+            return;
+        }
+        // Fold every never-friended member now, while the offer waits for its Join, so the snapshot verifies whole the moment it is merged.
+        self.fetch_member_folds(&snapshot);
         if let Some(pos) = self.molecule_rosters.iter().position(|(id, _)| *id == gid) {
             let mut changed = self.merge_snapshot_into(pos, snapshot);
             changed |= self.sync_molecule_conversation(&gid);
@@ -148,7 +154,11 @@ impl PhotonApp {
                 self.conversations.push(crate::types::Conversation::new_molecule(gid, offer.snapshot.standing()));
             }
             if !self.molecule_rosters.iter().any(|(g, _)| *g == gid) {
-                self.molecule_rosters.push((gid, offer.snapshot.clone()));
+                // The offer's snapshot enters thru the fold-checked merge like any records: what verifies now is held, what waits on a fold is parked.
+                self.molecule_rosters.push((gid, Roster::default()));
+                let pos = self.molecule_rosters.len() - 1;
+                self.merge_snapshot_into(pos, offer.snapshot.clone());
+                self.sync_molecule_conversation(&gid);
             }
             self.persist_molecule(&gid);
             self.persist_chains_of(&fid);
@@ -281,10 +291,24 @@ impl PhotonApp {
         let next = era + 1;
         let nonce: [u8; 32] = rand::random();
         let mut fresh: [u8; 32] = rand::random();
-        // The transcript binds the mint to the group, the index and the nonce; the wrap set is not in it (a member verifies the set against its own roster instead, and withholds a short one).
+        // The transcript binds the mint to the group, the index and the nonce; the wrap set is not in it (a member is meant to verify the set against its own roster and withhold a short one — that check is not built yet, docs/conversations.md Phase 3).
         let transcript = crate::crypto::era::derive_era_transcript(&gid.token(), next, &nonce, crate::crypto::era::KEM_SET_DEFAULT, &crate::crypto::era::EraKemWire::default(), &crate::crypto::era::EraKemWire::default());
         let (next_root, next_hk) = crate::crypto::era::derive_era_keys(&gid.0, next, &root, Some(&hk), &fresh, &transcript);
-        let targets: Vec<crate::types::molecule::BundleRecord> = self.molecule_rosters[pos].1.standing_bundles().into_iter().cloned().collect();
+        // The wrap set is the standing bundles whose device is still in its owner's fold: a device removed from a member's fleet, or a bundle planted under a party by a device that was never theirs, receives no era from here on.
+        // A bundle in the roster whose owner we hold no fold for was merged before records were fold-checked (new ones park until the fold lands), so it still receives rather than stranding that member.
+        let targets: Vec<crate::types::molecule::BundleRecord> = self.molecule_rosters[pos]
+            .1
+            .standing_bundles()
+            .into_iter()
+            .filter(|b| {
+                let keep = self.record_signer_verdict(&b.party, &b.device) != Some(false);
+                if !keep {
+                    crate::logf!("MOLECULE: mint {} — bundle for {} device {} is outside that member's fold; not wrapped", hex::encode(&gid.0[..4]), crate::fp(&b.party), hex::encode(&b.device[..4]));
+                }
+                keep
+            })
+            .cloned()
+            .collect();
         let mut inside = 0usize;
         for b in &targets {
             if Some(b.device) == our_device {
@@ -356,8 +380,16 @@ impl PhotonApp {
         if !self.conversations.iter().any(|v| v.id() == fid) {
             self.conversations.push(crate::types::Conversation::new_molecule(gid, offer.snapshot.standing()));
         }
-        self.molecule_rosters.retain(|(id, _)| *id != gid);
-        self.molecule_rosters.push((gid, offer.snapshot.clone()));
+        // The offer's snapshot enters thru the fold-checked merge (the Join already seeded it the same way; a re-merge is a no-op for what it holds).
+        let pos = match self.molecule_rosters.iter().position(|(id, _)| *id == gid) {
+            Some(p) => p,
+            None => {
+                self.molecule_rosters.push((gid, Roster::default()));
+                self.molecule_rosters.len() - 1
+            }
+        };
+        self.merge_snapshot_into(pos, offer.snapshot.clone());
+        self.sync_molecule_conversation(&gid);
         // The offer stays parked, accepted: it is what names the group the friendship row is about (the card reads "joined" from here on).
         self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing);
         self.persist_molecule(&gid);
@@ -375,7 +407,7 @@ impl PhotonApp {
         crate::logf!("MOLECULE: joined \"{}\" ({}) via {} at era {}", offer.snapshot.title(), hex::encode(&gid.0[..4]), sponsor_fp, w.era);
     }
 
-    /// WRAP inside the group (an existing member, §10.4): a mint's wrap addressed to our device — open it against our persisted bundle, derive the next era from the one we hold, install it as pending. Rows for other devices are ignored. A wrap set that omits a member we hold standing is WITHHELD (the exclusion tripwire of the vouch model); it re-evaluates on the next records edge.
+    /// WRAP inside the group (an existing member, §10.4): a mint's wrap addressed to our device — open it against our persisted bundle, derive the next era from the one we hold, install it as pending. Rows for other devices are ignored. NOT YET BUILT: withholding a mint whose wrap set omits a member we hold standing (the exclusion tripwire of the vouch model, docs/conversations.md Phase 3) — today any wrap that opens is installed.
     fn install_molecule_wrap(&mut self, cp: usize, wire: Option<crate::network::message_package::MoleculeWire>, kem: Option<crate::crypto::era::EraKemWire>) {
         let (Some(w), Some(cts)) = (wire.as_ref().and_then(|g| g.wrap.as_ref()), kem.as_ref()) else {
             return;
@@ -438,98 +470,117 @@ impl PhotonApp {
             return;
         };
         let standing_before = self.molecule_rosters[pos].1.standing();
-        let mut changed = self.merge_snapshot_into(pos, snapshot);
-        changed |= self.sync_molecule_conversation(&gid);
-        if changed {
-            self.persist_molecule(&gid);
+        let merged = self.merge_snapshot_into(pos, snapshot);
+        if merged || self.sync_molecule_conversation(&gid) {
             crate::logf!("MOLECULE: {} roster advanced by records from {}", hex::encode(&gid.0[..4]), sender);
-            let standing_after = self.molecule_rosters[pos].1.standing();
-            let departed: Vec<[u8; 32]> = standing_before.iter().filter(|p| standing_after.binary_search(p).is_err()).copied().collect();
-            if !departed.is_empty() {
-                // A member lost standing (a leave, or a withdrawn vouch): nothing is owed to it any more, and the survivors mint the next era (step 9).
-                let fid = crate::types::FriendshipId::from_bytes(gid.0);
-                let done = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid).map(|(_, c)| c.retarget_pendings(&standing_after)).unwrap_or_default();
-                if !done.is_empty() {
-                    if let Some(cp) = self.conversations.iter().position(|v| v.id() == fid) {
-                        for m in self.conversations[cp].messages.iter_mut() {
-                            if m.is_outgoing && done.contains(&m.timestamp) {
-                                m.delivered = true;
-                            }
-                        }
-                    }
-                    self.persist_conversation_async(fid);
-                }
-                for p in &departed {
-                    crate::logf!("MOLECULE: {} left {} — {} standing remain; minting the next era", crate::fp(p), hex::encode(&gid.0[..4]), standing_after.len());
-                }
-                self.mint_molecule_era(gid, None);
-            }
+            self.after_roster_advanced(gid, pos, &standing_before);
         }
     }
 
-    /// Merge a snapshot's records into a held roster — signature-checked per record (the subject's own claimed device; the fold check deepens with MoleculePeer in step 5), precedence entirely the roster merge's newest-wins law.
-    pub(super) fn merge_snapshot_into(&mut self, pos: usize, snapshot: Roster) -> bool {
-        use crate::types::molecule::verify_record;
-        let mut verified = Roster::default();
-        if let Some(g) = snapshot.genesis {
-            if verify_record(&g.signing_bytes(), &g.signature, &g.signer_device) {
-                verified.genesis = Some(g);
-            }
-        }
-        // merge_vouch needs the genesis for the founder self-vouch rule: seed it from the held roster when the snapshot lacks it.
-        if verified.genesis.is_none() {
-            verified.genesis = self.molecule_rosters[pos].1.genesis.clone();
-        }
-        // Roster merges are newest-wins on `signed_osc`, which sits inside each record's signature: a record dated past our known time would outrank every later edit forever, so it is refused whole.
-        let future = |t: i64| crate::network::time_base::from_the_future(t);
-        for (_, m) in snapshot.members {
-            if future(m.signed_osc) {
-                crate::logf!("MOLECULE: member record for {} is dated in the future — refused", crate::fp(&m.party));
-            } else if verify_record(&m.signing_bytes(), &m.signature, &m.signer_device) {
-                verified.merge_member(m);
-            } else {
-                crate::logf!("MOLECULE: member record for {} fails its signature — skipped", crate::fp(&m.party));
-            }
-        }
-        for (_, l) in snapshot.leaves {
-            if future(l.signed_osc) {
-                crate::logf!("MOLECULE: leave record for {} is dated in the future — refused", crate::fp(&l.party));
-            } else if verify_record(&l.signing_bytes(), &l.signature, &l.signer_device) {
-                verified.merge_leave(l);
-            } else {
-                crate::logf!("MOLECULE: leave record for {} fails its signature — skipped", crate::fp(&l.party));
-            }
-        }
-        for (_, list) in snapshot.vouches {
-            for v in list {
-                if future(v.signed_osc) {
-                    crate::logf!("MOLECULE: vouch {} → {} is dated in the future — refused", crate::fp(&v.voucher), crate::fp(&v.subject));
-                } else if verify_record(&v.signing_bytes(), &v.signature, &v.signer_device) {
-                    verified.merge_vouch(v);
-                } else {
-                    crate::logf!("MOLECULE: vouch {} → {} fails its signature — skipped", crate::fp(&v.voucher), crate::fp(&v.subject));
+    /// A roster advanced (a records row, or parked records a fold just verified): follow the standing set into the conversation, persist, and if anyone lost standing settle what was owed to them and mint the next era without them.
+    fn after_roster_advanced(&mut self, gid: MoleculeId, pos: usize, standing_before: &[[u8; 32]]) {
+        self.sync_molecule_conversation(&gid);
+        self.persist_molecule(&gid);
+        let standing_after = self.molecule_rosters[pos].1.standing();
+        let departed: Vec<[u8; 32]> = standing_before.iter().filter(|p| standing_after.binary_search(p).is_err()).copied().collect();
+        if !departed.is_empty() {
+            // A member lost standing (a leave, or a withdrawn vouch): nothing is owed to it any more, and the survivors mint the next era (step 9).
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let done = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid).map(|(_, c)| c.retarget_pendings(&standing_after)).unwrap_or_default();
+            if !done.is_empty() {
+                if let Some(cp) = self.conversations.iter().position(|v| v.id() == fid) {
+                    for m in self.conversations[cp].messages.iter_mut() {
+                        if m.is_outgoing && done.contains(&m.timestamp) {
+                            m.delivered = true;
+                        }
+                    }
                 }
+                self.persist_conversation_async(fid);
             }
-        }
-        for (_, b) in snapshot.bundles {
-            if future(b.signed_osc) {
-                crate::logf!("MOLECULE: bundle for device {} is dated in the future — refused", hex::encode(&b.device[..4]));
-            } else if verify_record(&b.signing_bytes(), &b.signature, &b.device) {
-                verified.merge_bundle(b);
-            } else {
-                crate::logf!("MOLECULE: bundle for device {} fails its signature — skipped", hex::encode(&b.device[..4]));
+            for p in &departed {
+                crate::logf!("MOLECULE: {} left {} — {} standing remain; minting the next era", crate::fp(p), hex::encode(&gid.0[..4]), standing_after.len());
             }
+            self.mint_molecule_era(gid, None);
         }
-        if let Some(t) = snapshot.title {
-            if !future(t.signed_osc) && verify_record(&t.signing_bytes(), &t.signature, &t.signer_device) {
-                verified.title = Some(t);
-            }
+    }
+
+    /// Is `device` one of `party`'s folded devices: `Some(true)` it is, `Some(false)` it is not, `None` we hold no fold for them yet.
+    /// One resolver for every roster subject — ourselves (this device plus our siblings), a friend (the fold-respecting `knows_device`), or a never-friended member (its MoleculePeer fold).
+    pub(super) fn record_signer_verdict(&self, party: &[u8; 32], device: &[u8; 32]) -> Option<bool> {
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        if us.as_ref() == Some(party) {
+            return Some(self.own_fleet_devices().contains(device));
         }
-        let held_genesis = self.molecule_rosters[pos].1.genesis.is_some();
-        if held_genesis {
+        if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *party) {
+            return Some(c.knows_device(device));
+        }
+        self.molecule_peers.iter().find(|p| p.party == *party && !p.devices.is_empty()).map(|p| p.knows_device(device))
+    }
+
+    /// The party a never-friended handle proof belongs to, as any roster we hold, park, or have been offered names it — so its fold lands as a MoleculePeer and the records waiting on it can verify.
+    pub(super) fn molecule_party_for_proof(&self, hp: &[u8; 32]) -> Option<[u8; 32]> {
+        let named = |r: &Roster| r.members.values().find(|m| m.handle_proof == *hp).map(|m| m.party);
+        self.molecule_rosters
+            .iter()
+            .find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == *hp && r.is_standing(&m.party)).map(|m| m.party))
+            .or_else(|| self.molecule_parked.iter().find_map(|(_, r)| named(r)))
+            .or_else(|| self.bond_offers.iter().find_map(|o| named(&o.snapshot)))
+    }
+
+    /// Ask for the folds of every never-friended member a roster names, so its records can be verified against them.
+    pub(super) fn fetch_member_folds(&mut self, roster: &Roster) {
+        let us = self.session.as_ref().map(|s| s.handle_proof);
+        let mut proofs: Vec<[u8; 32]> = roster
+            .members
+            .values()
+            .map(|m| m.handle_proof)
+            .filter(|hp| Some(*hp) != us && !self.contacts.iter().any(|c| c.handle_proof == *hp) && !self.molecule_peers.iter().any(|p| p.handle_proof == *hp && !p.devices.is_empty()))
+            .collect();
+        proofs.sort_unstable();
+        proofs.dedup();
+        if !proofs.is_empty() {
+            self.spawn_contact_fleet_refresh(proofs);
+        }
+    }
+
+    /// Merge a snapshot's records into a held roster under verify-or-withhold (docs/conversations.md Phase 0): `partition_by_fold` judges every record against its subject's fold.
+    /// What verifies merges; what waits on a fold we do not hold is parked, its fold is fetched, and the fold's landing re-merges it; what is signed outside a known fold is refused.
+    /// Precedence is entirely the roster merge's newest-wins law.
+    pub(super) fn merge_snapshot_into(&mut self, pos: usize, snapshot: Roster) -> bool {
+        let gid = self.molecule_rosters[pos].0;
+        let held_genesis = self.molecule_rosters[pos].1.genesis.clone();
+        let part = crate::types::molecule::partition_by_fold(snapshot, held_genesis.as_ref(), |p, d| self.record_signer_verdict(p, d), crate::network::time_base::from_the_future);
+        for why in &part.refused {
+            crate::logf!("MOLECULE: {} — {} — refused", hex::encode(&gid.0[..4]), why);
+        }
+        let waiting = part.parked_count();
+        let mut verified = part.verified;
+        if held_genesis.is_some() {
             verified.genesis = None; // never re-merge a genesis we hold (merge_genesis refuses anyway; this keeps `changed` honest)
         }
-        self.molecule_rosters[pos].1.merge_all(verified)
+        let changed = self.molecule_rosters[pos].1.merge_all(verified);
+        self.molecule_parked.retain(|(g, _)| *g != gid);
+        if waiting > 0 {
+            crate::logf!("MOLECULE: {} — {} record(s) wait on folds we do not hold yet; fetching them", hex::encode(&gid.0[..4]), waiting);
+            self.fetch_member_folds(&part.parked);
+            self.molecule_parked.push((gid, part.parked));
+        }
+        changed
+    }
+
+    /// A fold landed: every parked record gets its verdict again, and whatever now verifies joins its roster exactly as a records row would.
+    pub(super) fn remerge_parked_records(&mut self) {
+        let parked = std::mem::take(&mut self.molecule_parked);
+        for (gid, records) in parked {
+            let Some(pos) = self.molecule_rosters.iter().position(|(id, _)| *id == gid) else {
+                continue; // the group is gone (left, or never held): its parked records go with it
+            };
+            let standing_before = self.molecule_rosters[pos].1.standing();
+            if self.merge_snapshot_into(pos, records) {
+                crate::logf!("MOLECULE: {} roster advanced by records a fold just verified", hex::encode(&gid.0[..4]));
+                self.after_roster_advanced(gid, pos, &standing_before);
+            }
+        }
     }
 
     /// Follow the roster's standing set into the group conversation (§4: the set follows the roster; the id never moves), re-seed the group's admission list, and fold any standing member we never friended into the MoleculePeer trust source (step 5). Returns whether the set changed.

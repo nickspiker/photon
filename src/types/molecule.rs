@@ -361,6 +361,121 @@ impl Roster {
     }
 }
 
+/// What a fold-checked merge makes of a snapshot (verify-or-withhold, docs/conversations.md Phase 0).
+#[derive(Default)]
+pub struct FoldPartition {
+    /// Every record signed by a device in its subject's fold — merge these.
+    pub verified: Roster,
+    /// Records whose subject's fold is not held yet — park them and judge again when it lands.
+    pub parked: Roster,
+    /// One line per refused record, naming it and why.
+    pub refused: Vec<String>,
+}
+
+impl FoldPartition {
+    /// How many records wait on a fold.
+    pub fn parked_count(&self) -> usize {
+        let p = &self.parked;
+        p.members.len() + p.leaves.len() + p.bundles.len() + p.vouches.values().map(Vec::len).sum::<usize>() + usize::from(p.title.is_some())
+    }
+}
+
+/// Judge every record of `snapshot` against its SUBJECT's fold: the founder for the genesis, the member for its member and leave records, the voucher for a vouch, the owner for a bundle, the setter for a title.
+/// `signer_in_fold(party, device)` answers `Some(true)` / `Some(false)` from a fold we hold, `None` when we hold none for that party yet.
+/// Checking a signature only against the device a record itself names let any member forge another's leave or vouch, or plant a bundle under someone else's party and receive every later era.
+/// A record dated past our known time is refused whole: merges are newest-wins on a stamp inside the signature, so it would outrank every later edit forever.
+/// `held_genesis` is the genesis the roster already holds, which the founder self-vouch rule needs when the snapshot's own genesis is not verified.
+pub fn partition_by_fold(snapshot: Roster, held_genesis: Option<&GenesisRecord>, signer_in_fold: impl Fn(&PartyId, &[u8; 32]) -> Option<bool>, from_the_future: impl Fn(i64) -> bool) -> FoldPartition {
+    enum Verdict {
+        Take,
+        Park,
+        Refuse(&'static str),
+    }
+    let judge = |party: &PartyId, device: &[u8; 32], bytes: &[u8], sig: &[u8; 64], osc: i64| -> Verdict {
+        if from_the_future(osc) {
+            Verdict::Refuse("dated in the future")
+        } else if !verify_record(bytes, sig, device) {
+            Verdict::Refuse("fails its signature")
+        } else {
+            match signer_in_fold(party, device) {
+                Some(true) => Verdict::Take,
+                Some(false) => Verdict::Refuse("signed by a device outside its subject's fold"),
+                None => Verdict::Park,
+            }
+        }
+    };
+    let mut out = FoldPartition::default();
+    // The parked set keeps the genesis beside its records, only so the founder self-vouch rule can hold them; a later judgement verifies that genesis again.
+    out.parked.genesis = snapshot.genesis.clone().or_else(|| held_genesis.cloned());
+    if let Some(g) = snapshot.genesis {
+        match judge(&g.founder, &g.signer_device, &g.signing_bytes(), &g.signature, g.genesis_osc) {
+            Verdict::Take => out.verified.genesis = Some(g),
+            Verdict::Park => {}
+            Verdict::Refuse(why) => out.refused.push(format!("genesis {why}")),
+        }
+    }
+    // merge_vouch needs the genesis for the founder self-vouch rule: the held one stands in when the snapshot's is not verified.
+    if out.verified.genesis.is_none() {
+        out.verified.genesis = held_genesis.cloned();
+    }
+    for (_, m) in snapshot.members {
+        match judge(&m.party, &m.signer_device, &m.signing_bytes(), &m.signature, m.signed_osc) {
+            Verdict::Take => {
+                out.verified.merge_member(m);
+            }
+            Verdict::Park => {
+                out.parked.merge_member(m);
+            }
+            Verdict::Refuse(why) => out.refused.push(format!("member record for {} {why}", crate::fp(&m.party))),
+        }
+    }
+    for (_, l) in snapshot.leaves {
+        match judge(&l.party, &l.signer_device, &l.signing_bytes(), &l.signature, l.signed_osc) {
+            Verdict::Take => {
+                out.verified.merge_leave(l);
+            }
+            Verdict::Park => {
+                out.parked.merge_leave(l);
+            }
+            Verdict::Refuse(why) => out.refused.push(format!("leave record for {} {why}", crate::fp(&l.party))),
+        }
+    }
+    for (_, list) in snapshot.vouches {
+        for v in list {
+            // A founder self-vouch rides on the genesis: while the genesis waits on its fold the self-vouch waits with it, never dropped by the merge rule.
+            let waits_on_genesis = v.voucher == v.subject && out.verified.genesis.is_none();
+            match judge(&v.voucher, &v.signer_device, &v.signing_bytes(), &v.signature, v.signed_osc) {
+                Verdict::Take if !waits_on_genesis => {
+                    out.verified.merge_vouch(v);
+                }
+                Verdict::Take | Verdict::Park => {
+                    out.parked.merge_vouch(v);
+                }
+                Verdict::Refuse(why) => out.refused.push(format!("vouch {} → {} {why}", crate::fp(&v.voucher), crate::fp(&v.subject))),
+            }
+        }
+    }
+    for (_, b) in snapshot.bundles {
+        match judge(&b.party, &b.device, &b.signing_bytes(), &b.signature, b.signed_osc) {
+            Verdict::Take => {
+                out.verified.merge_bundle(b);
+            }
+            Verdict::Park => {
+                out.parked.merge_bundle(b);
+            }
+            Verdict::Refuse(why) => out.refused.push(format!("bundle for {} device {} {why}", crate::fp(&b.party), hex::encode(&b.device[..4]))),
+        }
+    }
+    if let Some(t) = snapshot.title {
+        match judge(&t.party, &t.signer_device, &t.signing_bytes(), &t.signature, t.signed_osc) {
+            Verdict::Take => out.verified.title = Some(t),
+            Verdict::Park => out.parked.title = Some(t),
+            Verdict::Refuse(why) => out.refused.push(format!("title by {} {why}", crate::fp(&t.party))),
+        }
+    }
+    out
+}
+
 /// A member seen thru the group's SECOND trust source (§2 "transport trust, scoped"): party id → folded devices, consulted ONLY for frames carrying that group's token. Deliberately NOT a Contact — no presence standing, no address-book row; a non-friend member's pings still drop, membership grants nothing outside the group.
 #[derive(Clone, Debug, Default)]
 pub struct MoleculePeer {
@@ -721,6 +836,86 @@ mod tests {
         assert_eq!(r.display_title(), "m1, m2");
         assert!(r.merge_title(TitleRecord { party: [2; 32], title: "taco".into(), signed_osc: 3, signature: [0; 64], signer_device: [0; 32] }));
         assert_eq!(r.display_title(), "taco", "a shared title, once anyone sets one, wins");
+    }
+
+    /// A founded atom with a second member X (vouched by the founder), and the fold every party's verdict reads from.
+    fn fold_fixture() -> (Roster, PartyId, PartyId, [u8; 32], [u8; 32]) {
+        let (f_seed, x_seed) = ([0x01u8; 32], [0x02u8; 32]);
+        let (founder, x) = ([0xF0u8; 32], [0x10u8; 32]);
+        let birth = found_atom(founder, [0xF1; 32], "founder", [0; 32], "turtles", false, &f_seed);
+        let mut r = Roster::default();
+        r.merge_genesis(birth.genesis);
+        r.merge_member(birth.founder_member);
+        r.merge_vouch(birth.founder_vouch);
+        r.merge_member(join_record(x, [0x11; 32], "x", [0; 32], founder, &x_seed));
+        r.merge_vouch(vouch_record(founder, x, false, &f_seed));
+        (r, founder, x, f_seed, x_seed)
+    }
+
+    #[test]
+    fn records_verify_against_their_subjects_fold_not_their_own_claim() {
+        let (r, founder, x, f_seed, x_seed) = fold_fixture();
+        let attacker_seed = [0x0Au8; 32];
+        let folds = |p: &PartyId, d: &[u8; 32]| -> Option<bool> {
+            if *p == founder {
+                Some(*d == device_pubkey(&f_seed))
+            } else if *p == x {
+                Some(*d == device_pubkey(&x_seed))
+            } else {
+                None
+            }
+        };
+        let mut forged = r.clone();
+        // A bundle planted under X by a device that was never X's, a leave forged for X, and a withdrawal of X's vouch forged in the founder's name: each signs validly with the attacker's own key.
+        let eph = crate::crypto::era::era_keygen(0, 0, crate::crypto::era::KEM_SET_DEFAULT);
+        forged.merge_bundle(bundle_record(x, 0, &eph, &attacker_seed));
+        let mut leave = LeaveRecord { party: x, signed_osc: vsf::eagle_time_oscillations() + 1, signature: [0; 64], signer_device: device_pubkey(&attacker_seed) };
+        leave.signature = sign_record(&leave.signing_bytes(), &attacker_seed);
+        forged.merge_leave(leave);
+        let mut withdraw = vouch_record(founder, x, true, &attacker_seed);
+        withdraw.signed_osc += 1;
+        withdraw.signature = sign_record(&withdraw.signing_bytes(), &attacker_seed);
+        forged.merge_vouch(withdraw);
+        let part = partition_by_fold(forged, None, folds, |_| false);
+        assert_eq!(part.refused.len(), 3, "every forgery is refused: {:?}", part.refused);
+        assert_eq!(part.parked_count(), 0);
+        let mut held = Roster::default();
+        held.merge_all(part.verified);
+        let mut want = vec![founder, x];
+        want.sort_unstable();
+        assert_eq!(held.standing(), want, "X still stands: no forged leave or withdrawal counted");
+        assert!(held.standing_bundles().is_empty(), "the planted bundle never reaches a wrap set");
+    }
+
+    #[test]
+    fn records_wait_on_an_unheld_fold_and_verify_when_it_lands() {
+        let (r, founder, x, f_seed, x_seed) = fold_fixture();
+        // We hold X's fold (a friend) but not the founder's: the genesis, the founder's records and its vouches all wait.
+        let only_x = |p: &PartyId, d: &[u8; 32]| (*p == x).then(|| *d == device_pubkey(&x_seed));
+        let part = partition_by_fold(r.clone(), None, only_x, |_| false);
+        assert!(part.refused.is_empty());
+        assert!(part.verified.genesis.is_none(), "the founder's genesis waits on the founder's fold");
+        assert!(part.parked_count() >= 3, "the founder's member record, self-vouch and vouch for X are parked");
+        let mut held = Roster::default();
+        held.merge_all(part.verified);
+        assert!(held.standing().is_empty(), "nobody stands on records that have not verified");
+        // The founder's fold lands: the parked records are judged again and the roster stands whole.
+        let both = |p: &PartyId, d: &[u8; 32]| -> Option<bool> { Some(if *p == founder { *d == device_pubkey(&f_seed) } else { *d == device_pubkey(&x_seed) }) };
+        let again = partition_by_fold(part.parked, held.genesis.as_ref(), both, |_| false);
+        assert!(again.refused.is_empty() && again.parked_count() == 0);
+        held.merge_all(again.verified);
+        let mut want = vec![founder, x];
+        want.sort_unstable();
+        assert_eq!(held.standing(), want);
+    }
+
+    #[test]
+    fn a_genesis_signed_outside_the_founders_fold_is_refused() {
+        let (r, founder, _, _, _) = fold_fixture();
+        let not_the_founder = |p: &PartyId, _: &[u8; 32]| (*p == founder).then_some(false);
+        let part = partition_by_fold(r, None, not_the_founder, |_| false);
+        assert!(part.verified.genesis.is_none());
+        assert!(part.refused.iter().any(|w| w.starts_with("genesis")), "{:?}", part.refused);
     }
 
     #[test]

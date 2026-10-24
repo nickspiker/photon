@@ -2085,6 +2085,37 @@ impl std::fmt::Debug for FriendshipChains {
 mod tests {
     use super::*;
 
+    /// GOLDEN (docs/conversations.md Phase 0): the derivations every stored conversation and every live wire token rest on.
+    /// The convergence moves code around them; if one of these values changes, a stored row table or a token moved with it.
+    #[test]
+    fn golden_conversation_derivations() {
+        let (a, b) = ([1u8; 32], [2u8; 32]);
+        let got = [
+            hex::encode(FriendshipId::derive(&[a]).0),
+            hex::encode(FriendshipId::derive(&[a, b]).0),
+            hex::encode(crate::crypto::clutch::derive_conversation_token(&[a, b])),
+            hex::encode(crate::types::molecule::MoleculeId::from_nonce(&[7u8; 32]).0),
+            hex::encode(crate::types::molecule::MoleculeId::from_nonce(&[7u8; 32]).token()),
+            {
+                let (root, hk) = crate::crypto::era::derive_era_keys(&[3u8; 32], 1, &[4u8; 32], Some(&[5u8; 32]), &[6u8; 32], &[8u8; 32]);
+                format!("{}{}", hex::encode(root), hex::encode(hk))
+            },
+            hex::encode(crate::crypto::era::derive_era_transcript(&[9u8; 32], 2, &[10u8; 32], crate::crypto::era::KEM_SET_DEFAULT, &crate::crypto::era::EraKemWire::default(), &crate::crypto::era::EraKemWire::default())),
+        ];
+        let want: [&str; 7] = [
+            "aa0b17d16eccf6d9c470ea79002286bba17ae4604572809bf7ff28f4ee482219",
+            "8eaf2fe01e749ea4caa436cb1ece517fde3542753f6ad2b5706f94cc6fc0ec1a",
+            "2598cca5e613118b935bce6201d470fe5ff9906b5a724d48d2cbf2faffe68e1f",
+            "4b051420adc3f3c6141871e63488b1119cf21a2e385f7175a1a5a9ed4fa77c07",
+            "1ac57707167996096303225f358263d364a1e63028c78ed80540447b528052fe",
+            "0c3b94e9dda645637faa55c81824caf091f41ca35b0db1e8afb5995453996da50fed57979476db7118835e0604fdd57a30fc4159f44a977df465316d93105053",
+            "1fc5121d6197ced4883efba10e3397d12c3ec81fa48c44741b6da31359022d34",
+        ];
+        for (g, w) in got.iter().zip(want) {
+            assert_eq!(g, w, "a conversation derivation moved");
+        }
+    }
+
     #[test]
     fn test_friendship_id_derive() {
         let alice = [1u8; 32];

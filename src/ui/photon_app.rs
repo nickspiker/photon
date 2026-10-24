@@ -1715,6 +1715,8 @@ pub struct PhotonApp {
     bonds_staged: Vec<(crate::types::molecule::MoleculeId, [u8; 32])>,
     /// Group-scoped trust source (§2): never-friended members' folded devices, consulted only for frames carrying that group's token. Runtime, re-folded at boot (step 5 wires the fold).
     molecule_peers: Vec<crate::types::molecule::MoleculePeer>,
+    /// Roster records waiting on a fold we do not hold yet (verify-or-withhold, docs/conversations.md Phase 0): re-merged on every fold landing. RAM only — the folds are fetched the moment a record parks, and the records ride every later snapshot.
+    molecule_parked: Vec<(crate::types::molecule::MoleculeId, crate::types::molecule::Roster)>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
     pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -2860,6 +2862,7 @@ impl PhotonApp {
             bond_rows: Vec::new(),
             bonds_staged: Vec::new(),
             molecule_peers: Vec::new(),
+            molecule_parked: Vec::new(),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,

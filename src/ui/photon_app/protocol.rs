@@ -930,7 +930,8 @@ impl PhotonApp {
                     .find(|(_, c)| c.handle_proof == hp)
                 else {
                     // GROUP PEER (docs/molecules.md §2 / step 5): no contact row, but a standing member of a group we hold carries this proof — fold it into the group-scoped trust source. Same monotonic tip gate as a contact; a vanished chain drops the peer's devices (verify-or-withhold).
-                    let party = self.molecule_rosters.iter().find_map(|(_, r)| r.members.values().find(|m| m.handle_proof == hp && r.is_standing(&m.party)).map(|m| m.party));
+                    // Standing members of a held group, and the members of records still parked on this very fold or of an offer waiting for its Join (docs/conversations.md Phase 0).
+                    let party = self.molecule_party_for_proof(&hp);
                     if let Some(party) = party {
                         if !existed {
                             if let Some(p) = self.molecule_peers.iter_mut().find(|p| p.party == party) {
@@ -1062,6 +1063,11 @@ impl PhotonApp {
                 if !self.successor_inflight.contains(&hp) {
                     self.spawn_successor_check(hp, pinned_genesis);
                 }
+            }
+            // A fold landed: roster records parked on a fold we did not hold get their verdict again (verify-or-withhold, docs/conversations.md Phase 0).
+            if !self.molecule_parked.is_empty() {
+                self.remerge_parked_records();
+                { needs_redraw = true; self.note_redraw(line!()); }
             }
         }
 
