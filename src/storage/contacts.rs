@@ -969,6 +969,7 @@ fn message_record(msg: &ChatMessage) -> Record {
     rec = set_attach_fields(rec, msg);
     rec = set_star_field(rec, msg);
     rec = set_author_field(rec, msg);
+    rec = set_delivered_to_field(rec, msg);
     rec = set_control_fields(rec, msg);
     set_file_fields(rec, msg)
 }
@@ -1069,6 +1070,7 @@ fn record_message(rec: &Record, fallback_ts: i64) -> Option<ChatMessage> {
         deleted: rec.uint("deleted").unwrap_or(0) != 0,
         star_osc: rec.time("star").unwrap_or(0),
         author: record_author(rec),
+        delivered_to: record_delivered_to(rec),
         reference: record_reference(rec),
         notified: rec.uint("unnotified").unwrap_or(0) == 0,
         marks: record_marks(rec, content),
@@ -1293,6 +1295,18 @@ fn set_author_field(rec: Record, msg: &ChatMessage) -> Record {
         Some(a) => rec.set("author", Value::Bytes(a.to_vec())),
         None => rec,
     }
+}
+
+/// Who holds an outgoing row (the delivery ring), written only when anyone does: the party ids end to end, 32 bytes each.
+fn set_delivered_to_field(rec: Record, msg: &ChatMessage) -> Record {
+    if msg.delivered_to.is_empty() {
+        return rec;
+    }
+    rec.set("dlv_to", Value::Bytes(msg.delivered_to.iter().flatten().copied().collect()))
+}
+
+fn record_delivered_to(rec: &Record) -> Vec<crate::types::PartyId> {
+    rec.bytes("dlv_to").map(|b| b.chunks_exact(32).filter_map(|c| <[u8; 32]>::try_from(c).ok()).collect()).unwrap_or_default()
 }
 
 fn record_author(rec: &Record) -> Option<crate::types::PartyId> {
@@ -1726,6 +1740,7 @@ mod tests {
                 control: None,
                 file: None,
                 head_name: String::new(),
+                delivered_to: Vec::new(),
                 content: "hi".to_string(),
                 timestamp: 100,
                 is_outgoing: true,
@@ -1750,6 +1765,7 @@ mod tests {
                 control: None,
                 file: None,
                 head_name: String::new(),
+                delivered_to: Vec::new(),
                 content: "hey".to_string(),
                 timestamp: 200,
                 is_outgoing: false,
@@ -1774,6 +1790,7 @@ mod tests {
                 control: None,
                 file: None,
                 head_name: String::new(),
+                delivered_to: Vec::new(),
                 content: "👋 unicode".to_string(),
                 timestamp: 300,
                 is_outgoing: true,
@@ -2067,6 +2084,7 @@ mod tests {
             control: None,
             file: None,
             head_name: String::new(),
+            delivered_to: Vec::new(),
             content: format!("msg {t}"),
             marks: Vec::new(),
             timestamp: t,

@@ -42,6 +42,8 @@ pub struct HistoryRow {
     pub file: Option<crate::types::AttachRef>,
     /// A molecule control row's records blob (an invitation's roster snapshot), as a page COLUMN — set only on the rows a device hands its own siblings, so every device of a fleet parks the invitation one of them received. Absent ⇒ empty.
     pub gpl: Vec<u8>,
+    /// Who holds this outgoing row (the delivery ring), as a page COLUMN — our own devices merge it as a union. Absent ⇒ empty.
+    pub delivered_to: Vec<[u8; 32]>,
 }
 
 impl HistoryRow {
@@ -61,6 +63,7 @@ impl HistoryRow {
             wave: m.wave.map(|w| (w.outcome as u8, w.secs)),
             envelope: m.envelope.clone(),
             gpl: Vec::new(),
+            delivered_to: m.delivered_to.clone(),
             // A headed row's attach / preview are its head's runtime hydration — never on a page (flag day 2026-10-07).
             attach: m.attach.filter(|_| m.carries_inline_attach()).map(|a| (a.kind as u8, a.dims.map_or(0, |d| d.0), a.dims.map_or(0, |d| d.1), a.preview_hash)),
             preview: if m.carries_inline_attach() { m.preview.clone() } else { Vec::new() },
@@ -125,6 +128,9 @@ pub fn seal_history_page(page: &HistoryPagePlain, key: &[u8; 32]) -> Result<Vec<
         }
         if !row.gpl.is_empty() {
             r.push(f("gpl", VsfType::hR(row.gpl.clone())));
+        }
+        if !row.delivered_to.is_empty() {
+            r.push(f("dlv_to", VsfType::hR(row.delivered_to.iter().flatten().copied().collect())));
         }
         if let Some((k, w, h, ph)) = row.attach {
             r.push(f("attach_kind", uint(k as u64)));
@@ -249,6 +255,7 @@ pub fn open_history_page(sealed: &[u8], key: &[u8; 32]) -> Result<HistoryPagePla
             wave: r.uint("wave_outcome").and_then(|o| Some((u8::try_from(o).ok()?, u32::try_from(r.uint("wave_secs")?).ok()?))),
             envelope: r.bytes("envelope").unwrap_or_default(),
             gpl: r.bytes("gpl").unwrap_or_default(),
+            delivered_to: r.bytes("dlv_to").map(|b| b.chunks_exact(32).filter_map(|c| <[u8; 32]>::try_from(c).ok()).collect()).unwrap_or_default(),
             attach,
             preview: r.bytes("preview").filter(|p| p.len() <= crate::types::MICRO_PREVIEW_MAX_BYTES).unwrap_or_default(),
             control,
@@ -298,6 +305,7 @@ mod tests {
                     wave: Some((4, 61)),
                     envelope: (0..288u32).map(|b| (b % 256) as u8).collect(),
                     gpl: vec![7, 7, 7],
+                    delivered_to: vec![[3u8; 32]],
                     // Typed attachment columns ride too: kind, dims, a preview-blob hash and a micro preview, all back byte-exact.
                     attach: Some((2, 6000, 4000, Some([9u8; 32]))),
                     preview: vec![3, 2, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
@@ -318,6 +326,7 @@ mod tests {
                     wave: None,
                     envelope: Vec::new(),
                     gpl: Vec::new(),
+                    delivered_to: Vec::new(),
                     attach: None,
                     preview: Vec::new(),
                     notified: true,
@@ -337,6 +346,7 @@ mod tests {
                     wave: None,
                     envelope: Vec::new(),
                     gpl: Vec::new(),
+                    delivered_to: Vec::new(),
                     attach: None,
                     preview: Vec::new(),
                     notified: true,
@@ -423,6 +433,7 @@ mod tests {
                 wave: None,
                 envelope: Vec::new(),
                 gpl: Vec::new(),
+                delivered_to: Vec::new(),
                 attach: None,
                 preview: Vec::new(),
                 notified: true,

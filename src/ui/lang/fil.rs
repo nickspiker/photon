@@ -249,6 +249,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SentDetail { age, state } => format!("ipinadala \u{00b7} {age} \u{00b7} {state}").into(),
         Msg::ReceivedDetail(age) => format!("natanggap \u{00b7} {age}").into(),
         Msg::DeliveryDelivered => "naihatid".into(),
+        Msg::MemberHolds { name } => format!("{} · natanggap na", name).into(),
+        Msg::MemberWaiting { name } => format!("{} · naghihintay", name).into(),
         Msg::DeliveryReplicated => "naiparami".into(),
         Msg::DeliverySending => "ipinapadala".into(),
         Msg::RecoveredSuffix => " \u{00b7} naibalik".into(),

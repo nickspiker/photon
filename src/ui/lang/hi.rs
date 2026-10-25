@@ -255,6 +255,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SentDetail { age, state } => format!("भेजा \u{00b7} {age} \u{00b7} {state}").into(),
         Msg::ReceivedDetail(age) => format!("मिला \u{00b7} {age}").into(),
         Msg::DeliveryDelivered => "पहुँच गया".into(),
+        Msg::MemberHolds { name } => format!("{} · को मिल गया", name).into(),
+        Msg::MemberWaiting { name } => format!("{} · प्रतीक्षा", name).into(),
         Msg::DeliveryReplicated => "नक़ल हो गई".into(),
         Msg::DeliverySending => "भेजा जा रहा है".into(),
         Msg::RecoveredSuffix => " \u{00b7} वापस मिला".into(),

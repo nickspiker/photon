@@ -248,6 +248,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SentDetail { age, state } => format!("terkirim \u{00b7} {age} \u{00b7} {state}").into(),
         Msg::ReceivedDetail(age) => format!("diterima \u{00b7} {age}").into(),
         Msg::DeliveryDelivered => "sampai".into(),
+        Msg::MemberHolds { name } => format!("{} · sudah terima", name).into(),
+        Msg::MemberWaiting { name } => format!("{} · menunggu", name).into(),
         Msg::DeliveryReplicated => "tereplikasi".into(),
         Msg::DeliverySending => "mengirim".into(),
         Msg::RecoveredSuffix => " \u{00b7} dipulihkan".into(),

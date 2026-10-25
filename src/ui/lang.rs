@@ -449,6 +449,9 @@ pub enum Msg<'a> {
     SentDetail { age: &'a str, state: &'a str },
     ReceivedDetail(&'a str),
     DeliveryDelivered,
+    /// One line per other member under a selected row of ours: they hold it (any of their devices ACKed), or not yet.
+    MemberHolds { name: &'a str },
+    MemberWaiting { name: &'a str },
     DeliveryReplicated,
     DeliverySending,
     RecoveredSuffix,

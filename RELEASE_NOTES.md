@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **See who has each photon.** Every photon you send shows a small ring beside it, one segment per person in the conversation in their colour, filling in as each of them receives it. Your own segment fills once it has left your device. Tap a photon to see each person by name: has it, or waiting.
 - **Beams and waves from a Mac have sound again.** Answering a beam or wave right as it started ringing could leave a Mac with no sound either way for the whole wave, though video still worked.
 - **The notification switches work.** Turning off the chime or the vibration for new messages, or the vibration for incoming waves, now actually silences them; the switches also show what you last chose.
 - **Tapping a notification opens its conversation.** On Android, and on Linux desktops, tapping a message notification takes you straight to that conversation or molecule.

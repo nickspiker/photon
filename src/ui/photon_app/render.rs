@@ -165,6 +165,29 @@ impl PhotonApp {
         let molecule_names: Vec<([u8; 32], String)> = active_gi
             .map(|gi| self.molecule_rosters[gi].1.members.values().map(|m| (m.party, if m.name.is_empty() { tr(Msg::PendingMember).into_owned() } else { m.name.clone() })).collect())
             .unwrap_or_default();
+        // THE DELIVERY RING (Nick 2026-10-25: "equal segments per identity, consistent for 1 or 1000"), snapshotted pre-chrome: the conversation's people in join order, and the stamps of our rows that have not left this device yet.
+        let ring_us: [u8; 32] = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
+        let ring_parties: Vec<[u8; 32]> = match (active_gi, active_ci) {
+            (Some(gi), _) => self.molecule_rosters[gi].1.join_order(),
+            (None, Some(ci)) => {
+                let them = self.contacts[ci].handle_hash;
+                let mut v = vec![ring_us];
+                if them != ring_us && self.contacts[ci].remote_count(&ring_us) > 0 {
+                    v.push(them);
+                }
+                v.sort_unstable();
+                v
+            }
+            _ => Vec::new(),
+        };
+        let ring_unsent: Vec<i64> = {
+            let cid = active_ci.map(|ci| self.contacts[ci].id);
+            let mut v: Vec<i64> = self.pending_chain_sends.iter().filter(|p| Some(p.0) == cid).map(|p| p.2).collect();
+            if let Some(g) = active_gid {
+                v.extend(self.pending_molecule_posts.iter().filter(|p| p.gid == g).filter_map(|p| p.text.as_ref().map(|(_, ts, _)| *ts)));
+            }
+            v
+        };
         let compose_ready = self.compose_ready();
         // Prompt-gate snapshot (same pre-chrome discipline): bridge command in flight → the send arrow dims and submit refuses.
         let bridge_held = active_ci.map_or(false, |ci| {
@@ -3660,6 +3683,20 @@ impl PhotonApp {
                                 } else {
                                     tr(Msg::ReceivedDetail(&age)).into_owned()
                                 };
+                                // WHO HOLDS IT, one line per other person in the ring's order (the ring under the row says it at a glance; this names them).
+                                if msg.is_outgoing {
+                                    for p in ring_parties.iter().filter(|p| **p != ring_us) {
+                                        let name = molecule_names
+                                            .iter()
+                                            .find(|(q, _)| q == p)
+                                            .map(|(_, n)| n.clone())
+                                            .or_else(|| self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *p).map(|c| c.display_name()))
+                                            .unwrap_or_else(|| tr(Msg::PendingMember).into_owned());
+                                        let held = msg.delivered || msg.delivered_to.binary_search(p).is_ok();
+                                        detail.push('\n');
+                                        detail.push_str(&tr(if held { Msg::MemberHolds { name: &name } } else { Msg::MemberWaiting { name: &name } }));
+                                    }
+                                }
                                 // WHEN, absolute, under the live age (Nick 2026-10-01): the WHOLE date every time — dozenal `year month-glyph day weekday .share`, hex the raw stamp, arabic the full date and clock. A bare share on its own line read as a decimal with no context.
                                 detail.push('\n');
                                 detail.push_str(&crate::fmt_when(msg.timestamp));
@@ -4424,6 +4461,24 @@ impl PhotonApp {
                             }
                             static NO_LINES: Vec<String> = Vec::new();
                             let body_lines: &Vec<String> = if msg.wave.is_some() { &NO_LINES } else { lines };
+                            // THE DELIVERY RING on our own rows, in the right margin beside the last line: one equal segment per person in join order, clockwise from 12 o'clock, each in that person's colour when they hold the row and dim until they do.
+                            // Our own segment fills once the row has left this device. Rows from before the ring (delivered, but no per-member record) read as held by everyone.
+                            if msg.is_outgoing && !msg.deleted && !msg.is_control() && !body_lines.is_empty() && !ring_parties.is_empty() {
+                                let r = (pad_x * 0.28).min(msg_size * 0.3).max(3.0);
+                                let stroke = (r * 0.42).max(1.5);
+                                let segs: Vec<u32> = ring_parties
+                                    .iter()
+                                    .map(|p| {
+                                        let (full, held) = if *p == ring_us {
+                                            (self_colour(), !ring_unsent.contains(&msg.timestamp))
+                                        } else {
+                                            (party_colour(&relationship_digest(p, &our_handle_hash)), msg.delivered || msg.delivered_to.binary_search(p).is_ok())
+                                        };
+                                        if held { full } else { theme::dim_colour(full) }
+                                    })
+                                    .collect();
+                                paint::draw_ring_segments(&mut canvas, buf_w as f32 - pad_x * 0.5, y - react_off, r, stroke, stroke * 0.9, &segs, Some(list_clip));
+                            }
                             for (k, line) in body_lines.iter().enumerate() {
                                 let ly = y - react_off - (lines.len() - 1 - k) as f32 * intra;
                                 let right_aligned = msg.is_outgoing || is_self_contact;

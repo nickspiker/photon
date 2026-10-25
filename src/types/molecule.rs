@@ -355,6 +355,15 @@ impl Roster {
         self.vouches.keys().any(|(voucher, subject)| subject == party && self.live_vouch(voucher, subject))
     }
     /// The standing set, sorted — what the next era is delivered to, what the UI lists, what `Conversation::set_participants` mirrors.
+    /// The standing members in JOIN ORDER — the delivery ring's segments, clockwise from 12 o'clock, the same on every member's screen: the founder(s) first, then each member by the earliest vouch that admitted them, ties by party id.
+    pub fn join_order(&self) -> Vec<PartyId> {
+        let founded = |p: &PartyId| self.genesis.as_ref().is_some_and(|g| g.founder == *p || g.founders.contains(p));
+        let admitted = |p: &PartyId| self.vouches.iter().filter(|((_, s), _)| s == p).flat_map(|(_, recs)| recs.iter()).filter(|v| !v.withdrawn).map(|v| v.signed_osc).min().unwrap_or(i64::MAX);
+        let mut v: Vec<(i64, PartyId)> = self.standing().into_iter().map(|p| (if founded(&p) { i64::MIN } else { admitted(&p) }, p)).collect();
+        v.sort_unstable();
+        v.into_iter().map(|(_, p)| p).collect()
+    }
+
     pub fn standing(&self) -> Vec<PartyId> {
         let founders = self.genesis.iter().flat_map(|g| g.founders.iter());
         let mut v: Vec<PartyId> = self.members.keys().chain(founders).filter(|p| self.is_standing(p)).copied().collect();
@@ -797,6 +806,21 @@ mod tests {
             signature: [0; 64],
             signer_device: [0; 32],
         }
+    }
+
+    /// The delivery ring's order: founder first, then by the vouch that admitted each — never by party id alone, never by a member record that a rename re-signs.
+    #[test]
+    fn join_order_is_founder_then_admission() {
+        let mut r = founded();
+        // Party 9 is admitted before party 2, though its id sorts after.
+        r.merge_member(rec(9, 10));
+        r.merge_vouch(vouch(1, 9, 20, false));
+        r.merge_member(rec(2, 10));
+        r.merge_vouch(vouch(1, 2, 30, false));
+        assert_eq!(r.join_order(), vec![[1u8; 32], [9u8; 32], [2u8; 32]]);
+        // A rename re-signs the member record later; the order does not move.
+        r.merge_member(rec(9, 500));
+        assert_eq!(r.join_order(), vec![[1u8; 32], [9u8; 32], [2u8; 32]]);
     }
 
     #[test]

@@ -1783,6 +1783,8 @@ impl PhotonApp {
                                     // Match by eagle_time (exact i64 match)
                                     if msg.timestamp == acked_eagle_time {
                                         msg.delivered = true;
+                                        // The delivery ring's one segment for a pair: the friend holds it.
+                                        crate::types::merge_delivered_to(&mut msg.delivered_to, &[from_handle_hash]);
                                         delivered_row = Some(msg.clone());
                                         found_msg = true;
                                         changed = true;

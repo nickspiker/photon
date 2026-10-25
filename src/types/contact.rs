@@ -291,6 +291,8 @@ pub struct ChatMessage {
     pub file: Option<crate::types::AttachRef>,
     /// RUNTIME ONLY (flag day 2026-10-07): the filename a headed row's HEAD carried, filled when the head is read — never persisted, never sent (a headed row's chain identity has no name).
     pub head_name: String,
+    /// Who among the other members holds this row (an outgoing row's per-member delivery: any one of their devices ACKed it), sorted and unique — the bubble's segmented ring reads it. A pair's row holds at most its one friend. Runtime + durable + fleet-shared (merged as a union).
+    pub delivered_to: Vec<crate::types::PartyId>,
 }
 
 impl ChatMessage {
@@ -318,6 +320,7 @@ impl ChatMessage {
             control: None,
             file: None,
             head_name: String::new(),
+            delivered_to: Vec::new(),
         }
     }
 
@@ -351,6 +354,7 @@ impl ChatMessage {
             control: None,
             file: None,
             head_name: String::new(),
+            delivered_to: Vec::new(),
         }
     }
 
@@ -1526,4 +1530,15 @@ mod fold_honour_tests {
         assert!(sib.get_slot(&our_pid).is_some());
         assert!(sib.get_slot(&sib.handle_hash).is_some());
     }
+}
+
+/// Merge who holds a row (the delivery ring) as a set union, kept sorted and unique. Returns whether anything was added.
+pub fn merge_delivered_to(into: &mut Vec<crate::types::PartyId>, from: &[crate::types::PartyId]) -> bool {
+    let before = into.len();
+    for p in from {
+        if let Err(i) = into.binary_search(p) {
+            into.insert(i, *p);
+        }
+    }
+    into.len() != before
 }

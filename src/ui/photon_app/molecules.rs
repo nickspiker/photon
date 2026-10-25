@@ -1187,10 +1187,26 @@ impl PhotonApp {
         if cut_over {
             self.after_molecule_cutover(gid);
         }
-        if done.is_empty() {
-            return false;
-        }
+        // The delivery ring: this member holds the row now, whatever the rest still owe.
         let mut changed = false;
+        let mut ringed: Option<crate::types::ChatMessage> = None;
+        if let Some(m) = self.conversations.iter_mut().find(|v| v.id() == fid).and_then(|v| v.messages.iter_mut().find(|m| m.is_outgoing && m.timestamp == acked_eagle_time)) {
+            if crate::types::merge_delivered_to(&mut m.delivered_to, &[party]) {
+                changed = true;
+                ringed = Some(m.clone());
+            }
+        }
+        // Our other devices learn who holds it too (their rings fill the same way).
+        if let Some(row) = ringed {
+            self.push_conversation_rows_to_siblings(fid, std::slice::from_ref(&row), None);
+        }
+        if done.is_empty() {
+            if changed {
+                self.persist_conversation_async(fid);
+                self.scene_dirty = true;
+            }
+            return changed;
+        }
         if let Some(cp) = self.conversations.iter().position(|v| v.id() == fid) {
             for m in self.conversations[cp].messages.iter_mut() {
                 if m.is_outgoing && !m.delivered && done.contains(&m.timestamp) {

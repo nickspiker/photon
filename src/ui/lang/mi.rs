@@ -251,6 +251,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SentDetail { age, state } => format!("i tukuna \u{00b7} {age} \u{00b7} {state}").into(),
         Msg::ReceivedDetail(age) => format!("i tae mai \u{00b7} {age}").into(),
         Msg::DeliveryDelivered => "kua tae".into(),
+        Msg::MemberHolds { name } => format!("{} · kua tae", name).into(),
+        Msg::MemberWaiting { name } => format!("{} · e tatari ana", name).into(),
         Msg::DeliveryReplicated => "kua horapa".into(),
         Msg::DeliverySending => "e tuku ana".into(),
         Msg::RecoveredSuffix => " \u{00b7} kua whakaorangia".into(),

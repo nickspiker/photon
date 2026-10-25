@@ -1180,6 +1180,9 @@ impl PhotonApp {
                     existing.star_osc = row.star_osc;
                     upgraded = true;
                 }
+                if crate::types::merge_delivered_to(&mut existing.delivered_to, &row.delivered_to) {
+                    upgraded = true;
+                }
                 if upgraded {
                     fresh.push(existing.clone());
                 }
@@ -1191,6 +1194,7 @@ impl PhotonApp {
             m.deleted = row.deleted;
             m.notified = row.notified;
             m.star_osc = row.star_osc;
+            m.delivered_to = row.delivered_to.clone();
             m.reference = row.reference.and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
             m.marks = crate::types::valid_marks(&m.content, &row.marks);
             m.preview = row.preview.clone();
@@ -2839,6 +2843,10 @@ impl PhotonApp {
                             existing.star_osc = row.star_osc;
                             upgraded = true;
                         }
+                        // Who holds our row is OUR fleet's knowledge: only a sibling's page carries it (a friend's page describes their copy).
+                        if from_sibling && crate::types::merge_delivered_to(&mut existing.delivered_to, &row.delivered_to) {
+                            upgraded = true;
+                        }
                         if existing.author.is_none() && row.author.is_some() {
                             existing.author = row.author;
                             upgraded = true;
@@ -2875,6 +2883,7 @@ impl PhotonApp {
                         control: row.control.clone(),
                         file: row.file.clone(),
                         head_name: String::new(),
+                        delivered_to: if from_sibling { row.delivered_to.clone() } else { Vec::new() },
                     });
                 }
                 // Deferred inserts (they'd shift indices the map holds); insert_message_sorted dedups again defensively, so a page carrying two identical rows still lands one.

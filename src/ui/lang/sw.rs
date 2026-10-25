@@ -254,6 +254,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SentDetail { age, state } => format!("umetumwa \u{00b7} {age} \u{00b7} {state}").into(),
         Msg::ReceivedDetail(age) => format!("umepokelewa \u{00b7} {age}").into(),
         Msg::DeliveryDelivered => "umefika".into(),
+        Msg::MemberHolds { name } => format!("{} · amepokea", name).into(),
+        Msg::MemberWaiting { name } => format!("{} · inasubiri", name).into(),
         Msg::DeliveryReplicated => "umerudufishwa".into(),
         Msg::DeliverySending => "unatumwa".into(),
         Msg::RecoveredSuffix => " \u{00b7} umerejeshwa".into(),

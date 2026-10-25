@@ -252,6 +252,8 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::SentDetail { age, state } => format!("inviato \u{00b7} {age} \u{00b7} {state}").into(),
         Msg::ReceivedDetail(age) => format!("ricevuto \u{00b7} {age}").into(),
         Msg::DeliveryDelivered => "consegnato".into(),
+        Msg::MemberHolds { name } => format!("{} · l’ha ricevuto", name).into(),
+        Msg::MemberWaiting { name } => format!("{} · in attesa", name).into(),
         Msg::DeliveryReplicated => "replicato".into(),
         Msg::DeliverySending => "in invio".into(),
         Msg::RecoveredSuffix => " \u{00b7} recuperato".into(),
