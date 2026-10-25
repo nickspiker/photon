@@ -253,6 +253,8 @@ impl PhotonApp {
         let mut catching_up: Vec<crate::types::molecule::MoleculeId> = Vec::new();
         // GROUP MEMBERS still writing on an era we retired (a wrap that never reached them): (conversation, their party), each handed the current era whole over our bond after the loop.
         let mut molecule_stragglers: Vec<(crate::types::FriendshipId, [u8; 32])> = Vec::new();
+        // GROUP frames from a signer our roster does not name yet (a member whose join records are still on their way): held after the loop and replayed when that roster advances, never dropped.
+        let mut molecule_held: Vec<(crate::types::molecule::MoleculeId, StatusUpdate)> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -1244,7 +1246,9 @@ impl PhotonApp {
                             }) {
                                 Some(c) => c.handle_hash,
                                 None => {
-                                    crate::logf!("MOLECULE: dropped frame — signer {}... is no standing member's device of {}", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
+                                    // HELD, not dropped (Emma's phone 2026-10-25): the newest member's records reach each device by its own path, and a frame that beat them here was lost for good once another of that member's devices ACKed it for them.
+                                    crate::logf!("MOLECULE: held frame — signer {}... is no standing member's device of {} yet; replayed when its roster advances", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
+                                    molecule_held.push((gid, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext: ciphertext.clone(), timestamp, sender_addr, sender_pubkey: sender_pubkey.clone(), era }));
                                     continue;
                                 }
                             }
@@ -5658,6 +5662,9 @@ impl PhotonApp {
         }
         catching_up.sort_unstable_by_key(|g| g.0);
         catching_up.dedup();
+        for (gid, update) in molecule_held {
+            self.hold_molecule_frame(gid, update);
+        }
         for (fid, party) in molecule_stragglers {
             self.deliver_era_to_straggler(fid, party);
         }
@@ -5680,6 +5687,7 @@ impl PhotonApp {
         if fleet_sweep_due {
             self.kick_fleet_history_sweep("sibling online");
             self.reserve_fleet_forwards();
+            self.reshare_fleet_leaves();
         }
         // Fleet-attention state changes (deferred past the checker borrow): void the dead holder first, then adopt the drain's LWW winner, then run the sweeps against the settled slots, then heal.
         if let Some(dead) = attn_void {

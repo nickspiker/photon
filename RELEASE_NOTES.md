@@ -6,6 +6,9 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Invitations reach all your devices.** An invitation to a molecule now shows on every one of your devices, not only the one it happened to reach first; it rings once.
+- **Leaving a molecule reaches all your devices.** Your other devices leave too, including ones that were off when you left and molecules you were alone in.
+- **Fewer photons lost when someone has just joined.** A photon from a new member that arrives before your device knows they joined is held until it does, instead of being dropped.
 - **Smooth window dragging on Linux Wayland desktops.** Dragging Photon’s window no longer jitters, and Photon no longer catches clicks across the whole screen there; it now runs through XWayland when that is available, the same way it runs on X11.
 
 ## v126

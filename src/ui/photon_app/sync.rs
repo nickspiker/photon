@@ -1381,7 +1381,18 @@ impl PhotonApp {
         rows: &[crate::types::ChatMessage],
         exclude_device: Option<[u8; 32]>,
     ) {
-        use crate::network::history_pages::{seal_history_page, HistoryPagePlain, HistoryRow};
+        // Control rows cross to our own devices only when they are fleet business — a wave signal stops the other devices' rings; probes, deletes, era and group rows stay put (the era replicates by chain-sync, the others are device-pair or roster-rebuilt).
+        let hist_rows: Vec<crate::network::history_pages::HistoryRow> = rows
+            .iter()
+            .filter(|m| m.control.as_ref().is_none_or(|c| c.wave().is_some()))
+            .map(crate::network::history_pages::HistoryRow::from_message)
+            .collect();
+        self.push_history_rows_to_siblings(token, label, hist_rows, exclude_device);
+    }
+
+    /// The push itself, for rows already shaped as page rows (an invitation carries its snapshot in the `gpl` column, which a chat row never has).
+    pub(super) fn push_history_rows_to_siblings(&self, token: [u8; 32], label: &str, hist_rows: Vec<crate::network::history_pages::HistoryRow>, exclude_device: Option<[u8; 32]>) {
+        use crate::network::history_pages::{seal_history_page, HistoryPagePlain};
         // The B-arc re-seal: live fleet pages seal under the EPOCH hist_page key, never the raw fleet key. No spine yet = the bounded bootstrap window — hold the push (the sibling-online history sweep re-covers these rows) rather than fork the seal, exactly the chain_sync rule.
         let (Some((epoch_k, epoch)), Some(kp), Some(checker), Some(session)) = (
             self.fleet_epoch,
@@ -1392,12 +1403,6 @@ impl PhotonApp {
             return;
         };
         let page_key = crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
-        // Control rows cross to our own devices only when they are fleet business — a wave signal stops the other devices' rings; probes, deletes, era and group rows stay put (the era replicates by chain-sync, the others are device-pair or roster-rebuilt).
-        let hist_rows: Vec<HistoryRow> = rows
-            .iter()
-            .filter(|m| m.control.as_ref().is_none_or(|c| c.wave().is_some()))
-            .map(HistoryRow::from_message)
-            .collect();
         if hist_rows.is_empty() {
             return;
         }

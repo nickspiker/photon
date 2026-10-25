@@ -44,6 +44,18 @@ impl PhotonApp {
 
     /// OFFER (§10.1 None → Offered): park the sponsor's snapshot beside the friendship row it rode in on. No secret arrives; the Join pill on that row is the consent. A re-offer for the same group replaces the parked snapshot (the sponsor's refresh); an offer for a group we already hold merges the snapshot as records.
     fn park_bond_offer(&mut self, ci: usize, blob: Option<Vec<u8>>, row_osc: i64) {
+        self.park_bond_offer_from(ci, blob, row_osc, false);
+    }
+
+    /// An invitation one of OUR devices received from `ci`, handed over in a sibling page: parked here the same way, silently (the device that received it already rang), and never handed on again.
+    pub(super) fn park_fleet_offer(&mut self, ci: usize, blob: Vec<u8>, row_osc: i64) {
+        if self.contacts.get(ci).is_some_and(|c| c.is_sibling) {
+            return;
+        }
+        self.park_bond_offer_from(ci, Some(blob), row_osc, true);
+    }
+
+    fn park_bond_offer_from(&mut self, ci: usize, blob: Option<Vec<u8>>, row_osc: i64, from_fleet: bool) {
         let sponsor_fp = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
         let Some(sponsor) = self.contacts.get(ci).map(|c| c.handle_hash) else {
             return;
@@ -93,10 +105,26 @@ impl PhotonApp {
             }
         }
         crate::logf!("MOLECULE: offered \"{}\" ({}) by {} — {} standing — Join is the consent", title, hex::encode(&gid.0[..4]), sponsor_fp, members);
-        if fresh {
+        if fresh && !from_fleet {
             self.alert_invitation(ci, gid, row_osc, &title);
+            self.share_offer_with_fleet(ci, &blob, row_osc);
         }
         self.scene_dirty = true;
+    }
+
+    /// Hand an invitation to our own devices as a page row carrying its snapshot (`gpl`), under the bond's token: whichever of our devices the sponsor reached, every one of them parks it.
+    fn share_offer_with_fleet(&self, ci: usize, blob: &[u8], row_osc: i64) {
+        let Some(sponsor) = self.contacts.get(ci).map(|c| c.handle_hash) else {
+            return;
+        };
+        let Some(token) = self.bond_fid_of(ci).and_then(|b| self.friendship_chains.iter().find(|(id, _)| *id == b)).map(|(_, c)| c.conversation_token) else {
+            return;
+        };
+        let mut msg = crate::types::ChatMessage::control(crate::types::RowControl::Molecule(MoleculeSignal::Offer), false, row_osc);
+        msg.author = Some(sponsor);
+        let mut row = crate::network::history_pages::HistoryRow::from_message(&msg);
+        row.gpl = blob.to_vec();
+        self.push_history_rows_to_siblings(token, "an invitation", vec![row], None);
     }
 
     /// An invitation is something a person sent us: it rings and alerts like a photon from them (Nick 2026-10-24: "it didn't ding for the recipients"), with the sponsor's own chirp and their name as the title.
@@ -718,6 +746,9 @@ impl PhotonApp {
             }
         }
         let chains_moved = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.set_molecule_participants(&members));
+        if chains_moved || changed {
+            self.release_molecule_frames(*gid);
+        }
         if chains_moved {
             self.persist_chains_of(&fid);
         }
@@ -922,6 +953,60 @@ impl PhotonApp {
     /// Queue a group-side post for the fan-out send (drained by step 4's group transmit).
     pub(super) fn queue_molecule_post(&mut self, post: MoleculePost) {
         self.pending_molecule_posts.push(post);
+    }
+
+    /// Hand roster records (our leave) to our own devices as a page row under the group's token, the records in the `gpl` column.
+    pub(super) fn share_molecule_records_with_fleet(&self, gid: MoleculeId, blob: Vec<u8>) {
+        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            return;
+        };
+        let mut msg = crate::types::ChatMessage::control(crate::types::RowControl::Molecule(MoleculeSignal::Records), true, crate::network::time_base::stamp_osc());
+        msg.author = Some(us);
+        let mut row = crate::network::history_pages::HistoryRow::from_message(&msg);
+        row.gpl = blob;
+        self.push_history_rows_to_siblings(gid.token(), &hex::encode(&gid.0[..4]), vec![row], None);
+    }
+
+    /// A sibling came online: every group we have left hands it our leave again (a no-op merge on a device that already left), so a device that was away when we left still leaves.
+    pub(super) fn reshare_fleet_leaves(&self) {
+        let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+            return;
+        };
+        for (gid, roster) in &self.molecule_rosters {
+            if !self.molecule_is_left(gid) {
+                continue;
+            }
+            let Some(leave) = roster.leaves.get(&us).cloned() else {
+                continue;
+            };
+            let mut posted = Roster::default();
+            posted.merge_leave(leave);
+            if let Ok(b) = crate::storage::molecule::roster_to_vsf_bytes(gid, &posted) {
+                self.share_molecule_records_with_fleet(*gid, b);
+            }
+        }
+    }
+
+    /// Hold a group frame whose signer the roster does not name yet; the oldest go first past 64 for one group (a flood from a device that never joins cannot grow without bound).
+    pub(super) fn hold_molecule_frame(&mut self, gid: MoleculeId, update: crate::network::status::StatusUpdate) {
+        const HELD_PER_GROUP: usize = 64;
+        if self.molecule_held_frames.iter().filter(|(g, _)| *g == gid).count() >= HELD_PER_GROUP {
+            if let Some(i) = self.molecule_held_frames.iter().position(|(g, _)| *g == gid) {
+                self.molecule_held_frames.remove(i);
+            }
+        }
+        self.molecule_held_frames.push((gid, update));
+    }
+
+    /// The roster's standing set moved: every frame held for this group re-enters the receive arm, full gates and all.
+    fn release_molecule_frames(&mut self, gid: MoleculeId) {
+        if !self.molecule_held_frames.iter().any(|(g, _)| *g == gid) {
+            return;
+        }
+        let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.molecule_held_frames).into_iter().partition(|(g, _)| *g == gid);
+        self.molecule_held_frames = rest;
+        crate::logf!("MOLECULE: {} held frame(s) in {} replayed — its roster moved", mine.len(), hex::encode(&gid.0[..4]));
+        self.chat_replay_queue.extend(mine.into_iter().map(|(_, u)| u));
     }
 
     /// The edge a parked group post waits for (keys landed, a cutover): every post parked for this group drains on the next tick.
@@ -1141,6 +1226,10 @@ impl PhotonApp {
         self.sync_molecule_conversation(&gid);
         self.persist_molecule(&gid);
         self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Left);
+        // Our other devices hear the leave directly, not only by the group's chains syncing: those chains die with the root, and a group we were alone in never syncs at all (Nick 2026-10-25: leaving did not reach the whole fleet).
+        if let Some(b) = blob.as_ref() {
+            self.share_molecule_records_with_fleet(gid, b.clone());
+        }
         if alone {
             self.zeroize_molecule_root(gid);
             crate::logf!("MOLECULE: left {} — alone, root zeroized at once", hex::encode(&gid.0[..4]));

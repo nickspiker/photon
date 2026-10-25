@@ -1729,6 +1729,8 @@ pub struct PhotonApp {
     braid_rx_rx: std::sync::mpsc::Receiver<BraidRxDecrypted>,
     /// Gap-refill replays minted by commit_braid_rx: buffered frames whose predecessor just committed, re-entering the arm's full gates ahead of new channel items (FIFO — a refilled N+1 processes before anything newer).
     chat_replay_queue: std::collections::VecDeque<crate::network::status::StatusUpdate>,
+    /// GROUP frames from a signer the roster did not name yet, per group, replayed thru `chat_replay_queue` when that roster's standing set moves (molecules.rs `hold_molecule_frame`).
+    molecule_held_frames: Vec<(crate::types::molecule::MoleculeId, crate::network::status::StatusUpdate)>,
     /// Send braid encrypts finished off-thread (see BraidTxEncrypted) — the drain commits.
     braid_tx_tx: std::sync::mpsc::Sender<BraidTxEncrypted>,
     braid_tx_rx: std::sync::mpsc::Receiver<BraidTxEncrypted>,
@@ -2899,6 +2901,7 @@ impl PhotonApp {
             },
             braid_rx_rx: std::sync::mpsc::channel().1,
             chat_replay_queue: std::collections::VecDeque::new(),
+            molecule_held_frames: Vec::new(),
             braid_tx_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

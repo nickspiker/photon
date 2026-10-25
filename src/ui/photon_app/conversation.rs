@@ -2553,6 +2553,11 @@ impl PhotonApp {
                 if let Some(gid) = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g) {
                     self.hist_rid_map.remove(&request_id);
                     if let Some(page) = page {
+                        // Records one of our devices handed over directly (our own leave, made there): merged like a replicated roster, so this device leaves too even if the group's keys never synced to it.
+                        let records: Vec<Vec<u8>> = page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)))).map(|r| r.gpl.clone()).collect();
+                        for blob in records {
+                            self.adopt_replicated_molecule(gid, &blob);
+                        }
                         let fid = crate::types::FriendshipId::from_bytes(gid.0);
                         let conv_pos = match self.conversations.iter().position(|v| v.id() == fid) {
                             Some(p) => p,
@@ -2637,6 +2642,13 @@ impl PhotonApp {
             if !(answered.is_some() || in_flight_match || from_sibling) {
                 crate::logf!("HISTORY: page from {} DROPPED — rid unmatched and sender is not a fold-trusted sibling", crate::fp(&sender_pubkey.key));
                 continue;
+            }
+            // AN INVITATION ONE OF OUR DEVICES RECEIVED: it carries the sponsor's snapshot, and this device parks it too — the sponsor's offer reaches whichever of our devices answers first, and the fleet ACK stops it from ever being re-sent to the rest (Nick's Pixel 2026-10-25 dropped its copy mid-decrypt and never saw the invitation).
+            if from_sibling {
+                let offers: Vec<(i64, Vec<u8>)> = page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Offer)))).map(|r| (r.timestamp, r.gpl.clone())).collect();
+                for (ts, blob) in offers {
+                    self.park_fleet_offer(idx, blob, ts);
+                }
             }
             let conv_pos = {
                 let derived = self.contacts[idx].conversation(&our_pid);
