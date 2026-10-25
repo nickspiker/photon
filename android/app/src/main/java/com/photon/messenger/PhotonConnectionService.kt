@@ -52,6 +52,8 @@ class PhotonConnectionService : Service() {
         /** Activity intent extras for the wave surface: the full-screen intent carries INCOMING_WAVE so the Activity shows over the keyguard and lights the screen; the notification's Answer carries WAVE_ACTION=answer so the Activity (which notifications MAY start — a Service on Android 10+ may not) hands the verdict to Rust and is in hand with the wave screen. */
         const val EXTRA_INCOMING_WAVE = "com.photon.INCOMING_WAVE"
         const val EXTRA_WAVE_ACTION = "com.photon.WAVE_ACTION"
+        /** The conversation (64 hex chars) a message notification's tap opens. */
+        const val EXTRA_OPEN_CONVERSATION = "com.photon.OPEN_CONVERSATION"
         const val ACTION_DECLINE_WAVE = "com.photon.DECLINE_WAVE"
         private const val TAG = "PhotonService"
         private const val POLL_INTERVAL_MS = 1000L // 1 second network polling
@@ -677,7 +679,7 @@ class PhotonConnectionService : Service() {
      * the lock screen is the OS's job via its per-app sensitive-content setting. The sender key still
      * never crosses — only its rendered audio/haptic and the display name do.
      */
-    fun postMessageNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String) {
+    fun postMessageNotification(wav: ByteArray, timings: LongArray, amplitudes: IntArray, sender: String, text: String, conversation: String) {
         // No foreground bail here: RUST owns the suppression decision (it calls this only when the
         // user is NOT looking at the sender's conversation — see photon_app's `looking` gate). The
         // old blanket inForeground return silenced messages from everyone else while the app was
@@ -699,11 +701,16 @@ class PhotonConnectionService : Service() {
             getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
         }
 
+        // The tap opens THIS notification's conversation: the id rides the intent, and FLAG_UPDATE_CURRENT keeps the one banner pointing at its newest sender (a cached intent with stale extras opened the wrong one, or none).
+        val tapIntent = Intent(this, PhotonActivity::class.java)
+        if (conversation.isNotEmpty()) {
+            tapIntent.putExtra(EXTRA_OPEN_CONVERSATION, conversation)
+        }
         val pendingIntent = PendingIntent.getActivity(
             this,
             0,
-            Intent(this, PhotonActivity::class.java),
-            PendingIntent.FLAG_IMMUTABLE
+            tapIntent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
         val notification = NotificationCompat.Builder(this, PhotonActivity.CHANNEL_ID)
             .setContentTitle(sender)

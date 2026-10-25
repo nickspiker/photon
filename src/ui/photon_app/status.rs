@@ -255,6 +255,9 @@ impl PhotonApp {
         let mut molecule_stragglers: Vec<(crate::types::FriendshipId, [u8; 32])> = Vec::new();
         // GROUP frames from a signer our roster does not name yet (a member whose join records are still on their way): held after the loop and replayed when that roster advances, never dropped.
         let mut molecule_held: Vec<(crate::types::molecule::MoleculeId, StatusUpdate)> = Vec::new();
+        // GROUP frames on a lane we hold, kept for relaying to members who miss them; and members' advertised lane heads per group, the relay's trigger — both applied after the loop.
+        let mut group_frames_after: Vec<super::molecules::GroupFrame> = Vec::new();
+        let mut group_heads_after: Vec<(crate::types::molecule::MoleculeId, [u8; 32], u32, Vec<([u8; 32], i64)>)> = Vec::new();
 
         // The braid / strict-ordering replay queue: when a committed decrypt fills a hash-chain gap, commit_braid_rx minted the now-contiguous buffered frames as synthetic ChatMessage updates on chat_replay_queue — seeded here so they re-enter the arm's full gates BEFORE the next channel item (a refilled N+1 processes ahead of anything newer, and can itself cascade). FIFO front-drain.
         let mut replay_queue: std::collections::VecDeque<StatusUpdate> =
@@ -522,6 +525,9 @@ impl PhotonApp {
                             }
                             // Tip testimony clears BEFORE stall recovery re-arms: pendings at/below the peer's contiguous lane head are received-in-order facts, not in-flight sends — un-re-ACKable pre-fix rows sat there wedging the window shut against the very send whose ACK could have implied them away.
                             // ERA (stage 2): the peer's advertised era makes a stale era visible on the presence edge, before any frame fails. Change-edge per (friendship, peer device): a new observation is logged and handed to the repair decision; a repeat is silent.
+                            if chains.molecule {
+                                group_heads_after.push((crate::types::molecule::MoleculeId(*fid.as_bytes()), peer_pubkey.key, record.era_tag, record.lane_heads.clone()));
+                            }
                             if record.era_tag != 0 {
                                 let seen = self.peer_era_seen.insert((*fid, peer_pubkey.key), (record.era_index, record.era_tag));
                                 let ours_tag = chains.era_tag();
@@ -1197,6 +1203,8 @@ impl PhotonApp {
                     sender_addr,
                     sender_pubkey,
                     era,
+                    raw,
+                    relayed_by,
                 } => {
                     // Get our handle_hash for chain lookups
                     let our_handle_hash = match self
@@ -1248,7 +1256,7 @@ impl PhotonApp {
                                 None => {
                                     // HELD, not dropped (Emma's phone 2026-10-25): the newest member's records reach each device by its own path, and a frame that beat them here was lost for good once another of that member's devices ACKed it for them.
                                     crate::logf!("MOLECULE: held frame — signer {}... is no standing member's device of {} yet; replayed when its roster advances", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
-                                    molecule_held.push((gid, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext: ciphertext.clone(), timestamp, sender_addr, sender_pubkey: sender_pubkey.clone(), era }));
+                                    molecule_held.push((gid, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext: ciphertext.clone(), timestamp, sender_addr, sender_pubkey: sender_pubkey.clone(), era, raw: raw.clone(), relayed_by }));
                                     continue;
                                 }
                             }
@@ -1294,6 +1302,9 @@ impl PhotonApp {
                         if chains.ensure_lane_era(&lane, slot).is_none() {
                             crate::log("CHAT: frame for pre-lane chains (no root) — dropped; re-clutch re-mints");
                             continue;
+                        }
+                        if chains.molecule {
+                            group_frames_after.push(super::molecules::GroupFrame { gid: crate::types::molecule::MoleculeId(*fid_ref.as_bytes()), lane, ts: timestamp, author_device: sender_pubkey.key, era, raw: raw.clone() });
                         }
 
                         // Find contact by their handle_hash
@@ -5664,6 +5675,12 @@ impl PhotonApp {
         catching_up.dedup();
         for (gid, update) in molecule_held {
             self.hold_molecule_frame(gid, update);
+        }
+        for frame in group_frames_after {
+            self.store_group_frame(frame);
+        }
+        for (gid, peer, era, heads) in group_heads_after {
+            self.relay_group_frames(gid, peer, era, &heads);
         }
         for (fid, party) in molecule_stragglers {
             self.deliver_era_to_straggler(fid, party);

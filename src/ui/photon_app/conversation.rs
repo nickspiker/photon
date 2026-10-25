@@ -406,6 +406,54 @@ impl PhotonApp {
     }
 
     /// Open the conversation this contact row stands for.
+    /// ENTER a group's conversation: the screen, the scroll chrome, the unread clear — the group-row tap and a notification tap both land here.
+    pub(super) fn enter_molecule(&mut self, gi: usize) {
+        self.open_molecule_conversation(gi);
+        self.state = AppState::Conversation;
+        self.conv_topbar_off = 0.0;
+        self.conv_blind_h = [0.0; 3];
+        self.conv_blind_edge = f32::MAX;
+        self.clear_molecule_unread(gi);
+        self.change_focus(None);
+        self.scene_dirty = true;
+    }
+
+    /// ENTER a pair's conversation with contact `ci`: the screen, unread clear, a fresh presence probe and the header avatar — the People tap and a notification tap both land here.
+    pub(super) fn enter_pair_conversation(&mut self, ci: usize) {
+        self.open_conversation_with(ci);
+        self.state = AppState::Conversation;
+        self.reset_contact_ping_backoff();
+        self.conv_topbar_off = 0.0;
+        self.conv_blind_h = [0.0; 3];
+        self.conv_blind_edge = f32::MAX;
+        // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
+        self.clear_unread(ci);
+        self.change_focus(None);
+        // Refresh this contact's presence on conversation-enter so the header reflects reality promptly — and arm the one-second verdict (presence_probe_tick).
+        self.ping_contact(ci);
+        self.presence_probe = self.contacts.get(ci).map(|c| (c.id, std::time::Instant::now()));
+        // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
+        self.spawn_avatar_download(ci);
+        self.scene_dirty = true;
+    }
+
+    /// ENTER any conversation by its id, at any size (a notification tap): a roster-backed one as a group, a pair's thru its contact. Returns whether one was found.
+    pub(super) fn enter_conversation_id(&mut self, id: crate::types::ConversationId) -> bool {
+        if let Some(gi) = self.molecule_rosters.iter().position(|(g, _)| g.0 == *id.as_bytes()) {
+            if self.conv_by_id(id).is_some_and(|v| v.is_molecule()) {
+                self.enter_molecule(gi);
+                return true;
+            }
+        }
+        match self.pair_contact_of(id) {
+            Some(ci) => {
+                self.enter_pair_conversation(ci);
+                true
+            }
+            None => false,
+        }
+    }
+
     pub(super) fn open_conversation_with(&mut self, ci: usize) {
         // Switching conversations stops a wave that was playing in the one we leave.
         self.wave_playback = None;
@@ -1731,6 +1779,8 @@ impl PhotonApp {
                         era: None,
                         // (buf.sender_addr is SocketAddr; matches the variant field)
                         sender_pubkey: crate::types::DevicePubkey::from_bytes(buf.sender_pubkey),
+                        raw: Vec::new(),
+                        relayed_by: None,
                     });
                 }
             }
@@ -2154,6 +2204,7 @@ impl PhotonApp {
                             &chirp_seed,
                             &sender_name,
                             &notify_body,
+                            Some(*conv.id().as_bytes()),
                         );
                     }
                     #[cfg(not(target_os = "android"))]
@@ -2161,6 +2212,7 @@ impl PhotonApp {
                         &msg_hp,
                         &sender_name,
                         &notify_body,
+                        Some(*conv.id().as_bytes()),
                     );
                 }
 
@@ -3030,10 +3082,11 @@ impl PhotonApp {
                 &chirp_seed,
                 &sender_name,
                 &summary,
+                self.conversations.get(conv_pos).map(|v| *v.id().as_bytes()),
             );
         }
         #[cfg(not(target_os = "android"))]
-        crate::platform::desktop_notify::notify_new_message(&batch_hp, &sender_name, &summary);
+        crate::platform::desktop_notify::notify_new_message(&batch_hp, &sender_name, &summary, self.conversations.get(conv_pos).map(|v| *v.id().as_bytes()));
         if let Some(conv) = self.conversations.get_mut(conv_pos) {
             for m in conv.messages.iter_mut() {
                 if undischarged.contains(&m.timestamp) {

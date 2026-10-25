@@ -88,6 +88,7 @@ impl FluorApp for PhotonApp {
         #[cfg(not(target_os = "android"))]
         {
             crate::platform::control::spawn_accept_thread(proxy.clone());
+            crate::platform::desktop_notify::set_wake(proxy.clone());
             // Resident from launch → the orb parks next to the clock now; a later toggle-on spawns it then (tray_spawned gates the once-per-process).
             if self.resident_mode && !self.tray_spawned {
                 crate::platform::tray::spawn(proxy.clone());
@@ -1388,13 +1389,7 @@ impl FluorApp for PhotonApp {
             let gi = (hit_id - self.molecule_hit_base) as usize;
             if gi < self.molecule_rosters.len() {
                 crate::logf!("group-tap: opening \"{}\"", self.molecule_rosters[gi].1.title());
-                self.open_molecule_conversation(gi);
-                self.state = AppState::Conversation;
-                self.conv_topbar_off = 0.0;
-                self.conv_blind_h = [0.0; 3];
-                self.conv_blind_edge = f32::MAX;
-                self.clear_molecule_unread(gi);
-                self.change_focus(None);
+                self.enter_molecule(gi);
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -1416,20 +1411,7 @@ impl FluorApp for PhotonApp {
                 if self.contacts[ci].friendship_id.is_none() {
                     self.found_pair_conversation(ci);
                 }
-                self.open_conversation_with(ci);
-                self.state = AppState::Conversation;
-                self.reset_contact_ping_backoff();
-                self.conv_topbar_off = 0.0;
-                self.conv_blind_h = [0.0; 3];
-                self.conv_blind_edge = f32::MAX;
-                // Opening the conversation is the interaction that clears unread (ring + float drop away on the next contacts-list frame).
-                self.clear_unread(ci);
-                self.change_focus(None);
-                // Refresh this contact's presence on conversation-enter so the header reflects reality promptly — and arm the one-second verdict (presence_probe_tick).
-                self.ping_contact(ci);
-                self.presence_probe = self.contacts.get(ci).map(|c| (c.id, Instant::now()));
-                // Fetch the peer's avatar (once/session) so the conversation header shows it instead of the grey placeholder. Cache-first, network on miss; off-thread. Keyed by the pin-set (hp + party id + avatar key) — no handle.
-                self.spawn_avatar_download(ci);
+                self.enter_pair_conversation(ci);
                 ctx.window.request_redraw();
                 return EventResponse::Handled;
             }
@@ -3009,6 +2991,23 @@ impl FluorApp for PhotonApp {
             if lost || gained {
                 // Intermediate flapping collapses to the current truth: a pause→resume that both landed since the last tick is just "still here" (claim never retracted — continuity), and a resume→pause is just "gone".
                 self.on_focus_changed(crate::platform::jni_android::app_in_foreground());
+            }
+        }
+
+        // A NOTIFICATION TAP opens the conversation it named (latched by the Activity, or by a clicked desktop notification, and taken here where &mut self lives). Only once signed in; until then it stays latched for the first signed-in tick.
+        if self.session.is_some() {
+            #[cfg(target_os = "android")]
+            let tapped = crate::platform::jni_android::take_open_conversation();
+            #[cfg(not(target_os = "android"))]
+            let tapped = crate::platform::desktop_notify::take_open_conversation();
+            if let Some(id) = tapped {
+                let id = crate::types::ConversationId::from_bytes(id);
+                if self.enter_conversation_id(id) {
+                    crate::logf!("NOTIFY: tap opened conversation {}", hex::encode(&id.as_bytes()[..4]));
+                    needs_redraw = true;
+                } else {
+                    crate::logf!("NOTIFY: tap named conversation {}, which this device does not hold", hex::encode(&id.as_bytes()[..4]));
+                }
             }
         }
 

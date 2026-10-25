@@ -22,7 +22,96 @@ pub(super) struct MoleculePost {
     pub control: bool,
 }
 
+/// A GROUP frame exactly as its author's device signed it, kept so this device can hand it to a member who missed it (`grp_relay`).
+pub(super) struct GroupFrame {
+    pub gid: MoleculeId,
+    /// The author's lane label (a member's sync record names its head per label).
+    pub lane: [u8; 32],
+    pub ts: i64,
+    pub author_device: [u8; 32],
+    /// The era tag the frame was sent under (`None` = untagged); only a member on that era can open it.
+    pub era: Option<u32>,
+    pub raw: Vec<u8>,
+}
+
+/// Frames kept per group for relaying: the newest win.
+const GROUP_FRAMES_KEPT: usize = 256;
+/// At most this many frames handed to one member device per sync record (oldest first; the next record carries on).
+const GROUP_RELAY_BURST: usize = 16;
+
 impl PhotonApp {
+    /// Keep a group frame for relaying (once per author device and stamp).
+    pub(super) fn store_group_frame(&mut self, frame: GroupFrame) {
+        if frame.raw.is_empty() || self.molecule_frames.iter().any(|f| f.gid == frame.gid && f.ts == frame.ts && f.author_device == frame.author_device) {
+            return;
+        }
+        let gid = frame.gid;
+        self.molecule_frames.push(frame);
+        let held = self.molecule_frames.iter().filter(|f| f.gid == gid).count();
+        if held > GROUP_FRAMES_KEPT {
+            if let Some(oldest) = self.molecule_frames.iter().enumerate().filter(|(_, f)| f.gid == gid).min_by_key(|(_, f)| f.ts).map(|(i, _)| i) {
+                self.molecule_frames.remove(oldest);
+            }
+        }
+    }
+
+    /// MEMBER RELAY (Nick 2026-10-25: "if steve sends and only mike is online, then steve goes offline and jan comes online, jan should get steve's messages"): a member device `peer` just advertised its lane heads for group `gid`.
+    /// Every frame we hold that it is behind on, from an author whose own devices are away, goes to it byte for byte inside a `grp_relay`, so it reaches every member by whoever is online, hop by hop. Only frames on the era that device is on (it opens nothing else), at most three tries per frame per device.
+    pub(super) fn relay_group_frames(&mut self, gid: MoleculeId, peer: [u8; 32], peer_era: u32, heads: &[([u8; 32], i64)]) {
+        if self.device_keypair.as_ref().is_some_and(|k| *k.public.as_bytes() == peer) || self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&peer)) {
+            return;
+        }
+        let Some(roster) = self.molecule_rosters.iter().find(|(g, _)| *g == gid).map(|(_, r)| r) else {
+            return;
+        };
+        // The device must belong to a standing member: a friend's device thru the contact fold, a never-friended member's thru its folded devices.
+        let route = match self.contacts.iter().find(|c| !c.is_sibling && c.knows_device(&peer) && roster.is_standing(&c.handle_hash)) {
+            Some(c) => {
+                let relay_to = if c.relay_device_list().contains(&peer) { vec![peer] } else { Vec::new() };
+                match (c.device_key() == Some(peer)).then(|| c.race_addrs()).flatten() {
+                    Some((a, b)) if !c.direct_parked() => (a, b, relay_to),
+                    _ => (crate::network::status::RELAY_ADDR, None, vec![peer]),
+                }
+            }
+            None if self.molecule_peers.iter().any(|p| p.devices.contains(&peer) && roster.is_standing(&p.party)) => (crate::network::status::RELAY_ADDR, None, vec![peer]),
+            None => return,
+        };
+        let head_of = |lane: &[u8; 32]| heads.iter().find(|(l, _)| l == lane).map_or(0, |(_, t)| *t);
+        let author_here = |dev: &[u8; 32]| self.contacts.iter().any(|c| c.knows_device(dev) && c.is_online);
+        let mut owed: Vec<(i64, usize)> = self
+            .molecule_frames
+            .iter()
+            .enumerate()
+            .filter(|(_, f)| f.gid == gid && f.author_device != peer && f.ts > head_of(&f.lane))
+            .filter(|(_, f)| peer_era == 0 || f.era.is_none_or(|t| t == peer_era))
+            .filter(|(_, f)| !author_here(&f.author_device))
+            .filter(|(_, f)| self.molecule_relay_tries.get(&(peer, f.ts)).copied().unwrap_or(0) < 3)
+            .map(|(i, f)| (f.ts, i))
+            .collect();
+        // Frames it has caught up on stop being tracked.
+        self.molecule_relay_tries.retain(|(d, ts), _| *d != peer || self.molecule_frames.iter().any(|f| f.gid == gid && f.ts == *ts && f.ts > head_of(&f.lane)));
+        if owed.is_empty() {
+            return;
+        }
+        owed.sort_unstable();
+        owed.truncate(GROUP_RELAY_BURST);
+        let (Some(kp), Some(checker)) = (self.device_keypair.as_ref(), self.status_checker.as_ref()) else {
+            return;
+        };
+        let token = gid.token();
+        let dispatch = checker.history_dispatch();
+        let mut sent = 0usize;
+        for (ts, i) in &owed {
+            let Ok(vsf_bytes) = crate::network::fgtw::protocol::build_grp_relay_vsf(&token, &self.molecule_frames[*i].raw, kp.public.as_bytes(), kp.secret.as_bytes()) else {
+                continue;
+            };
+            let _ = dispatch.send(crate::network::status::HistorySendRequest { peer_addr: route.0, alt_addr: route.1, recipient_pubkey: peer, vsf_bytes, relay_to: route.2.clone(), tag: None });
+            *self.molecule_relay_tries.entry((peer, *ts)).or_insert(0) += 1;
+            sent += 1;
+        }
+        crate::logf!("RELAY: handed {} frame(s) of {} to member device {} — their authors are away", sent, hex::encode(&gid.0[..4]), crate::fp(&peer));
+    }
+
     /// A `MoleculeSignal` control row landed (deferred from commit_braid_rx): `ci` = the sender's contact, `cp` = the conversation the row landed in, `wire` = the package's typed group extras.
     pub(super) fn on_molecule_signal(&mut self, ci: usize, cp: usize, sig: MoleculeSignal, wire: Option<crate::network::message_package::MoleculeWire>, kem: Option<crate::crypto::era::EraKemWire>, ts: i64) {
         let blob = wire.as_ref().and_then(|g| g.blob.clone());
@@ -142,10 +231,10 @@ impl PhotonApp {
         let digest = super::relationship_digest(&c.handle_hash, &us);
         crate::logf!("NOTIFY: invitation to {} from {}", hex::encode(&gid.0[..4]), crate::fp(&c.handle_proof));
         #[cfg(target_os = "android")]
-        crate::platform::jni_android::notify_new_message(&alert_hp, &digest, &sender, &body);
+        crate::platform::jni_android::notify_new_message(&alert_hp, &digest, &sender, &body, None);
         #[cfg(not(target_os = "android"))]
         {
-            crate::platform::desktop_notify::notify_new_message(&alert_hp, &sender, &body);
+            crate::platform::desktop_notify::notify_new_message(&alert_hp, &sender, &body, None);
             std::thread::spawn(move || {
                 chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
             });

@@ -52,9 +52,10 @@ static LAST_NOTIFIED_MSG: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex:
 ///
 /// Kotlin decides visibility/foreground suppression. No-op if the service never registered. Callable from any thread — attaches to the JVM as needed.
 #[cfg(target_os = "android")]
-pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str) {
+/// `conversation`: the conversation a tap on this notification opens (`None` = the app opens where it was).
+pub fn notify_new_message(msg_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &str, text: &str, conversation: Option<[u8; 32]>) {
     // The chirp seed IS the relationship digest, passed in verbatim — identical to the desktop in-app chirp's seed, so one sender = one song across every device and platform (seeding from the per-device pinned pubkey made one sender sound different everywhere).
-    notify_with_chirp(msg_hp, chirp::Chirp::from_hash(*chirp_seed), sender, text)
+    notify_with_chirp(msg_hp, chirp::Chirp::from_hash(*chirp_seed), sender, text, conversation)
 }
 
 /// The wave flavor of [`notify_new_message`]: same relationship digest, but rendered as the RING — the identity instrument held in the wave cadence (`chirp::Chirp::ring_from_hash`) instead of the one-shot ding.
@@ -70,6 +71,7 @@ pub fn notify_incoming_wave(ring_hp: &[u8; 32], chirp_seed: &[u8; 32], sender: &
         "postWaveNotification",
         // Muted (notify.ring_wave off) still posts the notification; gap None tells Kotlin to skip the ring loop entirely.
         if audible { Some(ring_gap_ms()) } else { None },
+        None,
     )
 }
 
@@ -142,13 +144,13 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeWaveAc
 
 /// Shared body: dedup on the hash pointer, render the given chirp to WAV + haptic, post to Kotlin.
 #[cfg(target_os = "android")]
-fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str) {
-    notify_with_chirp_via(msg_hp, chirp, sender, text, "postMessageNotification", None)
+fn notify_with_chirp(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, conversation: Option<[u8; 32]>) {
+    notify_with_chirp_via(msg_hp, chirp, sender, text, "postMessageNotification", None, conversation)
 }
 
 /// Shared marshal for both notification flavors — `method` names the Kotlin post entry point (message vs wave class).
 #[cfg(target_os = "android")]
-fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, method: &str, ring_gap_ms: Option<i32>) {
+fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, text: &str, method: &str, ring_gap_ms: Option<i32>, conversation: Option<[u8; 32]>) {
     // Dedup: skip if this is the same message we most recently notified for (a retransmit).
     {
         let mut last = LAST_NOTIFIED_MSG.lock().unwrap();
@@ -213,6 +215,13 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
                 }
             };
 
+            let conv_js = match env.new_string(conversation.map(hex::encode).unwrap_or_default()) {
+                Ok(s) => s,
+                Err(e) => {
+                    error!("notify_new_message: conversation string alloc failed: {:?}", e);
+                    return;
+                }
+            };
             // The wave flavor takes a trailing gap-ms int (Kotlin loops the ring and renders the silence); the message flavor doesn't.
             let (sig, args): (&str, Vec<jni::objects::JValue>) = match ring_gap_ms {
                 Some(gap) => (
@@ -227,13 +236,15 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
                     ],
                 ),
                 None => (
-                    "([B[J[ILjava/lang/String;Ljava/lang/String;)V",
+                    // The message flavor's trailing string is the conversation a tap opens (hex; empty = none).
+                    "([B[J[ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;)V",
                     vec![
                         (&wav_arr).into(),
                         (&timings_arr).into(),
                         (&amps_arr).into(),
                         (&sender_js).into(),
                         (&text_js).into(),
+                        (&conv_js).into(),
                     ],
                 ),
             };
@@ -2148,4 +2159,29 @@ pub fn android_wfd_platform() -> Box<dyn crate::network::wfd::WfdPlatform> {
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetHdrHeadroom(_env: JNIEnv<'_>, _class: JClass<'_>, ratio: jni::sys::jfloat) {
     fluor::host::android::hdr_surface::set_display_headroom(ratio);
+}
+
+/// A NOTIFICATION TAP's conversation (Nick 2026-10-01: "clicking the notification does not bring up that conversation"): the Activity reads the id its tap intent carried and hands it here from the main thread; the app's tick takes it and opens that conversation.
+#[cfg(target_os = "android")]
+static PENDING_OPEN_CONVERSATION: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+/// One-shot take of the conversation a notification tap asked to open.
+#[cfg(target_os = "android")]
+pub fn take_open_conversation() -> Option<[u8; 32]> {
+    PENDING_OPEN_CONVERSATION.lock().ok().and_then(|mut g| g.take())
+}
+
+/// Kotlin → the conversation id (64 hex chars) a tapped notification carried. Ptr-less: valid before the native context exists, so a cold launch from a tap still opens it once the app is up.
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeOpenConversation(mut env: JNIEnv<'_>, _class: JClass<'_>, id: JString<'_>) {
+    let Ok(id) = env.get_string(&id).map(String::from) else { return };
+    let Some(bytes) = hex::decode(id.trim()).ok().and_then(|b| <[u8; 32]>::try_from(b.as_slice()).ok()) else {
+        crate::log("NOTIFY: a tap carried no readable conversation id — the app opens where it was");
+        return;
+    };
+    if let Ok(mut g) = PENDING_OPEN_CONVERSATION.lock() {
+        *g = Some(bytes);
+    }
+    crate::logf!("NOTIFY: tap asked to open conversation {}", hex::encode(&bytes[..4]));
 }

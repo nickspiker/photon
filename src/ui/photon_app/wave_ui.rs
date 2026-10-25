@@ -1669,6 +1669,7 @@ impl PhotonApp {
                 &ring_hp,
                 &sender_name,
                 &tr(Msg::IncomingWave),
+                None,
             );
             if !ring_audible {
                 crate::log("WAVE: ring muted by notify.ring_wave — notification only");

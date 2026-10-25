@@ -389,6 +389,10 @@ pub enum StatusUpdate {
         era: Option<u32>,
         /// The signing device — carried so the UI thread can apply the full known∧not-refused gate (refused_devices/locked_out live there, not in the RX worker).
         sender_pubkey: DevicePubkey,
+        /// The frame's ORIGINAL signed bytes, kept so a group member can hand it on to a member who missed it (`grp_relay`); empty where the bytes are gone (a gap-buffer replay).
+        raw: Vec<u8>,
+        /// The device that relayed this frame to us (`grp_relay`), `None` when it came from its author.
+        relayed_by: Option<[u8; 32]>,
     },
     /// Sibling chain-reset frame received (fork repair): the fleet-sealed nonce blob rides opaque to the UI thread, which holds the fleet key + chains.
     ChainResetReceived {
@@ -2319,6 +2323,13 @@ async fn run_checker(
                                             &event_proxy_recv,
                                         );
                                     }
+                                    // A GROUP member handing on another member's frame (`grp_relay`) — the PT copy of a relay too large for one datagram.
+                                    else if let Some(update) = data.windows(9).any(|w| w == b"grp_relay").then(|| {
+                                        let list = contacts_recv.lock().unwrap();
+                                        relayed_group_frame(&data, src_addr, &list)
+                                    }).flatten() {
+                                        send_status_update(&status_tx_recv, update, &event_proxy_recv);
+                                    }
                                     // Attachment blob request (tap on a pill whose blob hasn't arrived)
                                     else if let Ok((
                                         (conversation_token, content_hash, want),
@@ -3029,6 +3040,22 @@ async fn run_checker(
                                 );
                                 continue;
                             }
+                            // A GROUP member handing on another member's frame (`grp_relay`) — same mandatory packet-ack as every reliable-queue frame.
+                            if msg_bytes.windows(9).any(|w| w == b"grp_relay") {
+                                let relayed = {
+                                    let list = contacts_recv.lock().unwrap();
+                                    relayed_group_frame(msg_bytes, src_addr, &list)
+                                };
+                                if let Some(update) = relayed {
+                                    let ack_bytes = {
+                                        let pt_mgr = pt_recv.lock().unwrap();
+                                        pt_mgr.build_packet_ack(msg_bytes)
+                                    };
+                                    udp::send(&socket_recv, &ack_bytes, src_addr).await;
+                                    send_status_update(&status_tx_recv, update, &event_proxy_recv);
+                                    continue;
+                                }
+                            }
                             if let Ok(((conversation_token, content_hash, want), sender_pubkey)) =
                                 crate::network::fgtw::protocol::parse_attach_req_vsf(msg_bytes)
                             {
@@ -3708,6 +3735,8 @@ async fn run_checker(
                                             sender_addr: src_addr,
                                             era,
                                             sender_pubkey,
+                                            raw: msg_bytes.to_vec(),
+                                            relayed_by: None,
                                         },
                                         &event_proxy_recv,
                                     );
@@ -5058,6 +5087,32 @@ async fn run_checker(
 }
 
 /// Verify Ed25519 signature on provenance hash
+/// A `grp_relay` frame (a GROUP member handing on another member's original frame) → the chat update it carries, or `None` to drop it.
+/// The relayer must be a known device or a device of that group; the inner frame must be a chat frame of the SAME group, signed by a device that may write in it, exactly as if it had come direct.
+/// No presence flip and no address adoption for the author: the frame came from the relayer, not from them.
+fn relayed_group_frame(data: &[u8], src_addr: SocketAddr, known: &[DevicePubkey]) -> Option<StatusUpdate> {
+    let ((token, inner), relayer) = crate::network::fgtw::protocol::parse_grp_relay_vsf(data).ok()?;
+    if !known.iter().any(|p| *p.as_bytes() == relayer) && !molecule_admits(&token, &relayer) {
+        crate::log("RELAY: group relay from an unknown device — dropped");
+        return None;
+    }
+    let FgtwMessage::ChatMessage { timestamp, conversation_token, lane, prev_msg_hp, ciphertext, sender_pubkey, signature, era } = FgtwMessage::from_vsf_bytes(&inner).ok()? else {
+        crate::log("RELAY: group relay carried no chat frame — dropped");
+        return None;
+    };
+    if conversation_token != token {
+        crate::log("RELAY: group relay's frame names another conversation — dropped");
+        return None;
+    }
+    let author_known = known.iter().any(|p| *p == sender_pubkey) || molecule_admits(&conversation_token, &sender_pubkey.key);
+    if !author_known || !verify_provenance_signature(&compute_chat_provenance(&conversation_token, &prev_msg_hp), &sender_pubkey, &signature) {
+        crate::log("RELAY: group relay's frame fails its author's checks — dropped");
+        return None;
+    }
+    crate::logf!("RELAY: frame {} of {} handed on by {}", timestamp, hex::encode(&conversation_token[..4]), hex::encode(&relayer[..4]));
+    Some(StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext, timestamp, sender_addr: src_addr, era, sender_pubkey, raw: inner, relayed_by: Some(relayer) })
+}
+
 fn verify_provenance_signature(
     provenance_hash: &[u8; 32],
     signer_pubkey: &DevicePubkey,

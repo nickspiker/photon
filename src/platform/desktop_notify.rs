@@ -33,8 +33,36 @@ pub fn set_attention_ours(ours: bool) {
 /// The last message identity we notified for, mirroring the Android dedupe: a dozing peer's retransmits redeliver the SAME logical message many times, and each would otherwise re-ding. Keyed on the message's chain-derived hash pointer, unique per logical message.
 static LAST_NOTIFIED: std::sync::Mutex<[u8; 32]> = std::sync::Mutex::new([0u8; 32]);
 
+/// The UI's wake handle, so a CLICKED notification can surface the window (the same ShowWindow the tray sends). Set once when the event loop hands the app its proxy.
+static WAKE: std::sync::OnceLock<std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>> = std::sync::OnceLock::new();
+
+/// The conversation the last clicked notification named, taken by the app's tick.
+static PENDING_OPEN: std::sync::Mutex<Option<[u8; 32]>> = std::sync::Mutex::new(None);
+
+pub fn set_wake(proxy: std::sync::Arc<dyn fluor::host::WakeSender<crate::ui::PhotonEvent>>) {
+    let _ = WAKE.set(proxy);
+}
+
+/// One-shot take of the conversation a notification click asked to open.
+pub fn take_open_conversation() -> Option<[u8; 32]> {
+    PENDING_OPEN.lock().ok().and_then(|mut g| g.take())
+}
+
+/// A notification was CLICKED: remember what it named and bring the window up; the tick opens it.
+#[allow(dead_code)] // reached only from the platforms whose notifier reports a click (Linux)
+fn clicked(conversation: Option<[u8; 32]>) {
+    if let (Some(id), Ok(mut g)) = (conversation, PENDING_OPEN.lock()) {
+        *g = Some(id);
+    }
+    crate::log("NOTIFY: desktop alert clicked — surfacing the window");
+    if let Some(w) = WAKE.get() {
+        let _ = w.send(crate::ui::PhotonEvent::ShowWindow);
+    }
+}
+
 /// Fire the platform notification for a decrypted message — title = the sender's display name, body = the message text — if anyone could actually be missing it (window hidden or unfocused) and this message hasn't already dinged. Callable from any thread.
-pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str) {
+/// `conversation`: what a click opens, where the platform's notifier reports clicks (`None` = the window just comes up).
+pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str, conversation: Option<[u8; 32]>) {
     // Every outcome logs (Nick's MacBook 2026-10-20: nothing in the log could say whether an alert was ever posted).
     if window_attended() && ATTENTION_OURS.load(Ordering::Relaxed) {
         crate::log("NOTIFY: desktop alert suppressed — the window is attended");
@@ -49,21 +77,38 @@ pub fn notify_new_message(msg_hp: &[u8; 32], sender: &str, text: &str) {
         *last = *msg_hp;
     }
     crate::log("NOTIFY: desktop alert posted");
-    post(sender, text);
+    post(sender, text, conversation);
 }
 
 #[cfg(target_os = "linux")]
-fn post(title: &str, body: &str) {
-    let _ = std::process::Command::new("notify-send")
-        .args(["--app-name=Photon", title, body])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .map_err(|e| crate::logf!("NOTIFY: the system notifier failed to launch: {}", e));
+fn post(title: &str, body: &str, conversation: Option<[u8; 32]>) {
+    // CLICKABLE: `--action` + `--wait` keep notify-send running until the notification closes and print the chosen action, so a click opens its conversation. It runs on its own thread; a libnotify too old for actions exits at once with nothing printed, and the plain fire-and-forget form posts instead.
+    let (title, body) = (title.to_string(), body.to_string());
+    std::thread::spawn(move || {
+        let waited = std::process::Command::new("notify-send")
+            .args(["--app-name=Photon", "--action=default=Open", "--wait", &title, &body])
+            .stderr(std::process::Stdio::null())
+            .output();
+        match waited {
+            Ok(out) if out.status.success() => {
+                if String::from_utf8_lossy(&out.stdout).trim() == "default" {
+                    clicked(conversation);
+                }
+            }
+            Ok(_) => {
+                let _ = std::process::Command::new("notify-send")
+                    .args(["--app-name=Photon", &title, &body])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
+            Err(e) => crate::logf!("NOTIFY: the system notifier failed to launch: {}", e),
+        }
+    });
 }
 
 #[cfg(target_os = "macos")]
-fn post(title: &str, body: &str) {
+fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
     // `display notification` needs no bundle/signing/notarization; attribution shows as Script Editor until we ship a proper .app with UNUserNotificationCenter.
     // Title/body are now real sender/message text interpolated into an AppleScript string literal, so backslashes and quotes MUST be escaped or a message containing them breaks (or injects into) the script.
     let esc = |s: &str| s.replace('\\', "\\\\").replace('"', "\\\"");
@@ -78,7 +123,7 @@ fn post(title: &str, body: &str) {
 }
 
 #[cfg(target_os = "windows")]
-fn post(title: &str, body: &str) {
+fn post(title: &str, body: &str, _conversation: Option<[u8; 32]>) {
     // WinRT toast via PowerShell — attribution rides PowerShell's AppUserModelID until we register our own (needs a Start-menu shortcut with an AUMID; packaging-time work). -WindowStyle Hidden keeps the transient console from flashing.
     // Title/body are now real sender/message text landing inside PowerShell single-quoted literals: double the single quotes so message content can't terminate the literal.
     let esc = |s: &str| s.replace('\'', "''");
@@ -100,4 +145,4 @@ fn post(title: &str, body: &str) {
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
-fn post(_title: &str, _body: &str) {}
+fn post(_title: &str, _body: &str, _conversation: Option<[u8; 32]>) {}

@@ -1731,6 +1731,10 @@ pub struct PhotonApp {
     chat_replay_queue: std::collections::VecDeque<crate::network::status::StatusUpdate>,
     /// GROUP frames from a signer the roster did not name yet, per group, replayed thru `chat_replay_queue` when that roster's standing set moves (molecules.rs `hold_molecule_frame`).
     molecule_held_frames: Vec<(crate::types::molecule::MoleculeId, crate::network::status::StatusUpdate)>,
+    /// GROUP frames as their authors signed them, per group (molecules.rs `store_group_frame`): what a member hands on to another member who missed them while the author is away.
+    molecule_frames: Vec<molecules::GroupFrame>,
+    /// How often each frame was handed to each member device ((device, frame stamp) → tries): a frame goes at most three times to one device.
+    molecule_relay_tries: std::collections::HashMap<([u8; 32], i64), u8>,
     /// Send braid encrypts finished off-thread (see BraidTxEncrypted) — the drain commits.
     braid_tx_tx: std::sync::mpsc::Sender<BraidTxEncrypted>,
     braid_tx_rx: std::sync::mpsc::Receiver<BraidTxEncrypted>,
@@ -2902,6 +2906,8 @@ impl PhotonApp {
             braid_rx_rx: std::sync::mpsc::channel().1,
             chat_replay_queue: std::collections::VecDeque::new(),
             molecule_held_frames: Vec::new(),
+            molecule_frames: Vec::new(),
+            molecule_relay_tries: std::collections::HashMap::new(),
             braid_tx_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx

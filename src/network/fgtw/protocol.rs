@@ -3228,6 +3228,48 @@ pub fn parse_attach_req_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], [u8; 32], Op
     Ok(((conversation_token, content_hash, want), sender_pubkey))
 }
 
+/// Build a `grp_relay` frame: a GROUP member hands another member's ORIGINAL chat frame (`inner`, byte for byte, signed by its author's device) to a member device that has not received it, while its author's own devices are away.
+/// The wrapper is signed by the relaying device; the receiver verifies both, and a relayed frame never counts as presence for its author (it did not come from them).
+pub fn build_grp_relay_vsf(conversation_token: &[u8; 32], inner: &[u8], device_pubkey: &[u8; 32], device_secret: &[u8; 32]) -> Result<Vec<u8>, String> {
+    use vsf::file_format::VsfSection;
+    use vsf::VsfBuilder;
+
+    let mut section = VsfSection::new("grp_relay");
+    section.add_field("tok", VsfType::hg(conversation_token.to_vec()));
+    section.add_field("inner", VsfType::hR(inner.to_vec()));
+
+    let unsigned = VsfBuilder::new()
+        .creation_time_oscillations(vsf::eagle_time_oscillations())
+        .signed_only_eggs(VsfType::ke(device_pubkey.to_vec()), &crate::network::fgtw::fleet::envelope_slots(device_pubkey))
+        .add_section_direct(section)
+        .build()
+        .map_err(|e| format!("Failed to build grp_relay VSF: {}", e))?;
+
+    crate::network::fgtw::fleet::sign_device_envelope(unsigned, device_pubkey, device_secret)
+}
+
+/// Parse + verify a `grp_relay` frame. Returns ((conversation_token, inner frame bytes), relaying device pubkey). The inner frame is verified separately, as the chat frame it is.
+pub fn parse_grp_relay_vsf(vsf_bytes: &[u8]) -> Result<(([u8; 32], Vec<u8>), [u8; 32]), String> {
+    let (header, header_end) = vsf::verification::read_verified(vsf_bytes, None).map_err(|e| format!("grp_relay verification failed: {}", e))?;
+    let sender_pubkey = vsf::verification::extract_signer_pubkey(vsf_bytes)?;
+    let (section, section_name) = parse_section_after_header(vsf_bytes, &header, header_end)?;
+    if section_name != "grp_relay" {
+        return Err(format!("Expected 'grp_relay' section, got '{}'", section_name));
+    }
+    let fields = &section.fields;
+    let conversation_token = field_hash32(fields, "tok", |v| matches!(v, VsfType::hg(_))).ok_or("grp_relay missing tok")?;
+    let inner = fields
+        .iter()
+        .find(|f| f.name == "inner")
+        .and_then(|f| f.values.first())
+        .and_then(|v| match v {
+            VsfType::hR(b) => Some(b.clone()),
+            _ => None,
+        })
+        .ok_or("grp_relay missing inner")?;
+    Ok(((conversation_token, inner), sender_pubkey))
+}
+
 /// Build an `attach_have` frame — the receiver's confirmation that an attachment blob arrived, verified, and stored. Flips the sender's pill from "sending" to delivered; purely informational (no retransmit machinery keys off it — PT owns reliability).
 pub fn build_attach_have_vsf(
     conversation_token: &[u8; 32],
@@ -4611,5 +4653,27 @@ mod local_ip_absent_tests {
         let ((wtok, whash, slots), wsigner) = parse_pigeon_want_vsf(&want).expect("parse want");
         assert_eq!((wtok, whash, slots, wsigner), (tok, hash, vec![0, 3, 1382], pk));
         assert!(parse_pigeon_ack_vsf(&want).is_err() && parse_pigeon_chunk_vsf(&want).is_err());
+    }
+}
+
+#[cfg(test)]
+mod grp_relay_tests {
+    use super::*;
+    use ed25519_dalek::SigningKey;
+
+    /// MEMBER RELAY's wire frame: the original frame rides byte for byte under the relayer's signature, and a changed byte anywhere is refused.
+    #[test]
+    fn a_relay_carries_the_original_frame_and_refuses_tampering() {
+        let sk = SigningKey::from_bytes(&[9u8; 32]);
+        let (pk, sec) = (sk.verifying_key().to_bytes(), sk.to_bytes());
+        let token = [7u8; 32];
+        let inner: Vec<u8> = (0..300u32).map(|b| (b % 251) as u8).collect();
+        let framed = build_grp_relay_vsf(&token, &inner, &pk, &sec).expect("build");
+        let ((tok, got), relayer) = parse_grp_relay_vsf(&framed).expect("parse");
+        assert_eq!((tok, got.as_slice(), relayer), (token, inner.as_slice(), pk));
+        let mut bent = framed.clone();
+        let at = bent.len() - 40;
+        bent[at] ^= 1;
+        assert!(parse_grp_relay_vsf(&bent).is_err(), "a changed byte must not verify");
     }
 }

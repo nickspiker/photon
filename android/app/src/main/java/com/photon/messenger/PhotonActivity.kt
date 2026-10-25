@@ -254,6 +254,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
         windowFocused = hasFocus
         pushFocus()
     }
+    private external fun nativeOpenConversation(conversation: String)  // a notification tap's conversation (hex) → Rust's latch, drained in tick
     private external fun nativeSetForeground(foreground: Boolean)  // onResume/onPause → Rust's foreground mirror (ptr-less: writes a process global; Rust gates unread + notify-suppression on it)
     private external fun nativeImeInset(px: Int)
     private external fun nativeSystemInsets(top: Int, bottom: Int, left: Int, right: Int)  // Status bar / gesture-nav / side cutout extents under an edge-to-edge surface
@@ -1004,6 +1005,11 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     /** The wave surface's two intent extras (see PhotonConnectionService.postWaveNotification): INCOMING_WAVE = show over the keyguard + light the screen; WAVE_ACTION=answer = the notification's Answer, forwarded to the Service (or parked until it binds). */
     private fun applyWaveIntent(intent: Intent?) {
         if (intent == null) return
+        // A message notification's tap: hand its conversation to Rust once (the tick opens it, even on a cold launch where the app is not up yet).
+        intent.getStringExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION)?.let { conv ->
+            intent.removeExtra(PhotonConnectionService.EXTRA_OPEN_CONVERSATION)
+            nativeOpenConversation(conv)
+        }
         if (intent.getBooleanExtra(PhotonConnectionService.EXTRA_INCOMING_WAVE, false)) {
             setWaveLockScreenFlags(true)
         }
