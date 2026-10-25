@@ -33,7 +33,7 @@ pub type ContactPubkeys = Arc<Mutex<Vec<DevicePubkey>>>;
 pub type SyncRecordsProvider = Arc<Mutex<Vec<SyncRecord>>>;
 
 /// Shared pairwise pong-seal keys — peer DEVICE pubkey → the 32-byte key that seals/opens that device's pong sensitive tail (sync rows + name + avatar pin). The UI derives and reseeds these on ITS thread (friend: static identity DH; sibling: shared identity seed + sorted device pair) in lockstep with `ContactPubkeys`, so the RX worker holds finished per-peer keys only and the identity seed never enters this module (secret-memory hygiene). No entry for a device = its pongs go out with no sensitive tail and inbound sealed tails from it stay unopened.
-pub type PongSealKeys = Arc<Mutex<std::collections::HashMap<[u8; 32], [u8; 32]>>>;
+pub type PongSealKeys = Arc<Mutex<crate::linear_map::SortedMap<[u8; 32], [u8; 32]>>>;
 
 /// Pairwise pong-seal key for a FRIEND's devices: one derive over the static identity DH secret ([`crate::crypto::clutch::identity_friendship_secret`]), computable by exactly the two identity holders — the pong tail becomes end-to-end between the identities, opaque to the relay worker and every on-path observer. One key per friendship, inserted under each of the friend's device pubkeys.
 pub fn friend_pong_seal_key(friendship_secret: &[u8; 32]) -> [u8; 32] {

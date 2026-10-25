@@ -29,10 +29,10 @@ pub(super) struct BridgeEmit {
 /// The interrupt registry the UI thread signals thru while a worker is blocked draining output: device → the shell's bash pid. The in-flight command is found live as bash's child TREE (a foreground group needs no announce — see run_streaming's foreground rationale). Written by workers at spawn/death, removed by Reset — its ABSENCE after a shell death tells the worker the death was a deliberate reset (swallow the "(shell died)" frame instead of sending it into a freshly wiped screen).
 #[cfg(all(unix, not(target_os = "android")))]
 pub(super) type BridgeFgMap =
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], i32>>>;
+    std::sync::Arc<std::sync::Mutex<crate::linear_map::SortedMap<[u8; 32], i32>>>;
 /// Each sibling's shell CWD as of its last completed command — the bridge pigeon's landing directory ("show up in whatever folder the bridge is currently in", Nick 2026-09-17). The worker owns the shell and learns the cwd from the command sentinel; the UI thread reads it at landing time, so the map is the one seam between them. Absent or empty (no command run yet) = the shell's starting directory, which is home.
 pub(super) type BridgeCwdMap =
-    std::sync::Arc<std::sync::Mutex<std::collections::HashMap<[u8; 32], String>>>;
+    std::sync::Arc<std::sync::Mutex<crate::linear_map::SortedMap<[u8; 32], String>>>;
 
 /// Every live descendant of `root`, breadth-first via `pgrep -P` (present on every unix host the bridge ships to). The foreground command and everything it spawned — bash itself excluded by construction.
 #[cfg(all(unix, not(target_os = "android")))]
@@ -71,14 +71,14 @@ pub(super) fn bridge_wake(w: &Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>
 #[cfg(all(unix, not(target_os = "android")))]
 fn spawn_bridge_worker(
     dev: [u8; 32],
-    partials: std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>>,
+    partials: std::sync::Arc<std::sync::Mutex<crate::linear_map::LinearMap<ContactId, BridgeEmit>>>,
     fg: BridgeFgMap,
     cwds: BridgeCwdMap,
     wake: Option<std::sync::Arc<dyn WakeSender<PhotonEvent>>>,
 ) -> std::sync::mpsc::Sender<(ContactId, String, i64)> {
     // Append `chunk` to the command's unsent-delta buffer (creating it on first output), bounding memory by trimming the FRONT with an explicit dropped-byte count. Wake only on the empty→occupied edge so a spewing build can't flood the event loop — the UI drain reads the buffer at its own pace.
     fn push_delta(
-        partials: &std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>,
+        partials: &std::sync::Mutex<crate::linear_map::LinearMap<ContactId, BridgeEmit>>,
         contact: ContactId,
         ts: i64,
         seq: u64,
@@ -628,7 +628,7 @@ impl PhotonApp {
         let (cmd_tx, cmd_rx) = std::sync::mpsc::channel::<BridgeJob>();
         // ONE shared per-command delta buffer carries everything — output AND the exit that folds into the last frame (no separate final channel; "finished" is a field, not a message).
         let partials: std::sync::Arc<
-            std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>,
+            std::sync::Mutex<crate::linear_map::LinearMap<ContactId, BridgeEmit>>,
         > = Default::default();
         let fg: BridgeFgMap = Default::default();
         let cwds: BridgeCwdMap = self.bridge_cwds.get_or_insert_with(Default::default).clone();
@@ -691,19 +691,18 @@ impl PhotonApp {
             return;
         };
         // Put an unsent delta BACK, prepending it to whatever the worker spooled meanwhile — content is never dropped by a parked or failed send, order is preserved, and the exit survives the merge.
-        let put_back = |slots: &std::sync::Mutex<std::collections::HashMap<ContactId, BridgeEmit>>, e: BridgeEmit| {
+        let put_back = |slots: &std::sync::Mutex<crate::linear_map::LinearMap<ContactId, BridgeEmit>>, e: BridgeEmit| {
             let mut m = slots.lock().unwrap();
-            match m.entry(e.contact) {
-                std::collections::hash_map::Entry::Occupied(mut o) => {
-                    let cur = o.get_mut();
+            match m.get_mut(&e.contact) {
+                Some(cur) => {
                     let mut body = e.body;
                     body.push_str(&cur.body);
                     cur.body = body;
                     cur.dropped += e.dropped;
                     cur.fin = cur.fin.or(e.fin);
                 }
-                std::collections::hash_map::Entry::Vacant(v) => {
-                    v.insert(e);
+                None => {
+                    m.insert(e.contact, e);
                 }
             }
         };

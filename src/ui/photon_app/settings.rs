@@ -553,7 +553,7 @@ impl PhotonApp {
                 _ => None,
             });
             crate::platform::audio::set_picked_route(picked);
-            let mut vols = std::collections::HashMap::new();
+            let mut vols = crate::linear_map::SortedMap::new();
             if let Some(dev) = fs.devices.iter().find(|d| d.device_pubkey == fs.our_device) {
                 for e in &dev.entries {
                     if let (Some(k), Some(v)) = (e.key.strip_prefix("audio.vol."), e.value.as_i64()) {

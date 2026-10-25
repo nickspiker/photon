@@ -278,7 +278,7 @@ pub fn vault_key(domain: &str, scope: &[u8; 32]) -> [u8; 32] {
     // NAMETAG AT THE MINT (dev builds, field 2026-08-28): an 8MB value at addr 920ee297 grew all day while BOTH per-blob confessions (settings, chains) stayed silent — the monster belongs to a third domain, and kete's SLOW-put line can only name the address. Log each (address, domain) pair ONCE so any addr in any log maps straight to its domain. Addresses aren't secrets (they appear in every SLOW line already); the DOMAIN string is the only new information.
     #[cfg(feature = "development")]
     {
-        static SEEN: std::sync::Mutex<Option<std::collections::HashSet<[u8; 4]>>> =
+        static SEEN: std::sync::Mutex<Option<crate::linear_map::SortedSet<[u8; 4]>>> =
             std::sync::Mutex::new(None);
         let prefix: [u8; 4] = key[..4].try_into().unwrap();
         if let Ok(mut g) = SEEN.lock() {
@@ -461,7 +461,7 @@ fn manifest_addr(content_hash: &[u8; 32]) -> Option<[u8; 32]> {
 }
 
 /// Chunked blobs proven complete this session (every chunk present) — keeps blob_present a hash lookup on the render path instead of a manifest walk per frame.
-static BLOB_COMPLETE: std::sync::Mutex<Option<std::collections::HashSet<[u8; 32]>>> = std::sync::Mutex::new(None);
+static BLOB_COMPLETE: std::sync::Mutex<Option<crate::linear_map::SortedSet<[u8; 32]>>> = std::sync::Mutex::new(None);
 
 fn complete_cache_has(h: &[u8; 32]) -> bool {
     BLOB_COMPLETE.lock().unwrap().as_ref().is_some_and(|s| s.contains(h))
@@ -570,7 +570,7 @@ pub fn blob_present_probe_now(content_hash: &[u8; 32]) -> bool {
 }
 
 /// The session-wide answer cache behind [`blob_present`]: the conversation render asks several times per attachment row per frame (progress bar, meta line, strip pill, image band, viewer pills), and each uncached ask is a vault round trip — so only the worker ever fills it.
-static BLOB_PRESENCE: std::sync::Mutex<Option<std::collections::HashMap<[u8; 32], bool>>> = std::sync::Mutex::new(None);
+static BLOB_PRESENCE: std::sync::Mutex<Option<crate::linear_map::SortedMap<[u8; 32], bool>>> = std::sync::Mutex::new(None);
 
 /// Hashes waiting for a probe (see [`blob_present_known`]).
 static PRESENCE_WANTED: std::sync::Mutex<Vec<[u8; 32]>> = std::sync::Mutex::new(Vec::new());

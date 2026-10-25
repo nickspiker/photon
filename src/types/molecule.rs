@@ -229,13 +229,13 @@ impl VouchRecord {
 #[derive(Clone, Debug, Default)]
 pub struct Roster {
     pub genesis: Option<GenesisRecord>,
-    pub members: std::collections::HashMap<PartyId, MemberRecord>,
-    pub leaves: std::collections::HashMap<PartyId, LeaveRecord>,
+    pub members: crate::linear_map::SortedMap<PartyId, MemberRecord>,
+    pub leaves: crate::linear_map::SortedMap<PartyId, LeaveRecord>,
     pub title: Option<TitleRecord>,
     /// Keyed by (party, device) — every device of every member publishes its own.
-    pub bundles: std::collections::HashMap<(PartyId, [u8; 32]), BundleRecord>,
+    pub bundles: crate::linear_map::SortedMap<(PartyId, [u8; 32]), BundleRecord>,
     /// Keyed by (voucher, subject): EVERY record ever merged, newest last (testimony; a departed voucher's late withdrawal must not erase its earlier vouch, so nothing is replaced).
-    pub vouches: std::collections::HashMap<(PartyId, PartyId), Vec<VouchRecord>>,
+    pub vouches: crate::linear_map::SortedMap<(PartyId, PartyId), Vec<VouchRecord>>,
 }
 
 impl Roster {
@@ -566,11 +566,11 @@ pub struct StrandOutcome {
 /// The receive-side confluence engine for a group stream (§3 The weave): a row applies when every strand it weaves is already held; a row missing one PARKS and pulls it from its own sender. Weave references point strictly backwards in causality, so the pull graph is a DAG and parking always terminates in applies, whatever the delivery order — braid §1.4's confluence promise, kept in groups. Edge-driven: state moves only on offer/serve edges, never a timer. The wiring seeds `applied` from the conversation DB at load; a served strand is just another offer.
 #[derive(Default, Clone, Debug)]
 pub struct StrandLedger {
-    applied: std::collections::HashSet<StrandRef>,
+    applied: crate::linear_map::SortedSet<StrandRef>,
     /// Parked rows with their unmet refs; a row parks once and unparks when its last ref lands.
     parked: Vec<(StrandRef, Vec<StrandRef>)>,
     /// Strands already asked for — one pull per missing edge; a re-park of the same gap stays quiet until served (retransmit pressure lives in the pending ledger, not here).
-    requested: std::collections::HashSet<StrandRef>,
+    requested: crate::linear_map::SortedSet<StrandRef>,
 }
 
 impl StrandLedger {

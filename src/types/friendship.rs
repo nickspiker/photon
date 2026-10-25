@@ -1289,7 +1289,7 @@ impl FriendshipChains {
         if dead.len() <= keep_recent {
             return 0;
         }
-        let drop_set: std::collections::HashSet<usize> =
+        let drop_set: crate::linear_map::SortedSet<usize> =
             dead[..dead.len() - keep_recent].iter().copied().collect();
         let mut i = 0usize;
         let mut dropped = 0usize;

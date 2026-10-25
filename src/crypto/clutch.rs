@@ -2689,7 +2689,7 @@ mod tests {
         );
 
         // Even with identical input bytes in every slot, the per-egg domain labels must make all 29 distinct — that is what proves the eggs are separated by NAME and not by value.
-        let unique_eggs: std::collections::HashSet<[u8; 32]> = eggs.eggs.into_iter().collect();
+        let unique_eggs: crate::linear_map::SortedSet<[u8; 32]> = eggs.eggs.into_iter().collect();
         assert_eq!(unique_eggs.len(), 29);
     }
 

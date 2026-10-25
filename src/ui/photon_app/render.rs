@@ -3236,8 +3236,8 @@ impl PhotonApp {
                             conv.map(|v| v.messages.as_slice()).unwrap_or(&[]);
                         // Newest live edit row per target — render-time supersede (the original row is braid key material and never mutates; see EDIT_MARKER_PREFIX). Deleting an edit row reverts to the previous edit or the original.
                         // Keyed by (target, DIRECTION): only the author edits their own words — an edit row supersedes only rows travelling its own way, so a peer's edit targeting OUR timestamp can never repaint our bubble (the authorship law, Nick 2026-09-14).
-                        let mut edit_over: std::collections::HashMap<(i64, bool), (i64, String)> =
-                            std::collections::HashMap::new();
+                        let mut edit_over: crate::linear_map::SortedMap<(i64, bool), (i64, String)> =
+                            crate::linear_map::SortedMap::new();
                         for m in raw_msgs.iter().filter(|m| !m.deleted) {
                             if let Some((crate::types::RefKind::Edit, t)) = m.reference {
                                 let e = edit_over
@@ -3298,8 +3298,8 @@ impl PhotonApp {
                             .collect();
                         let n = visible.len();
                         // The recording that folds into each wave row's card: wave row ts → the live wave.audio row referencing it (RefKind::Wave). TWO recordings for one wave (field 2026-09-17: the phone minted a second keep of the same wave 75 s after the first) fold to the one HELD here, then the larger — never "the last row the walk met", which read "fetch" on the very device that made the wave.
-                        let rec_over: std::collections::HashMap<i64, &crate::types::ChatMessage> = {
-                            let mut m: std::collections::HashMap<i64, &crate::types::ChatMessage> = std::collections::HashMap::new();
+                        let rec_over: crate::linear_map::SortedMap<i64, &crate::types::ChatMessage> = {
+                            let mut m: crate::linear_map::SortedMap<i64, &crate::types::ChatMessage> = crate::linear_map::SortedMap::new();
                             let rank = |r: &crate::types::ChatMessage| -> (bool, u64) {
                                 r.file_parts().map_or((false, 0), |(h, _, size)| (crate::storage::blob_present(&h), size))
                             };
@@ -3316,8 +3316,8 @@ impl PhotonApp {
                             m
                         };
                         // The wave.env rows that fold into each card: wave ts → (our env blob hash, their env blob hash) — each party's own shared 3-channel tensor (wave/wave_env.rs).
-                        let env_over: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = {
-                            let mut m: std::collections::HashMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = std::collections::HashMap::new();
+                        let env_over: crate::linear_map::SortedMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = {
+                            let mut m: crate::linear_map::SortedMap<i64, (Option<[u8; 32]>, Option<[u8; 32]>)> = crate::linear_map::SortedMap::new();
                             for e in raw_msgs.iter().filter(|m| !m.deleted) {
                                 if let (Some((crate::types::RefKind::Wave, t)), Some(f)) = (e.reference, e.file.as_ref()) {
                                     let h = f.hash;

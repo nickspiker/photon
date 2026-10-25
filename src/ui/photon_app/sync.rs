@@ -1181,7 +1181,7 @@ impl PhotonApp {
             return;
         }
         // Sibling 1:1 chains stay pair-local.
-        let sibling_fids: std::collections::HashSet<[u8; 32]> = self
+        let sibling_fids: crate::linear_map::SortedSet<[u8; 32]> = self
             .contacts
             .iter()
             .filter(|c| c.is_sibling && !c.locked_out)

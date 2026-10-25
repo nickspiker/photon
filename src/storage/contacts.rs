@@ -1155,7 +1155,7 @@ pub fn save_messages(
         );
     }
     // Self-terminating key migration: a legacy bare-Int key whose row was just re-put under its composite key is a stale twin — delete it or the table doubles. TIMESTAMP-MATCHED, never a blanket sweep: the old "delete every Int key" form assumed the snapshot held the whole table, and a persist that fired from a not-yet-loaded conversation re-put only its few RAM rows and then deleted every legacy row it never carried — the 2026-08-21 relaunch erasure (rows gone locally, the Mac re-serving them). An Int key with no matching re-put row is NOT ours to touch.
-    let reput_times: std::collections::HashSet<u64> = conv
+    let reput_times: crate::linear_map::SortedSet<u64> = conv
         .messages
         .iter()
         .map(|m| m.timestamp as u64)

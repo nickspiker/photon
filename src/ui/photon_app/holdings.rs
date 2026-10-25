@@ -11,7 +11,7 @@
 
 use super::*;
 use crate::network::fgtw::protocol::HoldingsKind;
-use std::collections::{HashMap, HashSet};
+use crate::linear_map::{SortedMap, SortedSet};
 
 /// The device-local setting that makes a departure wait for its copies.
 const RELEASE_WHEN_COPIED: &str = "release.when_copied";
@@ -28,20 +28,20 @@ pub(super) struct HoldingsCheck {
     nonce: [u8; 32],
     items: Vec<HeldItem>,
     /// `None` while the presence worker runs; then the hashes this device actually holds.
-    held: Option<HashSet<[u8; 32]>>,
-    probe_rx: Option<std::sync::mpsc::Receiver<HashSet<[u8; 32]>>>,
+    held: Option<SortedSet<[u8; 32]>>,
+    probe_rx: Option<std::sync::mpsc::Receiver<SortedSet<[u8; 32]>>>,
     /// The sibling devices asked; an answer from anyone else is dropped.
     asked: Vec<[u8; 32]>,
     /// Per answering sibling: the hashes of our ask it does NOT hold.
-    answers: HashMap<[u8; 32], HashSet<[u8; 32]>>,
+    answers: SortedMap<[u8; 32], SortedSet<[u8; 32]>>,
     /// No fleet key in RAM, so no ask could be sealed.
     no_key: bool,
     /// The sealed ask as sent and when, for the ONE re-ask a silent sibling gets when we next hear from it (an edge, not a timer).
     ask_frame: Option<Vec<u8>>,
     asked_at: Option<std::time::Instant>,
-    reasked: HashSet<[u8; 32]>,
+    reasked: SortedSet<[u8; 32]>,
     /// The copy in flight: the sibling asked to fetch, and the hashes asked for.
-    pull: Option<([u8; 32], HashSet<[u8; 32]>)>,
+    pull: Option<([u8; 32], SortedSet<[u8; 32]>)>,
 }
 
 /// A sibling's finished presence probe, handed from its worker back to the UI thread: an answer to seal and send, or (`pull`) the start of a fetch job.
@@ -59,9 +59,9 @@ pub(super) struct PullJob {
     addr: std::net::SocketAddr,
     nonce: [u8; 32],
     /// Fetches in flight.
-    pending: HashSet<[u8; 32]>,
+    pending: SortedSet<[u8; 32]>,
     /// Everything of the pull we still lack: the pending fetches plus any hash no row here points at (nothing to fetch it for).
-    missing: HashSet<[u8; 32]>,
+    missing: SortedSet<[u8; 32]>,
     total: usize,
     landed: usize,
 }
@@ -98,7 +98,7 @@ pub(super) fn split_hashes(plain: &[u8]) -> Option<Vec<[u8; 32]>> {
 }
 
 /// The items at risk: some hash of the item that we hold is missing on every sibling that answered. With nobody to ask, everything held is at risk.
-fn at_risk<'a>(items: &'a [HeldItem], held: &HashSet<[u8; 32]>, answers: &HashMap<[u8; 32], HashSet<[u8; 32]>>) -> Vec<&'a HeldItem> {
+fn at_risk<'a>(items: &'a [HeldItem], held: &SortedSet<[u8; 32]>, answers: &SortedMap<[u8; 32], SortedSet<[u8; 32]>>) -> Vec<&'a HeldItem> {
     items
         .iter()
         .filter(|item| {
@@ -110,7 +110,7 @@ fn at_risk<'a>(items: &'a [HeldItem], held: &HashSet<[u8; 32]>, answers: &HashMa
 }
 
 /// File an answer under its sibling. A pull target's answer covers only the pulled hashes, so it replaces just that part of what the sibling lacked; any other answer replaces the whole entry.
-fn merge_answer(answers: &mut HashMap<[u8; 32], HashSet<[u8; 32]>>, from: [u8; 32], pulled: Option<&HashSet<[u8; 32]>>, missing: Vec<[u8; 32]>) {
+fn merge_answer(answers: &mut SortedMap<[u8; 32], SortedSet<[u8; 32]>>, from: [u8; 32], pulled: Option<&SortedSet<[u8; 32]>>, missing: Vec<[u8; 32]>) {
     match (pulled, answers.get_mut(&from)) {
         (Some(pulled), Some(entry)) => {
             entry.retain(|h| !pulled.contains(h));
@@ -123,7 +123,7 @@ fn merge_answer(answers: &mut HashMap<[u8; 32], HashSet<[u8; 32]>>, from: [u8; 3
 }
 
 /// The sibling a copy goes to: the most complete holder that answered (fewest missing), ties broken by key so every run picks the same one.
-fn pull_target(answers: &HashMap<[u8; 32], HashSet<[u8; 32]>>) -> Option<[u8; 32]> {
+fn pull_target(answers: &SortedMap<[u8; 32], SortedSet<[u8; 32]>>) -> Option<[u8; 32]> {
     answers.iter().min_by_key(|(k, m)| (m.len(), **k)).map(|(k, _)| *k)
 }
 
@@ -142,8 +142,8 @@ impl PhotonApp {
 
     /// LEAVER, on arming Release (or at launch while a copy-then-release is pending): list every attachment the rows point at and hand the presence probe to a worker; the ask goes out when it lands ([`Self::drain_holdings`]).
     pub(super) fn holdings_check_start(&mut self) {
-        let mut seen = HashSet::new();
-        let mut items = Vec::new();
+        // Every candidate row in order, then ONE sort keeps the first row per blob (an insert per row into a sorted set shifted it every time — quadratic over a long history).
+        let mut all: Vec<HeldItem> = Vec::new();
         for conv in &self.conversations {
             for m in &conv.messages {
                 if m.deleted || m.is_control() {
@@ -151,19 +151,21 @@ impl PhotonApp {
                 }
                 let Some(f) = m.file.as_ref() else { continue };
                 // A wave's envelope pyramid only draws the card; the recording itself is the WaveAudio row.
-                if f.role == crate::types::AttachRole::WaveEnv || !seen.insert(f.hash) {
+                if f.role == crate::types::AttachRole::WaveEnv {
                     continue;
                 }
                 let mut hashes = vec![f.hash];
                 hashes.extend(f.head);
-                items.push(HeldItem { recording: f.role == crate::types::AttachRole::WaveAudio, size: f.size, hashes });
+                all.push(HeldItem { recording: f.role == crate::types::AttachRole::WaveAudio, size: f.size, hashes });
             }
         }
+        let first_of = SortedMap::from_iter_first(all.iter().enumerate().map(|(i, it)| (it.hashes[0], i)));
+        let items: Vec<HeldItem> = all.into_iter().enumerate().filter(|(i, it)| first_of.get(&it.hashes[0]) == Some(i)).map(|(_, it)| it).collect();
         let all: Vec<[u8; 32]> = items.iter().flat_map(|i| i.hashes.iter().copied()).collect();
         let (tx, rx) = std::sync::mpsc::channel();
         let wake = self.event_proxy.clone();
         let _ = std::thread::Builder::new().name("holdings-probe".into()).spawn(move || {
-            let held: HashSet<[u8; 32]> = all.into_iter().filter(|h| crate::storage::blob_present_probe_now(h)).collect();
+            let held: SortedSet<[u8; 32]> = all.into_iter().filter(|h| crate::storage::blob_present_probe_now(h)).collect();
             let _ = tx.send(held);
             if let Some(w) = wake {
                 let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
@@ -176,11 +178,11 @@ impl PhotonApp {
             held: None,
             probe_rx: Some(rx),
             asked: Vec::new(),
-            answers: HashMap::new(),
+            answers: SortedMap::new(),
             no_key: false,
             ask_frame: None,
             asked_at: None,
-            reasked: HashSet::new(),
+            reasked: SortedSet::new(),
             pull: None,
         });
     }
@@ -232,7 +234,7 @@ impl PhotonApp {
         changed
     }
 
-    fn holdings_send_ask(&mut self, held: HashSet<[u8; 32]>) {
+    fn holdings_send_ask(&mut self, held: SortedSet<[u8; 32]>) {
         let key = self.fleet_key_ram_only();
         let me = self.device_keypair.as_ref().map(|kp| (kp.public.to_bytes(), *kp.secret.as_bytes()));
         let siblings: Vec<[u8; 32]> = self
@@ -327,19 +329,21 @@ impl PhotonApp {
 
     /// SIBLING: a pull's probe landed — fetch every missing hash a row here points at, from the leaver first ([`Self::attach_fetch`] ranks `attach_fetch_prefer` ahead of everyone), and answer at once with where we stand.
     fn holdings_start_pull_job(&mut self, s: HoldingsServe) {
-        let mut row_of: HashMap<[u8; 32], usize> = HashMap::new();
+        // Every (blob, contact) in order, sorted once with the first contact kept per blob (inserting one by one into the sorted map was quadratic).
+        let mut pairs: Vec<([u8; 32], usize)> = Vec::new();
         for ci in 0..self.contacts.len() {
             let Some(conv) = self.conv_of(ci) else { continue };
             for m in conv.messages.iter().filter(|m| !m.deleted) {
                 if let Some(f) = m.file.as_ref() {
-                    row_of.entry(f.hash).or_insert(ci);
+                    pairs.push((f.hash, ci));
                     if let Some(h) = f.head {
-                        row_of.entry(h).or_insert(ci);
+                        pairs.push((h, ci));
                     }
                 }
             }
         }
-        let mut job = PullJob { leaver: s.to, addr: s.addr, nonce: s.nonce, pending: HashSet::new(), missing: s.missing.iter().copied().collect(), total: 0, landed: 0 };
+        let row_of: SortedMap<[u8; 32], usize> = SortedMap::from_iter_first(pairs);
+        let mut job = PullJob { leaver: s.to, addr: s.addr, nonce: s.nonce, pending: SortedSet::new(), missing: s.missing.iter().copied().collect(), total: 0, landed: 0 };
         for h in &s.missing {
             let Some(&sci) = row_of.get(h) else { continue };
             self.attach_fetch_prefer.insert(*h, s.to);
@@ -414,7 +418,7 @@ impl PhotonApp {
         let Some(check) = self.holdings_check.as_mut() else { return false };
         let (Some(held), Some(target)) = (check.held.as_ref(), pull_target(&check.answers)) else { return false };
         let lacks = &check.answers[&target];
-        let set: HashSet<[u8; 32]> = at_risk(&check.items, held, &check.answers)
+        let set: SortedSet<[u8; 32]> = at_risk(&check.items, held, &check.answers)
             .iter()
             .flat_map(|i| i.hashes.iter().copied())
             .filter(|h| held.contains(h) && lacks.contains(h))
@@ -545,7 +549,7 @@ mod tests {
         HeldItem { recording: false, size: 1, hashes: hashes.iter().map(|b| [*b; 32]).collect() }
     }
 
-    fn set(bytes: &[u8]) -> HashSet<[u8; 32]> {
+    fn set(bytes: &[u8]) -> SortedSet<[u8; 32]> {
         bytes.iter().map(|b| [*b; 32]).collect()
     }
 
@@ -556,20 +560,20 @@ mod tests {
         let held = set(&[1, 2, 3, 4]);
         let watch = set(&[2, 3, 4]); // lacks all but item 1
         let laptop = set(&[1, 3]); // lacks item 1 and the head of item 2
-        let answers: HashMap<[u8; 32], HashSet<[u8; 32]>> = [([10u8; 32], watch), ([11u8; 32], laptop)].into_iter().collect();
+        let answers: SortedMap<[u8; 32], SortedSet<[u8; 32]>> = [([10u8; 32], watch), ([11u8; 32], laptop)].into_iter().collect();
         let risk = at_risk(&items, &held, &answers);
         // Item 1 is on the watch and item 4 on the laptop; item 2's head (3) is on neither, so item 2 is at risk although the laptop holds its original.
         assert_eq!(risk.len(), 1);
         assert_eq!(risk[0].hashes[0], [2u8; 32]);
         // With nobody answering, everything held is at risk; a hash we do not hold never puts an item at risk.
-        assert_eq!(at_risk(&items, &held, &HashMap::new()).len(), 3);
-        assert_eq!(at_risk(&items, &set(&[1]), &HashMap::new()).len(), 1);
+        assert_eq!(at_risk(&items, &held, &SortedMap::new()).len(), 3);
+        assert_eq!(at_risk(&items, &set(&[1]), &SortedMap::new()).len(), 1);
     }
 
     /// The copy goes to the most complete holder; its answers to the pull replace only the pulled part of what it lacked, so a hash it still lacks outside the pull keeps counting against it.
     #[test]
     fn pull_answers_merge_into_the_pulled_part_only() {
-        let mut answers: HashMap<[u8; 32], HashSet<[u8; 32]>> = [([10u8; 32], set(&[1, 2, 3])), ([11u8; 32], set(&[1, 2, 5, 6]))].into_iter().collect();
+        let mut answers: SortedMap<[u8; 32], SortedSet<[u8; 32]>> = [([10u8; 32], set(&[1, 2, 3])), ([11u8; 32], set(&[1, 2, 5, 6]))].into_iter().collect();
         assert_eq!(pull_target(&answers), Some([10u8; 32]));
         let pulled = set(&[1, 2]);
         merge_answer(&mut answers, [10u8; 32], Some(&pulled), vec![[2u8; 32]]);

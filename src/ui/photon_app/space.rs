@@ -9,7 +9,7 @@
 
 use super::*;
 use crate::network::fgtw::protocol::HoldingsKind;
-use std::collections::HashSet;
+use crate::linear_map::SortedSet;
 
 /// The device-local list of recordings evicted here (concatenated hashes).
 const EVICTED: &str = "space.evicted";
@@ -181,7 +181,7 @@ impl PhotonApp {
             crate::logf!("SPACE: answer from {} did not open — dropped", crate::fp(&from));
             return true;
         };
-        let missing: HashSet<[u8; 32]> = missing.into_iter().collect();
+        let missing: SortedSet<[u8; 32]> = missing.into_iter().collect();
         let mut evict = Vec::new();
         sweep.candidates.retain(|(h, size)| {
             if sweep.freed >= sweep.need || missing.contains(h) {

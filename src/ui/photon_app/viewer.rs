@@ -40,7 +40,7 @@ const READER_MAX_BYTES: usize = 4 * 1024 * 1024;
 pub(super) const VIEW_HIT_IDS: HitId = 16;
 
 /// The decoded-picture cache type (hash → (w, h, packed pixels); None = decode failed).
-pub(super) type ImgCache = std::collections::HashMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>;
+pub(super) type ImgCache = crate::linear_map::SortedMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>;
 
 /// Lines an image row's picture band reserves: the decoded preview blob's tall band, the micro thumb's short one, or none. A free function over the cache so the render (which holds the chrome borrow) can call it.
 pub(super) fn img_band_lines_of(cache: &ImgCache, m: &crate::types::ChatMessage) -> usize {

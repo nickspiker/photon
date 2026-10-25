@@ -715,7 +715,7 @@ pub fn set_local_source(on: bool) {
 /// THE USER'S OUTPUT (Nick 2026-09-29, "keeps the user chosen device, same with gain"): the route this device's user last picked on the route pill (a route id: "earpiece", "speaker", "bt:<name>", "headset:<name>"), persisted device-local as `audio.route`.
 static PICKED_ROUTE: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// The volume the user last set per route + usage (`<route>.v` voice / `<route>.m` media → stream index), persisted device-local as `audio.vol.<key>`.
-static ROUTE_VOLUMES: std::sync::Mutex<Option<std::collections::HashMap<String, i32>>> = std::sync::Mutex::new(None);
+static ROUTE_VOLUMES: std::sync::Mutex<Option<crate::linear_map::SortedMap<String, i32>>> = std::sync::Mutex::new(None);
 /// Picks and volumes reported from the platform, waiting for the UI thread to persist them.
 static ROUTE_PICK_OUT: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 static ROUTE_VOLUME_OUT: std::sync::Mutex<Vec<(String, i32)>> = std::sync::Mutex::new(Vec::new());
@@ -737,7 +737,7 @@ pub fn picked_route() -> Option<String> {
 }
 
 /// Install the persisted per-route volumes (settings load).
-pub fn set_route_volumes(m: std::collections::HashMap<String, i32>) {
+pub fn set_route_volumes(m: crate::linear_map::SortedMap<String, i32>) {
     *ROUTE_VOLUMES.lock().unwrap() = Some(m);
 }
 

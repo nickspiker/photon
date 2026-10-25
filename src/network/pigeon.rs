@@ -7,7 +7,7 @@
 //! v2 (2026-10-07, the LAN drop whose chunks beat their announcement): every chunk SELF-DESCRIBES (size + sealed name), so the first one to arrive opens the spool and order stops mattering; the host REPAIRS what is missing by asking (`pigeon_want`) — on resume, and when a pigeon stops moving — and the sender keeps its copy until the host reports every slot held.
 
 use crate::storage::spool::{self, SpoolDesc, SpoolLayout};
-use std::collections::HashMap;
+use crate::linear_map::SortedMap;
 use std::fs::File;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
@@ -48,7 +48,7 @@ pub struct Landed {
 /// Host-side pigeon receiver. Owns the in-flight spools; the caller feeds it announcements and chunks off the wire, asks it what to repair, and asks it to finalize into a directory once a spool is whole.
 #[derive(Default)]
 pub struct PigeonReceiver {
-    inflight: HashMap<[u8; 32], Inflight>,
+    inflight: SortedMap<[u8; 32], Inflight>,
 }
 
 /// The seal overhead every chunk carries — kete's XChaCha20-Poly1305 nonce (24) + tag (16). Stored in the spool prelude so the primitive stays transport-agnostic, but the pigeon path knows it directly.

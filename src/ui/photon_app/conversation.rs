@@ -2736,8 +2736,8 @@ impl PhotonApp {
                             .unwrap(),
                     )
                 };
-                let mut existing_idx: std::collections::HashMap<(i64, u64), usize> =
-                    std::collections::HashMap::with_capacity(conv.messages.len());
+                let mut existing_idx: crate::linear_map::SortedMap<(i64, u64), usize> =
+                    crate::linear_map::SortedMap::with_capacity(conv.messages.len());
                 for (i, m) in conv.messages.iter().enumerate() {
                     existing_idx
                         .entry((m.timestamp, row_hash(&m.ident_bytes())))
@@ -3036,7 +3036,7 @@ impl PhotonApp {
             }
             if from_sibling && (self.contacts[idx].chain_woven || self.lane_transmit_capable(idx)) {
                 // KNOWN rows drain too when re-served undelivered with no live pending here: they reached us before we could transmit, and the fresh-only rule stranded them.
-                let pending: std::collections::HashSet<i64> = self.contacts[idx]
+                let pending: crate::linear_map::SortedSet<i64> = self.contacts[idx]
                     .friendship_id
                     .and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid))
                     .map(|(_, ch)| ch.pending_messages.iter().map(|m| m.eagle_time).collect())

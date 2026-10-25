@@ -215,7 +215,7 @@ impl Conversation {
 
     /// Drop every blank twin of a file row (see `insert_message_sorted`) — the stored ones from before the fix, which a plain load brings back. Returns how many went.
     pub fn collapse_bare_twins(&mut self) -> usize {
-        let files: std::collections::HashSet<(i64, bool)> = self.messages.iter().filter(|m| m.file.is_some()).map(|m| (m.timestamp, m.is_outgoing)).collect();
+        let files: crate::linear_map::SortedSet<(i64, bool)> = self.messages.iter().filter(|m| m.file.is_some()).map(|m| (m.timestamp, m.is_outgoing)).collect();
         let before = self.messages.len();
         self.messages.retain(|m| !(m.is_bare() && files.contains(&(m.timestamp, m.is_outgoing))));
         let gone = before - self.messages.len();

@@ -87,7 +87,7 @@ pub struct PTManager {
     /// Large payloads waiting for a slot in their peer's window, FIFO. Released in `tick()` on the completion/failure edge of an in-flight transfer.
     pending_outbound: std::collections::VecDeque<PendingOutbound>,
     /// Peers whose window is currently full — so the park and the drain each log once, not per transfer.
-    window_parked: std::collections::HashSet<PeerKey>,
+    window_parked: crate::linear_map::LinearSet<PeerKey>,
     /// Which device last spoke a signed SPEC from each address, oldest first, capped at `SPEC_SENDERS_CAP`.
     /// DATA carries no identity, so this is how a DATA arriving from an address its transfer was not keyed on is told apart: the same device path-migrating, or another device of the same friend reusing the letter (2026-10-21 Emma: four devices of one friend, 2958 hash mismatches).
     spec_senders: Vec<(SocketAddr, [u8; 32])>,
@@ -166,7 +166,7 @@ impl PTManager {
             next_stream_id: crate::linear_map::LinearMap::new(),
             next_transfer_id: 0,
             pending_outbound: std::collections::VecDeque::new(),
-            window_parked: std::collections::HashSet::new(),
+            window_parked: crate::linear_map::LinearSet::new(),
             spec_senders: Vec::new(),
             dead_addrs: Vec::new(),
             answered: Vec::new(),
@@ -1265,7 +1265,7 @@ impl PTManager {
             to_send.push(TickSend { peer_addr: p.peer_addr, wire_bytes: spec_bytes, tcp_payload: None, relay: None });
         }
         self.pending_outbound = kept;
-        let still_parked: std::collections::HashSet<PeerKey> = self.pending_outbound.iter().map(|p| peer_key(p.recipient_pubkey, p.peer_addr)).collect();
+        let still_parked: crate::linear_map::LinearSet<PeerKey> = self.pending_outbound.iter().map(|p| peer_key(p.recipient_pubkey, p.peer_addr)).collect();
         for key in self.window_parked.clone() {
             if !still_parked.contains(&key) {
                 crate::logf!("PT: window drained toward {} — nothing left queued", key);

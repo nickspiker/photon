@@ -679,7 +679,7 @@ impl PhotonApp {
                                             };
                                             if allowed {
                                                 // LIVE pendings only (2026-09-01, the head-gap last boss): a pending that exhausted MAX_SEND_ATTEMPTS never retransmits again — it sits in the list solely so a late ACK can clear it — yet the old whole-list exclusion treated it as "already retransmitting" and hid exactly the head row the peer's in-order gate was starving on (the MacBook's ringing-answered-silent wave: the ANSWER buffered behind one exhausted pending forever). Given-up rows are re-servable; live ones still are not (their ladder covers them).
-                                                let pending_times: std::collections::HashSet<i64> =
+                                                let pending_times: crate::linear_map::SortedSet<i64> =
                                                     chains
                                                         .pending_messages
                                                         .iter()
@@ -770,7 +770,7 @@ impl PhotonApp {
                                                 && !contact.refused_devices.contains(rep)
                                         })
                                         .map(|(rep, _)| *rep)
-                                        .collect::<std::collections::HashSet<_>>();
+                                        .collect::<crate::linear_map::SortedSet<_>>();
                                     if !reporters.is_empty() {
                                         contact.refused_devices.push(*reported);
                                         changed = true;

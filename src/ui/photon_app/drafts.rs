@@ -97,7 +97,7 @@ impl PhotonApp {
     }
 
     /// Conversations that exist only between two of our own devices (sibling chats): their ids mean nothing elsewhere, so their drafts stay on this device.
-    fn device_pair_conversations(&self) -> std::collections::HashSet<[u8; 32]> {
+    fn device_pair_conversations(&self) -> crate::linear_map::SortedSet<[u8; 32]> {
         self.contacts.iter().filter(|c| c.is_sibling).filter_map(|c| c.friendship_id.map(|f| *f.as_bytes())).collect()
     }
 

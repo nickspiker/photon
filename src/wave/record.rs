@@ -359,7 +359,7 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
     }
     // FILLS (recording fills, 2026-09-10): a window the peer served after the fact has no honest arrival stamp, but it has a seq — the same seq its neighbours carried. It sits exactly where the ruler says: after the nearest earlier arrived window (its slot + the windows between × that window's frame count), else before the nearest later one. A fill never overwrites a frame that arrived.
     let mut fills: Vec<(usize, usize, Cell)> = Vec::new();
-    let mut fill_frames: std::collections::HashMap<(usize, u32), usize> = Default::default();
+    let mut fill_frames: crate::linear_map::SortedMap<(usize, u32), usize> = Default::default();
     for r in records.iter().filter(|r| r.is_fill()) {
         if let Some((seq, _)) = r.seq {
             *fill_frames.entry((r.index(), seq)).or_default() += 1;

@@ -703,7 +703,7 @@ struct AttachPrepared {
 
 /// A whole-blob serve's place in `attach_serving`, held by its job: dropped when the job ends, whichever way it returns.
 struct AttachServing {
-    set: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>>,
+    set: std::sync::Arc<std::sync::Mutex<crate::linear_map::SortedSet<([u8; 32], [u8; 32])>>>,
     key: ([u8; 32], [u8; 32]),
 }
 
@@ -817,7 +817,7 @@ fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job
         let n = g.chunks.len().min(CHUNK_DRAIN_MAX);
         g.chunks.drain(..n).collect()
     };
-    let mut manifests: std::collections::HashMap<[u8; 32], Option<crate::storage::BlobManifest>> = std::collections::HashMap::new();
+    let mut manifests: crate::linear_map::SortedMap<[u8; 32], Option<crate::storage::BlobManifest>> = crate::linear_map::SortedMap::new();
     // Per seed (one session in practice): the stores, and the chunks to report once they are durable — (pending, total chunks, sniff, bytes); total None = an early chunk.
     let mut groups: Vec<([u8; 32], Vec<([u8; 32], Vec<u8>)>, Vec<(PendingChunk, Option<u32>, Option<crate::types::AttachKind>, usize)>)> = Vec::new();
     for pc in batch {
@@ -868,8 +868,8 @@ fn drain_chunk_intake(intake: std::sync::Arc<std::sync::Mutex<ChunkIntake>>, job
             continue;
         }
         // The chunk stores forgot the CHUNKS' presence; the blob each belongs to is what the render asks about — probed once per blob, after the whole batch is durable.
-        let mut verdicts: std::collections::HashMap<[u8; 32], (bool, Option<[u8; 32]>)> = std::collections::HashMap::new();
-        let last_of: std::collections::HashMap<[u8; 32], usize> = landed.iter().enumerate().filter(|(_, l)| l.1.is_some()).map(|(i, l)| (l.0.content_hash, i)).collect();
+        let mut verdicts: crate::linear_map::SortedMap<[u8; 32], (bool, Option<[u8; 32]>)> = crate::linear_map::SortedMap::new();
+        let last_of: crate::linear_map::SortedMap<[u8; 32], usize> = landed.iter().enumerate().filter(|(_, l)| l.1.is_some()).map(|(i, l)| (l.0.content_hash, i)).collect();
         for (i, (pc, total, sniffed, len)) in landed.into_iter().enumerate() {
             let Some(total) = total else {
                 crate::logf!("ATTACH: chunk {} before its manifest — stored at its own hash, the manifest will find it", pc.index);
@@ -1205,9 +1205,9 @@ pub(crate) struct WaveScrub {
 /// Current reaction per target per direction — newest live wins, empty glyph = retracted. [0]=theirs, [1]=ours. Shared by the renderer and the scroll walk (a reacted row is one line taller).
 fn build_react_over(
     raw: &[crate::types::ChatMessage],
-) -> std::collections::HashMap<i64, [Option<(i64, String)>; 2]> {
-    let mut out: std::collections::HashMap<i64, [Option<(i64, String)>; 2]> =
-        std::collections::HashMap::new();
+) -> crate::linear_map::SortedMap<i64, [Option<(i64, String)>; 2]> {
+    let mut out: crate::linear_map::SortedMap<i64, [Option<(i64, String)>; 2]> =
+        crate::linear_map::SortedMap::new();
     for m in raw.iter().filter(|m| !m.deleted) {
         if let Some((crate::types::RefKind::React, t)) = m.reference {
             let slot = &mut out.entry(t).or_default()[m.is_outgoing as usize];
@@ -1221,7 +1221,7 @@ fn build_react_over(
 
 /// Does the react_over map hold any LIVE glyph for this row? (The retract leaves a slot with an empty string.)
 fn row_has_reaction(
-    over: &std::collections::HashMap<i64, [Option<(i64, String)>; 2]>,
+    over: &crate::linear_map::SortedMap<i64, [Option<(i64, String)>; 2]>,
     ts: i64,
 ) -> bool {
     over.get(&ts).is_some_and(|slots| {
@@ -1691,8 +1691,8 @@ pub struct PhotonApp {
     /// The typed extras of the attachment row about to be minted by send_chain_message (set by attach_send_now, consumed at row creation) — so the row carries its kind + preview before the transmit reads it.
     attach_stage: Option<(crate::types::AttachMeta, Vec<u8>, crate::types::AttachRef)>,
     /// Decoded attachment pictures by hash (preview blobs and Original decodes): (w, h, packed display pixels); None = decode failed, don't ask again this session.
-    img_cache: std::collections::HashMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>,
-    img_pending: std::collections::HashSet<[u8; 32]>,
+    img_cache: crate::linear_map::SortedMap<[u8; 32], Option<(usize, usize, Vec<u32>)>>,
+    img_pending: crate::linear_map::SortedSet<[u8; 32]>,
     img_decoded_tx: std::sync::mpsc::Sender<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
     img_decoded_rx: std::sync::mpsc::Receiver<([u8; 32], Option<(usize, usize, Vec<u32>)>)>,
     /// Presence probes landed (viewer.rs drain_presence_probes) — the wrap re-measures and the screen repaints.
@@ -1705,14 +1705,14 @@ pub struct PhotonApp {
     img_wants: Vec<([u8; 32], [u8; 32], bool, bool)>,
     /// ATTACHMENT HEADS (flag day 2026-10-07): heads the last render needed for rows it laid out — (peer handle hash, head hash) — drained into a read job (held) or a fetch (missing, any network: a head is a few KB). `head_pending` = a read is out; `head_failed` = a held head would not parse (never re-asked this session). The channel carries each read back to hydrate every row that points at it.
     head_wants: Vec<([u8; 32], [u8; 32])>,
-    head_pending: std::collections::HashSet<[u8; 32]>,
-    head_failed: std::collections::HashSet<[u8; 32]>,
+    head_pending: crate::linear_map::SortedSet<[u8; 32]>,
+    head_failed: crate::linear_map::SortedSet<[u8; 32]>,
     /// The receiver's own sniff of each original that landed this session (content hash → kind): a headed row whose head is read AFTER its bytes landed still takes the stricter verdict at hydration.
-    attach_sniffed: std::collections::HashMap<[u8; 32], crate::types::AttachKind>,
+    attach_sniffed: crate::linear_map::SortedMap<[u8; 32], crate::types::AttachKind>,
     head_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<crate::types::AttachHead>)>>,
     head_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<crate::types::AttachHead>)>>,
     /// Preview blobs auto-fetched this session (one ask each).
-    attach_auto_fetched: std::collections::HashSet<[u8; 32]>,
+    attach_auto_fetched: crate::linear_map::SortedSet<[u8; 32]>,
     /// The open image viewer / text reader (viewer.rs) and the hit-id base of their pills (back, save, the pane itself); `viewer_view_base` is the block opsin's view widgets are built on (stable across images, so the overlay tables cover them).
     viewer: Option<viewer::Viewer>,
     reader: Option<viewer::Reader>,
@@ -1734,12 +1734,12 @@ pub struct PhotonApp {
     /// GROUP frames as their authors signed them, per group (molecules.rs `store_group_frame`): what a member hands on to another member who missed them while the author is away.
     molecule_frames: Vec<molecules::GroupFrame>,
     /// How often each frame was handed to each member device ((device, frame stamp) → tries): a frame goes at most three times to one device.
-    molecule_relay_tries: std::collections::HashMap<([u8; 32], i64), u8>,
+    molecule_relay_tries: crate::linear_map::LinearMap<([u8; 32], i64), u8>,
     /// Send braid encrypts finished off-thread (see BraidTxEncrypted) — the drain commits.
     braid_tx_tx: std::sync::mpsc::Sender<BraidTxEncrypted>,
     braid_tx_rx: std::sync::mpsc::Receiver<BraidTxEncrypted>,
     /// Friendships with a send encrypt in flight: a second dispatch would mint a second frame at the SAME lane position (the commit CAS would void it), so the gate holds the row and the commit edge re-fires it thru resend_held_messages.
-    send_encrypt_busy: std::collections::HashSet<[u8; 32]>,
+    send_encrypt_busy: crate::linear_map::SortedSet<[u8; 32]>,
     /// The sealed-I/O worker: kete opens/seals, page builds, blob serves — everything AEAD-shaped queues here instead of spawning a thread per item (see spawn_job_worker).
     seal_job_tx: std::sync::mpsc::Sender<Job>,
     /// The attachment worker: blob serves (manifest + every chunk), chunk/manifest/blob stores and blob deletes — bulk work that must never queue ahead of a history page's build or open (Emma 2026-10-21: her walk stalled behind a replication flood on both ends).
@@ -1749,14 +1749,14 @@ pub struct PhotonApp {
     /// The braid-crypto worker: memory-hard scratch decrypts + encrypts. ONE worker on purpose — the lockstep already serialized same-lane frames; serializing across lanes trades a few ms of queue latency for zero render-thread contention.
     braid_job_tx: std::sync::mpsc::Sender<Job>,
     /// Handles we've already kicked an avatar download for this session, so we don't re-spawn a fetch every time a conversation is reopened or the contact list re-renders.
-    avatar_dl_started: std::collections::HashSet<[u8; 32]>,
+    avatar_dl_started: crate::linear_map::SortedSet<[u8; 32]>,
     /// Mutual peers we've sent a direct P2P AvatarRequest to, mapped to the eagle-time we sent it. The per-tick sweep asks each mutual peer once, then — if no AvatarResponse has installed an avatar within `AVATAR_P2P_FALLBACK_OSC` — falls back to FGTW. So a friend's avatar comes from the friend first, and FGTW only covers the case where the friend is offline or avatar-less.
     avatar_req_pending: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Request ids WE minted for history pages, rid → (the conversation the request was FOR, sent osc, the device whose page answered it). The AUTHORITATIVE page-match: the per-conversation `in_flight` rid alone starved recovery when two contact rows resolved the same peer (field, 2026-08-10 — a duplicated contact meant the page's token resolved to one conversation while the rid lived on the OTHER's record, so every served page dropped "rid unmatched" forever). A page matching ANY rid here was asked for by us, whatever contact the token resolves to today.
     /// An answered entry stays until the sweep, so the twin every page has (PT plus the relay copy) is recognised and dropped silently; drive_history_recovery sweeps answered entries after one in-flight timeout and unanswered ones after eight.
     hist_rid_map: crate::linear_map::LinearMap<[u8; 32], (crate::types::ConversationId, i64, Option<[u8; 32]>)>,
     /// Devices whose history answers have not proven they reach us directly: an ask to one expired unanswered, so the next asks want the relay copy too, until a page from it lands direct. RAM only.
-    hist_relay_wanted: std::collections::HashSet<[u8; 32]>,
+    hist_relay_wanted: crate::linear_map::SortedSet<[u8; 32]>,
     /// Fleet-first keygen gate edge state — true while the gate is actively holding friend keygens (logs the hold and the release ONCE each, not per tick).
     keygen_fleet_gate_holding: bool,
     /// Blind-deposit flip-flop detector, keyed (contact hp, depositor device): (hash of the blob the CURRENT stored deposit replaced, consecutive A-B-A flips). Two photon installs sharing one device key wage an S-war — each twin's deposit replaces the other's forever (field 2026-08-21: 400 deposits from ONE device in an afternoon log, each a ~1.5s durable commit, wall-to-wall vault load). At 3 consecutive flips the commits DECIMATE 8:1 (drop-unacked; pure counter, no timer) — the war's write load collapses, a GENUINE re-key still lands within 8 retries, and a byte-identical (stable) deposit resets the detector. Runtime-only: a restart re-arms detection, which is fine.
@@ -1788,13 +1788,13 @@ pub struct PhotonApp {
     /// Conversation eras we delivered over a bond and await the ACK of: (bond chains id, the Deliver row's eagle time, the conversation) — the first ACK is the minter's cutover edge (docs/conversations.md §0).
     deliveries_in_flight: Vec<(crate::types::FriendshipId, i64, crate::types::FriendshipId)>,
     /// Who minted each conversation's pending era — two members minting the same index converge on the LOWER party's.
-    pending_minter: std::collections::HashMap<crate::types::FriendshipId, [u8; 32]>,
+    pending_minter: crate::linear_map::LinearMap<crate::types::FriendshipId, [u8; 32]>,
     /// Groups whose next mint waits for the pending era to cut over (a leave or cadence edge that landed mid-mint): minted in `after_molecule_cutover`.
-    molecule_mint_after_cutover: std::collections::HashSet<crate::types::molecule::MoleculeId>,
+    molecule_mint_after_cutover: crate::linear_map::LinearSet<crate::types::molecule::MoleculeId>,
     /// Era disagreements already acted on: (chains id, the peer's era tag, our bond's era tag or 0) — each heals once, a re-keyed bond tries again.
-    era_heals: std::collections::HashSet<(crate::types::FriendshipId, u32, u32)>,
+    era_heals: crate::linear_map::LinearSet<(crate::types::FriendshipId, u32, u32)>,
     /// People whose Message tap came before our bond with them completed — their two-member conversation is founded on the completion edge (docs/conversations.md D8).
-    found_when_bonded: std::collections::HashSet<[u8; 32]>,
+    found_when_bonded: crate::linear_map::LinearSet<[u8; 32]>,
     /// Group-side rows waiting for the fan-out send (step 4 drains them onto our lane inside the group).
     pending_molecule_posts: Vec<molecules::MoleculePost>,
     /// Last `[` Press timestamp; `None` until first press. Combined with `chord_lb_release` decides whether `[` is currently held — see `brackets_held`.
@@ -1930,9 +1930,9 @@ pub struct PhotonApp {
     /// The last frame the ACTIVE wave screen was repainted for its own sake: the timer, the live stats and the ring change at most once a second (Nick 2026-09-12: "wave screen should update at most every second").
     last_wave_redraw: Option<std::time::Instant>,
     /// Attachment fetches in flight, by content hash (see [`FetchAsk`]). A request that gets no answer — the holder dozing, the frame lost — used to leave the row at "fetching" forever; the retry tick moves an ask whose device went quiet to the next device and lets go after a bounded run of fruitless asks (field 2026-09-12: the desktop asked for a wave at 23:55 and nothing ever came back).
-    attach_fetch_inflight: std::collections::HashMap<[u8; 32], FetchAsk>,
+    attach_fetch_inflight: crate::linear_map::SortedMap<[u8; 32], FetchAsk>,
     /// The last attachment frame (blob, manifest or chunk) heard from each device, stamped as it arrives: a device streaming ANY of our asks is not quiet, so none of its queued asks moves on (it serves them one after another).
-    attach_heard: std::collections::HashMap<[u8; 32], std::time::Instant>,
+    attach_heard: crate::linear_map::SortedMap<[u8; 32], std::time::Instant>,
     /// Friend attachment rows just landed: (blob, conversation, the device pushing it) — the fetch tick records each as already asked of that device.
     attach_expect_pushes: Vec<([u8; 32], crate::types::ConversationId, [u8; 32])>,
     /// THE FLEET HOLDS EVERYTHING (Nick 2026-10-07): the replication sweep's edges — rows arrived (the total row count moved), presence probes landed, the network went unmetered — each sets this, and one sweep runs per edge. `replicate_rows_seen` / `replicate_metered` are the remembered sides of the first and last edge.
@@ -1942,7 +1942,7 @@ pub struct PhotonApp {
     /// Blob asks already answered, by the hash of the signed frame: the direct and relay copies of one ask carry the same bytes, so the second copy is dropped however late it lands. Capped by count, never aged.
     attach_asks_seen: std::collections::VecDeque<[u8; 32]>,
     /// Whole-blob serves queued or running, by (requesting device, hash): an ask racing one is answered by it. Each serve job removes its own entry when it ends ([`AttachServing`]), the edge after which a new ask is a real new ask.
-    attach_serving: std::sync::Arc<std::sync::Mutex<std::collections::HashSet<([u8; 32], [u8; 32])>>>,
+    attach_serving: std::sync::Arc<std::sync::Mutex<crate::linear_map::SortedSet<([u8; 32], [u8; 32])>>>,
     /// Last keygen pickup scan (spawn_next_pending_keygen runs at 4 Hz, not per vsync).
     last_keygen_pickup: Option<std::time::Instant>,
     /// Our identity party id, memoized per seed: it is an ed25519 public-key derivation, and the tick asked for it once per contact per vsync (thirty-odd scalar multiplications a frame on an idle phone, 2026-09-10 profile).
@@ -2035,7 +2035,7 @@ pub struct PhotonApp {
     successor_rx: Option<std::sync::mpsc::Receiver<([u8; 32], Option<[u8; 32]>)>>,
     successor_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<[u8; 32]>)>>,
     /// Contacts with an in-flight successor check, so a superseded fold that re-arrives each refresh spawns at most one network probe at a time (cleared when its result drains). NOT a permanent suppressor: a later refresh re-probes, so a successor record that publishes AFTER the mismatch is still adopted.
-    successor_inflight: std::collections::HashSet<[u8; 32]>,
+    successor_inflight: crate::linear_map::SortedSet<[u8; 32]>,
     /// Launch add-mode (NEW device joining a fleet): orb on Launch toggles it, and a failed attest against an existing fleet auto-enters it. Enter the handle; this device then generates + displays its pairing words and waits for the other device to match and bind.
     launch_add_mode: bool,
     /// Join flow: the handle once entered; `None` while still awaiting it.
@@ -2095,10 +2095,10 @@ pub struct PhotonApp {
     /// The conversation stream filter (top-bar pill). Session state.
     conv_filter: ChatFilter,
     /// Waves this fleet REJECTED (silent dismissal): by wave id (this device's own ring) and by offer stamp (a sibling's reject learned thru the wave row before or after this device's ring started). A re-expressed offer for either never rings. Session-local; a rejected wave is over long before a relaunch.
-    rejected_waves: std::collections::HashSet<[u8; 16]>,
+    rejected_waves: crate::linear_map::SortedSet<[u8; 16]>,
     /// Wave ids this device has ENDED (answered, hung up, dropped, missed): an offer for one of them is a late copy, not a ring (field 2026-09-11 23:34, the ghost ring — a relay pipe reconnected and delivered the original dial's offer beats half a minute after the wave had ended; each beat is a distinct nonce and the clocks sat inside the stamp window).
-    ended_waves: std::collections::HashSet<[u8; 16]>,
-    rejected_offers: std::collections::HashSet<i64>,
+    ended_waves: crate::linear_map::SortedSet<[u8; 16]>,
+    rejected_offers: crate::linear_map::SortedSet<i64>,
     /// The NEWEST row in a conversation shows its options without a tap (Nick 2026-09-09: "on end of any comms and any new messages always show the options"); tapping it closes them, remembered here by row key until a newer row takes the slot.
     strip_dismissed: Option<(crate::types::ConversationId, i64, bool)>,
     /// Conversation tokens of knocks that arrived from people we had NOT yet added (Jeff's log 2026-10-01: he added first, his knock reached us as a stranger's and was dropped; when we added him later our knock flipped his side but nothing came back, and the ceremony never armed). A token is a few bytes and proves nothing on its own, so remembering it is safe; an add whose token matches one is the mutuality edge in the other order. Session-only, bounded, oldest out.
@@ -2106,7 +2106,7 @@ pub struct PhotonApp {
     /// The lane each signer device wrote to us on most recently, per conversation: (friendship id, signer device key) → lane label.
     /// Garbage on any OTHER lane from that signer is a straggler on a lane it has rotated away from, never fork evidence (docs/lanes.md: a retired lane is retired, not forked).
     /// In memory only: the first clean frame after launch seeds it, and until then the detector behaves as before.
-    latest_lane_by_signer: std::collections::HashMap<([u8; 32], [u8; 32]), [u8; 32]>,
+    latest_lane_by_signer: crate::linear_map::SortedMap<([u8; 32], [u8; 32]), [u8; 32]>,
     /// Hit id of the filter pill.
     conv_filter_hit: HitId,
     /// The compose digit strip's twelve hit ids (dozenal base only, while the message box is focused).
@@ -2123,7 +2123,7 @@ pub struct PhotonApp {
     lane_rearm_cycles: crate::linear_map::LinearMap<crate::types::friendship::FriendshipId, (i64, u8)>,
     /// Runtime-only re-serve cap, keyed per (friendship, peer DEVICE): the record's evidence tuple (tip for OUR lane, peer row_count, peer row_digest) plus ROWS ACTUALLY TRANSMITTED against exactly that testimony (2026-09-01: was bursts ATTEMPTED — the serial-send gate let ~1 row out per burst, so 2 attempted bursts spent the cap having served ~2 rows and a deeper hole parked forever; counting transmitted rows keeps the anti-loop convergence while letting the whole deficit drain). Device-keyed because each peer device pongs its OWN lane view — a fid-keyed slot flip-flopped between two devices' tips and reset the cap every cycle (the hours-long 8-rows-per-pong loop, field 2026-08-21). ANY change in the peer's testimony is the new-evidence edge that re-arms the cap; a peer that holds the rows but counts them differently (deleted/edit/reaction rows) goes quiet after the cap instead of bursting forever.
     /// Rows already RE-SERVED to a friendship this session (fid, eagle_time). One re-serve per row, ever — the field storm of 2026-09-08: the burst cap above re-arms on ANY testimony change, and a live chat changes the peer's (row_count, digest) on every pong, so the same two rows were re-encrypted 29 times in 75 minutes while the peer dedup'd and re-ACKed every copy. A row the peer has re-ACKed is held; a row they genuinely lost after a re-serve rides that re-serve's own retry ladder. The count deficit that keeps firing after this set is exhausted is a counting divergence, not a delivery hole.
-    lane_reserved_rows: std::collections::HashSet<(crate::types::friendship::FriendshipId, i64)>,
+    lane_reserved_rows: crate::linear_map::LinearSet<(crate::types::friendship::FriendshipId, i64)>,
     lane_reserve_bursts: crate::linear_map::LinearMap<
         (crate::types::friendship::FriendshipId, [u8; 32]),
         (i64, u32, [u8; 32], u8),
@@ -2360,11 +2360,11 @@ pub struct PhotonApp {
     /// Fold-freshness tripwire pursuit: hp → the claimed tip we are currently refetching against. EDGES, not timers: inserted at spawn, cleared by the fold drain's result (or fetch-error sentinel); while standing, only a strictly newer claim re-fires. Cardinality ≤ roster size (keys come only from matched contacts).
     fleet_tip_pursuit: crate::linear_map::LinearMap<[u8; 32], i64>,
     /// Session dedup for the no-contact presence-verdict breadcrumb (cleared wholesale at 64 — a diagnostic, not a ledger).
-    unknown_verdict_logged: std::collections::HashSet<[u8; 32]>,
+    unknown_verdict_logged: crate::linear_map::SortedSet<[u8; 32]>,
     /// Responders already used to refresh a stale friend fold (StatusUpdate::ForeignResponder): one refresh per unknown device per session, never a storm.
-    stale_fold_refreshed: std::collections::HashSet<[u8; 32]>,
+    stale_fold_refreshed: crate::linear_map::SortedSet<[u8; 32]>,
     /// Friends whose era deadlock this session already healed with a fresh ceremony (era.rs): the stranded-peer re-key runs once per contact, never in a loop.
-    era_reclutched: std::collections::HashSet<[u8; 32]>,
+    era_reclutched: crate::linear_map::LinearSet<[u8; 32]>,
     /// Hit id for the selected message's "copy" pill inside the details strip.
     msg_copy_id: HitId,
     /// Base hit id for the rest of the details-strip action pills (span 8): 0=reply, 1=edit, 2=resend, 3=delete. Copy keeps its own id above.
@@ -2415,7 +2415,7 @@ pub struct PhotonApp {
     /// Per group: BLAKE3 of the roster last pushed to our siblings. A roster edge (founding, a join, a rename) moves no lane, so the lane filter alone never carried it.
     molecule_roster_pushed: crate::linear_map::LinearMap<[u8; 32], [u8; 32]>,
     /// Tokens we fired a `chain_pull` for (Complete-without-chains, siblings exist) — once per session, so the fleet gets ONE ask before any re-key verdict. RAM-only.
-    chain_pull_sent: std::collections::HashSet<[u8; 32]>,
+    chain_pull_sent: crate::linear_map::SortedSet<[u8; 32]>,
     /// Per-token miss answers: sibling device pubkeys that replied `chain_pull_miss`. When every live sibling contact has a device in the set, the fleet truly holds nothing and the re-key runs. RAM-only.
     chain_pull_misses: crate::linear_map::LinearMap<[u8; 32], Vec<[u8; 32]>>,
     /// Last era each peer DEVICE advertised per friendship (index, tag) — the change edge for the stale-era observation (era ratchet stage 2). Runtime only.
@@ -2441,13 +2441,13 @@ pub struct PhotonApp {
     /// Live PT transfer progress (peer, done, total, outbound) — throttled push from the status thread; drives the pill progress bar.
     attach_progress: Vec<crate::network::pt::TransferProgress>,
     /// Chunked-blob arrival progress keyed by the WHOLE-FILE hash: (chunks held, chunks total) — the pill bar's first source (typed attachments Phase 1; the PT snapshot above stays the fallback for whole-value blobs).
-    attach_chunk_progress: std::collections::HashMap<[u8; 32], (u32, u32)>,
+    attach_chunk_progress: crate::linear_map::SortedMap<[u8; 32], (u32, u32)>,
     /// OUTBOUND chunked sends this device dispatched: hash → total chunks. The render derives overall send progress from it and the PT snapshot (chunks no longer in flight are done); cleared when the peer's attach_have lands. 2026-09-14 (Nick: "drag/drop for sending pigeons has no indication of progress") — the bar used to show one chunk's transfer at a time, 0→100 % over and over.
     attach_send_total: crate::linear_map::LinearMap<[u8; 32], u32>,
     /// Blob pushes confirmed landed (attach_have), this session.
-    attach_confirmed: std::collections::HashSet<[u8; 32]>,
+    attach_confirmed: crate::linear_map::SortedSet<[u8; 32]>,
     /// Files whose transfer bar showed this session — when the transfer completes, the row turns green and the bar runs edge to edge (Nick 2026-10-07, "when the progress completes, turn the entire row green, remove the margin trim on the progress bar to indicate it's done"). Session-scoped: a file that was already whole before this session never had a bar, so it shows no finish.
-    attach_bar_shown: std::collections::HashSet<[u8; 32]>,
+    attach_bar_shown: crate::linear_map::SortedSet<[u8; 32]>,
     /// Android: set when the paperclip asks for the system file picker; drained by nativePollAttachPicker.
     pending_attach_picker: bool,
     /// Bridge executor channels (host side): commands go to the off-thread dispatcher that routes to one worker+shell per sibling device; FINAL outputs come back here for `drain_bridge_output` to reply with. Lazily created on the first command so a fleet that never bridges spawns nothing. Desktop-unix only (the shell host).
@@ -2456,7 +2456,7 @@ pub struct PhotonApp {
     /// Per-command unsent-DELTA spool (host side) — the worker appends what's new, the UI drain broadcasts what's missing at most 1Hz; the exit folds into the last frame (no separate final channel).
     #[cfg(all(unix, not(target_os = "android")))]
     bridge_partials: Option<
-        std::sync::Arc<std::sync::Mutex<std::collections::HashMap<ContactId, bridge::BridgeEmit>>>,
+        std::sync::Arc<std::sync::Mutex<crate::linear_map::LinearMap<ContactId, bridge::BridgeEmit>>>,
     >,
     /// Last wire-send instant per conversation for streamed PARTIALS — the ONE granted timer (Nick 2026-08-31): at most one partial per second per conversation; the latest-wins slot holds anything faster. Finals never consult it.
     #[cfg(all(unix, not(target_os = "android")))]
@@ -2473,9 +2473,9 @@ pub struct PhotonApp {
     pigeon_landed_tx: std::sync::mpsc::Sender<(ContactId, Option<crate::network::pigeon::Landed>, String)>,
     pigeon_landed_rx: std::sync::mpsc::Receiver<(ContactId, Option<crate::network::pigeon::Landed>, String)>,
     /// BOTH ENDS: how far each bridge pigeon has got, keyed by its whole-file hash — the sender learns it from the host's pigeon_ack frames, the host from its own spool. Draws the bar on the pigeon row; RAM-only like the rows themselves.
-    pigeon_progress: std::collections::HashMap<[u8; 32], PigeonProgress>,
+    pigeon_progress: crate::linear_map::SortedMap<[u8; 32], PigeonProgress>,
     /// CLIENT: pigeons dropped here and still being served (repair asks answered) until the host holds them whole.
-    pigeon_outbound: std::collections::HashMap<[u8; 32], PigeonOutbound>,
+    pigeon_outbound: crate::linear_map::SortedMap<[u8; 32], PigeonOutbound>,
     pigeon_prepared_tx: std::sync::mpsc::Sender<PigeonPrepared>,
     pigeon_prepared_rx: std::sync::mpsc::Receiver<PigeonPrepared>,
     /// HOST: this session has resumed the spools a previous run left (once, when the fleet key is in hand).
@@ -2584,9 +2584,9 @@ pub struct PhotonApp {
     fleet_release_armed: Option<[u8; 32]>,
     /// The sibling pubkey whose "Lock out" pill is two-tap armed (treat-as-stolen). Cleared on page switch like every destructive arm.
     /// Has-cached-avatar probe results by party id — the avatar sweep's answer, remembered. The sweep runs every tick and its per-contact `read_addr` probe takes the VAULT MUTEX, which background persist workers hold thru whole encrypted-table writes — so the innocent per-tick read turned every writer hold into a UI stall (the 2026-08-15 400-1794ms "status pre-loop" field log). One probe per contact per session; cleared wholesale on any avatar install / pin adoption (rare edges), costing one re-probe each.
-    avatar_probe_cache: std::collections::HashMap<[u8; 32], bool>,
+    avatar_probe_cache: crate::linear_map::SortedMap<[u8; 32], bool>,
     /// Egged-status probe results by sibling device key — fleet_device_rows' fanout_pairs::load answer, remembered. The Fleet page gathers rows every FRAME, so the per-sibling vault read was a per-frame librarian round trip; a pair secret changes only at ceremony completion, which invalidates its entry there. Same doctrine as avatar_probe_cache: the UI thread's steady state touches the vault zero times.
-    egged_cache: std::collections::HashMap<[u8; 32], bool>,
+    egged_cache: crate::linear_map::SortedMap<[u8; 32], bool>,
     /// The fleet's signature-scheme facts, read off OUR chain: the floor every member has proved, each member's declared mask, and the chain-locked set. Refreshed off-thread on every own-fold adopt and after every declare; rendered on the Fleet page so the migration from one egg to the basket is visible per device and as a whole.
     fleet_schemes: Option<FleetSchemes>,
     fleet_schemes_rx: Option<std::sync::mpsc::Receiver<FleetSchemes>>,
@@ -2612,13 +2612,13 @@ pub struct PhotonApp {
     /// Keep-transcode results (worker → UI): a finished N-channel recording posts here for the `wave.audio` row mint. Lazily created on first keep (see `wave_keep_sender`).
     wave_keep_rx: Option<std::sync::mpsc::Receiver<wave_ui::WaveKeepResult>>,
     /// Wave-card envelopes by SOURCE hash: an env blob's hash maps to a one-entry vec (that party's tensor); a recording's hash maps to the audio-derived per-channel vec. None = the load/parse failed (a durable miss, not a respawn loop). Session cache.
-    wave_env: std::collections::HashMap<[u8; 32], Option<Vec<std::sync::Arc<crate::wave::wave_env::WaveEnv>>>>,
+    wave_env: crate::linear_map::SortedMap<[u8; 32], Option<Vec<std::sync::Arc<crate::wave::wave_env::WaveEnv>>>>,
     /// Loads in flight (one per hash).
-    wave_env_pending: std::collections::HashSet<[u8; 32]>,
+    wave_env_pending: crate::linear_map::SortedSet<[u8; 32]>,
     /// Far-party env blobs seen but not held: (conversation id, hash) queued by the render, fetched once per session by drain_wave_env_wants.
     wave_env_wants: Vec<(crate::types::ConversationId, [u8; 32])>,
     /// Finished band folds per (source hash, channel-in-source, width, rows): per-column-per-row VERTICAL COVERAGE 0..1 (the downscale-with-opacity-contributions fold) — built once, the per-frame loop is solid runs + graded contour pixels. Cleared wholesale past a small cap.
-    wave_fold_cache: std::cell::RefCell<std::collections::HashMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
+    wave_fold_cache: std::cell::RefCell<crate::linear_map::SortedMap<([u8; 32], usize, usize, usize), std::rc::Rc<(Vec<f32>, Vec<u32>)>>>,
     /// The playing music pigeon, if any (desktop; Android stubs until music routes thru its audio engine).
     music_play: Option<music_play::MusicPlay>,
     wave_env_tx: Option<std::sync::mpsc::Sender<([u8; 32], Option<Vec<crate::wave::wave_env::WaveEnv>>)>>,
@@ -2648,7 +2648,7 @@ pub struct PhotonApp {
     /// A newer version the check found and this build cannot apply itself (Android, dev builds): the STANDING "update available" band on the contact and attest screens, gated on updates.auto at draw. Runtime-only — a restart is a new binary.
     update_available: Option<(usize, usize, usize)>,
     /// Devices already sent the boot ANNOUNCE (the unsolicited pong whose sealed tail carries our About — see PingRequest::announce). Runtime-only, so every launch announces once per sibling: the peers' fleet pages read the new build within seconds instead of a ping-backoff cycle later (field 2026-08-31: 71.0 shown for a host running 71.1).
-    announced_devices: std::collections::HashSet<[u8; 32]>,
+    announced_devices: crate::linear_map::SortedSet<[u8; 32]>,
     /// Android: a hash-verified APK is staged — the JNI poll hands this path to Kotlin, which fires the system installer (the second click).
     #[cfg(target_os = "android")]
     pub pending_apk_install: Option<String>,
@@ -2701,12 +2701,12 @@ pub struct PhotonApp {
     space_recheck: bool,
     space_short: bool,
     space_sweep: Option<space::SpaceSweep>,
-    space_evicted: std::collections::HashSet<[u8; 32]>,
+    space_evicted: crate::linear_map::SortedSet<[u8; 32]>,
     space_launch_checked: bool,
     /// Fetches aimed at one device first — a pull asks the leaver, who holds the only copy (attach_fetch ranks it ahead of everyone).
-    attach_fetch_prefer: std::collections::HashMap<[u8; 32], [u8; 32]>,
+    attach_fetch_prefer: crate::linear_map::SortedMap<[u8; 32], [u8; 32]>,
     /// wave_ids THIS device dialed this session — the license for the stray-answer loud-kill (wave_ui Answer arm): a device that never dialed must never hang up the friend. RAM-only on purpose; a few entries per session, never pruned.
-    dialed_wave_ids: std::collections::HashSet<[u8; 16]>,
+    dialed_wave_ids: crate::linear_map::SortedSet<[u8; 16]>,
     /// Fleet wave-presence chip: a wave is running on ANOTHER of our devices — `(wave_id, that device's pubkey if the row named it, the friend's handle hash)`. Lit by our fleet's replicated offer/answer rows, cleared by the terminal rows (hangup/decline/busy — the tombstones). Purely informational v1; join/switch reads this state later.
     fleet_wave_elsewhere: Option<([u8; 16], Option<[u8; 32]>, [u8; 32])>,
     /// About page: false = show the version as dozenal GLYPHS (the default — proper rendered dozenal, never arabic); true = the version tapped, spell it out in voca words. Toggles on each tap of the version row.
@@ -2822,7 +2822,7 @@ impl PhotonApp {
             contact_pubkeys: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             sync_records: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
             pong_seal_keys: std::sync::Arc::new(std::sync::Mutex::new(
-                std::collections::HashMap::new(),
+                crate::linear_map::SortedMap::new(),
             )),
             clutch_keygen_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
@@ -2860,8 +2860,8 @@ impl PhotonApp {
             },
             attach_prepared_rx: std::sync::mpsc::channel().1,
             attach_stage: None,
-            img_cache: std::collections::HashMap::new(),
-            img_pending: std::collections::HashSet::new(),
+            img_cache: crate::linear_map::SortedMap::new(),
+            img_pending: crate::linear_map::SortedSet::new(),
             img_decoded_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
@@ -2879,12 +2879,12 @@ impl PhotonApp {
             img_view_rx: std::sync::mpsc::channel().1,
             img_wants: Vec::new(),
             head_wants: Vec::new(),
-            head_pending: std::collections::HashSet::new(),
-            head_failed: std::collections::HashSet::new(),
-            attach_sniffed: std::collections::HashMap::new(),
+            head_pending: crate::linear_map::SortedSet::new(),
+            head_failed: crate::linear_map::SortedSet::new(),
+            attach_sniffed: crate::linear_map::SortedMap::new(),
             head_tx: None,
             head_rx: None,
-            attach_auto_fetched: std::collections::HashSet::new(),
+            attach_auto_fetched: crate::linear_map::SortedSet::new(),
             viewer: None,
             reader: None,
             viewer_base: HIT_NONE,
@@ -2907,13 +2907,13 @@ impl PhotonApp {
             chat_replay_queue: std::collections::VecDeque::new(),
             molecule_held_frames: Vec::new(),
             molecule_frames: Vec::new(),
-            molecule_relay_tries: std::collections::HashMap::new(),
+            molecule_relay_tries: crate::linear_map::LinearMap::new(),
             braid_tx_tx: {
                 let (tx, _) = std::sync::mpsc::channel();
                 tx
             },
             braid_tx_rx: std::sync::mpsc::channel().1,
-            send_encrypt_busy: std::collections::HashSet::new(),
+            send_encrypt_busy: crate::linear_map::SortedSet::new(),
             seal_job_tx: spawn_job_worker("photon-seal"),
             attach_job_tx: spawn_job_worker("photon-attach"),
             attach_chunk_intake: std::sync::Arc::new(std::sync::Mutex::new(ChunkIntake::default())),
@@ -2927,10 +2927,10 @@ impl PhotonApp {
                 tx
             },
             fleet_rotated_rx: std::sync::mpsc::channel().1,
-            avatar_dl_started: std::collections::HashSet::new(),
+            avatar_dl_started: crate::linear_map::SortedSet::new(),
             avatar_req_pending: crate::linear_map::LinearMap::new(),
             hist_rid_map: crate::linear_map::LinearMap::new(),
-            hist_relay_wanted: std::collections::HashSet::new(),
+            hist_relay_wanted: crate::linear_map::SortedSet::new(),
             keygen_fleet_gate_holding: false,
             blind_flip: crate::linear_map::LinearMap::new(),
             history_serve: crate::linear_map::LinearMap::new(),
@@ -2944,10 +2944,10 @@ impl PhotonApp {
             molecule_parked: Vec::new(),
             bonds_checked: (0, 0),
             deliveries_in_flight: Vec::new(),
-            pending_minter: std::collections::HashMap::new(),
-            molecule_mint_after_cutover: std::collections::HashSet::new(),
-            era_heals: std::collections::HashSet::new(),
-            found_when_bonded: std::collections::HashSet::new(),
+            pending_minter: crate::linear_map::LinearMap::new(),
+            molecule_mint_after_cutover: crate::linear_map::LinearSet::new(),
+            era_heals: crate::linear_map::LinearSet::new(),
+            found_when_bonded: crate::linear_map::LinearSet::new(),
             pending_molecule_posts: Vec::new(),
             chord_lb_press: None,
             chord_lb_release: None,
@@ -3028,14 +3028,14 @@ impl PhotonApp {
             wave_needs_addresses: std::cell::Cell::new(None),
             resume_vault_rx: None,
             last_wave_redraw: None,
-            attach_fetch_inflight: std::collections::HashMap::new(),
-            attach_heard: std::collections::HashMap::new(),
+            attach_fetch_inflight: crate::linear_map::SortedMap::new(),
+            attach_heard: crate::linear_map::SortedMap::new(),
             attach_expect_pushes: Vec::new(),
             replicate_dirty: true,
             replicate_rows_seen: 0,
             replicate_metered: false,
             attach_asks_seen: std::collections::VecDeque::new(),
-            attach_serving: std::sync::Arc::new(std::sync::Mutex::new(std::collections::HashSet::new())),
+            attach_serving: std::sync::Arc::new(std::sync::Mutex::new(crate::linear_map::SortedSet::new())),
             express_seen: Vec::new(),
             identity_pid_cache: std::cell::Cell::new(None),
             last_peer_harvest: None,
@@ -3074,7 +3074,7 @@ impl PhotonApp {
             contact_members_tx: None,
             successor_rx: None,
             successor_tx: None,
-            successor_inflight: std::collections::HashSet::new(),
+            successor_inflight: crate::linear_map::SortedSet::new(),
             launch_add_mode: false,
             add_join_handle: None,
             probed_session: None,
@@ -3106,12 +3106,12 @@ impl PhotonApp {
             wave_playback: None,
             wave_playback_hash: None,
             conv_filter: ChatFilter::All,
-            rejected_waves: std::collections::HashSet::new(),
-            ended_waves: std::collections::HashSet::new(),
-            rejected_offers: std::collections::HashSet::new(),
+            rejected_waves: crate::linear_map::SortedSet::new(),
+            ended_waves: crate::linear_map::SortedSet::new(),
+            rejected_offers: crate::linear_map::SortedSet::new(),
             strip_dismissed: None,
             stranger_knocks: Vec::new(),
-            latest_lane_by_signer: std::collections::HashMap::new(),
+            latest_lane_by_signer: crate::linear_map::SortedMap::new(),
             conv_filter_hit: HIT_NONE,
             digit_strip_base: HIT_NONE,
             msg_wave_bands: Vec::new(),
@@ -3119,7 +3119,7 @@ impl PhotonApp {
             wave_scrub: None,
             orphan_waves_swept: false,
             lane_rearm_cycles: crate::linear_map::LinearMap::new(),
-            lane_reserved_rows: std::collections::HashSet::new(),
+            lane_reserved_rows: crate::linear_map::LinearSet::new(),
             lane_reserve_bursts: crate::linear_map::LinearMap::new(),
             pb_resolve_cursor: 0,
             ckpt_mint_due: false,
@@ -3201,9 +3201,9 @@ impl PhotonApp {
             link_consent: None,
             link_consent_base: HIT_NONE,
             fleet_tip_pursuit: crate::linear_map::LinearMap::new(),
-            unknown_verdict_logged: std::collections::HashSet::new(),
-            stale_fold_refreshed: std::collections::HashSet::new(),
-            era_reclutched: std::collections::HashSet::new(),
+            unknown_verdict_logged: crate::linear_map::SortedSet::new(),
+            stale_fold_refreshed: crate::linear_map::SortedSet::new(),
+            era_reclutched: crate::linear_map::LinearSet::new(),
             msg_copy_id: HIT_NONE,
             msg_action_base: HIT_NONE,
             msg_hit_rows: Vec::new(),
@@ -3229,7 +3229,7 @@ impl PhotonApp {
             last_fleet_sweep: None,
             chain_pushed_osc: crate::linear_map::LinearMap::new(),
             molecule_roster_pushed: crate::linear_map::LinearMap::new(),
-            chain_pull_sent: std::collections::HashSet::new(),
+            chain_pull_sent: crate::linear_map::SortedSet::new(),
             chain_pull_misses: crate::linear_map::LinearMap::new(),
             peer_era_seen: crate::linear_map::LinearMap::new(),
             era_pull_sent: crate::linear_map::LinearMap::new(),
@@ -3243,10 +3243,10 @@ impl PhotonApp {
             settings_theme_dropdown: None,
             settings_zoom_slider: None,
             attach_progress: Vec::new(),
-            attach_chunk_progress: std::collections::HashMap::new(),
+            attach_chunk_progress: crate::linear_map::SortedMap::new(),
             attach_send_total: crate::linear_map::LinearMap::new(),
-            attach_confirmed: std::collections::HashSet::new(),
-            attach_bar_shown: std::collections::HashSet::new(),
+            attach_confirmed: crate::linear_map::SortedSet::new(),
+            attach_bar_shown: crate::linear_map::SortedSet::new(),
             pending_attach_picker: false,
             #[cfg(all(unix, not(target_os = "android")))]
             bridge_cmd_tx: None,
@@ -3262,8 +3262,8 @@ impl PhotonApp {
             pigeon_rx: Default::default(),
             pigeon_landed_tx: std::sync::mpsc::channel().0,
             pigeon_landed_rx: std::sync::mpsc::channel().1,
-            pigeon_progress: std::collections::HashMap::new(),
-            pigeon_outbound: std::collections::HashMap::new(),
+            pigeon_progress: crate::linear_map::SortedMap::new(),
+            pigeon_outbound: crate::linear_map::SortedMap::new(),
             pigeon_prepared_tx: std::sync::mpsc::channel().0,
             pigeon_prepared_rx: std::sync::mpsc::channel().1,
             pigeon_rediscovered: false,
@@ -3304,8 +3304,8 @@ impl PhotonApp {
             settings_fleet_selected: None,
             fleet_retired: Vec::new(),
             fleet_release_armed: None,
-            avatar_probe_cache: std::collections::HashMap::new(),
-            egged_cache: std::collections::HashMap::new(),
+            avatar_probe_cache: crate::linear_map::SortedMap::new(),
+            egged_cache: crate::linear_map::SortedMap::new(),
             fleet_schemes: None,
             fleet_schemes_rx: None,
             fleet_schemes_tx: None,
@@ -3320,11 +3320,11 @@ impl PhotonApp {
             update_rx: None,
             update_tx: None,
             wave_keep_rx: None,
-            wave_env: std::collections::HashMap::new(),
+            wave_env: crate::linear_map::SortedMap::new(),
             wave_env_wants: Vec::new(),
             music_play: None,
-            wave_fold_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
-            wave_env_pending: std::collections::HashSet::new(),
+            wave_fold_cache: std::cell::RefCell::new(crate::linear_map::SortedMap::new()),
+            wave_env_pending: crate::linear_map::SortedSet::new(),
             wave_env_tx: None,
             wave_env_rx: None,
             wave_keep_tx: None,
@@ -3340,7 +3340,7 @@ impl PhotonApp {
             next_update_check_osc: 0,
             update_toasted: None,
             update_available: None,
-            announced_devices: std::collections::HashSet::new(),
+            announced_devices: crate::linear_map::SortedSet::new(),
             #[cfg(target_os = "android")]
             pending_apk_install: None,
             pending_clipboard_copy: None,
@@ -3372,9 +3372,9 @@ impl PhotonApp {
             space_recheck: false,
             space_short: false,
             space_sweep: None,
-            space_evicted: std::collections::HashSet::new(),
+            space_evicted: crate::linear_map::SortedSet::new(),
             space_launch_checked: false,
-            attach_fetch_prefer: std::collections::HashMap::new(),
+            attach_fetch_prefer: crate::linear_map::SortedMap::new(),
             dialed_wave_ids: Default::default(),
             fleet_wave_elsewhere: None,
             signing_bundle: None,

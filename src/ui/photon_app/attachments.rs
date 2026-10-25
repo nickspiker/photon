@@ -597,7 +597,7 @@ impl PhotonApp {
     /// The transport gave up on a device (by key, or by an address one of its endpoints carries): every ask aimed there is over.
     pub(super) fn fetch_peer_unreachable(&mut self, addr: Option<std::net::SocketAddr>, device: Option<[u8; 32]>) {
         let same = |a: std::net::SocketAddr, b: std::net::SocketAddr| a.ip().to_canonical() == b.ip().to_canonical() && a.port() == b.port();
-        let devs: std::collections::HashSet<[u8; 32]> = self
+        let devs: crate::linear_map::SortedSet<[u8; 32]> = self
             .attach_fetch_inflight
             .values()
             .filter_map(|f| f.asked)
