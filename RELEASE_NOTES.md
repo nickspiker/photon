@@ -6,6 +6,11 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Lighter on memory.** Photon no longer builds a large lookup table the first time it handles text, which saves tens of megabytes on every device.
+- **Harder to fool with a bad clock.** A handful of checks that compare times from other devices, such as how fresh an invitation or a bind request is, could be thrown off by an extreme timestamp; they now judge every timestamp correctly.
+- **Smoother glow.** The glow around text boxes fades into its brightest point instead of stopping at a hard limit.
+- **Steadier picture loading.** The progress bar while a large picture opens can no longer run past its end.
+- **A big tidy-up underneath.** Hundreds of defensive checks across Photon and its libraries were proven unnecessary and removed, and the ones kept now say why they are there; nothing should look different, but it is all a little faster and easier to keep correct.
 
 ## v127
 - **See who has each photon.** Every photon you send shows a small ring beside it, one segment per person in the conversation in their colour, filling in as each of them receives it. Your own segment fills once it has left your device. Tap a photon to see each person by name: has it, or waiting.
