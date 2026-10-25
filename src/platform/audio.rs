@@ -1173,8 +1173,14 @@ mod desktop {
         HAS_RENDER.load(Ordering::Relaxed)
     }
 
+    /// THE HANDOVER LOCK, the desktop twin of the Android one below (Nick's MacBook 2026-10-25: a beam with no audio either way, video fine): start and stop each run as ONE unit.
+    /// The ringback's stop began tearing the Mac's voice-processing unit down (AudioOutputUnitStop blocks ~100 ms) the instant the answer landed; the engine's start in that window saw ACTIVE still true, returned "already live" and claimed a session that closed 87 ms later — no capture, no render, for the whole wave.
+    /// Held across each whole sequence, a stop finishes before a start begins, and the start then sees a closed session and opens its own.
+    static HANDOVER: Mutex<()> = Mutex::new(());
+
     /// Reopen the devices for the current picks while a session is live. On a Mac whose voice-processing unit holds the session, a pick moves it to the plain path (the unit only ever opens the system defaults).
     pub fn rebuild() {
+        let _h = HANDOVER.lock().unwrap();
         if !ACTIVE.load(Ordering::SeqCst) {
             return;
         }
@@ -1189,6 +1195,7 @@ mod desktop {
 
     /// Start the audio session: spawns the thread that owns both cpal streams for the life of the wave. Returns false when no devices exist (the wave proceeds one-way rather than failing — a mic-less desktop can still listen).
     pub fn start() -> bool {
+        let _h = HANDOVER.lock().unwrap();
         if ACTIVE.swap(true, Ordering::SeqCst) {
             return true; // already live
         }
@@ -1212,6 +1219,7 @@ mod desktop {
         if super::end_sweep_holds_stop() {
             return; // the disconnect sweep is playing; its own stop follows the drain
         }
+        let _h = HANDOVER.lock().unwrap();
         #[cfg(target_os = "macos")]
         if crate::platform::audio_vpio::live() {
             crate::platform::audio_vpio::stop();
