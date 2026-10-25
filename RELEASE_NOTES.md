@@ -23,6 +23,7 @@ One sentence per line, however long; plain language for the person who installs 
 - **Two people joining at once stay in one molecule.** When a second person joined before the first one’s keys had settled, the molecule split in two and each half couldn’t read the other; now everyone who joins in that window gets the same keys.
 - **Everyone who joins a molecule receives its photons.** People who joined, rather than started, a molecule were silently missing what others sent to it; they now get everything, and a new member learns about everyone who joined before them.
 - **Invitations appear right away.** A new invitation shows on your list the moment it arrives, without needing a tap.
+- **Phones send while in the background.** A phone with Photon in the background received photons but held some of its own outgoing ones (and key updates for molecules) until the screen came back on; it now sends them straight away.
 - **Joining works when a friend has invited you before.** A new invitation from someone whose earlier molecule you left now joins properly.
 - **Files send in molecules.** Dropping or picking a file in a molecule sends it to everyone in it.
 - **Buttons answer right after a page change.** A button under the pointer lights up and works straight away, without moving the mouse first.

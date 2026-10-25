@@ -53,6 +53,7 @@ pub fn run_lifeline(mut app: PhotonApp) {
             let _ = waker.cv.wait_timeout(q, LIFELINE_TICK);
         }
         // THE pump — advance_protocol wraps the full status drain (check_status_updates) plus pings, retransmits, chain sweeps, and the bridge drains. Ctx-free by construction (the core_init split's compiler-proven contract).
+        app.advance_headless_serial();
         let _ = app.advance_protocol(std::time::Instant::now());
     }
 }
