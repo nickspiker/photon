@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v126
 - **Update your friends too.** This version changes how Photon keeps each friendship's keys, so a chat with someone still on an older version can pause until they update; every device updates itself, so it sorts itself out within the day.
 - **Every conversation works the same, whatever its size.** Just you, you and one friend, or a whole group: the same panel opens from the orb, with the people in it (Bonds), the conversation in numbers, and Manage. Tap anyone in Bonds to see their page.
 - **People and conversations are separate.** Adding a friend no longer starts a chat by itself. Everyone you've added is under People; tap one to message them, and your conversation with them starts right there.
