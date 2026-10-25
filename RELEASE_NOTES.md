@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v128
 - **Lighter on memory.** Photon no longer builds a large lookup table the first time it handles text, which saves tens of megabytes on every device.
 - **Harder to fool with a bad clock.** A handful of checks that compare times from other devices, such as how fresh an invitation or a bind request is, could be thrown off by an extreme timestamp; they now judge every timestamp correctly.
 - **Smoother glow.** The glow around text boxes fades into its brightest point instead of stopping at a hard limit.
