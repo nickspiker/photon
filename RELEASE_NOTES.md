@@ -6,6 +6,7 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Smooth window dragging on Linux Wayland desktops.** Dragging Photon’s window no longer jitters, and Photon no longer catches clicks across the whole screen there; it now runs through XWayland when that is available, the same way it runs on X11.
 
 ## v126
 - **Update your friends too.** This version changes how Photon keeps each friendship's keys, so a chat with someone still on an older version can pause until they update; every device updates itself, so it sorts itself out within the day.
