@@ -94,7 +94,8 @@ impl StampReg {
     /// The regularized stamp for a frame arriving at `now`.
     fn stamp(&mut self, now: i64) -> i64 {
         match self.expected {
-            Some(exp) if (now - exp).abs() < REANCHOR_OSC => {
+            // WHY/PROOF: `now` is a device clock stamp that can jump arbitrarily — `(now - exp).abs()` of a far stamp wraps to i64::MIN and passes as "on time"; abs_diff is exact for every pair.
+            Some(exp) if now.abs_diff(exp) < REANCHOR_OSC as u64 => {
                 self.dev_max = self.dev_max.max(now - exp);
                 self.dev_n += 1;
                 let mut next = exp + BIN_OSC;

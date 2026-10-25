@@ -1415,9 +1415,10 @@ impl PhotonApp {
                 continue;
             };
             // The stamp is INSIDE the seal, so only the friendship could have written it; all it has to prove is freshness.
-            let skew = (vsf::eagle_time_oscillations() - ts).abs();
-            if skew > crate::wave::signal::EXPRESS_MAX_SKEW_OSC {
-                crate::logf!("WAVE: express {} stamped {}s away — dropped as stale (replay guard)", sig.kind(), skew / vsf::OSCILLATIONS_PER_SECOND as i64);
+            // WHY/PROOF: `ts` is the peer's — `(now - ts).abs()` of a crafted stamp wraps to i64::MIN and passes the skew test; abs_diff is exact for every pair.
+            let skew = vsf::eagle_time_oscillations().abs_diff(ts);
+            if skew > crate::wave::signal::EXPRESS_MAX_SKEW_OSC as u64 {
+                crate::logf!("WAVE: express {} stamped {}s away — dropped as stale (replay guard)", sig.kind(), skew / vsf::OSCILLATIONS_PER_SECOND as u64);
                 continue;
             }
             if self.express_seen.len() >= 256 {

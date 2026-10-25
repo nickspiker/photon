@@ -172,7 +172,7 @@ pub fn fit(window: &[Exchange], source: LockSource) -> Option<(Model, FitReport)
             lo = lo.min(e.boot);
             hi = hi.max(e.boot);
         }
-        hi.saturating_sub(lo)
+        hi - lo // the boots are our own boot clock, so a filled span cannot overflow; an empty filter leaves (MAX, MIN), whose difference wraps to 1, below the span like any short one
     };
     let rated = weighty_span >= MIN_RATE_SPAN_OSC && sxx > 0.0;
     let slope = if rated { sxy / sxx } else { 0.0 };

@@ -11,6 +11,7 @@ impl FetchAsk {
         match (self.asked, self.progressed) {
             (None, _) => self.fruitless,
             (Some(_), true) => 0,
+            // WHY/PROOF: only the tick checks the count against MAX_TRIES, and re-asks from other paths (a user tap, a reconnect) can each add one before it does — a wrap would hand a hopeless fetch a fresh run of asks.
             (Some(_), false) => self.fruitless.saturating_add(1),
         }
     }

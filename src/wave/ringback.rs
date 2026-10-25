@@ -150,6 +150,7 @@ fn run(digest: [u8; 32], stop: Arc<AtomicBool>, gen: u64) {
         for (at_osc, _, frame) in audio::captured_frames() {
             // The field's TX side, visual only (nothing is sent before the answer): 24-bit → 16-bit at the level plan's usual 16× (4 stops) makeup cap, so the ripples read at the loudness the wave will carry. The engine's own plan takes over at answer.
             if frame.len() == audio::FRAME_SAMPLES {
+                // WHY/PROOF: a 24-bit capture sample shifted by only 4 is 20 bits wide, and an int→int `as` WRAPS — the clamp is the saturating makeup gain, pinning a loud mic to the rail instead of flipping its sign.
                 let pcm: Vec<i16> = frame.iter().map(|&s| (s >> 4).clamp(i16::MIN as i32, i16::MAX as i32) as i16).collect();
                 crate::wave::live::push_tx(vsf::grid::eagle_to_sample(at_osc), &pcm);
             }

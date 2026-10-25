@@ -36,6 +36,7 @@ pub const TIER_NAMES: [&str; 5] = ["sublight", "light speed", "ridiculous speed"
 
 /// A rung's name; anything off the ladder reads as the floor.
 pub fn tier_name(tier: usize) -> &'static str {
+    // WHY/PROOF: the far avatar's rung is the PEER's tier byte off the wire — a value past the ladder would index past the names.
     TIER_NAMES.get(tier).copied().unwrap_or(TIER_NAMES[0])
 }
 // PLAID (Nick 2026-09-10, "stupid plaid mode"): the top rung is RAW 48 kHz mono 16-bit PCM — no codec at all, one 5 ms frame per datagram, no repair symbol. A lost datagram is skipped outright (a 5 ms hole, played as its own silence — never faded, never synthesized) so the jitter buffer stays hot instead of paying standing latency for everyone. Reached only on a LAN-class direct path (EngineParams::plaid_allowed) after a full second of clean 10 ms windows; left only when losses run past a rate, not on a lone pair. What it buys is the codec's lookahead and CPU, not fidelity — 128 kbps CELT is already transparent for speech.
@@ -673,7 +674,7 @@ fn run(
             if muted.load(Ordering::Relaxed) {
                 silent_run = 0;
             } else if frame_sum == 0 {
-                silent_run = silent_run.saturating_add(1);
+                silent_run += 1; // a u32 of 5-ms frames lasts 248 days of one wave
                 if silent_run == MIC_SILENT_FRAMES {
                     super::MIC_SILENT.store(true, Ordering::Relaxed);
                     crate::logf!("WAVE: the microphone is SILENT — {} unmuted frames in a row measured zero (a denied grant hands silence with no error); the wave screen says so", MIC_SILENT_FRAMES);
@@ -1014,6 +1015,7 @@ fn run(
                     }
                 }
                 if echo != 0 && hold != u16::MAX as u32 {
+                    // WHY/PROOF: `rx_at` is the socket thread's stamp, and a datagram queued before the engine started carries one older than `start_instant` — that reads as 0 µs, not a panic in a std that reinstates it.
                     let now_us = rx_at.saturating_duration_since(start_instant).as_micros() as u32;
                     let rtt_us = now_us.wrapping_sub(echo).wrapping_sub(hold);
                     let rtt = (rtt_us + 500) / 1000; // the rest of the link logic reads whole ms
@@ -1106,7 +1108,7 @@ fn run(
                         crate::platform::audio::reanchor_playout();
                     }
                     // The window holds five seconds of arrivals at this rung (see L_WINDOW_FRAMES); a rung change resizes it at the next arrival.
-                    let window_cap = (L_WINDOW_FRAMES / TIER_FRAMES[dtier].max(1)).max(L_WINDOW);
+                    let window_cap = (L_WINDOW_FRAMES / TIER_FRAMES[dtier]).max(L_WINDOW); // every TIER_FRAMES entry is at least 1
                     while recent_ages.len() >= window_cap {
                         recent_ages.pop_front();
                     }
@@ -1757,7 +1759,7 @@ fn loss_loop_step(bits: &mut [u64; LOSS_RING / 64], pos: &mut u8, integ: &mut f3
     let err_stops = (rate / LOSS_SETPOINT).log2();
     // WHY/PROOF: anti-windup — an integrator left free during a long outage winds past the cap and then takes as long to unwind after the link heals; bounding it to the output's own range is the PI controller, not a guard.
     *integ = (*integ + LOSS_KI * err_stops).clamp(0.0, JITTER_TARGET_CAP as f32);
-    let floor = floor_frames.max(1) as f32;
+    let floor = floor_frames as f32; // every TIER_FRAMES entry is at least 1
     // WHY/PROOF: the controller's output range — never below the measured jitter floor, never past the cap the buffer can hold.
     let target = (floor + LOSS_KP * err_stops + *integ).round().clamp(floor, JITTER_TARGET_CAP as f32) as usize;
     crate::platform::audio::set_jitter_target(target);

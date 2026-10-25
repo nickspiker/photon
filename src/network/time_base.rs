@@ -141,12 +141,13 @@ pub fn adopt_from_server(server_now_osc: i64, rtt_osc: i64) {
     let true_now = server_now_osc + rtt / 2;
     // THE REFUSAL IS NOT ALWAYS A CLOCK (field 2026-10-10, Nick's phone: a 6.5 MB log submit crawled up a saturated uplink for minutes, the server's 60 s window read the stale stamp as "107 s behind", and this reset moved photon time 107 s into the future over a nunc consensus of ±13 ms from 38 sources — every message the phone stamped after that sorted after its replies, and every express answer it sent was dropped as stale on the far side, three silent waves). The tell is not how tight the standing lock claims to be (a tight anchor can be WRONG — Theresa's phone, the test below) but whether the DISAGREEMENT fits inside the request's own span: a verdict that differs from us by less than the round trip it rode measured the request, not the clock. Such a verdict is fed as one loose exchange the fit weighs against the tight ones, and nothing moves; a disagreement the round trip cannot explain still re-anchors, however tight the old lock claimed to be.
     let st = now_stamp();
-    let disagreement = (true_now - before).abs();
-    if st.source != crate::network::true_clock::LockSource::Free && disagreement <= delay {
+    // WHY/PROOF: `server_now_osc` is the server's number parsed out of a refusal — `(a - b).abs()` of a crafted value wraps to i64::MIN and passes `<= delay`; abs_diff is exact for every pair.
+    let disagreement = true_now.abs_diff(before);
+    if st.source != crate::network::true_clock::LockSource::Free && disagreement <= delay as u64 {
         feed(&[crate::network::true_clock::Exchange { boot, offset: true_now - boot, delay }], false);
         crate::logf!(
             "Clock: FGTW refused our stamp as {} ms {}, but the request's round trip was {} ms — a slow request, not a wrong clock (lock ±{} ms); fed as one loose exchange, no reset",
-            disagreement * 1000 / crate::OSC_PER_SEC,
+            disagreement * 1000 / crate::OSC_PER_SEC as u64,
             if true_now > before { "behind" } else { "ahead" },
             rtt * 1000 / crate::OSC_PER_SEC,
             st.uncertainty_ns / 1_000_000

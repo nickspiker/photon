@@ -52,7 +52,8 @@ pub fn nv12_to_i420(y: &[u8], ys: usize, c: &[u8], cs: usize, w: usize, h: usize
         if video_range {
             // (Y − 16) × 255/219 in Q16, the constant rounded UP so video white (235) truncates to exactly 255 (Q12's 4769 landed it on 254).
             for (d, &s) in dst.iter_mut().zip(src) {
-                *d = (((s as i32 - 16).max(0) * 76310) >> 16).min(255) as u8;
+                // WHY/PROOF: the camera's video-range luma still carries codes below 16 and above 235 — the floor and the cap are the clip, since an int→int `as u8` WRAPS.
+                *d =(((s as i32 - 16).max(0) * 76310) >> 16).min(255) as u8;
             }
         } else {
             dst.copy_from_slice(src);
@@ -68,6 +69,7 @@ pub fn nv12_to_i420(y: &[u8], ys: usize, c: &[u8], cs: usize, w: usize, h: usize
             } else {
                 (cb, cr)
             };
+            // WHY/PROOF: a video-range camera still sends codes outside 16-240, and the expansion carries those past 0-255 — an int→int `as` WRAPS, so the clamp is the clip; as for luma above.
             out.u[row * cw + x] = cb.clamp(0, 255) as u8;
             out.v[row * cw + x] = cr.clamp(0, 255) as u8;
         }

@@ -177,7 +177,7 @@ fn every_weight_is_a_real_one() {
     assert!(open.windows(2).all(|p| p[0] < p[1]), "Open Sans ink must rise 400 < 500 < 600 < 700, got {open:?}");
 }
 
-/// The optical rule: 16 px draws the asked weight, smaller heavier, larger lighter, within the clamps — and nothing when it is off.
+/// The optical rule: 16 px draws the asked weight, smaller heavier, larger lighter, eased toward +60 and −40 by a tanh — and nothing when it is off.
 #[test]
 fn optical_weight_follows_the_size() {
     let mut tr = TextRenderer::new();
@@ -185,7 +185,8 @@ fn optical_weight_follows_the_size() {
     tr.set_optical_weight(true);
     assert_eq!(tr.optical_weight(400, 16.0), 400);
     assert_eq!(tr.optical_weight(400, 10.0), 424);
-    assert_eq!(tr.optical_weight(400, 4.0), 448);
-    assert_eq!(tr.optical_weight(400, 0.5), 460, "at most +60");
-    assert_eq!(tr.optical_weight(500, 40.0), 460, "at most −40");
+    assert_eq!(tr.optical_weight(400, 4.0), 442);
+    assert_eq!(tr.optical_weight(400, 0.5), 449, "eased toward +60");
+    assert_eq!(tr.optical_weight(500, 40.0), 461, "eased toward −40");
+    assert_eq!(tr.optical_weight(500, 1000.0), 460, "never past −40");
 }

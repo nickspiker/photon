@@ -288,10 +288,7 @@ pub struct Kept {
 }
 
 fn osc_to_slot(osc: i64, base: i64) -> i64 {
-    let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
-    if ops <= 0 {
-        return 0;
-    }
+    let ops = vsf::OSCILLATIONS_PER_SECOND as i64; // a positive constant: the division needs no guard
     let d = (osc - base).max(0); // WHY/PROOF: an archive record stamped before the recording's base (a fill that raced the first frame) sits at slot 0
     (d * SLOTS_PER_SEC + ops / 2) / ops
 }
@@ -332,13 +329,15 @@ fn grid_from_records(records: &[Record]) -> Option<(usize, Vec<Vec<Option<Cell>>
     for r in records.iter().filter(|r| !r.is_fill() && keep(r)) {
         let c = r.index();
         let by_stamp = match lat[c] {
-            Some((next, expected)) if (r.osc - expected).abs() < reanchor => next,
+            // WHY/PROOF: `r.osc` is read back from the spool on disk —`(a - b).abs()` of a crafted stamp wraps to i64::MIN and passes as "on the lattice"; abs_diff is exact for every pair.
+            Some((next, expected)) if r.osc.abs_diff(expected) < reanchor as u64 => next,
             _ => osc_to_slot(r.osc, base),
         };
         let slot = match (r.seq, seq_lat[c]) {
             (Some((seq, wslot)), Some((lseq, lslot0, ln))) if seq >= lseq => {
                 let by_seq = if seq == lseq { lslot0 + wslot as i64 } else { lslot0 + (seq - lseq) as i64 * ln + wslot as i64 }; // ln starts at 1 and only grows
-                if (by_seq - by_stamp).abs() < reanchor_slots.max(2) { by_seq } else { by_stamp }
+                // WHY/PROOF: `seq` is the peer's window number, so `by_seq` can be any i64 — `(a - b).abs()` would wrap to i64::MIN and pick it; abs_diff is exact for every pair.
+                if by_seq.abs_diff(by_stamp) < reanchor_slots.max(2) as u64 { by_seq } else { by_stamp }
             }
             _ => by_stamp,
         };
@@ -661,7 +660,7 @@ fn append_render_profile(profile: &mut Vec<u8>, render: &[&Record], base: i64, s
             any = true;
             if let Some((g, v)) = r.proc {
                 gain = gain.min(g);
-                holes = holes.saturating_add(v as u16);
+                holes += v as u16; // two u8 halves sum to at most 510
             }
             for (k, c) in r.bytes.chunks_exact(2).take(FRAME / 2).enumerate() {
                 pcm[i * (FRAME / 2) + k] = i16::from_le_bytes([c[0], c[1]]);
@@ -704,6 +703,7 @@ pub fn open_render_profile(bytes: &[u8]) -> Option<RenderProfile> {
         return None;
     }
     let block_len = u32::from_le_bytes(region[region.len() - 4..].try_into().ok()?) as usize;
+    // WHY/PROOF: `block_len` is read from the recording's bytes (vault, or a peer's blob) — a claim longer than the region would wrap the start index; checked_sub refuses it.
     let block = region.get(region.len().checked_sub(4 + block_len)?..region.len() - 4)?;
     if block.len() < 12 || &block[..8] != RENDER_PROFILE_MAGIC {
         return None;

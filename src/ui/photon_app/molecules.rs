@@ -1255,6 +1255,7 @@ impl PhotonApp {
             return false;
         }
         let serial = self.tick_serial;
+        // WHY/PROOF: a PARKED post is queued at u64::MAX, our own sentinel — a plain `+ 1` wraps it to 0, which is below every serial, and the parked post would fire.
         let (ready, keep): (Vec<MoleculePost>, Vec<MoleculePost>) = std::mem::take(&mut self.pending_molecule_posts).into_iter().partition(|p| p.queued.saturating_add(1) < serial); // u64 tick serials — a PARKED post (u64::MAX) waits for its edge
         self.pending_molecule_posts = keep;
         if ready.is_empty() {

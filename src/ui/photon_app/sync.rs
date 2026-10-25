@@ -220,7 +220,7 @@ impl PhotonApp {
         // The one-second word is only fair to a path that can answer inside a second: a relayed ping is an HTTPS leg each way (Nick's MacBook 2026-10-21 00:52:57: the open-ping reached Emma's pipe 0.99 s in and the verdict painted a ringing friend offline 20 ms later).
         let direct = contact.validated_path.is_some() && !contact.reached_via_relay;
         // Recent proof outranks one unanswered probe; the sweep's own strikes say so if that changed.
-        let recently_heard = contact.last_heard.is_some_and(|h| at.saturating_duration_since(h) < VALIDATED_PATH_KEEPALIVE);
+        let recently_heard = contact.last_heard.is_some_and(|h| at.duration_since(h) < VALIDATED_PATH_KEEPALIVE); // `answered` was false, so `h < at`
         if !direct || recently_heard {
             return false;
         }

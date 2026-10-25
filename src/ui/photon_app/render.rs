@@ -1183,6 +1183,7 @@ impl PhotonApp {
                     if let Some(me) = crate::wave::beam_session::self_picture() {
                         let s = (rw.min(ph) / 4).max(16);
                         let m = s / 8;
+                        // WHY/PROOF: `ph` follows the PEER's picture shape — a sliver of a picture is shorter than the inset's 16-px floor, and the inset then sits at the rect's top rather than a wrapped row past the buffer.
                         let (ix, iy) = (rx0 + rw - s - m, ry0 + ph.saturating_sub(s + m));
                         super::wave_field::paint_picture_rect(&mut canvas, ix, iy, s, s, &me, false);
                         // The inset is the camera switch (a tap cycles lenses on a phone, devices on a desktop): its square is a tap target, re-stamped at the end of the frame.
@@ -2024,7 +2025,7 @@ impl PhotonApp {
                 let mut pane_overlays: Vec<fluor::canvas::PixelRect> = Vec::new();
                 let bands_h = standing_bands.len() as f32 * ready_layout.unit_height * 1.5 * 2.0;
                 if bands_h > 0.0 {
-                    pane_overlays.push(fluor::canvas::PixelRect::new(0, (buf_h as f32 - bands_h).max(0.0) as usize, buf_w, buf_h));
+                    pane_overlays.push(fluor::canvas::PixelRect::new(0, (buf_h as f32 - bands_h) as usize, buf_w, buf_h));
                 }
                 if let Some(orb) = orb_bbox {
                     pane_overlays.push(orb);
@@ -2297,6 +2298,7 @@ impl PhotonApp {
                     );
                 }
                 // An INVITATION's verbs on its last line (docs/conversations.md): Bind — the consent — and Decline — the undo, as if it was never sent. Drawn only while the band sits wholly inside the list, so a row scrolling under the strip never leaves a live pill over it.
+                // WHY/PROOF: the row's lines come from a wrap cache that can be stale and empty for a frame (`unwrap_or_default` in the view) — no last line, no verbs, rather than a wrapped line index.
                 if let (ReadyRow::Offer(oi), Some(last)) = (*row, name_lines.len().checked_sub(1)) {
                     let band_y = line_cy(last);
                     let ph = line_step * 0.85;
@@ -2808,8 +2810,9 @@ impl PhotonApp {
                                     let bar_w = (buf_w as f32 - pad_x * 2.0) as isize;
                                     let bar_y = (buf_h as f32 - line_h * 1.35) as isize;
                                     let bar_h = (hairline_px(ru) * 3.0).max(2.0) as isize;
-                                    let fill_w = (bar_w as f32 * frac.clamp(0.0, 1.0)) as isize;
-                                    paint::fill_rect(&mut canvas, bar_x, bar_y, fill_w.clamp(0, bar_w), bar_h, *theme::PROGRESS_FILL, None, None);
+                                    // WHY/PROOF: the fraction is opsin's reported stage or a peer's chunk count, either of which can read past done — the fill is held inside its track (no floor: neither source goes negative, and a negative width paints nothing anyway).
+                                    let fill_w = (bar_w as f32 * frac.min(1.0)) as isize;
+                                    paint::fill_rect(&mut canvas, bar_x, bar_y, fill_w,bar_h, *theme::PROGRESS_FILL, None, None);
                                     paint::fill_rect(&mut canvas, bar_x, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
                                 }
                                 let our_hh = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)).unwrap_or([0u8; 32]);
@@ -3221,7 +3224,7 @@ impl PhotonApp {
                             let mut pane_overlays: Vec<fluor::canvas::PixelRect> = Vec::new();
                             if self.ready_toast.is_some() {
                                 let ts = unit * 0.72;
-                                pane_overlays.push(fluor::canvas::PixelRect::new(0, (list_bottom - ts * 1.4).max(0.0) as usize, buf_w, list_bottom as usize));
+                                pane_overlays.push(fluor::canvas::PixelRect::new(0, (list_bottom - ts * 1.4) as usize, buf_w, list_bottom as usize));
                             }
                             if let Some(orb) = orb_bbox {
                                 pane_overlays.push(orb);

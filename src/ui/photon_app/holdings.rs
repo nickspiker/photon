@@ -537,6 +537,7 @@ pub(super) fn view(check: Option<&HoldingsCheck>, contacts: &[crate::types::Cont
         return Some(shown(HoldingsView::Safe, waiting));
     }
     let recordings = risk.iter().filter(|i| i.recording).count() as u64;
+    // WHY/PROOF: each `size` is an attachment's typed size as its sender claimed it — a wrapped sum would show a small, plausible figure on the removal warning for files that are not small.
     let bytes = risk.iter().map(|i| i.size).fold(0u64, u64::saturating_add);
     Some(shown(HoldingsView::AtRisk { files: risk.len() as u64 - recordings, recordings, bytes }, waiting))
 }

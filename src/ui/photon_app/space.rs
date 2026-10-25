@@ -35,6 +35,7 @@ pub(super) struct SpaceSweep {
 
 /// Room below the floor, in disk bytes: zero when the reading clears it.
 fn shortfall(r: &SpaceReading) -> u64 {
+    // WHY/PROOF: the disk figures are the OS's and the dead count the vault engine's, both read from outside — a wrapped sum reads as a tiny free and a wrapped shortfall as a huge one, and either would evict recordings the disk never needed gone.
     let free = r.disk_free.saturating_add(r.vault_dead.saturating_mul(2));
     (r.disk_total / FLOOR_SHARE).saturating_sub(free)
 }
@@ -48,6 +49,7 @@ fn pick(mut recs: Vec<(i64, [u8; 32], u64)>, need: u64) -> Vec<([u8; 32], u64)> 
         if sum >= need {
             break;
         }
+        // WHY/PROOF: `size` is a recording's size as the vault index on disk records it — a wrapped sum would fall back under `need` and pick (evict) more recordings than the shortfall asks for.
         sum = sum.saturating_add(size.saturating_mul(2));
         out.push((h, size));
     }
@@ -57,6 +59,7 @@ fn pick(mut recs: Vec<(i64, [u8; 32], u64)>, need: u64) -> Vec<([u8; 32], u64)> 
 /// The disk and the vault, read together (a filesystem call and a librarian round trip, so worker only).
 fn read_space() -> Option<SpaceReading> {
     let (disk_free, disk_total) = crate::storage::vault_volume_space()?;
+    // WHY/PROOF: the engine's block counts are read live from the vault, not proven ordered — a live count past the tract would wrap to a near-2^64 dead figure and hide a real shortfall.
     let vault_dead = crate::storage::vault_stats_view().map_or(0, |v| v.engine.tract_blocks.saturating_sub(v.engine.live_blocks).saturating_mul(v.engine.block_bytes));
     Some(SpaceReading { disk_free, disk_total, vault_dead })
 }
@@ -187,6 +190,7 @@ impl PhotonApp {
             if sweep.freed >= sweep.need || missing.contains(h) {
                 return true;
             }
+            // WHY/PROOF: as in `pick` — the size is the vault index's, and a wrapped total would keep evicting past the need.
             sweep.freed = sweep.freed.saturating_add(size.saturating_mul(2));
             evict.push(*h);
             false

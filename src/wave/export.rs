@@ -95,6 +95,7 @@ fn write_wav<W: std::io::Write + std::io::Seek>(stream: &mut record::KeptStream,
                 for ch in 0..wire {
                     buf.extend_from_slice(&frame[i * wire + ch].to_le_bytes());
                 }
+                // WHY/PROOF: `per` follows the kept wave's own frame size and channel count, read from the vault — a frame longer than the 480-sample render slot has no rendered sample past it, which is silence.
                 buf.extend_from_slice(&rpcm.get(i).copied().unwrap_or(0).to_le_bytes());
             }
         } else {

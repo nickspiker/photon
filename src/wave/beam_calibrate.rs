@@ -144,6 +144,7 @@ pub fn linear_rgb(f: &I420) -> Vec<f32> {
             let c = (y / 2) * cw + x / 2;
             let (cb, cr) = (f.u[c] as f32 - 128.0, f.v[c] as f32 - 128.0);
             for v in [l + 1.402 * cr, l - 0.344_136 * cb - 0.714_136 * cr, l + 1.772 * cb] {
+                // WHY/PROOF: a camera's Y/Cb/Cr can name a colour outside the RGB cube — squared next, a negative would come back positive, so the gamut clip is part of the conversion.
                 let e = (v / 255.0).clamp(0.0, 1.0);
                 out.push(e * e);
             }

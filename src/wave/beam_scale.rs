@@ -100,13 +100,15 @@ fn grow(get: impl Fn(usize, usize) -> u8, sw: usize, sh: usize, dst: &Plane) {
     let (dw, dh) = (dst.w, dst.h);
     for dy in 0..dh {
         // Source coordinate of the destination pixel centre, Q8: ((dy + ½)·sh/dh − ½)·256.
+        // WHY/PROOF: growing, the first destination centres map left of the first source centre (a negative coordinate) — saturating is the clamp-to-edge sample there, where a wrap would read a row ~2^56 down.
         let fy = (((2 * dy + 1) * sh * 128) / dh).saturating_sub(128);
-        let y0 = (fy >> 8).min(sh - 1);
+        let y0 = fy >> 8; // fy < (2·dh − 1)·sh·128/dh − 128 < 256·sh, so y0 ≤ sh − 1
         let y1 = (y0 + 1).min(sh - 1);
         let wy = (fy & 255) as u32;
         for dx in 0..dw {
+            // WHY/PROOF: as for `fy` — the clamp-to-edge sample left of the first source column.
             let fx = (((2 * dx + 1) * sw * 128) / dw).saturating_sub(128);
-            let x0 = (fx >> 8).min(sw - 1);
+            let x0 = fx >> 8; // as for y0: x0 ≤ sw − 1
             let x1 = (x0 + 1).min(sw - 1);
             let wx = (fx & 255) as u32;
             let top = get(x0, y0) as u32 * (256 - wx) + get(x1, y0) as u32 * wx;
@@ -123,9 +125,10 @@ pub fn resample_plane(src: &Plane, dst: &Plane, soft: u8) {
     }
     let (x0, y0, cw, ch) = crop_to(src.w, src.h, dst.w, dst.h);
     let (cw, ch) = (cw.max(1), ch.max(1));
-    let scale = 2f64.powf(-(soft.min(4) as f64) / 2.0);
-    let ew = ((dst.w as f64 * scale).round() as usize).clamp(1, dst.w).min(cw);
-    let eh = ((dst.h as f64 * scale).round() as usize).clamp(1, dst.h).min(ch);
+    let scale = 2f64.powf(-(soft as f64) / 2.0);
+    // scale ≤ 1, so the rounded size never passes the plane; a 1-pixel chroma plane softened rounds to 0, and one pixel is the floor.
+    let ew = ((dst.w as f64 * scale).round() as usize).max(1).min(cw);
+    let eh = ((dst.h as f64 * scale).round() as usize).max(1).min(ch);
     if soft == 0 && dst.w <= cw && dst.h <= ch {
         // Full detail and a downscale (or the same size): box-average the crop straight onto the coded grid.
         let mut tmp = vec![0u8; dst.w * dst.h];

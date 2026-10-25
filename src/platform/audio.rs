@@ -134,7 +134,8 @@ fn named_frame(at_osc: i64) -> Vec<i16> {
     let last_dac = LAST_DAC_K.swap(dac_k, Ordering::Relaxed);
     if p != i64::MIN {
         let gap = last_dac != i64::MIN && dac_k - last_dac > 2 * FRAME_SAMPLES as i64;
-        let far = (dac_k - p - target).abs() > REANCHOR_SAMPLES;
+        // WHY/PROOF: `dac_k` comes from the device's timestamp, which can jump anywhere — `(x).abs()` of a far value wraps to i64::MIN and reads as "near"; abs_diff is exact for every pair.
+        let far = (dac_k - p).abs_diff(target) > REANCHOR_SAMPLES as u64;
         if gap || far {
             p = i64::MIN;
             REANCHORS.fetch_add(1, Ordering::Relaxed);
@@ -377,6 +378,7 @@ pub fn envelopes() -> (i64, i64) {
 
 /// The expander's live knee, plan units — the trace line prints it beside the far level.
 pub fn expand_knee() -> i64 {
+    // WHY/PROOF: the knee follows the far end's MEASURED noise floor (the peer's line) — the band is the expander's design range, so a silent line still gates and a roaring one never gates speech away.
     ((RX_EXPAND_FLOOR_MULT * FAR_FLOOR_Q8.load(Ordering::Relaxed)) >> 8).clamp(RX_EXPAND_KNEE_MIN, RX_EXPAND_KNEE)
 }
 
@@ -589,9 +591,11 @@ pub fn set_duck_coupling(coupling: f32) {
     let depth = (coupling / DUCK_COUPLING_FULL).clamp(0.0, 1.0);
     DUCK_DEPTH_Q32.store((depth as f64 * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
     // The duck's echo estimate starts from the MEASURED coupling, not the learner's 1/16 seed: on a loudspeaker the learner never climbed from its floor (k 0.0054 against a measured 0.25, 2026-10-03), so the duck read the speaker's own echo as a near talker and chopped the far voice by it. The learner still lowers it on evidence.
+    // WHY/PROOF: the coupling is the sweep's MEASUREMENT of the room — the learner's band (the same one it accepts samples inside) keeps one odd sweep from seeding a coupling no speaker has.
     DUCK_K_Q16.store(((coupling as f64 * 65536.0) as i64).clamp(DUCK_K_MIN_Q16, DUCK_K_MAX_Q16), Ordering::Relaxed);
     // The loss: the echo margin over the coupling, at most unity, at least a quarter (a coupling of zero is a clean route: no loss at all).
     let margin = RX_ECHO_MARGIN_Q16 as f64 / 65536.0;
+    // WHY/PROOF: the loss's design range (above) applied to a measured coupling — a weak coupling would ask for gain (> unity) and a strong one would cut the far voice below a quarter.
     let loss = if coupling <= 0.0 { 1.0 } else { (margin / coupling as f64).clamp(0.25, 1.0) };
     RX_LOSS_Q32.store((loss * crate::wave::qgain::UNITY as f64) as i64, Ordering::Relaxed);
     crate::logf!("WAVE: duck depth {}‰, receive loss {}‰ for coupling {:.4} (full duck at {:.4})", duck_depth_permille(), (RX_LOSS_Q32.load(Ordering::Relaxed) >> 22) * 1000 / 1024, coupling, DUCK_COUPLING_FULL);
@@ -807,6 +811,7 @@ fn mix_overlay(frame: &mut [i16], at_osc: i64) {
     }
     for s in frame.iter_mut() {
         match q.pop_front() {
+            // WHY/PROOF: two full-scale i16 samples sum past i16 — saturating is the clip; a wrap would flip a loud peak to full-scale of the other sign, a crack in the speaker.
             Some(o) => *s = s.saturating_add(o),
             None => break,
         }

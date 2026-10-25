@@ -347,6 +347,7 @@ impl BeamRx {
 
     /// Give up frames the horizon has passed: every open frame older than `newest_done − RX_HORIZON` is a loss; every done marker older still is forgotten.
     fn reap(&mut self) {
+        // WHY/PROOF: `newest_done` is a frame number off the peer's wire, below the horizon for a beam's first frames — the floor is then 0 (nothing passed), where a wrap would reap every open frame as lost.
         let floor = self.newest_done.saturating_sub(RX_HORIZON);
         let stale: Vec<u32> = self.open.range(..floor).map(|(k, _)| *k).collect();
         for k in stale {

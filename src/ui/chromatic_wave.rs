@@ -98,7 +98,7 @@ pub fn chromatic_wave_clipped(
                 * (1 << 15) as f32
                 / (scale.abs() + amplitude / region_span * (1. / ((1 << 2) as f32)));
 
-            // Wavelength index runs blue → red as x_flipped decreases; `region_w.max(1)` is a no-op guard since `region_w ≥ 1` follows from the early-return on `x0 >= x1`, but kept verbatim to match legacy.
+            // Wavelength index runs blue → red as x_flipped decreases; `region_w ≥ 1` follows from the early-return on `x0 >= x1`, so the division needs no guard.
             let wavelength_idx =
                 LAMBDA_START + ((region_w - 1 - x) * (LAMBDA_END - LAMBDA_START)) / region_w;
             let lms_idx = wavelength_idx * 3;

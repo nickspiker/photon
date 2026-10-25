@@ -63,6 +63,7 @@ pub fn fit(cap: &[i16], cap_k0: i64, render_k: i64) -> Option<Fit> {
         return None;
     }
     let first = first as usize;
+    // WHY/PROOF: `cap` is what the device captured and `first` comes off its timestamps — a capture that ends before the sweep does has no lag to scan, refused here where a wrap would scan far past the buffer.
     let scan = MAX_LAG.min(cap.len().checked_sub(first + n)?);
     let energy: f64 = tpl.iter().map(|&v| (v as f64) * (v as f64)).sum::<f64>().max(1e-9); // WHY/PROOF: a template of silence has no energy to normalise by
     let mut mags: Vec<f64> = Vec::with_capacity(scan + 1);

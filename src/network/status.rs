@@ -3381,16 +3381,17 @@ async fn run_checker(
                                             // REPLAY BOUND (2026-09-07): the salvage credits liveness on signature alone — without a stamp check, a pong captured Tuesday replays fine on Friday and paints a device online (and leaks provable liveness). ±10 min tolerates doze delivery and clock skew; a matched pong needs none of this (the nonce IS freshness).
                                             let stamp_fresh = {
                                                 let now = eagle_time_now();
-                                                let bound = vsf::OSCILLATIONS_PER_SECOND as i64 * 600;
-                                                (now - pong_timestamp).abs() <= bound
+                                                let bound = vsf::OSCILLATIONS_PER_SECOND as u64 * 600;
+                                                // WHY/PROOF: `pong_timestamp` is the peer's — `(now - ts).abs()` of a crafted stamp wraps to i64::MIN and passes the bound; abs_diff is exact for every pair.
+                                                now.abs_diff(pong_timestamp) <= bound
                                             };
                                             if !stamp_fresh {
                                                 crate::logf!(
                                                     "Status: unmatched pong from {} ({}) REJECTED — stamp {}s out of bounds (replay or a badly skewed clock)",
                                                     crate::fp(responder_pubkey.as_bytes()),
                                                     src_addr,
-                                                    (eagle_time_now() - pong_timestamp).abs()
-                                                        / vsf::OSCILLATIONS_PER_SECOND as i64
+                                                    eagle_time_now().abs_diff(pong_timestamp)
+                                                        / vsf::OSCILLATIONS_PER_SECOND as u64
                                                 );
                                             } else if verify_provenance_signature(
                                                 &provenance_hash,

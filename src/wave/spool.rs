@@ -313,7 +313,7 @@ pub(crate) fn drain_records(ticket: &SpoolTicket) -> Option<Vec<Record>> {
         counter += 1;
         let Ok(plain) = cipher.decrypt(&nonce.into(), &bytes[off..off + len]) else {
             // Corruption past here — keep what decrypted, and say where it stopped.
-            crate::logf!("WAVE: keep — spool record {} failed to decrypt at offset {} of {} bytes; keeping the {} before it", counter.saturating_sub(1), off, bytes.len(), out.len());
+            crate::logf!("WAVE: keep — spool record {} failed to decrypt at offset {} of {} bytes; keeping the {} before it", counter - 1, off, bytes.len(), out.len());
             break;
         };
         off += len;

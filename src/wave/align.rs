@@ -178,7 +178,8 @@ impl Aligner {
 
     /// Feed one HAL timestamp pair (hardware frame position, true capture time).
     pub fn timestamp(&mut self, frame: i64, eagle: i64) {
-        if self.fit.eagle_of(frame).is_some_and(|pred| (eagle - pred).abs() > REANCHOR_OSC) {
+        // WHY/PROOF: `eagle` is the HAL's timestamp, which can be garbage — `(eagle - pred).abs()` of a far stamp wraps to i64::MIN and skips the re-anchor; abs_diff is exact for every pair.
+        if self.fit.eagle_of(frame).is_some_and(|pred| eagle.abs_diff(pred) > REANCHOR_OSC as u64) {
             self.fit = RateFit::default();
             self.reanchor = true;
         }
@@ -214,6 +215,7 @@ impl Aligner {
         if self.since_loop >= LOOP_SAMPLES {
             self.since_loop = 0;
             // PI on the filtered phase; the output is samples of correction per 100 ms tick (discrete loop: ζ ≈ kp / 2√ki ≈ 0.56, settling ≈ 16 s — inside the spec's 30 s).
+            // WHY/PROOF: the phase is the HAL's timestamps against our names, and a stall or a garbage stamp can hold it far off for seconds — the clamps are the loop's anti-windup (at most one slip per tick), so the integrator cannot wind up a correction the slips then pay out for minutes (the 2026-09-27 windup).
             self.integ = (self.integ + self.filt * KI).clamp(-MAX_TICK, MAX_TICK);
             self.acc = (self.acc + self.filt * KP + self.integ).clamp(-(MAX_TICK + DEADBAND), MAX_TICK + DEADBAND);
             // Captured LATER than its name says (positive phase) ⇒ the names run early ⇒ insert a sample to push the rest later; earlier ⇒ delete one. At most one slip per tick; the deadband keeps a half-sample of accumulated correction from dithering.

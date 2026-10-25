@@ -1176,7 +1176,8 @@ impl PhotonApp {
                         upgraded = true;
                     }
                 }
-                if existing.star_osc.abs() < row.star_osc.abs() {
+                // WHY/PROOF: `row.star_osc` is a peer's history-page column — `i64::MIN.abs()` wraps negative and would lose every comparison; unsigned_abs is exact, as in the other star merges.
+                if existing.star_osc.unsigned_abs() < row.star_osc.unsigned_abs() {
                     existing.star_osc = row.star_osc;
                     upgraded = true;
                 }
@@ -3245,7 +3246,8 @@ impl PhotonApp {
                         crate::network::time_base::feed(&exchanges, self.active_wave.is_some());
                     }
                     self.clock_consensus = Some((offset_osc, confidence_osc));
-                    self.clock_off = if offset_osc.abs() > CLOCK_OFF_THRESHOLD_OSC {
+                    // WHY/PROOF: `offset_osc` is the time servers' consensus — `i64::MIN.abs()` wraps negative and would hide the banner; unsigned_abs is exact.
+                    self.clock_off = if offset_osc.unsigned_abs() > CLOCK_OFF_THRESHOLD_OSC as u64 {
                         crate::logf!("Clock: system clock off by {} ms — raising banner (warn only, not corrected)", ms(offset_osc));
                         Some(offset_osc)
                     } else {

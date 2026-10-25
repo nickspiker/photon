@@ -150,7 +150,7 @@ impl PhotonApp {
         let frac = v.decode_frac.clone();
         let tx = self.img_view_tx.clone();
         queue_job(&self.seal_job_tx, move || {
-            let report = |p: f32| frac.store((p.clamp(0., 1.) * 65535.) as u32, std::sync::atomic::Ordering::Relaxed);
+            let report = |p: f32| frac.store((p * 65535.) as u32, std::sync::atomic::Ordering::Relaxed);
             let out: Result<opsin::view::Loaded, String> = (|| {
                 let bytes = crate::storage::blob_load(&seed, &hash).ok_or_else(|| "the blob would not open".to_string())?;
                 let keep_decode = !cfg!(target_os = "android");

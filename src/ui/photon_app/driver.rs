@@ -3434,6 +3434,7 @@ impl FluorApp for PhotonApp {
             // THE LIST FLING'S SAMPLER: one sample per FRAME while the finger is down — this frame's accumulated drag delta, zero when it did not move — and the fling is the median of the last five. Frames keep coming at vsync for as long as the touch is down, so a still finger pushes zeros and a lift after a pause carries no fling.
             if self.press_held || self.pointer_down {
                 // A FRAME IS A NOMINAL FRAME (2026-10-07 phone log: a flick sampled 523 px in ONE tick — a slow, full-repaint tick had swallowed two or three frames' worth of finger, and the glide then replayed that whole lump every real frame). A tick that spanned n nominal frames contributes n samples of acc/n, so the window counts frames whatever the render cost.
+                // WHY/PROOF: `delta_time` is the OS's frame gap — a doze or a stall makes it seconds, and an unbounded count would flood the five-sample window with one lump; a sub-frame tick still counts as one.
                 let nominal = ((delta_time / (1.0 / 60.0)).round() as i32).clamp(1, 8);
                 let acc = std::mem::take(&mut self.fling_frame_acc);
                 let per = acc / nominal;
@@ -3707,12 +3708,13 @@ impl FluorApp for PhotonApp {
             let quiet = !self.scene_dirty && !chord && !chrome_dirty && want != 0 && self.viewer.is_none() && self.reader.is_none() && !self.wave_screen();
             if let (true, Some((tag, rect, overlays))) = (quiet, self.last_pane.as_ref()) {
                 let n = shift.unsigned_abs() as usize;
-                let h = rect.y1.saturating_sub(rect.y0);
+                let h = rect.y1 - rect.y0; // both pane writers in render.rs build y0 ≤ y1 (a top floored to the bottom, a bottom floored to the top)
                 if *tag == want && n < h && rect.y1 <= vh && rect.x1 <= vw {
                     let band = if shift > 0 { PixelRect::new(rect.x0, rect.y0, rect.x1, rect.y0 + n) } else { PixelRect::new(rect.x0, rect.y1 - n, rect.x1, rect.y1) };
                     let mut dmg = band;
                     for r in overlays {
                         dmg = dmg.union(*r);
+                        // WHY/PROOF: an overlay moved by the shift can land partly or wholly off the viewport — the clip keeps its damage band inside the buffer, and an empty one is skipped just below.
                         let (y0, y1) = ((r.y0 as i64 + shift as i64).clamp(0, vh as i64) as usize, (r.y1 as i64 + shift as i64).clamp(0, vh as i64) as usize);
                         if y1 > y0 {
                             dmg = dmg.union(PixelRect::new(r.x0, y0, r.x1, y1));

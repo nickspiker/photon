@@ -41,6 +41,7 @@ pub(super) fn field_geom(buf_w: usize, buf_h: usize, unit: f32) -> FieldGeom {
     let room = buf_h as f32 - top - unit * 14.5 - nav_extra;
     // WHY/PROOF: a square wider than the buffer, or taller than the room above the text and buttons, would put an avatar off screen; the ru size stands wherever it fits, and the floor keeps a degenerate window drawable.
     let side = (unit * SQUARE_UNITS).min(buf_w as f32).min(room).max(16.0).floor() as usize;
+    // WHY/PROOF: the window is the OS's size — narrower than the 16-px floor, the square overhangs and starts at column 0 instead of a wrapped column past the buffer.
     let x0 = buf_w.saturating_sub(side) / 2;
     let y0 = top as usize;
     let s = side as f32;
@@ -87,6 +88,7 @@ impl FieldMap {
         let span2 = reach2 - r2;
         let full = (FIELD_FRAMES as i64) << FRAC;
         // The box both reaches cover (in buffer pixels), clipped to the buffer.
+        // WHY/PROOF: a reach is a centre distance, so on a small window the box runs past the buffer's edges — the clip keeps every age index inside the pixels it is written to.
         let px = |c: i64, dir: i64| (c + dir * reach).div_euclid(2);
         let x0 = px(t.0, -1).min(px(o.0, -1)).clamp(0, w);
         let x1 = (px(t.0, 1).max(px(o.0, 1)) + 1).clamp(0, w);
@@ -195,7 +197,8 @@ fn frame_lin(e: &FrameEnv) -> [u16; 3] {
     });
     #[cfg(not(target_os = "macos"))]
     let lin = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &lin);
-    lin.map(|v| (v.clamp(0.0, 1.0) * (Q - 1) as f32).round() as u16)
+    // WHY/PROOF: the Rec.2020 matrix can push a saturated hue past 1, and the table index stops at Q − 1, far below the u16 cast's own ceiling; a negative needs nothing (the float→int cast sends it to 0).
+    lin.map(|v| (v.min(1.0) * (Q - 1) as f32).round() as u16)
 }
 
 /// Linear Q12 → γ2-encoded byte (√): the visible level a linear light displays as.
@@ -207,7 +210,7 @@ static ENC: std::sync::LazyLock<Vec<u32>> = std::sync::LazyLock::new(|| (0..Q).m
 fn field_pixel(enc: &[u32], r: u16, g: u16, b: u16) -> u32 {
     let a = enc[r.max(g).max(b) as usize];
     // Premultiplied: α stays the brightest channel's γ2 code; each channel's premultiplied value takes the `g2t` code of its light, which is never above its γ2 code, so it stays ≤ α.
-    let g2t = |c: u16| fluor::theme::GAMMA2_TO_G2T[enc[c as usize].min(255) as usize] as u32;
+    let g2t = |c: u16| fluor::theme::GAMMA2_TO_G2T[enc[c as usize] as usize] as u32;
     let dark = ((a - g2t(r)) << 16) | ((a - g2t(g)) << 8) | (a - g2t(b));
     (a << 24) | (fluor::theme::fmt(dark) & 0x00FF_FFFF)
 }
@@ -223,6 +226,7 @@ fn under_premult(top: u32, bot: u32) -> u32 {
 /// Paint a beam picture (γ2 Rec.2020 RGB triples) letterboxed in the square, under whatever is already on the canvas — the same under-compositing the field uses, so avatars and buttons drawn before it stay in front. Nearest-neighbour scaling, integer: the picture is already the display's transfer, so the only work per pixel is the pack.
 #[allow(dead_code)]
 pub(super) fn paint_picture(canvas: &mut Canvas, g: &FieldGeom, pic: &crate::wave::beam_session::Picture) {
+    // WHY/PROOF: as in the geometry — on a window narrower than the square's floor the side passes the width, and the picture starts at column 0, not a wrapped one.
     let x0 = canvas.width.saturating_sub(g.side) / 2;
     paint_picture_in(canvas, x0, g.y0, g.side, pic);
 }

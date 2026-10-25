@@ -453,7 +453,7 @@ fn molecule_avatar_rgb(seeds: &[u64], fallback: u64, diam: usize) -> Vec<u8> {
         for px in 0..diam {
             let ang = (py as f64 - c).atan2(px as f64 - c) + std::f64::consts::PI; // 0..2π, first slice starts at the left
             // WHY/PROOF: atan2 returns π on the negative x-axis, so `ang` reaches exactly 2π and the slice index reaches n — one past the last slice; that edge belongs to the last slice.
-            let k = ((ang / (2.0 * std::f64::consts::PI)) * n).floor().clamp(0.0, n - 1.0) as usize;
+            let k = ((ang / (2.0 * std::f64::consts::PI)) * n).floor().min(n - 1.0) as usize; // ang ≥ 0, so only the top edge needs holding
             let i = (py * diam + px) * 3;
             out[i..i + 3].copy_from_slice(&slices[k][i..i + 3]);
         }

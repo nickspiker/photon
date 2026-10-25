@@ -110,7 +110,7 @@ pub fn android_plan(t_ns: i64) -> i64 {
     }
     let p = ladder.plan();
     // Frame rate (below the smallest band): keep a frame once a period has passed since the last kept one — on the camera's own clock.
-    let period = 1_000_000_000i64 / p.fps.max(1) as i64;
+    let period = 1_000_000_000i64 / p.fps as i64; // the ladder floors fps at 5
     let keep = *last_kept == 0 || t_ns - *last_kept >= period - period / 8;
     if keep {
         *last_kept = t_ns;
@@ -323,9 +323,11 @@ impl Drop for Sender {
 
 /// The ladder's ceiling for a capture's bands: the whole capture on a LAN-fast path (a round trip of 15 ms or less), else the highest band no wider than 1280 — the far side's software decoder is the limit off the LAN — and two bands lower again on a metered network.
 fn ceiling(bands: &[(u16, u16)]) -> usize {
-    let lan = super::LAST_LINK_RTT_MS.load(Ordering::Relaxed).max(1) <= 15;
+    let lan = super::LAST_LINK_RTT_MS.load(Ordering::Relaxed) <= 15;
+    // WHY/PROOF: `bands` is the camera's mode list as the OS reports it, which can be empty — the ceiling is then rung 0, not a wrapped rung past the list.
     let mut top = if lan { bands.len().saturating_sub(1) } else { super::beam_ladder::top_within(bands, 1280) };
     if crate::network::wfd::net_metered() {
+        // WHY/PROOF: the ladder's floor — a capture with fewer than three bands stays at rung 0 on a metered link, never wraps to a rung that does not exist.
         top = top.saturating_sub(2);
     }
     top
@@ -401,7 +403,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                     plan = next;
                 }
                 // Frame rate below the smallest band: keep every Nth camera frame (free in H.264 — no keyframe).
-                let every = (cam_fps / plan.fps.max(1)).max(1) as u64;
+                let every = (cam_fps / plan.fps).max(1) as u64; // the ladder floors fps at 5; a camera slower than the plan keeps every frame
                 if cam_frames % every != 0 {
                     continue;
                 }
@@ -895,6 +897,7 @@ pub fn ask_camera_early() {
 /// The sender's bitrate for a frame size, from the ladder in docs/beams.md: ~600 kbit/s at 640×480, scaled by area.
 pub fn bitrate_for(w: usize, h: usize) -> u32 {
     let area = (w * h) as u64;
+    // WHY/PROOF: the size is the camera's (OS) — the ladder's bitrate floor and ceiling from docs/beams.md hold a thumbnail-sized or 8K capture to a rate the link and the far decoder can carry.
     ((600_000u64 * area) / (640 * 480)).clamp(150_000, 2_000_000) as u32
 }
 

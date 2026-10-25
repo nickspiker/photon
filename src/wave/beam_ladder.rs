@@ -15,6 +15,7 @@ pub const MAX_BANDS: usize = 5;
 
 /// The coded sizes for a capture, smallest first: the capture itself, then halves (even dimensions) down to [`MIN_BAND_WIDTH`].
 pub fn bands_for(w: usize, h: usize) -> Vec<(u16, u16)> {
+    // WHY/PROOF: the capture size is the camera's (OS) — the u16 casts below would wrap a size past 65535, and H.264 codes no plane under 2 or past 8190 a side.
     let (tw, th) = ((w & !1).clamp(2, 8190), (h & !1).clamp(2, 8190));
     let mut v = vec![(tw as u16, th as u16)];
     for k in 1..MAX_BANDS {
@@ -80,6 +81,7 @@ impl Ladder {
         self.bands = bands;
         self.max_band = max_band.min(self.bands.len() - 1);
         self.band = self.band.min(self.max_band);
+        // WHY/PROOF: the ladder's rungs, D_MIN up to the ceiling's top half-stop — the new capture can have fewer bands, and a detail past them names no band.
         self.d = self.d.clamp(D_MIN, 2 * self.max_band as i32);
         let start = self.band_changes;
         self.settle_band();
@@ -120,6 +122,7 @@ impl Ladder {
         } else {
             self.clean_run = 0;
         }
+        // WHY/PROOF: the verdicts are the LINK's, and a congested run or a long clean one walks `d` without end — held to the ladder's rungs so a recovery climbs from the floor, not from a debt of stops below it.
         self.d = self.d.clamp(D_MIN, 2 * self.max_band as i32);
         self.settle_band();
         self.plan() != before
@@ -148,6 +151,7 @@ impl Ladder {
 
     pub fn plan(&self) -> Plan {
         // Softness counts only detail at or above the smallest band's width; below it (d < 0) the lever is frame rate alone — never a picture narrower than 160.
+        // WHY/PROOF: softness is designed for 0-4 half-stops (the resampler's range) and an int→int `as u8` WRAPS — a band picked above the detail would ask for more, a negative is none.
         let soft = (2 * self.band as i32 - self.d.max(0)).clamp(0, 4) as u8;
         // Below the smallest band, frame rate: 30 at d = 0, halving per stop (two half-steps), floored at 5.
         let fps = if self.d >= 0 { 30 } else { ((30.0 * 2f64.powf(self.d as f64 / 2.0)).round() as u32).max(5) };
@@ -163,6 +167,7 @@ pub fn bitrate_for(w: u32, h: u32, soft: u8, fps: u32) -> u32 {
     let content = eff * fps as f64 * 0.1;
     let blocks = ((w + 15) / 16 * ((h + 15) / 16)) as f64;
     let floor = blocks * 3.0 * fps as f64;
+    // WHY/PROOF: the size comes from the camera (OS) — the encoder's working range, 24 kbit/s to 16 Mbit/s, holds a tiny or enormous capture to a rate the encoder accepts and the link can carry.
     content.max(floor).clamp(24_000.0, 16_000_000.0) as u32
 }
 

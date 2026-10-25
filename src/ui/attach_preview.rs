@@ -53,6 +53,7 @@ struct Folded {
 impl Folded {
     /// Scene light (diffuse white = 1) of one encoded sample.
     fn light(&self, v: f32) -> f32 {
+        // WHY/PROOF: `v` is a decoded sample of a foreign image file, which can sit past its code range — the transfer curves are defined on [0, 1], and a negative under a fractional power is a NaN carried into the fold.
         self.encoding.light_f32(v.clamp(0.0, 1.0))
     }
 

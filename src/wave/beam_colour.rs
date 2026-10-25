@@ -64,7 +64,7 @@ fn sqrt_lut() -> &'static [u16] {
     static LUT: OnceLock<Vec<u16>> = OnceLock::new();
     LUT.get_or_init(|| {
         // Built once with f64; the pixel path only indexes it.
-        (0..=LIN_FULL as usize).map(|lin| ((lin as f64 / LIN_FULL as f64).sqrt() * 255.0 * 256.0).round().min(65280.0) as u16).collect()
+        (0..=LIN_FULL as usize).map(|lin| ((lin as f64 / LIN_FULL as f64).sqrt() * 255.0 * 256.0).round() as u16).collect()
     })
 }
 
@@ -302,6 +302,7 @@ impl Converter {
                 let r8 = ((yy << 12) + CR_R * cr) >> 12;
                 let g8 = ((yy << 12) - CB_G * cb - CR_G * cr) >> 12;
                 let b8 = ((yy << 12) + CB_B * cb) >> 12;
+                // WHY/PROOF: the peer's decoded Y/Cb/Cr can name a colour outside the cube, and `r8` indexes the 256-entry sRGB table just below — an unclipped code reads past it.
                 let (r8, g8, b8) = (r8.clamp(0, 255), g8.clamp(0, 255), b8.clamp(0, 255));
                 // Transfer → 16-bit linear.
                 let (rl, gl, bl) = match self.chr.transfer {
@@ -309,6 +310,7 @@ impl Converter {
                     Transfer::Srgb => (srgb[r8 as usize] as i32, srgb[g8 as usize] as i32, srgb[b8 as usize] as i32),
                 };
                 // The folded matrix, Q10, signed; clamp AFTER (where out-of-gamut colours finally clip).
+                // WHY/PROOF: a saturated colour leaves the target gamut thru the matrix, and the clipped value indexes the √ table sized for 0..=LIN_FULL.
                 let ro = ((m[0] * rl + m[1] * gl + m[2] * bl) >> 10).clamp(0, LIN_FULL);
                 let go = ((m[3] * rl + m[4] * gl + m[5] * bl) >> 10).clamp(0, LIN_FULL);
                 let bo = ((m[6] * rl + m[7] * gl + m[8] * bl) >> 10).clamp(0, LIN_FULL);

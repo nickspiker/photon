@@ -89,6 +89,7 @@ pub fn match_txt_tokens(
 ) -> Option<[u8; 32]> {
     let hour = coarse_hour_now();
     for dev in friend_devices {
+        // WHY/PROOF: `hour` is the OS clock, which can read the epoch's first hour — the previous hour then wraps to a token no friend ever minted, a harmless miss instead of an overflow.
         for h in [hour, hour.wrapping_sub(1)] {
             let want = wfd_token(relationship_seed, dev, h);
             if txt.chunks_exact(WFD_TOKEN_LEN).any(|c| c == want) {

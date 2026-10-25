@@ -71,6 +71,7 @@ pub fn open(path: Option<&str>) -> Result<Camera, String> {
     pin_controls(&dev);
     let fps = Capture::params(&dev).ok().and_then(|p| {
         let i = p.interval;
+        // WHY/PROOF: the frame interval is the driver's report — a bogus one names 1000 fps or 0, and the beam's frame pacing and the ladder's bitrate are sized for a camera between 5 and 60.
         if i.numerator > 0 { Some((i.denominator / i.numerator).clamp(5, 60)) } else { None }
     }).unwrap_or(30);
     crate::logf!("BEAM: camera {} — {}×{} YUYV @ {} fps", path, w, h, fps);
