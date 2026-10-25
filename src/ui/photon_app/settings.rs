@@ -438,6 +438,18 @@ impl PhotonApp {
         crate::network::status::set_profile_name(&name);
     }
 
+    /// Read the notification preferences from the settings layer into their checkboxes and the process-wide flags the notifiers read (absent = ON).
+    pub(super) fn sync_notify_prefs(&mut self) {
+        let pref = |key: &str| self.fleet_settings.as_ref().and_then(|fs| fs.effective(key)).and_then(crate::storage::fleet_settings::as_bool).unwrap_or(true);
+        let (chime, vib_msg, ring_wave, vib_wave) = (pref("notify.chime"), pref("notify.vibrate_msg"), pref("notify.ring_wave"), pref("notify.vibrate_wave"));
+        crate::platform::notify_prefs::set(chime, vib_msg, vib_wave);
+        for (cb, on) in [(self.settings_chime_check.as_mut(), chime), (self.settings_vibrate_msg_check.as_mut(), vib_msg), (self.settings_ring_wave_check.as_mut(), ring_wave), (self.settings_vibrate_wave_check.as_mut(), vib_wave)] {
+            if let Some(cb) = cb {
+                cb.set_checked(on);
+            }
+        }
+    }
+
     /// Mirror the settings layer into the widgets that display it (after a load or an adopted fleet merge). updates.auto defaults ON until a value exists (the compiled default per docs/updates.md).
     pub(super) fn apply_settings_to_ui(&mut self) {
         let auto = self
@@ -561,6 +573,8 @@ impl PhotonApp {
         if let Some(cb) = self.settings_history_check.as_mut() {
             cb.set_checked(self.chat_history);
         }
+        // The notification preferences (absent = ON): the checkboxes show what is saved, and every notifier reads the same flags.
+        self.sync_notify_prefs();
         // Restore THIS DEVICE'S persisted zoom (display.zoom, f32 LE bytes — binary at rest), device-local ONLY: never the fleet global. Zoom is monitor ergonomics, so a device that has never set one keeps the default rather than adopting another screen's value — reading it thru `effective` is what made a fresh device jump to a 4K desktop's zoom seconds after launch. Handed to the host as a one-shot absolute request; applies exactly like a user zoom.
         // ONCE per process, and only at load. `apply_settings_to_ui` also runs after EVERY fleet merge that changed anything, and the fleet poll fires every ~15s -- so without this guard the stored zoom was re-applied on a timer, stomping whatever the window was actually at. That is the "scaling elements go half size a few moments after the contacts show up" report: the first pull after contacts load re-armed the restore, and every pull after it did so again. A restore is a startup action, not a steady-state one; the host applies it exactly like a user zoom and the user must stay in control after that.
         if !self.zoom_restored {

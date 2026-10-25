@@ -164,8 +164,11 @@ fn notify_with_chirp_via(msg_hp: &[u8; 32], chirp: chirp::Chirp, sender: &str, t
     };
 
     // 60 Hz bins the haptic envelope into ~16.7ms steps.
-    let wav = chirp.to_wav();
-    let (timings, amplitudes) = chirp.haptic_waveform(60);
+    // The person's preferences (Settings → Notifications, the Wave page): an empty sound or pattern is skipped by Kotlin, the notification itself still posts. A wave's sound is ring_wave's (gated upstream); its buzz is vibrate_wave's.
+    let is_wave = ring_gap_ms.is_some() || method == "postWaveNotification";
+    let wav = if is_wave || crate::platform::notify_prefs::chime() { chirp.to_wav() } else { Vec::new() };
+    let buzz = if is_wave { crate::platform::notify_prefs::vibrate_wave() } else { crate::platform::notify_prefs::vibrate_msg() };
+    let (timings, amplitudes) = if buzz { chirp.haptic_waveform(60) } else { (Vec::new(), Vec::new()) };
 
     match vm.attach_current_thread() {
         Ok(mut env) => {

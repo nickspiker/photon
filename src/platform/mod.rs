@@ -78,3 +78,26 @@ pub fn app_watching() -> bool {
         true
     }
 }
+
+/// The person's notification preferences (Settings → Notifications and the Wave page), mirrored here as process-wide flags so every notifier honours them from any thread: the new-message chime, the new-message vibration, the incoming-wave vibration. All default ON (the compiled defaults).
+pub mod notify_prefs {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static CHIME: AtomicBool = AtomicBool::new(true);
+    static VIBRATE_MSG: AtomicBool = AtomicBool::new(true);
+    static VIBRATE_WAVE: AtomicBool = AtomicBool::new(true);
+
+    pub fn set(chime: bool, vibrate_msg: bool, vibrate_wave: bool) {
+        CHIME.store(chime, Ordering::Relaxed);
+        VIBRATE_MSG.store(vibrate_msg, Ordering::Relaxed);
+        VIBRATE_WAVE.store(vibrate_wave, Ordering::Relaxed);
+    }
+    pub fn chime() -> bool {
+        CHIME.load(Ordering::Relaxed)
+    }
+    pub fn vibrate_msg() -> bool {
+        VIBRATE_MSG.load(Ordering::Relaxed)
+    }
+    pub fn vibrate_wave() -> bool {
+        VIBRATE_WAVE.load(Ordering::Relaxed)
+    }
+}

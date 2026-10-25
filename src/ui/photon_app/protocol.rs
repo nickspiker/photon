@@ -498,7 +498,10 @@ impl PhotonApp {
             .settings_vibrate_wave_check
             .as_mut()
             .map(|c| (c.take_toggle(), c.is_checked()));
+        // The new-message chime was drawn but never saved or read (Nick 2026-10-25, the stub sweep): it joins the same linked write.
+        let chime = self.settings_chime_check.as_mut().map(|c| (c.take_toggle(), c.is_checked()));
         for (toggle, key) in [
+            (chime, "notify.chime"),
             (vib_msg, "notify.vibrate_msg"),
             (ring_wave, "notify.ring_wave"),
             (vib_wave, "notify.vibrate_wave"),
@@ -507,6 +510,7 @@ impl PhotonApp {
                 if self.settings_set(key, vsf::VsfType::u0(checked)) {
                     crate::logf!("SETTINGS: {} = {} (linked write)", key, checked);
                 }
+                self.sync_notify_prefs();
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
         }

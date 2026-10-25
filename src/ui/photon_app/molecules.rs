@@ -235,9 +235,11 @@ impl PhotonApp {
         #[cfg(not(target_os = "android"))]
         {
             crate::platform::desktop_notify::notify_new_message(&alert_hp, &sender, &body, None);
-            std::thread::spawn(move || {
-                chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
-            });
+            if crate::platform::notify_prefs::chime() {
+                std::thread::spawn(move || {
+                    chirp::Chirp::from_hash(digest).play_blocking().unwrap_or_else(|e| crate::logf!("CHIME: {}", e));
+                });
+            }
         }
     }
 
