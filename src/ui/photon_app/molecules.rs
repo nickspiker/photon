@@ -323,6 +323,32 @@ impl PhotonApp {
     /// MINT (§10.4): a fresh secret, the next era derived from it, one WRAP per standing device posted inside the group on the OLD era — and, for a join under from-join, a wrap over the friendship to each of the joiner's devices. The minter installs the era as pending; the cutover edge is its first ACK of any wrap row (step 9 wires the edge and the triggers beyond a join).
     pub(super) fn mint_molecule_era(&mut self, gid: MoleculeId, joiner: Option<(usize, Vec<crate::types::molecule::BundleRecord>)>) {
         let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        // A MINT IS ALREADY IN FLIGHT (its era is pending until the first member's frame on it): a second mint from the same current era would overwrite it and split the group (Brittany 2026-10-25: two joins 12 s apart minted era 1 twice — Nick held the first, Emma and Brittany the second).
+        // A joiner takes the pending era whole — it reads nothing from before it, the from-join promise kept; any other mint waits for the cutover.
+        let pending = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| c.pending_era().map(|p| (p.era_index, p.lane_root, p.history_key, c.era_lineage)));
+        if let Some((p_era, p_root, p_hk, lineage)) = pending {
+            match (joiner, p_hk) {
+                (Some((ci, bundles)), Some(p_hk)) => {
+                    let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+                        return;
+                    };
+                    let mut whole = Vec::with_capacity(64);
+                    whole.extend_from_slice(&p_root);
+                    whole.extend_from_slice(&p_hk);
+                    for b in &bundles {
+                        self.send_wrap_over_friendship(ci, our_pid, b, p_era, lineage, &whole);
+                    }
+                    use zeroize::Zeroize;
+                    whole.zeroize();
+                    crate::logf!("MOLECULE: {} has era {} pending — the joiner takes it whole, no second mint", hex::encode(&gid.0[..4]), p_era);
+                }
+                _ => {
+                    self.molecule_mint_after_cutover.insert(gid);
+                    crate::logf!("MOLECULE: {} has era {} pending — the next mint waits for its cutover", hex::encode(&gid.0[..4]), p_era);
+                }
+            }
+            return;
+        }
         let Some((era, lineage, root, hk)) = self.friendship_chains.iter().find(|(id, _)| *id == fid).and_then(|(_, c)| Some((c.era_index, c.era_lineage, *c.lane_root()?, *c.history_key()?))) else {
             crate::logf!("MOLECULE: {} holds no root here — cannot mint", hex::encode(&gid.0[..4]));
             return;
@@ -356,8 +382,10 @@ impl PhotonApp {
             .cloned()
             .collect();
         let mut inside = 0usize;
+        // The joiner never held the era these inside wraps ride on, so a wrap to it there is unreadable — it takes the new era whole over the bond below.
+        let joiner_party = joiner.as_ref().and_then(|(ci, _)| self.contacts.get(*ci)).map(|c| c.handle_hash);
         for b in &targets {
-            if Some(b.device) == our_device {
+            if Some(b.device) == our_device || Some(b.party) == joiner_party {
                 continue;
             }
             let Some((cts, sealed)) = crate::crypto::era::wrap_to_bundle(&b.pubkeys(), b.kem_set, &b.device, next, &nonce, &fresh) else {
@@ -1178,6 +1206,10 @@ impl PhotonApp {
         self.persist_chains_of(&fid);
         self.unpark_molecule_posts(gid);
         self.resend_held_molecule_rows(gid);
+        if self.molecule_mint_after_cutover.remove(&gid) {
+            crate::logf!("MOLECULE: {} cut over — the mint that waited on it runs now", hex::encode(&gid.0[..4]));
+            self.mint_molecule_era(gid, None);
+        }
     }
 
     /// Re-queue every undelivered outgoing chat row of a group (a cutover cleared its pendings; a relaunch found them held) — control rows never re-serve bare.

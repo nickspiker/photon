@@ -646,6 +646,10 @@ impl PhotonApp {
 
         let mut records = Vec::new();
         for (fid, chains) in &self.friendship_chains {
+            // A group JOIN PLACEHOLDER holds no era yet: its all-zero root would advertise one fake era for every group we are joining, and each member would try to heal it.
+            if chains.molecule && chains.awaiting_root() {
+                continue;
+            }
             // Max last_received across all lanes — kept for legacy peers as the single-tip fallback. Per-lane heads below are the precise version.
             let max_time = chains
                 .last_received_times()

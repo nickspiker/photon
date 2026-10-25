@@ -1783,6 +1783,8 @@ pub struct PhotonApp {
     deliveries_in_flight: Vec<(crate::types::FriendshipId, i64, crate::types::FriendshipId)>,
     /// Who minted each conversation's pending era — two members minting the same index converge on the LOWER party's.
     pending_minter: std::collections::HashMap<crate::types::FriendshipId, [u8; 32]>,
+    /// Groups whose next mint waits for the pending era to cut over (a leave or cadence edge that landed mid-mint): minted in `after_molecule_cutover`.
+    molecule_mint_after_cutover: std::collections::HashSet<crate::types::molecule::MoleculeId>,
     /// Era disagreements already acted on: (chains id, the peer's era tag, our bond's era tag or 0) — each heals once, a re-keyed bond tries again.
     era_heals: std::collections::HashSet<(crate::types::FriendshipId, u32, u32)>,
     /// People whose Message tap came before our bond with them completed — their two-member conversation is founded on the completion edge (docs/conversations.md D8).
@@ -2934,6 +2936,7 @@ impl PhotonApp {
             bonds_checked: (0, 0),
             deliveries_in_flight: Vec::new(),
             pending_minter: std::collections::HashMap::new(),
+            molecule_mint_after_cutover: std::collections::HashSet::new(),
             era_heals: std::collections::HashSet::new(),
             found_when_bonded: std::collections::HashSet::new(),
             pending_molecule_posts: Vec::new(),

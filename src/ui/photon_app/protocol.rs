@@ -133,7 +133,7 @@ impl PhotonApp {
         // The checkpoint spine driver rides the same fleet sweep cadence: lazy vault load, outcome drain, and the bootstrap/rotation mint edges.
         if matches!(
             self.state,
-            AppState::Ready | AppState::Conversation | AppState::Settings(_)
+            AppState::Ready | AppState::Conversation | AppState::ConversationPanel(_) | AppState::Settings(_) | AppState::AddDevice
         ) {
             self.ckpt_tick();
         }
@@ -142,9 +142,10 @@ impl PhotonApp {
         // A contact whose address fetch failed sits with `ip = None`: its CLUTCH offer can't send (send needs an address), name/avatar never arrive (they ride the pong, which needs a reachable path), and the ceremony loops keygen forever. There is no periodic address re-fetch otherwise, so while any non-self contact is Pending-CLUTCH with no address, pulse a lightweight background resume (gossip + registry resolve below). A single success learns the address, fire-on-learn punches, the offer sends, and the pong then carries name/avatar. Self-limiting: stops the moment the address lands. (Stopgap for the peer-gossip fix, TICKETS T0.)
         const STALLED_ADDR_REFETCH: std::time::Duration = std::time::Duration::from_secs(15);
         // EXPONENTIAL BACKOFF on the refetch (battery, 2026-09-02): a Pending contact that never resolves (era-split debris) ran this full registry+punch cycle every 15s for hours. 15s→30s→…→~32min; any LEARNED address resets the streak (the success edge), as does an address-bearing gossip merge re-entering thru the same harvest.
+        // Every signed-in screen: the conversation panel was missing (it shipped after this gate), so a group post or a deferred send queued while it was open sat until the panel closed (Brittany 2026-10-25: an 18 s wrap stall that split a new molecule).
         if matches!(
             self.state,
-            AppState::Ready | AppState::Conversation | AppState::Settings(_)
+            AppState::Ready | AppState::Conversation | AppState::ConversationPanel(_) | AppState::Settings(_) | AppState::AddDevice
         ) {
             // THE PULSE RUNS FOR THE RELAY-ONLY TOO (field 2026-09-17, Jon's Mac ↔ Nick's phone — "are we just missing a punch?"): this registry resolve + punch is the ONLY path that turns a published address into a validated one, and it was gated on a PENDING contact with no address at all — so a Complete friend reachable only over the relay was never resolved and never punched from this side. Nick's phone punched Jon only because some other Pending contact happened to keep his pulse alive; Jon's Mac had none and fired zero punches all day. An online contact with no validated path is stalled by the same definition the resolver uses, so it keeps the pulse alive under the same backoff.
             let blocked = self.contacts.iter().any(|c| {
