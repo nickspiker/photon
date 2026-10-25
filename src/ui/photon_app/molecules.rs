@@ -296,7 +296,7 @@ impl PhotonApp {
             payload.extend_from_slice(&root);
             payload.extend_from_slice(&hk);
             for b in &bundles {
-                self.send_wrap_over_friendship(ci, our_pid, b, era, lineage, &payload);
+                self.send_wrap_over_friendship(gid, ci, our_pid, b, era, lineage, &payload);
             }
             use zeroize::Zeroize;
             payload.zeroize();
@@ -306,14 +306,16 @@ impl PhotonApp {
     }
 
     /// Seal `payload` to one bundle and send it as a WRAP row over the friendship with `ci`.
-    fn send_wrap_over_friendship(&mut self, ci: usize, our_pid: [u8; 32], bundle: &crate::types::molecule::BundleRecord, era: u64, lineage: [u8; 32], payload: &[u8]) -> bool {
+    fn send_wrap_over_friendship(&mut self, gid: MoleculeId, ci: usize, our_pid: [u8; 32], bundle: &crate::types::molecule::BundleRecord, era: u64, lineage: [u8; 32], payload: &[u8]) -> bool {
         let nonce: [u8; 32] = rand::random();
         let Some((cts, sealed)) = crate::crypto::era::wrap_to_bundle(&bundle.pubkeys(), bundle.kem_set, &bundle.device, era, &nonce, payload) else {
             crate::logf!("MOLECULE: wrap to {} failed to seal", hex::encode(&bundle.device[..4]));
             return false;
         };
         let wrap = crate::network::message_package::BondWrapWire { recipient_device: bundle.device, bundle_id: bundle.pubkeys().bundle_id(), era, era_lineage: lineage, nonce, sealed };
-        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: Some(wrap), deliver: None };
+        // The join answer carries the group's WHOLE current roster: the invitation's snapshot may predate other joins, and the records that named them rode an era the joiner never held (Nick 2026-10-25: his rows went to Emma alone, Brittany unknown to him).
+        let roster = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| crate::storage::molecule::roster_to_vsf_bytes(&gid, r).ok());
+        let wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: roster, wrap: Some(wrap), deliver: None };
         let ts = vsf::eagle_time_oscillations();
         let sent = self.bond_transmit_with(ci, ts, Some(&cts), Some(&wire), &crate::types::RowControl::Molecule(MoleculeSignal::Wrap));
         crate::logf!("MOLECULE: wrap (era {}) for device {} {} over the friendship", era, hex::encode(&bundle.device[..4]), if sent { "sent" } else { "NOT sent — the next edge retries" });
@@ -336,7 +338,7 @@ impl PhotonApp {
                     whole.extend_from_slice(&p_root);
                     whole.extend_from_slice(&p_hk);
                     for b in &bundles {
-                        self.send_wrap_over_friendship(ci, our_pid, b, p_era, lineage, &whole);
+                        self.send_wrap_over_friendship(gid, ci, our_pid, b, p_era, lineage, &whole);
                     }
                     use zeroize::Zeroize;
                     whole.zeroize();
@@ -403,7 +405,7 @@ impl PhotonApp {
             whole.extend_from_slice(&next_root);
             whole.extend_from_slice(&next_hk);
             for b in &bundles {
-                self.send_wrap_over_friendship(ci, our_pid, b, next, lineage, &whole);
+                self.send_wrap_over_friendship(gid, ci, our_pid, b, next, lineage, &whole);
             }
             use zeroize::Zeroize;
             whole.zeroize();
@@ -471,6 +473,12 @@ impl PhotonApp {
             }
         };
         self.merge_snapshot_into(pos, offer.snapshot.clone());
+        // The sponsor's current roster rides the answer: everyone who joined since the invitation, fold-checked like any records.
+        if let Some(Ok((bid, current))) = wire.as_ref().and_then(|g| g.blob.as_ref()).map(|b| crate::storage::molecule::roster_from_vsf_bytes(b)) {
+            if bid == gid {
+                self.merge_snapshot_into(pos, current);
+            }
+        }
         self.sync_molecule_conversation(&gid);
         // The offer stays parked, accepted: it is what names the group the friendship row is about (the card reads "joined" from here on).
         self.set_molecule_local(&gid, |l| l.phase = MoleculePhase::Standing);
@@ -699,6 +707,20 @@ impl PhotonApp {
             return false;
         };
         let changed = self.conversations.iter_mut().find(|c| c.id().as_bytes() == &gid.0).map(|c| c.set_participants(standing.clone())).unwrap_or(false);
+        // The group's chains carry the same standing set (a joiner's were born from the invitation's snapshot, which never names the joiner).
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        // We are in the set while we hold the keys and have not left, whether or not our own records have reached our roster yet.
+        let mut members = standing.clone();
+        if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+            let keyed = self.friendship_chains.iter().any(|(id, c)| *id == fid && !c.awaiting_root());
+            if keyed && !self.molecule_is_left(gid) {
+                members.push(us);
+            }
+        }
+        let chains_moved = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid).is_some_and(|(_, c)| c.set_molecule_participants(&members));
+        if chains_moved {
+            self.persist_chains_of(&fid);
+        }
         self.reseed_molecule_pubkeys();
         // Members with no contact row need their public chain folded — the same refresh a contact gets; the drain lands them in `molecule_peers`.
         let us = self.session.as_ref().map(|s| s.handle_proof);

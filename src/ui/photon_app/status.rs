@@ -1221,7 +1221,10 @@ impl PhotonApp {
                     if let Some((fid_ref, chains)) = chains_result {
                         // Party-id seam: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. (The raw seed is never a chain participant post-pin-set.) The UNSHADOWED identity pid survives for the conversation resolution below.
                         let identity_hh = our_handle_hash;
-                        let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
+                        // A GROUP's membership is its roster, never the chains' participant list: a joiner's chains were built from the invitation's snapshot, which does not name the joiner, so every group frame to a joiner was dropped here (Brittany 2026-10-25: "some photons don't get thru to all parties").
+                        // Holding the group's keys IS membership for reading: our own standing reaches our roster only in the sponsor's records, which arrive as exactly these frames.
+                        let standing_here = chains.molecule && !chains.awaiting_root();
+                        let our_handle_hash = if standing_here || chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
                         } else if let Some(pid) =
                             our_sibling_pid.filter(|p| chains.participants().contains(p))
@@ -1589,7 +1592,10 @@ impl PhotonApp {
                         let ack_fid = *fid_ref;
                         // Party-id seam: whichever of (identity seed, sibling pid) is a participant is "us". The UNSHADOWED identity pid survives for the conversation resolution below.
                         let identity_hh = our_handle_hash;
-                        let our_handle_hash = if chains.participants().contains(&our_handle_hash) {
+                        // A GROUP's membership is its roster, never the chains' participant list: a joiner's chains were built from the invitation's snapshot, which does not name the joiner, so every group frame to a joiner was dropped here (Brittany 2026-10-25: "some photons don't get thru to all parties").
+                        // Holding the group's keys IS membership for reading: our own standing reaches our roster only in the sponsor's records, which arrive as exactly these frames.
+                        let standing_here = chains.molecule && !chains.awaiting_root();
+                        let our_handle_hash = if standing_here || chains.participants().contains(&our_handle_hash) {
                             our_handle_hash
                         } else if let Some(pid) =
                             our_sibling_pid.filter(|p| chains.participants().contains(p))

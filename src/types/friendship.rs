@@ -903,6 +903,21 @@ impl FriendshipChains {
         &self.participants
     }
 
+    /// A GROUP's chains follow its roster's standing set (sorted, deduplicated); returns whether it changed. A friendship's pair never changes this way.
+    pub fn set_molecule_participants(&mut self, standing: &[[u8; 32]]) -> bool {
+        if !self.molecule {
+            return false;
+        }
+        let mut sorted = standing.to_vec();
+        sorted.sort();
+        sorted.dedup();
+        if sorted.is_empty() || sorted == self.participants {
+            return false;
+        }
+        self.participants = sorted;
+        true
+    }
+
     /// Find chain index for a participant.
     fn participant_index(&self, handle_hash: &[u8; 32]) -> Option<usize> {
         self.participants.binary_search(handle_hash).ok()

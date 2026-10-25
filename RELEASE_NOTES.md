@@ -21,6 +21,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Leaving a molecule leaves on all your devices.** Your leave now reaches the other members and your other devices, instead of staying on the one you tapped it on.
 - **One device answers for you.** When someone joins a molecule you started, one of your devices answers instead of all of them at once, so everyone ends up on the same keys and every message reaches everyone.
 - **Two people joining at once stay in one molecule.** When a second person joined before the first one’s keys had settled, the molecule split in two and each half couldn’t read the other; now everyone who joins in that window gets the same keys.
+- **Everyone who joins a molecule receives its photons.** People who joined, rather than started, a molecule were silently missing what others sent to it; they now get everything, and a new member learns about everyone who joined before them.
+- **Invitations appear right away.** A new invitation shows on your list the moment it arrives, without needing a tap.
 - **Joining works when a friend has invited you before.** A new invitation from someone whose earlier molecule you left now joins properly.
 - **Files send in molecules.** Dropping or picking a file in a molecule sends it to everyone in it.
 - **Buttons answer right after a page change.** A button under the pointer lights up and works straight away, without moving the mouse first.

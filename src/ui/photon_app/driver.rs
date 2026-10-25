@@ -3678,8 +3678,10 @@ impl FluorApp for PhotonApp {
         }
 
         // Content-flavoured redraws dirty the scene (full-viewport frame); a pure blinkey flip stays out so its frame narrows to the textbox's own damage rect.
+        // A handler that marked the scene dirty during this tick without raising `needs_redraw` (an invitation parked by a deferred control row) still owes the screen a frame: without one the Ready list sat stale until the next tap (Nick 2026-10-25).
+        let raised = self.scene_dirty && !self.dirty_before_tick;
         self.scene_dirty |= needs_redraw;
-        let redraw = needs_redraw || blink_redraw;
+        let redraw = needs_redraw || blink_redraw || raised;
         dirty_checkpoint!();
         self.dirty_blame_line = dirty_blame;
         if redraw {
