@@ -300,6 +300,7 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeRouteP
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamFrame(env: JNIEnv<'_>, _class: JClass<'_>, au: JByteArray<'_>, g0: jint, g1: jint, g2: jint, g3: jint) {
     let Ok(bytes) = env.convert_byte_array(&au) else { return };
+    // WHY/PROOF: the gains are the HAL's floats × 4096 (Kotlin) going into the wire's Q12 u16 — a gain past 16 rides at the field's ceiling instead of wrapping to a tiny one, and 0 (no reciprocal) is floored here as the receiver floors it.
     let g = crate::wave::beam::Gains([g0.clamp(1, 65535) as u16, g1.clamp(1, 65535) as u16, g2.clamp(1, 65535) as u16, g3.clamp(1, 65535) as u16]);
     crate::wave::beam_session::push_encoded(g, &bytes);
 }
@@ -308,13 +309,16 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamFr
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamSelf(env: JNIEnv<'_>, _class: JClass<'_>, planes: JByteArray<'_>, w: jint, h: jint) {
     let Ok(bytes) = env.convert_byte_array(&planes) else { return };
-    crate::wave::beam_session::android_self_frame(w.max(0) as usize, h.max(0) as usize, &bytes);
+    // A negative size is no frame: try_from refuses it where an `as` would wrap it huge (and its w × h back to small).
+    let (Ok(w), Ok(h)) = (usize::try_from(w), usize::try_from(h)) else { return };
+    crate::wave::beam_session::android_self_frame(w, h, &bytes);
 }
 
 /// BEAMS: the picture's rotation changed (quarter turns clockwise; a front camera mirrors its self-view).
 #[no_mangle]
 pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamOrient(_env: JNIEnv<'_>, _class: JClass<'_>, quarter_turns: jint, front: jni::sys::jboolean) {
-    crate::wave::beam_session::android_orient(quarter_turns.clamp(0, 3) as u8, front != 0);
+    // Quarter turns are mod 4: the u8 truncation keeps the residue (256 is a multiple of 4, so −1 lands on 3), and android_orient keeps the low two bits.
+    crate::wave::beam_session::android_orient(quarter_turns as u8, front != 0);
 }
 
 /// BEAMS: the ladder's plan for one camera frame (see beam_session::android_plan).
@@ -364,7 +368,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamFill(
     };
     // A Calibrate tap takes this frame, full size, before the ladder shrinks it (beam_calibrate.rs).
     crate::wave::beam_calibrate::offer_planes([s0, s1, s2]);
-    crate::wave::beam_scale::resample_frame([s0, s1, s2], [d0, d1, d2], soft.clamp(0, 4) as u8);
+    // The softness is our own ladder's, round-tripped thru pack_plan's 3 bits; any u8 resamples safely (the scale 2^(−soft/2) never passes 1 and a plane floors at one pixel).
+    crate::wave::beam_scale::resample_frame([s0, s1, s2], [d0, d1, d2], soft as u8);
     1
 }
 
@@ -379,7 +384,12 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamSt
         let mut m = [0f32; 9];
         env.get_float_array_region(&matrix, 0, &mut m).ok().map(|_| m)
     };
-    match crate::wave::beam_session::android_started(w.max(2) as usize, h.max(2) as usize, fps.clamp(1, 120) as u32, maker, straight != 0, curve != 0, &camera, &name) {
+    // A negative geometry or rate is no pipeline; any positive one is fine downstream (bands_for holds the size to what H.264 codes, the wire's fps is a u8 at its ceiling, and the ladder floors its own rate).
+    let (Ok(cw), Ok(ch), Ok(cfps)) = (usize::try_from(w), usize::try_from(h), u32::try_from(fps)) else {
+        error!("BEAM: camera reported {}x{} @ {} fps", w, h, fps);
+        return;
+    };
+    match crate::wave::beam_session::android_started(cw, ch, cfps, maker, straight != 0, curve != 0, &camera, &name) {
         Ok(()) => info!("BEAM: phone sender up — camera {} ({}) {}x{} @ {} fps (maker matrix {}, straight {}, γ2 curve {})", camera, name, w, h, fps, maker.is_some(), straight != 0, curve != 0),
         Err(e) => error!("BEAM: {}", e),
     }

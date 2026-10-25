@@ -198,7 +198,8 @@ fn frame_lin(e: &FrameEnv) -> [u16; 3] {
     #[cfg(not(target_os = "macos"))]
     let lin = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &lin);
     // WHY/PROOF: the Rec.2020 matrix can push a saturated hue past 1, and the table index stops at Q − 1, far below the u16 cast's own ceiling; a negative needs nothing (the float→int cast sends it to 0).
-    lin.map(|v| (v.min(1.0) * (Q - 1) as f32).round() as u16)
+    // The ceiling is a comparison, not f32::min: a NaN fails it and stays NaN, which the cast sends to 0 (dark), where min would have lit it full.
+    lin.map(|v| ((if v > 1.0 { 1.0 } else { v }) * (Q - 1) as f32).round() as u16)
 }
 
 /// Linear Q12 → γ2-encoded byte (√): the visible level a linear light displays as.

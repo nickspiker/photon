@@ -2801,7 +2801,7 @@ impl PhotonApp {
                                 let frac: Option<f32> = if v.failed {
                                     None
                                 } else if held {
-                                    v.decoding.then(|| v.decode_frac.load(std::sync::atomic::Ordering::Relaxed) as f32 / 65535.0)
+                                    v.decoding.then(|| f32::from_bits(v.decode_frac.load(std::sync::atomic::Ordering::Relaxed)))
                                 } else {
                                     self.attach_chunk_progress.get(&v.hash).map(|(have, total)| frac_of(*have as u64, *total as u64))
                                 };
@@ -2810,8 +2810,8 @@ impl PhotonApp {
                                     let bar_w = (buf_w as f32 - pad_x * 2.0) as isize;
                                     let bar_y = (buf_h as f32 - line_h * 1.35) as isize;
                                     let bar_h = (hairline_px(ru) * 3.0).max(2.0) as isize;
-                                    // WHY/PROOF: the fraction is opsin's reported stage or a peer's chunk count, either of which can read past done — the fill is held inside its track (no floor: neither source goes negative, and a negative width paints nothing anyway).
-                                    let fill_w = (bar_w as f32 * frac.min(1.0)) as isize;
+                                    // Neither source reads past done: opsin reports 0.05, 0.6, 1.0, and the chunk count is held at its total where it is counted (the manifest seed is below total, a full one installs instead).
+                                    let fill_w = (bar_w as f32 * frac) as isize;
                                     paint::fill_rect(&mut canvas, bar_x, bar_y, fill_w,bar_h, *theme::PROGRESS_FILL, None, None);
                                     paint::fill_rect(&mut canvas, bar_x, bar_y, bar_w, bar_h, *theme::PROGRESS_TRACK, None, None);
                                 }

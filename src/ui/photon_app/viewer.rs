@@ -16,9 +16,9 @@ pub(super) struct Viewer {
     pub view: Option<opsin::view::View>,
     /// The decode job is out (off the UI thread; `drain_img_view` installs the result).
     pub decoding: bool,
-    /// How far the decode is along, Q16 (opsin reports its stages — the file read + decode, then the linear render); the job thread writes, the render reads, the tick repaints on the edge. Fetch progress is the chunk count, not this.
+    /// How far the decode is along, as the bits of opsin's own 0..=1 f32 (opsin reports its stages — the file read + decode, then the linear render); the job thread writes, the render reads, the tick repaints on the edge. Fetch progress is the chunk count, not this.
     pub decode_frac: std::sync::Arc<std::sync::atomic::AtomicU32>,
-    /// The last Q16 the tick saw, so a moved bar repaints once per move and never on a timer.
+    /// The last bits the tick saw, so a moved bar repaints once per move and never on a timer.
     pub decode_frac_seen: u32,
     /// Nothing could open these bytes (opsin and the image crate both declined) — the preview stays, the log says why.
     pub failed: bool,
@@ -150,7 +150,7 @@ impl PhotonApp {
         let frac = v.decode_frac.clone();
         let tx = self.img_view_tx.clone();
         queue_job(&self.seal_job_tx, move || {
-            let report = |p: f32| frac.store((p * 65535.) as u32, std::sync::atomic::Ordering::Relaxed);
+            let report = |p: f32| frac.store(p.to_bits(), std::sync::atomic::Ordering::Relaxed);
             let out: Result<opsin::view::Loaded, String> = (|| {
                 let bytes = crate::storage::blob_load(&seed, &hash).ok_or_else(|| "the blob would not open".to_string())?;
                 let keep_decode = !cfg!(target_os = "android");
