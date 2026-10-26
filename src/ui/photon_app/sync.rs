@@ -854,6 +854,26 @@ impl PhotonApp {
     }
 
     /// Reliability sweep (every tick): resend any unacked outgoing message whose backoff deadline has passed, with exponential backoff, until an ACK clears it or it exhausts its attempts. This is the per-message retry the protocol was missing — without it, a single dropped message OR a single dropped ACK desyncs the chain permanently (the sender advances on ACK, so a lost ACK freezes its chain while the receiver's has moved on → every later message decrypts as garbage). Resending is safe: the receiver dedupes by eagle_time and its ACK is deterministic, so a redelivered message just yields a free re-ACK. Uses the same LAN-preferring `race_addrs()` as the live send.
+    /// A route for a RETRANSMIT, held to the foreign-LAN rule: a peer's private address on a subnet that isn't ours is a black hole PT would retry into forever — a reachable alternate takes its place, and with none the route survives on the relay alone (the sentinel address sends nowhere harmlessly, relay_to carries it). A same-subnet private address is kept: that is a real fast path. None = no direct path and no relay.
+    fn retransmit_route(mut r: super::Route, our_lan_v4: Option<std::net::Ipv4Addr>, who: &str) -> Option<super::Route> {
+        use crate::network::traverse::gather::is_foreign_peer_lan;
+        if r.peer_addr != crate::network::status::RELAY_ADDR && is_foreign_peer_lan(&r.peer_addr, our_lan_v4) {
+            match r.alt_addr.take().filter(|a| !is_foreign_peer_lan(a, our_lan_v4)) {
+                Some(reachable) => r.peer_addr = reachable,
+                None => {
+                    if r.relay_to.is_empty() {
+                        crate::logf!("CHAT: {} retransmit has no reachable path (foreign LAN {}, no relay) — skipping", who, r.peer_addr);
+                        return None;
+                    }
+                    r.peer_addr = crate::network::status::RELAY_ADDR;
+                }
+            }
+        } else if r.alt_addr.is_some_and(|a| is_foreign_peer_lan(&a, our_lan_v4)) {
+            r.alt_addr = None;
+        }
+        Some(r)
+    }
+
     pub(super) fn retransmit_due_messages(&mut self) {
         // Nothing pending anywhere: nothing to route (this runs every tick; the route build below is the expensive half).
         if !self.friendship_chains.iter().any(|(_, ch)| ch.has_pending_messages()) {
@@ -864,60 +884,39 @@ impl PhotonApp {
         // Snapshot (friendship_id → primary + alt addr + recipient pubkey) from contacts so we don't hold a contacts borrow across the mutable chains sweep. Only Complete contacts with a known address. Carry BOTH addresses — a retransmit that only re-hit the primary would keep blackholing an off-LAN peer for the whole retry budget (observed: 8 attempts all to a dead LAN IPv4).
         // OUR own LAN v4 (if any) decides whether a peer's private-v4 address is a same-subnet fast path or a foreign black hole. Computed ONCE for the whole sweep — it's a syscall.
         let our_lan_v4 = crate::network::udp::get_local_ip();
-        let routes: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = self
-            .contacts
-            .iter()
-            .filter_map(|c| {
-                let fid = c.friendship_id?;
-                // The wire recipient is a DEVICE key; a Complete contact always has one, but never fabricate for a keyless row.
-                let recipient_key = c.device_key()?;
-                let (mut primary, mut alt) = c.race_addrs()?;
-                // Drop a FOREIGN peer LAN — a peer's private address on a subnet that isn't ours, which PT retransmits into a black hole forever. If the primary is foreign, promote a reachable alt into its place; if both are foreign, this route has NO direct target and survives ONLY on the relay fan-out below (relay_to). A same-subnet peer LAN is kept — that's a real fast path.
-                use crate::network::traverse::gather::is_foreign_peer_lan;
-                if is_foreign_peer_lan(&primary, our_lan_v4) {
-                    match alt.take().filter(|a| !is_foreign_peer_lan(a, our_lan_v4)) {
-                        Some(reachable) => primary = reachable,
-                        None => {
-                            // No reachable direct address at all. Keep the route only if the relay can carry it.
-                            let relay_to = c.relay_device_list();
-                            if relay_to.is_empty() {
-                                crate::logf!("CHAT: {} retransmit has no reachable path (foreign LAN {}, no relay) — skipping", crate::fp(&c.handle_proof), primary);
-                                return None;
-                            }
-                            // peer_addr is unused for delivery here (both direct addrs were foreign); hand the sentinel so the send drain UDP-sends nowhere harmlessly and the relay_to carries it.
-                            return Some((fid, crate::network::status::RELAY_ADDR, None, recipient_key, relay_to));
-                        }
-                    }
-                } else if alt.map_or(false, |a| is_foreign_peer_lan(&a, our_lan_v4)) {
-                    alt = None; // primary reachable, but drop a foreign alt so PT doesn't race a black hole
-                }
-                // No direct path → carry the peer's relay device list so the retransmit also rides the pipe.
-                let relay_to = c.relay_device_list();
-                Some((fid, primary, alt, recipient_key, relay_to))
-            })
-            .collect();
-        // BONDS (docs/conversations.md §7): a friend's bond rides the friend's own route, so every friend route has a bond twin — a lost invitation, join or decline retransmits like any pending.
-        let bond_twins: Vec<(crate::types::FriendshipId, std::net::SocketAddr, Option<std::net::SocketAddr>, [u8; 32], Vec<[u8; 32]>)> = routes
-            .iter()
-            .filter_map(|(fid, primary, alt, key, relay)| {
-                let c = self.contacts.iter().find(|c| !c.is_sibling && c.friendship_id == Some(*fid))?;
-                let bfid = crate::types::FriendshipId::from_bytes(c.bond_id(&self.our_party_id(c)?)?.0);
-                self.friendship_chains.iter().any(|(id, ch)| *id == bfid && ch.has_pending_messages()).then(|| (bfid, *primary, *alt, *key, relay.clone()))
-            })
-            .collect();
-        let mut routes = routes;
-        routes.extend(bond_twins);
-        // GROUP pass (docs/molecules.md step 4): one route per standing member's device, resolved from the roster at sweep time, and a pending re-sends only to the parties whose ACK is still missing.
-        let molecule_routes: Vec<(crate::types::molecule::MoleculeId, Vec<super::Route>)> = self
-            .molecule_rosters
-            .iter()
-            .filter(|(g, _)| {
+        // ONE PASS at any size (docs/conversations.md Phase 2): every conversation's chains with a pending, its members' routes (a pair's friend, a group's standing members, a friend's bond on the friend's route), each route held to the foreign-LAN rule below.
+        let fix = |r: super::Route, who: &str| -> Option<super::Route> { Self::retransmit_route(r, our_lan_v4, who) };
+        let mut routes: Vec<(crate::types::FriendshipId, Vec<super::Route>)> = Vec::new();
+        for c in &self.contacts {
+            let Some(fid) = c.friendship_id else { continue };
+            if !self.friendship_chains.iter().any(|(id, ch)| *id == fid && ch.has_pending_messages() && !ch.molecule) {
+                continue;
+            }
+            if let Some(r) = Self::route_to_contact(c).and_then(|r| fix(r, &crate::fp(&c.handle_proof))) {
+                routes.push((fid, vec![r]));
+            }
+        }
+        // BONDS (docs/conversations.md §7): a friend's bond rides the friend's own route — a lost invitation, join or decline retransmits like any pending.
+        for c in self.contacts.iter().filter(|c| !c.is_sibling) {
+            let Some(bfid) = self.our_party_id(c).and_then(|us| c.bond_id(&us)).map(|b| crate::types::FriendshipId::from_bytes(b.0)) else { continue };
+            if !self.friendship_chains.iter().any(|(id, ch)| *id == bfid && ch.has_pending_messages()) {
+                continue;
+            }
+            if let Some(r) = Self::route_to_contact(c).and_then(|r| fix(r, &crate::fp(&c.handle_proof))) {
+                routes.push((bfid, vec![r]));
+            }
+        }
+        if let Some(us) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) {
+            for (g, _) in &self.molecule_rosters {
                 let fid = crate::types::FriendshipId::from_bytes(g.0);
-                self.friendship_chains.iter().any(|(id, c)| *id == fid && c.has_pending_messages())
-            })
-            .map(|(g, _)| (*g, self.routes_for_molecule(*g)))
-            .collect();
-        if routes.is_empty() && molecule_routes.is_empty() {
+                if !self.friendship_chains.iter().any(|(id, c)| *id == fid && c.has_pending_messages()) {
+                    continue;
+                }
+                let rs: Vec<super::Route> = self.routes_for_conversation(fid, &us).into_iter().filter_map(|r| fix(r, &hex::encode(&g.0[..4]))).collect();
+                routes.push((fid, rs));
+            }
+        }
+        if routes.is_empty() {
             return;
         }
 
@@ -925,21 +924,27 @@ impl PhotonApp {
             return;
         };
 
-        for (gid, groutes) in molecule_routes {
-            let fid = crate::types::FriendshipId::from_bytes(gid.0);
-            let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid) else {
+        let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
+        let mut gave_up_fids: Vec<crate::types::FriendshipId> = Vec::new();
+        let mut gave_up_rows: Vec<(crate::types::FriendshipId, i64)> = Vec::new();
+        for (fid, croutes) in routes {
+            let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
+            else {
                 continue;
             };
             let conversation_token = chains.conversation_token;
+            // Pendings exist only on the lane WE minted, so a retransmit always rides our label.
             let Some(lane) = chains.our_label().copied() else {
                 continue;
             };
+            let mut any_due = false;
+            // Pendings never outlive their era (a cutover clears them), so a retransmit is always current-era.
             let era = chains.era_tag();
-            let due = chains.collect_due_retransmits(now_osc);
-            for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in due {
-                let owed = chains.pending_unacked(eagle_time).unwrap_or_default();
-                let mut sent = 0usize;
-                for r in groutes.iter().filter(|r| r.party.map_or(false, |p| owed.contains(&p))) {
+            for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in chains.collect_due_retransmits(now_osc) {
+                any_due = true;
+                // Only the members whose ACK is still missing — every route when the pending names no targets.
+                let owed = chains.pending_unacked(eagle_time);
+                for r in croutes.iter().filter(|r| owed.as_ref().is_none_or(|o| r.party.is_some_and(|p| o.contains(&p)))) {
                     checker.send_message(crate::network::status::MessageRequest {
                         peer_addr: r.peer_addr,
                         alt_addr: r.alt_addr,
@@ -952,43 +957,7 @@ impl PhotonApp {
                         relay_to: r.relay_to.clone(),
                         era,
                     });
-                    sent += 1;
                 }
-                crate::logf!("MOLECULE: retransmit {} in {} (attempt {}) to {} of {} owed{}", eagle_time, hex::encode(&gid.0[..4]), attempts, sent, owed.len(), if exhausted { " — GAVE UP" } else { "" });
-            }
-        }
-
-        let mut undelivered_fids: Vec<crate::types::FriendshipId> = Vec::new();
-        let mut gave_up_fids: Vec<crate::types::FriendshipId> = Vec::new();
-        let mut gave_up_rows: Vec<(crate::types::FriendshipId, i64)> = Vec::new();
-        for (fid, peer_addr, alt_addr, recipient_pubkey, relay_to) in routes {
-            let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == fid)
-            else {
-                continue;
-            };
-            let conversation_token = chains.conversation_token;
-            // Pendings exist only on the lane WE minted, so a retransmit always rides our label.
-            let Some(lane) = chains.our_label().copied() else {
-                continue;
-            };
-            let mut any_due = false;
-            for (eagle_time, prev_msg_hp, ciphertext, attempts, exhausted) in
-                chains.collect_due_retransmits(now_osc)
-            {
-                any_due = true;
-                checker.send_message(crate::network::status::MessageRequest {
-                    peer_addr,
-                    alt_addr,
-                    recipient_pubkey,
-                    conversation_token,
-                    lane,
-                    prev_msg_hp,
-                    ciphertext,
-                    eagle_time,
-                    relay_to: relay_to.clone(),
-                    // Pendings never outlive their era (a cutover clears them), so a retransmit is always current-era.
-                    era: chains.era_tag(),
-                });
                 if exhausted {
                     crate::logf!("CHAT: retransmit GAVE UP on msg eagle_time {} after {} attempts (undelivered)", eagle_time, attempts);
                     gave_up_fids.push(fid);

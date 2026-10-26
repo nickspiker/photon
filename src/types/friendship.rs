@@ -1671,10 +1671,8 @@ impl FriendshipChains {
 
     /// GROUP: the parties a pending still owes — `None` when it is not pending (or not a group blob).
     pub fn pending_unacked(&self, eagle_time: i64) -> Option<Vec<crate::types::PartyId>> {
-        if !self.molecule {
-            return None;
-        }
-        self.pending_messages.iter().find(|m| m.eagle_time == eagle_time).map(|m| m.targets.iter().filter(|p| !m.acked_by.contains(p)).copied().collect())
+        // An untargeted pending (written before every conversation named its targets) owes whoever its route is: None.
+        self.pending_messages.iter().find(|m| m.eagle_time == eagle_time && !m.targets.is_empty()).map(|m| m.targets.iter().filter(|p| !m.acked_by.contains(p)).copied().collect())
     }
 
     /// Drop every pending AT OR BELOW the peer's contiguous lane tip: their sync record testified "everything up to here, received in order", so these rows are delivered — and holding them can wedge the in-flight window PERMANENTLY when the rows predate ack_hash persistence (the peer can never re-ACK them; the ACK that would imply-clear them needs a fresh send the full window blocks — round-5's chicken-and-egg, 'flushed 0/4', field 2026-08-16). Same testimony `rearm_pending_after` already trusts to pick what to RESEND; this just stops pretending the delivered half is still in flight. Device-local, no mutated_osc stamp (siblings never adopt pendings).
