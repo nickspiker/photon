@@ -528,6 +528,11 @@ impl PhotonApp {
 
     /// REJECT (Nick 2026-09-09): dismiss the ring across the fleet WITHOUT telling the origin. No signal leaves the fleet; the origin's own patience ends their side (they mint the missed wave). The wave row's Rejected outcome rides the ordinary sibling push and stops every sibling's ring on merge; the wave id and offer stamp are remembered so a re-expressed offer never rings again.
     pub(super) fn reject_wave(&mut self) {
+        // A group ring is declined silently anyway (nothing leaves the fleet): reject is decline there.
+        if self.group_wave.is_some() {
+            self.decline_group_wave();
+            return;
+        }
         let Some(wave) = self.active_wave.as_ref() else {
             return;
         };

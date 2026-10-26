@@ -2641,6 +2641,10 @@ impl PhotonApp {
                         for sig in page.rows.iter().filter(|r| r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
                             self.on_group_wave_merge(sig);
                         }
+                        // A wave row our fleet minted (a decline, a reject, a wave lived on another device) ends this device's ring for the same offer.
+                        for ts in page.rows.iter().filter(|r| r.wave.is_some()).map(|r| r.timestamp) {
+                            self.on_group_wave_row_merged(ts);
+                        }
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows);
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);

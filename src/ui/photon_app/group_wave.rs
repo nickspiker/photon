@@ -336,6 +336,18 @@ impl PhotonApp {
         }
     }
 
+    /// A wave ROW from our own fleet for the offer we are ringing for (stamped offer_osc + 1): another of our devices declined it, or lived it — the ring stops here too, silently.
+    pub(super) fn on_group_wave_row_merged(&mut self, row_ts: i64) {
+        let ringing = self.group_wave.as_ref().filter(|w| w.phase == GroupPhase::Ringing && w.offer_osc + 1 == row_ts).map(|w| w.wave_id);
+        if let Some(wave_id) = ringing {
+            crate::log("WAVE: our fleet answered the group ring elsewhere — ring stops here");
+            self.ended_waves.insert(wave_id);
+            self.group_wave = None;
+            Self::stop_group_ring_platform();
+            self.scene_dirty = true;
+        }
+    }
+
     fn ringing_group_wave(gid: MoleculeId, wave_id: [u8; 16], offer_osc: i64, key: [u8; 32], origin: GroupMember) -> GroupWave {
         GroupWave {
             gid,
