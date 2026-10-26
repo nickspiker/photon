@@ -1255,24 +1255,19 @@ impl PhotonApp {
                         };
                         // For 2-party chats, infer sender as the "other" participant. A GROUP frame (docs/molecules.md §2) has no "other": the sender is whichever STANDING member's folded devices include the signer — v1 resolves thru the Contact fold (field-test members are mutual friends); the MoleculePeer fold for never-friended members layers in with eras. Post-decrypt attribution (pkg.molecule.from) must agree with this resolution or the row is refused there.
                         // A GROUP's sender is a MEMBER (molecules::group_member_of): a friend's contact, or a member we never friended, by their folded devices — `group_ci` is the contact when there is one.
-                        let (from_handle_hash, group_ci) = if chains.molecule {
-                            let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
-                            match super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key) {
-                                Some(m) => m,
-                                None => {
+                        // ONE ATTRIBUTION at any size (molecules::member_by_device): the member whose device signed — a pair's other participant, a roster conversation's standing member by their fold.
+                        let (from_handle_hash, group_ci) = match super::molecules::member_by_device(&self.contacts, &self.molecule_peers, &self.molecule_rosters, chains, &our_handle_hash, &sender_pubkey.key) {
+                            Some(m) => m,
+                            None if chains.molecule => {
+                                let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
                                     // HELD, not dropped (Emma's phone 2026-10-25): the newest member's records reach each device by its own path, and a frame that beat them here was lost for good once another of that member's devices ACKed it for them.
                                     crate::logf!("MOLECULE: held frame — signer {}... is no standing member's device of {} yet; replayed when its roster advances", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
                                     molecule_held.push((gid, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext: ciphertext.clone(), timestamp, sender_addr, sender_pubkey: sender_pubkey.clone(), era, raw: raw.clone(), relayed_by }));
-                                    continue;
-                                }
+                                continue;
                             }
-                        } else {
-                            match chains.other_participant(&our_handle_hash) {
-                                Some(h) => (*h, None),
-                                None => {
-                                    crate::log("CHAT: Could not determine sender (not a 2-party chat or we're not a participant)");
-                                    continue;
-                                }
+                            None => {
+                                crate::log("CHAT: Could not determine sender (not a 2-party chat or we're not a participant)");
+                                continue;
                             }
                         };
 
@@ -1319,32 +1314,17 @@ impl PhotonApp {
                         }
 
                         // The sender's contact: a pair's peer always has one; a group member has one only if we friended them (group_ci), and the group path below runs without it.
-                        let contact_idx: Option<usize> = if chains.molecule {
-                            group_ci
-                        } else {
-                            match self.contacts.iter().position(|c| c.handle_hash == from_handle_hash) {
-                                Some(idx) => Some(idx),
-                                None => {
-                                    crate::logf!(
-                                        "CHAT: Contact not found for handle_hash {}...",
-                                        hex::encode(&from_handle_hash[..8])
-                                    );
-                                    continue;
-                                }
+                        let contact_idx: Option<usize> = match group_ci {
+                            Some(ci) => Some(ci),
+                            None if chains.molecule => None,
+                            None => {
+                                crate::logf!("CHAT: Contact not found for handle_hash {}...", hex::encode(&from_handle_hash[..8]));
+                                continue;
                             }
                         };
-                        // A group member's devices (their contact's relay list, or a never-friended member's fold): where a re-ACK goes.
-                        let member_relay: Vec<[u8; 32]> = if chains.molecule {
-                            super::molecules::member_devices(&self.contacts, &self.molecule_peers, &from_handle_hash)
-                        } else {
-                            Vec::new()
-                        };
-                        // Where an ACK for this frame goes: a GROUP's to the very device that signed it (that lane's pending lives there) with every device of the member on the relay, a pair's to the contact's device as ever.
-                        let ack_target: Option<([u8; 32], Vec<[u8; 32]>)> = if chains.molecule {
-                            Some((sender_pubkey.key, member_relay.clone()))
-                        } else {
-                            contact_idx.and_then(|ci| self.contacts[ci].device_key().map(|k| (k, self.contacts[ci].relay_device_list())))
-                        };
+                        // Where an ACK for this frame goes, any size (molecules::ack_target): the very device that signed it, every device of the member on the relay.
+                        let (ack_dev, member_relay) = super::molecules::ack_target(&self.contacts, &self.molecule_peers, &from_handle_hash, contact_idx, &sender_pubkey.key);
+                        let ack_target: Option<([u8; 32], Vec<[u8; 32]>)> = Some((ack_dev, member_relay.clone()));
 
                         // KNOWN∧NOT-REFUSED, the same gate ChainSyncReceived applies (knows_device already excludes refused_devices; locked_out is the sibling case). The RX worker proved only "some contact knows this signing key"; here we prove the signer is a current device of THIS conversation's peer and not one the fold has refused or the fleet has locked — so a stolen/refused device cannot inject frames that drive the fork detectors.
                         // Capability latch: a tagged frame proves the peer runs an era-aware build. Only then may the in-band ratchet (a later stage) be initiated toward them.
@@ -1368,6 +1348,15 @@ impl PhotonApp {
                                 None => {
                                     let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
                                     self.conversations.push(crate::types::Conversation::new_molecule(gid, chains.participants().iter().copied()));
+                                    self.conversations.len() - 1
+                                }
+                            }
+                        } else if chains.bond {
+                            // A BOND's frame is checked against the bond's hidden conversation, where commit lands it — the duplicate check and the stored re-ACK used to read the PAIR conversation, so a bond row was never seen as a duplicate and its re-ACK never found.
+                            match self.conversations.iter().position(|v| v.id() == *fid_ref) {
+                                Some(p) => p,
+                                None => {
+                                    self.conversations.push(crate::types::Conversation::new_bond(crate::types::friendship::BondId(fid_ref.0), chains.participants().iter().copied()));
                                     self.conversations.len() - 1
                                 }
                             }
@@ -1630,26 +1619,13 @@ impl PhotonApp {
                             crate::log("CHAT: we are not a participant in these chains (ACK)");
                             continue;
                         };
-                        // For 2-party chats, the ACK sender is the "other" participant
-                        let from_handle_hash = match chains.other_participant(&our_handle_hash) {
-                            Some(h) => *h,
-                            None => {
-                                crate::log("CHAT: Could not determine ACK sender");
-                                continue;
-                            }
+                        // ONE ATTRIBUTION at any size (molecules::member_by_device): the member whose device signed the ACK (a roster conversation's ACKs left for on_molecule_ack above).
+                        let Some((from_handle_hash, member_ci)) = super::molecules::member_by_device(&self.contacts, &self.molecule_peers, &self.molecule_rosters, chains, &our_handle_hash, &sender_pubkey) else {
+                            crate::log("CHAT: Could not determine ACK sender");
+                            continue;
                         };
-
-                        // Find contact by their handle_hash
-                        let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
-                            if c.handle_hash == from_handle_hash {
-                                Some((idx, c.display_name()))
-                            } else {
-                                None
-                            }
-                        });
-
-                        let (contact_idx, _handle) = match contact_info {
-                            Some((idx, h)) => (idx, h),
+                        let contact_idx = match member_ci {
+                            Some(idx) => idx,
                             None => {
                                 crate::logf!(
                                     "CHAT: Contact not found for ACK from handle_hash {}...",
@@ -1658,6 +1634,11 @@ impl PhotonApp {
                                 continue;
                             }
                         };
+                        // The same trust the frame itself must pass: a current, unrefused device of THIS conversation's peer, never a locked one (the ACK arm used to take any signer the token named).
+                        if !self.contacts[contact_idx].knows_device(&sender_pubkey) || self.contacts[contact_idx].locked_out {
+                            crate::logf!("CHAT: ACK from {} dropped — signer {}... is not a trusted device of this conversation", crate::fp(&from_handle_hash), hex::encode(&sender_pubkey[..8]));
+                            continue;
+                        }
 
                         crate::logf!(
                             "CHAT: ACK received from {} for eagle_time {} (hash: {}...)",
@@ -1668,6 +1649,11 @@ impl PhotonApp {
 
                         // The conversation this ACK lands in — resolved THRU THE CONTACT (see the braid drain's SHADOW SEAM note: chains-derived resolution put delivered-flag flips on an unpersisted shadow object). Field-precise, same shape as the ChatMessage arm (`chains` pins `friendship_chains` here too).
                         let conv_pos = {
+                            // A BOND's rows live in its hidden conversation: the ACK marks THAT row delivered (it used to search the pair conversation, so a bond row never turned delivered).
+                            let bond_pos = chains.bond.then(|| self.conversations.iter().position(|v| v.id() == ack_fid)).flatten();
+                            if let Some(p) = bond_pos {
+                                p
+                            } else {
                             let conv_our_pid = if self.contacts[contact_idx].is_sibling {
                                 match our_sibling_pid {
                                     Some(p) => p,
@@ -1694,6 +1680,7 @@ impl PhotonApp {
                                     self.conversations.push(derived);
                                     self.conversations.len() - 1
                                 }
+                            }
                             }
                         };
 

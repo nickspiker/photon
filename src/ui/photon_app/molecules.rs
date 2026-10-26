@@ -44,6 +44,24 @@ pub(super) fn group_member_of(contacts: &[crate::types::Contact], peers: &[crate
     peers.iter().find(|p| p.knows_device(device) && roster.is_standing(&p.party)).map(|p| (p.party, None))
 }
 
+/// ONE SENDER ATTRIBUTION, any size (docs/conversations.md Phase 2; Nick 2026-10-26: "we know who's in it"): the member of the conversation these chains key who signed with `device` — (their party, their contact when we friended them). A roster conversation resolves thru its standing members' folds ([`group_member_of`]); a pair, a bond or our own fleet's chains thru their two participants, the one that is not `us`. The caller still holds the signer to the member's trusted devices.
+pub(super) fn member_by_device(contacts: &[crate::types::Contact], peers: &[crate::types::molecule::MoleculePeer], rosters: &[(MoleculeId, Roster)], chains: &crate::types::FriendshipChains, us: &[u8; 32], device: &[u8; 32]) -> Option<([u8; 32], Option<usize>)> {
+    if chains.molecule {
+        return group_member_of(contacts, peers, rosters, &MoleculeId(*chains.friendship_id.as_bytes()), device);
+    }
+    let party = *chains.other_participant(us)?;
+    Some((party, contacts.iter().position(|c| c.handle_hash == party)))
+}
+
+/// Where an ACK for a frame goes, any size: the very device that signed it (its lane's pending lives there — per-device lanes), with every device of that member on the relay leg.
+pub(super) fn ack_target(contacts: &[crate::types::Contact], peers: &[crate::types::molecule::MoleculePeer], party: &[u8; 32], ci: Option<usize>, signer: &[u8; 32]) -> ([u8; 32], Vec<[u8; 32]>) {
+    let relay = match ci.and_then(|ci| contacts.get(ci)) {
+        Some(c) => c.relay_device_list(),
+        None => member_devices(contacts, peers, party),
+    };
+    (*signer, relay)
+}
+
 /// The devices a group member's photons and ACKs go to: a friend's relay list, or a never-friended member's folded devices.
 pub(super) fn member_devices(contacts: &[crate::types::Contact], peers: &[crate::types::molecule::MoleculePeer], party: &[u8; 32]) -> Vec<[u8; 32]> {
     match contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *party) {

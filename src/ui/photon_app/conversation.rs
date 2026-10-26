@@ -1425,29 +1425,25 @@ impl PhotonApp {
             // Party-id seam, re-run: our participant id is the identity PARTY id (friends) or the sibling pid (siblings) — whichever the chain actually holds. The UNSHADOWED identity pid is kept for the conversation resolution below, which must NOT follow the chains' expression of us.
             let identity_hh = our_handle_hash;
             // TOTAL identity resolution — no silent exits. The normal path: one of our pids is a participant, the other participant is a known contact. EITHER half can be stale-era (a pre-flag-day ceremony's expression of us, OR a contact whose key has since migrated) — and the frame still DECRYPTED, because lanes key on wire labels, not participants: the crypto is fine, only the naming is stale. Breaking silently on any half was the field's decrypts-forever-never-ACKs loop (2026-08-11: one device re-decrypted the same retransmitted frame every ~15s for six-plus HOURS — no row, no ACK, no persist, nothing in its log). The fallback resolves the peer by matching participants against the contact list; only a set matching NO known contact drops, loudly.
-            let (our_handle_hash, from_handle_hash, contact_idx) = if chains.molecule {
-                // GROUP resolution (docs/molecules.md §2): the sender is whichever STANDING member's folded devices include the signer — the same verdict dispatch reached, re-run against current state. No other-participant, no shadow seam: the id is minted, never derived.
-                let gid = crate::types::molecule::MoleculeId(*chains.friendship_id.as_bytes());
-                // A member, friended or not (molecules::group_member_of): the contact rides along only when there is one.
-                let Some((party, ci)) = super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key) else {
-                    crate::logf!("MOLECULE: decrypted frame's signer is no standing member's device — dropped (token {}...)", hex::encode(&conversation_token[..8]));
-                    break 'commit;
-                };
-                (identity_hh, party, ci)
+            // ONE ATTRIBUTION at any size (molecules::member_by_device), re-run against current state: a roster conversation's standing member by their fold (the contact rides along only when we friended them), a pair's other participant (whose contact must exist).
+            let in_set = |p: &[u8; 32]| chains.participants().contains(p);
+            let us = if chains.molecule || in_set(&identity_hh) {
+                Some(identity_hh)
             } else {
-                let in_set = |p: &[u8; 32]| chains.participants().contains(p);
-                let us = if in_set(&identity_hh) {
-                    Some(identity_hh)
-                } else {
-                    our_sibling_pid.filter(in_set)
-                };
-                let normal = us.and_then(|us| {
-                    let them = *chains.other_participant(&us)?;
-                    let idx = self.contacts.iter().position(|c| c.handle_hash == them)?;
-                    Some((us, them, Some(idx)))
-                });
+                our_sibling_pid.filter(in_set)
+            };
+            let normal = us.and_then(|us| {
+                super::molecules::member_by_device(&self.contacts, &self.molecule_peers, &self.molecule_rosters, chains, &us, &sender_pubkey.key)
+                    .filter(|(_, ci)| chains.molecule || ci.is_some())
+                    .map(|(party, ci)| (us, party, ci))
+            });
+            let (our_handle_hash, from_handle_hash, contact_idx) = {
                 match normal {
                     Some(resolved) => resolved,
+                    None if chains.molecule => {
+                        crate::logf!("MOLECULE: decrypted frame's signer is no standing member's device — dropped (token {}...)", hex::encode(&conversation_token[..8]));
+                        break 'commit;
+                    }
                     None => {
                         let Some((idx, them)) = chains.participants().iter().find_map(|p| {
                             self.contacts
@@ -1475,14 +1471,8 @@ impl PhotonApp {
                 crate::logf!("CHAT: decrypted frame's signer lost trust mid-flight — dropped");
                 break 'commit;
             }
-            // Where this frame's ACK goes: a GROUP's to the very device that signed it (that lane's pending lives there) with every device of the member on the relay — a friend's relay list or a never-friended member's fold; a pair's to the contact's device as ever.
-            let (ack_recipient, ack_relay): ([u8; 32], Vec<[u8; 32]>) = if chains.molecule {
-                (sender_pubkey.key, super::molecules::member_devices(&self.contacts, &self.molecule_peers, &from_handle_hash))
-            } else {
-                let c = contact_idx.and_then(|ci| self.contacts.get(ci));
-                // zero unreachable in practice (we just received their frame); ACK request API is on the zero-sentinel follow-up list
-                (c.and_then(|c| c.device_key()).unwrap_or([0u8; 32]), c.map(|c| c.relay_device_list()).unwrap_or_default())
-            };
+            // Where this frame's ACK goes, any size (molecules::ack_target): the very device that signed it (that lane's pending lives there), every device of the member on the relay.
+            let (ack_recipient, ack_relay) = super::molecules::ack_target(&self.contacts, &self.molecule_peers, &from_handle_hash, contact_idx, &sender_pubkey.key);
             // CAS: the lane must be EXACTLY where dispatch saw it. The expected prev still verifying proves no advance, no era swap, no adopt moved the lane while the worker ran — which also proves the decrypt's salt inputs were current, so a parse failure below IS fork evidence. Any mismatch means this plaintext came from dead state: drop it and never feed it to the fork detector; is_duplicate covers the raced-copy case (two UDP copies of one frame both dispatched pre-mark, the first committed).
             if chains.chain(&lane).is_none()
                 || chains.verify_chain_link(&lane, &prev_msg_hp).is_err()
