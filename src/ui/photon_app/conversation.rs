@@ -2479,6 +2479,10 @@ impl PhotonApp {
                 let gid = crate::types::molecule::MoleculeId(*fid.as_bytes());
                 self.adopt_replicated_molecule(gid, bytes);
                 // A sibling's group blob may carry a roster edge with no lane movement; the roster merge above is the whole adopt in that case.
+                // Chains that landed or moved are the edge a frame held for them waits on (it beat the sync, or named an era this push brought).
+                if adopted {
+                    self.release_molecule_frames(gid);
+                }
             }
             if !adopted {
                 continue;

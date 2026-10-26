@@ -1278,7 +1278,7 @@ impl PhotonApp {
 
                         // Materialize the SENDER'S LANE from root ‖ label (docs/lanes.md): any device holding the root decrypts any lane — receive-anywhere, no fold lookup, no trial decryption. A blob without a root predates lanes: the flag-day re-clutch is already sweeping it.
                         // ERA ROUTING (2026-09-08): a known label routes by label; an unknown label materializes under the era the frame's tag names. A tag matching nothing we hold is a stale or unknown era — dropped here, BEFORE decrypt, never counted as fork evidence. No tag = a pre-era peer = current era, garbage still to the fork detector as before.
-                        let slot = match chains.era_slot_for_label(&lane).or_else(|| chains.era_slot_for_tag(era)) {
+                        let mut slot = match chains.era_slot_for_label(&lane).or_else(|| chains.era_slot_for_tag(era)) {
                             Some(s) => s,
                             None => {
                                 let ours = chains.era_tag().map(|t| format!("{t:08x}")).unwrap_or_else(|| "none".into());
@@ -1286,8 +1286,11 @@ impl PhotonApp {
                                 let pen = chains.pending_era().map(|p| format!("{:08x}", p.tag)).unwrap_or_else(|| "none".into());
                                 crate::logf!("CHAT: frame tagged era {:08x} from {} — ours {}, retired {}, pending {} — dropped (stale/unknown era, not fork evidence)", era.unwrap_or(0), crate::fp(&sender_pubkey.key), ours, ret, pen);
                                 // A GROUP frame on an era we do not hold (docs/molecules.md §10.1 Catching up): the wrap for this device is still in flight or re-serve — say so in the header until it lands.
+                                // HELD, not dropped (Brittany 2026-10-25: a member's era-2 frame beat its wrap by 50 ms and waited out a retransmit): the era installing replays it.
                                 if chains.molecule {
-                                    catching_up.push(crate::types::molecule::MoleculeId(*fid_ref.as_bytes()));
+                                    let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
+                                    catching_up.push(gid);
+                                    molecule_held.push((gid, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext: ciphertext.clone(), timestamp, sender_addr, sender_pubkey: sender_pubkey.clone(), era, raw: raw.clone(), relayed_by }));
                                 }
                                 continue;
                             }
@@ -1300,6 +1303,8 @@ impl PhotonApp {
                             if let Some((old_tag, new_tag, retired_pendings)) = chains.cut_over_to_pending() {
                                 crate::logf!("ERA: cut over {:08x} → {:08x} on the peer's first frame — {} pending(s) re-serve on the fresh lane", old_tag, new_tag, retired_pendings);
                                 rotated_flush.push(*fid_ref);
+                                // The pending era IS the current one now: the frame that cut it over opens there (Emma and Brittany 2026-10-25: every member's first frame on a new era looked for a pending slot the cutover had just emptied, was dropped as pre-lane, and waited out a retransmit).
+                                slot = crate::types::friendship::EraSlot::Current;
                             }
                         }
                         if chains.molecule && slot == crate::types::friendship::EraSlot::Retired {
@@ -1564,9 +1569,11 @@ impl PhotonApp {
                             hex::encode(&conversation_token[..8])
                         );
                         // A frame we can't even ROUTE is evidence, not just noise: if this token's contact claims the ceremony is Complete, the state is lying (chains wiped, claim resurrected) and nothing else will ever trigger the repair. Recorded here, judged post-drain. A GROUP token is excluded — no ceremony exists to repair; the root re-arrives by a refreshed invite, never a re-clutch.
-                        let molecule_token = self.molecule_rosters.iter().any(|(g, _)| g.token() == conversation_token);
-                        if molecule_token {
-                            crate::logf!("MOLECULE: frame for token {}... arrived before its chains loaded — dropped (no rekey probe)", hex::encode(&conversation_token[..8]));
+                        let molecule_gid = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
+                        if let Some(gid) = molecule_gid {
+                            // HELD, not dropped (Nick's Mac 2026-10-25: a group booted from a sibling's roster 0.7 s before its chains synced, and the frames between were lost to it): the chains landing replay it.
+                            crate::logf!("MOLECULE: frame for token {}... arrived before its chains loaded — held until they land", hex::encode(&conversation_token[..8]));
+                            molecule_held.push((gid, StatusUpdate::ChatMessage { conversation_token, lane, prev_msg_hp, ciphertext: ciphertext.clone(), timestamp, sender_addr, sender_pubkey: sender_pubkey.clone(), era, raw: raw.clone(), relayed_by }));
                         } else if !rekey_probe.contains(&conversation_token) {
                             rekey_probe.push(conversation_token);
                         }

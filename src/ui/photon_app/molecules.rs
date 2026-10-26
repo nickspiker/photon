@@ -615,6 +615,7 @@ impl PhotonApp {
             self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob: crate::storage::molecule::roster_to_vsf_bytes(&gid, &ours).ok(), wrap: None, kem: None, text: None, queued: self.tick_serial, control: false });
         }
         crate::logf!("MOLECULE: joined \"{}\" ({}) via {} at era {}", offer.snapshot.title(), hex::encode(&gid.0[..4]), sponsor_fp, w.era);
+        self.release_molecule_frames(gid);
     }
 
     /// WRAP inside the group (an existing member, §10.4): a mint's wrap addressed to our device — open it against our persisted bundle, derive the next era from the one we hold, install it as pending. Rows for other devices are ignored. NOT YET BUILT: withholding a mint whose wrap set omits a member we hold standing (the exclusion tripwire of the vouch model, docs/conversations.md Phase 3) — today any wrap that opens is installed.
@@ -651,6 +652,7 @@ impl PhotonApp {
         }
         self.persist_chains_of(&fid);
         crate::logf!("MOLECULE: era {} for {} installed as pending — cutover on the first frame tagged with it or our next send", w.era, hex::encode(&gid.0[..4]));
+        self.release_molecule_frames(gid);
     }
 
     /// Records posted inside a group (§4): merge every record from the blob under the roster's one law, then follow the standing set into the conversation. Invalid signatures are skipped loudly; merge decides precedence.
@@ -1089,14 +1091,14 @@ impl PhotonApp {
         self.molecule_held_frames.push((gid, update));
     }
 
-    /// The roster's standing set moved: every frame held for this group re-enters the receive arm, full gates and all.
-    fn release_molecule_frames(&mut self, gid: MoleculeId) {
+    /// An edge a held frame waits on (the roster's standing set moved, an era installed, the chains landed): every frame held for this group re-enters the receive arm, full gates and all.
+    pub(super) fn release_molecule_frames(&mut self, gid: MoleculeId) {
         if !self.molecule_held_frames.iter().any(|(g, _)| *g == gid) {
             return;
         }
         let (mine, rest): (Vec<_>, Vec<_>) = std::mem::take(&mut self.molecule_held_frames).into_iter().partition(|(g, _)| *g == gid);
         self.molecule_held_frames = rest;
-        crate::logf!("MOLECULE: {} held frame(s) in {} replayed — its roster moved", mine.len(), hex::encode(&gid.0[..4]));
+        crate::logf!("MOLECULE: {} held frame(s) in {} replayed — the group moved", mine.len(), hex::encode(&gid.0[..4]));
         self.chat_replay_queue.extend(mine.into_iter().map(|(_, u)| u));
     }
 
