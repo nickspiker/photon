@@ -963,22 +963,30 @@ impl PhotonApp {
         let Some(our_pid) = self.our_party_id(contact) else {
             return Err("no party id (no session, or a sibling without a fleet pid)");
         };
-        // No direct path → also relay this message over the pipe. CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer whose reflexive went stale) — the relay copy is cheap and the receiver dedups.
-        let relay_to = contact.relay_device_list();
-        // The wire recipient is a DEVICE key; a sendable contact always has one, but never fabricate for a keyless row.
-        let Some(recipient_pubkey) = contact.device_key() else {
+        if contact.device_key().is_none() {
             return Err("no device key for contact");
+        }
+        let Some(route) = Self::route_to_contact(contact) else {
+            return Err("no known address for contact");
         };
-        // NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the seam" never happened. The relay sentinel keeps the send alive.
-        // Parked on "pending relay": the relay carries it alone until a direct path validates (Contact::direct_parked).
+        let conv_id = contact.conversation(&our_pid).id();
+        Ok((fid, route, conv_id))
+    }
+
+    /// The ONE route to a person we hold a contact for, at any size (a pair's peer, a molecule's friend, our own sibling): their active device at its raced addresses, every device of theirs as a relay copy.
+    /// No direct path → also relay this message over the pipe. CHAT joins the ACKs' rule: ALWAYS carry the relay copy. The direct-trust heuristic starved every shape of one-way reachability the field produced (a validated path to the wrong device, an AP that began isolating clients, a peer whose reflexive went stale) — the relay copy is cheap and the receiver dedups.
+    /// NO direct address is not NO send: the weave probe fired the moment a ceremony completed over the relay, hit this bail (the peer's addresses hadn't validated yet), and died silently — the probe never retransmits, so "testing the seam" never happened. The relay sentinel keeps the send alive. Parked on "pending relay": the relay carries it alone until a direct path validates (Contact::direct_parked). None = no device key, or neither an address nor a relay device.
+    pub(super) fn route_to_contact(contact: &crate::types::Contact) -> Option<Route> {
+        let relay_to = contact.relay_device_list();
+        // The wire recipient is a DEVICE key; never fabricate one for a keyless row.
+        let recipient_pubkey = contact.device_key()?;
         let direct = if contact.direct_parked() && !relay_to.is_empty() { None } else { contact.race_addrs() };
         let (peer_addr, alt_addr) = match direct {
             Some(pair) => pair,
             None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
-            None => return Err("no known address for contact"),
+            None => return None,
         };
-        let conv_id = contact.conversation(&our_pid).id();
-        Ok((fid, Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(contact.handle_hash) }, conv_id))
+        Some(Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(contact.handle_hash) })
     }
 
     /// The recipient list of a GROUP send (docs/molecules.md step 4): one route per standing member's addressable device — the contact fold for friends (their active device and race addresses, their fleet as relay copies), the MoleculePeer fold for members we never friended (relay only, by device pubkey; step 5 wires the fold). We are never our own route. Empty = nobody reachable yet (the retransmit sweep re-resolves on every pass).
@@ -993,19 +1001,15 @@ impl PhotonApp {
                 continue;
             }
             if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == party) {
-                let relay_to = c.relay_device_list();
-                let Some(recipient_pubkey) = c.device_key() else { continue };
-                let direct = if c.direct_parked() && !relay_to.is_empty() { None } else { c.race_addrs() };
-                let (peer_addr, alt_addr) = match direct {
-                    Some(pair) => pair,
-                    None if !relay_to.is_empty() => (crate::network::status::RELAY_ADDR, None),
-                    None => continue,
-                };
-                routes.push(Route { peer_addr, alt_addr, recipient_pubkey, relay_to, party: Some(party) });
+                if let Some(r) = Self::route_to_contact(c) {
+                    routes.push(r);
+                }
             } else if let Some(peer) = self.molecule_peers.iter().find(|p| p.party == party) {
-                // Never friended: no LAN/WAN address known here — the relay carries it by device pubkey, every folded device a copy.
+                // Never friended: the first folded device at the addresses the phonebook holds for it (device_addresses — the peer store's records), every folded device a relay copy; the relay alone when no address is known.
                 if let Some(first) = peer.devices.first() {
-                    routes.push(Route { peer_addr: crate::network::status::RELAY_ADDR, alt_addr: None, recipient_pubkey: *first, relay_to: peer.devices.clone(), party: Some(party) });
+                    let addrs = self.device_addresses(first);
+                    let (peer_addr, alt_addr) = (addrs.first().copied().unwrap_or(crate::network::status::RELAY_ADDR), addrs.get(1).copied());
+                    routes.push(Route { peer_addr, alt_addr, recipient_pubkey: *first, relay_to: peer.devices.clone(), party: Some(party) });
                 }
             }
         }

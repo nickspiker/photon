@@ -2087,7 +2087,8 @@ async fn run_checker(
                                             &data,
                                         )
                                     {
-                                        if !is_known_sender_pt(&sender_pubkey) {
+                                        // A standing member of the conversation the request names may ask, friend or not (docs/conversations.md Phase 2).
+                                        if !(is_known_sender_pt(&sender_pubkey) || molecule_admits(&payload.conversation_token, &sender_pubkey)) {
                                             crate::log("PT: hist_req REJECTED - unknown sender");
                                             continue;
                                         }
@@ -2115,7 +2116,7 @@ async fn run_checker(
                                     )) = crate::network::fgtw::protocol::parse_history_page_vsf(
                                         &data,
                                     ) {
-                                        if !is_known_sender_pt(&sender_pubkey) {
+                                        if !(is_known_sender_pt(&sender_pubkey) || molecule_admits(&conversation_token, &sender_pubkey)) {
                                             crate::log("PT: hist_page REJECTED - unknown sender");
                                             continue;
                                         }

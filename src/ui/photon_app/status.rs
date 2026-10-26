@@ -1467,8 +1467,8 @@ impl PhotonApp {
                                 c.last_pinged = None;
                             }
                             // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a wave ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
-                            if !chains.molecule && contact_idx.is_some_and(|ci| !self.contacts[ci].is_sibling) {
-                                // Groups: the friend-history walk is a pairwise protocol; a group gap waits on the sender's retransmit and (later) group re-serve — never a friendship walk against a group conversation.
+                            if chains.molecule || contact_idx.is_some_and(|ci| !self.contacts[ci].is_sibling) {
+                                // A GROUP gap walks too (docs/conversations.md Phase 2): its members serve its pages now, friend or not, so the sender's retransmit is no longer the only heal.
                                 let conv = &mut self.conversations[conv_pos];
                                 if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {
                                     crate::log("CHAT: gap arms the history walk — the friend holds the missing row(s)");
@@ -3309,37 +3309,26 @@ impl PhotonApp {
                             entry.1.pop_front();
                         }
 
-                        // FRIEND route: bind token → chains (history key) → the OTHER participant → contact, and require the requesting device to belong to that exact contact + be mutual. Participants are PARTY IDS (chains key on them since the pin-set migration), so "other" resolves against OUR party id — comparing against the raw seed matched nothing and made `other` sort-order dependent.
+                        // MEMBER route, any size (docs/conversations.md Phase 2): bind token → chains (history key) → the member whose device asked (molecules::member_by_device) — a pair's peer, who must be a mutual contact owning that device, or a standing member of a roster conversation, friended or not (their fold already holds the device). The page comes from the conversation's own table: a roster conversation's id, a pair's derived from the contact (the SHADOW SEAM rule: rows live where the contact derives them).
                         let our_pid = self
                             .session
                             .as_ref()
                             .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-                        let key_and_other = self
-                            .friendship_chains
-                            .iter()
-                            .find(|(_, c)| c.conversation_token == conversation_token)
-                            .and_then(|(_, c)| {
-                                let key = c.history_key().copied()?;
-                                let other = c
-                                    .participants()
-                                    .iter()
-                                    .find(|p| Some(**p) != our_pid)
-                                    .copied()?;
-                                Some((key, other))
-                            });
-                        let friend_route: Option<(usize, [u8; 32], Option<u64>)> = key_and_other
-                            .and_then(|(key, other)| {
-                                self.contacts
-                                    .iter()
-                                    .position(|c| {
-                                        // Friend chains only — a sibling chain's "other ≠ our pid" resolution is ambiguous (both participant pids differ); sibling requests take the FLEET route below.
-                                        !c.is_sibling
-                                            && c.handle_hash == other
-                                            && c.knows_device(&sender_pubkey.key)
-                                            && c.is_mutual()
-                                    })
-                                    .map(|idx| (idx, key, None))
-                            });
+                        let friend_route: Option<([u8; 32], [u8; 32], Option<u64>)> = our_pid.and_then(|us| {
+                            let (_, chains) = self.friendship_chains.iter().find(|(_, c)| c.conversation_token == conversation_token && !c.bond)?;
+                            let key = chains.history_key().copied()?;
+                            let (_, ci) = super::molecules::member_by_device(&self.contacts, &self.molecule_peers, &self.molecule_rosters, chains, &us, &sender_pubkey.key)?;
+                            if chains.molecule {
+                                // A friend member still has to own the asking device and be mutual; a stranger passed by their fold.
+                                if ci.is_some_and(|ci| !self.contacts[ci].knows_device(&sender_pubkey.key) || !self.contacts[ci].is_mutual()) {
+                                    return None;
+                                }
+                                return Some((*chains.friendship_id.as_bytes(), key, None));
+                            }
+                            // Friend chains only — a sibling chain's "other" is ambiguous (both participant pids differ); sibling requests take the FLEET route below.
+                            let c = self.contacts.get(ci?).filter(|c| !c.is_sibling && c.knows_device(&sender_pubkey.key) && c.is_mutual())?;
+                            Some((*c.conversation(&us).id().as_bytes(), key, None))
+                        });
                         // FLEET route (fleet history sync): the requester is one of OUR OWN devices — fold-trusted sibling — asking for any conversation we hold. Sealed under the EPOCH hist_page key (the B-arc re-seal), with the epoch on the frame; no spine yet = don't serve — the requester re-requests after our 45s-bounded bootstrap lands, exactly the chain_sync hold rule. The token resolves by DERIVATION from party ids (no chain needed), so a conversation the sibling only knows from the roster — or the self notes conversation — still serves.
                         let route = friend_route.or_else(|| {
                             let sender_is_sibling = self.contacts.iter().any(|c| {
@@ -3351,16 +3340,22 @@ impl PhotonApp {
                             let (k, epoch) = self.fleet_epoch?;
                             let key =
                                 crate::crypto::clutch::fleet_epoch_seal_key(&epoch, b"hist_page");
-                            let idx =
-                                self.contact_idx_for_conversation_token(&conversation_token)?;
-                            Some((idx, key, Some(k)))
+                            // The table: a roster conversation's own id, else the conversation the token derives for a contact (notes, a pair, a conversation the sibling knows only from the roster).
+                            let table = match self.friendship_chains.iter().find(|(_, c)| c.conversation_token == conversation_token && c.molecule) {
+                                Some((fid, _)) => *fid.as_bytes(),
+                                None => {
+                                    let idx = self.contact_idx_for_conversation_token(&conversation_token)?;
+                                    let c = &self.contacts[idx];
+                                    *c.conversation(&self.our_party_id(c)?).id().as_bytes()
+                                }
+                            };
+                            Some((table, key, Some(k)))
                         });
 
-                        if let (Some((idx, key, serve_ek)), Some(storage), Some(checker)) =
+                        if let (Some((table, key, serve_ek)), Some(storage), Some(checker)) =
                             (route, self.storage.as_ref(), self.status_checker.as_ref())
                         {
                             // OFF THE RENDER THREAD. Serving a page reads and decrypts up to 50 vault rows and then seals them — measured at 2195ms inline, which is what a peer's backfill felt like from inside our own UI. Everything the work needs is copied here (ids, keys, an Arc of storage, a cloned dispatch sender) and the whole read-seal-send runs on a worker; nothing it produces touches app state, so there is no result to drain back.
-                            let their_seed = self.contacts[idx].handle_hash;
                             // WHY/PROOF: `limit` is the REQUESTER's — any number off the wire; a page is served at no more than our own row cap and at least one row.
                             let page_limit = (limit as usize)
                                 .clamp(1, crate::network::history_pages::MAX_PAGE_ROWS);
@@ -3378,8 +3373,8 @@ impl PhotonApp {
                                 use crate::network::history_pages::{
                                     seal_history_page, HistoryPagePlain, HistoryRow,
                                 };
-                                match crate::storage::contacts::load_message_page_before(
-                                    &their_seed,
+                                match crate::storage::contacts::load_message_page_in(
+                                    &table,
                                     before_osc,
                                     page_limit,
                                     crate::network::history_pages::MAX_PAGE_BYTES,
@@ -4515,7 +4510,9 @@ impl PhotonApp {
 
                     // A GROUP page from a sibling has no contact behind its token by construction; drain_history_pages merges it into the group (docs/molecules.md step 6).
                     // Gating it on a contact dropped every fleet copy of every group row (field 2026-10-25: a sibling's checkpoint moved the lane past a live frame, and the page that carried the row died here, so the row never landed on that device).
-                    let molecule_page = from_sibling && self.molecule_rosters.iter().any(|(g, _)| g.token() == conversation_token);
+                    // …and a page from a MEMBER of the group, friend or not (docs/conversations.md Phase 2: history recovery reaches molecules), merged from their side in drain_history_pages.
+                    let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
+                    let molecule_page = group.is_some_and(|gid| from_sibling || super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key).is_some());
                     let routable = contact_idx.is_some() || molecule_page;
                     if key.is_none() || !routable {
                         // Torch the drop: a page dying here is indistinguishable from "sync doesn't work" in the field ("fleet sync with self is not working", 2026-07-26 — every drop in this arm was silent).

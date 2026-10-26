@@ -1702,11 +1702,19 @@ impl PhotonApp {
 
     pub(super) fn kick_fleet_history_sweep(&mut self, reason: &str) {
         let mut kicked = 0usize;
+        // Every conversation, any size (docs/conversations.md Phase 2): each friend's pair conversation (materialized here) and every roster conversation we hold.
+        let mut ids: Vec<crate::types::ConversationId> = Vec::new();
         for ci in 0..self.contacts.len() {
             if self.contacts[ci].is_sibling {
                 continue;
             }
-            let Some(conv) = self.conv_mut_of(ci) else {
+            if let Some(conv) = self.conv_mut_of(ci) {
+                ids.push(conv.id());
+            }
+        }
+        ids.extend(self.molecule_rosters.iter().map(|(g, _)| crate::types::FriendshipId::from_bytes(g.0)).filter(|id| self.conversations.iter().any(|v| v.id() == *id)));
+        for id in ids {
+            let Some(conv) = self.conv_by_id_mut(id) else {
                 continue;
             };
             if conv.history_recovery.as_ref().is_some_and(|r| !r.complete) {
@@ -1821,8 +1829,10 @@ impl PhotonApp {
             .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
 
         // Candidate pass (read-only): eligible contacts + the best available route. FRIEND route (woven keyed chain, friend online) is preferred — it's the authoritative two-party copy; otherwise the FLEET route asks an online sibling under the fleet key, which needs no chain at all (a roster-merged contact backfills before its first CLUTCH, and the self notes conversation only ever has this route).
-        let candidates: Vec<(
-            usize,
+        // (the conversation, the chains whose history key fingerprints a parked walk, token, primary, alt, recipient, relay)
+        let mut candidates: Vec<(
+            crate::types::ConversationId,
+            Option<crate::types::FriendshipId>,
             [u8; 32],
             std::net::SocketAddr,
             Option<std::net::SocketAddr>,
@@ -1831,8 +1841,7 @@ impl PhotonApp {
         )> = self
             .contacts
             .iter()
-            .enumerate()
-            .filter_map(|(idx, c)| {
+            .filter_map(|c| {
                 if c.is_sibling {
                     return None;
                 }
@@ -1856,7 +1865,8 @@ impl PhotonApp {
                                         crate::network::udp::get_local_ip(),
                                     );
                                     return Some((
-                                        idx,
+                                        c.conversation(&our_pid?).id(),
+                                        Some(fid),
                                         chains.conversation_token,
                                         primary,
                                         alt,
@@ -1872,7 +1882,8 @@ impl PhotonApp {
                 let (primary, alt, sib_pk, sib_relay) = sibling_target.clone()?;
                 let pid = our_pid?;
                 Some((
-                    idx,
+                    c.conversation(&pid).id(),
+                    c.friendship_id,
                     crate::crypto::clutch::derive_conversation_token(&[pid, c.handle_hash]),
                     primary,
                     alt,
@@ -1881,6 +1892,33 @@ impl PhotonApp {
                 ))
             })
             .collect();
+        // ROSTER CONVERSATIONS walk too (docs/conversations.md Phase 2 — the walk used to be contacts-only, so a molecule's missing rows waited on live re-sends alone): the group's token and history key; asked of an online friend member at their direct path, else any member's device at its phonebook addresses or the relay alone, else our own fleet under the fleet key.
+        for (gid, roster) in &self.molecule_rosters {
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            if !self.conversations.iter().any(|v| v.id() == fid && v.history_recovery.as_ref().is_some_and(|r| !r.complete)) {
+                continue;
+            }
+            let Some((_, chains)) = self.friendship_chains.iter().find(|(id, c)| *id == fid && c.molecule) else { continue };
+            if chains.history_key().is_none() {
+                continue;
+            }
+            let others: Vec<[u8; 32]> = roster.standing().into_iter().filter(|p| Some(*p) != our_pid).collect();
+            let friend = others.iter().find_map(|p| {
+                let c = self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *p && c.is_online)?;
+                let (primary, alt) = c.race_addrs()?;
+                Some((primary, alt, c.device_key()?, relay_unless_direct_trusted(c, crate::network::udp::get_local_ip())))
+            });
+            let any_member = || {
+                others.iter().find_map(|p| {
+                    let dev = *super::molecules::member_devices(&self.contacts, &self.molecule_peers, p).first()?;
+                    let addrs = self.device_addresses(&dev);
+                    Some((addrs.first().copied().unwrap_or(crate::network::status::RELAY_ADDR), addrs.get(1).copied(), dev, vec![dev]))
+                })
+            };
+            if let Some((primary, alt, pk, relay)) = friend.or_else(any_member).or_else(|| sibling_target.clone()) {
+                candidates.push((fid, Some(fid), chains.conversation_token, primary, alt, pk, relay));
+            }
+        }
         if candidates.is_empty() {
             return;
         }
@@ -1888,12 +1926,8 @@ impl PhotonApp {
             return;
         };
 
-        for (idx, token, primary, alt, recipient_pubkey, relay_to) in candidates {
+        for (cid, park_fid, token, primary, alt, recipient_pubkey, relay_to) in candidates {
             // Field-precise lookup (`checker` holds a field borrow of self across this loop, so no &mut self method fits here).
-            let Some(pid) = our_pid else {
-                continue;
-            };
-            let cid = self.contacts[idx].conversation(&pid).id();
             let Some(rec) = self
                 .conversations
                 .iter_mut()
@@ -1904,8 +1938,7 @@ impl PhotonApp {
             };
             // DIVERGENCE PARK: while the conversation's history key still fingerprints as the one that kept failing to open pages, a re-request just re-downloads the same undecryptable 17KB — skip until the key CHANGES (re-key completed / era adopted), which is the resume edge. State comparison per sweep, no timer.
             if let Some(parked) = rec.parked_key_fp {
-                let current_fp: Option<[u8; 4]> = self.contacts[idx]
-                    .friendship_id
+                let current_fp: Option<[u8; 4]> = park_fid
                     .and_then(|fid| self.friendship_chains.iter().find(|(id, _)| *id == fid))
                     .and_then(|(_, c)| c.history_key().copied())
                     .map(|k| blake3::hash(&k).as_bytes()[..4].try_into().unwrap());

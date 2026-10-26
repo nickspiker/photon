@@ -1139,16 +1139,27 @@ impl PhotonApp {
 
     /// Zero this contact's unread counter — called at every site where their conversation becomes the active view (contact tap, panel back/Esc re-entry). Persists only on an actual change (off-thread, coalesced), so the common already-read path costs nothing. Interaction-cleared by doctrine: this is the ONLY way the counter ever goes down.
     /// Merge a sibling page's rows into a GROUP conversation (docs/molecules.md step 6): identity = (timestamp, content, file); flags upgrade monotonically (delivered, deleted, notified true-wins; reference/marks/author fill in once); new rows insert with their flags verbatim. Returns the rows that changed or landed (for persist + onward gossip).
-    pub(super) fn merge_molecule_page_rows(&mut self, conv_pos: usize, rows: &[crate::network::history_pages::HistoryRow]) -> Vec<crate::types::ChatMessage> {
+    /// `member` = (us, the member who served it) for a page from a member of the conversation rather than one of our own devices (docs/conversations.md Phase 2): its rows speak from THAT member's side, so a row is ours when its author is us and incoming otherwise, and that member's own flags — delivered as they saw it, notified, starred — are theirs, never adopted. `None` = our own device's page, merged verbatim (its flags are ours).
+    pub(super) fn merge_molecule_page_rows(&mut self, conv_pos: usize, rows: &[crate::network::history_pages::HistoryRow], member: Option<([u8; 32], [u8; 32])>) -> Vec<crate::types::ChatMessage> {
         let conv = &mut self.conversations[conv_pos];
         let mut fresh = Vec::new();
         for row in rows {
             if row.control.is_some() || crate::types::row_control::is_legacy_prefixed(&row.content) {
                 continue;
             }
+            // Whose row and which way, from our side. A member's page names every group row's author (molecules.md §5); one that names none is that member's own when outgoing to them, and otherwise unknowable — skipped.
+            let (outgoing, author) = match member {
+                None => (row.sender_outgoing, row.author),
+                Some((us, from)) => match row.author {
+                    Some(a) => (a == us, Some(a)),
+                    None if row.sender_outgoing => (false, Some(from)),
+                    None => continue,
+                },
+            };
+            let own_flags = member.is_none();
             if let Some(existing) = conv.messages.iter_mut().find(|m| m.timestamp == row.timestamp && m.content == row.content && match (&m.file, &row.file) { (Some(a), Some(b)) => a.same_identity(b), (None, None) => true, _ => false }) {
                 let mut upgraded = false;
-                if row.delivered && !existing.delivered && existing.is_outgoing == row.sender_outgoing {
+                if own_flags && row.delivered && !existing.delivered && existing.is_outgoing == outgoing {
                     existing.delivered = true;
                     upgraded = true;
                 }
@@ -1156,11 +1167,11 @@ impl PhotonApp {
                     existing.deleted = true;
                     upgraded = true;
                 }
-                if row.notified && !existing.notified {
+                if own_flags && row.notified && !existing.notified {
                     existing.notified = true;
                 }
-                if existing.author.is_none() && row.author.is_some() {
-                    existing.author = row.author;
+                if existing.author.is_none() && author.is_some() {
+                    existing.author = author;
                     upgraded = true;
                 }
                 if existing.reference.is_none() {
@@ -1177,7 +1188,7 @@ impl PhotonApp {
                     }
                 }
                 // WHY/PROOF: `row.star_osc` is a peer's history-page column — `i64::MIN.abs()` wraps negative and would lose every comparison; unsigned_abs is exact, as in the other star merges.
-                if existing.star_osc.unsigned_abs() < row.star_osc.unsigned_abs() {
+                if own_flags && existing.star_osc.unsigned_abs() < row.star_osc.unsigned_abs() {
                     existing.star_osc = row.star_osc;
                     upgraded = true;
                 }
@@ -1189,12 +1200,14 @@ impl PhotonApp {
                 }
                 continue;
             }
-            let mut m = crate::types::ChatMessage::new_with_timestamp(row.content.clone(), row.sender_outgoing, row.timestamp);
-            m.author = row.author;
-            m.delivered = row.delivered;
+            let mut m = crate::types::ChatMessage::new_with_timestamp(row.content.clone(), outgoing, row.timestamp);
+            m.author = author;
             m.deleted = row.deleted;
-            m.notified = row.notified;
-            m.star_osc = row.star_osc;
+            if own_flags {
+                m.delivered = row.delivered;
+                m.notified = row.notified;
+                m.star_osc = row.star_osc;
+            }
             m.delivered_to = row.delivered_to.clone();
             m.reference = row.reference.and_then(|(k, t)| crate::types::RefKind::from_wire(k).map(|k| (k, t)));
             m.marks = crate::types::valid_marks(&m.content, &row.marks);
@@ -2617,12 +2630,16 @@ impl PhotonApp {
                 continue;
             };
             // A GROUP page from a sibling (docs/molecules.md step 6): rows merge into the group conversation verbatim (same identity, their flags are ours); no contact stands behind the token, so the contact-scoped extras (chirp, attach fetch, wave signals) are skipped here.
-            if from_sibling {
-                if let Some(gid) = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g) {
-                    self.hist_rid_map.remove(&request_id);
+            // …or from a MEMBER of the group, friend or not (docs/conversations.md Phase 2): the same merge, its rows re-expressed from our side (merge_molecule_page_rows' member view), our fleet's own records and wave rows taken from siblings alone.
+            let group = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).map(|(g, _)| *g);
+            let member_from = if from_sibling { None } else { group.and_then(|gid| super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key)).map(|(p, _)| p) };
+            if from_sibling || member_from.is_some() {
+                if let Some(gid) = group {
+                    // A page WE asked for (the walk's own request) moves the walk; a live push never fast-forwards it.
+                    let rid_matches = self.hist_rid_map.remove(&request_id).is_some();
                     if let Some(page) = page {
                         // Records one of our devices handed over directly (our own leave, made there): merged like a replicated roster, so this device leaves too even if the group's keys never synced to it.
-                        let records: Vec<Vec<u8>> = page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)))).map(|r| r.gpl.clone()).collect();
+                        let records: Vec<Vec<u8>> = if from_sibling { page.rows.iter().filter(|r| !r.gpl.is_empty() && matches!(r.control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)))).map(|r| r.gpl.clone()).collect() } else { Vec::new() };
                         for blob in records {
                             self.adopt_replicated_molecule(gid, &blob);
                         }
@@ -2635,14 +2652,33 @@ impl PhotonApp {
                             }
                         };
                         // Our fleet's wave rows in this group (docs/group-waves.md): a sibling's join stops this device's ring for the same wave.
-                        for sig in page.rows.iter().filter(|r| r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
+                        for sig in page.rows.iter().filter(|r| from_sibling && r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
                             self.on_group_wave_merge(sig);
                         }
                         // A wave row our fleet minted (a decline, a reject, a wave lived on another device) ends this device's ring for the same offer.
-                        for ts in page.rows.iter().filter(|r| r.wave.is_some()).map(|r| r.timestamp) {
+                        for ts in page.rows.iter().filter(|r| from_sibling && r.wave.is_some()).map(|r| r.timestamp) {
                             self.on_group_wave_row_merged(ts);
                         }
-                        let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows);
+                        let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows, member_from.map(|m| (our_pid, m)));
+                        // Cursor + completion, the pair walk's rule (molecules walk since docs/conversations.md Phase 2).
+                        if rid_matches {
+                            let conv = &mut self.conversations[conv_pos];
+                            if !page.more {
+                                conv.peer_ahead = false;
+                            }
+                            if let Some(rec) = conv.history_recovery.as_mut() {
+                                rec.in_flight = None;
+                                rec.decrypt_fail_streak = 0;
+                                rec.parked_key_fp = None;
+                                rec.expire_streak = 0;
+                                if page.oldest_osc < rec.oldest_recovered_osc {
+                                    rec.oldest_recovered_osc = page.oldest_osc;
+                                }
+                                if !page.more || (rec.was_complete_before && fresh.is_empty()) {
+                                    rec.complete = true;
+                                }
+                            }
+                        }
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);
                             self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), &fresh, Some(sender_pubkey.key));

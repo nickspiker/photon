@@ -1496,7 +1496,18 @@ pub fn load_message_page_before(
     max_bytes: usize,
     storage: &FlatStorage,
 ) -> Result<(Vec<ChatMessage>, bool), StorageError> {
-    let table = conversation_table(&[our_party_id(storage), *their_identity_seed]);
+    load_message_page_in(&conversation_table(&[our_party_id(storage), *their_identity_seed]), before_osc, max_rows, max_bytes, storage)
+}
+
+/// A history page of ANY conversation by its table (= its id): a pair's, a roster conversation's, our notes' — the serve route reads every size thru here (docs/conversations.md Phase 2).
+pub fn load_message_page_in(
+    table: &[u8; 32],
+    before_osc: i64,
+    max_rows: usize,
+    max_bytes: usize,
+    storage: &FlatStorage,
+) -> Result<(Vec<ChatMessage>, bool), StorageError> {
+    let table = *table;
     let db = Db::open(storage).map_err(|e| StorageError::Vault(e.to_string()))?;
     let pks = db
         .list_in(&table)
