@@ -495,6 +495,9 @@ impl PhotonApp {
                     let now_osc = vsf::eagle_time_oscillations();
                     // Lanes rotated by the wedge heal below — flushed AFTER the record loop (the loop holds the chains borrow; resend_held_messages needs &mut self).
                     let mut rotated_fids: Vec<crate::types::friendship::FriendshipId> = Vec::new();
+                    // WHO TESTIFIES: a pong's sealed tail carries the responder's records for EVERY conversation it holds, so one of our own siblings advertises heads for friendships whose lane from us it never receives.
+                    // Its tip 0 for our lane read as "the friend is at the anchor" and rotated the lane every two minutes while the friend was offline (field 2026-10-25: 253 rotations of one friendship, each re-serving the same two rows).
+                    let responder_is_sibling = self.contacts.iter().any(|c| c.is_sibling && c.knows_device(&peer_pubkey.key));
                     for record in &sync_records {
                         if let Some((fid, chains)) = self
                             .friendship_chains
@@ -516,8 +519,11 @@ impl PhotonApp {
                                     })
                                     .unwrap_or(0)
                             };
+                            // The tip settles our lane only as the receiver's own word: a sibling never receives it, and in a molecule one member's head says nothing of the members still owed (each party's ACK settles its own share), so neither rotates the lane nor clears a pending.
+                            // A member's head may still revive a given-up group pending: the resend goes only to the parties still owed.
+                            let lane_testimony = !responder_is_sibling && !chains.molecule;
                             // LANE WEDGE HEAL — checked BEFORE stall recovery, because the wedge's terminal loop was exactly that re-arm: give-up → "past peer lane tip 0" revive → give-up, forever (2,913 retransmit lines in one overnight log, 2026-08-09, every frame gap-buffered by a peer that lost the lane state and expects the anchor — unlinkable by hash AND undecryptable at their position-0 key). Rotation retires the dead lane and its pendings; the post-loop flush re-serves every undelivered row thru chain_transmit on the fresh lane at the ORIGINAL eagle_times, so row identity — and history — converges instead of forking.
-                            if chains.our_lane_wedged_at_peer_anchor(tip) {
+                            if lane_testimony && chains.our_lane_wedged_at_peer_anchor(tip) {
                                 if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
                                     crate::logf!("LANE: peer at the ANCHOR of {}... with {} unlinkable exhausted pending(s) — rotated to {}..., re-serving undelivered rows on the fresh lane", hex::encode(&dead[..4]), retired, hex::encode(&fresh[..4]));
                                     rotated_fids.push(*fid);
@@ -545,11 +551,11 @@ impl PhotonApp {
                                     }
                                 }
                             }
-                            let cleared = chains.clear_pending_up_to(tip);
+                            let cleared = if lane_testimony { chains.clear_pending_up_to(tip) } else { 0 };
                             if cleared > 0 {
                                 crate::logf!("CHAT: {} pending(s) at/below peer lane tip {} — implied-delivered by the sync record", cleared, tip);
                             }
-                            let n = chains.rearm_pending_after(tip, now_osc);
+                            let n = if responder_is_sibling { 0 } else { chains.rearm_pending_after(tip, now_osc) };
                             if n > 0 {
                                 crate::logf!("CHAT: re-armed {} given-up pending msg(s) past peer lane tip {} (stall recovery)", n, tip);
                                 // STUCK-TIP WEDGE — the anchor wedge in disguise (round-9 field, 2026-08-17): the peer's head for our lane is NONZERO but never moves (its lane stalled exactly where ours wedged; the rows above it reached the fleet as forwards nobody can re-ACK), so exhaust → re-arm → exhaust loops forever below the tip-0 detector. Two FULL retry ladders re-armed at the very same advertised head = the peer provably cannot advance past it; rotate, and the re-serve converges rows by identity exactly like the anchor heal.
@@ -563,7 +569,7 @@ impl PhotonApp {
                                     }
                                     e.1
                                 };
-                                if ladders >= 2 {
+                                if ladders >= 2 && lane_testimony {
                                     if let Some((dead, fresh, retired)) = chains.rotate_our_lane() {
                                         crate::logf!("LANE: peer's head for our lane STUCK at {} thru {} exhaust→re-arm ladders ({} pending(s)) — rotated {}... to {}..., re-serving on the fresh lane", tip, ladders, retired, hex::encode(&dead[..4]), hex::encode(&fresh[..4]));
                                         rotated_fids.push(*fid);
@@ -4521,7 +4527,11 @@ impl PhotonApp {
                         )
                     };
 
-                    if key.is_none() || contact_idx.is_none() {
+                    // A GROUP page from a sibling has no contact behind its token by construction; drain_history_pages merges it into the group (docs/molecules.md step 6).
+                    // Gating it on a contact dropped every fleet copy of every group row (field 2026-10-25: a sibling's checkpoint moved the lane past a live frame, and the page that carried the row died here, so the row never landed on that device).
+                    let molecule_page = from_sibling && self.molecule_rosters.iter().any(|(g, _)| g.token() == conversation_token);
+                    let routable = contact_idx.is_some() || molecule_page;
+                    if key.is_none() || !routable {
                         // Torch the drop: a page dying here is indistinguishable from "sync doesn't work" in the field ("fleet sync with self is not working", 2026-07-26 — every drop in this arm was silent).
                         crate::logf!(
                             "HISTORY: page from {} DROPPED — {} (from_sibling={})",
@@ -4534,7 +4544,7 @@ impl PhotonApp {
                             from_sibling
                         );
                     }
-                    if let (Some(key), Some(_)) = (key, contact_idx) {
+                    if let (Some(key), true) = (key, routable) {
                         // OFF-THREAD: opening the sealed page (kete over up to MAX_PAGE_BYTES) ran inline here — 210-485ms per page in the field (2026-08-08), the largest single status-arm stall. The worker only decrypts and posts back; EVERY gate that reads mutable state (in-flight rid match, sibling trust, contact indexes) lives in drain_history_pages, evaluated against current state instead of a dispatch-time snapshot.
                         let tx = self.hist_opened_tx.clone();
                         let wake = self.event_proxy.clone();
