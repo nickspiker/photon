@@ -6,7 +6,7 @@
 //!
 //! The beam describes itself IN-BAND: a [`Kind::Info`] packet (geometry, fps, codec, the VSF characterization entry: matrix, class, tier, transfer) goes out at start and once a second, like intra refresh for metadata — nothing is added to the offer/answer, a beam can start mid-wave, a late joiner needs nothing from signalling.
 //!
-//! Threads: the sender runs on whatever thread produces frames ([`BeamTx::send_frame`] is a plain call); the receiver is one thread fed by the sink, handing completed frames to [`take_frames`] for the decoder stage.
+//! Threads: the sender runs on whatever thread produces frames ([`BeamTx::send_frame`] is a plain call); the receiver is one thread fed by the sink, handing completed frames to its [`RxShared`] for the decoder stage (one receiver per link of a group wave).
 
 use super::keys::{Direction, StepChain, PACKETS_PER_STEP};
 use super::packet;
@@ -368,64 +368,59 @@ impl BeamRx {
 
 // ───────────────────────── the sink and the thread ─────────────────────────
 
-/// Beam ingress, demuxed by [`super::deliver_media`] on the magic: installed when a beam receiver starts, cleared when it stops.
-static BEAM_SINK: Mutex<Option<mpsc::Sender<Vec<u8>>>> = Mutex::new(None);
-/// Completed encoded frames for the decoder stage, newest last. Bounded: a stalled decoder drops the OLDEST (a late frame is worthless; the newest is the picture).
-static BEAM_FRAMES: Mutex<Vec<Frame>> = Mutex::new(Vec::new());
-/// Signalled on every completed frame, so the decoder stage blocks instead of polling.
-static BEAM_FRAMES_CV: std::sync::Condvar = std::sync::Condvar::new();
+/// Beam ingress, demuxed by [`super::deliver_media`] on the magic: one sink per running receiver (a 1:1 wave runs one, a group wave one per link — docs/group-waves.md).
+/// Every beam datagram goes to every receiver and each receiver's own seal keeps or refuses it: `packet::open` never moves a chain on a packet that fails, so a foreign link's datagram costs one tag check and nothing else.
+static BEAM_SINKS: Mutex<Vec<(u64, mpsc::Sender<Vec<u8>>)>> = Mutex::new(Vec::new());
+static BEAM_SINK_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 /// Generous: the decoder must see EVERY frame in order (H.264 frames reference their predecessors and a beam never keyframes) — the display, not the mailbox, is where staleness is dropped. A cap only for a decoder that has stalled outright.
 const FRAMES_CAP: usize = 120;
-/// The latest self-description the receiver heard (for the decoder stage's reconfigure edge and the UI's "what is this beam" line).
-static BEAM_INFO: Mutex<Option<Info>> = Mutex::new(None);
-/// The peer's picture rotation (quarter turns clockwise), from its Orient packets — the decoder stage turns each displayed picture by it.
-static BEAM_ROTATION: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
 
-pub fn current_rotation() -> u8 {
-    BEAM_ROTATION.load(std::sync::atomic::Ordering::Relaxed)
+/// What one receiver hands its decoder stage: completed encoded frames (newest last, bounded drop-oldest), the latest self-description, and the sender's rotation.
+pub struct RxShared {
+    frames: Mutex<Vec<Frame>>,
+    /// Signalled on every completed frame, so the decoder stage blocks instead of polling.
+    cv: std::sync::Condvar,
+    info: Mutex<Option<Info>>,
+    /// The peer's picture rotation (quarter turns clockwise), from its Orient packets — the decoder stage turns each displayed picture by it.
+    rotation: std::sync::atomic::AtomicU8,
 }
 
-/// Is a beam receiver up? The media sink asks before demuxing.
-pub fn rx_live() -> bool {
-    BEAM_SINK.lock().unwrap().is_some()
+impl RxShared {
+    /// The blocking take: waits for a frame to complete or for `stop` to rise, then takes everything queued.
+    /// No timeout: a completed frame is one edge and the stop is the other, signalled by [`RxShared::wake`].
+    pub fn take_frames_wait(&self, stop: &std::sync::atomic::AtomicBool) -> Vec<Frame> {
+        let guard = self.frames.lock().unwrap();
+        let mut guard = self.cv.wait_while(guard, |q| q.is_empty() && !stop.load(std::sync::atomic::Ordering::Relaxed)).unwrap();
+        std::mem::take(&mut *guard)
+    }
+
+    /// The stop edge for a decoder parked in [`RxShared::take_frames_wait`]: the caller raises its stop flag first, then calls this.
+    /// Taking the queue's lock between the flag and the signal is what makes it race-free: a waiter is either before its predicate check (it will see the flag) or parked (it gets the signal).
+    pub fn wake(&self) {
+        drop(self.frames.lock().unwrap());
+        self.cv.notify_all();
+    }
+
+    pub fn info(&self) -> Option<Info> {
+        self.info.lock().unwrap().clone()
+    }
+
+    pub fn rotation(&self) -> u8 {
+        self.rotation.load(std::sync::atomic::Ordering::Relaxed)
+    }
 }
 
-/// Recv-worker side: one beam datagram. Cheap when no receiver is up (one mutex + None).
+/// Recv-worker side: one beam datagram, to every running receiver. Cheap when none is up (one mutex + an empty list).
 pub fn deliver(bytes: &[u8]) {
-    let sink = BEAM_SINK.lock().unwrap();
-    if let Some(tx) = sink.as_ref() {
+    for (_, tx) in BEAM_SINKS.lock().unwrap().iter() {
         let _ = tx.send(bytes.to_vec());
     }
 }
 
-/// Decoder-stage side: every frame completed since the last take, oldest first.
-pub fn take_frames() -> Vec<Frame> {
-    std::mem::take(&mut *BEAM_FRAMES.lock().unwrap())
-}
-
-/// The blocking form: waits for a frame to complete or for `stop` to rise, then takes everything queued.
-/// No timeout: a completed frame is one edge and the stop is the other, signalled by [`wake_frames`].
-pub fn take_frames_wait(stop: &std::sync::atomic::AtomicBool) -> Vec<Frame> {
-    let guard = BEAM_FRAMES.lock().unwrap();
-    let mut guard = BEAM_FRAMES_CV
-        .wait_while(guard, |q| q.is_empty() && !stop.load(std::sync::atomic::Ordering::Relaxed))
-        .unwrap();
-    std::mem::take(&mut *guard)
-}
-
-/// The stop edge for a decoder parked in [`take_frames_wait`]: the caller raises its stop flag first, then calls this.
-/// Taking the queue's lock between the flag and the signal is what makes it race-free: a waiter is either before its predicate check (it will see the flag) or parked (it gets the signal).
-pub fn wake_frames() {
-    drop(BEAM_FRAMES.lock().unwrap());
-    BEAM_FRAMES_CV.notify_all();
-}
-
-pub fn current_info() -> Option<Info> {
-    BEAM_INFO.lock().unwrap().clone()
-}
-
 /// A running beam receiver thread; dropping the handle stops it.
 pub struct RxHandle {
+    id: u64,
+    pub shared: std::sync::Arc<RxShared>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -433,55 +428,51 @@ pub struct RxHandle {
 impl Drop for RxHandle {
     fn drop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        *BEAM_SINK.lock().unwrap() = None;
+        // Removing the sink drops the only sender, so the thread's blocking recv returns at once with the stop.
+        BEAM_SINKS.lock().unwrap().retain(|(id, _)| *id != self.id);
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        BEAM_FRAMES.lock().unwrap().clear();
-        *BEAM_INFO.lock().unwrap() = None;
-        BEAM_ROTATION.store(0, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
-/// Start the beam receiver for a wave: installs the sink and runs the reassembly thread. `dir` is the direction the PEER sends in (the chain this end opens with).
+/// Start a beam receiver: installs its sink and runs its reassembly thread. `dir` is the direction the PEER sends in (the chain this end opens with).
 pub fn start_rx(wave_secret: &[u8; 32], dir: Direction) -> RxHandle {
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
-    *BEAM_SINK.lock().unwrap() = Some(tx);
+    let id = BEAM_SINK_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    BEAM_SINKS.lock().unwrap().push((id, tx));
+    let shared = std::sync::Arc::new(RxShared { frames: Mutex::new(Vec::new()), cv: std::sync::Condvar::new(), info: Mutex::new(None), rotation: std::sync::atomic::AtomicU8::new(0) });
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let stop2 = stop.clone();
+    let (stop2, shared2) = (stop.clone(), shared.clone());
     let mut brx = BeamRx::new(wave_secret, dir);
     let thread = std::thread::Builder::new()
         .name("beam-rx".into())
         .spawn(move || {
             while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
-                // A blocking recv is the thread's only wait: datagrams are the edges, and the handle's drop clearing `BEAM_SINK` drops the only sender, so the recv returns at once with the stop.
+                // A blocking recv is the thread's only wait: datagrams are the edges, and the handle's drop removing the sink drops the only sender.
                 match rx.recv() {
                     Ok(bytes) => {
                         if let Some(frame) = brx.push(&bytes) {
-                            let mut q = BEAM_FRAMES.lock().unwrap();
+                            let mut q = shared2.frames.lock().unwrap();
                             if q.len() >= FRAMES_CAP {
                                 q.remove(0);
                             }
                             q.push(frame);
-                            BEAM_FRAMES_CV.notify_one();
+                            shared2.cv.notify_one();
                         }
                         if let Some(info) = brx.take_info_change() {
-                            *BEAM_INFO.lock().unwrap() = Some(info);
+                            *shared2.info.lock().unwrap() = Some(info);
                         }
-                        BEAM_ROTATION.store(brx.rotation, std::sync::atomic::Ordering::Relaxed);
+                        shared2.rotation.store(brx.rotation, std::sync::atomic::Ordering::Relaxed);
                     }
                     Err(mpsc::RecvError) => break,
                 }
             }
-            crate::logf!(
-                "BEAM: rx thread down — {} frames done, {} lost, {} bad packets",
-                brx.frames_done,
-                brx.frames_lost,
-                brx.bad_packets
-            );
+            // A group link's receiver sees every other link's datagrams too, and refuses them: its bad-packet count is theirs, not loss.
+            crate::logf!("BEAM: rx thread down — {} frames done, {} lost, {} refused packets", brx.frames_done, brx.frames_lost, brx.bad_packets);
         })
         .expect("beam-rx thread");
-    RxHandle { stop, thread: Some(thread) }
+    RxHandle { id, shared, stop, thread: Some(thread) }
 }
 
 #[allow(dead_code)]
@@ -515,6 +506,33 @@ mod tests {
             out.push(packet::seal_beam(&tx.chain, seq, &payload).unwrap());
         }
         out
+    }
+
+    /// A group wave runs one receiver per link and hands every beam datagram to all of them: each opens only its own link's frames, and another link's datagrams never move its chain.
+    #[test]
+    fn each_link_receiver_opens_only_its_own_link() {
+        let (a, b) = (secret(), derive_wave_secret(&[1; 32], &[2; 16], &[3; 32], &[4; 32]));
+        let peer: SocketAddr = "127.0.0.1:1".parse().unwrap();
+        let (mut tx_a, mut tx_b) = (BeamTx::new(&a, Direction::OriginToAnswer, peer), BeamTx::new(&b, Direction::OriginToAnswer, peer));
+        let (mut rx_a, mut rx_b) = (BeamRx::new(&a, Direction::OriginToAnswer), BeamRx::new(&b, Direction::OriginToAnswer));
+        let frame: Vec<u8> = (0..3_000u32).map(|i| (i % 251) as u8).collect();
+        // Link B's sender runs far ahead first, as a busy link would.
+        for n in 0..300 {
+            for d in sealed_datagrams(&mut tx_b, n, Gains::NONE, &frame) {
+                assert!(rx_a.push(&d).is_none(), "A must refuse B's datagrams");
+                let _ = rx_b.push(&d);
+            }
+        }
+        assert_eq!(rx_b.frames_done, 300);
+        // A's own frames still open, whatever B's datagrams asked A's chain to do.
+        let mut got = 0;
+        for d in sealed_datagrams(&mut tx_a, 0, Gains::NONE, &frame) {
+            if rx_a.push(&d).is_some() {
+                got += 1;
+            }
+        }
+        assert_eq!(got, 1);
+        assert_eq!(rx_a.frames_done, 1);
     }
 
     #[test]

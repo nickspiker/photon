@@ -43,13 +43,14 @@ pub fn claim_slot() -> Option<(usize, u64)> {
     None
 }
 
-/// Release a far slot, only while `gen` still holds it.
-pub fn release_slot(slot: usize, gen: u64) {
+/// Release a far slot, only while `gen` still holds it; true when it did.
+pub fn release_slot(slot: usize, gen: u64) -> bool {
     if slot == 0 || slot >= FAR_SLOTS || SLOT_GEN[slot].load(Ordering::SeqCst) != gen {
-        return;
+        return false;
     }
     FAR_ACTIVE.fetch_and(!(1u32 << slot), Ordering::SeqCst);
     reset_slot(slot);
+    true
 }
 
 /// Slots live right now, slot 0 included while named playout runs.

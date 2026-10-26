@@ -143,20 +143,66 @@ impl FieldTables {
 
     /// An avatar ring's colour (Nick 2026-09-28): the field's own colour at AGE 0 — the newest audio, as the ripple leaves the avatar — as a straight fluor colour, the hue at full brightness with α its γ-encoded brightness (the same pixel the field paints there, un-premultiplied for `draw_circle`). Silence is transparent.
     pub fn ring_colour(&self, theirs: bool) -> u32 {
-        let Some(&[r, g, b]) = (if theirs { &self.theirs } else { &self.ours }).first() else {
+        let Some(&lin) = (if theirs { &self.theirs } else { &self.ours }).first() else {
             return 0;
         };
-        let enc = &*ENC;
-        let a = enc[r.max(g).max(b) as usize];
-        if a == 0 {
-            return 0;
-        }
-        // Full-brightness hue byte = ENC[c]·255/α (the brightest channel reads 255).
-        let hue = |c: u16| (enc[c as usize] * 255 + a / 2) / a;
-        // γ2 hue → the `g2t` buffer's code for the same light (fluor's buffer is g2t since 2026-10-20).
-        let visible = fluor::theme::from_gamma2((hue(r) << 16) | (hue(g) << 8) | hue(b));
-        (a << 24) | (fluor::theme::fmt(visible ^ 0x00FF_FFFF) & 0x00FF_FFFF)
+        lin_ring_colour(lin)
     }
+}
+
+/// A group wave face's ring (docs/group-waves.md): the colour of that person's newest frame, as the 1:1 field's rings are — transparent when nothing has arrived for half a second (a link gone quiet must not hold its last syllable lit).
+pub(super) fn env_ring_colour(e: Option<FrameEnv>) -> u32 {
+    let Some(e) = e else {
+        return 0;
+    };
+    let now_fno = vsf::grid::eagle_to_sample(crate::network::time_base::now_osc()).div_euclid(crate::wave::align::FRAME);
+    if now_fno - e.fno > 100 {
+        return 0;
+    }
+    lin_ring_colour(frame_lin(&e))
+}
+
+/// A linear Q12 colour as a ring: the hue at full brightness with α its γ-encoded brightness (straight, for `draw_circle`). Silence is transparent.
+fn lin_ring_colour([r, g, b]: [u16; 3]) -> u32 {
+    let enc = &*ENC;
+    let a = enc[r.max(g).max(b) as usize];
+    if a == 0 {
+        return 0;
+    }
+    // Full-brightness hue byte = ENC[c]·255/α (the brightest channel reads 255).
+    let hue = |c: u16| (enc[c as usize] * 255 + a / 2) / a;
+    // γ2 hue → the `g2t` buffer's code for the same light (fluor's buffer is g2t since 2026-10-20).
+    let visible = fluor::theme::from_gamma2((hue(r) << 16) | (hue(g) << 8) | hue(b));
+    (a << 24) | (fluor::theme::fmt(visible ^ 0x00FF_FFFF) & 0x00FF_FFFF)
+}
+
+/// THE GROUP ROLL (docs/group-waves.md): `n` faces around a circle in the wave square, the first at the top, clockwise — the centre and radius of each.
+/// One face sits in the middle at the 1:1 avatar's size; more share the circle, each as large as its arc allows and never larger than a 1:1 avatar.
+pub(super) fn roll_positions(g: &FieldGeom, n: usize) -> Vec<(f32, f32, f32)> {
+    let s = g.side as f32;
+    let (cx, cy) = (g.w.saturating_sub(g.side) as f32 / 2.0 + s / 2.0, g.y0 as f32 + s / 2.0);
+    if n <= 1 {
+        return vec![(cx, cy, g.r)];
+    }
+    let ring = s * 0.32;
+    let r = (ring * (std::f32::consts::PI / n as f32).sin() * 0.8).min(g.r);
+    (0..n)
+        .map(|i| {
+            let a = -std::f32::consts::FRAC_PI_2 + i as f32 * std::f32::consts::TAU / n as f32;
+            (cx + ring * a.cos(), cy + ring * a.sin(), r)
+        })
+        .collect()
+}
+
+/// The picture grid for a group beam: `n` tiles filling the picture region, as near square as the count allows — each tile's (x, y, w, h).
+pub(super) fn picture_tiles(rx0: usize, ry0: usize, rw: usize, rh: usize, n: usize) -> Vec<(usize, usize, usize, usize)> {
+    if n == 0 {
+        return Vec::new();
+    }
+    let cols = (1..=n).find(|c| c * c >= n).unwrap_or(n); // the algorithm: the smallest square grid that holds them
+    let rows = n.div_ceil(cols);
+    let (tw, th) = (rw / cols, rh / rows);
+    (0..n).map(|i| (rx0 + (i % cols) * tw, ry0 + (i / cols) * th, tw, th)).collect()
 }
 
 fn amplitude(e: &FrameEnv) -> f32 {
@@ -428,6 +474,41 @@ mod tests {
     fn field_geom_for(w: usize, h: usize) -> FieldGeom {
         let s = w.min(h) as f32;
         FieldGeom { w, h, y0: 0, side: w.min(h), r: s / 8.0, theirs: (s * 2.0 / 3.0, s / 3.0), ours: (s / 3.0, s * 2.0 / 3.0) }
+    }
+
+    /// The group roll: every face inside the square, none overlapping its neighbour, none larger than a 1:1 avatar, the first at the top.
+    #[test]
+    fn the_roll_fits_everyone_in_the_square() {
+        let g = field_geom_for(800, 800);
+        for n in 1..=8 {
+            let at = roll_positions(&g, n);
+            assert_eq!(at.len(), n);
+            for &(x, y, r) in &at {
+                assert!(r > 0.0 && r <= g.r + 1e-3);
+                assert!(x - r >= 0.0 && x + r <= 800.0 && y - r >= 0.0 && y + r <= 800.0, "n {n}: a face leaves the square");
+            }
+            for i in 0..n {
+                for j in i + 1..n {
+                    let ((x0, y0, r0), (x1, y1, r1)) = (at[i], at[j]);
+                    assert!(((x0 - x1).powi(2) + (y0 - y1).powi(2)).sqrt() > r0 + r1, "n {n}: faces {i} and {j} overlap");
+                }
+            }
+            if n > 1 {
+                assert!(at[0].1 < at[1].1.min(400.0), "the first face is at the top");
+            }
+        }
+    }
+
+    /// The picture grid tiles the region without overlap, as near square as the count allows.
+    #[test]
+    fn picture_tiles_cover_the_region() {
+        assert!(picture_tiles(0, 0, 900, 600, 0).is_empty());
+        assert_eq!(picture_tiles(10, 20, 900, 600, 1), vec![(10, 20, 900, 600)]);
+        let t = picture_tiles(0, 0, 900, 600, 3);
+        assert_eq!(t, vec![(0, 0, 450, 300), (450, 0, 450, 300), (0, 300, 450, 300)]);
+        let t = picture_tiles(0, 0, 900, 900, 7);
+        assert_eq!(t.len(), 7);
+        assert!(t.iter().all(|&(x, y, w, h)| w == 300 && h == 300 && x + w <= 900 && y + h <= 900));
     }
 
     /// Between two frames the colour is the blend of both by the age's fraction; the fade leaves the newest frame whole and the oldest nearly gone.

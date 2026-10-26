@@ -24,18 +24,24 @@ pub struct Picture {
     pub holes: Option<Vec<u8>>,
 }
 
-static PICTURE: Mutex<Option<Picture>> = Mutex::new(None);
+/// One picture per far slot (platform::audio FAR_SLOTS): slot 0 is the 1:1 wave's peer, a group wave's links show theirs in their own slots.
+static PICTURES: [Mutex<Option<Picture>>; crate::platform::audio::FAR_SLOTS] = [const { Mutex::new(None) }; crate::platform::audio::FAR_SLOTS];
 /// Bumped on every new picture: the paint compares it with what it last drew.
 pub static PICTURE_GEN: AtomicU64 = AtomicU64::new(0);
 
 /// The newest picture the peer's beam produced, if a beam is flowing.
 pub fn picture() -> Option<Picture> {
-    PICTURE.lock().unwrap().clone()
+    picture_slot(0)
+}
+
+/// The newest picture one far slot's beam produced (a group link's peer).
+pub fn picture_slot(slot: usize) -> Option<Picture> {
+    PICTURES[slot].lock().unwrap().clone()
 }
 
 /// Is any beam picture up (theirs or our own inset)? The wave screen's switch to the beam layout, without cloning a frame.
 pub fn showing() -> bool {
-    PICTURE.lock().unwrap().is_some() || SELF_PICTURE.lock().unwrap().is_some()
+    PICTURES.iter().any(|p| p.lock().unwrap().is_some()) || SELF_PICTURE.lock().unwrap().is_some()
 }
 
 /// THE SELF-VIEW (2026-10-10, Nick: "when you choose beam, still no video shows"): what this device's camera is sending, converted thru the same chain the receiver runs — so the inset shows the colour the far side gets, tungsten-yellow included.
@@ -141,6 +147,7 @@ pub trait FrameSource: Send {
 /// The receiving half: the beam-rx thread (transport) plus this decode thread.
 pub struct Receiver {
     _rx: beam::RxHandle,
+    slot: usize,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -149,12 +156,15 @@ impl Drop for Receiver {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         // The stop is an edge, not a poll: wake the decoder parked on the frame queue so the join returns at once (it used to wait out a 250 ms timeout at every hangup, on the thread hanging up).
-        beam::wake_frames();
+        self._rx.shared.wake();
         if let Some(t) = self.thread.take() {
             let _ = t.join();
         }
-        *PICTURE.lock().unwrap() = None;
-        *PARKED_TX.lock().unwrap() = None;
+        *PICTURES[self.slot].lock().unwrap() = None;
+        // The parked transport is the 1:1 wave's; a group link's receiver leaves it alone.
+        if self.slot == 0 {
+            *PARKED_TX.lock().unwrap() = None;
+        }
         PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
     }
 }
@@ -191,20 +201,169 @@ fn park_tx(key: [u8; 32], tx: BeamTx, frame_no: u32) {
     *PARKED_TX.lock().unwrap() = Some((key, tx, frame_no));
 }
 
+/// Who a beam sender sends to: the 1:1 wave's peer (its wave secret and our side), or every link of the group wave (the fan, docs/group-waves.md).
+#[derive(Clone, Copy)]
+pub enum Target {
+    Pair([u8; 32], bool),
+    Group,
+}
+
+/// GROUP BEAMS (docs/group-waves.md): one transport per live link of the group wave — its far slot, its BeamTx from the link's secret, and whether it has heard the beam's self-description yet.
+/// The group wave keeps it as links come and go (`fan_add` / `fan_remove`), beaming or not, so a transport's chain runs from the link's start and a camera that stops and starts again never restarts it; a sender in group mode sends every frame to all of them.
+static GROUP_FAN: Mutex<Vec<(usize, BeamTx, bool)>> = Mutex::new(Vec::new());
+/// The group beam's frame counter, kept across a camera stopping and starting within the wave: a receiver gives up frame numbers behind what it has already shown, so a restart from 0 would be dropped until it passed them.
+static GROUP_FRAME_NO: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// A group link came up: its beam transport joins the fan.
+pub fn fan_add(slot: usize, link_secret: &[u8; 32], we_are_origin: bool) {
+    let dir = if we_are_origin { Direction::OriginToAnswer } else { Direction::AnswerToOrigin };
+    let peer = super::slot_tx_addr(slot).unwrap_or(crate::network::status::RELAY_ADDR);
+    let mut fan = GROUP_FAN.lock().unwrap();
+    fan.retain(|(s, _, _)| *s != slot);
+    fan.push((slot, BeamTx::new(link_secret, dir, peer), true));
+}
+
+/// A group link went down: its transport leaves the fan.
+pub fn fan_remove(slot: usize) {
+    GROUP_FAN.lock().unwrap().retain(|(s, _, _)| *s != slot);
+}
+
+/// The group wave ended: the whole fan goes.
+pub fn fan_clear() {
+    GROUP_FAN.lock().unwrap().clear();
+    GROUP_FRAME_NO.store(0, Ordering::Relaxed);
+}
+
+/// One sender's way out: the 1:1 wave's single transport, or the group's fan (with the beam's latest self-description and rotation, which a link that joins mid-beam is sent first).
+enum Outbound {
+    Pair(BeamTx),
+    Group { info: Option<Info>, orient: u8, sent: u64, fail: u64 },
+}
+
+impl Outbound {
+    /// Follow the peers' current addresses (the wave's own re-points, address-follows-auth).
+    fn follow(&mut self) {
+        match self {
+            Outbound::Pair(tx) => {
+                if let Some(addr) = super::wave_tx_addr() {
+                    if addr != tx.peer() {
+                        tx.set_peer(addr);
+                    }
+                }
+            }
+            Outbound::Group { .. } => {
+                for (slot, tx, _) in GROUP_FAN.lock().unwrap().iter_mut() {
+                    if let Some(addr) = super::slot_tx_addr(*slot) {
+                        if addr != tx.peer() {
+                            tx.set_peer(addr);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn send_info(&mut self, i: &Info) {
+        match self {
+            Outbound::Pair(tx) => tx.send_info(i),
+            Outbound::Group { info, .. } => {
+                *info = Some(i.clone());
+                for (_, tx, fresh) in GROUP_FAN.lock().unwrap().iter_mut() {
+                    tx.send_info(i);
+                    *fresh = false;
+                }
+            }
+        }
+    }
+
+    fn send_orient(&mut self, q: u8) {
+        match self {
+            Outbound::Pair(tx) => tx.send_orient(q),
+            Outbound::Group { orient, .. } => {
+                *orient = q;
+                for (_, tx, _) in GROUP_FAN.lock().unwrap().iter_mut() {
+                    tx.send_orient(q);
+                }
+            }
+        }
+    }
+
+    fn send_frame(&mut self, frame_no: u32, gains: Gains, au: &[u8]) {
+        match self {
+            Outbound::Pair(tx) => {
+                tx.send_frame(frame_no, gains, au);
+            }
+            Outbound::Group { info, orient, sent, fail } => {
+                for (_, tx, fresh) in GROUP_FAN.lock().unwrap().iter_mut() {
+                    // A link that joined mid-beam hears what the beam is before its first frame.
+                    if *fresh {
+                        if let Some(i) = info.as_ref() {
+                            tx.send_info(i);
+                            tx.send_orient(*orient);
+                            *fresh = false;
+                        }
+                    }
+                    let (s0, f0) = (tx.sent, tx.send_fail);
+                    tx.send_frame(frame_no, gains, au);
+                    *sent += tx.sent - s0;
+                    *fail += tx.send_fail - f0;
+                }
+            }
+        }
+    }
+
+    /// Datagrams sent and refused so far.
+    fn counts(&self) -> (u64, u64) {
+        match self {
+            Outbound::Pair(tx) => (tx.sent, tx.send_fail),
+            Outbound::Group { sent, fail, .. } => (*sent, *fail),
+        }
+    }
+
+    /// The way out for a target, and the frame number to continue from: the 1:1 wave's parked transport resumes its chain; the group's fan already runs.
+    fn for_target(target: &Target) -> Result<(Outbound, u32, Option<[u8; 32]>), String> {
+        match target {
+            Target::Pair(secret, origin) => {
+                let Some(peer) = super::wave_tx_addr() else {
+                    return Err("BEAM: no peer address yet — the wave's first authenticated packet sets it".into());
+                };
+                let (tx, n) = take_tx(secret, *origin, peer);
+                Ok((Outbound::Pair(tx), n, Some(tx_key(secret, *origin))))
+            }
+            Target::Group => Ok((Outbound::Group { info: None, orient: 0, sent: 0, fail: 0 }, GROUP_FRAME_NO.load(Ordering::Relaxed), None)),
+        }
+    }
+
+    /// The sender stopped: a 1:1 transport parks under its key so a restart runs its chain on; the fan stays with the group wave.
+    fn park(self, key: Option<[u8; 32]>, frame_no: u32) {
+        match (self, key) {
+            (Outbound::Pair(tx), Some(k)) => park_tx(k, tx, frame_no),
+            (Outbound::Group { .. }, _) => GROUP_FRAME_NO.store(frame_no, Ordering::Relaxed),
+            _ => {}
+        }
+    }
+}
+
 pub fn start_receiver(wave_secret: &[u8; 32], we_are_origin: bool) -> Receiver {
     *PARKED_TX.lock().unwrap() = None;
+    start_receiver_slot(wave_secret, we_are_origin, 0)
+}
+
+/// The same for a group link (docs/group-waves.md): its own transport chain from the link's secret, its picture in the link's far slot.
+pub fn start_receiver_slot(wave_secret: &[u8; 32], we_are_origin: bool, slot: usize) -> Receiver {
     let dir = if we_are_origin { Direction::AnswerToOrigin } else { Direction::OriginToAnswer };
     let rx = beam::start_rx(wave_secret, dir);
     let stop = Arc::new(AtomicBool::new(false));
     let stop2 = stop.clone();
+    let shared = rx.shared.clone();
     let thread = std::thread::Builder::new()
         .name("beam-decode".into())
-        .spawn(move || decode_loop(stop2))
+        .spawn(move || decode_loop(stop2, shared, slot))
         .expect("beam-decode thread");
-    Receiver { _rx: rx, stop, thread: Some(thread) }
+    Receiver { _rx: rx, slot, stop, thread: Some(thread) }
 }
 
-fn decode_loop(stop: Arc<AtomicBool>) {
+fn decode_loop(stop: Arc<AtomicBool>, shared: Arc<beam::RxShared>, slot: usize) {
     let mut decoder: Option<h264::Decoder> = None;
     let mut conv = Converter::new(Characterization::IDENTITY_GAMMA2);
     let mut rgb = Vec::new();
@@ -218,12 +377,12 @@ fn decode_loop(stop: Arc<AtomicBool>) {
     let mut next: Option<u32> = None;
     const REORDER: u32 = 6;
     while !stop.load(Ordering::Relaxed) {
-        let frames = beam::take_frames_wait(&stop);
+        let frames = shared.take_frames_wait(&stop);
         if frames.is_empty() {
             continue;
         }
         // The self-description edge: a changed characterization reconfigures the colour chain.
-        if let Some(info) = beam::current_info() {
+        if let Some(info) = shared.info() {
             if last_info.as_ref() != Some(&info) {
                 if let Some(chr) = colour_from_bytes(&info.colour) {
                     conv.set_characterization(chr);
@@ -284,12 +443,12 @@ fn decode_loop(stop: Arc<AtomicBool>) {
         if let Some((pic, gains, n)) = shown {
             conv.convert(&pic, gains, n, &mut rgb);
             // The sender's rotation, applied here at display (the wire stays sensor-native).
-            let rot = beam::current_rotation();
+            let rot = shared.rotation();
             let (out, w, h) = super::beam_colour::rotate_rgb(&rgb, pic.w, pic.h, rot);
             // THE SWIPE IN (Nick 2026-10-14: "the swipe to start is really nice… Nice and empty!"): what the intra refresh has not reached yet shows the screen's own background, not the decoder's green.
             let holes = pic.unpainted_mask().map(|m| super::beam_colour::rotate_px(&m, pic.w / 2, pic.h / 2, rot, 1).0);
             holey += holes.is_some() as u64;
-            *PICTURE.lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out, holes });
+            *PICTURES[slot].lock().unwrap() = Some(Picture { w, h, frame_no: n, rgb: out, holes });
             PICTURE_GEN.fetch_add(1, Ordering::Relaxed);
         }
     }
@@ -316,7 +475,7 @@ impl Drop for Sender {
             let _ = t.join();
         }
         if let Some((tx, _, n)) = ENCODED_TX.lock().unwrap().take() {
-            park_tx(*ENCODED_KEY.lock().unwrap(), tx, n);
+            tx.park(ENCODED_KEY.lock().unwrap().take(), n);
         }
     }
 }
@@ -334,8 +493,7 @@ fn ceiling(bands: &[(u16, u16)]) -> usize {
 }
 
 /// Start sending a camera's frames (desktop): capture → H.264 → the beam track, toward the wave's current peer address (re-read every frame, so a redirect is followed).
-pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box<dyn FrameSource>, _bitrate_bps: u32) -> Result<Sender, String> {
-    let key = tx_key(wave_secret, we_are_origin);
+pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_bps: u32) -> Result<Sender, String> {
     let (sw, sh) = source.dimensions();
     let cam_fps = source.fps().max(1);
     // THE LADDER (beam_ladder.rs): bands from the camera's own frame; the ceiling per `ceiling`.
@@ -345,10 +503,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
     let mut plan = ladder.plan();
     let (bw, bh) = (plan.w, plan.h);
     let mut enc = h264::Encoder::new(bw as usize, bh as usize, cam_fps, plan.bitrate)?;
-    let Some(peer) = super::wave_tx_addr() else {
-        return Err("BEAM: no peer address yet — the wave's first authenticated packet sets it".into());
-    };
-    let (mut tx, first_frame) = take_tx(wave_secret, we_are_origin, peer);
+    let (mut tx, first_frame, key) = Outbound::for_target(&target)?;
     let self_conv = Converter::new(Characterization::from_entry(&source.characterization()));
     let colour = colour_bytes(&source.characterization());
     let mut info = Info { width: bw, height: bh, fps: cam_fps as u8, codec: Codec::H264, colour };
@@ -370,11 +525,7 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                     break;
                 };
                 cam_frames += 1;
-                if let Some(addr) = super::wave_tx_addr() {
-                    if addr != tx.peer() {
-                        tx.set_peer(addr);
-                    }
-                }
+                tx.follow();
                 // The self-view, every other camera frame — the camera as it is, whatever the ladder sends.
                 if cam_frames % 2 == 0 {
                     post_self(&self_conv, &frame, gains, frame_no, &mut self_rgb, 0, true);
@@ -436,29 +587,27 @@ pub fn start_sender(wave_secret: &[u8; 32], we_are_origin: bool, mut source: Box
                 }
                 frame_no = frame_no.wrapping_add(1);
                 if frame_no % (cam_fps * 10) == 0 {
-                    crate::logf!("BEAM: sent {} frames, {} KB, {} datagrams ({} refused); ladder {}×{} soft {} @ {} fps", frame_no, sent_bytes / 1024, tx.sent, tx.send_fail, coded.w, coded.h, plan.soft, plan.fps);
+                    let (sent, fail) = tx.counts();
+                    crate::logf!("BEAM: sent {} frames, {} KB, {} datagrams ({} refused); ladder {}×{} soft {} @ {} fps", frame_no, sent_bytes / 1024, sent, fail, coded.w, coded.h, plan.soft, plan.fps);
                 }
             }
             clear_self();
-            park_tx(key, tx, frame_no);
+            tx.park(key, frame_no);
         })
         .map_err(|e| format!("beam-send thread: {e}"))?;
     Ok(Sender { stop, thread: Some(thread) })
 }
 
 /// The ENCODED-frame feed (Android: Kotlin's Camera2 + MediaCodec push access units here). Installed by [`start_encoded_sender`], read by [`push_encoded`].
-static ENCODED_TX: Mutex<Option<(BeamTx, Info, u32)>> = Mutex::new(None);
-/// The parking key of the transport in ENCODED_TX (see PARKED_TX).
-static ENCODED_KEY: Mutex<[u8; 32]> = Mutex::new([0; 32]);
+static ENCODED_TX: Mutex<Option<(Outbound, Info, u32)>> = Mutex::new(None);
+/// The parking key of the transport in ENCODED_TX (see PARKED_TX); `None` for a group beam, whose fan stays with the group wave.
+static ENCODED_KEY: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 
 /// Start a sender that is fed encoded frames from outside (the phone). Returns the handle whose drop clears the feed.
-pub fn start_encoded_sender(wave_secret: &[u8; 32], we_are_origin: bool, info: Info) -> Result<Sender, String> {
-    let Some(peer) = super::wave_tx_addr() else {
-        return Err("BEAM: no peer address yet".into());
-    };
-    let (mut tx, first_frame) = take_tx(wave_secret, we_are_origin, peer);
+pub fn start_encoded_sender(target: Target, info: Info) -> Result<Sender, String> {
+    let (mut tx, first_frame, key) = Outbound::for_target(&target)?;
     tx.send_info(&info);
-    *ENCODED_KEY.lock().unwrap() = tx_key(wave_secret, we_are_origin);
+    *ENCODED_KEY.lock().unwrap() = key;
     *ENCODED_TX.lock().unwrap() = Some((tx, info, first_frame));
     Ok(Sender { stop: Arc::new(AtomicBool::new(false)), thread: None })
 }
@@ -467,11 +616,7 @@ pub fn start_encoded_sender(wave_secret: &[u8; 32], we_are_origin: bool, info: I
 pub fn push_encoded(gains: Gains, au: &[u8]) -> bool {
     let mut g = ENCODED_TX.lock().unwrap();
     let Some((tx, info, frame_no)) = g.as_mut() else { return false };
-    if let Some(addr) = super::wave_tx_addr() {
-        if addr != tx.peer() {
-            tx.set_peer(addr);
-        }
-    }
+    tx.follow();
     let o = ANDROID_ORIENT.load(Ordering::Relaxed) & 3;
     let changed = ANDROID_ORIENT_SENT.swap(o, Ordering::Relaxed) != o;
     if *frame_no % beam::INFO_EVERY_FRAMES == 0 {
@@ -494,14 +639,14 @@ pub fn encoded_sender_live() -> bool {
 // ───────────────────────── the phone ─────────────────────────
 
 /// The Beam button armed a send on the phone: the wave secret and our side, waiting for Kotlin's pipeline-up edge (`android_started`). Cleared by `android_stop`.
-static ANDROID_ARMED: Mutex<Option<([u8; 32], bool)>> = Mutex::new(None);
+static ANDROID_ARMED: Mutex<Option<Target>> = Mutex::new(None);
 /// The phone's encoded sender handle (the UI thread cannot own it: the pipeline-up edge arrives on the service thread).
 static ANDROID_SENDER: Mutex<Option<Sender>> = Mutex::new(None);
 
 /// Arm a phone send for the active wave and ask Kotlin to open the camera + encoder. Returns false when the service bridge is down.
 #[cfg(target_os = "android")]
-pub fn android_arm(wave_secret: [u8; 32], we_are_origin: bool) -> bool {
-    *ANDROID_ARMED.lock().unwrap() = Some((wave_secret, we_are_origin));
+pub fn android_arm(target: Target) -> bool {
+    *ANDROID_ARMED.lock().unwrap() = Some(target);
     crate::platform::jni_android::wave_service_void("startBeamCapture")
 }
 
@@ -509,7 +654,7 @@ pub fn android_arm(wave_secret: [u8; 32], we_are_origin: bool) -> bool {
 /// A CAMERA SWITCH mid-beam (Nick 2026-10-14: "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview") arrives as this same edge while the sender is live: the transport stays — a new BeamTx would restart its key chain — and the ladder rebuilds from the new capture keeping the link's detail; the new size, colour and orientation go out at once, and the encoder's restart opens with the keyframe the new size needs.
 pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, camera: &str, camera_name: &str) -> Result<(), String> {
     *ANDROID_CAMERA_NAME.lock().unwrap() = Some(camera_name.to_string());
-    let Some((secret, origin)) = *ANDROID_ARMED.lock().unwrap() else {
+    let Some(target) = *ANDROID_ARMED.lock().unwrap() else {
         return Err("BEAM: pipeline up with nothing armed".into());
     };
     // A calibration made earlier this run for THIS lens (beam_calibrate.rs) outranks the maker's matrix — on the straight path only, where the frames are the colour it was solved from.
@@ -543,7 +688,7 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
     *lg = Some((ladder, 0));
     drop(lg);
     let info = Info { width: p.w, height: p.h, fps: fps.min(255) as u8, codec: Codec::H264, colour };
-    let s = start_encoded_sender(&secret, origin, info)?;
+    let s = start_encoded_sender(target, info)?;
     *ANDROID_SENDER.lock().unwrap() = Some(s);
     Ok(())
 }
@@ -801,15 +946,14 @@ pub fn open_desktop_camera() -> Result<Box<dyn FrameSource>, String> {
 /// A worker enumerates, opens the picked camera and starts the sender; the wave tick drains the answer from the returned channel.
 /// The worker first waits for any sender still stopping (`retire`), so a restart takes back the parked transport and the key chain runs on.
 #[cfg(not(target_os = "android"))]
-pub fn start_desktop_async(wave_secret: &[u8; 32], we_are_origin: bool) -> std::sync::mpsc::Receiver<Result<Sender, String>> {
-    let secret = zeroize::Zeroizing::new(*wave_secret);
+pub fn start_desktop_async(target: Target) -> std::sync::mpsc::Receiver<Result<Sender, String>> {
     let (tx, rx) = std::sync::mpsc::sync_channel(1);
     let spawned = std::thread::Builder::new().name("beam-open".into()).spawn(move || {
         await_retired();
         reenumerate_desktop_cameras();
         let started = open_desktop_camera().and_then(|source| {
             let (w, h) = source.dimensions();
-            let s = start_sender(&secret, we_are_origin, source, bitrate_for(w, h))?;
+            let s = start_sender(target, source, bitrate_for(w, h))?;
             crate::logf!("BEAM: sending {}×{} from {}", w, h, camera_name().unwrap_or_default());
             Ok(s)
         });

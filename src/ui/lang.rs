@@ -452,6 +452,8 @@ pub enum Msg<'a> {
     /// One line per other member under a selected row of ours: they hold it (any of their devices ACKed), or not yet.
     MemberHolds { name: &'a str },
     MemberWaiting { name: &'a str },
+    /// Under our own face on a group wave's roll (docs/group-waves.md).
+    WaveYou,
     DeliveryReplicated,
     DeliverySending,
     RecoveredSuffix,

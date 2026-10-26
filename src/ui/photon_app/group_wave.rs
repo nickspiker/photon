@@ -32,6 +32,8 @@ pub(crate) struct GroupLinkUp {
     pub slot: usize,
     pub lead: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub engine: crate::wave::engine::EngineHandle,
+    /// The link's beam receiver: up with the engine, costing nothing until the peer beams; its picture lands in the link's slot.
+    pub _beam_rx: crate::wave::beam_session::Receiver,
 }
 
 /// The one live group wave (one wave at a time on a device, group or pair).
@@ -57,6 +59,9 @@ pub(crate) struct GroupWave {
     pub session: Option<u64>,
     /// A link has been up at some point: the origin's wave ends when the last member leaves, not while it still waits for the first.
     pub ever_linked: bool,
+    /// Our camera going out to every link (the fan), and a desktop camera still opening.
+    pub beam_tx: Option<crate::wave::beam_session::Sender>,
+    pub beam_opening: Option<std::sync::mpsc::Receiver<Result<crate::wave::beam_session::Sender, String>>>,
 }
 
 impl GroupWave {
@@ -111,6 +116,8 @@ impl PhotonApp {
             ring: None,
             session: None,
             ever_linked: false,
+            beam_tx: None,
+            beam_opening: None,
         });
         self.dialed_wave_ids.insert(wave_id);
         let sig = WaveSignal::Offer { wave_id, nonce, device: Some(device) };
@@ -333,6 +340,8 @@ impl PhotonApp {
             ring: None,
             session: None,
             ever_linked: false,
+            beam_tx: None,
+            beam_opening: None,
         }
     }
 
@@ -388,9 +397,10 @@ impl PhotonApp {
             .and_then(|c| crate::network::traverse::gather::gather_device_candidates(c, &device).sorted().into_iter().map(|x| x.addr).next())
             .unwrap_or(crate::network::status::RELAY_ADDR);
         let lead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(self.group_wave.as_ref().is_some_and(|w| w.links.is_empty())));
+        let origin = crate::wave::keys::group_link_origin(&our_device, &device);
         let engine = crate::wave::engine::start(crate::wave::engine::EngineParams {
             secret,
-            we_are_origin: crate::wave::keys::group_link_origin(&our_device, &device),
+            we_are_origin: origin,
             peer_addr: addr,
             spool: None,
             cal: self.cal_snapshot(),
@@ -399,8 +409,11 @@ impl PhotonApp {
             group: Some(crate::wave::engine::GroupLink { lead: lead.clone(), slot_gen }),
         });
         crate::logf!("WAVE: group link up with {} on slot {} — media aimed at {}", crate::fp(&device), slot, addr);
+        // The link's beam, both ways: a receiver for their picture, a transport in the fan for ours (beaming or not, so its chain runs from the link's start).
+        let beam_rx = crate::wave::beam_session::start_receiver_slot(&secret, origin, slot);
+        crate::wave::beam_session::fan_add(slot, &secret, origin);
         if let Some(w) = self.group_wave.as_mut() {
-            w.links.push(GroupLinkUp { device, slot, lead, engine });
+            w.links.push(GroupLinkUp { device, slot, lead, engine, _beam_rx: beam_rx });
             w.ever_linked = true;
         }
         self.scene_dirty = true;
@@ -416,6 +429,7 @@ impl PhotonApp {
         };
         let link = w.links.remove(i);
         crate::platform::audio::far_done_slot(link.slot);
+        crate::wave::beam_session::fan_remove(link.slot);
         link.engine.stop();
         if link.lead.load(std::sync::atomic::Ordering::Relaxed) {
             if let Some(next) = w.links.first() {
@@ -442,6 +456,16 @@ impl PhotonApp {
         for link in w.links.drain(..) {
             link.engine.stop();
         }
+        // Our camera: stopped off the UI thread, the phone's pipeline told, the fan gone.
+        if let Some(s) = w.beam_tx.take() {
+            crate::wave::beam_session::retire(s);
+        }
+        if let Some(rx) = w.beam_opening.take() {
+            crate::wave::beam_session::retire_opening(rx);
+        }
+        self.beam_armed = false;
+        crate::wave::beam_session::android_stop();
+        crate::wave::beam_session::fan_clear();
         w.ring = None;
         Self::stop_group_ring_platform();
         if w.session.is_some() {
@@ -470,6 +494,138 @@ impl PhotonApp {
         }
         self.persist_and_push_rows(id, std::slice::from_ref(&row));
         self.scene_dirty = true;
+    }
+
+    /// The Beam button in a group wave: our camera to every link (the fan), or off again.
+    pub(super) fn toggle_group_beam(&mut self) {
+        let Some(w) = self.group_wave.as_mut() else {
+            return;
+        };
+        if let Some(rx) = w.beam_opening.take() {
+            crate::wave::beam_session::retire_opening(rx);
+            crate::log("BEAM: camera open cancelled");
+            return;
+        }
+        if let Some(s) = w.beam_tx.take() {
+            crate::wave::beam_session::retire(s);
+            crate::log("BEAM: stopped sending to the group");
+            return;
+        }
+        #[cfg(target_os = "android")]
+        {
+            if crate::wave::beam_session::android_sending() {
+                crate::wave::beam_session::android_stop();
+                crate::log("BEAM: stopped sending to the group");
+            } else if crate::wave::beam_session::android_arm(crate::wave::beam_session::Target::Group) {
+                crate::log("BEAM: armed for the group — camera opening");
+            } else {
+                crate::log("BEAM: service bridge down — cannot beam");
+            }
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            w.beam_opening = Some(crate::wave::beam_session::start_desktop_async(crate::wave::beam_session::Target::Group));
+        }
+    }
+
+    /// The desktop camera worker's answer for a group beam, an edge on the wave tick.
+    pub(super) fn drain_group_beam_open(&mut self) {
+        let Some(w) = self.group_wave.as_mut() else {
+            return;
+        };
+        let Some(rx) = w.beam_opening.as_ref() else {
+            return;
+        };
+        let got = match rx.try_recv() {
+            Ok(r) => r,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                w.beam_opening = None;
+                return;
+            }
+        };
+        w.beam_opening = None;
+        self.scene_dirty = true;
+        match got {
+            Ok(tx) if w.phase == GroupPhase::Joined && w.beam_tx.is_none() => w.beam_tx = Some(tx),
+            Ok(tx) => crate::wave::beam_session::retire(tx),
+            Err(e) => {
+                crate::logf!("BEAM: {}", e);
+                #[cfg(target_os = "macos")]
+                if e == crate::platform::camera_avf::ASKING {
+                    self.beam_armed = true;
+                }
+            }
+        }
+    }
+
+    /// Is our camera going out (or opening) in the group wave?
+    pub(super) fn group_beaming(&self) -> bool {
+        self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some() || w.beam_opening.is_some()) || (cfg!(target_os = "android") && self.group_wave.is_some() && crate::wave::beam_session::android_sending())
+    }
+
+    /// A desktop camera switch mid-beam: the sender restarts on the next camera, the fan carries on.
+    #[cfg(not(target_os = "android"))]
+    pub(super) fn restart_group_beam(&mut self) {
+        let Some(w) = self.group_wave.as_mut() else {
+            return;
+        };
+        if let Some(s) = w.beam_tx.take() {
+            crate::wave::beam_session::retire(s);
+            w.beam_opening = Some(crate::wave::beam_session::start_desktop_async(crate::wave::beam_session::Target::Group));
+        }
+    }
+
+    /// Who the wave screen's roll shows, in order: us first once we are in, then every joined device (the origin first) — (device, the person's contact or `None` for us, the far slot their voice plays in or `None` for our own sent voice).
+    pub(super) fn group_roll(&self) -> Vec<([u8; 32], Option<usize>, Option<usize>)> {
+        let Some(w) = self.group_wave.as_ref() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        if w.phase == GroupPhase::Joined {
+            if let Some(d) = self.our_device() {
+                out.push((d, None, None));
+            }
+        }
+        for m in &w.joined {
+            let ci = self.contacts.iter().position(|c| !c.is_sibling && c.handle_hash == m.party);
+            let slot = w.links.iter().find(|l| l.device == m.device).map(|l| l.slot);
+            out.push((m.device, ci, slot));
+        }
+        out
+    }
+
+    /// Keep every roll face scaled to `diameter` (before the paint borrows `self`): a face is scaled once per person per layout.
+    pub(super) fn refresh_group_roll_avatars(&mut self, diameter: usize) {
+        let roll = self.group_roll();
+        self.group_roll_avatars.retain(|(d, diam, _)| *diam == diameter && roll.iter().any(|(r, _, _)| r == d));
+        for (device, ci, _) in roll {
+            if self.group_roll_avatars.iter().any(|(d, _, _)| *d == device) {
+                continue;
+            }
+            let px = match ci {
+                Some(i) => {
+                    let c = &self.contacts[i];
+                    match c.avatar_pixels.as_ref() {
+                        Some(base) => crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diameter),
+                        None => gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), diameter),
+                    }
+                }
+                None => {
+                    let proof = self.session.as_ref().map(|s| s.handle_proof).unwrap_or_default();
+                    match self.device_avatar_pixels.as_ref() {
+                        Some(base) => crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diameter),
+                        None => gradient_avatar_rgb(proof_gradient_seed(&proof), diameter),
+                    }
+                }
+            };
+            self.group_roll_avatars.push((device, diameter, px));
+        }
+    }
+
+    /// The far slots whose peers are beaming, in link order, for the wave screen's picture grid.
+    pub(super) fn group_picture_slots(&self) -> Vec<usize> {
+        self.group_wave.as_ref().map(|w| w.links.iter().map(|l| l.slot).collect()).unwrap_or_default()
     }
 
     fn stop_group_ring_platform() {

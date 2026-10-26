@@ -251,6 +251,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliveryDelivered => "naihatid".into(),
         Msg::MemberHolds { name } => format!("{} · natanggap na", name).into(),
         Msg::MemberWaiting { name } => format!("{} · naghihintay", name).into(),
+        Msg::WaveYou => "Ikaw".into(),
         Msg::DeliveryReplicated => "naiparami".into(),
         Msg::DeliverySending => "ipinapadala".into(),
         Msg::RecoveredSuffix => " \u{00b7} naibalik".into(),

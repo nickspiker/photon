@@ -250,6 +250,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliveryDelivered => "entregue".into(),
         Msg::MemberHolds { name } => format!("{} · já tem", name).into(),
         Msg::MemberWaiting { name } => format!("{} · aguardando", name).into(),
+        Msg::WaveYou => "Você".into(),
         Msg::DeliveryReplicated => "replicada".into(),
         Msg::DeliverySending => "enviando".into(),
         Msg::RecoveredSuffix => " \u{00b7} recuperada".into(),

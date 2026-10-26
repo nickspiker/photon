@@ -436,8 +436,8 @@ impl PhotonApp {
             })
             && !wave_pill_no_path
             || molecule_wave.is_some_and(|(_, on)| on);
-        // Beams stay a pair's for now (a group beam is N−1 uploads — docs/group-waves.md).
-        let beam_pill_enabled = wave_pill_enabled && molecule_wave.is_none() && crate::wave::beam_session::can_send();
+        // A molecule beams too: our camera to every link (docs/group-waves.md).
+        let beam_pill_enabled = wave_pill_enabled && crate::wave::beam_session::can_send();
         // Live wave-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
         let wave_overlay: Option<(crate::wave::WavePhase, String, bool, Option<usize>, i64)> =
             self.active_wave.as_ref().map(|c| {
@@ -571,6 +571,26 @@ impl PhotonApp {
             self.wave_field_avatars = None;
             self.wave_field_tabs = Default::default();
         }
+        // THE GROUP ROLL (docs/group-waves.md): a group wave shows everyone in it around the square instead of the 1:1 field — their faces scaled here, before the paint borrows `self`, and their positions for the paint.
+        let group_layout = self.group_wave.is_some();
+        let group_beaming = self.group_beaming();
+        let group_slots = self.group_picture_slots();
+        let group_roll: Vec<([u8; 32], Option<usize>, Option<usize>, (f32, f32, f32))> = match field_geom.filter(|_| group_layout) {
+            Some(g) => {
+                let roll = self.group_roll();
+                let at = super::wave_field::roll_positions(&g, roll.len());
+                if let Some(&(_, _, r)) = at.first() {
+                    self.refresh_group_roll_avatars(((r * 2.0) as usize).max(2));
+                }
+                roll.into_iter().zip(at).map(|((d, ci, slot), p)| (d, ci, slot, p)).collect()
+            }
+            None => {
+                if !self.group_roll_avatars.is_empty() {
+                    self.group_roll_avatars.clear();
+                }
+                Vec::new()
+            }
+        };
 
         // Content-scroll → background offset (hoisted before the chrome borrow, which takes `&mut self`). The background noise translates WITH the foreground content so the whole scene is one rigid vertical shift on scroll — the bg tracks whatever you're reading, and (once the host learns to scroll-copy) a scroll becomes a memcopy of the prior frame plus a repaint of just the newly-exposed slice instead of a full redraw. Sign matches the foreground pixel motion: Contacts moves rows UP as `contacts_scroll` grows (`row_top = … − contacts_scroll`) → texture shifts by `−contacts_scroll`; Conversation moves messages DOWN as `scroll_offset` grows (`y = … + scroll`) → texture shifts by `+scroll_offset`. Settings/ContactPanel keep the split-pane path below. `scroll_offset` is clamped elsewhere (tick clamps the stored conversation offset; contacts_scroll is clamped in the render block), so reading it raw here matches what the foreground draws.
         let content_bg_scroll: isize = if self.wave_screen() { 0 } else { match self.state {
@@ -838,6 +858,26 @@ impl PhotonApp {
                 match field_geom {
                     None => paint::draw_circle(&mut canvas, acx, acy, avatar_r + super::ring_thickness(avatar_r), path_colour, None),
                     Some(_) if beam_showing => {}
+                    // A GROUP wave: every face on the roll, each ringed in the colour of its own newest audio (ours from what we send), each name beneath in that person's colour.
+                    Some(_) if group_layout => {
+                        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                        for (device, ci, slot, (fx, fy, fr)) in &group_roll {
+                            if let Some((_, diam, px)) = self.group_roll_avatars.iter().find(|(d, _, _)| d == device) {
+                                crate::ui::avatar_render::draw_avatar(&mut canvas, *fx, *fy, *fr, px, *diam, None);
+                            }
+                            let level = crate::wave::live::latest(if ci.is_none() { None } else { Some(slot.unwrap_or(usize::MAX)) });
+                            let ring = if ci.is_some() && slot.is_none() { 0 } else { super::wave_field::env_ring_colour(level) };
+                            paint::draw_circle(&mut canvas, *fx, *fy, *fr + super::ring_thickness(*fr), ring, None);
+                            let (label, tint) = match ci {
+                                Some(i) => {
+                                    let c = &self.contacts[*i];
+                                    (c.display_name(), us.map(|u| party_colour(&relationship_digest(&c.handle_hash, &u))).unwrap_or(*theme::STATUS_TEXT_COLOUR))
+                                }
+                                None => (tr(Msg::WaveYou).into_owned(), *theme::STATUS_TEXT_COLOUR),
+                            };
+                            ctx.text.draw_text_center(&mut canvas, &label, *fx, *fy + *fr + unit * 0.75, &TextStyle::new(unit * 0.55, tint), None, None);
+                        }
+                    }
                     Some(g) => {
                         // Both parties, theirs top-right and ours bottom-left, each ringed in the colour of its field at age 0 — the newest audio, exactly as the ripple leaves the avatar (Nick 2026-09-28; the path quality lives in the top-left orb) — at the usual fixed ring width (Nick: no stroke width changes). Drawn before the field, so they sit on top of it.
                         // Each party is shown once it is IN the wave (Nick 2026-09-29): ringing out, only ours; ringing in, only theirs (they are already waving); talking, both.
@@ -878,6 +918,7 @@ impl PhotonApp {
                         let m = crate::ui::ring_rim::sample(&orbit, t_secs);
                         // Around THEIR avatar in the square (the one wave screen), or the lone avatar when there is no square.
                         let (acx, acy, avatar_r) = match field_geom {
+                            Some(_) if group_layout => group_roll.first().map_or((acx, acy, avatar_r), |r| r.3),
                             Some(g) => (g.theirs.0, g.theirs.1, g.r),
                             None => (acx, acy, avatar_r),
                         };
@@ -987,7 +1028,7 @@ impl PhotonApp {
                     }
                 }
                 // Under each avatar, the rung that voice is sent on; centred between them, the ROUND TRIP mouth to ear and back (Nick 2026-09-28): our own l plus the l they report. The sum is exact whatever the two clocks disagree by — a one-way split would be a guess until the grid has an outside reference (GPS or the like).
-                if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active) && !beam_showing) {
+                if let Some(g) = field_geom.filter(|_| matches!(phase, crate::wave::WavePhase::Active) && !beam_showing && !group_layout) {
                     let rung = |t: u32| if t == u32::MAX { "\u{2014}".to_string() } else { crate::wave::engine::tier_name(t as usize).to_string() };
                     let ours_l = crate::platform::audio::play_latency().map(|l| (l.max(0) / 48) as u32);
                     let theirs_l = Some(crate::wave::LAST_PEER_L_MS.load(std::sync::atomic::Ordering::Relaxed)).filter(|&v| v != u32::MAX);
@@ -1095,7 +1136,8 @@ impl PhotonApp {
                             b.set_font_size(bfont);
                             // A wave with video in it is a beam (Nick 2026-10-21: "when your camera is on it still has an End wave"): our camera on or opening, or the far side's picture up.
                             let beaming = crate::wave::beam_session::showing()
-                                || self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some() || w.beam_opening.is_some());
+                                || self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some() || w.beam_opening.is_some())
+                                || group_beaming;
                             b.set_label(tr(if beaming { Msg::EndBeam } else { Msg::EndWave }));
                             b.set_enabled(true);
                             b.set_fill(Some(*theme::WAVE_DANGER_FILL));
@@ -1160,7 +1202,7 @@ impl PhotonApp {
                             b.set_rect(rx, ry, bw, bh);
                             b.set_font_size(bfont * 0.8);
                             // A camera still opening reads as sending: the next tap cancels it.
-                            let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some() || w.beam_opening.is_some());
+                            let sending = self.active_wave.as_ref().map_or(false, |w| w.beam_tx.is_some() || w.beam_opening.is_some()) || group_beaming;
                             b.set_label(tr(if sending { Msg::BeamToggle } else { Msg::BeamStart }));
                             b.set_enabled(crate::wave::beam_session::can_send());
                             let id = b.hit_id();
@@ -1193,7 +1235,13 @@ impl PhotonApp {
                 if field_geom.is_some() {
                     let unit_now = ReadyLayout::compute(buf_w, buf_h, ctx.viewport.ru).unit_height;
                     let (rx0, ry0, rw, rh) = super::wave_field::picture_region(buf_w, buf_h, unit_now);
-                    let peer = crate::wave::beam_session::picture();
+                    // A GROUP beam: every beaming member's picture, tiled over the region (docs/group-waves.md); a 1:1 beam's one picture otherwise.
+                    let group_pics: Vec<crate::wave::beam_session::Picture> = if group_layout {
+                        group_slots.iter().copied().filter_map(crate::wave::beam_session::picture_slot).collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let peer = if group_layout { None } else { crate::wave::beam_session::picture() };
                     // The picture's drawn height (fit to width first), so the inset hugs its corner rather than the region's.
                     let ph = peer.as_ref().map_or(rh, |p| if p.w * rh >= p.h * rw { (p.h * rw / p.w.max(1)).min(rh) } else { rh });
                     self.beam_self_rect = None;
@@ -1207,7 +1255,7 @@ impl PhotonApp {
                         let sending = if cfg!(target_os = "android") {
                             crate::wave::beam_session::android_sending()
                         } else {
-                            self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) && crate::wave::beam_session::desktop_cameras().len() > 1
+                            (self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some()) || self.group_wave.as_ref().is_some_and(|w| w.beam_tx.is_some())) && crate::wave::beam_session::desktop_cameras().len() > 1
                         };
                         if sending {
                             self.beam_self_rect = Some((ix, iy, ix + s, iy + s));
@@ -1221,8 +1269,11 @@ impl PhotonApp {
                     if let Some(p) = peer {
                         super::wave_field::paint_picture_rect(&mut canvas, rx0, ry0, rw, rh, &p, true);
                     }
+                    for (p, (tx0, ty0, tw, th)) in group_pics.iter().zip(super::wave_field::picture_tiles(rx0, ry0, rw, rh, group_pics.len())) {
+                        super::wave_field::paint_picture_rect(&mut canvas, tx0, ty0, tw, th, p, true);
+                    }
                 }
-                if let (Some(g), Some(m), false) = (field_geom, self.wave_field_map.as_ref(), beam_showing) {
+                if let (Some(g), Some(m), false, false) = (field_geom, self.wave_field_map.as_ref(), beam_showing, group_layout) {
                     super::wave_field::paint_field(&mut canvas, &g, m, &self.wave_field_tabs);
                 }
             } else if let Some((phase, name, direct, _pi, _dur)) = &wave_overlay {

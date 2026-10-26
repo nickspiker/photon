@@ -2666,6 +2666,8 @@ pub struct PhotonApp {
     wave_field_tabs: wave_field::FieldTables,
     wave_field_scratch: (Vec<crate::wave::live::FrameEnv>, Vec<crate::wave::live::FrameEnv>),
     wave_field_avatars: Option<(usize, Vec<u8>, Vec<u8>)>,
+    /// A GROUP wave's faces at the roll's diameter, by device (ours under our own device key): (device, diameter, pixels) — scaled once per layout, not per paint.
+    group_roll_avatars: Vec<([u8; 32], usize, Vec<u8>)>,
     /// The off-thread handle_proof derivation for the pending woods add (the ~1s memory-hard PoW never runs on the UI thread).
     pub woods_add_rx: Option<std::sync::mpsc::Receiver<(String, [u8; 32])>>,
     /// Rubber-band scroll extents, measured by the last render (the extents live in render-side geometry — text metrics, dynamic row counts — so render publishes them and the wheel handler + tick() read last frame's value; geometry is stable frame-to-frame). `tick()` relaxes any out-of-range scroll back to [0, extent] thru these.
@@ -3355,6 +3357,7 @@ impl PhotonApp {
             wave_field_tabs: Default::default(),
             wave_field_scratch: (Vec::new(), Vec::new()),
             wave_field_avatars: None,
+            group_roll_avatars: Vec::new(),
             settings_rail_extent: 0.0,
             settings_content_extent: 0.0,
             msg_max_scroll: 0.0,

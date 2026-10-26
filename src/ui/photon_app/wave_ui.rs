@@ -129,6 +129,13 @@ impl PhotonApp {
                             crate::log("BEAM: wave started from the Beam button — the camera follows the engine");
                             any = true;
                         }
+                    } else if let Some(gi) = self.active_molecule().filter(|_| crate::wave::beam_session::can_send()) {
+                        // A molecule's Beam: the group wave with our camera armed — it opens the moment the first link is up.
+                        crate::wave::beam_session::ask_camera_early();
+                        self.beam_armed = true;
+                        self.start_group_wave(gi);
+                        crate::log("BEAM: group wave started from the Beam button — the camera follows the first link");
+                        any = true;
                     }
                 }
                 _ => {}
@@ -732,7 +739,8 @@ impl PhotonApp {
         if !self.beam_armed {
             return;
         }
-        let live = self.active_wave.as_ref().map_or(false, |w| w.phase == WavePhase::Active && w.engine.is_some() && w.beam_tx.is_none() && w.beam_opening.is_none());
+        let live = self.active_wave.as_ref().map_or(false, |w| w.phase == WavePhase::Active && w.engine.is_some() && w.beam_tx.is_none() && w.beam_opening.is_none())
+            || self.group_wave.as_ref().is_some_and(|w| !w.links.is_empty() && w.beam_tx.is_none() && w.beam_opening.is_none() && !(cfg!(target_os = "android") && crate::wave::beam_session::android_sending()));
         // A Mac waiting on the camera prompt: hold the arm until the user answers — asking first if nothing has (Beam back arms without the Beam button's ask), never re-asking every tick.
         if live && !crate::wave::beam_session::camera_ready() {
             crate::wave::beam_session::ask_camera_once();
@@ -741,7 +749,7 @@ impl PhotonApp {
         if live {
             self.beam_armed = false;
             self.toggle_beam();
-        } else if self.active_wave.is_none() {
+        } else if self.active_wave.is_none() && self.group_wave.is_none() {
             self.beam_armed = false;
         }
     }
@@ -1867,6 +1875,10 @@ impl PhotonApp {
     /// Spin up the media engine for an Active wave. None (the wave stays signaling-only + silent) when the basket never completed or the contact has no direct address — media-over-the-relay-pipe is explicitly deferred (docs/waves.md), and the transport dot already tells the human they're on relay.
     /// The Beam button on an active wave: start sending this device's camera, or stop. Receiving is always up (it started with the engine), so the peer's picture needs no action here.
     pub(super) fn toggle_beam(&mut self) {
+        if self.group_wave.is_some() {
+            self.toggle_group_beam();
+            return;
+        }
         let Some(wave) = self.active_wave.as_mut() else { return };
         if let Some(rx) = wave.beam_opening.take() {
             crate::wave::beam_session::retire_opening(rx);
@@ -1888,7 +1900,7 @@ impl PhotonApp {
             if crate::wave::beam_session::android_sending() {
                 crate::wave::beam_session::android_stop();
                 crate::log("BEAM: stopped sending");
-            } else if crate::wave::beam_session::android_arm(secret, wave.we_are_origin) {
+            } else if crate::wave::beam_session::android_arm(crate::wave::beam_session::Target::Pair(secret, wave.we_are_origin)) {
                 crate::log("BEAM: armed — camera opening");
             } else {
                 crate::log("BEAM: service bridge down — cannot beam");
@@ -1911,11 +1923,12 @@ impl PhotonApp {
         if wave.beam_opening.is_some() {
             return;
         }
-        wave.beam_opening = Some(crate::wave::beam_session::start_desktop_async(&secret, wave.we_are_origin));
+        wave.beam_opening = Some(crate::wave::beam_session::start_desktop_async(crate::wave::beam_session::Target::Pair(secret, wave.we_are_origin)));
     }
 
     /// The camera worker's answer, an edge on the wave tick: install the sender, or say why not — a Mac's camera prompt re-arms the beam so the answer's edge opens the camera.
     pub(super) fn drain_beam_open(&mut self) {
+        self.drain_group_beam_open();
         let Some(wave) = self.active_wave.as_mut() else { return };
         let Some(rx) = wave.beam_opening.as_ref() else { return };
         let got = match rx.try_recv() {
@@ -1961,6 +1974,10 @@ impl PhotonApp {
             };
             crate::logf!("BEAM: camera → {}", crate::wave::beam_session::camera_name().unwrap_or_default());
             self.store_device_pick("beam.camera", &Some(next));
+            if self.group_wave.is_some() {
+                self.restart_group_beam();
+                return;
+            }
             let sending = self.active_wave.as_ref().is_some_and(|w| w.beam_tx.is_some());
             if sending {
                 if let Some(w) = self.active_wave.as_mut() {

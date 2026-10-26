@@ -309,6 +309,17 @@ pub fn wave_tx_addr() -> Option<SocketAddr> {
     *WAVE_TX_ADDR.lock().unwrap()
 }
 
+/// The same per far slot: where each group link's engine is sending right now (docs/group-waves.md) — the link's beam transport and the wave screen follow it.
+static SLOT_TX_ADDR: [Mutex<Option<SocketAddr>>; crate::platform::audio::FAR_SLOTS] = [const { Mutex::new(None) }; crate::platform::audio::FAR_SLOTS];
+
+pub fn set_slot_tx_addr(slot: usize, addr: Option<SocketAddr>) {
+    *SLOT_TX_ADDR[slot].lock().unwrap() = addr.map(|a| SocketAddr::new(a.ip().to_canonical(), a.port()));
+}
+
+pub fn slot_tx_addr(slot: usize) -> Option<SocketAddr> {
+    *SLOT_TX_ADDR[slot].lock().unwrap()
+}
+
 /// A device that just pushed us its new address mid-wave, so the UI pushes ours back to it on the next tick (the network thread cannot: our freshest reflexive lives in the app).
 static ADDRESS_PUSH_WANTED: Mutex<Option<[u8; 32]>> = Mutex::new(None);
 

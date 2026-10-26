@@ -56,20 +56,28 @@ impl Side {
 struct Live {
     tx: Side,
     rx: Side,
+    /// A group wave's far slots (docs/group-waves.md): each link's RX, for that member's level ring; slot 0 is `rx`.
+    slots: Vec<Side>,
+}
+
+impl Live {
+    fn new() -> Self {
+        Live { tx: Side::new(), rx: Side::new(), slots: (0..crate::platform::audio::FAR_SLOTS).map(|_| Side::new()).collect() }
+    }
 }
 
 static LIVE: Mutex<Option<Live>> = Mutex::new(None);
 
 /// A wave's engine came up: fresh, empty rings (and fresh band filters, so one wave's filter state never bleeds into the next).
 pub fn start() {
-    *LIVE.lock().unwrap() = Some(Live { tx: Side::new(), rx: Side::new() });
+    *LIVE.lock().unwrap() = Some(Live::new());
 }
 
 /// Start the rings only if none are running — the ringback opens them while the wave rings out, and the engine joins the SAME rings at answer, so the ripples already leaving our avatar carry on instead of restarting.
 pub fn ensure_started() {
     let mut g = LIVE.lock().unwrap();
     if g.is_none() {
-        *g = Some(Live { tx: Side::new(), rx: Side::new() });
+        *g = Some(Live::new());
     }
 }
 
@@ -90,6 +98,31 @@ pub fn push_rx(k0: i64, pcm: &[i16]) {
     if let Some(l) = LIVE.lock().unwrap().as_mut() {
         l.rx.push(k0, pcm);
     }
+}
+
+/// The same for a far slot: slot 0 is the 1:1 wave's RX, a group link writes its own.
+pub fn push_rx_slot(slot: usize, k0: i64, pcm: &[i16]) {
+    if let Some(l) = LIVE.lock().unwrap().as_mut() {
+        if slot == 0 {
+            l.rx.push(k0, pcm);
+        } else if let Some(s) = l.slots.get_mut(slot) {
+            s.push(k0, pcm);
+        }
+    }
+}
+
+/// The newest frame a far slot heard (a group member's level ring), or our own newest sent frame (`None` slot); `None` when nothing has arrived or no wave runs.
+pub fn latest(slot: Option<usize>) -> Option<FrameEnv> {
+    let g = LIVE.lock().unwrap();
+    let l = g.as_ref()?;
+    let side = match slot {
+        None => &l.tx,
+        Some(0) => &l.rx,
+        Some(s) => l.slots.get(s)?,
+    };
+    let n = side.newest?;
+    let e = side.ring[n.rem_euclid(RING as i64) as usize];
+    (e.fno == n).then_some(e)
 }
 
 /// Copy the recent history for one paint: TX ending at the newest frame sent, RX ending at the frame the speaker is playing now (`rx_play_k`, a grid sample), or the newest arrival before playout has begun. `false` when no wave is running.

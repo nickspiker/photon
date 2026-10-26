@@ -250,6 +250,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliveryDelivered => "sampai".into(),
         Msg::MemberHolds { name } => format!("{} · sudah terima", name).into(),
         Msg::MemberWaiting { name } => format!("{} · menunggu", name).into(),
+        Msg::WaveYou => "Anda".into(),
         Msg::DeliveryReplicated => "tereplikasi".into(),
         Msg::DeliverySending => "mengirim".into(),
         Msg::RecoveredSuffix => " \u{00b7} dipulihkan".into(),

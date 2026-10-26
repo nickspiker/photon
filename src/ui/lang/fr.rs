@@ -262,6 +262,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliveryDelivered => "remis".into(),
         Msg::MemberHolds { name } => format!("{} · l’a reçu", name).into(),
         Msg::MemberWaiting { name } => format!("{} · en attente", name).into(),
+        Msg::WaveYou => "Vous".into(),
         Msg::DeliveryReplicated => "répliqué".into(),
         Msg::DeliverySending => "envoi en cours".into(),
         Msg::RecoveredSuffix => " \u{00b7} récupéré".into(),

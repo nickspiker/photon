@@ -253,6 +253,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliveryDelivered => "iletildi".into(),
         Msg::MemberHolds { name } => format!("{} · aldı", name).into(),
         Msg::MemberWaiting { name } => format!("{} · bekleniyor", name).into(),
+        Msg::WaveYou => "Sen".into(),
         Msg::DeliveryReplicated => "çoğaltıldı".into(),
         Msg::DeliverySending => "gönderiliyor".into(),
         Msg::RecoveredSuffix => " \u{00b7} kurtarıldı".into(),

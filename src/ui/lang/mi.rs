@@ -253,6 +253,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::DeliveryDelivered => "kua tae".into(),
         Msg::MemberHolds { name } => format!("{} · kua tae", name).into(),
         Msg::MemberWaiting { name } => format!("{} · e tatari ana", name).into(),
+        Msg::WaveYou => "Ko koe".into(),
         Msg::DeliveryReplicated => "kua horapa".into(),
         Msg::DeliverySending => "e tuku ana".into(),
         Msg::RecoveredSuffix => " \u{00b7} kua whakaorangia".into(),
