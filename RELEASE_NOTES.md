@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v130
 - **Waves and beams in molecules.** Tap Wave or Beam in a molecule and every member's devices ring; whoever joins hears everyone else who has joined, and anyone can leave while the others carry on. The wave screen shows everyone in the wave, each lit by their own voice, and with cameras on it shows every picture side by side. Group waves are recorded like any other wave, each person on their own track.
 - **Waves that cannot be knocked off.** A single forged packet aimed at a live wave could stop it from hearing anything more; a wave now ignores anything that is not genuinely part of it.
 
