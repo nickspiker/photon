@@ -28,6 +28,13 @@ Wire (`network/fgtw/protocol.rs`): `attach_manifest` (sealed manifest) then `att
 
 Overlays inside the conversation (painted before the row walk, hit-stamped after it): the viewer shows the Original decode, else the preview blob, else the micro thumb; fit-to-pane, wheel/pinch zoom about the pointer, drag pan, ←/→ between the conversation's images, Back / Original (decode the file at ≤4096 px, off-thread; a RAW thru a temp copy for limbus) / Save. The reader shows a text/code file unwrapped with vertical and horizontal scroll (≤ 4 MB; bigger saves).
 
+## Saving and dragging out (2026-10-26)
+
+Nick's MacBook could not save ("unable to save pigeons on mac?"): macOS guards the Downloads folder behind a privacy permission, and an app writing there on its own needs the user's grant. Two routes need no permission at all, because the user chooses the place:
+
+- **Save on macOS opens the system save panel** (`fluor::host::file_drag::save_dialog`), in Downloads with the file's name filled in; the vault writes straight to the path picked. Cancelling is not a failure (`SaveMiss::Cancelled`, no toast). Windows and Linux do not guard Downloads, so Save still writes there directly; Android still hands the file to the public Downloads/Photon thru MediaStore. The bundle plist also names the Downloads use (`NSDownloadsFolderUsageDescription`), and a refused write logs the OS's reason (`save_refused`).
+- **Drag a held file out of the window** (desktop): a press on the file's picture or preview that travels past `FILE_DRAG_SLOP` (8 px) hands the host the file — its name, and a closure that reads its bytes from the vault when a drop asks (`blob_load_named`, no seed in the closure) — and returns `EventResponse::StartFileDrag`; the host cancels the pending click and runs the platform's own drag (fluor `host/file_drag.rs`). No cache: on macOS the drag is a FILE PROMISE (Finder names the folder at drop time and the bytes are written straight there); on Windows a VIRTUAL FILE (Explorer pulls the descriptor and the contents at drop time); on Linux X11 (and XWayland) the drag must carry a path, so the file is staged in `/fluor-drag` (per user, in RAM, gone at logout), offered as a move, and removed on the drag's own edges — a cancel, a drop nobody accepted, the target's DELETE — with the next drag's sweep clearing what a copy-only target left. No share sheet and no AirDrop (Nick: "not a fan of airdrop or resharing").
+
 ## Later
 
 - "Send as VSF" for RAW (limbus/opsin `write_vsf` translateration → a second attachment).

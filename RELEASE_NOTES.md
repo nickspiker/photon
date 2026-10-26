@@ -11,6 +11,8 @@ One sentence per line, however long; plain language for the person who installs 
 - **Beam settings.** A new Beam page in Settings sets the largest size, the frame rate, the quality, the most data a beam may use, and whether a busy connection keeps your picture smooth or sharp. Each device keeps its own settings unless you choose to have it follow your other devices.
 - **HDR beams.** On a phone whose camera can capture HDR, turn on HDR on the Beam page and highlights brighter than white reach the people you beam, shown in HDR on screens that can show it. Cameras that only capture standard range, such as most laptop webcams, show the switch greyed out.
 - **Test patterns for your screen.** The Beam page shows gradients and patches that compare white with the brightest your screen allows, and show any banding.
+- **Drag files out.** On a computer, drag a picture or file from a conversation straight onto your desktop or into a folder, and it lands there.
+- **Saving on a Mac works.** Save now opens the Mac's own save window, starting in Downloads, so you can put the file wherever you like; before, macOS could quietly block the save.
 
 ## v130
 - **Waves and beams in molecules.** Tap Wave or Beam in a molecule and every member's devices ring; whoever joins hears everyone else who has joined, and anyone can leave while the others carry on. The wave screen shows everyone in the wave, each lit by their own voice, and with cameras on it shows every picture side by side. Group waves are recorded like any other wave, each person on their own track.

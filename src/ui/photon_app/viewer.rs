@@ -216,10 +216,11 @@ impl PhotonApp {
     pub(super) fn viewer_save(&mut self) {
         let target = self.viewer.as_ref().map(|v| (v.hash, v.name.clone())).or_else(|| self.reader.as_ref().map(|r| (r.hash, r.name.clone())));
         if let Some((hash, name)) = target {
-            self.ready_toast = Some(match self.attach_save(&name, &hash) {
-                Some(dest) => tr(Msg::SavedTo(&dest)).into_owned(),
-                None => tr(Msg::SaveFailed).into_owned(),
-            });
+            match self.attach_save(&name, &hash) {
+                Ok(dest) => self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned()),
+                Err(super::attachments::SaveMiss::Failed) => self.ready_toast = Some(tr(Msg::SaveFailed).into_owned()),
+                Err(super::attachments::SaveMiss::Cancelled) => return,
+            }
             self.ready_toast_screen = None;
         }
     }

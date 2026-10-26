@@ -1634,11 +1634,12 @@ impl FluorApp for PhotonApp {
                                     self.toggle_recording_playback(hash);
                                 } else {
                                     match self.attach_save(&name, &hash) {
-                                        Some(dest) => {
+                                        Ok(dest) => {
                                             self.ready_toast = Some(tr(Msg::SavedTo(&dest)).into_owned());
                                             crate::logf!("attach: saved to {}", dest);
                                         }
-                                        None => {
+                                        Err(super::attachments::SaveMiss::Cancelled) => {}
+                                        Err(super::attachments::SaveMiss::Failed) => {
                                             // Named in the log (2026-10-07): a held-looking file that will not save was a toast and nothing else, so a report of "it won't fetch" left no trace to read.
                                             crate::logf!("attach: save of {}… failed — the blob reads as held but did not land", hex::encode(&hash[..4]));
                                             self.ready_toast = Some(tr(Msg::SaveFailed).into_owned());
@@ -1973,6 +1974,18 @@ impl FluorApp for PhotonApp {
         }
         match event {
             Event::CursorMoved { .. } => {
+                // DRAG-OUT: the press on a file travelled past the slop — the OS's own drag takes it from here (fluor host/file_drag.rs: a promise on macOS, a virtual file on Windows, an XDND source on X11).
+                #[cfg(not(target_os = "android"))]
+                if self.press_held {
+                    if let Some((_, _, x0, y0)) = self.file_drag_from.as_ref() {
+                        let (dx, dy) = (ctx.cursor_x as f32 - x0, ctx.cursor_y as f32 - y0);
+                        if dx * dx + dy * dy > super::FILE_DRAG_SLOP * super::FILE_DRAG_SLOP {
+                            if let Some(r) = self.start_file_drag() {
+                                return r;
+                            }
+                        }
+                    }
+                }
                 // Hit-test the shared map (chrome stamps its buttons, widgets stamp their pill silhouettes — all into chrome's map). `hit_at` returns the id under the cursor regardless of owner.
                 let new_hit = self
                     .chrome
@@ -2206,6 +2219,19 @@ impl FluorApp for PhotonApp {
                     .map(|c| c.hit_at(ctx.cursor_x, ctx.cursor_y))
                     .unwrap_or(HIT_NONE);
 
+                // DRAG-OUT (desktop): a press on a held file's visual remembers itself; a move past the slop drags the file out of the window (the CursorMoved arm).
+                self.file_drag_from = None;
+                #[cfg(not(target_os = "android"))]
+                if hit_id >= self.msg_hit_base && hit_id < (self.msg_hit_base + super::MSG_HIT_SPAN) {
+                    let (px, py) = (ctx.cursor_x as f32, ctx.cursor_y as f32);
+                    if let Some(v) = self.msg_attach_visuals.get((hit_id - self.msg_hit_base) as usize).copied().flatten().filter(|v| v.held && v.contains(px, py)) {
+                        if let Some(id) = self.active_conversation {
+                            let name = self.conv_by_id(id).and_then(|c| c.messages.iter().find_map(|m| m.file_parts().filter(|(h, _, _)| *h == v.hash).map(|(_, n, _)| n))).unwrap_or_default();
+                            self.file_drag_from = Some((v.hash, name, px, py));
+                        }
+                    }
+                }
+
                 // WAVEFORM SCRUB: a press on a held recording's waveform picks the playhead up; moves carry it (drawn live), the release seeks. The glyph zone is a plain tap (on_activate).
                 if hit_id >= self.msg_hit_base && hit_id < (self.msg_hit_base + super::MSG_HIT_SPAN) {
                     let vis = (hit_id - self.msg_hit_base) as usize;
@@ -2350,6 +2376,7 @@ impl FluorApp for PhotonApp {
                 ..
             } => {
                 self.press_held = false;
+                self.file_drag_from = None;
                 // THE LIFT (2026-10-06 phone log: a 187 px/frame flick sampled [187, 182, 2, 0, 0] and died at 2; 2026-10-07: the fastest flicks moved everything in one or two frames and then showed three or four still frames before Android reported UP — the finger was already off the glass). Up to FOUR trailing still frames (≈ 67 ms, the UP's latency) are dropped before the median; five or more (≈ 83 ms+) is a genuine hold and the fling is zero, as Nick asked.
                 if self.drag_px > 0 {
                     let oldest_first: Vec<i32> = self.fling_recent.iter().rev().copied().collect();

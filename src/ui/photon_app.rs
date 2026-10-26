@@ -1152,6 +1152,9 @@ pub(crate) struct PigeonProgress {
     pub(crate) at: std::time::Instant,
 }
 
+/// How far (px) a press on a file must travel before it becomes a drag out of the window — past a hand's wobble on a click.
+pub(super) const FILE_DRAG_SLOP: f32 = 8.0;
+
 /// An attachment's VISUAL as drawn this frame (the picture band, or a code row's preview lines), slot-indexed like [`PhotonApp::msg_hit_rows`]: a tap inside opens it, a tap on the rest of the row opens the actions (Nick 2026-09-12: "just show the image or code or waveform or thumbnail, that's it").
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct AttachVisual {
@@ -2118,6 +2121,8 @@ pub struct PhotonApp {
     msg_wave_bands: Vec<Option<WaveBand>>,
     /// Attachment visuals as drawn this frame, slot-indexed like `msg_hit_rows`.
     msg_attach_visuals: Vec<Option<AttachVisual>>,
+    /// DRAG-OUT (desktop, Nick 2026-10-26): a press on a held file's visual — its hash, the name it lands under, and where the press went down; a move past [`FILE_DRAG_SLOP`] turns it into the OS's own file drag.
+    file_drag_from: Option<([u8; 32], String, f32, f32)>,
     /// A waveform scrub in progress (pointer down on a card's waveform); release seeks.
     wave_scrub: Option<WaveScrub>,
     /// One-shot launch sweep for waves whose keep a crash interrupted (spool.rs recover_orphans).
@@ -3122,6 +3127,7 @@ impl PhotonApp {
             digit_strip_base: HIT_NONE,
             msg_wave_bands: Vec::new(),
             msg_attach_visuals: Vec::new(),
+            file_drag_from: None,
             wave_scrub: None,
             orphan_waves_swept: false,
             lane_rearm_cycles: crate::linear_map::LinearMap::new(),

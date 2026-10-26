@@ -786,34 +786,45 @@ impl PhotonApp {
     }
 
     /// Save a held blob to the user's Downloads dir under its own name, replacing an earlier save of that name. Returns the destination on success.
-    pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Option<String> {
-        let seed = self.session.as_ref().map(|s| s.identity_seed)?;
+    pub(super) fn attach_save(&mut self, name: &str, content_hash: &[u8; 32]) -> Result<String, SaveMiss> {
+        let seed = self.session.as_ref().map(|s| s.identity_seed).ok_or(SaveMiss::Failed)?;
         // Android: stage in the app's private dir, then hand the file to the PUBLIC Downloads/Photon (MediaStore) — the private dir was invisible to the user and every other app (Nick 2026-09-28: "somewhere sane and shared").
         #[cfg(target_os = "android")]
-        let base = crate::storage::photon_config_dir().ok()?.join("staging");
+        let base = crate::storage::photon_config_dir().map_err(|_| SaveMiss::Failed)?.join("staging");
         #[cfg(not(target_os = "android"))]
-        let base = dirs::download_dir()?;
+        let base = dirs::download_dir().ok_or(SaveMiss::Failed)?;
         let _ = std::fs::create_dir_all(&base);
-        // A nameless attachment (images travel without filenames) saves under its hash prefix with a magic-sniffed extension.
-        let derived;
-        let name = if name.is_empty() {
-            let head = crate::storage::blob_load(&seed, content_hash).unwrap_or_default();
-            derived = format!("photon-{}.{}", hex::encode(&content_hash[..8]), crate::types::sniff_ext(&head));
-            derived.as_str()
-        } else {
-            name
+        let name = Self::attach_file_name(&seed, name, content_hash);
+        let name = name.as_str();
+        // macOS: the system save panel, opening in Downloads with the name filled in — a place the user picked is writable with no privacy prompt (Nick 2026-10-26, after "unable to save pigeons on mac"); cancelling is no failure.
+        #[cfg(target_os = "macos")]
+        let (base, name) = {
+            let dest = fluor::host::file_drag::save_dialog(name, Some(&base)).ok_or(SaveMiss::Cancelled)?;
+            let file = dest.file_name().map(|f| f.to_string_lossy().into_owned()).ok_or(SaveMiss::Failed)?;
+            (dest.parent().map(|p| p.to_path_buf()).ok_or(SaveMiss::Failed)?, file)
         };
+        #[cfg(target_os = "macos")]
+        let name = name.as_str();
         // Stream the blob under exactly that name, replacing any earlier save — the same landing a bridge pigeon does, factored out.
-        let landed = crate::storage::land_blob(&seed, content_hash, &base, name)?;
+        let landed = crate::storage::land_blob(&seed, content_hash, &base, name).ok_or(SaveMiss::Failed)?;
         #[cfg(target_os = "android")]
         {
             let staged = std::path::PathBuf::from(&landed);
             let shared = crate::platform::jni_android::save_to_downloads(&staged, name);
             let _ = std::fs::remove_file(&staged); // the staging copy is done with either way
-            return shared;
+            return shared.ok_or(SaveMiss::Failed);
         }
         #[cfg(not(target_os = "android"))]
-        Some(landed)
+        Ok(landed)
+    }
+
+    /// The name a saved or dragged file lands under: its own, or for a nameless attachment (images travel without filenames) its hash prefix with a magic-sniffed extension.
+    pub(super) fn attach_file_name(seed: &[u8; 32], name: &str, content_hash: &[u8; 32]) -> String {
+        if !name.is_empty() {
+            return name.to_string();
+        }
+        let head = crate::storage::blob_load(seed, content_hash).unwrap_or_default();
+        format!("photon-{}.{}", hex::encode(&content_hash[..8]), crate::types::sniff_ext(&head))
     }
 
     /// Drain completed peer-avatar downloads: colour-convert the VSF-RGB pixels to the display buffer (same path as the self avatar) and install them on the matching contact, invalidating its scaled cache so the next render rebuilds + shows it. A `None` result (no avatar / fetch failed) just leaves the placeholder.
@@ -950,5 +961,28 @@ mod fetch_tests {
         assert_eq!(ask(true, 4, true).fruitless_after(), 0, "a quiet ask that brought chunks starts the count again");
         assert_eq!(ask(false, 0, false).fruitless_after(), 0, "an armed fetch was never asked");
         assert_eq!(ask(true, u8::MAX, false).fruitless_after(), u8::MAX, "the count saturates");
+    }
+}
+
+/// Why a Save did not land: the user cancelled the save panel (no toast, nothing went wrong), or it failed.
+// Only macOS has a save panel to cancel; the other platforms save straight to Downloads.
+#[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+pub(super) enum SaveMiss {
+    Cancelled,
+    Failed,
+}
+
+impl PhotonApp {
+    /// Hand the pressed file to the host's drag-out (fluor host/file_drag.rs): its name now, its bytes read from the vault when a drop asks — no file exists anywhere until the drop writes one where the user put it.
+    #[cfg(not(target_os = "android"))]
+    pub(super) fn start_file_drag(&mut self) -> Option<fluor::host::EventResponse> {
+        let (hash, name, _, _) = self.file_drag_from.take()?;
+        let seed = self.session.as_ref()?.identity_seed;
+        let name = Self::attach_file_name(&seed, &name, &hash);
+        // The press is the OS's now: its release never reaches us, so nothing of ours may wait on it.
+        self.press_held = false;
+        crate::logf!("attach: {}… dragged out of the window as {}", hex::encode(&hash[..4]), name);
+        fluor::host::file_drag::request(fluor::host::file_drag::DragFile { name, bytes: std::sync::Arc::new(move || crate::storage::blob_load_named(&hash)) });
+        Some(fluor::host::EventResponse::StartFileDrag)
     }
 }

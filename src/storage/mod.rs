@@ -608,6 +608,12 @@ pub fn blob_load(identity_seed: &[u8; 32], content_hash: &[u8; 32]) -> Option<Ve
     if BLOB_NAME_KEY.lock().unwrap().is_none() {
         blob_init_names(identity_seed);
     }
+    blob_load_named(content_hash)
+}
+
+/// [`blob_load`] for a session whose blob names are already set up — no seed in hand (a file dragged out of the window reads its bytes at drop time, from a closure that must not carry the identity seed). None before the names exist.
+pub fn blob_load_named(content_hash: &[u8; 32]) -> Option<Vec<u8>> {
+    BLOB_NAME_KEY.lock().unwrap().as_ref()?;
     if let Some(bytes) = blob_load_stored(content_hash) {
         if !blob_binds(&bytes, content_hash) {
             crate::log("blob: content hash mismatch on load — corrupt blob value dropped");
