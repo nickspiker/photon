@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Waves in molecules.** Tap Wave in a molecule and every member's devices ring; whoever joins hears everyone else who has joined, and anyone can leave while the others carry on. Group waves are voice only for now, and are not recorded yet.
+- **Waves that cannot be knocked off.** A single forged packet aimed at a live wave could stop it from hearing anything more; a wave now ignores anything that is not genuinely part of it.
 
 ## v129
 - **Molecule photons reach all your devices.** If you use Photon on more than one device, a photon in a molecule could land on one of them and never show on the other; your devices now hand each other every photon they hold.
