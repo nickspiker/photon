@@ -348,6 +348,21 @@ impl PhotonApp {
         }
     }
 
+    /// The presence plane's offline verdict for a device (status.rs): while we RING, a waving device that went away is out of the wave, and a ring with nobody left waving ends missed — the group ring's lease, on an edge. A linked device is left to its link (its drought heal), since a busy media path can starve presence pings.
+    pub(super) fn on_group_wave_device_offline(&mut self, device: [u8; 32]) {
+        let Some(w) = self.group_wave.as_mut().filter(|w| w.phase == GroupPhase::Ringing) else {
+            return;
+        };
+        if !w.joined.iter().any(|m| m.device == device) {
+            return;
+        }
+        w.joined.retain(|m| m.device != device);
+        crate::logf!("WAVE: {} went offline while waving the group — {} still waving", crate::fp(&device), w.joined.len());
+        if w.joined.is_empty() {
+            self.end_group_wave(WaveOutcome::Missed);
+        }
+    }
+
     fn ringing_group_wave(gid: MoleculeId, wave_id: [u8; 16], offer_osc: i64, key: [u8; 32], origin: GroupMember) -> GroupWave {
         GroupWave {
             gid,

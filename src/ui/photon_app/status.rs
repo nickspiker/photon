@@ -255,6 +255,8 @@ impl PhotonApp {
         let mut molecule_stragglers: Vec<(crate::types::FriendshipId, [u8; 32])> = Vec::new();
         // GROUP frames from a signer our roster does not name yet (a member whose join records are still on their way): held after the loop and replayed when that roster advances, never dropped.
         let mut molecule_held: Vec<(crate::types::molecule::MoleculeId, StatusUpdate)> = Vec::new();
+        // Devices the presence plane just declared offline (the 3-strike verdict): a group ring whose every waving device went away ends (docs/group-waves.md — the lease a group ring has, an edge, never a timer).
+        let mut wave_devices_offline: Vec<[u8; 32]> = Vec::new();
         // GROUP frames on a lane we hold, kept for relaying to members who miss them; and members' advertised lane heads per group, the relay's trigger — both applied after the loop.
         let mut group_frames_after: Vec<super::molecules::GroupFrame> = Vec::new();
         let mut group_heads_after: Vec<(crate::types::molecule::MoleculeId, [u8; 32], u32, Vec<([u8; 32], i64)>)> = Vec::new();
@@ -985,6 +987,7 @@ impl PhotonApp {
                             }
                             // Presence VOIDS a dead holder's clearer claim (the design's crash/sleep coverage, no timers): the 3-strike offline verdict for the claim-holding device clears the claim, so the next friend message dings somewhere instead of being suppressed by a ghost. DROP-SWEEP (b): rows we suppressed under the now-dead claim are orphaned — chirp them (deferred).
                             if !is_online {
+                                wave_devices_offline.push(peer_pubkey.key);
                                 if let Some((tok, d, cosc)) = self.fleet_focus_claim {
                                     if d == peer_pubkey.key {
                                         self.fleet_focus_claim = None;
@@ -5694,6 +5697,9 @@ impl PhotonApp {
         catching_up.dedup();
         for (gid, update) in molecule_held {
             self.hold_molecule_frame(gid, update);
+        }
+        for dev in wave_devices_offline {
+            self.on_group_wave_device_offline(dev);
         }
         for frame in group_frames_after {
             self.store_group_frame(frame);

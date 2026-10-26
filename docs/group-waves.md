@@ -68,4 +68,4 @@ Recorded by default, as every wave is. Each link spools on its own (our side and
 - **No crash recovery for a group recording** (the 1:1 spool register is per peer): a group wave cut off by a crash is not recovered.
 - **No relay media**, as for 1:1 waves: a link needs a direct path either end can reach.
 - **A mesh, not a relay.** Up to seven others fit the slots; past a handful of people the uploads multiply (N−1 beams for every camera), and the any-size doctrine wants a member fanning out instead.
-- **No express copy and no ring lease:** a group ring arrives by the lane alone, and it ends on the origin's hangup or our own answer, decline or a sibling's join.
+- **No express copy:** a group ring arrives by the lane alone. It ends on the origin's hangup, our own answer or decline, our fleet's answer or decline on another device, or the presence plane's offline verdict for every device still waving (the group ring's lease, on an edge).
