@@ -42,6 +42,20 @@ pub(crate) struct GroupLinkUp {
     pub spool: Option<crate::wave::spool::SpoolTicket>,
 }
 
+/// One face on the wave screen's roll.
+pub(crate) struct RollFace {
+    pub device: [u8; 32],
+    /// Our own face (the one labelled "You", ringed by what we send).
+    pub us: bool,
+    pub party: [u8; 32],
+    /// Their contact when we friended them.
+    pub ci: Option<usize>,
+    /// The far slot their voice plays in, once a link is up.
+    pub slot: Option<usize>,
+    /// What we call them: a friend's display name, or the name a never-friended member's record grants.
+    pub name: String,
+}
+
 /// The one live group wave (one wave at a time on a device, group or pair).
 pub(crate) struct GroupWave {
     pub gid: MoleculeId,
@@ -149,10 +163,108 @@ impl PhotonApp {
         if !self.send_control_in_conversation(id, ctl.clone(), ts) {
             return false;
         }
+        // A join or a leave also goes express (an offer waits for its egg: capture_group_offer_key).
+        if !matches!(sig, WaveSignal::Offer { .. }) {
+            self.send_group_express(gid, &sig, ts, None);
+        }
         let row = self.conv_by_id(id).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == ts && m.control.as_ref() == Some(&ctl)).cloned());
         if let Some(row) = row {
             self.push_conversation_rows_to_siblings(id, std::slice::from_ref(&row), None);
         }
+        true
+    }
+
+    /// THE GROUP EXPRESS COPY (docs/group-waves.md): the same signal as a sealed datagram under the group's express key, signed by our device, to every other member's devices — straight to each device's addresses and over the relay, so a ring, a join or a leave beats the group's lane as a pair's does. Every signal also seals under the retired era (a member one cutover behind still opens it).
+    pub(super) fn send_group_express(&self, gid: MoleculeId, sig: &WaveSignal, ts: i64, lane_key: Option<[u8; 32]>) {
+        let Some(kp) = self.device_keypair.clone() else {
+            return;
+        };
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        let Some((_, chains)) = self.friendship_chains.iter().find(|(id, c)| *id == fid && c.molecule) else {
+            return;
+        };
+        let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
+        if let (Some(root), Some(hk)) = (chains.lane_root(), chains.history_key()) {
+            keys.push(crate::wave::signal::group_express_key(root, hk));
+        }
+        if let Some(r) = chains.retired_era() {
+            if let Some(hk) = r.history_key.as_ref() {
+                keys.push(crate::wave::signal::group_express_key(&r.lane_root, hk));
+            }
+        }
+        // A group beam describes itself in-band once its links are up, so a group offer never carries the beam flag.
+        let frames: Vec<Vec<u8>> = keys.iter().filter_map(|k| crate::wave::signal::seal_group_express(k, ts, lane_key.as_ref(), sig, false, &kp)).collect();
+        if frames.is_empty() {
+            return;
+        }
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let Some((_, roster)) = self.molecule_rosters.iter().find(|(g, _)| *g == gid) else {
+            return;
+        };
+        let devices: Vec<[u8; 32]> = roster.standing().into_iter().filter(|p| Some(*p) != us).flat_map(|p| super::molecules::member_devices(&self.contacts, &self.molecule_peers, &p)).collect();
+        let mut direct = 0usize;
+        for dev in &devices {
+            for a in self.device_addresses(dev) {
+                if a.ip().to_canonical().is_loopback() || a.ip().is_unspecified() {
+                    continue;
+                }
+                for f in &frames {
+                    let _ = crate::wave::send_media(f.clone(), a);
+                }
+                direct += 1;
+            }
+            for f in frames.iter().cloned() {
+                let (kp, dev) = (kp.clone(), *dev);
+                let kind = sig.kind();
+                crate::network::http::runtime().spawn(async move {
+                    if let Err(e) = crate::network::fgtw::relay::send_via_relay(&kp, &dev, &f).await {
+                        crate::logf!("WAVE: group express {} via relay to {} failed: {}", kind, crate::fp(&dev), e);
+                    }
+                });
+            }
+        }
+        crate::logf!("WAVE: group express {} fired → {} device(s), {} direct path(s) + the relay × {} era key(s) (id {})", sig.kind(), devices.len(), direct, frames.len(), hex::encode(&sig.wave_id()[..4]));
+    }
+
+    /// An express frame no pair opened, tried against every molecule we stand in (current era, then retired): the signing device names the member, who need not be our contact, and the signal goes where the group's lane row would send it. `false` = no group opened it.
+    pub(super) fn open_group_express_frame(&mut self, bytes: &[u8], nonce: [u8; crate::wave::signal::EXPRESS_NONCE_LEN]) -> bool {
+        let mut opened: Option<(MoleculeId, (i64, Option<[u8; 32]>, WaveSignal, bool, [u8; 32]))> = None;
+        for (fid, chains) in self.friendship_chains.iter().filter(|(_, c)| c.molecule) {
+            let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
+            if let (Some(root), Some(hk)) = (chains.lane_root(), chains.history_key()) {
+                keys.push(crate::wave::signal::group_express_key(root, hk));
+            }
+            if let Some(r) = chains.retired_era() {
+                if let Some(hk) = r.history_key.as_ref() {
+                    keys.push(crate::wave::signal::group_express_key(&r.lane_root, hk));
+                }
+            }
+            if let Some(r) = keys.iter().find_map(|k| crate::wave::signal::open_group_express(k, bytes)) {
+                opened = Some((MoleculeId(*fid.as_bytes()), r));
+                break;
+            }
+        }
+        let Some((gid, (ts, lane_key, sig, _, device))) = opened else {
+            return false;
+        };
+        // The same freshness gate and nonce cache as a pair's frame: sealed means unforgeable, not unreplayable.
+        // WHY/PROOF: `ts` is the sender's — abs_diff is exact for every pair of stamps, a crafted one included.
+        let skew = vsf::eagle_time_oscillations().abs_diff(ts);
+        if skew > crate::wave::signal::EXPRESS_MAX_SKEW_OSC as u64 {
+            crate::logf!("WAVE: group express {} stamped {}s away — dropped as stale (replay guard)", sig.kind(), skew / vsf::OSCILLATIONS_PER_SECOND as u64);
+            return true;
+        }
+        if self.express_seen.len() >= 256 {
+            self.express_seen.drain(..64);
+        }
+        self.express_seen.push(nonce);
+        // The group key proves the sender stands in the group's era; the device signature proves which device — and the roster must still say that device's person stands.
+        let Some((party, ci)) = super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &device) else {
+            crate::logf!("WAVE: group express {} signed by {}, no standing member's device — dropped", sig.kind(), crate::fp(&device));
+            return true;
+        };
+        crate::logf!("WAVE: group express {} from {} (device {}) in {} (jumped the lane; id {})", sig.kind(), crate::fp(&party), crate::fp(&device), hex::encode(&gid.0[..4]), hex::encode(&sig.wave_id()[..4]));
+        self.on_group_wave_signal(gid, party, ci, device, sig, lane_key, ts);
         true
     }
 
@@ -162,6 +274,11 @@ impl PhotonApp {
             Some(w) if w.wave_id == *wave_id && w.offer_lane_key.is_none() => {
                 w.offer_lane_key = Some(key);
                 crate::log("WAVE: group offer lane key captured at commit — basket egg secured");
+                // The egg is ours now, so the offer's express copy can carry it: every member rings at datagram speed, the lane row following as the record.
+                let (gid, ts, nonce) = (w.gid, w.offer_osc, w.our_nonce);
+                if let (Some(nonce), Some(device)) = (nonce, self.our_device()) {
+                    self.send_group_express(gid, &WaveSignal::Offer { wave_id: *wave_id, nonce, device: Some(device) }, ts, Some(key));
+                }
                 true
             }
             _ => false,
@@ -226,11 +343,11 @@ impl PhotonApp {
         self.end_group_wave(outcome);
     }
 
-    /// A wave row in a molecule (docs/group-waves.md): `ci` is the sending member's contact, `device` the device that signed the frame.
-    pub(super) fn on_group_wave_signal(&mut self, gid: MoleculeId, ci: usize, device: [u8; 32], sig: WaveSignal, rx_lane_key: Option<[u8; 32]>, row_ts: i64) {
-        let Some(party) = self.contacts.get(ci).filter(|c| !c.is_sibling).map(|c| c.handle_hash) else {
+    /// A wave row in a molecule (docs/group-waves.md): `party` the sending member, `ci` their contact when we friended them (a member is a person, not a contact), `device` the device that signed the frame.
+    pub(super) fn on_group_wave_signal(&mut self, gid: MoleculeId, party: [u8; 32], ci: Option<usize>, device: [u8; 32], sig: WaveSignal, rx_lane_key: Option<[u8; 32]>, row_ts: i64) {
+        if ci.is_some_and(|ci| self.contacts.get(ci).is_none_or(|c| c.is_sibling)) {
             return;
-        };
+        }
         if Some(device) == self.our_device() {
             return;
         }
@@ -267,7 +384,15 @@ impl PhotonApp {
                         }
                         self.freshen_clock_for_wave();
                         self.group_wave = Some(Self::ringing_group_wave(gid, wave_id, row_ts, key, GroupMember { device, party, nonce }));
-                        if let Some(guard) = self.ring_alert_guard(ci) {
+                        let guard = match ci {
+                            Some(ci) => self.ring_alert_guard(ci),
+                            None => {
+                                let name = self.member_granted_name(&gid, &party);
+                                let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+                                us.and_then(|us| self.ring_alert_for(name, &party, &us))
+                            }
+                        };
+                        if let Some(guard) = guard {
                             if let Some(w) = self.group_wave.as_mut() {
                                 w.ring = Some(guard);
                             }
@@ -430,12 +555,7 @@ impl PhotonApp {
 
     fn start_group_link(&mut self, device: [u8; 32], secret: [u8; 32], our_device: [u8; 32], slot: usize, slot_gen: u64) {
         // The device's own best address (a wave is with a device, not a contact); none = the sentinel, and TX follows its first authenticated packet.
-        let addr = self
-            .contacts
-            .iter()
-            .find(|c| !c.is_sibling && c.knows_device(&device))
-            .and_then(|c| crate::network::traverse::gather::gather_device_candidates(c, &device).sorted().into_iter().map(|x| x.addr).next())
-            .unwrap_or(crate::network::status::RELAY_ADDR);
+        let addr = self.device_addresses(&device).into_iter().next().unwrap_or(crate::network::status::RELAY_ADDR);
         let lead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(self.group_wave.as_ref().is_some_and(|w| w.links.is_empty())));
         let origin = crate::wave::keys::group_link_origin(&our_device, &device);
         // Recording by default, as every wave is: each link its own spool, named apart by how many this wave has minted.
@@ -617,12 +737,7 @@ impl PhotonApp {
             self.force_presence_sweep();
         }
         for (slot, dev, n) in walks {
-            let cands: Vec<std::net::SocketAddr> = self
-                .contacts
-                .iter()
-                .find(|c| !c.is_sibling && c.knows_device(&dev))
-                .map(|c| crate::network::traverse::gather::gather_device_candidates(c, &dev).sorted().into_iter().map(|x| x.addr).collect())
-                .unwrap_or_default();
+            let cands = self.device_addresses(&dev);
             if !cands.is_empty() {
                 let addr = cands[n as usize % cands.len()];
                 crate::wave::set_slot_redirect(slot, addr);
@@ -632,6 +747,33 @@ impl PhotonApp {
         if changed {
             self.scene_dirty = true;
         }
+    }
+
+    /// Where one member device can be reached, best first: a friend's candidates as a 1:1 wave gathers them; a member we never friended from the phonebook — the self-signed record the device published or pushed us (docs/group-waves.md: a member is a person, not a contact).
+    fn device_addresses(&self, device: &[u8; 32]) -> Vec<std::net::SocketAddr> {
+        if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.knows_device(device)) {
+            return crate::network::traverse::gather::gather_device_candidates(c, device).sorted().into_iter().map(|x| x.addr).collect();
+        }
+        let Some(store) = self.peer_store.as_ref() else {
+            return Vec::new();
+        };
+        let Ok(store) = store.lock() else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for rec in store.get_all_peers().into_iter().filter(|r| r.device_pubkey.as_bytes() == device) {
+            // Their LAN address only when it shares our LAN (the same rule the 1:1 gather keeps), then the public one.
+            if let (Some(ip), true) = (rec.local_ip, rec.local_port != 0) {
+                let lan = std::net::SocketAddr::new(ip, rec.local_port);
+                if self.our_lan_ip.is_some_and(|ours| matches!(ip, std::net::IpAddr::V4(v4) if v4.octets()[..3] == ours.octets()[..3])) {
+                    out.push(lan);
+                }
+            }
+            if !crate::network::traverse::gather::is_bogus_addr(&rec.ip) && !out.contains(&rec.ip) {
+                out.push(rec.ip);
+            }
+        }
+        out
     }
 
     /// Is any link of the group wave reconnecting (the status line says so)?
@@ -719,21 +861,25 @@ impl PhotonApp {
         }
     }
 
-    /// Who the wave screen's roll shows, in order: us first once we are in, then every joined device (the origin first) — (device, the person's contact or `None` for us, the far slot their voice plays in or `None` for our own sent voice).
-    pub(super) fn group_roll(&self) -> Vec<([u8; 32], Option<usize>, Option<usize>)> {
+    /// Who the wave screen's roll shows, in order: us first once we are in, then every joined device (the origin first) — a friend, or a member we never friended under the name their member record grants.
+    pub(super) fn group_roll(&self) -> Vec<RollFace> {
         let Some(w) = self.group_wave.as_ref() else {
             return Vec::new();
         };
         let mut out = Vec::new();
         if w.phase == GroupPhase::Joined {
-            if let Some(d) = self.our_device() {
-                out.push((d, None, None));
+            if let (Some(d), Some(us)) = (self.our_device(), self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))) {
+                out.push(RollFace { device: d, us: true, party: us, ci: None, slot: None, name: String::new() });
             }
         }
         for m in &w.joined {
             let ci = self.contacts.iter().position(|c| !c.is_sibling && c.handle_hash == m.party);
             let slot = w.links.iter().find(|l| l.device == m.device).map(|l| l.slot);
-            out.push((m.device, ci, slot));
+            let name = match ci {
+                Some(i) => self.contacts[i].display_name(),
+                None => self.member_granted_name(&w.gid, &m.party),
+            };
+            out.push(RollFace { device: m.device, us: false, party: m.party, ci, slot, name });
         }
         out
     }
@@ -741,28 +887,28 @@ impl PhotonApp {
     /// Keep every roll face scaled to `diameter` (before the paint borrows `self`): a face is scaled once per person per layout.
     pub(super) fn refresh_group_roll_avatars(&mut self, diameter: usize) {
         let roll = self.group_roll();
-        self.group_roll_avatars.retain(|(d, diam, _)| *diam == diameter && roll.iter().any(|(r, _, _)| r == d));
-        for (device, ci, _) in roll {
-            if self.group_roll_avatars.iter().any(|(d, _, _)| *d == device) {
+        self.group_roll_avatars.retain(|(d, diam, _)| *diam == diameter && roll.iter().any(|r| r.device == *d));
+        for face in roll {
+            if self.group_roll_avatars.iter().any(|(d, _, _)| *d == face.device) {
                 continue;
             }
-            let px = match ci {
-                Some(i) => {
-                    let c = &self.contacts[i];
-                    match c.avatar_pixels.as_ref() {
+            let px = if face.us {
+                let proof = self.session.as_ref().map(|s| s.handle_proof).unwrap_or_default();
+                match self.device_avatar_pixels.as_ref() {
+                    Some(base) => crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diameter),
+                    None => gradient_avatar_rgb(proof_gradient_seed(&proof), diameter),
+                }
+            } else {
+                match face.ci.map(|i| &self.contacts[i]) {
+                    Some(c) => match c.avatar_pixels.as_ref() {
                         Some(base) => crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diameter),
                         None => gradient_avatar_rgb(proof_gradient_seed(&c.handle_proof), diameter),
-                    }
-                }
-                None => {
-                    let proof = self.session.as_ref().map(|s| s.handle_proof).unwrap_or_default();
-                    match self.device_avatar_pixels.as_ref() {
-                        Some(base) => crate::ui::avatar_render::update_avatar_scaled(base, crate::ui::avatar::AVATAR_SIZE, diameter),
-                        None => gradient_avatar_rgb(proof_gradient_seed(&proof), diameter),
-                    }
+                    },
+                    // A member we never friended: their party's gradient, as their person page draws them.
+                    None => gradient_avatar_rgb(proof_gradient_seed(&face.party), diameter),
                 }
             };
-            self.group_roll_avatars.push((device, diameter, px));
+            self.group_roll_avatars.push((face.device, diameter, px));
         }
     }
 

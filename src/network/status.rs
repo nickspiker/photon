@@ -169,6 +169,11 @@ pub fn set_molecule_devices(list: Vec<([u8; 32], Vec<[u8; 32]>)>) {
     }
 }
 
+/// Is `dev` a standing member's device of ANY group we hold — the one door past the group's own chat frames: a member we never friended may push us its OWN signed address record (docs/group-waves.md: a wave with a stranger needs to know where they are).
+pub fn molecule_member_device(dev: &[u8; 32]) -> bool {
+    MOLECULE_DEVICES.lock().map(|g| g.iter().any(|(_, devs)| devs.iter().any(|d| d == dev))).unwrap_or(false)
+}
+
 /// Is `dev` a standing member's device of the group whose token is `token`?
 pub fn molecule_admits(token: &[u8; 32], dev: &[u8; 32]) -> bool {
     MOLECULE_DEVICES
@@ -4113,7 +4118,9 @@ async fn run_checker(
                                         let list = contacts_recv.lock().unwrap();
                                         list.iter().any(|p| *p == responder_pubkey)
                                     };
-                                    if !is_contact {
+                                    // A group member we never friended may push its OWN record only (one record, its own device): enough for a group wave to find it, nothing of anyone else's.
+                                    let member_push = !is_contact && peers.len() == 1 && peers[0].device_pubkey.as_bytes() == responder_pubkey.as_bytes() && molecule_member_device(responder_pubkey.as_bytes());
+                                    if !is_contact && !member_push {
                                         continue;
                                     }
                                     // An unsolicited PUSH (one record, the sender's own) rather than an answer to our request.

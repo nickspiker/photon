@@ -17,7 +17,7 @@
 
 /// Express frame magic — high-ASCII like MEDIA_MAGIC (0xC7), colliding with nothing on the wire (VSF opens "RÅ<", PT lowercase).
 pub const EXPRESS_MAGIC: u8 = 0xC9;
-const EXPRESS_NONCE_LEN: usize = 24;
+pub const EXPRESS_NONCE_LEN: usize = 24;
 
 /// Wire shape: [EXPRESS_MAGIC][nonce:24][AEAD(payload)]. Payload: a complete VSF document — the stamp, the optional lane key, and the signal's typed control fields.
 pub fn is_express_frame(bytes: &[u8]) -> bool {
@@ -94,14 +94,23 @@ fn express_schema() -> vsf::schema::SectionSchema {
         vsf::schema::SectionSchema::new(EXPRESS_SECTION)
             .field("ts", vsf::schema::TypeConstraint::Any) // e6 the signal's stamp
             .field("lk", vsf::schema::TypeConstraint::Any) // hR the offer's lane key (the doomed egg), offers only
-            .field("bm", vsf::schema::TypeConstraint::Any), // u: present = this offer carries a BEAM (docs/beams.md)
+            .field("bm", vsf::schema::TypeConstraint::Any) // u: present = this offer carries a BEAM (docs/beams.md)
+            .field("dv", vsf::schema::TypeConstraint::Any), // hR the signing DEVICE, on a GROUP express frame only (docs/group-waves.md)
     )
 }
 
 /// The sealed plaintext: a complete VSF document, the signal as typed fields.
 fn express_payload(ts: i64, lane_key: Option<&[u8; 32]>, sig: &WaveSignal, beam: bool) -> Option<Vec<u8>> {
+    express_payload_dev(ts, lane_key, sig, beam, None)
+}
+
+/// The same, naming the signing device (a group frame).
+fn express_payload_dev(ts: i64, lane_key: Option<&[u8; 32]>, sig: &WaveSignal, beam: bool, device: Option<&[u8; 32]>) -> Option<Vec<u8>> {
     use vsf::VsfType;
     let mut b = express_schema().build().set("ts", VsfType::e(vsf::types::EtType::e6(ts))).ok()?;
+    if let Some(d) = device {
+        b = b.set("dv", VsfType::hR(d.to_vec())).ok()?;
+    }
     if let Some(k) = lane_key {
         b = b.set("lk", VsfType::hR(k.to_vec())).ok()?;
     }
@@ -129,6 +138,62 @@ fn read_express_payload(payload: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSi
         crate::types::RowControl::Wave(w) => Some((ts, lane_key, w, beam)),
         _ => None,
     }
+}
+
+// ---------------------------------------------------------------------------
+// GROUP EXPRESS (docs/group-waves.md): the same out-of-band copy for a wave in a molecule, under a key every standing member derives from the group's era (and none else), so a ring or a join beats the group's lane exactly as a pair's does.
+// A group key is shared by every member, so the frame also says WHICH device sent it and signs that with the device's own key: no member can speak as another, and the receiver resolves the member from the device as it does for a lane frame.
+// ---------------------------------------------------------------------------
+
+/// The group express key: the group era's root and history key under a context of its own, so no pair's express key can ever equal a group's.
+pub fn group_express_key(lane_root: &[u8; 32], history_key: &[u8; 32]) -> [u8; 32] {
+    let mut material = [0u8; 64];
+    material[..32].copy_from_slice(lane_root);
+    material[32..].copy_from_slice(history_key);
+    let out = blake3::derive_key("PHOTON_WAVE_v1 group express signal", &material);
+    zeroize::Zeroize::zeroize(&mut material);
+    out
+}
+
+/// Seal one group signal: the express document naming our device, our device's signature over its hash appended, all of it inside the group key's AEAD.
+pub fn seal_group_express(key: &[u8; 32], ts: i64, lane_key: Option<&[u8; 32]>, sig: &WaveSignal, beam: bool, device: &crate::network::fgtw::Keypair) -> Option<Vec<u8>> {
+    use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
+    let mut payload = express_payload_dev(ts, lane_key, sig, beam, Some(device.public.as_bytes()))?;
+    let signature = device.sign(blake3::hash(&payload).as_bytes());
+    payload.extend_from_slice(&signature.to_bytes());
+    let nonce_bytes: [u8; EXPRESS_NONCE_LEN] = rand::random();
+    let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
+    let sealed = cipher.encrypt(&XNonce::from(nonce_bytes), payload.as_slice()).ok()?;
+    let mut out = Vec::with_capacity(1 + EXPRESS_NONCE_LEN + sealed.len());
+    out.push(EXPRESS_MAGIC);
+    out.extend_from_slice(&nonce_bytes);
+    out.extend_from_slice(&sealed);
+    Some(out)
+}
+
+/// Open a group express frame: (stamp, lane key, signal, beam, the device that signed it) — `None` unless the group key opens it AND the named device's signature holds.
+pub fn open_group_express(key: &[u8; 32], bytes: &[u8]) -> Option<(i64, Option<[u8; 32]>, WaveSignal, bool, [u8; 32])> {
+    use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
+    use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+    if !is_express_frame(bytes) {
+        return None;
+    }
+    let nonce = &bytes[1..1 + EXPRESS_NONCE_LEN];
+    let cipher = XChaCha20Poly1305::new_from_slice(key).ok()?;
+    let plain = cipher.decrypt(&XNonce::try_from(nonce).ok()?, &bytes[1 + EXPRESS_NONCE_LEN..]).ok()?;
+    if plain.len() <= 64 {
+        return None;
+    }
+    let (doc, sig_bytes) = plain.split_at(plain.len() - 64);
+    let section = vsf::schema::SectionBuilder::parse_document(express_schema(), doc, None).ok()?;
+    let device: [u8; 32] = match section.get_fields("dv").first().and_then(|f| f.values.first())? {
+        vsf::VsfType::hR(b) => <[u8; 32]>::try_from(b.as_slice()).ok()?,
+        _ => return None,
+    };
+    let vk = VerifyingKey::from_bytes(&device).ok()?;
+    vk.verify(blake3::hash(doc).as_bytes(), &Signature::from_bytes(sig_bytes.try_into().ok()?)).ok()?;
+    let (ts, lane_key, sig, beam) = read_express_payload(doc)?;
+    Some((ts, lane_key, sig, beam, device))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +258,31 @@ mod tests {
         let (ts, _, _) = open_express(&key, &a).unwrap();
         assert_eq!(ts, 1000);
         assert!(EXPRESS_MAX_SKEW_OSC > 0);
+    }
+
+    /// A group express frame names and signs its device: it opens under the group key, never under a pair's key from the same era material, and a member cannot speak as another member's device.
+    #[test]
+    fn a_group_express_frame_names_its_device_and_cannot_be_spoofed() {
+        let (root, hk) = ([1u8; 32], [2u8; 32]);
+        let key = group_express_key(&root, &hk);
+        assert_ne!(key, express_key(&root, &hk), "a group key is never a pair's");
+        let mike = crate::network::fgtw::Keypair::from_seed(&[7; 32]);
+        let sig = WaveSignal::Answer { wave_id: [5; 16], nonce: [6; 32], device: Some(*mike.public.as_bytes()) };
+        let wire = seal_group_express(&key, 99, None, &sig, false, &mike).unwrap();
+        let (ts, lk, got, beam, dev) = open_group_express(&key, &wire).unwrap();
+        assert_eq!((ts, lk, got, beam, dev), (99, None, sig, false, *mike.public.as_bytes()));
+        assert!(open_express(&express_key(&root, &hk), &wire).is_none(), "the pair key does not open a group frame");
+        assert!(open_group_express(&[9; 32], &wire).is_none());
+        // A member holding the group key re-seals Mike's document under its own signature: the named device's key refuses it.
+        let frank = crate::network::fgtw::Keypair::from_seed(&[8; 32]);
+        let mut doc = express_payload_dev(99, None, &sig, false, Some(mike.public.as_bytes())).unwrap();
+        doc.extend_from_slice(&frank.sign(blake3::hash(&doc).as_bytes()).to_bytes());
+        use chacha20poly1305::{aead::Aead, KeyInit, XChaCha20Poly1305, XNonce};
+        let sealed = XChaCha20Poly1305::new_from_slice(&key).unwrap().encrypt(&XNonce::from([3u8; EXPRESS_NONCE_LEN]), doc.as_slice()).unwrap();
+        let mut forged = vec![EXPRESS_MAGIC];
+        forged.extend_from_slice(&[3u8; EXPRESS_NONCE_LEN]);
+        forged.extend_from_slice(&sealed);
+        assert!(open_group_express(&key, &forged).is_none(), "a signature by another device is refused");
     }
 
     #[test]

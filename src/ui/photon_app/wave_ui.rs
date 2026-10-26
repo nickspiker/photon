@@ -1437,6 +1437,10 @@ impl PhotonApp {
             }
             let mut opened: Option<(usize, i64, Option<[u8; 32]>, WaveSignal, [u8; 32], bool)> = None;
             for (fid, chains) in &self.friendship_chains {
+                // A molecule's frames open under its group key below, never a pair key.
+                if chains.molecule {
+                    continue;
+                }
                 // Current era first, then the retired one: a wave offer minted on the old era that lands after our cutover must still open (it used to read as "opened by no friendship").
                 let mut keys: Vec<[u8; 32]> = Vec::with_capacity(2);
                 if let (Some(lane_root), Some(history_key)) = (chains.lane_root(), chains.history_key()) {
@@ -1465,7 +1469,9 @@ impl PhotonApp {
                 }
             }
             let Some((ci, ts, lane_key, sig, opened_key, beam_flag)) = opened else {
-                crate::log("WAVE: express frame opened by no friendship — dropped (an era we do not hold: neither current nor retired)");
+                if !self.open_group_express_frame(&bytes, nonce) {
+                    crate::log("WAVE: express frame opened by no friendship and no group — dropped (an era we do not hold: neither current nor retired)");
+                }
                 continue;
             };
             // The stamp is INSIDE the seal, so only the friendship could have written it; all it has to prove is freshness.
@@ -1688,15 +1694,15 @@ impl PhotonApp {
 
     /// The ring itself, for a 1:1 wave or a group wave: the notification, the relationship ring, and (desktop) the loop's stopper for the caller to hold.
     pub(super) fn ring_alert_guard(&mut self, ci: usize) -> Option<crate::wave::RingGuard> {
-        let Some(contact) = self.contacts.get(ci) else {
-            return None;
-        };
-        let sender_name = contact.display_name();
-        let from_hh = contact.handle_hash;
-        let Some(us) = self.our_party_id(contact) else {
-            return None;
-        };
-        let digest = relationship_digest(&from_hh, &us);
+        let contact = self.contacts.get(ci)?;
+        let (sender_name, from_hh) = (contact.display_name(), contact.handle_hash);
+        let us = self.our_party_id(contact)?;
+        self.ring_alert_for(sender_name, &from_hh, &us)
+    }
+
+    /// The ring for anyone — a contact, or a group member we never friended (docs/group-waves.md): their name and party id, our own party id beside it for the relationship ring.
+    pub(super) fn ring_alert_for(&mut self, sender_name: String, from_hh: &[u8; 32], us: &[u8; 32]) -> Option<crate::wave::RingGuard> {
+        let digest = relationship_digest(from_hh, us);
         let ring_hp = *blake3::hash(&digest).as_bytes();
         // Honor the Notifications "Ring on incoming wave" tick: unchecked = the notification still posts (the wave is never invisible) but the audible ring loop stays silent. Read BEFORE the platform blocks — Android's ring loops now, and an unhonored mute there is a ring that cannot be silenced.
         let ring_audible = self

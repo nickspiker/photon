@@ -34,12 +34,35 @@ pub(super) struct GroupFrame {
     pub raw: Vec<u8>,
 }
 
+/// A MEMBER IS A PERSON, NOT A CONTACT (Nick 2026-10-26, "I add Frank, Frank adds Mike, who I do not know"): the standing member of a group that a signing device belongs to — a friend's contact first, then a member we never friended, by the devices their public fleet chain folds to (`MoleculePeer`).
+/// Returns the member's party id and their contact when they are one. A free function over the fields, because the receive arms call it while the group's chains are borrowed.
+pub(super) fn group_member_of(contacts: &[crate::types::Contact], peers: &[crate::types::molecule::MoleculePeer], rosters: &[(MoleculeId, Roster)], gid: &MoleculeId, device: &[u8; 32]) -> Option<([u8; 32], Option<usize>)> {
+    let roster = &rosters.iter().find(|(g, _)| g == gid)?.1;
+    if let Some(ci) = contacts.iter().position(|c| !c.is_sibling && !c.locked_out && c.knows_device(device) && roster.is_standing(&c.handle_hash)) {
+        return Some((contacts[ci].handle_hash, Some(ci)));
+    }
+    peers.iter().find(|p| p.knows_device(device) && roster.is_standing(&p.party)).map(|p| (p.party, None))
+}
+
+/// The devices a group member's photons and ACKs go to: a friend's relay list, or a never-friended member's folded devices.
+pub(super) fn member_devices(contacts: &[crate::types::Contact], peers: &[crate::types::molecule::MoleculePeer], party: &[u8; 32]) -> Vec<[u8; 32]> {
+    match contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *party) {
+        Some(c) => c.relay_device_list(),
+        None => peers.iter().find(|p| p.party == *party).map(|p| p.devices.clone()).unwrap_or_default(),
+    }
+}
+
 /// Frames kept per group for relaying: the newest win.
 const GROUP_FRAMES_KEPT: usize = 256;
 /// At most this many frames handed to one member device per sync record (oldest first; the next record carries on).
 const GROUP_RELAY_BURST: usize = 16;
 
 impl PhotonApp {
+    /// The name a member's own record grants them in a group — what the author line, the ring and the wave screen call someone we never friended.
+    pub(super) fn member_granted_name(&self, gid: &MoleculeId, party: &[u8; 32]) -> String {
+        self.molecule_rosters.iter().find(|(g, _)| g == gid).and_then(|(_, r)| r.members.get(party)).map(|m| m.name.clone()).unwrap_or_default()
+    }
+
     /// Keep a group frame for relaying (once per author device and stamp).
     pub(super) fn store_group_frame(&mut self, frame: GroupFrame) {
         if frame.raw.is_empty() || self.molecule_frames.iter().any(|f| f.gid == frame.gid && f.ts == frame.ts && f.author_device == frame.author_device) {
@@ -113,19 +136,20 @@ impl PhotonApp {
     }
 
     /// A `MoleculeSignal` control row landed (deferred from commit_braid_rx): `ci` = the sender's contact, `cp` = the conversation the row landed in, `wire` = the package's typed group extras.
-    pub(super) fn on_molecule_signal(&mut self, ci: usize, cp: usize, sig: MoleculeSignal, wire: Option<crate::network::message_package::MoleculeWire>, kem: Option<crate::crypto::era::EraKemWire>, ts: i64) {
+    /// `ci` is the sender's contact — `None` for a member we never friended (docs/group-waves.md, "a member is a person, not a contact"): inside the group a wrap or records row needs no contact; the rows that ride a friendship always have one.
+    pub(super) fn on_molecule_signal(&mut self, ci: Option<usize>, cp: usize, sig: MoleculeSignal, wire: Option<crate::network::message_package::MoleculeWire>, kem: Option<crate::crypto::era::EraKemWire>, ts: i64) {
         let blob = wire.as_ref().and_then(|g| g.blob.clone());
         let in_group = self.conversations.get(cp).map_or(false, |c| c.is_molecule());
-        match (sig, in_group) {
-            (MoleculeSignal::Offer, false) => self.park_bond_offer(ci, blob, ts),
-            (MoleculeSignal::Join, false) => self.answer_bind(ci, blob),
-            (MoleculeSignal::Wrap, false) => self.install_bind_wrap(ci, wire, kem),
-            (MoleculeSignal::Wrap, true) => self.install_molecule_wrap(cp, wire, kem),
-            (MoleculeSignal::Records, true) => self.merge_molecule_records(ci, cp, blob),
-            (MoleculeSignal::Decline, false) => self.on_decline(ci, blob),
-            (MoleculeSignal::Deliver, false) => self.on_era_delivery(ci, wire),
-            (other, _) => {
-                let sender = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
+        match (sig, in_group, ci) {
+            (MoleculeSignal::Offer, false, Some(ci)) => self.park_bond_offer(ci, blob, ts),
+            (MoleculeSignal::Join, false, Some(ci)) => self.answer_bind(ci, blob),
+            (MoleculeSignal::Wrap, false, Some(ci)) => self.install_bind_wrap(ci, wire, kem),
+            (MoleculeSignal::Wrap, true, _) => self.install_molecule_wrap(cp, wire, kem),
+            (MoleculeSignal::Records, true, _) => self.merge_molecule_records(ci, cp, blob),
+            (MoleculeSignal::Decline, false, Some(ci)) => self.on_decline(ci, blob),
+            (MoleculeSignal::Deliver, false, Some(ci)) => self.on_era_delivery(ci, wire),
+            (other, _, _) => {
+                let sender = ci.and_then(|ci| self.contacts.get(ci)).map(|c| crate::fp(&c.handle_proof)).unwrap_or_else(|| "a member".into());
                 crate::logf!("MOLECULE: {} row from {} landed {} a group conversation — ignored", format!("{other:?}"), sender, if in_group { "inside" } else { "outside" });
             }
         }
@@ -656,8 +680,8 @@ impl PhotonApp {
     }
 
     /// Records posted inside a group (§4): merge every record from the blob under the roster's one law, then follow the standing set into the conversation. Invalid signatures are skipped loudly; merge decides precedence.
-    fn merge_molecule_records(&mut self, ci: usize, cp: usize, blob: Option<Vec<u8>>) {
-        let sender = self.contacts.get(ci).map(|c| crate::fp(&c.handle_proof)).unwrap_or_default();
+    fn merge_molecule_records(&mut self, ci: Option<usize>, cp: usize, blob: Option<Vec<u8>>) {
+        let sender = ci.and_then(|ci| self.contacts.get(ci)).map(|c| crate::fp(&c.handle_proof)).unwrap_or_else(|| "a member".into());
         let Some(gid) = self.conversations.get(cp).filter(|c| c.is_molecule()).map(|c| MoleculeId(*c.id().as_bytes())) else {
             crate::logf!("MOLECULE: records row from {} landed outside a group conversation — ignored", sender);
             return;

@@ -1254,14 +1254,11 @@ impl PhotonApp {
                             continue;
                         };
                         // For 2-party chats, infer sender as the "other" participant. A GROUP frame (docs/molecules.md §2) has no "other": the sender is whichever STANDING member's folded devices include the signer — v1 resolves thru the Contact fold (field-test members are mutual friends); the MoleculePeer fold for never-friended members layers in with eras. Post-decrypt attribution (pkg.molecule.from) must agree with this resolution or the row is refused there.
-                        let from_handle_hash = if chains.molecule {
+                        // A GROUP's sender is a MEMBER (molecules::group_member_of): a friend's contact, or a member we never friended, by their folded devices — `group_ci` is the contact when there is one.
+                        let (from_handle_hash, group_ci) = if chains.molecule {
                             let gid = crate::types::molecule::MoleculeId(*fid_ref.as_bytes());
-                            match self.contacts.iter().find(|c| {
-                                !c.is_sibling
-                                    && c.knows_device(&sender_pubkey.key)
-                                    && self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
-                            }) {
-                                Some(c) => c.handle_hash,
+                            match super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key) {
+                                Some(m) => m,
                                 None => {
                                     // HELD, not dropped (Emma's phone 2026-10-25): the newest member's records reach each device by its own path, and a frame that beat them here was lost for good once another of that member's devices ACKed it for them.
                                     crate::logf!("MOLECULE: held frame — signer {}... is no standing member's device of {} yet; replayed when its roster advances", hex::encode(&sender_pubkey.key[..8]), hex::encode(&fid_ref.as_bytes()[..4]));
@@ -1271,7 +1268,7 @@ impl PhotonApp {
                             }
                         } else {
                             match chains.other_participant(&our_handle_hash) {
-                                Some(h) => *h,
+                                Some(h) => (*h, None),
                                 None => {
                                     crate::log("CHAT: Could not determine sender (not a 2-party chat or we're not a participant)");
                                     continue;
@@ -1321,38 +1318,45 @@ impl PhotonApp {
                             group_frames_after.push(super::molecules::GroupFrame { gid: crate::types::molecule::MoleculeId(*fid_ref.as_bytes()), lane, ts: timestamp, author_device: sender_pubkey.key, era, raw: raw.clone() });
                         }
 
-                        // Find contact by their handle_hash
-                        let contact_info = self.contacts.iter().enumerate().find_map(|(idx, c)| {
-                            if c.handle_hash == from_handle_hash {
-                                Some((idx, c.display_name()))
-                            } else {
-                                None
+                        // The sender's contact: a pair's peer always has one; a group member has one only if we friended them (group_ci), and the group path below runs without it.
+                        let contact_idx: Option<usize> = if chains.molecule {
+                            group_ci
+                        } else {
+                            match self.contacts.iter().position(|c| c.handle_hash == from_handle_hash) {
+                                Some(idx) => Some(idx),
+                                None => {
+                                    crate::logf!(
+                                        "CHAT: Contact not found for handle_hash {}...",
+                                        hex::encode(&from_handle_hash[..8])
+                                    );
+                                    continue;
+                                }
                             }
-                        });
-
-                        let (contact_idx, _handle) = match contact_info {
-                            Some((idx, h)) => (idx, h),
-                            None => {
-                                crate::logf!(
-                                    "CHAT: Contact not found for handle_hash {}...",
-                                    hex::encode(&from_handle_hash[..8])
-                                );
-                                continue;
-                            }
+                        };
+                        // A group member's devices (their contact's relay list, or a never-friended member's fold): where a re-ACK goes.
+                        let member_relay: Vec<[u8; 32]> = if chains.molecule {
+                            super::molecules::member_devices(&self.contacts, &self.molecule_peers, &from_handle_hash)
+                        } else {
+                            Vec::new()
+                        };
+                        // Where an ACK for this frame goes: a GROUP's to the very device that signed it (that lane's pending lives there) with every device of the member on the relay, a pair's to the contact's device as ever.
+                        let ack_target: Option<([u8; 32], Vec<[u8; 32]>)> = if chains.molecule {
+                            Some((sender_pubkey.key, member_relay.clone()))
+                        } else {
+                            contact_idx.and_then(|ci| self.contacts[ci].device_key().map(|k| (k, self.contacts[ci].relay_device_list())))
                         };
 
                         // KNOWN∧NOT-REFUSED, the same gate ChainSyncReceived applies (knows_device already excludes refused_devices; locked_out is the sibling case). The RX worker proved only "some contact knows this signing key"; here we prove the signer is a current device of THIS conversation's peer and not one the fold has refused or the fleet has locked — so a stolen/refused device cannot inject frames that drive the fork detectors.
                         // Capability latch: a tagged frame proves the peer runs an era-aware build. Only then may the in-band ratchet (a later stage) be initiated toward them.
-                        if era.is_some() && !self.contacts[contact_idx].peer_era_capable {
-                            self.contacts[contact_idx].peer_era_capable = true;
-                            crate::logf!("ERA: {} is era-capable (first tagged frame)", crate::fp(&self.contacts[contact_idx].handle_proof));
+                        if let Some(ci) = contact_idx.filter(|&ci| era.is_some() && !self.contacts[ci].peer_era_capable) {
+                            self.contacts[ci].peer_era_capable = true;
+                            crate::logf!("ERA: {} is era-capable (first tagged frame)", crate::fp(&self.contacts[ci].handle_proof));
                             if let Some(storage) = self.storage.as_ref() {
-                                let _ = crate::storage::contacts::save_contact(&self.contacts[contact_idx], storage);
+                                let _ = crate::storage::contacts::save_contact(&self.contacts[ci], storage);
                             }
                         }
-                        if !self.contacts[contact_idx].knows_device(&sender_pubkey.key)
-                            || self.contacts[contact_idx].locked_out
-                        {
+                        // A group member who is no contact passed this gate in group_member_of (a standing member's folded device).
+                        if contact_idx.is_some_and(|ci| !self.contacts[ci].knows_device(&sender_pubkey.key) || self.contacts[ci].locked_out) {
                             crate::logf!("CHAT: dropped frame from {} — signer {}... is not a trusted device of this conversation (refused/locked/unfolded)", crate::fp(&from_handle_hash), hex::encode(&sender_pubkey.key[..8]));
                             continue;
                         }
@@ -1368,7 +1372,9 @@ impl PhotonApp {
                                 }
                             }
                         } else {
-                            let conv_our_pid = if self.contacts[contact_idx].is_sibling {
+                            // A pair always resolved its contact above.
+                            let Some(ci) = contact_idx else { continue };
+                            let conv_our_pid = if self.contacts[ci].is_sibling {
                                 match our_sibling_pid {
                                     Some(p) => p,
                                     None => continue,
@@ -1376,7 +1382,7 @@ impl PhotonApp {
                             } else {
                                 identity_hh
                             };
-                            let derived = self.contacts[contact_idx].conversation(&conv_our_pid);
+                            let derived = self.contacts[ci].conversation(&conv_our_pid);
                             let chains_id = crate::types::Conversation::new(
                                 chains.participants().iter().copied(),
                             )
@@ -1414,19 +1420,11 @@ impl PhotonApp {
                                 .iter()
                                 .find(|m| !m.is_outgoing && m.timestamp == timestamp)
                                 .and_then(|m| m.ack_hash)
-                                .and_then(|ack| {
-                                    self.contacts
-                                        .get(contact_idx)
-                                        .and_then(|c| c.device_key().map(|k| (ack, k)))
-                                });
+                                .and_then(|ack| ack_target.as_ref().map(|(k, _)| (ack, *k)));
                             if let Some((ph, recipient_pubkey)) = stored {
                                 if let Some(ref checker) = self.status_checker {
                                     // The ACK ALWAYS rides the relay alongside any direct leg. Gating on the sentinel missed the case that actually lagged in the field: a message received DIRECT whose reverse direction is dead — the direct ACK vanished, the sender retransmitted, and only the duplicate's re-ACK (relayed) landed. Acks are tiny and idempotent, so the duplicate delivery is free.
-                                    let relay_to = self
-                                        .contacts
-                                        .get(contact_idx)
-                                        .map(|c| c.relay_device_list())
-                                        .unwrap_or_default();
+                                    let relay_to = ack_target.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
                                     checker.send_ack(AckRequest {
                                         peer_addr: sender_addr,
                                         recipient_pubkey,
@@ -1442,15 +1440,11 @@ impl PhotonApp {
                                 .iter()
                                 .find(|m| !m.is_outgoing && m.timestamp == timestamp)
                                 .map(|m| *blake3::hash(m.content.as_bytes()).as_bytes())
-                                .and_then(|h| self.contacts.get(contact_idx).and_then(|c| c.device_key().map(|k| (h, k))))
+                                .and_then(|h| ack_target.as_ref().map(|(k, _)| (h, *k)))
                             {
                                 // We HOLD the row but never decrypted this braid frame ourselves — it came in by a history page or a sibling's chain adopt, neither of which stores the braid plaintext hash (that hash covers the woven strand references, unrecoverable from the row). The sender clears its pending on eagle_time and only LOGS a hash mismatch (process_ack), so refusing to ACK here just left them retransmitting forever: the 2026-09-08 "Emma never saw an ack". ACK with the content hash as the stand-in and say so.
                                 if let Some(ref checker) = self.status_checker {
-                                    let relay_to = self
-                                        .contacts
-                                        .get(contact_idx)
-                                        .map(|c| c.relay_device_list())
-                                        .unwrap_or_default();
+                                    let relay_to = ack_target.as_ref().map(|(_, r)| r.clone()).unwrap_or_default();
                                     checker.send_ack(AckRequest {
                                         peer_addr: sender_addr,
                                         recipient_pubkey,
@@ -1471,8 +1465,8 @@ impl PhotonApp {
                         if let Err(expected) = chains.verify_chain_link(&lane, &prev_msg_hp) {
                             crate::logf!("CHAT: Hash chain gap from {} - expected prev {}..., got {}... — buffering (ahead of us)", crate::fp(&from_handle_hash), hex::encode(&expected[..8]), hex::encode(&prev_msg_hp[..8]));
                             // GAPS ARE TRANSPORT, NEVER FORK EVIDENCE: a missing predecessor means a frame is in flight, lost (anti-entropy re-serves it on the next pong edge), or a stale-era straggler — none of which a re-key repairs and all of which a re-key destroys (the ≥8-streak trigger here nuked healthy weaves all week, 2026-08-03→07, and masked the actual salt bug). Fork evidence lives solely in the decrypt-fail streak: a fill that arrives and still produces garbage is the only proof both heads committed differently.
-                            {
-                                let c = &mut self.contacts[contact_idx];
+                            // A member who is no contact has no presence row to collapse: their frames wait on the retransmit and the member relay.
+                            if let Some(c) = contact_idx.map(|ci| &mut self.contacts[ci]) {
                                 // The depth still rides the log-visible counter (cleared by a successful fill) so field logs show how far behind a lane is running.
                                 let key = u64::from_le_bytes(expected[..8].try_into().unwrap())
                                     ^ u64::from_le_bytes(prev_msg_hp[..8].try_into().unwrap());
@@ -1484,7 +1478,7 @@ impl PhotonApp {
                                 c.last_pinged = None;
                             }
                             // RECEIVER-DRIVEN GAP HEAL (2026-08-20): the backoff collapse above only works when the SENDER still holds the missing row as a pending — a row their side believes delivered (fleet-ACK'd via a sibling, or swept past ack_hash persistence) NEVER retransmits, and the in-order gate then holds every later row hostage forever. Field proof: a wave ANSWER sat buffered behind one such hole while the caller rang out (a78c6f9b), and the chronic 53-buffered/4-filled stuck-message logs are the same class. The friend provably HOLDS the missing row (it is their own outgoing), so arm the urgent friend history walk — the same arm the strand-miss path uses in conversation.rs — which re-serves the hole from their store regardless of anyone's pending list. Gated on not-already-recovering so repeat buffering of the same frame doesn't re-arm a walk already in flight. Direct field access: `chains` pins friendship_chains for this block, and conversations is a disjoint field.
-                            if !self.contacts[contact_idx].is_sibling && !chains.molecule {
+                            if !chains.molecule && contact_idx.is_some_and(|ci| !self.contacts[ci].is_sibling) {
                                 // Groups: the friend-history walk is a pairwise protocol; a group gap waits on the sender's retransmit and (later) group re-serve — never a friendship walk against a group conversation.
                                 let conv = &mut self.conversations[conv_pos];
                                 if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {

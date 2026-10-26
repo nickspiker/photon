@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+- **Molecule members you have never met.** If you bind a friend into a molecule and they bind someone you do not know, your photons, waves and beams with that person now work like anyone else's; before, their photons never showed for you.
+- **Group rings arrive right away.** Waving a molecule rings everyone as quickly as waving one friend does, and joining or leaving reaches the others at once.
 
 ## v130
 - **Waves and beams in molecules.** Tap Wave or Beam in a molecule and every member's devices ring; whoever joins hears everyone else who has joined, and anyone can leave while the others carry on. The wave screen shows everyone in the wave, each lit by their own voice, and with cameras on it shows every picture side by side. Group waves are recorded like any other wave, each person on their own track.

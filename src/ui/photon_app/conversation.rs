@@ -1379,20 +1379,20 @@ impl PhotonApp {
         let mut fork_friend_rekey: Option<usize> = None;
         // A two-member CONVERSATION whose keys diverged (docs/conversations.md §7): its era is re-delivered whole over the bond — a re-CLUTCH re-keys only the bond.
         let mut fork_conversation: Option<crate::types::FriendshipId> = None;
-        let mut sibling_push: Option<(usize, ChatMessage)> = None;
+        let mut sibling_push: Option<(Option<usize>, ChatMessage)> = None;
         // A friend deleted their group offer (their undo of an invite we declined): the offer row's eagle time, so the parked offer is forgotten after the borrow.
         let mut offer_undone: Option<(usize, i64)> = None;
         // Wave signal deferred past the `chains` borrow — the state machine takes &mut self (docs/waves.md).
         let mut wave_signal_evt: Option<(usize, crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
         // The same for a wave row in a MOLECULE (docs/group-waves.md): (the group, the sending member's contact, the device that signed the frame, signal, pre-advance lane key, row stamp).
-        let mut group_wave_evt: Option<(crate::types::molecule::MoleculeId, usize, [u8; 32], crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
+        let mut group_wave_evt: Option<(crate::types::molecule::MoleculeId, [u8; 32], Option<usize>, [u8; 32], crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
         let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // Group control row landed (docs/molecules.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
-        let mut molecule_signal_evt: Option<(usize, usize, crate::types::molecule::MoleculeSignal, Option<crate::network::message_package::MoleculeWire>, Option<crate::crypto::era::EraKemWire>, i64)> = None;
+        let mut molecule_signal_evt: Option<(Option<usize>, usize, crate::types::molecule::MoleculeSignal, Option<crate::network::message_package::MoleculeWire>, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // The 256-row cadence edge (crypto/era.rs): the contact whose peer-row count just crossed a multiple of the cadence.
         // (contact, the chains id, is a bond, is a group) — the cadence edge acts by the chains' kind (docs/conversations.md §7).
-        let mut cadence_ci: Option<(usize, crate::types::FriendshipId, bool, bool)> = None;
+        let mut cadence_ci: Option<(Option<usize>, crate::types::FriendshipId, bool, bool)> = None;
         let mut recv_seal_idx: Option<usize> = None;
         let mut persist_ci: Option<usize> = None;
         // A GROUP row persists by its conversation id, never by the sender's contact (whose own conversation is a different table) — docs/molecules.md step 4.
@@ -1428,15 +1428,12 @@ impl PhotonApp {
             let (our_handle_hash, from_handle_hash, contact_idx) = if chains.molecule {
                 // GROUP resolution (docs/molecules.md §2): the sender is whichever STANDING member's folded devices include the signer — the same verdict dispatch reached, re-run against current state. No other-participant, no shadow seam: the id is minted, never derived.
                 let gid = crate::types::molecule::MoleculeId(*chains.friendship_id.as_bytes());
-                let Some(idx) = self.contacts.iter().position(|c| {
-                    !c.is_sibling
-                        && c.knows_device(&sender_pubkey.key)
-                        && self.molecule_rosters.iter().any(|(g, r)| *g == gid && r.is_standing(&c.handle_hash))
-                }) else {
+                // A member, friended or not (molecules::group_member_of): the contact rides along only when there is one.
+                let Some((party, ci)) = super::molecules::group_member_of(&self.contacts, &self.molecule_peers, &self.molecule_rosters, &gid, &sender_pubkey.key) else {
                     crate::logf!("MOLECULE: decrypted frame's signer is no standing member's device — dropped (token {}...)", hex::encode(&conversation_token[..8]));
                     break 'commit;
                 };
-                (identity_hh, self.contacts[idx].handle_hash, idx)
+                (identity_hh, party, ci)
             } else {
                 let in_set = |p: &[u8; 32]| chains.participants().contains(p);
                 let us = if in_set(&identity_hh) {
@@ -1447,7 +1444,7 @@ impl PhotonApp {
                 let normal = us.and_then(|us| {
                     let them = *chains.other_participant(&us)?;
                     let idx = self.contacts.iter().position(|c| c.handle_hash == them)?;
-                    Some((us, them, idx))
+                    Some((us, them, Some(idx)))
                 });
                 match normal {
                     Some(resolved) => resolved,
@@ -1469,17 +1466,23 @@ impl PhotonApp {
                             .find(|p| **p != them)
                             .copied()
                             .unwrap_or(them);
-                        (stale_us, them, idx)
+                        (stale_us, them, Some(idx))
                     }
                 }
             };
             // AUTH re-check: a refusal or lockout landing while the worker ran must still block the commit.
-            if !self.contacts[contact_idx].knows_device(&sender_pubkey.key)
-                || self.contacts[contact_idx].locked_out
-            {
+            if contact_idx.is_some_and(|ci| !self.contacts[ci].knows_device(&sender_pubkey.key) || self.contacts[ci].locked_out) {
                 crate::logf!("CHAT: decrypted frame's signer lost trust mid-flight — dropped");
                 break 'commit;
             }
+            // Where this frame's ACK goes: a GROUP's to the very device that signed it (that lane's pending lives there) with every device of the member on the relay — a friend's relay list or a never-friended member's fold; a pair's to the contact's device as ever.
+            let (ack_recipient, ack_relay): ([u8; 32], Vec<[u8; 32]>) = if chains.molecule {
+                (sender_pubkey.key, super::molecules::member_devices(&self.contacts, &self.molecule_peers, &from_handle_hash))
+            } else {
+                let c = contact_idx.and_then(|ci| self.contacts.get(ci));
+                // zero unreachable in practice (we just received their frame); ACK request API is on the zero-sentinel follow-up list
+                (c.and_then(|c| c.device_key()).unwrap_or([0u8; 32]), c.map(|c| c.relay_device_list()).unwrap_or_default())
+            };
             // CAS: the lane must be EXACTLY where dispatch saw it. The expected prev still verifying proves no advance, no era swap, no adopt moved the lane while the worker ran — which also proves the decrypt's salt inputs were current, so a parse failure below IS fork evidence. Any mismatch means this plaintext came from dead state: drop it and never feed it to the fork detector; is_duplicate covers the raced-copy case (two UDP copies of one frame both dispatched pre-mark, the first committed).
             if chains.chain(&lane).is_none()
                 || chains.verify_chain_link(&lane, &prev_msg_hp).is_err()
@@ -1513,7 +1516,9 @@ impl PhotonApp {
                     }
                 }
             } else {
-                let conv_our_pid = if self.contacts[contact_idx].is_sibling {
+                // A pair always resolved its contact.
+                let Some(ci) = contact_idx else { break 'commit };
+                let conv_our_pid = if self.contacts[ci].is_sibling {
                     match our_sibling_pid {
                         Some(p) => p,
                         None => break 'commit,
@@ -1521,7 +1526,7 @@ impl PhotonApp {
                 } else {
                     identity_hh
                 };
-                let derived = self.contacts[contact_idx].conversation(&conv_our_pid);
+                let derived = self.contacts[ci].conversation(&conv_our_pid);
                 let chains_id =
                     crate::types::Conversation::new(chains.participants().iter().copied()).id();
                 if chains_id != derived.id() {
@@ -1570,7 +1575,7 @@ impl PhotonApp {
                         crate::logf!("LANE: garbage on lane {} from a signer that has moved to a newer lane — a retired lane's straggler, not fork evidence", hex::encode(&lane[..4]));
                     } else if is_molecule {
                         crate::logf!("MOLECULE: garbage decrypt past verify on lane {} — held for the era owner's refresh, no pairwise re-key", hex::encode(&lane[..4]));
-                    } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                    } else if let Some(contact) = contact_idx.and_then(|ci| self.contacts.get_mut(ci)) {
                         // WHY: a u8 counting garbage decrypts — frames the PEER (or anyone on the wire) sends.
                         // PROOF: a flood passes 255; a wrap would drop the streak under the re-key threshold and the fork would go unanswered.
                         contact.chain_fail_streak = contact.chain_fail_streak.saturating_add(1);
@@ -1579,7 +1584,7 @@ impl PhotonApp {
                         contact.last_pinged = None;
                         if contact.chain_fail_streak >= 2 && contact.is_sibling {
                             crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating sibling chain reset", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
-                            fork_sibling_reset = Some(contact_idx);
+                            fork_sibling_reset = contact_idx;
                         } else if contact.chain_fail_streak >= 3
                             && !contact.is_sibling
                             && era_grace_active
@@ -1597,7 +1602,7 @@ impl PhotonApp {
                         } else if contact.chain_fail_streak >= 3 && !contact.is_sibling {
                             crate::logf!("CHAIN FORK SUSPECTED: {} — {} consecutive garbage decrypts past chain-link verify — initiating friend re-key", crate::fp(&contact.handle_proof), contact.chain_fail_streak);
                             if chains.bond {
-                                fork_friend_rekey = Some(contact_idx);
+                                fork_friend_rekey = contact_idx;
                             } else {
                                 fork_conversation = Some(chains.friendship_id);
                             }
@@ -1607,7 +1612,7 @@ impl PhotonApp {
                 }
             };
             // A clean decrypt+parse clears the fork detector, and records this lane as the signer's current one (see `latest_lane_by_signer`).
-            if let Some(contact) = self.contacts.get_mut(contact_idx) {
+            if let Some(contact) = contact_idx.and_then(|ci| self.contacts.get_mut(ci)) {
                 contact.chain_fail_streak = 0;
             }
             self.latest_lane_by_signer
@@ -1696,9 +1701,10 @@ impl PhotonApp {
             };
             if let Some(t) = strand_miss {
                 crate::logf!("LANE: braid strand miss from {} — no outgoing row at eagle_time {} yet; holding this frame (no advance, no ACK)", crate::fp(&from_handle_hash), t);
-                let c = &mut self.contacts[contact_idx];
-                c.ping_backoff = 0;
-                c.last_pinged = None;
+                if let Some(c) = contact_idx.map(|ci| &mut self.contacts[ci]) {
+                    c.ping_backoff = 0;
+                    c.last_pinged = None;
+                }
                 // A strand miss IS row-lack evidence, and the SENDER provably holds the missing row (they just wove it — it's one of OUR OWN messages, held by them as an incoming row). Sibling replication heals a fleet that has the row somewhere, but a device that LOST its history — maybe with no siblings at all — can only get it back from the FRIEND. Arm the full history walk right here: the pages carry our outgoing rows home (original stamps, delivered flags), the retransmitted frame then resolves its strands on replay, and the hold releases. Waiting on sibling replication alone left one device re-decrypting the same frame every ~15s for six-plus hours (2026-08-11), its walk never arming because every digest-record path had its own silent gate.
                 let conv = &mut self.conversations[conv_pos];
                 if conv.history_recovery.as_ref().map_or(true, |r| r.complete) {
@@ -1773,7 +1779,9 @@ impl PhotonApp {
                     hex::encode(&msg_hp[..8])
                 );
                 // A fill proves the pipeline is healthy — the no-fill counter starts over.
-                self.contacts[contact_idx].gap_streak = (0, 0);
+                if let Some(ci) = contact_idx {
+                    self.contacts[ci].gap_streak = (0, 0);
+                }
                 for buf in ready {
                     replays.push(crate::network::status::StatusUpdate::ChatMessage {
                         conversation_token,
@@ -1799,16 +1807,8 @@ impl PhotonApp {
 
             // A duplicate-stamp re-encrypt ends HERE: the chain state followed the sender (the snapshot above carries the adopted head, and the gap drain just released any successors that were wedged on it), and the re-ACK carries THIS copy's plaintext hash so it matches the sender's fresh pending. No row insert, no bubble, no bridge execution — we hold the content already.
             if is_dup_frame {
-                let recipient_pubkey = self
-                    .contacts
-                    .get(contact_idx)
-                    .and_then(|c| c.device_key())
-                    .unwrap_or([0u8; 32]); // zero unreachable in practice (we just received their frame); ACK request API is on the zero-sentinel follow-up list
-                let relay_to = self
-                    .contacts
-                    .get(contact_idx)
-                    .map(|c| c.relay_device_list())
-                    .unwrap_or_default();
+                let recipient_pubkey = ack_recipient;
+                let relay_to = ack_relay.clone();
                 ack_enqueue = Some((
                     chains_commit_snapshot.clone(),
                     AckRequest {
@@ -1835,10 +1835,10 @@ impl PhotonApp {
                 let era_row = ChatMessage::control(crate::types::RowControl::Era(sig.clone()), false, timestamp)
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(era_row);
-                persist_ci = Some(contact_idx);
+                persist_ci = contact_idx;
                 // Era rows belong to the BOND (docs/conversations.md §7): one arriving on a conversation is an older build's light ratchet — kept as a hidden row for its ACK, never applied (conversation eras are minted and delivered over the bond; the era-mismatch heal converges the two sides).
-                if chains.bond || self.contacts.get(contact_idx).is_some_and(|c| c.is_sibling) {
-                    era_signal_evt = Some((contact_idx, sig, pkg_era_kem.take(), timestamp));
+                if let Some(ci) = contact_idx.filter(|&ci| chains.bond || self.contacts.get(ci).is_some_and(|c| c.is_sibling)) {
+                    era_signal_evt = Some((ci, sig, pkg_era_kem.take(), timestamp));
                 } else {
                     crate::logf!("ERA: an era row on conversation {} (an older build's ratchet) — kept for its ACK, not applied; conversation eras ride the bond", hex::encode(&chains.friendship_id.as_bytes()[..4]));
                 }
@@ -1847,21 +1847,23 @@ impl PhotonApp {
                 let row = ChatMessage::control(crate::types::RowControl::Molecule(sig), false, timestamp)
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(row);
-                persist_ci = Some(contact_idx);
+                persist_ci = contact_idx;
                 // The whole typed group wire goes to the handler (the invite's secrets live ONLY there — the row inserted above is the bare kind marker).
                 molecule_signal_evt = Some((contact_idx, conv_pos, sig, pkg_group.clone(), pkg_era_kem.take(), timestamp));
             } else if let Some(crate::types::RowControl::Wave(sig)) = wire_control.clone() {
                 let sig_row = ChatMessage::control(crate::types::RowControl::Wave(sig), false, timestamp)
                     .with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(sig_row.clone());
-                persist_ci = Some(contact_idx);
+                persist_ci = contact_idx;
                 sibling_push = Some((contact_idx, sig_row));
                 if self.conversations[conv_pos].is_molecule() {
                     let gid = crate::types::molecule::MoleculeId(*self.conversations[conv_pos].id().as_bytes());
-                    group_wave_evt = Some((gid, contact_idx, sender_pubkey.key, sig, rx_lane_key_pre_advance, timestamp));
+                    group_wave_evt = Some((gid, from_handle_hash, contact_idx, sender_pubkey.key, sig, rx_lane_key_pre_advance, timestamp));
                 } else {
-                    recv_seal_idx = Some(contact_idx);
-                    wave_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
+                    recv_seal_idx = contact_idx;
+                    if let Some(ci) = contact_idx {
+                        wave_signal_evt = Some((ci, sig, rx_lane_key_pre_advance, timestamp));
+                    }
                 }
             } else
             // Hidden DELETE marker: the friend tombstoned a message — apply it here, persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
@@ -1882,7 +1884,9 @@ impl PhotonApp {
                         if !m.deleted {
                             m.deleted = true;
                             if super::is_bond_offer_row(m) {
-                                offer_undone = Some((contact_idx, target_ts));
+                                if let Some(ci) = contact_idx {
+                                    offer_undone = Some((ci, target_ts));
+                                }
                             }
                             tombstoned = Some(m.clone());
                         }
@@ -1891,7 +1895,7 @@ impl PhotonApp {
                     let marker_row = ChatMessage::control(crate::types::RowControl::Delete { target: target_ts }, false, timestamp)
                         .with_ack_hash(plaintext_hash);
                     conv.insert_message_sorted(marker_row);
-                    persist_ci = Some(contact_idx);
+                    persist_ci = contact_idx;
                     if let Some(row) = tombstoned {
                         if let Some(hash) = row.file.as_ref().map(|f| f.hash) {
                             {
@@ -1910,12 +1914,12 @@ impl PhotonApp {
                     }
                     self.scene_dirty = true;
                 }
-                recv_seal_idx = Some(contact_idx);
+                recv_seal_idx = contact_idx;
             } else if wire_control.is_none() && crate::types::row_control::is_legacy_prefixed(&message_text) {
                 // A PRE-FLAG-DAY PEER (2026-09-24): its control and attachment rows still hide their kind in the text. The chain advanced and the frame ACKs like any other (the braid ingredient is the same bytes both sides), but nothing is shown, stored or rung — no backwards compatibility.
                 crate::logf!("CHAT: pre-flag-day row from {} (kind hidden in its text) — ACKed, not shown; that device needs this build", crate::fp(&from_handle_hash));
             } else if is_chain_probe {
-                if let Some(contact) = self.contacts.get_mut(contact_idx) {
+                if let Some(contact) = contact_idx.and_then(|ci| self.contacts.get_mut(ci)) {
                     contact.their_probe_seen = true;
                     // Attribute the probe to the ceremony whose chain just decrypted it, so a completion landing microseconds later can tell "the peer's probe for THIS ceremony" from "a stale seal for the chain we just replaced".
                     contact.their_probe_ceremony = contact.ceremony_id;
@@ -1923,22 +1927,29 @@ impl PhotonApp {
                 // Persist the probe as a HIDDEN rarangi row carrying its ack_hash: without a row the duplicate handler has nothing to re-ACK from, so a probe whose ACK was lost froze the sender's chain at the pre-probe position forever — the sibling weave fork of 2026-07-23. Every UI/history/preview path filters control rows, so the row never surfaces; it exists purely as the durable dedup + re-ACK record. No chime, no sibling push (probes stay device-pair-local).
                 let probe_row = ChatMessage::control(crate::types::RowControl::Probe, false, timestamp).with_ack_hash(plaintext_hash);
                 self.conversations[conv_pos].insert_message_sorted(probe_row);
-                persist_ci = Some(contact_idx);
+                persist_ci = contact_idx;
                 crate::log("CHAIN-PROBE: received peer's chain-weave probe — RX chain proven");
-                recv_seal_idx = Some(contact_idx);
-            } else if let Some(contact) = self.contacts.get_mut(contact_idx) {
-                // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
-                contact.their_probe_seen = true;
-                contact.their_probe_ceremony = contact.ceremony_id;
-                // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (observed after a peer's re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
-                if !contact.chain_woven
-                    && contact.clutch_state == crate::types::ClutchState::Complete
-                {
-                    contact.chain_advanced_by_ack = true;
-                }
+                recv_seal_idx = contact_idx;
+            } else if contact_idx.is_some() || chains.molecule {
                 // Snapshot the facts the gates below need, so the &mut contact borrow ends here (the claim check walks self.contacts).
-                let contact_is_sibling = contact.is_sibling;
-                let sender_name = contact.display_name();
+                let (contact_is_sibling, sender_name) = match contact_idx.and_then(|ci| self.contacts.get_mut(ci)) {
+                    Some(contact) => {
+                        // Any real received message means the chain is demonstrably working end-to-end in at least the RX direction — belt-and-suspenders toward woven.
+                        contact.their_probe_seen = true;
+                        contact.their_probe_ceremony = contact.ceremony_id;
+                        // A real message that DECRYPTED and advanced the chain is DEFINITIVE proof the ratchet works — stronger than the hidden probe ever was. Seal here unconditionally on a Complete contact, WITHOUT waiting for chain_advanced_by_ack. That flag is runtime-only and resets on reload, so a chain that completed but never sealed before a restart (probe lost, or the seal raced) reloaded chain_woven=false with no way back: the compose box stayed hidden, so no outgoing message could ever set chain_advanced_by_ack, so it could never seal — a functional chain locked out of composing forever (observed after a peer's re-attest, 2026-07-25). Receiving a decryptable message breaks that deadlock.
+                        if !contact.chain_woven && contact.clutch_state == crate::types::ClutchState::Complete {
+                            contact.chain_advanced_by_ack = true;
+                        }
+                        (contact.is_sibling, contact.display_name())
+                    }
+                    // A group member we never friended: the name their member record grants (the same one the author line shows).
+                    None => {
+                        let gid = crate::types::molecule::MoleculeId(*chains.friendship_id.as_bytes());
+                        let granted = self.molecule_rosters.iter().find(|(g, _)| *g == gid).and_then(|(_, r)| r.members.get(&from_handle_hash)).map(|m| m.name.clone()).unwrap_or_default();
+                        (false, granted)
+                    }
+                };
                 // BRIDGE host capture, TYPED (2026-08-23): a row runs as a command iff it carries RefKind::BridgeCmd — the mark rides the wire's reference field, never the content (the old any-plain-sibling-row-executes gate with its stripped `$ ` prefix was content-as-trigger, the exact class the typed-reference rework exists to kill). A bare untyped sibling row still runs for ONE transition era, loudly, so a not-yet-updated client keeps its bridge until the fleet converges. Promotion to an actual run stays gated on is_new_row below — a re-served/duplicate/history-backfilled command must never re-execute (Nick 2026-08-22).
                 // A BridgeReset row (the peer opened the bridge) drops our shell for them; a BridgeCtl row is the operator's Stop press (signal number in the typed bsig field) — both hidden control rows, never commands.
                 #[cfg(all(unix, not(target_os = "android")))]
@@ -2094,7 +2105,7 @@ impl PhotonApp {
                         if let Some(bw) = bridge_wire.as_ref() {
                             if bw.host.is_some() || bw.cwd.is_some() {
                                 if let Some(dev) =
-                                    self.contacts.get(contact_idx).and_then(|c| c.device_key())
+                                    contact_idx.and_then(|ci| self.contacts.get(ci)).and_then(|c| c.device_key())
                                 {
                                     self.bridge_locus = Some((
                                         dev,
@@ -2165,17 +2176,17 @@ impl PhotonApp {
                 // Promote a captured bridge command to an actual run ONLY on first receipt — a re-serve/duplicate/history-backfill must never re-execute (Nick 2026-08-22). A reset likewise fires once; a Stop press signals inline (bridge_interrupt_host bypasses the executor queue by design).
                 if is_new_row && contact_is_sibling {
                     if let (Some((crate::types::RefKind::BridgePigeon, _)), Some(p)) = (wire_reference, bridge_wire.as_ref().and_then(|b| b.pigeon.clone())) {
-                        bridge_pigeon = Some((contact_idx, p));
+                        bridge_pigeon = contact_idx.map(|ci| (ci, p));
                     }
                 }
                 #[cfg(all(unix, not(target_os = "android")))]
                 if is_new_row {
                     if bridge_reset {
-                        bridge_run = Some((contact_idx, String::new(), 0)); // sentinel: empty cmd = reset (handled at the drain site)
+                        bridge_run = contact_idx.map(|ci| (ci, String::new(), 0)); // sentinel: empty cmd = reset (handled at the drain site)
                     } else if let Some((sig, t)) = bridge_sig {
-                        bridge_ctl = Some((contact_idx, sig, t));
+                        bridge_ctl = contact_idx.map(|ci| (ci, sig, t));
                     } else if let Some(cmd) = bridge_cmd_candidate {
-                        bridge_run = Some((contact_idx, cmd, msg.timestamp));
+                        bridge_run = contact_idx.map(|ci| (ci, cmd, msg.timestamp));
                     }
                 }
                 // NON-HOST platforms (Android/Windows) REFUSE a typed command instead of swallowing it: from the client a silent host is indistinguishable from a hung one (field 2026-08-26). Only TYPED BridgeCmd refuses — a legacy bare row toward a phone is just a note.
@@ -2184,11 +2195,11 @@ impl PhotonApp {
                     && contact_is_sibling
                     && matches!(wire_reference, Some((crate::types::RefKind::BridgeCmd, _)))
                 {
-                    bridge_refuse = Some((contact_idx, msg.timestamp));
+                    bridge_refuse = contact_idx.map(|ci| (ci, msg.timestamp));
                 }
 
                 // Persist (async — see persist_hashes)
-                persist_ci = Some(contact_idx);
+                persist_ci = contact_idx;
 
                 // A friend's attachment row: its device pushes the blob right behind it, so that push is this device's answer and nobody else is asked meanwhile (no push window to wait out).
                 if !contact_is_sibling && is_new_row {
@@ -2243,21 +2254,13 @@ impl PhotonApp {
                     });
                 }
                 // A real inbound message proves both directions once ACKed, but even the RX half alone can seal if our TX was already ACK-confirmed.
-                recv_seal_idx = Some(contact_idx);
+                recv_seal_idx = contact_idx;
             }
 
             // *** THEN the ACK — attached to the commit snapshot above; the chains writer fires it only after the write lands. If we crash before that, no ACK ever left: the sender resends, we dedup. *** Get recipient pubkey for relay fallback
-            let recipient_pubkey = self
-                .contacts
-                .get(contact_idx)
-                .and_then(|c| c.device_key())
-                .unwrap_or([0u8; 32]); // zero unreachable in practice (we just received their frame); ACK request API is on the zero-sentinel follow-up list
+            let recipient_pubkey = ack_recipient;
             // The re-ACK source is the per-message ack_hash persisted on the stored ChatMessage (see the duplicate handler above + with_ack_hash below), which heals a lost ACK for ANY message — not just the most recent. ACK always rides the relay alongside any direct leg — see the re-ACK site above for the field-observed one-directional case this closes.
-            let relay_to = self
-                .contacts
-                .get(contact_idx)
-                .map(|c| c.relay_device_list())
-                .unwrap_or_default();
+            let relay_to = ack_relay;
             ack_enqueue = Some((
                 chains_commit_snapshot,
                 AckRequest {
@@ -2280,8 +2283,8 @@ impl PhotonApp {
         if let Some((ci, sig, rx_key, ts)) = wave_signal_evt {
             self.on_wave_signal(ci, sig, rx_key, ts, false, false);
         }
-        if let Some((gid, ci, device, sig, rx_key, ts)) = group_wave_evt {
-            self.on_group_wave_signal(gid, ci, device, sig, rx_key, ts);
+        if let Some((gid, party, ci, device, sig, rx_key, ts)) = group_wave_evt {
+            self.on_group_wave_signal(gid, party, ci, device, sig, rx_key, ts);
         }
         if let Some((ci, sig, kem, ts)) = era_signal_evt {
             self.on_era_signal(ci, sig, kem, ts);
@@ -2299,10 +2302,10 @@ impl PhotonApp {
                     crate::logf!("MOLECULE: cadence reached in {} — minting the next era", hex::encode(&gid.0[..4]));
                     self.mint_molecule_era(gid, None);
                 }
-            } else if is_bond || self.contacts.get(ci).is_some_and(|c| c.is_sibling) {
+            } else if let Some(ci) = ci.filter(|&ci| is_bond || self.contacts.get(ci).is_some_and(|c| c.is_sibling)) {
                 // A BOND (a sibling's chains included) ratchets itself (era.rs).
                 self.repair_dispatch(ci, super::era::RepairTrigger::CadenceReached);
-            } else if us.is_some_and(|us| self.contacts.get(ci).is_some_and(|c| us < c.handle_hash)) {
+            } else if us.is_some_and(|us| ci.and_then(|ci| self.contacts.get(ci)).is_some_and(|c| us < c.handle_hash)) {
                 // A two-member CONVERSATION's next era is minted and delivered over the bond (docs/conversations.md §0) — by the lower party, so the two sides never race.
                 self.mint_pair_era(fid, "cadence");
             }
@@ -2338,7 +2341,11 @@ impl PhotonApp {
                     let gid = crate::types::molecule::MoleculeId(*id.as_bytes());
                     self.push_conversation_rows_to_siblings(crate::types::FriendshipId::from_bytes(gid.0), std::slice::from_ref(&m), None);
                 }
-                None => self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None),
+                None => {
+                    if let Some(idx) = idx {
+                        self.push_rows_to_siblings(idx, std::slice::from_ref(&m), None);
+                    }
+                }
             }
         }
         if let Some(idx) = recv_seal_idx {

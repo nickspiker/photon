@@ -575,14 +575,14 @@ impl PhotonApp {
         let group_layout = self.group_wave.is_some();
         let group_beaming = self.group_beaming();
         let group_slots = self.group_picture_slots();
-        let group_roll: Vec<([u8; 32], Option<usize>, Option<usize>, (f32, f32, f32))> = match field_geom.filter(|_| group_layout) {
+        let group_roll: Vec<(super::group_wave::RollFace, (f32, f32, f32))> = match field_geom.filter(|_| group_layout) {
             Some(g) => {
                 let roll = self.group_roll();
                 let at = super::wave_field::roll_positions(&g, roll.len());
                 if let Some(&(_, _, r)) = at.first() {
                     self.refresh_group_roll_avatars(((r * 2.0) as usize).max(2));
                 }
-                roll.into_iter().zip(at).map(|((d, ci, slot), p)| (d, ci, slot, p)).collect()
+                roll.into_iter().zip(at).collect()
             }
             None => {
                 if !self.group_roll_avatars.is_empty() {
@@ -861,19 +861,21 @@ impl PhotonApp {
                     // A GROUP wave: every face on the roll, each ringed in the colour of its own newest audio (ours from what we send), each name beneath in that person's colour.
                     Some(_) if group_layout => {
                         let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-                        for (device, ci, slot, (fx, fy, fr)) in &group_roll {
-                            if let Some((_, diam, px)) = self.group_roll_avatars.iter().find(|(d, _, _)| d == device) {
+                        for (face, (fx, fy, fr)) in &group_roll {
+                            if let Some((_, diam, px)) = self.group_roll_avatars.iter().find(|(d, _, _)| *d == face.device) {
                                 crate::ui::avatar_render::draw_avatar(&mut canvas, *fx, *fy, *fr, px, *diam, None);
                             }
-                            let level = crate::wave::live::latest(if ci.is_none() { None } else { Some(slot.unwrap_or(usize::MAX)) });
-                            let ring = if ci.is_some() && slot.is_none() { 0 } else { super::wave_field::env_ring_colour(level) };
+                            // Ours from what we send; theirs from their link's far slot, dark until the link is up.
+                            let ring = match (face.us, face.slot) {
+                                (true, _) => super::wave_field::env_ring_colour(crate::wave::live::latest(None)),
+                                (false, Some(s)) => super::wave_field::env_ring_colour(crate::wave::live::latest(Some(s))),
+                                (false, None) => 0,
+                            };
                             paint::draw_circle(&mut canvas, *fx, *fy, *fr + super::ring_thickness(*fr), ring, None);
-                            let (label, tint) = match ci {
-                                Some(i) => {
-                                    let c = &self.contacts[*i];
-                                    (c.display_name(), us.map(|u| party_colour(&relationship_digest(&c.handle_hash, &u))).unwrap_or(*theme::STATUS_TEXT_COLOUR))
-                                }
-                                None => (tr(Msg::WaveYou).into_owned(), *theme::STATUS_TEXT_COLOUR),
+                            let (label, tint) = if face.us {
+                                (tr(Msg::WaveYou).into_owned(), *theme::STATUS_TEXT_COLOUR)
+                            } else {
+                                (face.name.clone(), us.map(|u| party_colour(&relationship_digest(&face.party, &u))).unwrap_or(*theme::STATUS_TEXT_COLOUR))
                             };
                             ctx.text.draw_text_center(&mut canvas, &label, *fx, *fy + *fr + unit * 0.75, &TextStyle::new(unit * 0.55, tint), None, None);
                         }
@@ -918,7 +920,7 @@ impl PhotonApp {
                         let m = crate::ui::ring_rim::sample(&orbit, t_secs);
                         // Around THEIR avatar in the square (the one wave screen), or the lone avatar when there is no square.
                         let (acx, acy, avatar_r) = match field_geom {
-                            Some(_) if group_layout => group_roll.first().map_or((acx, acy, avatar_r), |r| r.3),
+                            Some(_) if group_layout => group_roll.first().map_or((acx, acy, avatar_r), |r| r.1),
                             Some(g) => (g.theirs.0, g.theirs.1, g.r),
                             None => (acx, acy, avatar_r),
                         };

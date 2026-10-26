@@ -9,7 +9,7 @@ Nick, 2026-10-25: "Needs built so wherever you want to start!"
 
 A group wave is three things, each the 1:1 wave's own design carried to N:
 
-1. **Signalling rides the group's lane.** The 1:1 vocabulary, unchanged: the `Offer` is the origin's join, an `Answer` is a member's join, a `Hangup` is a member leaving. They are hidden control rows (`RowControl::Wave`) in the molecule's conversation, sent by `send_control_in_conversation` to every standing member's device. The frame's signing device says who joined or left; nothing new is on the wire. There is no express copy: the group's lane is the only signal path (v1).
+1. **Signalling rides the group's lane.** The 1:1 vocabulary, unchanged: the `Offer` is the origin's join, an `Answer` is a member's join, a `Hangup` is a member leaving. They are hidden control rows (`RowControl::Wave`) in the molecule's conversation, sent by `send_control_in_conversation` to every standing member's device. The frame's signing device says who joined or left; nothing new is on the wire. Each signal also goes EXPRESS (below); the lane row is the record and the backstop.
 2. **Media is a mesh of 1:1 engines.** Every pair of joined devices runs its own media plane, a whole wave engine (keys, ladder, loss loop, fills, the link tail) exactly as a 1:1 wave runs one. The engines share the one audio session: each owns a FAR SLOT (`platform::audio::FAR_SLOTS`, 8), with its own copy of the microphone and its own far channel, and the speaker mixes the slots.
 3. **History is one row per wave per device**, stamped `offer_osc + 1` in the molecule's conversation, outcome typed like a pair's (answered, missed, declined). Every device that saw the offer mints its own; its siblings fold it by stamp.
 
@@ -29,6 +29,24 @@ The lower device key plays the origin's direction (`group_link_origin`), so the 
 - A sibling of ours joining stops our ring: its `Answer` row reaches us by the fleet push and the molecule page merge.
 - Glare: two members waving the same group in the same breath — the smaller wave id is the wave, and the other origin folds its offer into joining it.
 - A device is in one wave at a time: a pair's offer during a group wave gets `Busy`, a group offer during any wave is ignored.
+- A ring ends on the origin's hangup, our own answer or decline, our fleet's answer or decline on another device, or the presence plane's offline verdict for every device still waving (the group ring's lease, on an edge).
+
+## A member is a person, not a contact
+
+A molecule's member need not be anyone's friend: I bind Frank, Frank binds Mike, and Mike and I never met.
+Every group frame resolves its sender by its signing device thru the roster (`molecules::group_member_of`): a contact when we friended them, else the member's `MoleculePeer` fold, and in both cases only while the roster says they stand.
+So a stranger's photons, waves and joins commit, ring and link exactly as a friend's do; a ring from a stranger names them by the name they granted the molecule, and the roll paints their party gradient where a friend has an avatar.
+A group ACK goes to the device that signed the frame, never thru a contact.
+Their devices come from the fold (`molecules::member_devices`) and their addresses from the phonebook (`device_addresses`: a contact's gathered candidates, else the peer store's records, LAN first when it shares our /24); a member may push its own record to us (the PhonebookResponse door admits a molecule member's device for its own record only).
+Presence is still not granted by membership: a stranger's pings drop.
+
+## Express
+
+Each signal is also sealed as a datagram (`signal::seal_group_express`) and sent straight to every other standing member's devices and over the relay, so a ring, a join or a leave beats the lane as a pair's does.
+The key is the group era's, under a context of its own (`group_express_key`, `PHOTON_WAVE_v1 group express signal`), so no pair's express key can equal a group's; every signal also seals under the retired era, for a member one cutover behind.
+A group key is shared by every member, so it proves membership and nothing more: the frame names its device (`dv`) and carries that device's Ed25519 signature over the hash of the sealed document, so no member can speak as another.
+The receiver opens what no pair opened against every molecule it stands in, drops a stale stamp or a nonce it has seen (the pair's replay guard), resolves the member from the signing device, and hands the signal to the same handler as the lane row; whichever copy lands second is a no-op.
+The offer goes express at its send commit, the moment the origin holds the egg the frame must carry; joins, roll calls and leaves go with their lane rows.
 
 ## The audio session
 
@@ -68,4 +86,4 @@ Recorded by default, as every wave is. Each link spools on its own (our side and
 - **No crash recovery for a group recording** (the 1:1 spool register is per peer): a group wave cut off by a crash is not recovered.
 - **No relay media**, as for 1:1 waves: a link needs a direct path either end can reach.
 - **A mesh, not a relay.** Up to seven others fit the slots; past a handful of people the uploads multiply (N−1 beams for every camera), and the any-size doctrine wants a member fanning out instead.
-- **No express copy:** a group ring arrives by the lane alone. It ends on the origin's hangup, our own answer or decline, our fleet's answer or decline on another device, or the presence plane's offline verdict for every device still waving (the group ring's lease, on an edge).
+- **One express shot.** A pair's ring re-fires its express offer while it rings; a group's goes once, and the lane carries anything it misses.
