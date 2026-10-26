@@ -34,6 +34,12 @@ pub(crate) struct GroupLinkUp {
     pub engine: crate::wave::engine::EngineHandle,
     /// The link's beam receiver: up with the engine, costing nothing until the peer beams; its picture lands in the link's slot.
     pub _beam_rx: crate::wave::beam_session::Receiver,
+    /// The link's drought state (group_drought_tick): reconnecting, the candidate the walk is on, when it last moved.
+    pub reconnecting: bool,
+    pub probe: u32,
+    pub last_probe_osc: i64,
+    /// The link's recording spool: our side and this link's far party (docs/group-waves.md); collected into the group keep when the link or the wave ends.
+    pub spool: Option<crate::wave::spool::SpoolTicket>,
 }
 
 /// The one live group wave (one wave at a time on a device, group or pair).
@@ -62,6 +68,9 @@ pub(crate) struct GroupWave {
     /// Our camera going out to every link (the fan), and a desktop camera still opening.
     pub beam_tx: Option<crate::wave::beam_session::Sender>,
     pub beam_opening: Option<std::sync::mpsc::Receiver<Result<crate::wave::beam_session::Sender, String>>>,
+    /// Spools of links that have ended (with their engine threads, which the keep joins first), and how many spools this wave has minted (each link's file is named apart).
+    pub spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>)>,
+    pub spools_minted: u8,
 }
 
 impl GroupWave {
@@ -118,6 +127,8 @@ impl PhotonApp {
             ever_linked: false,
             beam_tx: None,
             beam_opening: None,
+            spent: Vec::new(),
+            spools_minted: 0,
         });
         self.dialed_wave_ids.insert(wave_id);
         let sig = WaveSignal::Offer { wave_id, nonce, device: Some(device) };
@@ -342,6 +353,8 @@ impl PhotonApp {
             ever_linked: false,
             beam_tx: None,
             beam_opening: None,
+            spent: Vec::new(),
+            spools_minted: 0,
         }
     }
 
@@ -398,22 +411,39 @@ impl PhotonApp {
             .unwrap_or(crate::network::status::RELAY_ADDR);
         let lead = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(self.group_wave.as_ref().is_some_and(|w| w.links.is_empty())));
         let origin = crate::wave::keys::group_link_origin(&our_device, &device);
+        // Recording by default, as every wave is: each link its own spool, named apart by how many this wave has minted.
+        let (spool_param, ticket) = match self.group_wave.as_mut() {
+            Some(w) => {
+                let mut id8: [u8; 8] = w.wave_id[..8].try_into().unwrap();
+                id8[7] ^= 0x80 | w.spools_minted;
+                w.spools_minted = w.spools_minted.wrapping_add(1);
+                match crate::wave::spool::mint(&id8) {
+                    Some((key, path, ticket)) => (Some((key, path)), Some(ticket)),
+                    None => (None, None),
+                }
+            }
+            None => (None, None),
+        };
         let engine = crate::wave::engine::start(crate::wave::engine::EngineParams {
             secret,
             we_are_origin: origin,
             peer_addr: addr,
-            spool: None,
+            spool: spool_param,
             cal: self.cal_snapshot(),
             plaid_allowed: self.is_lan_for_plaid(addr),
             slot,
             group: Some(crate::wave::engine::GroupLink { lead: lead.clone(), slot_gen }),
         });
         crate::logf!("WAVE: group link up with {} on slot {} — media aimed at {}", crate::fp(&device), slot, addr);
+        // No address for this device: push ours to it now (its answer is its record), as a 1:1 wave does when it starts without a route.
+        if addr == crate::network::status::RELAY_ADDR {
+            self.push_address_record_to(vec![device]);
+        }
         // The link's beam, both ways: a receiver for their picture, a transport in the fan for ours (beaming or not, so its chain runs from the link's start).
         let beam_rx = crate::wave::beam_session::start_receiver_slot(&secret, origin, slot);
         crate::wave::beam_session::fan_add(slot, &secret, origin);
         if let Some(w) = self.group_wave.as_mut() {
-            w.links.push(GroupLinkUp { device, slot, lead, engine, _beam_rx: beam_rx });
+            w.links.push(GroupLinkUp { device, slot, lead, engine, _beam_rx: beam_rx, reconnecting: false, probe: 0, last_probe_osc: 0, spool: ticket });
             w.ever_linked = true;
         }
         self.scene_dirty = true;
@@ -427,10 +457,14 @@ impl PhotonApp {
         let Some(i) = w.links.iter().position(|l| l.device == device) else {
             return;
         };
-        let link = w.links.remove(i);
+        let mut link = w.links.remove(i);
         crate::platform::audio::far_done_slot(link.slot);
         crate::wave::beam_session::fan_remove(link.slot);
         link.engine.stop();
+        // Its recording joins the wave's keep, with the engine thread the keep waits on (the fill drain may still be writing).
+        if let Some(t) = link.spool.take() {
+            w.spent.push((t, link.engine.take_thread()));
+        }
         if link.lead.load(std::sync::atomic::Ordering::Relaxed) {
             if let Some(next) = w.links.first() {
                 next.lead.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -453,8 +487,16 @@ impl PhotonApp {
         if had_links {
             crate::platform::audio::play_end_sweep();
         }
-        for link in w.links.drain(..) {
+        for mut link in w.links.drain(..) {
             link.engine.stop();
+            if let Some(t) = link.spool.take() {
+                w.spent.push((t, link.engine.take_thread()));
+            }
+        }
+        // RECORDED BY DEFAULT: every link's spool goes to one keep off the UI thread, which joins the engines first; the recording lands against the wave's row.
+        let spent = std::mem::take(&mut w.spent);
+        if w.ever_linked && !spent.is_empty() {
+            self.spawn_group_keep(w.gid, w.offer_osc, w.wave_id, spent);
         }
         // Our camera: stopped off the UI thread, the phone's pipeline told, the fan gone.
         if let Some(s) = w.beam_tx.take() {
@@ -494,6 +536,80 @@ impl PhotonApp {
         }
         self.persist_and_push_rows(id, std::slice::from_ref(&row));
         self.scene_dirty = true;
+    }
+
+    /// THE GROUP DROUGHT (docs/group-waves.md), the 1:1 wave's reconnect carried to each link: two seconds without an authenticated packet on a link marks it reconnecting and pushes our address to that device; a link that has never heard its peer walks the device's candidate addresses, one every two seconds; a link that has carried media keeps its path (a working path is never abandoned — the peer stopped, we are not aimed wrong). No give-up: a link waits until its peer leaves or we do.
+    pub(super) fn group_drought_tick(&mut self) {
+        const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
+        use std::sync::atomic::Ordering::Relaxed;
+        let Some(w) = self.group_wave.as_ref() else {
+            return;
+        };
+        let now = vsf::eagle_time_oscillations();
+        let mut pushes: Vec<[u8; 32]> = Vec::new();
+        let mut walks: Vec<(usize, [u8; 32], u32)> = Vec::new();
+        let mut changed = false;
+        let states: Vec<(usize, bool, i64, i64)> = w
+            .links
+            .iter()
+            .map(|l| {
+                let start = crate::wave::SLOT_START_OSC[l.slot].load(Relaxed);
+                let heard = crate::wave::SLOT_RX_OSC[l.slot].load(Relaxed);
+                (l.slot, l.reconnecting, start, heard)
+            })
+            .collect();
+        let Some(w) = self.group_wave.as_mut() else {
+            return;
+        };
+        for (l, (slot, was, start, heard)) in w.links.iter_mut().zip(states) {
+            if start == 0 {
+                continue;
+            }
+            let drought = now - heard.max(start);
+            if drought >= 2 * OSC {
+                if !was {
+                    crate::logf!("WAVE: group link {} (slot {}) silent {}s — reconnecting", crate::fp(&l.device), slot, drought / OSC);
+                    l.reconnecting = true;
+                    pushes.push(l.device);
+                    changed = true;
+                }
+                if heard == 0 && now - l.last_probe_osc >= 2 * OSC {
+                    l.last_probe_osc = now;
+                    walks.push((slot, l.device, l.probe));
+                    l.probe = l.probe.wrapping_add(1);
+                }
+            } else if was {
+                crate::logf!("WAVE: group link {} (slot {}) — media resumed", crate::fp(&l.device), slot);
+                l.reconnecting = false;
+                l.probe = 0;
+                changed = true;
+            }
+        }
+        if !pushes.is_empty() {
+            self.push_address_record_to(pushes);
+            self.force_presence_sweep();
+        }
+        for (slot, dev, n) in walks {
+            let cands: Vec<std::net::SocketAddr> = self
+                .contacts
+                .iter()
+                .find(|c| !c.is_sibling && c.knows_device(&dev))
+                .map(|c| crate::network::traverse::gather::gather_device_candidates(c, &dev).sorted().into_iter().map(|x| x.addr).collect())
+                .unwrap_or_default();
+            if !cands.is_empty() {
+                let addr = cands[n as usize % cands.len()];
+                crate::wave::set_slot_redirect(slot, addr);
+                crate::logf!("WAVE: group link {} probe {} of {} — media aimed at {}", crate::fp(&dev), n as usize % cands.len() + 1, cands.len(), addr);
+            }
+        }
+        if changed {
+            self.scene_dirty = true;
+        }
+    }
+
+    /// Is any link of the group wave reconnecting (the status line says so)?
+    pub(super) fn group_reconnecting(&self) -> bool {
+        self.group_wave.as_ref().is_some_and(|w| w.links.iter().any(|l| l.reconnecting))
     }
 
     /// The Beam button in a group wave: our camera to every link (the fan), or off again.
@@ -626,6 +742,70 @@ impl PhotonApp {
     /// The far slots whose peers are beaming, in link order, for the wave screen's picture grid.
     pub(super) fn group_picture_slots(&self) -> Vec<usize> {
         self.group_wave.as_ref().map(|w| w.links.iter().map(|l| l.slot).collect()).unwrap_or_default()
+    }
+
+    /// The group keep, off the UI thread: wait for every link's engine (the fill drain may still be writing), merge the spools into one recording, store it; the drain lands the row.
+    fn spawn_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, wave_id: [u8; 16], spent: Vec<(crate::wave::spool::SpoolTicket, Option<std::thread::JoinHandle<()>>)>) {
+        let Some(seed) = self.session.as_ref().map(|s| s.identity_seed) else {
+            return;
+        };
+        let tx = self.wave_keep_sender();
+        let wake = self.event_proxy.clone();
+        self.pending_keep_hold = 1;
+        let wave_id8: [u8; 8] = wave_id[..8].try_into().unwrap();
+        let spawned = std::thread::Builder::new()
+            .name("wave-keep".into())
+            .spawn(move || {
+                #[cfg(target_os = "android")]
+                {
+                    let _ = unsafe { libc::setpriority(libc::PRIO_PROCESS, 0, -4) };
+                }
+                let mut tickets = Vec::new();
+                for (t, th) in spent {
+                    if let Some(th) = th {
+                        let _ = th.join();
+                    }
+                    tickets.push(t);
+                }
+                let result = crate::wave::record::finalize_group(tickets, &seed);
+                let _ = tx.send(super::wave_ui::WaveKeepResult { peer: [0u8; 32], offer_osc, wave_id8, result, group: Some(gid) });
+                if let Some(w) = wake {
+                    let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
+                }
+            })
+            .is_ok();
+        if !spawned {
+            crate::log("WAVE: group keep thread failed to spawn — recording not kept");
+        }
+    }
+
+    /// The group keep landed: the recording row in the molecule's conversation against the wave's row, carried to our siblings (each member's fleet keeps its own recording, as in a pair).
+    pub(super) fn land_group_keep(&mut self, gid: MoleculeId, offer_osc: i64, kept: Option<crate::wave::record::Kept>) {
+        let Some(kept) = kept else {
+            crate::log("WAVE: group recording not kept — the WAVE: group keep line(s) above say why");
+            return;
+        };
+        let id = crate::types::FriendshipId::from_bytes(gid.0);
+        let file = crate::types::AttachRef { hash: kept.hash, name: String::new(), size: kept.size, role: crate::types::AttachRole::WaveAudio, head: None, wrap: None };
+        let mut row = ChatMessage::attachment(file, true, offer_osc + 2).with_reference(crate::types::RefKind::Wave, offer_osc + 1);
+        row.notified = true;
+        row.delivered = true;
+        row.author = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let mut pushed = vec![row.clone()];
+        if let Some(conv) = self.conv_by_id_mut(id) {
+            conv.insert_message_sorted(row);
+            if let Some(w) = conv.messages.iter_mut().find(|m| m.timestamp == offer_osc + 1 && m.wave.is_some()) {
+                let before = w.wave;
+                crate::types::merge_wave_fields(w, Some(WaveInfo { outcome: WaveOutcome::Answered, secs: kept.secs }), &[]);
+                if w.wave != before {
+                    pushed.push(w.clone());
+                }
+            }
+        }
+        self.persist_and_push_rows(id, &pushed);
+        crate::logf!("WAVE: group recording kept — {} bytes as blob {}…, {} s", kept.size, hex::encode(&kept.hash[..4]), kept.secs);
+        self.space_check("a group recording kept");
+        self.scene_dirty = true;
     }
 
     fn stop_group_ring_platform() {

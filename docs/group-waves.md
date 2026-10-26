@@ -3,7 +3,7 @@
 A wave in a molecule, at any size: the same wave as two people have (docs/waves.md), held by everyone who joins it.
 Nick, 2026-10-25: "Needs built so wherever you want to start!"
 
-**Status:** v1 BUILT 2026-10-25 — audio, mesh, no recording, no beams.
+**Status:** BUILT 2026-10-25 — voice and beams over a mesh, recorded by default, reconnecting per link; field test pending.
 
 ## The shape
 
@@ -42,10 +42,30 @@ A slot is claimed with a generation (`claim_slot` / `release_slot`), so a link t
 Each engine installs its own media sink. A datagram goes to the sink whose engine already hears that address; one from an address no engine knows goes to every sink, and each engine's own seal keeps or refuses it — so a link whose peer moved finds it again by the same address-follows-auth rule as a 1:1 wave.
 That broadcast is only safe because `packet::open` checks the tag before it moves the step chain (2026-10-25): it used to advance first, which let any datagram with a far-ahead sequence number ratchet a live wave past its own keys.
 
-## v1 gaps
+## Beams
 
-- **No recording.** The links run with no spool; a group wave's row has no card. The N-channel container (docs/waves.md, "One spool per identity") already names a channel per party — the keep needs one spool per party across the links.
-- **No beams.** A beam in a mesh is N−1 uploads; it waits for a ladder that sizes to the weakest receiver, or a member relaying.
-- **No drought heal.** A 1:1 wave re-anchors through express signals; a group link has only the engine's own follow-the-packet rule. Both ends send from the start, so a path either end can reach carries.
-- **No relay media**, as for 1:1 waves.
-- **A mesh, not a relay.** Up to seven others fit the slots; past a handful of people the uploads multiply, and the any-size doctrine wants a member fanning out instead.
+Every link carries a beam both ways, exactly as a 1:1 wave does, under its own link secret.
+- **Receiving:** each link runs its own beam receiver (`beam_session::start_receiver_slot`) with its own frame queue, self-description and rotation, and its picture lands in the link's far slot. Every beam datagram goes to every receiver and each seal keeps its own (the same tag-before-advance rule as the media plane).
+- **Sending:** the group keeps a FAN — one beam transport per live link, from the link's secret, aimed at the link's current address (`wave::slot_tx_addr`, which each engine keeps). A sender in group mode (`beam_session::Target::Group`) encodes once and sends every frame to all of them; a link that joins mid-beam is told what the beam is before its first frame; the frame counter survives a camera stopping and starting. Desktop and phone alike — the phone's encoded feed goes to the fan the same way.
+- The ladder follows the lead link's verdict (v1): one encode for everyone, sized to the path the lead sees.
+- The wave screen tiles every beaming member's picture over the picture region, our own camera as the inset.
+
+## The wave screen
+
+A group wave shows the ROLL instead of the 1:1 field: everyone in the wave around the square (us first once joined, then each device in join order), each ringed in the colour of their own newest audio — ours from what we send, each member's from their link's far slot (`live::push_rx_slot`, `wave_field::env_ring_colour`), dark after half a second of nothing — and each name beneath in that person's colour.
+
+## Reconnecting
+
+Each link runs the 1:1 wave's drought rule (`group_drought_tick`): two seconds without an authenticated packet marks the link reconnecting and pushes our address to that device; a link that has never heard its peer walks the device's candidate addresses, one every two seconds (`wave::set_slot_redirect`); a link that has carried media keeps its path. A network change pushes our address to every linked device. No give-up.
+
+## Recording
+
+Recorded by default, as every wave is. Each link spools on its own (our side and that link's far party); only the lead link writes the archive stream, because packets from two encoders cannot be spliced, and the archive follows the lead as it passes. At the end every link's spool goes to one keep (`record::finalize_group`): our archive is channel 0, each link's far party a channel of its own in link order (`merge_group_records`). The recording row lands against the wave's row in the molecule's conversation and goes to our siblings; each member's fleet keeps its own recording, as in a pair.
+
+## Gaps
+
+- **The wave.env exchange** (a pair's card colours each half from the other party's shared envelope) is not carried to groups yet: a group recording's card draws from the audio itself.
+- **No crash recovery for a group recording** (the 1:1 spool register is per peer): a group wave cut off by a crash is not recovered.
+- **No relay media**, as for 1:1 waves: a link needs a direct path either end can reach.
+- **A mesh, not a relay.** Up to seven others fit the slots; past a handful of people the uploads multiply (N−1 beams for every camera), and the any-size doctrine wants a member fanning out instead.
+- **No express copy and no ring lease:** a group ring arrives by the lane alone, and it ends on the origin's hangup or our own answer, decline or a sibling's join.

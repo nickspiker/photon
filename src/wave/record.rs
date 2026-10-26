@@ -447,6 +447,54 @@ pub fn finalize_nchannel(ticket: SpoolTicket, identity_seed: &[u8; 32]) -> Optio
     Some(Kept { hash, size, env, secs: t.secs })
 }
 
+/// A GROUP wave's keep (docs/group-waves.md): one spool per link, each holding our side (the lead link's archive stream, our wire copies) and that link's far party on channel 1. The far parties become channels 1, 2, 3… in link order; our archive is channel 0 as in any keep, taken from whichever link was lead at the time.
+pub fn finalize_group(tickets: Vec<SpoolTicket>, identity_seed: &[u8; 32]) -> Option<Kept> {
+    let mut sets: Vec<Vec<Record>> = Vec::new();
+    for t in &tickets {
+        sets.push(drain_records(t).unwrap_or_default());
+    }
+    let merged = merge_group_records(sets);
+    let built = build_container(&merged);
+    for t in tickets {
+        let _ = std::fs::remove_file(&t.path);
+    }
+    let Some(t) = built else {
+        crate::logf!("WAVE: group keep failed — {} record(s) built no recording", merged.len());
+        return None;
+    };
+    let hash = *blake3::hash(&t.container).as_bytes();
+    let size = t.container.len() as u64;
+    if let Err(e) = crate::storage::blob_store_any(identity_seed, &hash, &t.container) {
+        crate::logf!("WAVE: group keep failed — the vault refused the {} byte recording ({} s): {}", size, t.secs, e);
+        return None;
+    }
+    let env = t.env.and_then(|e| {
+        let eh = *blake3::hash(&e).as_bytes();
+        crate::storage::blob_store_any(identity_seed, &eh, &e).ok().map(|_| (eh, e))
+    });
+    Some(Kept { hash, size, env, secs: t.secs })
+}
+
+/// The group keep's merge: link `k`'s far party (its channel 1) becomes channel `1 + k`; our own records (channel 0, the archive, the render) pass as they are.
+/// Past the channels the container's index can name (the archive and render indices sit above), a link's far party is dropped rather than folded onto another's.
+pub(crate) fn merge_group_records(sets: Vec<Vec<Record>>) -> Vec<Record> {
+    let flags = !super::spool::CHAN_MASK;
+    let mut out = Vec::new();
+    for (k, set) in sets.into_iter().enumerate() {
+        let ch = 1 + k;
+        for mut r in set {
+            if r.index() == 1 {
+                if ch >= super::spool::RENDER_CHAN as usize {
+                    continue;
+                }
+                r.chan = (r.chan & flags) | ch as u8;
+            }
+            out.push(r);
+        }
+    }
+    out
+}
+
 /// The keep core: drained spool records → a `PHCALL8` container (bytes). Split from [`finalize_nchannel`] so it's testable without the storage/vault layer. `None` = nothing recorded or a codec init failure.
 pub(crate) fn build_container(records: &[Record]) -> Option<Transcoded> {
     // THE ORDERING FIX (Nick 2026-09-12): channel 0 is the live ARCHIVE stream verbatim — the clean pre-duck encode made during the wave. THE VERBATIM KEEP (Nick 2026-09-17): every other channel is verbatim too — the wire packets on their 5 ms seq lattice, fills included, holes kept — so the keep encodes nothing and its one decode pass feeds the envelope. A legacy spool with no archive records carries channel 0 as its wire copies (sub 2) the same way.
@@ -1016,6 +1064,41 @@ mod tests {
         let mut ks3 = open_blob(&container).unwrap();
         ks3.seek(total + 50);
         assert!(ks3.next_frame().is_none());
+    }
+
+    /// A group keep: three links' spools merge into one container — our side once (channel 0), each link's far party on a channel of its own in link order.
+    #[test]
+    fn a_group_keep_gives_every_far_party_its_own_channel() {
+        let mut enc = opus::Encoder::new(48_000, opus::Channels::Mono, opus::Application::Audio).unwrap();
+        let mut buf = vec![0u8; 4000];
+        let ops = vsf::OSCILLATIONS_PER_SECOND as i64;
+        let mut sets: Vec<Vec<Record>> = vec![Vec::new(); 3];
+        for i in 0..20i64 {
+            let tone: Vec<i16> = (0..FRAME_IN).map(|s| ((s as f32 * 0.1).sin() * 4000.0) as i16).collect();
+            let n = enc.encode(&tone, &mut buf).unwrap();
+            let osc = i * (ops / 200);
+            for (k, set) in sets.iter_mut().enumerate() {
+                // Every link spools our wire copy and its own far party; the far party's level marks which link it came from.
+                set.push(Record { chan: 0, osc, seq: None, proc: None, bytes: buf[..n].to_vec() });
+                let far: Vec<i16> = tone.iter().map(|s| s / (1 << k)).collect();
+                let m = enc.encode(&far, &mut buf).unwrap();
+                set.push(Record { chan: 1 | crate::wave::spool::FILL_FLAG * (i == 7) as u8, osc, seq: Some((i as u32, 0)), proc: None, bytes: buf[..m].to_vec() });
+            }
+        }
+        let merged = merge_group_records(sets);
+        assert_eq!(merged.iter().filter(|r| r.index() == 0).count(), 60, "our side passes as it is");
+        for ch in 1..=3usize {
+            assert_eq!(merged.iter().filter(|r| r.index() == ch).count(), 20, "link {} is channel {}", ch - 1, ch);
+        }
+        assert!(merged.iter().filter(|r| r.is_fill()).count() == 3, "a fill keeps its flag on its new channel");
+        let t = build_container(&merged).unwrap();
+        let ks = open_blob(&t.container).unwrap();
+        assert_eq!(ks.nchan, 4, "us and three far parties");
+        // Past what the container can name, a link is dropped, never folded onto another's channel.
+        let many: Vec<Vec<Record>> = (0..14).map(|_| vec![Record { chan: 1, osc: 0, seq: None, proc: None, bytes: vec![1] }]).collect();
+        let m = merge_group_records(many);
+        assert!(m.iter().all(|r| r.index() < crate::wave::spool::RENDER_CHAN as usize));
+        assert_eq!(m.len(), 12);
     }
 
     #[test]

@@ -349,3 +349,14 @@ pub fn set_peer_redirect(addr: SocketAddr) {
 pub fn take_peer_redirect() -> Option<SocketAddr> {
     PEER_REDIRECT.lock().unwrap().take()
 }
+
+/// A fresh address for one group link's engine (docs/group-waves.md): the group's drought walk aims a link that has never heard its peer at the device's next candidate, as `set_peer_redirect` does for a 1:1 wave.
+static SLOT_REDIRECT: [Mutex<Option<SocketAddr>>; crate::platform::audio::FAR_SLOTS] = [const { Mutex::new(None) }; crate::platform::audio::FAR_SLOTS];
+
+pub fn set_slot_redirect(slot: usize, addr: SocketAddr) {
+    *SLOT_REDIRECT[slot].lock().unwrap() = Some(addr);
+}
+
+pub fn take_slot_redirect(slot: usize) -> Option<SocketAddr> {
+    SLOT_REDIRECT[slot].lock().unwrap().take()
+}

@@ -12,10 +12,12 @@ use crate::types::{WaveInfo, WaveOutcome};
 
 /// A finished keep-transcode, posted from the worker thread back to the UI thread to mint the `wave.audio` row. `result` is `None` when the recording was empty or the transcode failed (treated as delete).
 pub(super) struct WaveKeepResult {
-    peer: [u8; 32],
-    offer_osc: i64,
-    wave_id8: [u8; 8],
-    result: Option<crate::wave::record::Kept>,
+    pub(super) peer: [u8; 32],
+    pub(super) offer_osc: i64,
+    pub(super) wave_id8: [u8; 8],
+    pub(super) result: Option<crate::wave::record::Kept>,
+    /// A GROUP wave's keep (docs/group-waves.md): its row lands in the molecule's conversation, not a contact's.
+    pub(super) group: Option<crate::types::molecule::MoleculeId>,
 }
 
 /// Format a duration base-aware: `M:SS` in dozenal and arabic, the plain seconds count in hex (hex is linear everywhere, Nick 2026-09-11). A free function so the render can call it under its chrome borrow (the method form reads `&self`). Rendered in the Oxanium face so the dozenal `+glyphs` control-block glyphs resolve. Dozenal seconds pad to two dozenal digits (0–4B).
@@ -665,6 +667,11 @@ impl PhotonApp {
         if let Some(dev) = self.active_wave.as_ref().and_then(|c| c.peer_device) {
             self.wave_needs_addresses.set(Some(dev));
         }
+        // Every device a group wave links us to hears where we went.
+        let linked: Vec<[u8; 32]> = self.group_wave.as_ref().map(|w| w.links.iter().map(|l| l.device).collect()).unwrap_or_default();
+        if !linked.is_empty() {
+            self.push_address_record_to(linked);
+        }
         self.force_presence_sweep();
         self.reseed_reflexive_from_fgtw();
         self.start_portmap();
@@ -780,6 +787,7 @@ impl PhotonApp {
         if let Some(dev) = crate::wave::take_address_push() {
             self.push_address_record_to(vec![dev]);
         }
+        self.group_drought_tick();
         const OSC: i64 = vsf::OSCILLATIONS_PER_SECOND as i64;
         // NO GIVE-UP (Nick 2026-10-15: "Reconnecting at 2s or longer, not 5 and I'd pull the 30s dropped. Should be able to wait forever if needed, could be an unattended beam that needs to stay live across network outages"): two seconds of silence starts the reconnect — anchors every 2 s, addresses re-pushed, the answer re-sent while the caller has never been heard — and a live wave or beam then waits through any outage until a person ends it.
         let (reconnect_after, anchor_every) = (2 * OSC, 2 * OSC);
@@ -1652,7 +1660,7 @@ impl PhotonApp {
                     let _ = t.join();
                 }
                 let result = crate::wave::record::finalize_nchannel(ticket, &seed);
-                let _ = tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result });
+                let _ = tx.send(WaveKeepResult { peer, offer_osc, wave_id8, result, group: None });
                 if let Some(w) = wake {
                     let _ = w.send(crate::ui::PhotonEvent::NetworkUpdate);
                 }
@@ -1751,7 +1759,7 @@ impl PhotonApp {
 
     /// KEEP the recording: finalize the spool into the wave container, store it as a content-addressed blob, and mint a FLEET-INTERNAL attachment row (local insert + sibling push — never chain-transmitted; the friend's fleet keeps its own recording). v1 gap, tracked in docs/waves.md: the blob itself lives on THIS device until sibling blob-fetch lands.
     /// Lazily mint the keep-transcode result channel (worker → UI), mirroring `update_sender`.
-    fn wave_keep_sender(&mut self) -> std::sync::mpsc::Sender<WaveKeepResult> {
+    pub(super) fn wave_keep_sender(&mut self) -> std::sync::mpsc::Sender<WaveKeepResult> {
         if self.wave_keep_tx.is_none() {
             let (tx, rx) = std::sync::mpsc::channel();
             self.wave_keep_tx = Some(tx);
@@ -1808,6 +1816,10 @@ impl PhotonApp {
         }
         for r in pending {
             self.pending_keep_hold = -1; // the keep finished, one way or the other — Kotlin drops the wake lock
+            if let Some(gid) = r.group {
+                self.land_group_keep(gid, r.offer_osc, r.result);
+                continue;
+            }
             match r.result {
                 Some(kept) => {
                     // Keep completed (blob stored) → the durable spool register has done its job; a crash from here on has nothing to recover.

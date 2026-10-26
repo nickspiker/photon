@@ -744,22 +744,28 @@ fn run(
                 let osc = vsf::grid::sample_to_eagle(k0);
                 let gain_q8: u16 = 256;
                 // The archive stream: clean mic pairs encode once at the high rung, the ducking profile rides the record's proc fields (10ms resolution — the gain slews far slower than that).
-                if arch_buf.is_empty() {
-                    arch_meta = Some((osc, window_id, frames_in_window as u8));
-                }
-                arch_buf.extend_from_slice(&pre_frame);
-                if arch_buf.len() >= 480 {
-                    if let (Some(enc2), Some((osc0, wid0, slot0))) = (arch_enc.as_mut(), arch_meta.take()) {
-                        if let Ok(an) = enc2.encode(&arch_buf[..480], &mut arch_pkt) {
-                            if let Some(at) = w.append_seq_proc(super::spool::ARCH_CHAN | super::spool::PROC_FLAG, osc0, Some((wid0, slot0)), Some((gain_q8, proc_verdict)), &arch_pkt[..an]) {
-                                if arch_index.len() >= TX_INDEX_CAP {
-                                    arch_index.pop_front();
+                // A group wave keeps ONE archive stream, the lead link's (docs/group-waves.md): packets from two encoders cannot be spliced, so the others write none, and the keep follows the lead as it passes.
+                if !is_lead() {
+                    arch_buf.clear();
+                    arch_meta = None;
+                } else {
+                    if arch_buf.is_empty() {
+                        arch_meta = Some((osc, window_id, frames_in_window as u8));
+                    }
+                    arch_buf.extend_from_slice(&pre_frame);
+                    if arch_buf.len() >= 480 {
+                        if let (Some(enc2), Some((osc0, wid0, slot0))) = (arch_enc.as_mut(), arch_meta.take()) {
+                            if let Ok(an) = enc2.encode(&arch_buf[..480], &mut arch_pkt) {
+                                if let Some(at) = w.append_seq_proc(super::spool::ARCH_CHAN | super::spool::PROC_FLAG, osc0, Some((wid0, slot0)), Some((gain_q8, proc_verdict)), &arch_pkt[..an]) {
+                                    if arch_index.len() >= TX_INDEX_CAP {
+                                        arch_index.pop_front();
+                                    }
+                                    arch_index.push_back((wid0, slot0, at));
                                 }
-                                arch_index.push_back((wid0, slot0, at));
                             }
                         }
+                        arch_buf.clear();
                     }
-                    arch_buf.clear();
                 }
                 // The wire copy spools ONLY when compressed (bit-exact fill service, small); a plaid window reconstructs from its archive record at serve time.
                 if tier != RAW_TIER {
@@ -1379,13 +1385,15 @@ fn run(
         }
 
         // Signal-plane re-anchor: an authenticated express Anchor named a fresh peer address (both-sides-moved heal) — re-point TX there. The media plane's own follow rule keeps refining from packet sources as usual.
-        if let Some(a) = solo.then(super::take_peer_redirect).flatten() {
+        let redirect = if solo { super::take_peer_redirect() } else { super::take_slot_redirect(far) };
+        if let Some(a) = redirect {
             // A path that has carried authenticated media is never yanked off by a signal (field 2026-09-12: the other side's rescue probe re-anchored a live LAN wave onto a dead IPv6 address). The media plane's own forward-progress rule still re-points TX when the PEER'S packets arrive from somewhere new — that is the heal that stays.
             if a != peer && rx_max_seq.is_none() {
                 crate::logf!("WAVE: peer re-anchored via express → {} (was {})", a, peer);
                 peer = a;
                 if solo { super::set_wave_tx_addr(Some(peer)); }
                 super::set_slot_tx_addr(far, Some(peer));
+                super::set_media_sink_peer(sink_gen, peer);
             } else if a != peer {
                 crate::logf!("WAVE: express named {} but media has flowed from {} — keeping the working path", a, peer);
             }

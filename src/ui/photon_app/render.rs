@@ -487,7 +487,7 @@ impl PhotonApp {
             .map(|t| self.fmt_duration(t.4))
             .unwrap_or_default();
         // Receive-drought state for the Active status line (wave_drought_tick owns the flag).
-        let wave_reconnecting = self.active_wave.as_ref().is_some_and(|c| c.reconnecting);
+        let wave_reconnecting = self.active_wave.as_ref().is_some_and(|c| c.reconnecting) || self.group_reconnecting();
         // Fleet wave-presence chip text, hoisted like the duration (machine_name reads &self): shown only in the chip's own conversation, only while THIS device has no wave UI of its own.
         let fleet_chip_text: Option<String> = self.fleet_wave_elsewhere.and_then(|(_, dev, chip_peer)| {
             if self.active_wave.is_some() || !matches!(self.state, AppState::Conversation) {

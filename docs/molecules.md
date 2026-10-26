@@ -64,7 +64,7 @@ My devices see a molecule as one more conversation: chains blob (lanes, eras, KE
 - Conversation: author name and `party_colour` of the author's party id on each row; the delivered ring fills by the fraction of members that ACKed. Header lists members.
 - New molecule: pick from your contacts; a molecule page with members, Add (your contacts only), Leave.
 - Honest surfaces: "history before you joined isn't shared" when D5 is off; "N members haven't received this yet" is the delivered fraction, nothing timered.
-- Waves in molecules: docs/group-waves.md (v1 built 2026-10-25 — audio over a mesh of 1:1 engines; no recording, no beams yet).
+- Waves in molecules: docs/group-waves.md (built 2026-10-25 — voice and beams over a mesh of 1:1 engines, recorded by default).
 
 ## 7. Concrete additions
 
