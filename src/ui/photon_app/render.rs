@@ -119,6 +119,7 @@ impl PhotonApp {
                 AppState::Settings(SettingsPage::Language) => "Settings:Language",
                 AppState::Settings(SettingsPage::Vault) => "Settings:Vault",
                 AppState::Settings(SettingsPage::Wave) => "Settings:Wave",
+                AppState::Settings(SettingsPage::Beam) => "Settings:Beam",
                 AppState::Settings(SettingsPage::Dozenal) => "Settings:Dozenal",
                 AppState::Settings(SettingsPage::Conversations) => "Settings:Conversations",
                 AppState::Settings(SettingsPage::About) => "Settings:About",
@@ -575,6 +576,8 @@ impl PhotonApp {
         let group_layout = self.group_wave.is_some();
         let group_beaming = self.group_beaming();
         let group_slots = self.group_picture_slots();
+        // The Beam page reads this inside the chrome borrow.
+        let beam_follows = self.beam_follows_fleet();
         let group_roll: Vec<(super::group_wave::RollFace, (f32, f32, f32))> = match field_geom.filter(|_| group_layout) {
             Some(g) => {
                 let roll = self.group_roll();
@@ -6804,6 +6807,143 @@ impl PhotonApp {
                         y += line_h * 1.1;
                     }
                 }
+                SettingsPage::Beam => {
+                    // THE BEAM PAGE (Nick 2026-10-26): what this device asks of the beams it sends — this device only or following the fleet, HDR (greyed out where the cameras are 8-bit SDR), the largest size, the frame rate, quality, the data ceiling, what a busy link sheds — then test patterns painted straight into the buffer as g2t codes, so this screen's white, its brightest and its banding can be judged by eye.
+                    let inset = layout.content_inset();
+                    let mut flow = Flow::new(inset, settings_content_scroll);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::PageName(page)), tspan, *theme::CONTACT_NAME_COLOUR, 600);
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::BeamIntro), hspan2, *theme::LABEL_COLOUR, 400);
+                    let bs = crate::wave::beam_settings::current();
+                    let capable = crate::wave::beam_settings::hdr_capable();
+                    let green = |on: bool| if on { Some(*theme::PILL_GREEN) } else { None };
+                    // Each control: a heading, an optional line of prose, a row of pills (slot = btn_base + n; driver.rs on_beam_pill maps them back).
+                    let sections: Vec<(String, Option<String>, Vec<(String, u16, bool, bool)>)> = {
+                        use crate::wave::beam_settings::{BITRATE_CAPS, FPS_CAPS, QUALITIES, SIZE_CAPS};
+                        let follows = beam_follows;
+                        let mut size = vec![(tr(Msg::BeamAuto).into_owned(), 4u16, true, bs.size_cap.is_none())];
+                        size.extend(SIZE_CAPS.iter().enumerate().map(|(i, &w)| (crate::fmt_num(w), 5 + i as u16, true, bs.size_cap == Some(w))));
+                        let fps = FPS_CAPS.iter().enumerate().map(|(i, &f)| (crate::fmt_num(f), 9 + i as u16, true, bs.tuning.fps_cap == f)).collect();
+                        let q_names = [Msg::BeamQualityLean, Msg::BeamQualityStandard, Msg::BeamQualityRich];
+                        let quality = QUALITIES.iter().zip(q_names).enumerate().map(|(i, (&q, m))| (tr(m).into_owned(), 12 + i as u16, true, bs.tuning.bpp_milli == q)).collect();
+                        let mut rate = vec![(tr(Msg::BeamAuto).into_owned(), 15u16, true, bs.tuning.bitrate_cap.is_none())];
+                        rate.extend(BITRATE_CAPS.iter().enumerate().map(|(i, &b)| (tr(Msg::BeamKbit(&crate::fmt_num(b / 1000))).into_owned(), 16 + i as u16, true, bs.tuning.bitrate_cap == Some(b))));
+                        vec![
+                            (tr(Msg::BeamFollowHead).into_owned(), None, vec![(tr(Msg::BeamThisDevice).into_owned(), 0, true, !follows), (tr(Msg::BeamFollowFleet).into_owned(), 1, true, follows)]),
+                            (
+                                tr(Msg::BeamHdrHead).into_owned(),
+                                Some(tr(if capable { Msg::BeamHdrProse } else { Msg::BeamHdrUnavailable }).into_owned()),
+                                vec![(tr(Msg::BeamOff).into_owned(), 2, true, !(bs.hdr && capable)), (tr(Msg::BeamOn).into_owned(), 3, capable, bs.hdr && capable)],
+                            ),
+                            (tr(Msg::BeamSizeHead).into_owned(), None, size),
+                            (tr(Msg::BeamFpsHead).into_owned(), None, fps),
+                            (tr(Msg::BeamQualityHead).into_owned(), Some(tr(Msg::BeamQualityProse).into_owned()), quality),
+                            (tr(Msg::BeamBitrateHead).into_owned(), None, rate),
+                            (tr(Msg::BeamShedHead).into_owned(), None, vec![(tr(Msg::BeamShedSmooth).into_owned(), 20, true, !bs.tuning.keep_detail), (tr(Msg::BeamShedSharp).into_owned(), 21, true, bs.tuning.keep_detail)]),
+                        ]
+                    };
+                    for (head, prose, pills) in &sections {
+                        flow.gap(hspan2 * 0.6);
+                        flow.line(&mut canvas, ctx.text, head, hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                        if let Some(p) = prose {
+                            flow.prose(&mut canvas, ctx.text, p, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                        }
+                        let row: Vec<(&str, HitId, bool, Option<(u32, u32)>)> = pills.iter().map(|(l, s, en, on)| (l.as_str(), btn_base + *s, *en, green(*on))).collect();
+                        flow_pills(&mut flow, &mut canvas, ctx.text, &mut chrome.hit_test_map, buf_w, buf_h, ctx.pressed_hit, hspan2 * 0.9, &row, "Oxanium");
+                    }
+                    // ── TEST PATTERNS: the buffer's own codes (g2t: white at 194, 9.7× at 255), so what shows is exactly what the display path makes of them.
+                    flow.gap(hspan2 * 1.2);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::BeamTestHead), hspan2 * 1.05, *theme::CONTACT_NAME_COLOUR, 600);
+                    #[cfg(target_os = "android")]
+                    let hdr = fluor::host::android::hdr_surface::status();
+                    #[cfg(not(target_os = "android"))]
+                    let hdr: Option<(f32, f32, f32)> = None;
+                    let stops = |r: f32| crate::fmt_halves((2.0 * r.max(1.0).log2()).round() as i32);
+                    let status = match hdr {
+                        Some((granted, _, desired)) if granted > 1.01 => tr(Msg::BeamScreenHdr { allowed: &stops(granted), asked: &stops(desired) }).into_owned(),
+                        Some(_) => tr(Msg::BeamScreenHdrNone).into_owned(),
+                        None => tr(Msg::BeamScreenSdr).into_owned(),
+                    };
+                    flow.prose(&mut canvas, ctx.text, &status, hspan2 * 0.9, *theme::LABEL_COLOUR, 400);
+                    let page_clip = Some(fluor::paint::Clip::new(inset.x as usize, inset.y as usize, (inset.x + inset.w) as usize, (inset.y + inset.h) as usize));
+                    let margin = hspan2 * 0.6;
+                    let (px0, pw) = (flow.x + margin, (flow.w - 2.0 * margin).max(8.0));
+                    let ramp_h = hspan2 * 2.4;
+                    let label_size = hspan2 * 0.85;
+                    // A ramp across the pane: column i gets `code(i, columns)` as its (R, G, B) codes.
+                    let ramp = |canvas: &mut Canvas, y: Coord, code: &dyn Fn(usize, usize) -> (u32, u32, u32)| {
+                        let n = pw as usize;
+                        for i in 0..n {
+                            let (r, g, b) = code(i, n);
+                            paint::fill_rect(canvas, (px0 as usize + i) as isize, y as isize, 1, ramp_h as isize, beam_test_colour(r, g, b), page_clip, None);
+                        }
+                    };
+                    flow.gap(hspan2 * 0.4);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::BeamRampBlackWhite), label_size, *theme::LABEL_COLOUR, 500);
+                    let y = flow.band(ramp_h).y;
+                    ramp(&mut canvas, y, &|i, n| {
+                        let c = (i * 194 / n.saturating_sub(1).max(1)) as u32;
+                        (c, c, c)
+                    });
+                    flow.gap(hspan2 * 0.5);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::BeamRampWhiteBrightest), label_size, *theme::LABEL_COLOUR, 500);
+                    let y = flow.band(ramp_h).y;
+                    ramp(&mut canvas, y, &|i, n| {
+                        let c = 194 + (i * 61 / n.saturating_sub(1).max(1)) as u32;
+                        (c, c, c)
+                    });
+                    // Ticks under it at each whole stop above white (1×, 2×, 4×, 8×) and, on an HDR screen, the light it allows right now.
+                    {
+                        let band = flow.band(hspan2 * 1.8);
+                        let at = |code: u32| px0 + (code.saturating_sub(194) as f32 / 61.0) * (pw - 1.0);
+                        let tick_style = TextStyle::new(hspan2 * 0.7, *theme::LABEL_COLOUR).weight(500).font("Oxanium");
+                        for k in 0..4u32 {
+                            let x = at(fluor::theme::g2t_code(65536 << k));
+                            paint::fill_rect(&mut canvas, x as isize, band.y as isize, 0, (hspan2 * 0.45) as isize, *theme::LABEL_COLOUR, page_clip, None);
+                            ctx.text.draw_text_center(&mut canvas, &crate::fmt_halves(2 * k as i32), x, band.y + hspan2 * 1.05, &tick_style, page_clip, None);
+                        }
+                        if let Some((granted, _, _)) = hdr.filter(|h| h.0 > 1.01) {
+                            let x = at(fluor::theme::g2t_code((granted * 65536.0) as u32));
+                            paint::fill_rect(&mut canvas, (x - 1.0) as isize, band.y as isize, 3, (hspan2 * 0.6) as isize, *theme::SEARCH_FOUND_COLOUR, page_clip, None);
+                        }
+                    }
+                    flow.prose(&mut canvas, ctx.text, &tr(Msg::BeamRampStops), hspan2 * 0.7, *theme::LABEL_COLOUR, 400);
+                    // Patches: white, the brightest the screen allows now, the brightest the buffer holds — side by side, the comparison Nick asked for.
+                    flow.gap(hspan2 * 0.5);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::BeamPatches), label_size, *theme::LABEL_COLOUR, 500);
+                    {
+                        let side = (pw / 3.6).min(hspan2 * 6.0);
+                        let band = flow.band(side + hspan2 * 1.4);
+                        let allowed = hdr.filter(|h| h.0 > 1.01).map_or(194, |h| fluor::theme::g2t_code((h.0 * 65536.0) as u32));
+                        let gap = (pw - 3.0 * side) / 2.0;
+                        let name_style = TextStyle::new(hspan2 * 0.75, *theme::LABEL_COLOUR).weight(500);
+                        for (i, (code, name)) in [(194u32, Msg::BeamPatchWhite), (allowed, Msg::BeamPatchAllowed), (255, Msg::BeamPatchTop)].into_iter().enumerate() {
+                            let x = px0 + i as f32 * (side + gap);
+                            paint::fill_rect(&mut canvas, x as isize, band.y as isize, side as isize, side as isize, beam_test_colour(code, code, code), page_clip, None);
+                            ctx.text.draw_text_center(&mut canvas, &tr(name), x + side * 0.5, band.y + side + hspan2 * 0.75, &name_style, page_clip, None);
+                        }
+                    }
+                    // Near black: one code per band, where too few bits (or a crushed curve) shows first.
+                    flow.gap(hspan2 * 0.5);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::BeamShadows), label_size, *theme::LABEL_COLOUR, 500);
+                    let y = flow.band(ramp_h).y;
+                    ramp(&mut canvas, y, &|i, n| {
+                        let c = (i * 25 / n.max(1)) as u32;
+                        (c, c, c)
+                    });
+                    // Each Rec.2020 primary alone, from black up past white to the top code.
+                    flow.gap(hspan2 * 0.5);
+                    flow.line(&mut canvas, ctx.text, &tr(Msg::BeamColourRamps), label_size, *theme::LABEL_COLOUR, 500);
+                    for ch in 0..3 {
+                        let y = flow.band(ramp_h * 0.7).y;
+                        ramp(&mut canvas, y, &|i, n| {
+                            let c = (i * 255 / n.saturating_sub(1).max(1)) as u32;
+                            [(c, 0, 0), (0, c, 0), (0, 0, c)][ch]
+                        });
+                        flow.gap(hspan2 * 0.2);
+                    }
+                    flow.gap(hspan2);
+                    measured_extent = Some((flow.used(), inset.h));
+                }
                 SettingsPage::Dozenal => {
                     // THE BASE PAGE (Nick 2026-09-09: "a distinct dozenal tab that reads Dozenal or Arabic depending on their choice"): the fleet-wide toggle, why (or the tin-foil answer in arabic mode), the digit cheat sheet with the custodian riddle behind it, and the DMS time-ago legend. A centred card like About, manual cursor, measured extent.
                     let inset = layout.content_inset();
@@ -7803,4 +7943,9 @@ mod blind_tests {
         conv_blind_step(&mut h, &mut edge, rests, 300.0, -150.0);
         assert_eq!(h, [0.0; 3], "the row lands last");
     }
+}
+
+/// A test-pattern colour from the buffer's own g2t codes (the Beam page): stored darkness-inverted, opaque, in the platform's byte order.
+fn beam_test_colour(r: u32, g: u32, b: u32) -> u32 {
+    fluor::theme::dark(fluor::theme::fmt((r.min(255) << 16) | (g.min(255) << 8) | b.min(255)))
 }

@@ -1296,6 +1296,8 @@ impl FluorApp for PhotonApp {
                         }
                     }
                     ctx.window.request_redraw();
+                } else if page == SettingsPage::Beam {
+                    self.on_beam_pill(slot);
                 } else if page == SettingsPage::Dozenal {
                     // The base pills (slots 0..=2): the render-edge static flips NOW so every number on screen switches base this frame, and the fleet-wide linked write follows the identity to every device.
                     // Historical order, matching the pills in render.rs (Nick 2026-09-30): arabic, hexadecimal, dozenal.
@@ -3992,6 +3994,11 @@ impl PhotonApp {
                 }
                 s
             }
+            // The Beam page's HDR line: the display's grant and the frame's ask, in the half-stops it prints.
+            #[cfg(target_os = "android")]
+            AppState::Settings(SettingsPage::Beam) => fluor::host::android::hdr_surface::status()
+                .map(|(g, _, d)| format!("{} {}", (2.0 * g.max(1.0).log2()).round(), (2.0 * d.max(1.0).log2()).round()))
+                .unwrap_or_default(),
             // The strip's row, selected or the newest shown unasked — the same resolution the render uses.
             AppState::Conversation => self.strip_target().map(|(_, ts, _)| {
                 let osc = (now_osc - ts).max(0);

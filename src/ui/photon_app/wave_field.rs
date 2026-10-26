@@ -324,7 +324,8 @@ pub(super) fn paint_picture_rect(canvas: &mut Canvas, x0: usize, y0: usize, rw: 
                 continue;
             }
             let o = (srow + sx) * 3;
-            let rgb = fluor::theme::from_gamma2(((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32);
+            // The picture is already g2t Rec.2020, the buffer's own encoding (beam_colour.rs) — an HDR beam's light past white goes in as it is.
+            let rgb = ((pic.rgb[o] as u32) << 16) | ((pic.rgb[o + 1] as u32) << 8) | pic.rgb[o + 2] as u32;
             // Opaque: α = 255, the channels stored as darkness (fluor's layer convention, see `field_pixel`).
             let src = 0xFF00_0000 | (fluor::theme::fmt(rgb ^ 0x00FF_FFFF) & 0x00FF_FFFF);
             line[x] = if d == 0 { src } else { under_premult(d, src) };

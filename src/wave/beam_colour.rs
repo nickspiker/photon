@@ -2,16 +2,17 @@
 //!
 //! ```text
 //! Y Cb Cr (8-bit, 4:2:0, 601 full range)
-//!   │ 3×3 Q12 + offsets, truncate → R'G'B' γ2 (8-bit)
-//!   │ square → linear, 16-bit (full scale 255² = 65025)
-//!   │ ONE folded 3×3 in Q10 — (VSF RGB → Rec.2020) × (camera → VSF RGB) × diag(1/gains) — signed, clamp after
-//!   │ √ by a 65536-entry table → γ2 Rec.2020 at 16 bits
+//!   │ 3×3 Q12 + offsets, truncate → R'G'B' codes (8-bit)
+//!   │ the entry's transfer, a 256-entry table → light, Q16 (diffuse white = 65536, fluor's scale)
+//!   │ ONE folded 3×3 in Q10 — (VSF RGB → Rec.2020) × (camera → VSF RGB) × diag(1/gains) — signed, i64, clamp after:
+//!   │   at white for an SDR entry (γ2, sRGB), at the buffer's 9.7× for a g2t one (an HDR beam's light past white is kept)
+//!   │ light → g2t code × 256 by table (fractional, for the dither)
 //!   │ + blue-noise tile (x,y mod 64, origin hashed per frame), truncate → 8-bit
 //!   ▼
-//! R G B triples, γ2 Rec.2020 — the shape `colour_convert::vsf_rgb_to_bt2020` already hands the blit
+//! R G B triples, g2t Rec.2020 — fluor's own buffer encoding (theme.rs), blitted as they are
 //! ```
 //!
-//! Headroom accounting (i32 only, never isize): 8-bit × Q12 × 3 terms = 22 bits; 16-bit × Q10 × 3 terms with coefficients under 4.0 = 30 bits. A `srgb` transfer (a desktop camera's `creative`/`assumed` entry) swaps the square for a 256-entry inverse table; a `gamma2` entry (the phone) is the square.
+//! Headroom: 8-bit × Q12 × 3 terms = 22 bits; light up to 9.7 × 2^16 (20 bits) × Q10 coefficients under 4.0 × 3 terms = 34 bits, so the matrix runs in i64. A `gamma2` entry (the phone's straight path) decodes by the square, `srgb` (a desktop camera, the phone's own colour) by the sRGB curve, `g2t` (an HDR beam, docs/beams.md) by fluor's `G2T_LIGHT_Q16`.
 //!
 //! The dither: unbiased truncation — the mean of ⌊x + u⌋ over uniform u is x — with a void-and-cluster blue-noise tile (all its energy high-frequency, the least visible noise for its amplitude) whose origin walks per frame so a still scene never shows a fixed pattern. Applied at the ONE place it belongs, the final 8-bit output. The 16-bit intermediate needs none. It hides OUR steps only; the codec's artifacts sit many codes high (docs/beams.md §5).
 
@@ -19,11 +20,13 @@ use super::beam::Gains;
 use super::h264::I420;
 use std::sync::OnceLock;
 
-/// The transfer the encoded samples carry (vsf::spectral_image::Transfer, the two a beam uses).
+/// The transfer the encoded samples carry (vsf::spectral_image::Transfer, the three a beam uses).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transfer {
     Gamma2,
     Srgb,
+    /// γ2 with headroom (an HDR beam): white at code 194, light past it kept.
+    G2t,
 }
 
 /// The camera's characterization as the receiver needs it: the camera→VSF-RGB matrix (row-major, linear in, linear out, unscaled) and the transfer its samples carry. Built from a `vsf::spectral_image::ProfileEntry`; identity + γ2 when a beam carries none yet.
@@ -41,6 +44,7 @@ impl Characterization {
     pub fn from_entry(e: &vsf::spectral_image::ProfileEntry) -> Self {
         let transfer = match e.transfer {
             vsf::spectral_image::Transfer::Srgb => Transfer::Srgb,
+            vsf::spectral_image::Transfer::Gamma2Tanh => Transfer::G2t,
             _ => Transfer::Gamma2,
         };
         Characterization { matrix: e.matrix, transfer }
@@ -49,8 +53,12 @@ impl Characterization {
 
 const Q12: i32 = 4096;
 const Q10: i32 = 1024;
-/// Full scale of the 16-bit linear intermediate: 255².
-const LIN_FULL: i32 = 255 * 255;
+/// Light, Q16: diffuse white (fluor's scale, `theme::G2T_LIGHT_Q16`).
+const WHITE: i64 = 65536;
+/// The most light the buffer holds: code 255's (9.7× white).
+const PEAK: i64 = fluor::theme::G2T_LIGHT_Q16[255] as i64;
+/// Above white the encode table steps 16 Q16 units at a time (g2t's codes there are hundreds of units apart).
+const ABOVE_SHIFT: u32 = 4;
 pub const TILE: usize = 64;
 
 /// 601 full-range YCbCr → R'G'B', Q12: R = Y + 1.402 Cr; G = Y − 0.344136 Cb − 0.714136 Cr; B = Y + 1.772 Cb (Cb, Cr centred on 128).
@@ -59,27 +67,39 @@ const CB_G: i32 = 1410;
 const CR_G: i32 = 2925;
 const CB_B: i32 = 7258;
 
-/// √ table: index = 16-bit linear (0..=65025), value = √(lin / 65025) × 255 × 256 — γ2 encode at 16 bits, so the 8-bit truncation below it has 8 bits of dither room.
-fn sqrt_lut() -> &'static [u16] {
+/// Each transfer's decode: 8-bit code → light, Q16 (white = 65536). Built once with f64; the pixel path only indexes.
+fn decode_lut(t: Transfer) -> &'static [u32; 256] {
+    static GAMMA2: OnceLock<[u32; 256]> = OnceLock::new();
+    static SRGB: OnceLock<[u32; 256]> = OnceLock::new();
+    let build = |f: fn(f64) -> f64| {
+        let mut t = [0u32; 256];
+        for (i, v) in t.iter_mut().enumerate() {
+            *v = (f(i as f64 / 255.0) * WHITE as f64).round() as u32;
+        }
+        t
+    };
+    match t {
+        Transfer::Gamma2 => GAMMA2.get_or_init(|| build(|c| c * c)),
+        Transfer::Srgb => SRGB.get_or_init(|| build(|c| if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) })),
+        Transfer::G2t => &fluor::theme::G2T_LIGHT_Q16,
+    }
+}
+
+/// Light → g2t code × 256 (the fraction the dither spends), nearest: code = 256·tanh(√light), VSF's g2t. Index = light Q16 up to white, then white + (i << [`ABOVE_SHIFT`]) up to [`PEAK`], the last entry exactly the peak so the top light is the top code.
+fn encode_lut() -> &'static [u16] {
     static LUT: OnceLock<Vec<u16>> = OnceLock::new();
     LUT.get_or_init(|| {
-        // Built once with f64; the pixel path only indexes it.
-        (0..=LIN_FULL as usize).map(|lin| ((lin as f64 / LIN_FULL as f64).sqrt() * 255.0 * 256.0).round() as u16).collect()
+        let code = |l: i64| ((l as f64 / WHITE as f64).sqrt().tanh() * 256.0 * 256.0).round().min(65535.0) as u16;
+        let above = ((PEAK - WHITE + (1 << ABOVE_SHIFT) - 1) >> ABOVE_SHIFT) as usize;
+        (0..=WHITE).map(code).chain((1..=above).map(|i| code((WHITE + ((i as i64) << ABOVE_SHIFT)).min(PEAK)))).collect()
     })
 }
 
-/// sRGB → linear, 8-bit code → 16-bit linear (full scale 65025).
-fn srgb_lut() -> &'static [u16; 256] {
-    static LUT: OnceLock<[u16; 256]> = OnceLock::new();
-    LUT.get_or_init(|| {
-        let mut t = [0u16; 256];
-        for (i, v) in t.iter_mut().enumerate() {
-            let c = i as f64 / 255.0;
-            let lin = if c <= 0.04045 { c / 12.92 } else { ((c + 0.055) / 1.055).powf(2.4) };
-            *v = (lin * LIN_FULL as f64).round() as u16;
-        }
-        t
-    })
+/// The encode table's entry for a light already clamped to 0..=PEAK (above white, the nearest step).
+#[inline]
+fn encode_at(lut: &[u16], l: i64) -> i32 {
+    let i = if l <= WHITE { l as usize } else { WHITE as usize + ((l - WHITE + (1 << (ABOVE_SHIFT - 1))) >> ABOVE_SHIFT) as usize };
+    lut[i] as i32
 }
 
 // ───────────────────────── blue noise ─────────────────────────
@@ -240,7 +260,7 @@ pub const fn vsf_rows(m: [f32; 9]) -> [f32; 9] {
     [m[0], m[3], m[6], m[1], m[4], m[7], m[2], m[5], m[8]]
 }
 
-/// Converts decoded frames to γ2 Rec.2020 RGB triples for the blit. One per beam; `set_characterization` on the info edge.
+/// Converts decoded frames to g2t Rec.2020 RGB triples for the blit (fluor's buffer encoding). One per beam; `set_characterization` on the info edge.
 pub struct Converter {
     chr: Characterization,
     /// The camera→VSF-RGB matrix already folded with VSF RGB→Rec.2020 (f32, gains not yet in).
@@ -276,15 +296,18 @@ impl Converter {
         m
     }
 
-    /// One frame: `out` becomes w×h×3 bytes, γ2 Rec.2020, dithered at the final truncation.
+    /// One frame: `out` becomes w×h×3 bytes, g2t Rec.2020, dithered at the final truncation.
     pub fn convert(&self, pic: &I420, gains: Gains, frame_no: u32, out: &mut Vec<u8>) {
         let (w, h) = (pic.w, pic.h);
         out.clear();
         out.resize(w * h * 3, 0);
         let m = self.q10(gains);
         let tile = blue_noise_tile();
-        let sq = sqrt_lut();
-        let srgb = srgb_lut();
+        let dec = decode_lut(self.chr.transfer);
+        let enc = encode_lut();
+        // An SDR entry's light stops at white (a saturated colour can still overshoot thru the matrix, and clips there as before); an HDR entry keeps what it carries, up to the buffer's top.
+        let top = if self.chr.transfer == Transfer::G2t { PEAK } else { WHITE };
+        let m: [i64; 9] = m.map(|v| v as i64);
         // The tile's origin walks per frame: a hash of the frame number, never the same offset twice in a row.
         let mut hs = frame_no as u64 ^ 0xB10E_0A15E;
         let hv = splitmix64(&mut hs);
@@ -302,24 +325,21 @@ impl Converter {
                 let r8 = ((yy << 12) + CR_R * cr) >> 12;
                 let g8 = ((yy << 12) - CB_G * cb - CR_G * cr) >> 12;
                 let b8 = ((yy << 12) + CB_B * cb) >> 12;
-                // WHY/PROOF: the peer's decoded Y/Cb/Cr can name a colour outside the cube, and `r8` indexes the 256-entry sRGB table just below — an unclipped code reads past it.
+                // WHY/PROOF: the peer's decoded Y/Cb/Cr can name a colour outside the cube, and the code indexes the 256-entry decode table just below — an unclipped code reads past it.
                 let (r8, g8, b8) = (r8.clamp(0, 255), g8.clamp(0, 255), b8.clamp(0, 255));
-                // Transfer → 16-bit linear.
-                let (rl, gl, bl) = match self.chr.transfer {
-                    Transfer::Gamma2 => (r8 * r8, g8 * g8, b8 * b8),
-                    Transfer::Srgb => (srgb[r8 as usize] as i32, srgb[g8 as usize] as i32, srgb[b8 as usize] as i32),
-                };
+                // Transfer → light.
+                let (rl, gl, bl) = (dec[r8 as usize] as i64, dec[g8 as usize] as i64, dec[b8 as usize] as i64);
                 // The folded matrix, Q10, signed; clamp AFTER (where out-of-gamut colours finally clip).
-                // WHY/PROOF: a saturated colour leaves the target gamut thru the matrix, and the clipped value indexes the √ table sized for 0..=LIN_FULL.
-                let ro = ((m[0] * rl + m[1] * gl + m[2] * bl) >> 10).clamp(0, LIN_FULL);
-                let go = ((m[3] * rl + m[4] * gl + m[5] * bl) >> 10).clamp(0, LIN_FULL);
-                let bo = ((m[6] * rl + m[7] * gl + m[8] * bl) >> 10).clamp(0, LIN_FULL);
-                // √ at 16 bits, + the tile, truncate to 8.
+                // WHY/PROOF: a saturated colour leaves the target gamut thru the matrix, and the clipped light indexes the encode table sized for 0..=PEAK.
+                let ro = ((m[0] * rl + m[1] * gl + m[2] * bl) >> 10).clamp(0, top);
+                let go = ((m[3] * rl + m[4] * gl + m[5] * bl) >> 10).clamp(0, top);
+                let bo = ((m[6] * rl + m[7] * gl + m[8] * bl) >> 10).clamp(0, top);
+                // g2t at 16 bits, + the tile, truncate to 8 (the top code holds whatever passes it).
                 let d = tile[trow + (x + ox) % TILE] as i32;
                 let o = (y * w + x) * 3;
-                out[o] = ((sq[ro as usize] as i32 + d) >> 8) as u8;
-                out[o + 1] = ((sq[go as usize] as i32 + d) >> 8) as u8;
-                out[o + 2] = ((sq[bo as usize] as i32 + d) >> 8) as u8;
+                out[o] = ((encode_at(enc, ro) + d) >> 8).min(255) as u8;
+                out[o + 1] = ((encode_at(enc, go) + d) >> 8).min(255) as u8;
+                out[o + 2] = ((encode_at(enc, bo) + d) >> 8).min(255) as u8;
             }
         }
     }
@@ -403,7 +423,7 @@ mod tests {
         assert!(mean > 85.0, "mean adjacent difference {mean:.1} — white noise sits near 85, blue above it");
     }
 
-    /// A flat grey through the identity chain lands on itself: the dither is unbiased, so the MEAN over the area is the exact value and no sample is more than one code off.
+    /// A flat grey through the identity chain lands on its own light in g2t: the dither is unbiased, so the MEAN over the area is the exact fractional code and no sample is more than one code off.
     #[test]
     fn a_flat_grey_is_unbiased_through_the_chain() {
         let conv = Converter::new(Characterization { matrix: inverse_rec2020(), transfer: Transfer::Gamma2 });
@@ -412,9 +432,11 @@ mod tests {
         pic.y.fill(140); // Cb = Cr = 128: R' = G' = B' = 140
         let mut out = Vec::new();
         conv.convert(&pic, Gains::NONE, 7, &mut out);
+        // γ2 140 is light (140/255)²; its g2t code is 256·tanh(140/255).
+        let want = 256.0 * (140.0f64 / 255.0).tanh();
         let mean = out.iter().map(|&v| v as f64).sum::<f64>() / out.len() as f64;
-        assert!((mean - 140.0).abs() < 0.6, "mean {mean:.2}");
-        assert!(out.iter().all(|&v| (v as i32 - 140).abs() <= 1));
+        assert!((mean - want).abs() < 0.6, "mean {mean:.2}, want {want:.2}");
+        assert!(out.iter().all(|&v| (v as f64 - want).abs() <= 1.0));
     }
 
     /// Gains divide back out: a frame whose ISP doubled blue arrives with blue halved on the wire's linear side.
@@ -428,10 +450,10 @@ mod tests {
         conv.convert(&pic, Gains::NONE, 1, &mut plain);
         let mut halved = Vec::new();
         conv.convert(&pic, Gains([4096, 4096, 4096, 8192]), 1, &mut halved);
-        let mb = |v: &Vec<u8>| v.chunks(3).map(|p| p[2] as f64).sum::<f64>() / (w * h) as f64;
+        // Blue's mean LIGHT (decoded from the g2t codes) halves.
+        let mb = |v: &Vec<u8>| v.chunks(3).map(|p| fluor::theme::G2T_LIGHT_Q16[p[2] as usize] as f64).sum::<f64>() / (w * h) as f64;
         let (pb, hb) = (mb(&plain), mb(&halved));
-        // Linear blue halves → γ2 blue × 1/√2.
-        assert!((hb / pb - 0.7071).abs() < 0.03, "plain {pb:.1} halved {hb:.1}");
+        assert!((hb / pb - 0.5).abs() < 0.03, "plain {pb:.0} halved {hb:.0}");
     }
 
     #[test]
@@ -456,11 +478,35 @@ mod tests {
 
     #[test]
     fn srgb_entries_linearize_by_the_curve() {
-        let s = srgb_lut();
+        let s = decode_lut(Transfer::Srgb);
         assert_eq!(s[0], 0);
-        assert_eq!(s[255], LIN_FULL as u16);
+        assert_eq!(s[255], WHITE as u32);
         // sRGB 128 → 0.2158 linear.
-        assert!((s[128] as f64 / LIN_FULL as f64 - 0.2158).abs() < 0.002);
+        assert!((s[128] as f64 / WHITE as f64 - 0.2158).abs() < 0.002);
+    }
+
+    /// White lands on g2t's white code; an SDR entry stops there, an HDR (g2t) entry keeps the light past it — the whole point of an HDR beam.
+    #[test]
+    fn sdr_white_is_code_194_and_only_a_g2t_entry_passes_it() {
+        let flat = |y: u8, t: Transfer| {
+            let conv = Converter::new(Characterization { matrix: inverse_rec2020(), transfer: t });
+            let mut pic = I420::new(32, 32);
+            pic.y.fill(y);
+            let mut out = Vec::new();
+            conv.convert(&pic, Gains::NONE, 3, &mut out);
+            out.iter().map(|&v| v as f64).sum::<f64>() / out.len() as f64
+        };
+        let sdr_white = flat(255, Transfer::Gamma2);
+        assert!((sdr_white - 194.96).abs() < 0.6, "γ2 white → g2t 256·tanh(1) = 194.96, got {sdr_white:.2}");
+        assert!((flat(255, Transfer::Srgb) - 194.96).abs() < 0.6, "sRGB white too");
+        // A g2t stream's code 194 is white again (decode then encode, the dither unbiased); its code 240 is about 3× white and survives.
+        assert!((flat(194, Transfer::G2t) - 194.0).abs() < 0.7);
+        let bright = flat(240, Transfer::G2t);
+        assert!((bright - 240.0).abs() < 0.7, "light past white kept: {bright:.2}");
+        // Every encode entry is monotone and the top light is the top code.
+        let enc = encode_lut();
+        assert!(enc.windows(2).all(|p| p[0] <= p[1]));
+        assert_eq!(encode_at(enc, PEAK) >> 8, 255);
     }
 
     /// The inverse of VSF RGB→Rec.2020, so the fold becomes identity: samples that are already Rec.2020 pass straight through.

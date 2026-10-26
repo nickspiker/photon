@@ -373,9 +373,65 @@ pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamFill(
     1
 }
 
+/// BEAMS, HDR (beam_hdr.rs): a P010 HLG camera frame → 8-bit g2t codes at the coded size, straight into the encoder's planes. P010 samples are two bytes (chroma planes interleaved, four bytes a step).
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamFillHdr(
+    env: JNIEnv<'_>,
+    _this: JObject<'_>,
+    sy: jni::objects::JByteBuffer<'_>,
+    su: jni::objects::JByteBuffer<'_>,
+    sv: jni::objects::JByteBuffer<'_>,
+    s_yrow: jint,
+    s_ypx: jint,
+    s_uvrow: jint,
+    s_uvpx: jint,
+    sw: jint,
+    sh: jint,
+    full_range: jni::sys::jboolean,
+    dy: jni::objects::JByteBuffer<'_>,
+    du: jni::objects::JByteBuffer<'_>,
+    dv: jni::objects::JByteBuffer<'_>,
+    d_yrow: jint,
+    d_ypx: jint,
+    d_uvrow: jint,
+    d_uvpx: jint,
+    dw: jint,
+    dh: jint,
+    soft: jint,
+    frame: jint,
+) -> jni::sys::jboolean {
+    use crate::wave::beam_scale::Plane;
+    let plane = |b: &jni::objects::JByteBuffer<'_>, row: jint, px: jint, w: jint, h: jint| -> Option<Plane> {
+        let ptr = env.get_direct_buffer_address(b).ok()?;
+        let len = env.get_direct_buffer_capacity(b).ok()?;
+        Some(Plane { ptr, len, row: row.max(0) as usize, px: px.max(1) as usize, w: w.max(0) as usize, h: h.max(0) as usize })
+    };
+    let (sw, sh, dw, dh) = (sw & !1, sh & !1, dw & !1, dh & !1);
+    let src = [plane(&sy, s_yrow, s_ypx, sw, sh), plane(&su, s_uvrow, s_uvpx, sw / 2, sh / 2), plane(&sv, s_uvrow, s_uvpx, sw / 2, sh / 2)];
+    let dst = [plane(&dy, d_yrow, d_ypx, dw, dh), plane(&du, d_uvrow, d_uvpx, dw / 2, dh / 2), plane(&dv, d_uvrow, d_uvpx, dw / 2, dh / 2)];
+    let (Some(s0), Some(s1), Some(s2), Some(d0), Some(d1), Some(d2)) = (src[0], src[1], src[2], dst[0], dst[1], dst[2]) else {
+        return 0;
+    };
+    // fill_hlg_p010 checks every plane covers its geometry before it reads or writes a byte.
+    crate::wave::beam_hdr::fill_hlg_p010([s0, s1, s2], full_range != 0, [d0, d1, d2], soft as u8, frame as u32) as jni::sys::jboolean
+}
+
+/// BEAMS: does Settings → Beams ask for HDR (and can this phone)? Read by Kotlin at each camera start.
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonBeam_nativeBeamWantHdr(_env: JNIEnv<'_>, _this: JObject<'_>) -> jni::sys::jboolean {
+    crate::wave::beam_settings::hdr_wanted() as jni::sys::jboolean
+}
+
+/// BEAMS: whether any camera on this phone offers 10-bit HLG (PhotonBeam.anyHlgCamera, once at startup).
+#[no_mangle]
+pub extern "C" fn Java_com_photon_messenger_PhotonActivity_nativeSetBeamHdrCapable(_env: JNIEnv<'_>, _this: JObject<'_>, capable: jni::sys::jboolean) {
+    crate::wave::beam_settings::set_hdr_capable(capable != 0);
+    info!("BEAM: HDR cameras on this phone: {}", capable != 0);
+}
+
 /// BEAMS: the phone's pipeline is up — geometry, fps, the maker's XYZ→camera matrix (9 floats row-major, or null) and whether the straight-thru request took in full. Starts the encoded sender armed by the Beam button.
 #[no_mangle]
-pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(mut env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean, curve: jni::sys::jboolean, camera: JString<'_>, name: JString<'_>) {
+pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamStarted(mut env: JNIEnv<'_>, _class: JClass<'_>, w: jint, h: jint, fps: jint, matrix: jni::objects::JFloatArray<'_>, straight: jni::sys::jboolean, curve: jni::sys::jboolean, camera: JString<'_>, name: JString<'_>, hdr: jni::sys::jboolean) {
     let camera: String = env.get_string(&camera).map(String::from).unwrap_or_default();
     let name: String = env.get_string(&name).map(String::from).unwrap_or_default();
     let maker = if matrix.is_null() {
@@ -389,8 +445,8 @@ pub extern "C" fn Java_com_photon_messenger_PhotonConnectionService_nativeBeamSt
         error!("BEAM: camera reported {}x{} @ {} fps", w, h, fps);
         return;
     };
-    match crate::wave::beam_session::android_started(cw, ch, cfps, maker, straight != 0, curve != 0, &camera, &name) {
-        Ok(()) => info!("BEAM: phone sender up — camera {} ({}) {}x{} @ {} fps (maker matrix {}, straight {}, γ2 curve {})", camera, name, w, h, fps, maker.is_some(), straight != 0, curve != 0),
+    match crate::wave::beam_session::android_started(cw, ch, cfps, maker, straight != 0, curve != 0, hdr != 0, &camera, &name) {
+        Ok(()) => info!("BEAM: phone sender up — camera {} ({}) {}x{} @ {} fps (maker matrix {}, straight {}, γ2 curve {}, HDR {})", camera, name, w, h, fps, maker.is_some(), straight != 0, curve != 0, hdr != 0),
         Err(e) => error!("BEAM: {}", e),
     }
 }

@@ -526,6 +526,8 @@ impl PhotonApp {
         }
         // The remembered mic / speaker / camera picks (device-local): the next wave and beam open them.
         self.apply_device_picks();
+        // Settings → Beam (per device unless it follows the fleet) into the senders.
+        self.load_beam_settings();
         // The phone's voice processing: device-local, absent = OFF.
         // Absent = OFF on the phone (the raw earpiece sounds best and runs 50 ms sooner), ON on the Mac (Nick 2026-10-03: a MacBook's mic is next to its speakers; the unit's gain control is off there, so nothing of ours is lost).
         let voice_dsp = self
@@ -1138,6 +1140,100 @@ impl PhotonApp {
     /// Flip a key's link on this device (unlink = set locally from now on; relink = follow the fleet). Persists + pushes on change.
     /// Not yet wired to a UI (the per-key link toggle is a designed settings-page control that hasn't landed) — kept as the API half so the storage layer's `set_link` has its app-side entry point.
     #[allow(dead_code)]
+    /// Settings → Beam's keys (docs/beams.md "Settings"): per device by default, and one toggle links every one of them to the fleet (Nick 2026-10-26: "the device can maintain its own settings OR sync with the fleet").
+    const BEAM_KEYS: [&'static str; 6] = ["beam.hdr", "beam.size_cap", "beam.fps_cap", "beam.quality", "beam.bitrate_cap", "beam.keep_detail"];
+
+    /// Does this device follow the fleet for its beam settings? Only by choice: a device that never chose reads its own values (or the defaults), never another device's.
+    pub(super) fn beam_follows_fleet(&self) -> bool {
+        self.fleet_settings.as_ref().is_some_and(|fs| fs.device_local("beam.hdr").is_some() && fs.linked("beam.hdr"))
+    }
+
+    /// One beam key as this device should act on it: the fleet's value when following, else this device's own.
+    fn beam_value(&self, key: &str) -> Option<vsf::VsfType> {
+        let fs = self.fleet_settings.as_ref()?;
+        if self.beam_follows_fleet() { fs.effective(key) } else { fs.device_local(key) }.cloned()
+    }
+
+    /// Settings → Beam into the senders (wave::beam_settings): every key read, anything outside the page's choices ignored, absent = the default. A cap is a number, or `u0(false)` for Auto (the link decides).
+    pub(super) fn load_beam_settings(&mut self) {
+        use crate::storage::fleet_settings::{as_bool, as_u32};
+        use crate::wave::beam_settings::{BeamSettings, BITRATE_CAPS, FPS_CAPS, QUALITIES, SIZE_CAPS};
+        let d = BeamSettings::DEFAULT;
+        let cap = |v: Option<vsf::VsfType>, offered: &[u32]| v.as_ref().filter(|v| !matches!(v, vsf::VsfType::u0(_))).and_then(as_u32).filter(|n| offered.contains(n));
+        let s = BeamSettings {
+            hdr: self.beam_value("beam.hdr").as_ref().and_then(as_bool).unwrap_or(d.hdr),
+            size_cap: cap(self.beam_value("beam.size_cap"), &SIZE_CAPS),
+            tuning: crate::wave::beam_ladder::Tuning {
+                fps_cap: cap(self.beam_value("beam.fps_cap"), &FPS_CAPS).unwrap_or(d.tuning.fps_cap),
+                bpp_milli: cap(self.beam_value("beam.quality"), &QUALITIES).unwrap_or(d.tuning.bpp_milli),
+                bitrate_cap: cap(self.beam_value("beam.bitrate_cap"), &BITRATE_CAPS),
+                keep_detail: self.beam_value("beam.keep_detail").as_ref().and_then(as_bool).unwrap_or(d.tuning.keep_detail),
+            },
+        };
+        crate::wave::beam_settings::set(s);
+    }
+
+    /// Write one beam key where this device keeps it (its own map, unless it follows the fleet), then retune the senders.
+    fn write_beam(&mut self, key: &str, value: vsf::VsfType) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let follows = self.beam_follows_fleet();
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        if !follows && fs.linked(key) {
+            fs.set_link(key, false, now);
+        }
+        if fs.set(key, value.clone(), now) {
+            crate::logf!("SETTINGS: {} = {:?} ({})", key, value, if follows { "fleet" } else { "device-local" });
+            self.persist_and_push_settings();
+        }
+        self.load_beam_settings();
+    }
+
+    /// Link every beam key to the fleet, or keep them on this device (each keeps its position as it changes over).
+    fn set_beam_follow(&mut self, follow: bool) {
+        if !self.ensure_fleet_settings() {
+            return;
+        }
+        let now = vsf::eagle_time_oscillations();
+        let fs = self.fleet_settings.as_mut().unwrap();
+        let mut changed = false;
+        for key in Self::BEAM_KEYS {
+            // A key never written yet gets its own entry first, so "this device chose" is on record either way.
+            if fs.device_local(key).is_none() {
+                changed |= fs.set_link(key, false, now);
+            }
+            changed |= fs.set_link(key, follow, now);
+        }
+        if changed {
+            crate::logf!("SETTINGS: beam.* {}", if follow { "follow the fleet" } else { "this device only" });
+            self.persist_and_push_settings();
+        }
+        self.load_beam_settings();
+    }
+
+    /// A pill on the Beam page (slots as render.rs lays them out).
+    pub(super) fn on_beam_pill(&mut self, slot: u16) {
+        use crate::wave::beam_settings::{BITRATE_CAPS, FPS_CAPS, QUALITIES, SIZE_CAPS};
+        use vsf::VsfType;
+        let num = |n: u32| VsfType::u(n as usize, false);
+        match slot {
+            0 | 1 => self.set_beam_follow(slot == 1),
+            2 | 3 => self.write_beam("beam.hdr", VsfType::u0(slot == 3)),
+            4 => self.write_beam("beam.size_cap", VsfType::u0(false)),
+            5..=8 => self.write_beam("beam.size_cap", num(SIZE_CAPS[(slot - 5) as usize])),
+            9..=11 => self.write_beam("beam.fps_cap", num(FPS_CAPS[(slot - 9) as usize])),
+            12..=14 => self.write_beam("beam.quality", num(QUALITIES[(slot - 12) as usize])),
+            15 => self.write_beam("beam.bitrate_cap", VsfType::u0(false)),
+            16..=19 => self.write_beam("beam.bitrate_cap", num(BITRATE_CAPS[(slot - 16) as usize])),
+            20 | 21 => self.write_beam("beam.keep_detail", VsfType::u0(slot == 21)),
+            _ => {}
+        }
+        self.scene_dirty = true;
+    }
+
+
     pub(super) fn settings_set_link(&mut self, key: &str, linked: bool) -> bool {
         if !self.ensure_fleet_settings() {
             return false;

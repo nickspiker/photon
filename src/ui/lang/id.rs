@@ -51,6 +51,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
             SettingsPage::Conversations => "Percakapan",
             SettingsPage::Vault => "Brankas",
             SettingsPage::Wave => "Gelombang",
+            SettingsPage::Beam => "Pancaran",
             SettingsPage::Language => "Bahasa",
             SettingsPage::Dozenal => "Basis",
             SettingsPage::About => "Tentang",
@@ -563,6 +564,7 @@ pub fn text(msg: Msg) -> Cow<'static, str> {
         Msg::VaultConvLine { size, name, count } => format!("{size} \u{00b7} {name} ({count})").into(),
         Msg::VaultBinEmpty => "belum ada apa-apa di sini".into(),
         // ---- the Wave page ----
+        Msg::BeamIntro | Msg::BeamFollowHead | Msg::BeamThisDevice | Msg::BeamFollowFleet | Msg::BeamHdrHead | Msg::BeamHdrProse | Msg::BeamHdrUnavailable | Msg::BeamOff | Msg::BeamOn | Msg::BeamSizeHead | Msg::BeamAuto | Msg::BeamFpsHead | Msg::BeamQualityHead | Msg::BeamQualityProse | Msg::BeamQualityLean | Msg::BeamQualityStandard | Msg::BeamQualityRich | Msg::BeamBitrateHead | Msg::BeamKbit(_) | Msg::BeamShedHead | Msg::BeamShedSmooth | Msg::BeamShedSharp | Msg::BeamTestHead | Msg::BeamScreenHdr { .. } | Msg::BeamScreenHdrNone | Msg::BeamScreenSdr | Msg::BeamRampBlackWhite | Msg::BeamRampWhiteBrightest | Msg::BeamRampStops | Msg::BeamPatches | Msg::BeamPatchWhite | Msg::BeamPatchAllowed | Msg::BeamPatchTop | Msg::BeamShadows | Msg::BeamColourRamps => super::en::text(msg),
         Msg::WaveIntro => "How this device hears and speaks on a wave, what the last wave measured, and the wave preferences.".into(),
         Msg::WaveHearingHead => "This device's hearing".into(),
         Msg::WaveHearingLine { stops, route, rocker } => format!("earpiece trim {stops} stops · route {route} · rocker {rocker}").into(),

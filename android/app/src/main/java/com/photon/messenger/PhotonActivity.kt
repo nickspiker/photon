@@ -289,6 +289,7 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
     private external fun nativePollClipboardCopy(contextPtr: Long): String?  // Per-frame poll: text to place on the OS clipboard (one-shot) — copy-words / copy-name affordances
     private external fun nativeSetDisplayColorSpace(rgbToXyz: FloatArray, primaries: FloatArray)  // Display panel's RGB→XYZ_D50 (9 floats) + chromaticity primaries [Rx,Ry,Gx,Gy,Bx,By] (6 floats)
     private external fun nativeSetHdrHeadroom(ratio: Float)  // the display's granted HDR/SDR ratio (Display.getHdrSdrRatio + its listener) → fluor::host::android::hdr_surface
+    private external fun nativeSetBeamHdrCapable(capable: Boolean)  // does any camera here offer 10-bit HLG? → wave::beam_settings (the Beams page greys HDR out when none does)
     private external fun nativeSetAvatarFromFile(contextPtr: Long, fileBytes: ByteArray)  // Raw image file bytes (preserves ICC profile)
     private external fun nativeRestoreSessionFromVsf(vsfBytes: ByteArray): Int  // Restore session from sticky broadcast VSF capsule — call before nativeInitWithNetwork; returns 1 on success
     private external fun nativeDestroy(contextPtr: Long)
@@ -520,6 +521,8 @@ class PhotonActivity : AppCompatActivity(), SurfaceHolder.Callback, Choreographe
             window.colorMode = ActivityInfo.COLOR_MODE_WIDE_COLOR_GAMUT
             // HDR (2026-10-20): an HDR window is what lets the display raise its headroom for the extended-range surface (fluor::host::android::hdr_surface). No window-level headroom: each frame asks for its own brightest light, so a frame that never passes white asks for nothing.
             window.colorMode = ActivityInfo.COLOR_MODE_HDR
+            // HDR BEAMS (Settings → Beams): whether this phone's cameras can send one, asked once.
+            try { nativeSetBeamHdrCapable(PhotonBeam.anyHlgCamera(this)) } catch (e: Throwable) { PhotonLog.w(TAG, "beam HDR probe", e) }
             if (Build.VERSION.SDK_INT >= 34) {
                 display?.let { d ->
                     if (d.isHdrSdrRatioAvailable) {

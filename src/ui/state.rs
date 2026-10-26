@@ -61,6 +61,8 @@ pub enum SettingsPage {
     Vault,
     /// THE WAVE PAGE (Nick 2026-09-16, "a wave config screen"): this device's hearing (the earpiece trim in stops, the route, the rocker), its voice (the per-mic calibration profiles, forget / measure now), the last wave's stats, and the wave preferences (ring, vibrate, hold every wave, plaid off-LAN).
     Wave,
+    /// THE BEAM PAGE (Nick 2026-10-26, "a beam settings screen to control bitrate/size/quality/HDRness… show some test gradients there too"): what this device asks of the beams it sends (HDR, size, frame rate, quality, the data ceiling, what a busy link sheds), this device only or following the fleet, and test patterns that check this screen's HDR against white and brightest and show its banding.
+    Beam,
     /// UI-language picker — one button per language, labelled in itself (autonyms).
     Language,
     /// The number base: the dozenal toggle, why, the digit cheat sheet, and the DMS time-ago legend. Its rail label reads "Dozenal" or "Arabic" per the current choice (Nick 2026-09-09).
@@ -73,7 +75,7 @@ pub enum SettingsPage {
 
 impl SettingsPage {
     /// All pages in rail order — the nav rail and the tab-cycle iterate this. Appearance is COMMENTED OUT of the rail (Nick 2026-09-01) — the variant + its render arm stay compiled so restoring it is a one-line uncomment; the dozenal (base-twelve) toggle lives on About. The Wave calibration page is GONE (2026-09-07): the v-chirp connect probe measures every route at every wave start, so there is no ritual for a page to hold.
-    pub const ALL: [SettingsPage; 14] = [
+    pub const ALL: [SettingsPage; 15] = [
         SettingsPage::You,
         SettingsPage::Fleet,
         SettingsPage::Security,
@@ -81,6 +83,7 @@ impl SettingsPage {
         // SettingsPage::Appearance,
         SettingsPage::Conversations,
         SettingsPage::Wave,
+        SettingsPage::Beam,
         SettingsPage::Notifications,
         SettingsPage::Updates,
         SettingsPage::Diagnostics,
@@ -105,6 +108,7 @@ impl SettingsPage {
             SettingsPage::Ideas => "Ideas",
             SettingsPage::Vault => "Vault",
             SettingsPage::Wave => "Wave",
+            SettingsPage::Beam => "Beam",
             SettingsPage::Language => "Language",
             // The base page is "Base" (Nick 2026-09-10) — the pills on it show the choice.
             SettingsPage::Dozenal => "Base",

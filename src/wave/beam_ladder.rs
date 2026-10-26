@@ -39,6 +39,27 @@ pub const CLIMB_CLEAN_VERDICTS: u32 = 3;
 /// The lowest detail: two stops of frame rate below the smallest band.
 pub const D_MIN: i32 = -4;
 
+/// The user's beam settings as the ladder reads them (Settings → Beams, beam_settings.rs): a frame-rate ceiling, the bits each effective pixel gets, an optional bitrate ceiling, and which lever congestion pulls first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Tuning {
+    pub fps_cap: u32,
+    /// Bits per effective pixel per frame, in thousandths (100 = 0.1, the default).
+    pub bpp_milli: u32,
+    /// No plan spends more than this (bit/s): the ladder's top rung becomes the highest whose bitrate fits.
+    pub bitrate_cap: Option<u32>,
+    /// Congestion sheds FRAME RATE first ([`FPS_FIRST`] half-stops, to a quarter of the cap) and only then detail; false sheds detail first (the default: a beam stays smooth).
+    pub keep_detail: bool,
+}
+
+impl Tuning {
+    pub const DEFAULT: Tuning = Tuning { fps_cap: 30, bpp_milli: 100, bitrate_cap: None, keep_detail: false };
+}
+
+/// The half-stops of frame rate a keep-detail ladder spends before it touches detail: two stops, a quarter of the cap.
+pub const FPS_FIRST: i32 = 4;
+/// No beam runs slower than this.
+pub const FPS_FLOOR: u32 = 5;
+
 /// What the encoder should do now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Plan {
@@ -61,6 +82,7 @@ pub struct Ladder {
     clean_run: u32,
     last_seq: u32,
     pub band_changes: u32,
+    tuning: Tuning,
 }
 
 impl Ladder {
@@ -69,7 +91,7 @@ impl Ladder {
         let bands = if bands.is_empty() { vec![(160, 120)] } else { bands };
         let max_band = max_band.min(bands.len() - 1);
         let band = 2usize.min(max_band);
-        Self { bands, band, d: 2 * band as i32, max_band, clean_run: 0, last_seq: 0, band_changes: 0 }
+        Self { bands, band, d: 2 * band as i32, max_band, clean_run: 0, last_seq: 0, band_changes: 0, tuning: Tuning::DEFAULT }
     }
 
     /// A new capture mid-beam (a camera switch): new bands and ceiling, the link's detail kept — clamped into the new range and settled into a band. Counts as a band change when the coded size moves.
@@ -82,7 +104,7 @@ impl Ladder {
         self.max_band = max_band.min(self.bands.len() - 1);
         self.band = self.band.min(self.max_band);
         // WHY/PROOF: the ladder's rungs, D_MIN up to the ceiling's top half-stop — the new capture can have fewer bands, and a detail past them names no band.
-        self.d = self.d.clamp(D_MIN, 2 * self.max_band as i32);
+        self.d = self.d.clamp(D_MIN, self.top());
         let start = self.band_changes;
         self.settle_band();
         if self.band_changes == start && self.bands[self.band] != before {
@@ -97,10 +119,53 @@ impl Ladder {
     /// The ceiling can move (a metered network, a LAN path appearing): a lower ceiling takes effect at once.
     pub fn set_max_band(&mut self, max_band: usize) {
         self.max_band = max_band.min(self.bands.len() - 1);
-        if self.d > 2 * self.max_band as i32 {
-            self.d = 2 * self.max_band as i32;
-        }
+        self.d = self.d.min(self.top());
         self.settle_band();
+    }
+
+    /// New settings (Settings → Beams), live: a change of shed order keeps the picture's detail (a keep-detail ladder below its top runs [`FPS_FIRST`] half-stops slow — that is its trade), a lower ceiling or a tighter bitrate cap takes effect at once.
+    pub fn set_tuning(&mut self, t: Tuning) {
+        if t.keep_detail != self.tuning.keep_detail {
+            let (detail, slow) = self.split(self.d);
+            let full = 2 * self.max_band as i32;
+            self.d = if t.keep_detail && detail >= full { full + FPS_FIRST - slow.min(FPS_FIRST) } else { detail };
+        }
+        self.tuning = t;
+        self.d = self.d.clamp(D_MIN, self.top());
+        self.settle_band();
+    }
+
+    pub fn tuning(&self) -> Tuning {
+        self.tuning
+    }
+
+    /// The highest rung: full detail of the ceiling band (plus the frame-rate rungs of a keep-detail ladder), lowered until the plan fits the bitrate cap.
+    fn top(&self) -> i32 {
+        let mut top = 2 * self.max_band as i32 + if self.tuning.keep_detail { FPS_FIRST } else { 0 };
+        if let Some(cap) = self.tuning.bitrate_cap {
+            while top > D_MIN && self.raw_plan(top, Self::band_for(self.split(top).0, self.max_band)).bitrate > cap {
+                top -= 1;
+            }
+        }
+        top
+    }
+
+    /// The lowest band whose range holds a detail (the overlap's lower band), within the ceiling.
+    fn band_for(detail: i32, max_band: usize) -> usize {
+        // WHY/PROOF: detail runs D_MIN..=2·max_band; a negative detail is the smallest band, and (detail + 1) / 2 is at most max_band.
+        ((detail.max(0) + 1) / 2).min(max_band as i32) as usize
+    }
+
+    /// A rung → (detail in half-stops above the smallest band, half-stops of frame rate below the cap).
+    fn split(&self, d: i32) -> (i32, i32) {
+        let full = 2 * self.max_band as i32;
+        if !self.tuning.keep_detail {
+            (d, (-d).max(0))
+        } else if d > full {
+            (full, full + FPS_FIRST - d)
+        } else {
+            (d, FPS_FIRST + (-d).max(0))
+        }
     }
 
     /// Feed the link verdict (`seq` increments once per verdict; a repeat is ignored). Returns true when the plan changed.
@@ -123,7 +188,7 @@ impl Ladder {
             self.clean_run = 0;
         }
         // WHY/PROOF: the verdicts are the LINK's, and a congested run or a long clean one walks `d` without end — held to the ladder's rungs so a recovery climbs from the floor, not from a debt of stops below it.
-        self.d = self.d.clamp(D_MIN, 2 * self.max_band as i32);
+        self.d = self.d.clamp(D_MIN, self.top());
         self.settle_band();
         self.plan() != before
     }
@@ -131,10 +196,11 @@ impl Ladder {
     /// Change band only on leaving the current band's range — the one-stop overlap is where it holds.
     fn settle_band(&mut self) {
         let start = self.band;
-        while self.band < self.max_band && self.d > 2 * self.band as i32 {
+        let detail = self.split(self.d).0;
+        while self.band < self.max_band && detail > 2 * self.band as i32 {
             self.band += 1;
         }
-        while self.band > 0 && self.d < 2 * self.band as i32 - 4 {
+        while self.band > 0 && detail < 2 * self.band as i32 - 4 {
             self.band -= 1;
         }
         if self.band > self.max_band {
@@ -150,21 +216,37 @@ impl Ladder {
     }
 
     pub fn plan(&self) -> Plan {
-        // Softness counts only detail at or above the smallest band's width; below it (d < 0) the lever is frame rate alone — never a picture narrower than 160.
+        self.plan_at(self.d, self.band)
+    }
+
+    fn plan_at(&self, d: i32, band: usize) -> Plan {
+        let mut p = self.raw_plan(d, band);
+        if let Some(c) = self.tuning.bitrate_cap {
+            // The floor rung may still cost more than a tiny cap: the cap wins, the picture goes blocky rather than over budget.
+            p.bitrate = p.bitrate.min(c.max(24_000));
+        }
+        p
+    }
+
+    /// A rung's plan at what it costs, before the bitrate cap.
+    fn raw_plan(&self, d: i32, band: usize) -> Plan {
+        let (detail, slow) = self.split(d);
+        // Softness counts only detail at or above the smallest band's width; below it (detail < 0) the lever is frame rate alone — never a picture narrower than 160.
         // WHY/PROOF: softness is designed for 0-4 half-stops (the resampler's range) and an int→int `as u8` WRAPS — a band picked above the detail would ask for more, a negative is none.
-        let soft = (2 * self.band as i32 - self.d.max(0)).clamp(0, 4) as u8;
-        // Below the smallest band, frame rate: 30 at d = 0, halving per stop (two half-steps), floored at 5.
-        let fps = if self.d >= 0 { 30 } else { ((30.0 * 2f64.powf(self.d as f64 / 2.0)).round() as u32).max(5) };
-        let (w, h) = self.bands[self.band];
-        Plan { band: self.band, w, h, soft, fps, bitrate: bitrate_for(w as u32, h as u32, soft, fps) }
+        let soft = (2 * band as i32 - detail.max(0)).clamp(0, 4) as u8;
+        // Frame rate: the cap, halving per stop (two half-steps) of `slow`, floored.
+        let cap = self.tuning.fps_cap.max(FPS_FLOOR);
+        let fps = if slow == 0 { cap } else { ((cap as f64 * 2f64.powf(-slow as f64 / 2.0)).round() as u32).max(FPS_FLOOR) };
+        let (w, h) = self.bands[band];
+        Plan { band, w, h, soft, fps, bitrate: bitrate_for(w as u32, h as u32, soft, fps, self.tuning.bpp_milli) }
     }
 }
 
-/// The bits a plan needs: ~0.1 bit per EFFECTIVE pixel per frame (decent H.264 at a real-time preset), never below the coded size's per-macroblock floor (each 16×16 block costs a few bits however soft the picture — the reason softness alone cannot carry a big coded size to a tiny bitrate).
-pub fn bitrate_for(w: u32, h: u32, soft: u8, fps: u32) -> u32 {
+/// The bits a plan needs: `bpp_milli` thousandths of a bit per EFFECTIVE pixel per frame (100, ~0.1 bit, is decent H.264 at a real-time preset), never below the coded size's per-macroblock floor (each 16×16 block costs a few bits however soft the picture — the reason softness alone cannot carry a big coded size to a tiny bitrate).
+pub fn bitrate_for(w: u32, h: u32, soft: u8, fps: u32, bpp_milli: u32) -> u32 {
     let scale = 2f64.powf(-(soft as f64) / 2.0);
     let eff = (w as f64 * scale) * (h as f64 * scale);
-    let content = eff * fps as f64 * 0.1;
+    let content = eff * fps as f64 * bpp_milli as f64 / 1000.0;
     let blocks = ((w + 15) / 16 * ((h + 15) / 16)) as f64;
     let floor = blocks * 3.0 * fps as f64;
     // WHY/PROOF: the size comes from the camera (OS) — the encoder's working range, 24 kbit/s to 16 Mbit/s, holds a tiny or enormous capture to a rate the encoder accepts and the link can carry.
@@ -204,7 +286,7 @@ mod tests {
     #[test]
     fn starts_at_full_detail_of_the_middle_band() {
         let l = Ladder::new(wide(), 4);
-        assert_eq!(l.plan(), Plan { band: 2, w: 640, h: 360, soft: 0, fps: 30, bitrate: bitrate_for(640, 360, 0, 30) });
+        assert_eq!(l.plan(), Plan { band: 2, w: 640, h: 360, soft: 0, fps: 30, bitrate: bitrate_for(640, 360, 0, 30, 100) });
         assert_eq!(Ladder::new(wide(), 1).plan().band, 1, "a lower ceiling starts lower");
     }
 
@@ -264,7 +346,7 @@ mod tests {
             seq += 1;
             l.verdict(seq, false, true);
         }
-        assert_eq!(l.plan(), Plan { band: 3, w: 1280, h: 720, soft: 0, fps: 30, bitrate: bitrate_for(1280, 720, 0, 30) });
+        assert_eq!(l.plan(), Plan { band: 3, w: 1280, h: 720, soft: 0, fps: 30, bitrate: bitrate_for(1280, 720, 0, 30, 100) });
         for _ in 0..200 {
             seq += 1;
             l.verdict(seq, true, false);
@@ -281,6 +363,57 @@ mod tests {
     #[test]
     fn the_macroblock_floor_binds_a_big_coded_size() {
         // 1280×720 softened two stops still costs more than 320×180 at full detail — why bands, not softness alone, carry the bottom.
-        assert!(bitrate_for(1280, 720, 4, 30) > bitrate_for(320, 180, 0, 30));
+        assert!(bitrate_for(1280, 720, 4, 30, 100) > bitrate_for(320, 180, 0, 30, 100));
+    }
+    #[test]
+    fn the_frame_rate_cap_and_quality_shape_every_plan() {
+        let mut l = Ladder::new(wide(), 4);
+        l.set_tuning(Tuning { fps_cap: 15, bpp_milli: 200, ..Tuning::DEFAULT });
+        let p = l.plan();
+        assert_eq!(p.fps, 15, "the cap is the top frame rate");
+        assert_eq!(p.bitrate, bitrate_for(640, 360, 0, 15, 200), "twice the bits per pixel");
+        assert!(bitrate_for(640, 360, 0, 15, 200) > bitrate_for(640, 360, 0, 15, 100));
+    }
+
+    #[test]
+    fn a_bitrate_cap_lowers_the_top_rung() {
+        let mut l = Ladder::new(wide(), 4);
+        let cap = bitrate_for(640, 360, 0, 30, 100);
+        l.set_tuning(Tuning { bitrate_cap: Some(cap), ..Tuning::DEFAULT });
+        let mut seq = 0u32;
+        for _ in 0..200 {
+            seq += 1;
+            l.verdict(seq, false, true);
+        }
+        let p = l.plan();
+        assert!(p.bitrate <= cap, "never over the cap: {} > {}", p.bitrate, cap);
+        assert!(p.band <= 3 && (p.w, p.soft) != (2560, 0), "a clean link climbs only as far as the cap allows");
+    }
+
+    #[test]
+    fn keep_detail_sheds_frame_rate_first() {
+        let mut l = Ladder::new(wide(), 4);
+        l.set_tuning(Tuning { keep_detail: true, ..Tuning::DEFAULT });
+        let start = l.plan();
+        assert_eq!((start.band, start.soft, start.fps), (2, 0, 8), "the change of shed order keeps the detail; below the top a keep-detail ladder runs two stops slow");
+        let mut seq = 0u32;
+        for _ in 0..200 {
+            seq += 1;
+            l.verdict(seq, false, true);
+        }
+        assert_eq!((l.plan().band, l.plan().soft, l.plan().fps), (4, 0, 30), "a clean link reaches the top: full detail, full rate");
+        for _ in 0..4 {
+            seq += 1;
+            l.verdict(seq, true, false);
+        }
+        let p = l.plan();
+        assert_eq!((p.band, p.soft), (4, 0), "four congested verdicts: detail untouched");
+        assert!(p.fps <= 8, "two stops of frame rate gone first, got {}", p.fps);
+        seq += 1;
+        l.verdict(seq, true, false);
+        assert_eq!(l.plan().soft, 1, "then detail");
+        // Back to the default order: the same picture, the frame rate restored.
+        l.set_tuning(Tuning::DEFAULT);
+        assert_eq!((l.plan().band, l.plan().soft, l.plan().fps), (4, 1, 30));
     }
 }

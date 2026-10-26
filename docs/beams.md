@@ -65,17 +65,18 @@ RAW is lumis's road, not the beam's: RAW_SENSOR at 30 fps means our own demosaic
 ## 4. The receive chain
 
 ```
-H.264 NALs ──decode──▶ Y Cb Cr (8-bit, 4:2:0)
-   │ 3×3 Q12 + offsets (601 full range), add half? NO — see dither; shift 12 → R'G'B' γ2, 8-bit → widen
-   │ square → linear R G B, 16-bit
-   │ 3×3 Q10–Q12 (sensor → VSF RGB) with 1/gains folded in, signed, clamp after → VSF RGB linear 16-bit
-   │ theme formatter: VSF RGB → BT.2020 display encode (existing, integer)
-   │ + blue-noise tile (x,y mod 64, origin hashed per frame), truncate → 8/10-bit surface
+H.264 NALs ──decode──▶ Y Cb Cr (8-bit, 4:2:0, 601 full range)
+   │ 3×3 Q12 + offsets → R'G'B' codes, 8-bit
+   │ the entry's transfer, a 256-entry table → light, Q16 (white = 65536)
+   │ 3×3 Q10 (camera → VSF RGB → Rec.2020) with 1/gains folded in, signed, i64, clamp after:
+   │   at white for an SDR entry, at the buffer's 9.7× for a g2t entry (an HDR beam keeps its light past white)
+   │ light → g2t code × 256 by table
+   │ + blue-noise tile (x,y mod 64, origin hashed per frame), truncate → 8-bit g2t Rec.2020
    ▼
-fluor direct blit into the wave screen's square
+fluor direct blit into the wave screen's square — the buffer's own encoding, no conversion at the blit
 ```
 
-The receiver branches on the characterization's `Transfer` and class: `gamma2` → the square; `srgb` → a 256-entry inverse table; a `creative`/`assumed` entry carries the assumed sRGB→VSF-RGB matrix and gains of one; a `relative`/`unit` entry carries the scanned matrix; an `absolute`/`model` entry carries the maker's. The pixel path never asks which camera it was — only what the entry says.
+The receiver branches on the characterization's `Transfer` and class: `gamma2` → the square; `srgb` → the sRGB curve; `g2t` → fluor's `G2T_LIGHT_Q16` (an HDR beam, §5f); a `creative`/`assumed` entry carries the assumed sRGB→VSF-RGB matrix and gains of one; a `relative`/`unit` entry carries the scanned matrix; an `absolute`/`model` entry carries the maker's. The pixel path never asks which camera it was — only what the entry says.
 
 ## 5. How H.264 blocks, so the artifacts are expected
 
@@ -154,6 +155,25 @@ The status line says "looking for the target…", then the outcome. The outcome 
 **Desktop:** not shipped yet. The loader looks beside the binary, and in a macOS bundle's Frameworks, but no installer carries the library, and a desktop camera's own AWB makes a one-frame matrix drift anyway.
 
 **Found on the way: VSF matrices were read transposed.** `vsf::colour` constants are column-major; a `ProfileEntry` matrix and this chain are row-major. The beam read `SRGB2VSF_RGB`, `XYZ2VSF_RGB` and `VSF_RGB2REC2020` raw, so sRGB white came out as (0.65, 1.35, 1.00): every `assumed` beam (Samsung fallback, Mac) was green. Now every VSF constant enters the chain thru `beam_colour::vsf_rows`, and a grey-stays-grey test guards it.
+
+## 5f. HDR beams (built 2026-10-26)
+
+Nick 2026-10-26: HDR beams as VSF RGB g2t. A phone camera that offers 10-bit HLG (`REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT` + the `HLG10` profile + P010 output sizes, API 33) streams P010 into its reader when Settings → Beam asks for HDR; the request keeps the camera's own colour (the HLG10 profile carries the HAL's processing to BT.2020 — no straight path, no γ2 curve of ours). Per frame (`beam_hdr.rs`): the P010 planes box-shrink at 16 bits to the effective size, each pixel goes 10-bit BT.2020 Y'CbCr (video or full range, as the frame's dataspace says) → HLG R'G'B' → light (the inverse OETF, the OOTF's system gamma 1.2 per channel, HLG's reference white 0.75 = diffuse white, its top 4.9× white) → g2t code by one 4096-entry table, blue-noise dithered, re-encoded as the same 601 full-range 8-bit YCbCr the encoder always takes. The entry is `creative` / `assumed`, the Rec.2020→VSF-RGB matrix, transfer `g2t` (`hdr_entry`). An HDR beam is an ordinary H.264 stream; a receiver keeps its light past white (§4) and an HDR screen shows it (the Android extended-range surface asks for the frame's brightest light); an SDR screen clips each channel at white. Desktop cameras (V4L2, AVFoundation) are 8-bit SDR: HDR is greyed out on their Settings page. The self-view of an HDR camera reads the high byte of each P010 sample (HLG standing in for g2t's curve, the inset only).
+
+## 5g. Settings (built 2026-10-26)
+
+Settings → Beam (Nick 2026-10-26: "a beam settings screen to control bitrate/size/quality/HDRness… and test gradients… to check our HDR against 'white' and 'brightest' and see stairsteps for any banding/bitdepth"). The controls, all live (`beam_settings.rs`: one generation counter each sender reads on its frame edge):
+
+- **HDR** off / on (default off; greyed out without a 10-bit HLG camera). Takes effect at the next camera start.
+- **Largest size**: Auto (the link's ceiling, §5c) or 1920 / 1280 / 640 / 320 wide — a cap only ever lowers the ceiling.
+- **Frame rate**: 30 / 24 / 15 — the ladder's top rate; below the smallest band it still halves per stop, floored at 5. Desktops keep frames evenly (24 of 30 keeps four in five).
+- **Quality**: lean / standard / rich = 0.06 / 0.1 / 0.18 bit per effective pixel per frame (`Tuning::bpp_milli`).
+- **Most data**: Auto or 4000 / 2000 / 1000 / 500 kbit/s — the ladder's top rung becomes the highest whose bitrate fits, so the cap shapes size and detail, never just starves the encoder.
+- **When the connection is busy**: keep it smooth (shed detail first, the default) or keep it sharp (shed two stops of frame rate first, `FPS_FIRST`, then detail).
+
+The keys (`beam.hdr`, `beam.size_cap`, `beam.fps_cap`, `beam.quality`, `beam.bitrate_cap`, `beam.keep_detail`) are per device by default; one choice on the page links all of them to the fleet ("this device only" / "follow my fleet"). A device that never chose reads its own values or the defaults, never another device's. A cap is a number, or `u0(false)` for Auto.
+
+The page's test patterns are painted straight into the buffer as g2t codes: black → white (codes 0–194), white → brightest (194–255) with ticks at each whole stop above white and a marker at the light the screen allows now, three patches (white, the brightest allowed now, the top code), near black one code per band, and each Rec.2020 primary from black up past white. A line says what the screen does: HDR with its allowed and asked-for stops (the Android extended-range surface's grant and declaration, `hdr_surface::status`), HDR allowing none (the phone's HDR brightness setting or battery saver), or SDR.
 
 ## 6. Stages (build order)
 

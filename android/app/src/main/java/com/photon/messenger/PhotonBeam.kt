@@ -40,8 +40,8 @@ class PhotonBeam(
     private val ctx: Context,
     /** One encoded access unit + the gains the ISP applied (Q12: R, G-even, G-odd, B). */
     private val onFrame: (ByteArray, IntArray) -> Unit,
-    /** The pipeline is up (again, after a camera switch): width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, whether the straight-thru colour path took, whether our γ2 curve took, and the camera's key ("1", "0/3"). */
-    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean, String, String) -> Unit,
+    /** The pipeline is up (again, after a camera switch): width, height, fps, the maker's XYZ→camera matrix (SENSOR_COLOR_TRANSFORM, 9 floats row-major) or null, whether the straight-thru colour path took, whether our γ2 curve took, the camera's key ("1", "0/3") and label, and whether this camera runs HDR (10-bit HLG → g2t, docs/beams.md). */
+    private val onStarted: (Int, Int, Int, FloatArray?, Boolean, Boolean, String, String, Boolean) -> Unit,
     /** The self-view: a 4× subsampled I420 frame (y‖u‖v), every other camera frame. */
     private val onSelf: (ByteArray, Int, Int) -> Unit,
     /** The picture's rotation changed: quarter turns clockwise that put the world's up at the top, and whether this is a front camera. */
@@ -62,6 +62,25 @@ class PhotonBeam(
         /** Parameter sets ride the first access unit and every this many frames after (the beam's info cadence). */
         const val CONFIG_EVERY = 30
         private val UNIT_GAINS = intArrayOf(4096, 4096, 4096, 4096)
+
+        /** Can this camera stream 10-bit HLG into a P010 reader (Settings → Beams' HDR; API 33+)? `chars` = the sensor's (its sizes), `logical` = the request capabilities. */
+        fun hlgCapable(chars: CameraCharacteristics, logical: CameraCharacteristics): Boolean {
+            if (Build.VERSION.SDK_INT < 33) return false
+            val caps = logical.get(CameraCharacteristics.REQUEST_AVAILABLE_CAPABILITIES) ?: return false
+            if (!caps.contains(CameraMetadata.REQUEST_AVAILABLE_CAPABILITIES_DYNAMIC_RANGE_TEN_BIT)) return false
+            val profiles = logical.get(CameraCharacteristics.REQUEST_AVAILABLE_DYNAMIC_RANGE_PROFILES)?.supportedProfiles ?: return false
+            if (!profiles.contains(android.hardware.camera2.params.DynamicRangeProfiles.HLG10)) return false
+            return !chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP)?.getOutputSizes(ImageFormat.YCBCR_P010).isNullOrEmpty()
+        }
+
+        /** Does any camera on this phone offer HDR beams? Asked once at startup (no permission needed to read characteristics); the settings page greys HDR out when none does. */
+        fun anyHlgCamera(ctx: Context): Boolean = try {
+            val cm = ctx.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+            cm.cameraIdList.any { id -> cm.getCameraCharacteristics(id).let { hlgCapable(it, it) } }
+        } catch (e: Throwable) {
+            PhotonLog.w(TAG, "HDR camera probe", e)
+            false
+        }
     }
 
     private var cameraThread: HandlerThread? = null
@@ -99,10 +118,21 @@ class PhotonBeam(
         sy: java.nio.ByteBuffer, su: java.nio.ByteBuffer, sv: java.nio.ByteBuffer, sYRow: Int, sYPx: Int, sUVRow: Int, sUVPx: Int, sw: Int, sh: Int,
         dy: java.nio.ByteBuffer, du: java.nio.ByteBuffer, dv: java.nio.ByteBuffer, dYRow: Int, dYPx: Int, dUVRow: Int, dUVPx: Int, dw: Int, dh: Int, soft: Int
     ): Boolean
+    /** The HDR fill: a P010 HLG camera frame → 8-bit g2t codes at the coded size (beam_hdr.rs). */
+    private external fun nativeBeamFillHdr(
+        sy: java.nio.ByteBuffer, su: java.nio.ByteBuffer, sv: java.nio.ByteBuffer, sYRow: Int, sYPx: Int, sUVRow: Int, sUVPx: Int, sw: Int, sh: Int, fullRange: Boolean,
+        dy: java.nio.ByteBuffer, du: java.nio.ByteBuffer, dv: java.nio.ByteBuffer, dYRow: Int, dYPx: Int, dUVRow: Int, dUVPx: Int, dw: Int, dh: Int, soft: Int, frame: Int
+    ): Boolean
+    /** Settings → Beams asks for HDR (and this phone can): read at each camera start. */
+    private external fun nativeBeamWantHdr(): Boolean
+    /** This camera's pipeline runs HDR: a P010 reader, the HLG10 profile, the camera's own colour. */
+     private var hdrNow = false
     @Volatile private var gains: IntArray = UNIT_GAINS
 
     /** One camera the beam can be on: a logical camera, or one physical lens of a logical multi-camera (opened thru its logical id, the stream pinned to the lens). `chars` describe the SENSOR (sizes, matrix, orientation, facing); `logical` holds the request capabilities. `key` names it to Rust ("1", "0/3"), `fov` orders it (sensor width ÷ focal length — wider first). */
-    private class Target(val openId: String, val physicalId: String?, val chars: CameraCharacteristics, val logical: CameraCharacteristics, val key: String, val fov: Float, val front: Boolean, val label: String)
+    private class Target(val openId: String, val physicalId: String?, val chars: CameraCharacteristics, val logical: CameraCharacteristics, val key: String, val fov: Float, val front: Boolean, val label: String) {
+        val hlg: Boolean = hlgCapable(chars, logical)
+    }
 
     private var targets: List<Target> = emptyList()
     private var target: Target? = null
@@ -153,12 +183,15 @@ class PhotonBeam(
         sensorOrientation = t.chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
         frontFacing = t.front
         lastQuarter = -1
-        val (size, rate) = pickCapture(t.chars)
+        // HDR when Settings → Beams asks and this lens can (an edge: read once per camera start).
+        hdrNow = t.hlg && (try { nativeBeamWantHdr() } catch (_: Throwable) { false })
+        val format = if (hdrNow) ImageFormat.YCBCR_P010 else ImageFormat.YUV_420_888
+        val (size, rate) = pickCapture(t.chars, format)
         w = size.width
         h = size.height
         fps = rate
         val matrix = makerMatrix(t.chars)
-        reader = ImageReader.newInstance(w, h, ImageFormat.YUV_420_888, 4).also { r ->
+        reader = ImageReader.newInstance(w, h, format, 4).also { r ->
             r.setOnImageAvailableListener({ rd ->
                 val img = rd.acquireLatestImage() ?: return@setOnImageAvailableListener
                 try {
@@ -172,7 +205,7 @@ class PhotonBeam(
             try {
                 startSession(dev, t, t.physicalId != null)
                 // The label follows the COLOUR path alone (not whether distortion or edge keys existed): absolute only when the straight colour path took.
-                onStarted(w, h, fps, matrix, fullStraight, curveTook, t.key, t.label)
+                onStarted(w, h, fps, matrix, fullStraight, curveTook, t.key, t.label, hdrNow)
             } catch (e: Throwable) {
                 PhotonLog.w(TAG, "session failed", e)
                 stop()
@@ -269,15 +302,15 @@ class PhotonBeam(
     }
 
     /** THE CAPTURE (Nick 2026-10-14: "sampling what we have available and working with it, even if we only get a 25fps camera with a 2:1 aspect… cap the framerate at 30 and the megapixels at 5 ish… ideally uncropped"): of the YUV sizes this sensor streams, the one with the highest frame rate up to [MAX_FPS], then the least crop of the sensor's own aspect (within 1% counts as uncropped), then the most pixels up to [MAX_PIXELS]. Returns the size and the frame rate it runs at. */
-    private fun pickCapture(chars: CameraCharacteristics): Pair<Size, Int> {
+    private fun pickCapture(chars: CameraCharacteristics, format: Int): Pair<Size, Int> {
         val fallback = Size(1280, 720) to MAX_FPS
         val map = chars.get(CameraCharacteristics.SCALER_STREAM_CONFIGURATION_MAP) ?: return fallback
-        val sizes = map.getOutputSizes(ImageFormat.YUV_420_888)?.filter { it.width % 2 == 0 && it.height % 2 == 0 && it.width.toLong() * it.height <= MAX_PIXELS } ?: return fallback
+        val sizes = map.getOutputSizes(format)?.filter { it.width % 2 == 0 && it.height % 2 == 0 && it.width.toLong() * it.height <= MAX_PIXELS } ?: return fallback
         val active = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
         val native = if (active != null && active.height() > 0) active.width().toFloat() / active.height() else 4f / 3f
         data class Cand(val size: Size, val fps: Int, val crop: Float)
         val cands = sizes.map { sz ->
-            val dur = try { map.getOutputMinFrameDuration(ImageFormat.YUV_420_888, sz) } catch (_: Throwable) { 0L }
+            val dur = try { map.getOutputMinFrameDuration(format, sz) } catch (_: Throwable) { 0L }
             val rate = if (dur > 0) (1_000_000_000L / dur).toInt() else MAX_FPS
             val a = sz.width.toFloat() / sz.height
             val keep = minOf(a / native, native / a)
@@ -433,12 +466,21 @@ class PhotonBeam(
         val out = ByteArray(sw * sh + 2 * cw * ch)
         val yp = img.planes[0]; val up = img.planes[1]; val vp = img.planes[2]
         val yb = yp.buffer; val ub = up.buffer; val vb = vp.buffer
-        for (y in 0 until sh) for (x in 0 until sw) out[y * sw + x] = yb.get((y * f) * yp.rowStride + (x * f) * yp.pixelStride)
+        // An HDR frame is P010: the high byte of each sample is the top 8 of its 10 bits, and video range is stretched to full. HLG's curve stands in for g2t's in the inset (both put white near three quarters of the range) — the inset only, never the wire.
+        val hi = if (hdrNow) 1 else 0
+        val stretch = hdrNow && !fullRange(img)
+        fun ly(b: Byte): Byte { val v = b.toInt() and 0xFF; return if (stretch) ((v - 16) * 255 / 219).coerceIn(0, 255).toByte() else b }
+        fun lc(b: Byte): Byte { val v = b.toInt() and 0xFF; return if (stretch) ((v - 128) * 255 / 224 + 128).coerceIn(0, 255).toByte() else b }
+        for (y in 0 until sh) for (x in 0 until sw) out[y * sw + x] = ly(yb.get((y * f) * yp.rowStride + (x * f) * yp.pixelStride + hi))
         var o = sw * sh
-        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = ub.get((y * f) * up.rowStride + (x * f) * up.pixelStride) }
-        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = vb.get((y * f) * vp.rowStride + (x * f) * vp.pixelStride) }
+        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = lc(ub.get((y * f) * up.rowStride + (x * f) * up.pixelStride + hi)) }
+        for (y in 0 until ch) for (x in 0 until cw) { out[o++] = lc(vb.get((y * f) * vp.rowStride + (x * f) * vp.pixelStride + hi)) }
         onSelf(out, sw, sh)
     }
+
+    /** Did the camera tag this frame full range (API 33+ dataspace)? Video range otherwise — the HDR fill expands it. */
+    private fun fullRange(img: Image): Boolean =
+        Build.VERSION.SDK_INT >= 33 && android.hardware.DataSpace.getRange(img.dataSpace) == android.hardware.DataSpace.RANGE_FULL
 
     /** A band crossing: restart the encoder at the new coded size (its first frame is the keyframe the new size needs — the only one the ladder ever costs). */
     private fun reconfigure(nw: Int, nh: Int, kbps: Int) {
@@ -515,7 +557,10 @@ class PhotonBeam(
         val s = img.planes
         val d = dst.planes
         val filled = try {
-            nativeBeamFill(
+            if (hdrNow) nativeBeamFillHdr(
+                s[0].buffer, s[1].buffer, s[2].buffer, s[0].rowStride, s[0].pixelStride, s[1].rowStride, s[1].pixelStride, w, h, fullRange(img),
+                d[0].buffer, d[1].buffer, d[2].buffer, d[0].rowStride, d[0].pixelStride, d[1].rowStride, d[1].pixelStride, codedW, codedH, soft, fed.toInt()
+            ) else nativeBeamFill(
                 s[0].buffer, s[1].buffer, s[2].buffer, s[0].rowStride, s[0].pixelStride, s[1].rowStride, s[1].pixelStride, w, h,
                 d[0].buffer, d[1].buffer, d[2].buffer, d[0].rowStride, d[0].pixelStride, d[1].rowStride, d[1].pixelStride, codedW, codedH, soft
             )
@@ -585,7 +630,8 @@ class PhotonBeam(
         // …and only where the far side can undo the raw colour: the maker's matrix must exist and our γ2 curve must take, or the frames would be unbalanced sensor colour labelled as something else.
         val toneModesEarly = chars.get(CameraCharacteristics.TONEMAP_AVAILABLE_TONE_MAP_MODES) ?: intArrayOf()
         val hasMaker = makerMatrix(t.chars) != null
-        fullStraight = manualPost && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF) && hasMaker &&
+        // An HDR camera keeps its own colour (the HLG10 profile carries the HAL's processing to BT.2020; no straight path, no curve of ours).
+        fullStraight = !hdrNow && manualPost && awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF) && hasMaker &&
             toneModesEarly.contains(CameraMetadata.TONEMAP_MODE_CONTRAST_CURVE)
         if (fullStraight) {
             req.set(CaptureRequest.CONTROL_AWB_MODE, CameraMetadata.CONTROL_AWB_MODE_OFF)
@@ -643,7 +689,7 @@ class PhotonBeam(
         req.set(CaptureRequest.CONTROL_EFFECT_MODE, CameraMetadata.CONTROL_EFFECT_MODE_OFF)
         req.set(CaptureRequest.CONTROL_SCENE_MODE, CameraMetadata.CONTROL_SCENE_MODE_DISABLED)
         // AE and AF stay automatic; hot-pixel correction stays as the template has it.
-        PhotonLog.i(TAG, "request: manualPost=$manualPost awbOff=${awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)} curve=$curveOk straight=$straight size=${w}x$h")
+        PhotonLog.i(TAG, "request: hdr=$hdrNow manualPost=$manualPost awbOff=${awbModes.contains(CameraMetadata.CONTROL_AWB_MODE_OFF)} curve=$curveOk straight=$straight size=${w}x$h")
         val straightNow = straight
         val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
@@ -699,9 +745,14 @@ class PhotonBeam(
                 }
             }
         }
-        if (physical && Build.VERSION.SDK_INT >= 28 && t.physicalId != null) {
+        val pinned = physical && Build.VERSION.SDK_INT >= 28 && t.physicalId != null
+        if (pinned || hdrNow) {
             // THE LENS PINNED: the stream rides one physical camera of the logical one, so the picture (and its colour matrix) is that sensor's, never a HAL-chosen switch.
-            val oc = android.hardware.camera2.params.OutputConfiguration(surface).apply { setPhysicalCameraId(t.physicalId) }
+            // HDR: the stream asks for the HLG10 profile (10-bit, BT.2020 HLG into the P010 reader).
+            val oc = android.hardware.camera2.params.OutputConfiguration(surface).apply {
+                if (pinned) setPhysicalCameraId(t.physicalId)
+                if (hdrNow && Build.VERSION.SDK_INT >= 33) dynamicRangeProfile = android.hardware.camera2.params.DynamicRangeProfiles.HLG10
+            }
             val handler = cameraHandler ?: return straight
             val sc = android.hardware.camera2.params.SessionConfiguration(android.hardware.camera2.params.SessionConfiguration.SESSION_REGULAR, listOf(oc), java.util.concurrent.Executor { handler.post(it) }, cb)
             dev.createCaptureSession(sc)

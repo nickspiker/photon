@@ -93,16 +93,16 @@ static ANDROID_ORIENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8
 /// The value last put on the wire, so a change goes out at once.
 static ANDROID_ORIENT_SENT: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0xFF);
 
-/// The phone's ladder and the camera timestamp (ns) of the last frame it kept.
-static ANDROID_LADDER: Mutex<Option<(super::beam_ladder::Ladder, i64)>> = Mutex::new(None);
+/// The phone's ladder, the camera timestamp (ns) of the last frame it kept, and the beam-settings generation it last read.
+static ANDROID_LADDER: Mutex<Option<(super::beam_ladder::Ladder, i64, u32)>> = Mutex::new(None);
 
 /// Per camera frame (Kotlin, before it touches the encoder): step the ladder with any new link verdict and say what to do with this frame — packed `keep | band << 1 | soft << 4 | kbit/s << 8 | coded width << 24 | coded height << 40` (14 bits of kbit/s, 16 of each dimension); −1 when no beam is running. A band change also re-describes the beam at once (the receiver's geometry).
 pub fn android_plan(t_ns: i64) -> i64 {
     let mut g = ANDROID_LADDER.lock().unwrap();
-    let Some((ladder, last_kept)) = g.as_mut() else { return -1 };
+    let Some((ladder, last_kept, seen)) = g.as_mut() else { return -1 };
     let before = ladder.plan();
     let (seq, congested, clean) = super::link_verdict();
-    if ladder.verdict(seq, congested, clean) {
+    if follow_settings(ladder, seen) | ladder.verdict(seq, congested, clean) {
         let p = ladder.plan();
         if (p.w, p.h) != (before.w, before.h) {
             let (nw, nh) = (p.w, p.h);
@@ -489,7 +489,36 @@ fn ceiling(bands: &[(u16, u16)]) -> usize {
         // WHY/PROOF: the ladder's floor — a capture with fewer than three bands stays at rung 0 on a metered link, never wraps to a rung that does not exist.
         top = top.saturating_sub(2);
     }
+    // Settings → Beams: the user's size cap lowers it further, never raises it.
+    if let Some(cap) = super::beam_settings::current().size_cap {
+        top = top.min(super::beam_ladder::top_within(bands, cap as usize));
+    }
     top
+}
+
+/// A new ladder for a capture's bands, tuned to the beam settings; returns it with the settings generation it read.
+fn new_ladder(bands: Vec<(u16, u16)>) -> (super::beam_ladder::Ladder, u32) {
+    let seen = super::beam_settings::generation();
+    let max_band = ceiling(&bands);
+    let mut ladder = super::beam_ladder::Ladder::new(bands, max_band);
+    ladder.set_tuning(super::beam_settings::current().tuning);
+    (ladder, seen)
+}
+
+/// Settings → Beams, live: a newer generation retunes the ladder and moves its ceiling. True when the plan changed.
+fn follow_settings(ladder: &mut super::beam_ladder::Ladder, seen: &mut u32) -> bool {
+    let g = super::beam_settings::generation();
+    if g == *seen {
+        return false;
+    }
+    *seen = g;
+    let before = ladder.plan();
+    ladder.set_tuning(super::beam_settings::current().tuning);
+    let max_band = ceiling(ladder.bands());
+    ladder.set_max_band(max_band);
+    let after = ladder.plan();
+    crate::logf!("BEAM: settings changed — now {}×{} soft {} at {} fps, {} kbit/s", after.w, after.h, after.soft, after.fps, after.bitrate / 1000);
+    after != before
 }
 
 /// Start sending a camera's frames (desktop): capture → H.264 → the beam track, toward the wave's current peer address (re-read every frame, so a redirect is followed).
@@ -498,8 +527,8 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
     let cam_fps = source.fps().max(1);
     // THE LADDER (beam_ladder.rs): bands from the camera's own frame; the ceiling per `ceiling`.
     let bands = super::beam_ladder::bands_for(sw, sh);
-    let max_band = ceiling(&bands);
-    let mut ladder = super::beam_ladder::Ladder::new(bands, max_band);
+    let (mut ladder, mut seen) = new_ladder(bands);
+    let max_band = ceiling(ladder.bands());
     let mut plan = ladder.plan();
     let (bw, bh) = (plan.w, plan.h);
     let mut enc = h264::Encoder::new(bw as usize, bh as usize, cam_fps, plan.bitrate)?;
@@ -516,6 +545,7 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
         .spawn(move || {
             let mut frame_no = first_frame;
             let mut cam_frames = 0u64;
+            let mut rate_acc = 0u32;
             let mut sent_bytes = 0u64;
             let mut self_rgb = Vec::new();
             let mut coded = h264::I420::new(bw as usize, bh as usize);
@@ -532,7 +562,8 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                 }
                 // The link verdict moves the ladder (an edge: a new verdict once a second, nothing in between).
                 let (seq, congested, clean) = super::link_verdict();
-                if ladder.verdict(seq, congested, clean) {
+                // Settings → Beams moves it too (a tap on the page, read on this frame's edge); `|` so both run.
+                if follow_settings(&mut ladder, &mut seen) | ladder.verdict(seq, congested, clean) {
                     let next = ladder.plan();
                     if next.band != plan.band {
                         // A band crossing: the one place the coded size — and so a keyframe — changes.
@@ -553,11 +584,12 @@ pub fn start_sender(target: Target, mut source: Box<dyn FrameSource>, _bitrate_b
                     }
                     plan = next;
                 }
-                // Frame rate below the smallest band: keep every Nth camera frame (free in H.264 — no keyframe).
-                let every = (cam_fps / plan.fps).max(1) as u64; // the ladder floors fps at 5; a camera slower than the plan keeps every frame
-                if cam_frames % every != 0 {
+                // The plan's frame rate (the ladder's lever below the smallest band, and the user's cap): keep plan.fps of every cam_fps camera frames, spread evenly — 24 of 30 keeps four in five (free in H.264, no keyframe). A camera slower than the plan keeps every frame.
+                rate_acc += plan.fps.min(cam_fps);
+                if rate_acc < cam_fps {
                     continue;
                 }
+                rate_acc -= cam_fps;
                 if frame_no % beam::INFO_EVERY_FRAMES == 0 {
                     tx.send_info(&info);
                     tx.send_orient(0);
@@ -652,16 +684,16 @@ pub fn android_arm(target: Target) -> bool {
 
 /// The pipeline-up edge from Kotlin: build the beam's self-description from what the camera is, and start the encoded sender the button armed. `camera` names the lens ("1", "0/3" — logical id / physical id), the key a calibration is kept under.
 /// A CAMERA SWITCH mid-beam (Nick 2026-10-14: "tap and switch between the front and back cam, or the other three back cams… cycles thru all when I tap on my preview") arrives as this same edge while the sender is live: the transport stays — a new BeamTx would restart its key chain — and the ladder rebuilds from the new capture keeping the link's detail; the new size, colour and orientation go out at once, and the encoder's restart opens with the keyframe the new size needs.
-pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, camera: &str, camera_name: &str) -> Result<(), String> {
+pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, straight: bool, curve: bool, hdr: bool, camera: &str, camera_name: &str) -> Result<(), String> {
     *ANDROID_CAMERA_NAME.lock().unwrap() = Some(camera_name.to_string());
     let Some(target) = *ANDROID_ARMED.lock().unwrap() else {
         return Err("BEAM: pipeline up with nothing armed".into());
     };
     // A calibration made earlier this run for THIS lens (beam_calibrate.rs) outranks the maker's matrix — on the straight path only, where the frames are the colour it was solved from.
-    let on_straight = straight && curve;
+    let on_straight = straight && curve && !hdr;
     super::beam_calibrate::set_camera(camera, on_straight);
     let calibrated = super::beam_calibrate::calibration().filter(|_| on_straight);
-    let entry = calibrated.as_ref().map_or_else(|| phone_entry(maker, straight, curve), |(e, _)| e.clone());
+    let entry = if hdr { hdr_entry() } else { calibrated.as_ref().map_or_else(|| phone_entry(maker, straight, curve), |(e, _)| e.clone()) };
     *ANDROID_SELF_CONV.lock().unwrap() = Some(Converter::new(Characterization::from_entry(&entry)));
     let colour = colour_bytes_cal(&entry, calibrated.map(|(_, c)| c));
     // THE LADDER (beam_ladder.rs): bands from the capture itself (Kotlin picked it: ≤ ~5 MP, ≤ 30 fps, least cropped), the ceiling per `ceiling`.
@@ -669,7 +701,7 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
     let max_band = ceiling(&bands);
     let top = bands[max_band];
     let mut lg = ANDROID_LADDER.lock().unwrap();
-    if let (Some((ladder, last_kept)), Some((tx, info, _))) = (lg.as_mut(), ENCODED_TX.lock().unwrap().as_mut()) {
+    if let (Some((ladder, last_kept, _)), Some((tx, info, _))) = (lg.as_mut(), ENCODED_TX.lock().unwrap().as_mut()) {
         ladder.rebuild(bands, max_band);
         *last_kept = 0;
         let p = ladder.plan();
@@ -682,10 +714,10 @@ pub fn android_started(w: usize, h: usize, fps: u32, maker: Option<[f32; 9]>, st
         crate::logf!("BEAM: camera switched to {} — capture {}×{} @ {} fps, ceiling {}×{}, now {}×{} (detail kept)", camera, w, h, fps, top.0, top.1, p.w, p.h);
         return Ok(());
     }
-    let ladder = super::beam_ladder::Ladder::new(bands, max_band);
+    let (ladder, seen) = new_ladder(bands);
     let p = ladder.plan();
     crate::logf!("BEAM: phone ladder up — camera {}, capture {}×{} @ {} fps, ceiling {}×{}, starting {}×{}", camera, w, h, fps, top.0, top.1, p.w, p.h);
-    *lg = Some((ladder, 0));
+    *lg = Some((ladder, 0, seen));
     drop(lg);
     let info = Info { width: p.w, height: p.h, fps: fps.min(255) as u8, codec: Codec::H264, colour };
     let s = start_encoded_sender(target, info)?;
@@ -833,6 +865,19 @@ pub fn colour_from_bytes(bytes: &[u8]) -> Option<Characterization> {
     }
     let profile = vsf::spectral_image::profile_from_fields(&fields).ok()?;
     profile.entries.first().map(Characterization::from_entry)
+}
+
+/// An HDR beam's entry (docs/beams.md "HDR"): the camera's own colour carried to BT.2020 by its HLG10 profile, so `creative` / `assumed` with the Rec.2020→VSF-RGB matrix, and the samples `g2t` (beam_hdr.rs converts HLG to it on the phone) — the receiver keeps their light past white.
+pub fn hdr_entry() -> vsf::spectral_image::ProfileEntry {
+    vsf::spectral_image::ProfileEntry {
+        matrix: super::beam_colour::vsf_rows(vsf::colour::REC2020_2VSF_RGB),
+        source: "camera_hlg10".into(),
+        class: vsf::spectral_image::IdtClass::Creative,
+        tier: vsf::spectral_image::ProfileTier::Assumed,
+        illuminant: 0,
+        transfer: vsf::spectral_image::Transfer::Gamma2Tanh,
+        scale: None,
+    }
 }
 
 /// The entry for a camera we know nothing about (a UVC webcam, a Mac): `creative` / `assumed` / `srgb`, the sRGB→VSF-RGB matrix.
@@ -1068,11 +1113,12 @@ mod tests {
         grey.y.iter_mut().for_each(|v| *v = 128);
         let mut rgb = Vec::new();
         conv.convert(&grey, Gains::NONE, 0, &mut rgb);
-        let mean = |c: usize| rgb.iter().skip(c).step_by(3).map(|&v| v as u32).sum::<u32>() / (64 * 64);
+        // Each channel's mean LIGHT, decoded from the g2t codes.
+        let mean = |c: usize| rgb.iter().skip(c).step_by(3).map(|&v| fluor::theme::G2T_LIGHT_Q16[v as usize] as f64).sum::<f64>() / (64.0 * 64.0);
         let (r, g, b) = (mean(0) as f32, mean(1) as f32, mean(2) as f32);
-        // Expected: sRGB white thru VSF RGB onto Rec.2020, as ratios of γ2 codes.
+        // Expected: sRGB white thru VSF RGB onto Rec.2020, as ratios of light.
         let w = vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::VSF_RGB2REC2020, &vsf::colour::convert::apply_matrix_3x3_f32(&vsf::colour::SRGB2VSF_RGB, &[1., 1., 1.]));
-        let (er, eb) = ((w[0] / w[1]).sqrt(), (w[2] / w[1]).sqrt());
+        let (er, eb) = (w[0] / w[1], w[2] / w[1]);
         assert!((r / g - er).abs() < 0.015 && (b / g - eb).abs() < 0.015, "grey keeps D65's light: got {r} {g} {b}, want r/g {er} b/g {eb}");
     }
 
@@ -1086,6 +1132,14 @@ mod tests {
         assert_eq!(chr.matrix, super::super::beam_colour::vsf_rows(vsf::colour::SRGB2VSF_RGB));
         assert!(colour_from_bytes(&[]).is_none());
         assert!(colour_from_bytes(b"not a vsf document").is_none());
+    }
+
+    /// An HDR beam says `g2t` on the wire and its receiver reads it as such (an older receiver that lacks the word refuses the entry, never misreads it).
+    #[test]
+    fn the_hdr_entry_round_trips_as_g2t() {
+        let chr = colour_from_bytes(&colour_bytes(&hdr_entry())).expect("reads back");
+        assert_eq!(chr.transfer, super::super::beam_colour::Transfer::G2t);
+        assert_eq!(chr.matrix, super::super::beam_colour::vsf_rows(vsf::colour::REC2020_2VSF_RGB));
     }
 
     #[test]
