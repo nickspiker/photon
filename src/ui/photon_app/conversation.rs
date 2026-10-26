@@ -388,15 +388,63 @@ impl PhotonApp {
         // Focus claims are a friendship-token affair today (the token derives from the pair); a group claim rides the group token once the fleet notification design lands for groups.
     }
 
-    /// The transient contact the conversation screen paints a group thru (`Contact::molecule_view`): the shared title (its members' names when untitled), the standing count minus us, online = any standing member's contact row is online, and woven only once the conversation stands — so the status line under the header reads exactly as a pair's does (docs/conversations.md Phase 1). The phase is that line's business, never the title's.
-    pub(super) fn molecule_view_of(&self, gi: usize) -> Option<crate::types::Contact> {
-        let (gid, roster) = self.molecule_rosters.get(gi)?;
-        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
-        let standing = roster.standing();
-        let remote = standing.iter().filter(|p| Some(**p) != us).count();
-        let online = standing.iter().any(|p| Some(*p) != us && self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p && c.is_online));
-        let phase = self.molecule_locals.iter().find(|(g, _)| g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-        Some(crate::types::Contact::molecule_view(*gid, &roster.display_title(), remote, online, phase == crate::storage::molecule::MoleculePhase::Standing))
+    /// The open conversation's header (docs/conversations.md Phase 2): one view at any size, computed before the chrome borrow.
+    pub(super) fn conv_header(&self) -> Option<super::ConvHeader> {
+        let id = self.active_conversation?;
+        if let Some(gid) = self.roster_id_of(id) {
+            let roster = &self.molecule_rosters.iter().find(|(g, _)| *g == gid)?.1;
+            let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+            let others: Vec<[u8; 32]> = roster.standing().into_iter().filter(|p| Some(*p) != us).collect();
+            let members: Vec<&crate::types::Contact> = others.iter().filter_map(|p| self.contacts.iter().find(|c| !c.is_sibling && c.handle_hash == *p)).collect();
+            let standing = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default() == crate::storage::molecule::MoleculePhase::Standing;
+            let title = roster.display_title();
+            // The ring: the best tier over the members we can see (a stranger's presence is never granted).
+            let tier = members.iter().map(|c| super::contact_conn_tier(c)).min().unwrap_or(super::ConnTier::Offline);
+            return Some(super::ConvHeader {
+                ci: None,
+                conv_id: id,
+                remote: others.len(),
+                has_real_name: !title.is_empty(),
+                title,
+                seed: gid.0,
+                colour_party: Some(gid.0),
+                woven: standing,
+                owner_woven: false,
+                superseded: false,
+                ended: false,
+                clutch_complete: true,
+                clutch_line: String::new(),
+                roster: true,
+                sibling: false,
+                device_key: None,
+                ring: super::ring_colour_of(tier),
+                online: members.iter().any(|c| c.is_online),
+            });
+        }
+        let ci = self.pair_contact_of(id)?;
+        let c = &self.contacts[ci];
+        let us = self.our_party_id(c)?;
+        let remote = c.remote_count(&us);
+        Some(super::ConvHeader {
+            ci: Some(ci),
+            conv_id: id,
+            remote,
+            title: super::contact_visible_name(c, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()),
+            has_real_name: c.has_real_name(),
+            seed: c.handle_proof,
+            colour_party: (remote > 0).then_some(c.handle_hash),
+            woven: c.chain_woven,
+            owner_woven: c.owner_woven,
+            superseded: c.identity_superseded,
+            ended: c.identity_ended,
+            clutch_complete: c.clutch_state == crate::types::ClutchState::Complete,
+            clutch_line: super::contact_status_line(c, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed), self.contacts.iter().any(|s| s.is_sibling), self.fleet_settings.as_ref()),
+            roster: false,
+            sibling: c.is_sibling,
+            device_key: c.device_key(),
+            ring: super::row_ring_tier_in(&self.contacts, c, remote > 0),
+            online: c.is_online,
+        })
     }
 
     /// Open the conversation this contact row stands for.

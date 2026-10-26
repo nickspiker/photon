@@ -989,8 +989,7 @@ impl PhotonApp {
     /// The wave screen's name for a group wave: the molecule's title.
     pub(super) fn group_wave_title(&self) -> Option<String> {
         let w = self.group_wave.as_ref()?;
-        let gi = self.molecule_rosters.iter().position(|(g, _)| *g == w.gid)?;
-        self.molecule_view_of(gi).map(|c| c.display_name())
+        self.molecule_rosters.iter().find(|(g, _)| *g == w.gid).map(|(_, r)| r.display_title())
     }
 
     /// The contact the wave screen shows for a group wave: the first other device's person (the origin while ringing).

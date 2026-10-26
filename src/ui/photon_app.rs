@@ -1152,6 +1152,36 @@ pub(crate) struct PigeonProgress {
     pub(crate) at: std::time::Instant,
 }
 
+/// What the conversation screen paints at its top for ANY conversation (docs/conversations.md Phase 2) — computed once before the chrome borrow. It replaces the transient contact a group used to be painted thru (`Contact::molecule_view`, gone): a conversation is not a person, and only a conversation WITH one person carries that person's contact (`ci`).
+pub(crate) struct ConvHeader {
+    /// The one person this conversation is with, when it is with exactly one we hold a contact for (a pair, a fleet sibling's terminal, our own notes' self row); None for a roster conversation.
+    pub ci: Option<usize>,
+    pub conv_id: crate::types::ConversationId,
+    /// Everyone in it but us.
+    pub remote: usize,
+    pub title: String,
+    pub has_real_name: bool,
+    /// The gradient avatar's seed when no picture is held (the person's proof, the group's id).
+    pub seed: [u8; 32],
+    /// Whose relationship colour the screen speaks in: the person, the group; None = nobody else here (our own colour).
+    pub colour_party: Option<[u8; 32]>,
+    /// The status line's inputs: a pair's CLUTCH step until woven (precomputed), a roster conversation's phase until it stands, the end-of-identity states.
+    pub woven: bool,
+    pub owner_woven: bool,
+    pub superseded: bool,
+    pub ended: bool,
+    pub clutch_complete: bool,
+    pub clutch_line: String,
+    pub roster: bool,
+    /// Our own fleet's terminal (the bridge) and that device's key.
+    pub sibling: bool,
+    pub device_key: Option<[u8; 32]>,
+    /// The presence ring: a person's own tier, the best over a group's members, the fleet's for our notes.
+    pub ring: u32,
+    /// Anyone else in it reachable right now.
+    pub online: bool,
+}
+
 /// One outgoing row whose WIRE half waits one frame, in any conversation: the bubble is already in, the transmit runs after the frame presents (`drain_pending_sends`). A send that cannot go yet is held (a pair's row stays undelivered for the held-message flush) or PARKED at `queued = u64::MAX` (a minted group still Joining or holding no root) until the edge that changes that.
 pub(crate) struct PendingSend {
     pub conv: crate::types::ConversationId,

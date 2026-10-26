@@ -156,9 +156,9 @@ impl PhotonApp {
 
         // The open conversation's contact row + compose gate, resolved ONCE before the chrome borrow — the borrow lives thru the whole render, so no `&self` method can run past this point.
         let active_ci = self.active_contact();
-        // A GROUP conversation paints thru a transient contact view (docs/molecules.md §10.5) — resolved here, before the borrow, beside the contact index. Exactly one of the two is Some on the conversation screen.
+        // The open conversation's HEADER (ConvHeader): one view at any size, resolved here before the borrow — a group is no longer painted thru a transient contact.
         let active_gi = self.active_molecule();
-        let molecule_view: Option<crate::types::Contact> = active_gi.and_then(|gi| self.molecule_view_of(gi));
+        let conv_hdr: Option<super::ConvHeader> = self.conv_header();
         let active_gid: Option<crate::types::molecule::MoleculeId> = active_gi.map(|gi| self.molecule_rosters[gi].0);
         // Where a roster-backed conversation stands (Joining, CatchingUp, Standing, Left) — the status line under its header reads it, as a pair's reads its CLUTCH step.
         let active_phase: Option<crate::storage::molecule::MoleculePhase> = active_gid.map(|g| self.molecule_locals.iter().find(|(lg, _)| *lg == g).map(|(_, l)| l.phase).unwrap_or_default());
@@ -204,11 +204,10 @@ impl PhotonApp {
             self.state,
             AppState::Conversation | AppState::ConversationPanel(_)
         ) {
-            active_ci
-                .and_then(|ci| self.contacts.get(ci))
-                .or(molecule_view.as_ref())
-                // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list). Siblings show their machine name; a group its shared title.
-                .map(|c| super::contact_visible_name(c, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref()))
+            // Pending… until they publish a real name — the title bar is a visual surface; the pseudonym lives ONLY in the contact panel's identity section (Nick 2026-08-21, matching the contact list). Siblings show their machine name; a group its shared title.
+            conv_hdr
+                .as_ref()
+                .map(|h| h.title.clone())
                 .unwrap_or_else(|| tr(Msg::ConversationTitle).into_owned())
         } else if matches!(self.state, AppState::Ready) {
             let own_hp = self.session.as_ref().map(|s| s.handle_proof);
@@ -414,7 +413,7 @@ impl PhotonApp {
         let fleet_schemes = self.fleet_schemes.clone();
         // Hoisted for the wave overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a wave is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
         // A MOLECULE waves too (docs/group-waves.md): the pill shows once the conversation stands, and lights when any other standing member is online.
-        let molecule_wave = self.active_molecule().and_then(|gi| self.molecule_view_of(gi)).map(|v| (v.chain_woven, v.chain_woven && v.is_online));
+        let molecule_wave = conv_hdr.as_ref().filter(|h| h.roster).map(|h| (h.woven, h.woven && h.online));
         let wave_pill_show = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
@@ -2923,15 +2922,9 @@ impl PhotonApp {
                     paint::fill_rect(&mut canvas, 0, bd_top as isize, buf_w as isize, (buf_h as f32 - bd_top) as isize, *theme::VIEWER_BG_COLOUR, None, None);
                 }
             }
-            // The one conversation arm paints a contact OR a group: `ci` is the contact index (usize::MAX for a group — it keys caches and strip-dismissal only, and never indexes `contacts` past the guards below), `contact` is the row or the group's transient view.
-            let active_peer: Option<(usize, Option<&crate::types::Contact>)> = if viewer_open {
-                None
-            } else if let Some(ci) = active_ci {
-                Some((ci, None))
-            } else {
-                molecule_view.as_ref().map(|v| (usize::MAX, Some(v)))
-            };
-            if let Some((ci, peer_view)) = active_peer {
+            // The one conversation arm paints ANY conversation from its header; `hdr.ci` is the one person it is with, when it is with one we hold a contact for.
+            let active_hdr: Option<&super::ConvHeader> = if viewer_open { None } else { conv_hdr.as_ref() };
+            if let Some(hdr) = active_hdr {
                 {
                     let ru = ctx.viewport.ru;
                     // Build/refresh the contact's scaled-avatar cache at the CONVERSATION-HEADER diameter BEFORE the immutable borrow below. The header renders the avatar bigger than the contact-list rows, but it has no rebuild of its own — it used to draw whatever `avatar_scaled` happened to hold (built at the small row diameter) while telling draw_avatar the buffer was header-sized → it sampled past the smaller buffer → "index out of bounds: len 2028 (26²·3) but index 2307" panic on conversation-open. Rebuilding here at the header diameter keeps the cache and the claimed scaled_diameter in lockstep.
@@ -2939,10 +2932,10 @@ impl PhotonApp {
                         let (_, _, header_r) =
                             ReadyLayout::compute(buf_w, buf_h, ru).avatar_center_radius();
                         let header_diam = (header_r * 2.0) as usize;
-                        if ci < self.contacts.len()
+                        if let Some(ci) = hdr.ci.filter(|&ci| ci < self.contacts.len()
                             && self.contacts[ci].avatar_pixels.is_some()
                             && (self.contacts[ci].avatar_scaled.is_none()
-                                || self.contacts[ci].avatar_scaled_diameter != header_diam)
+                                || self.contacts[ci].avatar_scaled_diameter != header_diam))
                         {
                             let base = self.contacts[ci].avatar_pixels.as_ref().unwrap();
                             let scaled = crate::ui::avatar_render::update_avatar_scaled(
@@ -2954,10 +2947,8 @@ impl PhotonApp {
                             self.contacts[ci].avatar_scaled_diameter = header_diam;
                         }
                     }
-                    let contact: &crate::types::Contact = match peer_view {
-                        Some(v) => v,
-                        None => &self.contacts[ci],
-                    };
+                    // The person this conversation is with, when it is with one (their picture); everything else reads the header.
+                    let peer: Option<&crate::types::Contact> = hdr.ci.map(|ci| &self.contacts[ci]);
                     // Scale off the SAME span-based harmonic unit the contacts screen uses, so the conversation screen scales identically (aspect-ratio-robust, zoom-aware, no hardcoded pixels) instead of the old crude height-only `buf_h·0.04` with a magic 12px floor.
                     let conv_layout = ReadyLayout::compute(buf_w, buf_h, ru);
                     let unit = conv_layout.unit_height;
@@ -3057,33 +3048,21 @@ impl PhotonApp {
                         .map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed))
                         .unwrap_or([0u8; 32]);
                     // The device-derived sibling pid, captured here (immutable self reads only) so the conv key below needs no &self call while `contact` holds a borrow.
-                    let our_sibling_pid = self
-                        .device_keypair
-                        .as_ref()
-                        .map(|kp| crate::crypto::clutch::sibling_party_id(kp.public.as_bytes()));
-                    let is_self_contact = contact.remote_count(&our_handle_hash) == 0;
+                    let is_self_contact = hdr.remote == 0;
                     // BRIDGE locus strip inputs (2026-08-23, the blind-cwd fix): the host-reported host:cwd for THIS sibling device, plus whether a command is in flight — which puts the Stop pill in the band.
-                    let bridge_strip_txt: Option<String> = if contact.is_sibling {
+                    let bridge_strip_txt: Option<String> = if hdr.sibling {
                         self.bridge_locus
                             .as_ref()
-                            .filter(|(d, _, _)| Some(*d) == contact.device_key())
+                            .filter(|(d, _, _)| Some(*d) == hdr.device_key)
                             .map(|(_, h, c)| format!("{h}:{c}"))
                     } else {
                         None
                     };
                     // THE conversation key MUST match how the SEND path keyed it (`our_party_id`): for a SIBLING that is the device-derived sibling pid, NOT our_handle_hash (the identity pid). Using our_handle_hash here made the render look up an EMPTY phantom conversation for every sibling — the send inserted the bubble into the sibling-pid-keyed conversation, the screen painted the identity-keyed one, and a bridge command vanished on send ("BOOP", field 2026-08-21). Friends and self are unaffected: their party id already EQUALS our_handle_hash. Mirrors `our_party_id` exactly, so insert and render read the same object.
-                    let conv_party_id = if contact.is_sibling {
-                        our_sibling_pid.unwrap_or(our_handle_hash)
-                    } else {
-                        our_handle_hash
-                    };
                     // The conversation this screen paints — messages, scroll, unread all read from here, never from the contact. Field-precise lookup: the scope below writes disjoint `self` fields while this borrow is live.
-                    let conv: Option<&crate::types::Conversation> = {
-                        let id = contact.conversation(&conv_party_id).id();
-                        self.conversations.iter().find(|v| v.id() == id)
-                    };
+                    let conv: Option<&crate::types::Conversation> = self.conversations.iter().find(|v| v.id() == hdr.conv_id);
                     // In-flight = the newest outgoing BridgeCmd with no FINAL output yet (bridge_exit stamped by the replace-in-place). Field-precise mirror of bridge_inflight_target — a &self method call here would collide with the live chrome borrow.
-                    let bridge_inflight = contact.is_sibling
+                    let bridge_inflight = hdr.sibling
                         && conv.map_or(false, |v| {
                             v.messages
                                 .iter()
@@ -3107,11 +3086,11 @@ impl PhotonApp {
                                 })
                         });
                     // Ring computed BEFORE the closure: row_ring_tier borrows &self, and the closure outlives writes to disjoint self fields below.
-                    let conv_ring = row_ring_tier_in(&self.contacts, contact, !is_self_contact);
+                    let conv_ring = hdr.ring;
                     // Stamp the avatar disc + tier ring at a given centre-y — stream entry #0's avatar. Clip rides in as a parameter and the caller passes the LIST clip: the avatar obeys exactly the same boundary as every message (a hardcoded None once let it paint thru the top edge onto its own visual layer).
                     let draw_conv_avatar =
                         |canvas: &mut Canvas, cy: f32, clip: Option<fluor::paint::Clip>| {
-                            if let Some(scaled) = contact.avatar_scaled.as_ref() {
+                            if let Some(scaled) = peer.and_then(|c| c.avatar_scaled.as_ref()) {
                                 crate::ui::avatar_render::draw_avatar(
                                     canvas,
                                     avatar_cx,
@@ -3123,7 +3102,7 @@ impl PhotonApp {
                                 );
                             } else {
                                 let gd = disk_px(avatar_r * 2.0);
-                                let seed = proof_gradient_seed(&contact.handle_proof);
+                                let seed = proof_gradient_seed(&hdr.seed);
                                 crate::ui::avatar_render::draw_avatar(
                                     canvas,
                                     avatar_cx,
@@ -3148,10 +3127,9 @@ impl PhotonApp {
                         };
 
                     // Relationship colour for this contact: everything handle-specific on this screen (name, their message text) renders in it. A zero-remote conversation has no other party, so no relationship colour — everything is the neutral anchor.
-                    let their_colour = if is_self_contact {
-                        self_colour()
-                    } else {
-                        party_colour(&relationship_digest(&contact.handle_hash, &our_handle_hash))
+                    let their_colour = match hdr.colour_party {
+                        None => self_colour(),
+                        Some(p) => party_colour(&relationship_digest(&p, &our_handle_hash)),
                     };
                     // A row's colour is its AUTHOR's, keyed on the pair (that person, us) exactly as a two-member conversation colours them (D3, docs/conversations.md: one colour per person on our devices, in every conversation; their colour on someone else's screen differs).
                     let author_colour = |m: &crate::types::ChatMessage| -> u32 {
@@ -3172,7 +3150,7 @@ impl PhotonApp {
 
                     // Petname style for stream entry #0 (pending names shear italic like everywhere else).
                     let name_size = unit * 1.2;
-                    let header_style = if contact.has_real_name() {
+                    let header_style = if hdr.has_real_name {
                         TextStyle::new(name_size, their_colour)
                             .weight(600)
                             .font("Oxanium")
@@ -3185,15 +3163,15 @@ impl PhotonApp {
 
                     // THE STATUS LINE — the same rule at every size (docs/conversations.md Phase 1): computed here, DRAWN inside stream entry #0 (under the name, at genesis). End-of-identity states outrank the key line; a secured conversation shows no line at all (the working conversation is its own proof).
                     // A pair shows its CLUTCH step until the chain is woven; a roster-backed conversation shows binding / catching up / you left until it stands. A conversation with nobody else in it has nothing pending and gets NO line (Nick 2026-10-01: self is a contact like anyone).
-                    let show_status = contact.identity_superseded
-                        || contact.identity_ended
-                        || (!is_self_contact && !contact.chain_woven);
+                    let show_status = hdr.superseded
+                        || hdr.ended
+                        || (!is_self_contact && !hdr.woven);
                     let status_in_stream: Option<(String, u32)> = if show_status {
-                        Some(if contact.identity_superseded {
+                        Some(if hdr.superseded {
                             (tr(Msg::NameReclaimed).into_owned(), *theme::ERROR_TEXT_COLOUR)
-                        } else if contact.identity_ended {
+                        } else if hdr.ended {
                             (tr(Msg::IdentityEndedFrozen).into_owned(), *theme::LABEL_COLOUR)
-                        } else if let (Some(phase), true) = (active_phase, contact.molecule.is_some()) {
+                        } else if let (Some(phase), true) = (active_phase, hdr.roster) {
                             match phase {
                                 crate::storage::molecule::MoleculePhase::Left => (tr(Msg::LeftStatus).into_owned(), *theme::LABEL_COLOUR),
                                 crate::storage::molecule::MoleculePhase::CatchingUp => (tr(Msg::CatchingUpStatus).into_owned(), *theme::HOURGLASS_COLOUR),
@@ -3201,8 +3179,8 @@ impl PhotonApp {
                             }
                         } else {
                             (
-                                tr(Msg::ClutchStatus(&contact_status_line(contact, self.device_keypair.as_ref().map(|kp| *kp.public.as_bytes()), self.session.as_ref().map(|se| &se.identity_seed), self.contacts.iter().any(|s| s.is_sibling), self.fleet_settings.as_ref()))).into_owned(),
-                                if contact.clutch_state == crate::types::ClutchState::Complete { *theme::SEARCH_FOUND_COLOUR } else { *theme::HOURGLASS_COLOUR },
+                                tr(Msg::ClutchStatus(&hdr.clutch_line)).into_owned(),
+                                if hdr.clutch_complete { *theme::SEARCH_FOUND_COLOUR } else { *theme::HOURGLASS_COLOUR },
                             )
                         })
                     } else {
@@ -3410,7 +3388,7 @@ impl PhotonApp {
                         };
                         // Stream entry #0 (avatar + name + optional status) is the oldest item: its height joins content_h so scrolling to genesis reveals it above message 1. Unconditional — every conversation has entry #0.
                         // The contact's chosen name may carry line returns — each extra line adds a pitch to entry #0 (the avatar above rides up by the same).
-                        let header_name = super::contact_visible_name(contact, self.session.as_ref().map(|se| &se.identity_seed), self.fleet_settings.as_ref());
+                        let header_name = hdr.title.clone();
                         let header_name_lines: Vec<String> = header_name.split('\n').map(|s| s.to_string()).collect();
                         let header_name_extra = unit * 0.9 * (header_name_lines.len() - 1) as f32; // `split` always yields at least one piece
                         let header_block_h = avatar_r * 2.0
@@ -3447,7 +3425,7 @@ impl PhotonApp {
                         let avail_w = (buf_w as f32 - pad_x * 2.0).max(msg_size);
                         let intra = msg_size * 1.25;
                         // The conversation's contact, for the preview wants the walk collects.
-                        let peer_handle_hash = self.contacts.get(ci).map(|c| c.handle_hash).unwrap_or([0u8; 32]);
+                        let peer_handle_hash = peer.map(|c| c.handle_hash).unwrap_or([0u8; 32]);
                         // The decoded-picture count rides the key: a preview blob landing grows its row's band.
                         let wrap_key =
                             (self.active_conversation, n, raw_msgs.len() + (self.img_cache.len() << 20) + sel_key.map_or(0, |(t, o)| (t as usize) ^ (o as usize)), avail_w.to_bits(), msg_size.to_bits(), conv_filter as u8);
@@ -3580,7 +3558,7 @@ impl PhotonApp {
                             let f_x = buf_w as f32 - pad_x - f_w + self.conv_topbar_off; // slides off to the right as the blind rises
                             let f_y = list_bottom - f_h - unit * 0.25;
                             // Only once there is something to filter (Nick 2026-10-01): a link established, or rows already in the stream — never on the barren CLUTCH screen.
-                            let linked = is_self_contact || contact.chain_woven || contact.owner_woven || !visible.is_empty();
+                            let linked = is_self_contact || hdr.woven || hdr.owner_woven || !visible.is_empty();
                             if linked && f_x < buf_w as f32 {
                                 filter_stamp = Some((fluor::region::Region::new(f_x, f_y, f_w, f_h), if topbar_visible { self.conv_filter_hit } else { HIT_NONE }));
                                 super::draw_stub_pill(
@@ -3688,7 +3666,7 @@ impl PhotonApp {
                             }
                             // A BRIDGE PIGEON'S BAR (Nick 2026-09-20: "we definitely need a progress bar when sending shit thru the bridge"): the row carries the file's name, the progress map carries the host's word (or, on the host, its own spool count) keyed by hash — matched by sibling device + name, the newest entry when a name was dropped twice. Drawn while chunks are still landing; a whole pigeon drops its bar and the host's "landed at …" row follows.
                             if matches!(msg.reference, Some((crate::types::RefKind::BridgePigeon, _))) {
-                                if let Some(dev) = contact.device_key() {
+                                if let Some(dev) = hdr.device_key {
                                     bar_frac = self
                                         .pigeon_progress
                                         .values()
@@ -3915,7 +3893,7 @@ impl PhotonApp {
                                         v.push((tr(if playing_this { Msg::StopPill } else if held { Msg::PlayPill } else { Msg::FetchPill }), if held { *theme::COPY_PILL_COLOUR } else { *theme::HOURGLASS_COLOUR }, (self.msg_action_base + 11)));
                                     }
                                     // Wave back needs a direct path too (Nick 2026-09-17): over the relay alone the pill is dimmed and says so.
-                                    let wave_back_ok = self.contacts.get(ci).is_some_and(|c| c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR));
+                                    let wave_back_ok = peer.is_some_and(|c| c.validated_path.is_some_and(|(a, _)| a != crate::network::status::RELAY_ADDR));
                                     if wave_back_ok {
                                         v.push((tr(Msg::WaveBack), *theme::COPY_PILL_COLOUR, (self.msg_action_base + 6)));
                                     } else {
