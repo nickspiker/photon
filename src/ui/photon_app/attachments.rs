@@ -448,7 +448,7 @@ impl PhotonApp {
         let Some(token) = self.conversation_token_of(id) else {
             return;
         };
-        // The other members: a device of theirs is asked like a friend's in a pair (a member we never friended has no address here yet, so only friends and our siblings are candidates).
+        // The other members: a friend's devices are asked as in a pair; a member we never friended is asked too, by the roster (below).
         let members: Vec<[u8; 32]> = self.conv_by_id(id).map(|v| v.participants().to_vec()).unwrap_or_default();
         let (Some(kp), Some(checker)) =
             (self.device_keypair.as_ref(), self.status_checker.as_ref())
@@ -504,6 +504,16 @@ impl PhotonApp {
                     let alt = if ep.lan.is_some() { ep.public } else { None };
                     targets.push((ranked(ep.pubkey, if ep.online { 1 } else { 3 }), addr, alt, ep.pubkey, vec![ep.pubkey]));
                 }
+            }
+        }
+        // STRANGERS IN THE ROOM (Nick 2026-10-26: "we know who's in it"): a standing member we never friended is asked like a friend — their devices from the roster's fold (member_devices), their addresses from the phonebook (device_addresses), the relay alone when none is known. They rank with a friend's offline devices: after the friends' live paths and our own siblings, before nobody.
+        let us = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        let strangers: Vec<[u8; 32]> = members.iter().copied().filter(|p| Some(*p) != us && !self.contacts.iter().any(|c| !c.is_sibling && c.handle_hash == *p)).collect();
+        for party in &strangers {
+            for dev in super::molecules::member_devices(&self.contacts, &self.molecule_peers, party) {
+                let addrs = self.device_addresses(&dev);
+                let (addr, alt) = (addrs.first().copied().unwrap_or(crate::network::status::RELAY_ADDR), addrs.get(1).copied());
+                targets.push((ranked(dev, 3), addr, alt, dev, vec![dev]));
             }
         }
         targets.sort_by_key(|t| t.0);
@@ -984,5 +994,13 @@ impl PhotonApp {
         crate::logf!("attach: {}… dragged out of the window as {}", hex::encode(&hash[..4]), name);
         fluor::host::file_drag::request(fluor::host::file_drag::DragFile { name, bytes: std::sync::Arc::new(move || crate::storage::blob_load_named(&hash)) });
         Some(fluor::host::EventResponse::StartFileDrag)
+    }
+}
+
+impl PhotonApp {
+    /// May this device trade files with us in the conversation `token` names? A contact's device, or a device of a member standing in that very conversation — a member we never friended asks, serves and answers like a friend (docs/conversations.md; only members hold the token).
+    pub(super) fn attach_peer_known(&self, device: &[u8; 32], token: &[u8; 32]) -> bool {
+        self.contacts.iter().any(|c| c.knows_device(device))
+            || self.molecule_rosters.iter().find(|(g, _)| g.token() == *token).is_some_and(|(_, r)| self.molecule_peers.iter().any(|p| p.knows_device(device) && r.is_standing(&p.party)))
     }
 }

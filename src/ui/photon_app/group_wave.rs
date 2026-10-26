@@ -750,7 +750,7 @@ impl PhotonApp {
     }
 
     /// Where one member device can be reached, best first: a friend's candidates as a 1:1 wave gathers them; a member we never friended from the phonebook — the self-signed record the device published or pushed us (docs/group-waves.md: a member is a person, not a contact).
-    fn device_addresses(&self, device: &[u8; 32]) -> Vec<std::net::SocketAddr> {
+    pub(super) fn device_addresses(&self, device: &[u8; 32]) -> Vec<std::net::SocketAddr> {
         if let Some(c) = self.contacts.iter().find(|c| !c.is_sibling && c.knows_device(device)) {
             return crate::network::traverse::gather::gather_device_candidates(c, device).sorted().into_iter().map(|x| x.addr).collect();
         }

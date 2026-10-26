@@ -3512,10 +3512,7 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    let known = self
-                        .contacts
-                        .iter()
-                        .any(|c| c.knows_device(&sender_pubkey.key));
+                    let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     // The sender is not quiet: every ask aimed at it waits on (attach_fetch_retry_tick).
@@ -3575,7 +3572,7 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr: raw_sender_addr,
                 } => {
-                    let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if known {
@@ -3656,7 +3653,7 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    let known = self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let wire_key = self.attach_wire_key(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     if known {
@@ -3768,9 +3765,7 @@ impl PhotonApp {
                     sender_pubkey,
                     sender_addr,
                 } => {
-                    // A contact's device, or a device of a member standing in the very conversation the ask names (docs/conversations.md: a member we never friended fetches from us like a friend does — only members hold the token).
-                    let member_of_token = self.molecule_rosters.iter().find(|(g, _)| g.token() == conversation_token).is_some_and(|(_, r)| self.molecule_peers.iter().any(|p| p.knows_device(&sender_pubkey.key) && r.is_standing(&p.party)));
-                    let known = member_of_token || self.contacts.iter().any(|c| c.knows_device(&sender_pubkey.key));
+                    let known = self.attach_peer_known(&sender_pubkey.key, &conversation_token);
                     let seed = self.session.as_ref().map(|s| s.identity_seed);
                     // THE RELAY COPY ONLY WHERE THE DIRECT LEG IS UNPROVEN (field 2026-09-17, Nick: "re-uploads/replications of pigeons"): every served chunk went out twice — PT direct AND a Cloudflare relay copy, unconditionally — so a 142 MB pigeon cost 284 MB and every relay byte. A requester we hold a punch-validated path to gets the direct leg alone (PT is reliable on it); a relay-injected request, or a requester with no validated path, still gets the relay copy — that is the one-directional-reverse-path case the copy existed for.
                     let relay_needed = crate::network::traverse::gather::is_bogus_addr(&sender_addr)

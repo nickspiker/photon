@@ -1992,7 +1992,8 @@ async fn run_checker(
                                     if let Ok(signer) =
                                         vsf::verification::extract_signer_pubkey(&data)
                                     {
-                                        if !is_known_sender_pt(&signer) {
+                                        // A molecule member we never friended passes this gate too (its file frames are admitted below by the conversation they name); every other arm still asks for a contact.
+                                        if !is_known_sender_pt(&signer) && !molecule_member_device(&signer) {
                                             crate::logf!("PT: CLUTCH message REJECTED before parse - sender not in contacts (pubkey: {})", hex::encode(&signer[..signer.len().min(8)]));
                                             continue;
                                         }
@@ -2239,7 +2240,7 @@ async fn run_checker(
                                     )) = crate::network::fgtw::protocol::parse_attach_blob_vsf(
                                         &data,
                                     ) {
-                                        if !is_known_sender_pt(&sender_pubkey) {
+                                        if !(is_known_sender_pt(&sender_pubkey) || molecule_admits(&conversation_token, &sender_pubkey)) {
                                             crate::log("PT: attach_blob REJECTED - unknown sender");
                                             continue;
                                         }
@@ -2261,7 +2262,7 @@ async fn run_checker(
                                     else if let Ok(((conversation_token, content_hash, sealed), sender_pubkey)) =
                                         crate::network::fgtw::protocol::parse_attach_manifest_vsf(&data)
                                     {
-                                        if !is_known_sender_pt(&sender_pubkey) {
+                                        if !(is_known_sender_pt(&sender_pubkey) || molecule_admits(&conversation_token, &sender_pubkey)) {
                                             crate::log("PT: attach_manifest REJECTED - unknown sender");
                                             continue;
                                         }
@@ -2311,7 +2312,7 @@ async fn run_checker(
                                     } else if let Ok(((conversation_token, content_hash, index, sealed), sender_pubkey)) =
                                         crate::network::fgtw::protocol::parse_attach_chunk_vsf(&data)
                                     {
-                                        if !is_known_sender_pt(&sender_pubkey) {
+                                        if !(is_known_sender_pt(&sender_pubkey) || molecule_admits(&conversation_token, &sender_pubkey)) {
                                             crate::log("PT: attach_chunk REJECTED - unknown sender");
                                             continue;
                                         }
@@ -2342,7 +2343,7 @@ async fn run_checker(
                                     )) = crate::network::fgtw::protocol::parse_attach_req_vsf(
                                         &data,
                                     ) {
-                                        if !is_known_sender_pt(&sender_pubkey) {
+                                        if !(is_known_sender_pt(&sender_pubkey) || molecule_admits(&conversation_token, &sender_pubkey)) {
                                             crate::log("PT: attach_req REJECTED - unknown sender");
                                             continue;
                                         }
@@ -3776,6 +3777,28 @@ async fn run_checker(
                                         crate::log("  -> REJECTED (bad signature)");
                                         continue;
                                     }
+
+                                    // A signed ACK is liveness proof like a chat (field 2026-10-26, Azie: her phone ACKed every photon for a minute, direct and over the relay, while her ring stayed offline — the open-ping had gone unanswered and only a pong could flip it back). Same treatment as the chat arm: clear the ping-failure count, report the device online.
+                                    {
+                                        let mut failures = failed_pings_recv.lock().unwrap();
+                                        failures.retain(|(k, _)| k != sender_pubkey.as_bytes());
+                                    }
+                                    send_status_update(
+                                        &status_tx_recv,
+                                        StatusUpdate::Online {
+                                            peer_pubkey: sender_pubkey.clone(),
+                                            is_online: true,
+                                            peer_addr: Some(src_addr),
+                                            sync_records: vec![],
+                                            display_name: None,
+                                            avatar_pin: None,
+                                            locked_reports: None,
+                                            about: None,
+                                            fleet_tip: None,
+                                            braid: None,
+                                        },
+                                        &event_proxy_recv,
+                                    );
 
                                     send_status_update(
                                         &status_tx_recv,
