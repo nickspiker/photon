@@ -757,6 +757,11 @@ pub fn land_blob(seed: &[u8; 32], content_hash: &[u8; 32], dir: &std::path::Path
     Some(dest.to_string_lossy().into_owned())
 }
 
+/// A Save that the filesystem refused, named in the log with the OS's reason (field 2026-10-26, Nick's MacBook: "unable to save pigeons on mac" left only "did not land" — macOS guards the Downloads folder behind a privacy permission, and the refusal was swallowed).
+fn save_refused(path: &std::path::Path, e: std::io::Error) {
+    crate::logf!("blob: save to {} refused by the filesystem: {} ({:?})", path.display(), e, e.kind());
+}
+
 /// Write a held blob to `path`, chunk by chunk with a running hash — the Save path for any size. Returns the byte count; a hash mismatch removes the partial file and returns None.
 pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: &std::path::Path) -> Option<u64> {
     use std::io::Write;
@@ -769,16 +774,16 @@ pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: 
         if blake3::hash(&plain).as_bytes() != content_hash {
             return None;
         }
-        std::fs::write(path, &plain).ok()?;
+        std::fs::write(path, &plain).map_err(|e| save_refused(path, e)).ok()?;
         return Some(plain.len() as u64);
     }
     // Held WRAPPED: unwrap thru the verified load (originals are capped at the 256 MB attachment limit, so this fits in RAM) and write the original byte-exact.
     let Some(m) = blob_manifest(content_hash) else {
         let raw = blob_load(identity_seed, content_hash)?;
-        std::fs::write(path, &raw).ok()?;
+        std::fs::write(path, &raw).map_err(|e| save_refused(path, e)).ok()?;
         return Some(raw.len() as u64);
     };
-    let mut f = std::fs::File::create(path).ok()?;
+    let mut f = std::fs::File::create(path).map_err(|e| save_refused(path, e)).ok()?;
     let mut hasher = blake3::Hasher::new();
     let mut n = 0u64;
     for h in &m.chunks {
@@ -788,7 +793,8 @@ pub fn blob_write_file(identity_seed: &[u8; 32], content_hash: &[u8; 32], path: 
             return None;
         };
         hasher.update(&c);
-        if f.write_all(&c).is_err() {
+        if let Err(e) = f.write_all(&c) {
+            save_refused(path, e);
             drop(f);
             let _ = std::fs::remove_file(path);
             return None;
