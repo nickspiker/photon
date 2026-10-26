@@ -35,8 +35,14 @@ pub mod signal;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 
-/// The media ingress sink: installed by the wave engine at wave start, cleared at teardown. The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. `None` (no live wave) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
-static MEDIA_SINK: Mutex<Option<std::sync::mpsc::Sender<MediaIn>>> = Mutex::new(None);
+/// The media ingress sinks: each wave engine installs one at start and clears it at teardown — one for a 1:1 wave, one per link of a group wave (docs/group-waves.md). The recv worker's two-byte fast path hands matching datagrams here RAW — no PT ack, no StatusUpdate, no parse ladder. No sink (no live wave) means media datagrams silently drop, which is also the correct answer for stragglers after hangup.
+/// A datagram goes to the sink whose engine already hears that address; one from an address no engine knows goes to every sink, and each engine's own seal keeps or refuses it (packet::open never moves a chain on a packet that fails) — so a link whose peer moved finds it again by the same address-follows-auth rule as a 1:1 wave.
+struct MediaSink {
+    gen: u64,
+    tx: std::sync::mpsc::Sender<MediaIn>,
+    peer: Option<SocketAddr>,
+}
+static MEDIA_SINKS: Mutex<Vec<MediaSink>> = Mutex::new(Vec::new());
 
 /// One media datagram as the recv worker saw it: bytes, source, and the instant `recv` returned — the RTT and arrival ages measure from the socket, not from whenever the engine thread got round to it.
 pub type MediaIn = (Vec<u8>, SocketAddr, std::time::Instant);
@@ -70,29 +76,38 @@ pub fn link_verdict() -> (u32, bool, bool) {
 static MEDIA_SINK_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 pub fn install_media_sink(tx: std::sync::mpsc::Sender<MediaIn>) -> u64 {
-    *MEDIA_SINK.lock().unwrap() = Some(tx);
+    let gen = MEDIA_SINK_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    MEDIA_SINKS.lock().unwrap().push(MediaSink { gen, tx, peer: None });
     MEDIA_QUIET.store(true, std::sync::atomic::Ordering::Relaxed);
-    MEDIA_SINK_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+    gen
 }
 
-/// Clear the sink only if `gen` is still the installed generation.
-pub fn clear_media_sink_gen(gen: u64) {
-    if MEDIA_SINK_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen {
-        clear_media_sink();
+/// The address an engine is hearing its peer from now: datagrams from it go to that engine alone.
+pub fn set_media_sink_peer(gen: u64, peer: SocketAddr) {
+    let peer = SocketAddr::new(peer.ip().to_canonical(), peer.port());
+    if let Some(s) = MEDIA_SINKS.lock().unwrap().iter_mut().find(|s| s.gen == gen) {
+        s.peer = Some(peer);
     }
 }
 
-/// Is the engine holding the media path? The ringback asks before deciding whether to close the audio session it opened — answered means the engine owns it now, unanswered means nobody does.
+/// Clear the sink `gen` installed (a drained engine exiting seconds after hangup leaves the next wave's sinks alone).
+pub fn clear_media_sink_gen(gen: u64) {
+    let mut sinks = MEDIA_SINKS.lock().unwrap();
+    sinks.retain(|s| s.gen != gen);
+    MEDIA_QUIET.store(!sinks.is_empty(), std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Is an engine holding the media path? The ringback asks before deciding whether to close the audio session it opened — answered means the engine owns it now, unanswered means nobody does.
 pub fn media_sink_live() -> bool {
-    MEDIA_SINK.lock().unwrap().is_some()
+    !MEDIA_SINKS.lock().unwrap().is_empty()
 }
 
 pub fn clear_media_sink() {
-    *MEDIA_SINK.lock().unwrap() = None;
+    MEDIA_SINKS.lock().unwrap().clear();
     MEDIA_QUIET.store(false, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Called from the recv worker for every magic-matched datagram. Cheap when idle (one mutex + None).
+/// Called from the recv worker for every magic-matched datagram. Cheap when idle (one mutex + an empty list).
 pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
     // BEAM datagrams (docs/beams.md) take their own door: the video receiver's sink, never the audio engine's channel — one byte decides, before any lock the engine shares.
     if bytes.first() == Some(&packet::BEAM_MAGIC) {
@@ -100,9 +115,11 @@ pub fn deliver_media(bytes: &[u8], src: SocketAddr) {
         return;
     }
     let at = std::time::Instant::now(); // straight after recv returned: the socket's arrival instant
-    let sink = MEDIA_SINK.lock().unwrap();
-    if let Some(tx) = sink.as_ref() {
-        let _ = tx.send((bytes.to_vec(), src, at));
+    let from = SocketAddr::new(src.ip().to_canonical(), src.port());
+    let sinks = MEDIA_SINKS.lock().unwrap();
+    let known = sinks.iter().any(|s| s.peer == Some(from));
+    for s in sinks.iter().filter(|s| !known || s.peer == Some(from)) {
+        let _ = s.tx.send((bytes.to_vec(), src, at));
     }
 }
 
@@ -272,6 +289,10 @@ pub fn last_wave() -> Option<LastWave> {
 pub static LAST_MEDIA_RX_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 /// Eagle osc at engine start — the drought baseline before the first packet ever arrives (0 = no engine).
 pub static MEDIA_START_OSC: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// The same two stamps per far slot, for a group wave's links (docs/group-waves.md): the last authenticated packet each link opened, and when its engine started.
+pub static SLOT_RX_OSC: [std::sync::atomic::AtomicI64; crate::platform::audio::FAR_SLOTS] = [const { std::sync::atomic::AtomicI64::new(0) }; crate::platform::audio::FAR_SLOTS];
+pub static SLOT_START_OSC: [std::sync::atomic::AtomicI64; crate::platform::audio::FAR_SLOTS] = [const { std::sync::atomic::AtomicI64::new(0) }; crate::platform::audio::FAR_SLOTS];
 
 /// A fresh peer address for the LIVE engine's TX, set by an authenticated express Anchor's source (drain_express_signals) and drained by the engine loop. The media-plane "address follows authenticated packets" rule can't heal a both-sides-moved deadlock — this is the signal-plane override that can.
 static PEER_REDIRECT: Mutex<Option<SocketAddr>> = Mutex::new(None);

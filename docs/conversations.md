@@ -74,7 +74,7 @@ Known limits found on the way, carried forward: (a) the "a member withholds a sh
 - **N=2:** `Contact::conversation`/`remote_count`/`is_keyed`; `other_participant`; `route_for_contact`; `chain_transmit_with`; the friendship ACK arm; molecule-gated ledger fns; `dm_conversation`/`conv_of`; the SHADOW SEAM; garbage → pairwise rekey; the CLUTCH ladder bound to Contact; ContactPanel; `RowView::of_contact`; the light ratchet and heavy weave; offer cards inside a friendship; the "bring into a molecule" picker on a contact.
 - **Molecule-only:** every `is_molecule()` branch in conversation.rs, status.rs, messaging.rs, sync.rs, era.rs, driver.rs, input.rs, render.rs, storage/friendship.rs, storage/molecule.rs, launch.rs, and the in-group gating of `on_molecule_signal`.
 - **Siblings:** an `is_sibling` that chooses key material, party id or bond behaviour stays (siblings are bonds); one that filters people or conversations in a conversation path disappears with Contact-as-conversation. The bridge terminal moves off the conversation screen.
-- **Waves** stay pairwise (`remote_standing == 1`) until N-party waves are designed — an honest capability limit, shown as such.
+- **Waves** at any size: docs/group-waves.md (a mesh of 1:1 engines on one audio session; group recording and beams are the gaps).
 
 ## 6. Owner decisions
 

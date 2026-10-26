@@ -43,6 +43,7 @@ mod attachments;
 mod viewer;
 mod bridge;
 mod wave_ui;
+mod group_wave;
 mod wave_field;
 mod ceremony;
 mod era;
@@ -2063,6 +2064,8 @@ pub struct PhotonApp {
     fleet_attention: Option<([u8; 32], i64)>,
     /// The one live wave (docs/waves.md) — None = no wave. Singular by design (v1); a second inbound offer gets an automatic Busy.
     active_wave: Option<crate::wave::ActiveWave>,
+    /// The one live GROUP wave (docs/group-waves.md) — a device is in one wave at a time, a molecule's or a pair's.
+    group_wave: Option<group_wave::GroupWave>,
     /// Wave overlay controls — retained fluor Buttons (no hand-rolled pills). Painted front-first on EVERY screen (a ring must be answerable from wherever the user is — docs/waves.md); registered cross-screen in `visit_app_widgets` so hover/press/dispatch ride the same walk as every other Button. `wave_status_btn` is a non-interactive label chip (full-brightness, never in the walk, never stamped). `wave_start_btn` = ☎ Wave (conversation, no live wave); `wave_action_btn` = Answer / Hang up / Keep (phase decides the verb); `wave_decline_btn` = Decline / Delete (ringing/ended only).
     wave_status_btn: Option<Button>,
     wave_start_btn: Option<Button>,
@@ -3088,6 +3091,7 @@ impl PhotonApp {
             fleet_focus_claim: None,
             fleet_attention: None,
             active_wave: None,
+            group_wave: None,
             wave_status_btn: None,
             wave_start_btn: None,
             beam_btn: None,

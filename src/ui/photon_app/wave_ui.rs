@@ -83,7 +83,7 @@ impl PhotonApp {
 
     /// Poll the retained wave Buttons' rising-edge clicks (docs/waves.md) — mirrors the attest/+/send pattern: `dispatch_release` (or a focused-key activation) fired `on_click`; we observe the edge here and run the phase's action. Called from BOTH the Released arm and the key path so pointer taps and Enter/Space on a focused wave button both fire exactly once. The verb is phase-driven: action = Answer/Keep/Hang up, decline = Decline/Delete, start = place the wave.
     pub(super) fn dispatch_wave_button_clicks(&mut self, ctx: &mut Context) -> bool {
-        let phase = self.active_wave.as_ref().map(|c| c.phase);
+        let phase = self.wave_phase();
         let mut any = false;
         // THE RING'S SECOND OPTION (Nick 2026-10-10: "the default/largest button would be what's coming at us… we can beam back or wave back"): the smaller button above the big one is the OTHER answer — Wave back on an incoming beam, Beam back on an incoming wave.
         if self.beam_back_btn.as_mut().map(|b| b.take_click()).unwrap_or(false) && phase == Some(WavePhase::Ringing) {
@@ -186,9 +186,13 @@ impl PhotonApp {
             .map(|b| b.take_click())
             .unwrap_or(false)
             && self.active_wave.is_none()
+            && self.group_wave.is_none()
         {
             if let Some(ci) = self.active_contact() {
                 self.start_wave(ci);
+                any = true;
+            } else if let Some(gi) = self.active_molecule() {
+                self.start_group_wave(gi);
                 any = true;
             }
         }
@@ -236,12 +240,22 @@ impl PhotonApp {
 
     /// THE WAVE SCREEN OWNS THE DEVICE (Nick 2026-09-29, "completely distinct screens"): true while the full-screen wave panel shows — ringing in, ringing out or talking, not minimised. Every conversation-screen path (layout, input, scroll, drops, the chrome title) checks this and stands down; the conversation's DATA (rows, delivery, persistence) keeps flowing.
     pub(super) fn wave_screen(&self) -> bool {
-        !self.wave_minimized && self.active_wave.as_ref().is_some_and(|c| matches!(c.phase, WavePhase::Ringing | WavePhase::Outgoing | WavePhase::Active))
+        !self.wave_minimized && (self.group_wave.is_some() || self.active_wave.as_ref().is_some_and(|c| matches!(c.phase, WavePhase::Ringing | WavePhase::Outgoing | WavePhase::Active)))
+    }
+
+    /// The live wave's phase for the wave screen and its buttons, a pair's or a group's.
+    pub(super) fn wave_phase(&self) -> Option<WavePhase> {
+        self.active_wave.as_ref().map(|c| c.phase).or_else(|| self.group_wave.as_ref().map(|w| w.screen_phase()))
     }
 
     /// Minimize the in-wave full-screen to the app-wide strip / compact bar and navigate to the peer's conversation, so messaging + scrolling stay live during the wave. The wave keeps running (only the modal panel yields).
     fn minimize_wave_to_contact(&mut self) {
         self.wave_minimized = true;
+        if let Some(gi) = self.group_wave.as_ref().and_then(|w| self.molecule_rosters.iter().position(|(g, _)| *g == w.gid)) {
+            self.open_molecule_conversation(gi);
+            self.scene_dirty = true;
+            return;
+        }
         let peer = self.active_wave.as_ref().map(|c| c.peer_handle_hash);
         if let Some(peer) = peer {
             if let Some(ci) = self.contact_index_by_handle_hash(&peer) {
@@ -314,7 +328,7 @@ impl PhotonApp {
     }
 
     pub(super) fn start_wave(&mut self, ci: usize) {
-        if self.active_wave.is_some() {
+        if self.active_wave.is_some() || self.group_wave.is_some() {
             crate::log("WAVE: already in a wave");
             return;
         }
@@ -417,6 +431,11 @@ impl PhotonApp {
 
     /// Answer the ringing wave — the take-the-ball edge.
     pub(super) fn answer_wave(&mut self) {
+        // A ringing GROUP wave answers by joining (every entry point — the button, the notification's Answer — lands here).
+        if self.group_wave.as_ref().is_some_and(|w| w.phase == super::group_wave::GroupPhase::Ringing) {
+            self.join_group_wave();
+            return;
+        }
         let Some(wave) = self.active_wave.as_ref() else {
             return;
         };
@@ -481,6 +500,10 @@ impl PhotonApp {
 
     /// Decline the ringing wave.
     pub(super) fn decline_wave(&mut self) {
+        if self.group_wave.is_some() {
+            self.decline_group_wave();
+            return;
+        }
         let Some(wave) = self.active_wave.as_ref() else {
             return;
         };
@@ -526,6 +549,10 @@ impl PhotonApp {
 
     /// Hang up — covers the origin abandoning an unanswered ring (the human timeout) AND either side ending an active wave.
     pub(super) fn hangup_wave(&mut self) {
+        if self.group_wave.is_some() {
+            self.leave_group_wave();
+            return;
+        }
         let Some(wave) = self.active_wave.as_ref() else {
             return;
         };
@@ -940,6 +967,12 @@ impl PhotonApp {
                     }
                     Some(_) => {
                         // Busy: only the direct receiver replies (merge is history, and every sibling replying would triplicate it).
+                        if !from_merge {
+                            let _ = self.send_wave_signal(ci, WaveSignal::Busy { wave_id }, vsf::eagle_time_oscillations());
+                        }
+                    }
+                    // In a GROUP wave: busy, exactly as in a pair's.
+                    None if self.group_wave.is_some() => {
                         if !from_merge {
                             let _ = self.send_wave_signal(ci, WaveSignal::Busy { wave_id }, vsf::eagle_time_oscillations());
                         }
@@ -1626,13 +1659,21 @@ impl PhotonApp {
     ///
     /// Both platforms loop the cadence until a stop edge, no timers: desktop by a thread watching the [`crate::wave::RingGuard`] on the ActiveWave, Android by a MODE_STATIC AudioTrack looping in the HAL until `cancelWaveNotification` (which every teardown edge already calls).
     fn ring_alert(&mut self, ci: usize) {
+        let guard = self.ring_alert_guard(ci);
+        if let Some(wave) = self.active_wave.as_mut() {
+            wave.ring = guard;
+        }
+    }
+
+    /// The ring itself, for a 1:1 wave or a group wave: the notification, the relationship ring, and (desktop) the loop's stopper for the caller to hold.
+    pub(super) fn ring_alert_guard(&mut self, ci: usize) -> Option<crate::wave::RingGuard> {
         let Some(contact) = self.contacts.get(ci) else {
-            return;
+            return None;
         };
         let sender_name = contact.display_name();
         let from_hh = contact.handle_hash;
         let Some(us) = self.our_party_id(contact) else {
-            return;
+            return None;
         };
         let digest = relationship_digest(&from_hh, &us);
         let ring_hp = *blake3::hash(&digest).as_bytes();
@@ -1674,7 +1715,7 @@ impl PhotonApp {
             );
             if !ring_audible {
                 crate::log("WAVE: ring muted by notify.ring_wave — notification only");
-                return;
+                return None;
             }
             let stop = std::sync::Arc::new(AtomicBool::new(false));
             let flag = stop.clone();
@@ -1694,10 +1735,10 @@ impl PhotonApp {
                     }
                 }
             });
-            if let Some(wave) = self.active_wave.as_mut() {
-                wave.ring = Some(crate::wave::RingGuard(stop));
-            }
+            return Some(crate::wave::RingGuard(stop));
         }
+        #[cfg(target_os = "android")]
+        None
     }
 
     /// KEEP the recording: finalize the spool into the wave container, store it as a content-addressed blob, and mint a FLEET-INTERNAL attachment row (local insert + sibling push — never chain-transmitted; the friend's fleet keeps its own recording). v1 gap, tracked in docs/waves.md: the blob itself lives on THIS device until sibling blob-fetch lands.
@@ -2077,12 +2118,14 @@ impl PhotonApp {
             spool: spool_param,
             cal: self.ringback_seeded_cal(),
             plaid_allowed: self.is_lan_for_plaid(addr),
+            slot: 0,
+            group: None,
         });
         (Some(handle), ticket)
     }
 
     /// LAN for the plaid gate (Nick 2026-09-13: "waves haven’t been switching to plaid"): the waves connect on the router's GLOBAL IPv6 even in the same room, so the private-v4-only test never armed plaid. Same rule as the wave screen's cyan ring — private/link-local v4, ULA/link-local v6, or a global v6 on OUR OWN /64.
-    fn is_lan_for_plaid(&self, a: std::net::SocketAddr) -> bool {
+    pub(super) fn is_lan_for_plaid(&self, a: std::net::SocketAddr) -> bool {
         if is_lan_addr(a) {
             return true;
         }

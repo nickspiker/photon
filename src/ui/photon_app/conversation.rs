@@ -1384,6 +1384,8 @@ impl PhotonApp {
         let mut offer_undone: Option<(usize, i64)> = None;
         // Wave signal deferred past the `chains` borrow — the state machine takes &mut self (docs/waves.md).
         let mut wave_signal_evt: Option<(usize, crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
+        // The same for a wave row in a MOLECULE (docs/group-waves.md): (the group, the sending member's contact, the device that signed the frame, signal, pre-advance lane key, row stamp).
+        let mut group_wave_evt: Option<(crate::types::molecule::MoleculeId, usize, [u8; 32], crate::wave::signal::WaveSignal, Option<[u8; 32]>, i64)> = None;
         // Era-ratchet row landed: (contact idx, signal, the package's KEM material, row eagle time) — dispatched after the borrow ends.
         let mut era_signal_evt: Option<(usize, crate::crypto::era::EraSignal, Option<crate::crypto::era::EraKemWire>, i64)> = None;
         // Group control row landed (docs/molecules.md §4): (sender contact idx, conversation pos, signal, the package's roster blob, row eagle time) — dispatched after the borrow ends, same discipline as the era signal.
@@ -1854,8 +1856,13 @@ impl PhotonApp {
                 self.conversations[conv_pos].insert_message_sorted(sig_row.clone());
                 persist_ci = Some(contact_idx);
                 sibling_push = Some((contact_idx, sig_row));
-                recv_seal_idx = Some(contact_idx);
-                wave_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
+                if self.conversations[conv_pos].is_molecule() {
+                    let gid = crate::types::molecule::MoleculeId(*self.conversations[conv_pos].id().as_bytes());
+                    group_wave_evt = Some((gid, contact_idx, sender_pubkey.key, sig, rx_lane_key_pre_advance, timestamp));
+                } else {
+                    recv_seal_idx = Some(contact_idx);
+                    wave_signal_evt = Some((contact_idx, sig, rx_lane_key_pre_advance, timestamp));
+                }
             } else
             // Hidden DELETE marker: the friend tombstoned a message — apply it here, persist a HIDDEN marker row for re-ACK durability (the probe pattern), and gossip the tombstoned row to our siblings. No bubble, no chime, no notify.
             // AUTHORSHIP PROPAGATES, EXPERIENCE DOESN'T (Nick 2026-09-14): a friend's marker may tombstone ONLY rows THEY authored (incoming here) and never a wave — their delete can't reach into our words or our archive of a shared wave.
@@ -2273,6 +2280,9 @@ impl PhotonApp {
         if let Some((ci, sig, rx_key, ts)) = wave_signal_evt {
             self.on_wave_signal(ci, sig, rx_key, ts, false, false);
         }
+        if let Some((gid, ci, device, sig, rx_key, ts)) = group_wave_evt {
+            self.on_group_wave_signal(gid, ci, device, sig, rx_key, ts);
+        }
         if let Some((ci, sig, kem, ts)) = era_signal_evt {
             self.on_era_signal(ci, sig, kem, ts);
         }
@@ -2627,6 +2637,10 @@ impl PhotonApp {
                                 self.conversations.len() - 1
                             }
                         };
+                        // Our fleet's wave rows in this group (docs/group-waves.md): a sibling's join stops this device's ring for the same wave.
+                        for sig in page.rows.iter().filter(|r| r.sender_outgoing).filter_map(|r| r.control.as_ref().and_then(|c| c.wave()).copied()) {
+                            self.on_group_wave_merge(sig);
+                        }
                         let fresh = self.merge_molecule_page_rows(conv_pos, &page.rows);
                         if !fresh.is_empty() {
                             self.persist_conversation_async(fid);

@@ -698,6 +698,8 @@ impl PhotonApp {
                     done.control.as_ref().and_then(|c| c.wave()).copied()
                 {
                     let mut captured = false;
+                    // A GROUP wave's offer commits on the group's chains: the same egg, captured the same way (docs/group-waves.md); no express copy, the group's lane is its only signal path.
+                    let group_captured = self.capture_group_offer_key(&wave_id, wire.expected_key);
                     if let Some(wave) = self.active_wave.as_mut() {
                         if wave.wave_id == wave_id && wave.offer_lane_key.is_none() {
                             wave.offer_lane_key = Some(wire.expected_key);
@@ -708,7 +710,7 @@ impl PhotonApp {
                         }
                     }
                     // Only a call THIS device dialed can be missing its capture — a re-served history row that happens to be an old offer commits here too (Esme's phone, 2026-09-10) and is not that.
-                    if !captured && self.dialed_wave_ids.contains(&wave_id) {
+                    if !captured && !group_captured && self.dialed_wave_ids.contains(&wave_id) {
                         crate::logf!("WAVE: offer {} committed with no matching outgoing wave — lane key NOT captured, the express offer will never fire", hex::encode(&wave_id[..4]));
                     }
                     // The offer's EXPRESS copy fires HERE, not at send: only the commit knows the lane key, and the express payload carries it as the answering side's basket egg (signal.rs). ts = the row's own eagle stamp, so offer_osc and the stale-offer gate agree on both ends whichever copy lands first.

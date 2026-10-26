@@ -413,10 +413,13 @@ impl PhotonApp {
         let fleet_locked_set = self.locked_devices();
         let fleet_schemes = self.fleet_schemes.clone();
         // Hoisted for the wave overlay (the chrome borrow below outlives it): SHOW the ☎ pill for any real friend conversation (discoverable, dimmed when it can't connect); ENABLE it only when the friend is online with a usable chain. Also whether a wave is live (phase + peer name for the bar). All read before the chrome `as_mut` since the overlay draws early, under-blend-topmost, on every screen.
+        // A MOLECULE waves too (docs/group-waves.md): the pill shows once the conversation stands, and lights when any other standing member is online.
+        let molecule_wave = self.active_molecule().and_then(|gi| self.molecule_view_of(gi)).map(|v| (v.chain_woven, v.chain_woven && v.is_online));
         let wave_pill_show = self
             .active_contact()
             .and_then(|ci| self.contacts.get(ci))
-            .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some());
+            .map_or(false, |c| !c.is_sibling && c.friendship_id.is_some())
+            || molecule_wave.is_some_and(|(show, _)| show);
         // No calibration gate on placing a wave (the doctrine retired 2026-09-07): every wave opens with the v-chirp probe, so the route is measured before any voice connects.
         // A WAVE NEEDS A DIRECT PATH (Nick 2026-09-17, the Jon waves: three connected, none carried a packet — relay media does not exist yet): online over the relay alone shows the pill dimmed and labelled "no direct path" instead of placing a wave that connects into silence. The punch pulse keeps trying behind it; the label flips back to Wave the moment a path validates.
         let wave_pill_no_path = self
@@ -431,7 +434,10 @@ impl PhotonApp {
             .map_or(false, |c| {
                 !c.is_sibling && c.is_online && (c.chain_woven || c.friendship_id.is_some())
             })
-            && !wave_pill_no_path;
+            && !wave_pill_no_path
+            || molecule_wave.is_some_and(|(_, on)| on);
+        // Beams stay a pair's for now (a group beam is N−1 uploads — docs/group-waves.md).
+        let beam_pill_enabled = wave_pill_enabled && molecule_wave.is_none() && crate::wave::beam_session::can_send();
         // Live wave-duration seconds, computed here (a per-frame recompute from the frozen osc stamps — no stored timer): Active counts up from `phase_osc` (re-stamped at answer); Ended freezes at `final_osc - phase_osc`; other phases show 0. Carried in the overlay tuple so the panel + strip render it via the base-aware `fmt_duration`.
         let wave_overlay: Option<(crate::wave::WavePhase, String, bool, Option<usize>, i64)> =
             self.active_wave.as_ref().map(|c| {
@@ -451,6 +457,17 @@ impl PhotonApp {
                     _ => 0,
                 };
                 (c.phase, name, direct, pi, dur)
+            }).or_else(|| {
+                // A GROUP wave (docs/group-waves.md) shows on the same screen: the molecule's title, the first other member's face, the time since we joined.
+                self.group_wave.as_ref().map(|w| {
+                    let phase = w.screen_phase();
+                    let dur = if phase == crate::wave::WavePhase::Active {
+                        (vsf::eagle_time_oscillations() - w.phase_osc).max(0) / vsf::OSCILLATIONS_PER_SECOND as i64 // WHY/PROOF: the wall clock can step back past the join — its age is 0, never negative
+                    } else {
+                        0
+                    };
+                    (phase, self.group_wave_title().unwrap_or_else(|| "?".into()), true, self.group_wave_face(), dur)
+                })
             });
         // Ringing shows a SECOND action (Decline) beside the primary — hoisted so the end-of-frame hit re-stamp agrees with the early paint without re-deriving the phase.
         let wave_two_actions = wave_overlay.as_ref().map_or(false, |(p, _, _, _, _)| {
@@ -1296,7 +1313,7 @@ impl PhotonApp {
                     b.set_rect(wave_cx - pill_w * 0.35, beam_cy, pill_w, pill_h);
                     b.set_font_size(pill_font);
                     b.set_label(tr(Msg::BeamStart));
-                    b.set_enabled(wave_pill_enabled && crate::wave::beam_session::can_send());
+                    b.set_enabled(beam_pill_enabled);
                     let id = b.hit_id();
                     b.render_content_into(&mut canvas, 0., 0., ctx.text, None, None, id);
                 }
@@ -7290,7 +7307,7 @@ impl PhotonApp {
                 b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
             }
             // The Beam slat above Wave, the same re-assert (it was painted live but owned no pixels — the 2026-10-10 dead tap).
-            if crate::wave::beam_session::can_send() {
+            if beam_pill_enabled {
                 if let Some(b) = self.beam_btn.as_ref() {
                     b.stamp_hit_into(&mut chrome.hit_test_map, buf_w, buf_h, b.hit_id());
                 }
