@@ -646,9 +646,9 @@ impl PhotonApp {
                 }
                 continue;
             }
-            // GROUP (docs/molecules.md step 4): the pending just recorded learns WHO it has to reach — the per-member ACK ledger's target set.
+            // The pending just recorded learns WHO it has to reach — the one ACK ledger's target set, at any size (a pair's one other party, a group's every member but us).
             let targets: Vec<[u8; 32]> = done.routes.iter().filter_map(|r| r.party).collect();
-            if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, c)| *id == done.friendship_id && c.molecule) {
+            if let Some((_, chains)) = self.friendship_chains.iter_mut().find(|(id, _)| *id == done.friendship_id) {
                 chains.set_pending_targets(done.eagle_time, targets);
             }
             // WAVE basket capture (docs/waves.md): the offer's send COMMIT is where the ORIGIN sees the lane key its offer sealed under — the basket's doomed egg (the answering side captures the same value at decrypt, pre-advance). Matched by the frame's typed control kind.

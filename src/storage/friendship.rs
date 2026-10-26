@@ -657,7 +657,7 @@ mod tests {
         chains.set_molecule_roster(vec![0xAB; 40]);
         chains.prepare_send(b"hi".to_vec(), b"hi".to_vec(), 77, vec![]).unwrap();
         chains.set_pending_targets(77, vec![[2u8; 32], [3u8; 32]]);
-        assert_eq!(chains.process_group_ack(77, [3u8; 32]), Vec::<i64>::new());
+        assert_eq!(chains.process_ack_by(77, Some([3u8; 32]), None), Vec::<i64>::new());
         let bytes = chains_to_vsf_bytes(&chains).expect("encode");
         let back = chains_from_vsf_bytes(&bytes).expect("decode");
         assert_eq!(back.molecule_roster(), &[0xAB; 40][..]);

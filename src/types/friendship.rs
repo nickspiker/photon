@@ -1942,12 +1942,8 @@ impl FriendshipChains {
         true
     }
 
-    /// Process ACK: match the pending by (eagle_time, plaintext_hash), remove it, report the match. Under advance-on-send the chain already ratcheted forward when this message was encrypted, so the ACK is a pure delivery RECEIPT — it MUST NOT advance again (that would double-ratchet past the receiver). The match edge is what the caller hangs delivery, CLUTCH-ephemeral zeroize, and chain-seal on. No mutated_osc stamp: removing a pending is device-local (siblings never adopt our pendings) and the send already pushed the advanced lane, so an ACK needs no fleet replication.
-    /// GROUP: record which parties a just-committed pending has to reach (docs/molecules.md step 4). No-op on a friendship blob.
+    /// Record which parties a just-committed pending has to reach — any conversation, any size (docs/conversations.md Phase 2: a pair's is its one other party, a group's every standing member but us).
     pub fn set_pending_targets(&mut self, eagle_time: i64, targets: Vec<crate::types::PartyId>) {
-        if !self.molecule {
-            return;
-        }
         if let Some(m) = self.pending_messages.iter_mut().find(|m| m.eagle_time == eagle_time) {
             let mut t = targets;
             t.sort_unstable();
@@ -1980,52 +1976,44 @@ impl FriendshipChains {
         self.pending_messages.iter().find(|m| m.eagle_time == eagle_time).map(|m| (m.acked_by.len(), m.targets.len()))
     }
 
-    /// GROUP ACK (docs/molecules.md step 4): mark `acker` on the row and — because a receiver processes OUR lane strictly in order — on every OLDER pending too (the implied-ACK rule, per party); a pending clears when its acked set covers its targets. Returns the eagle times that just completed (the row `delivered` flips for those).
-    pub fn process_group_ack(&mut self, acked_eagle_time: i64, acker: crate::types::PartyId) -> Vec<i64> {
-        if !self.pending_messages.iter().any(|m| m.eagle_time == acked_eagle_time) {
+    /// THE ACK LEDGER, any size (docs/conversations.md Phase 2): mark `acker` on the row and — because a receiver processes OUR lane strictly in order — on every OLDER pending too (the implied-ACK rule, per party); a pending clears when its acked set covers its targets, and one that names no targets (written before every conversation carried them, or an ACK with no attributed party) clears on any ACK, as a pair's always did.
+    /// Matched on eagle_time ALONE: a device physically cannot emit two messages at the same 704 ps tick (braid.md §1.5). The plaintext hash is a logged soft-check, never a gate — it covers the random pad, so any re-encryption of one message changes it (field 2026-08-08: a hard hash gate leaked the pending and the message retransmitted forever while the peer re-ACKed each copy).
+    /// Returns the eagle times that just completed (their rows flip `delivered`). Under advance-on-send the ACK is a pure receipt: it never advances the chain.
+    pub fn process_ack_by(&mut self, acked_eagle_time: i64, acker: Option<crate::types::PartyId>, acked_plaintext_hash: Option<&[u8; 32]>) -> Vec<i64> {
+        let Some(idx) = self.pending_messages.iter().position(|m| m.eagle_time == acked_eagle_time) else {
             return Vec::new();
+        };
+        if acked_plaintext_hash.is_some_and(|h| self.pending_messages[idx].plaintext_hash != *h) {
+            crate::logf!("CHAT: ACK hash mismatch for eagle_time {} — clearing on eagle_time (the pad differs or a re-encrypt raced); the message is delivered either way", acked_eagle_time);
         }
         let mut done = Vec::new();
-        for m in self.pending_messages.iter_mut() {
-            if m.eagle_time <= acked_eagle_time && !m.acked_by.contains(&acker) {
-                m.acked_by.push(acker);
+        let mut targeted = false;
+        for m in self.pending_messages.iter_mut().filter(|m| m.eagle_time <= acked_eagle_time) {
+            if let Some(a) = acker.filter(|a| !m.acked_by.contains(a)) {
+                m.acked_by.push(a);
                 m.acked_by.sort_unstable();
             }
-            if m.eagle_time <= acked_eagle_time && m.targets.iter().all(|p| m.acked_by.contains(p)) {
+            targeted |= !m.targets.is_empty();
+            if m.targets.is_empty() || m.targets.iter().all(|p| m.acked_by.contains(p)) {
                 done.push(m.eagle_time);
             }
         }
         self.pending_messages.retain(|m| !done.contains(&m.eagle_time));
-        self.mutated_osc = vsf::eagle_time_oscillations();
+        if done.len() > 1 {
+            crate::logf!("CHAT: {} older pending(s) implied-delivered by the ACK for eagle_time {} (in-order lane)", done.len() - 1, acked_eagle_time);
+        }
+        // A targeted ledger is fleet-visible progress (who still owes it); an untargeted clear is device-local bookkeeping, as it always was.
+        if targeted {
+            self.mutated_osc = vsf::eagle_time_oscillations();
+        }
         done
     }
 
+    /// [`Self::process_ack_by`] for an ACK attributed to no party — completes untargeted pendings only.
     pub fn process_ack(&mut self, acked_eagle_time: i64, acked_plaintext_hash: &[u8; 32]) -> bool {
-        // Match on eagle_time ALONE. A device physically cannot emit two messages at the same 704ps tick (braid.md §1.5), so eagle_time uniquely names our outgoing message. The plaintext_hash was a hard co-gate, but it is taken over the FULL payload including the random hR pad, so any re-encryption of the same message yields a different hash — a hash mismatch then leaked the pending and the message retransmitted forever while the peer re-ACKed each copy (field, 2026-08-08: Emma re-ACKing one message every ~2s, Nick never advancing). The ACK is already Ed25519-authenticated over (token, eagle_time, hash); keep the hash as a logged soft-check, never a match gate.
-        if let Some(idx) = self
-            .pending_messages
-            .iter()
-            .position(|m| m.eagle_time == acked_eagle_time)
-        {
-            if self.pending_messages[idx].plaintext_hash != *acked_plaintext_hash {
-                crate::logf!("CHAT: ACK hash mismatch for eagle_time {} — clearing on eagle_time (the pad differs or a re-encrypt raced); the message is delivered either way", acked_eagle_time);
-            }
-            // IMPLIED ACKs ride the in-order lane: the receiver processes our lane STRICTLY in chain order (Layer 1), so an ACK for this row proves every OLDER pending was already processed — their own ACKs may simply be unmintable (rows the peer stored before ack_hash persistence can never be re-ACKed), and those unACKable stragglers sat in the in-flight window wedging the lane forever ('holding for an ACK slot', flushed 0/3, field 2026-08-16). Content redundancy is anti-entropy's job; the pending list is delivery bookkeeping, and this ACK just testified for everything behind it.
-            let before = self.pending_messages.len();
-            self.pending_messages
-                .retain(|m| m.eagle_time > acked_eagle_time);
-            let implied = before - 1 - self.pending_messages.len();
-            if implied > 0 {
-                crate::logf!(
-                    "CHAT: {} older pending(s) implied-delivered by the ACK for eagle_time {} (in-order lane)",
-                    implied,
-                    acked_eagle_time
-                );
-            }
-            return true;
-        }
-        false
+        !self.process_ack_by(acked_eagle_time, None, Some(acked_plaintext_hash)).is_empty()
     }
+
 
     /// Get the most recent pending plaintext (for salt derivation of next send). If no pending messages, returns last_plaintext for our chain.
     pub fn current_send_plaintext(&self) -> &[u8] {
@@ -2743,16 +2731,16 @@ mod tests {
         g.set_pending_targets(t2, vec![c, b, a]);
         assert_eq!(g.pending_progress(t1), Some((0, 3)));
         // b ACKs the SECOND row: implied for the first too (in-order lane), per party.
-        assert!(g.process_group_ack(t2, b).is_empty());
+        assert!(g.process_ack_by(t2, Some(b), None).is_empty());
         assert_eq!(g.pending_progress(t1), Some((1, 3)));
         assert_eq!(g.pending_progress(t2), Some((1, 3)));
         assert_eq!(g.pending_unacked(t1), Some(vec![a, c]));
         // a ACKs the first row only.
-        assert!(g.process_group_ack(t1, a).is_empty());
+        assert!(g.process_ack_by(t1, Some(a), None).is_empty());
         assert_eq!(g.pending_progress(t1), Some((2, 3)));
         assert_eq!(g.pending_progress(t2), Some((1, 3)));
         // c ACKs the first: it completes; the second still owes a and c.
-        assert_eq!(g.process_group_ack(t1, c), vec![t1]);
+        assert_eq!(g.process_ack_by(t1, Some(c), None), vec![t1]);
         assert_eq!(g.pending_progress(t1), None);
         assert_eq!(g.pending_unacked(t2), Some(vec![a, c]));
         // c leaves: the second row's targets shrink to {a, b}; b acked, a has not — still pending.
@@ -2762,15 +2750,15 @@ mod tests {
         assert_eq!(g.retarget_pendings(&[[0x01; 32], b]), vec![t2]);
         assert!(g.pending_messages.is_empty());
         // A duplicate ACK for a cleared row matches nothing.
-        assert!(g.process_group_ack(t1, a).is_empty());
+        assert!(g.process_ack_by(t1, Some(a), None).is_empty());
         // A friendship blob ignores the group ledger entirely.
         let eggs: Vec<[u8; 32]> = (0..8).map(|i| [i as u8; 32]).collect();
         let mut f = FriendshipChains::from_clutch(&[[1u8; 32], [2u8; 32]], &eggs);
         f.prepare_send(b"x".to_vec(), b"x".to_vec(), 5, vec![]).unwrap();
         f.set_pending_targets(5, vec![a]);
-        assert!(f.pending_messages[0].targets.is_empty(), "a friendship pending never carries targets");
-        assert_eq!(f.pending_unacked(5), None);
-        assert!(f.process_ack(5, &[0u8; 32]), "the friendship ACK path clears on the one ACK as ever");
+        assert_eq!(f.pending_messages[0].targets, vec![a], "a pair pending names its one other party (one ledger at any size)");
+        assert!(f.process_ack_by(5, Some(b), None).is_empty(), "an ACK from someone it was not for completes nothing");
+        assert_eq!(f.process_ack_by(5, Some(a), None), vec![5], "the one ACK it owes clears it");
     }
 
     /// PER-LANE REPLICATION: a subset carrying only some lanes must round-trip thru merge_lanes_from and adopt EXACTLY those lanes at their real positions, leaving other lanes untouched — index-alignment across the parallel per-lane vecs is load-bearing (a slip corrupts a lane's chain/position/anchors).

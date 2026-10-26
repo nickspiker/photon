@@ -1685,7 +1685,9 @@ impl PhotonApp {
                         };
 
                         // Process ACK: advance our chain and remove pending message
-                        if chains.process_ack(acked_eagle_time, &plaintext_hash) {
+                        // THE ONE LEDGER (FriendshipChains::process_ack_by): the ACK's party marks the row and every older pending; `done` = the rows it completed (the implied ones with it).
+                        let ack_done = chains.process_ack_by(acked_eagle_time, Some(from_handle_hash), Some(&plaintext_hash));
+                        if !ack_done.is_empty() {
                             if chains.bond {
                                 bond_acks_after.push((ack_fid, acked_eagle_time));
                             }
@@ -1770,23 +1772,19 @@ impl PhotonApp {
                         }
 
                         // Mark message as delivered in UI
-                        let mut delivered_row: Option<ChatMessage> = None;
+                        let mut delivered_rows: Vec<ChatMessage> = Vec::new();
                         {
                             let conv = &mut self.conversations[conv_pos];
                             // Find message by matching eagle_time (exact i64 oscillations)
                             let mut found_msg = false;
+                            // The ACKed row, and every row the in-order rule just completed with it: delivered, and the member holds it (their delivery-ring segment).
                             for msg in conv.messages.iter_mut().rev() {
-                                if msg.is_outgoing && !msg.delivered {
-                                    // Match by eagle_time (exact i64 match)
-                                    if msg.timestamp == acked_eagle_time {
-                                        msg.delivered = true;
-                                        // The delivery ring's one segment for a pair: the friend holds it.
-                                        crate::types::merge_delivered_to(&mut msg.delivered_to, &[from_handle_hash]);
-                                        delivered_row = Some(msg.clone());
-                                        found_msg = true;
-                                        changed = true;
-                                        break;
-                                    }
+                                if msg.is_outgoing && !msg.delivered && (msg.timestamp == acked_eagle_time || ack_done.contains(&msg.timestamp)) {
+                                    msg.delivered = true;
+                                    crate::types::merge_delivered_to(&mut msg.delivered_to, &[from_handle_hash]);
+                                    delivered_rows.push(msg.clone());
+                                    found_msg = true;
+                                    changed = true;
                                 }
                             }
 
@@ -1796,12 +1794,9 @@ impl PhotonApp {
                             }
                         }
                         // Live fleet propagation of the delivered tick (the sibling merge upgrades its copy monotonically).
-                        if let Some(row) = delivered_row {
-                            self.push_rows_to_siblings(
-                                contact_idx,
-                                std::slice::from_ref(&row),
-                                None,
-                            );
+                        if !delivered_rows.is_empty() {
+                            let conv_id = self.conversations[conv_pos].id();
+                            self.push_conversation_rows_to_siblings(conv_id, &delivered_rows, None);
                         }
                     } else {
                         crate::logf!(

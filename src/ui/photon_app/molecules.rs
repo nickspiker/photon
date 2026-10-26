@@ -1220,7 +1220,7 @@ impl PhotonApp {
                 cut_over = true;
             }
         }
-        let done = chains.process_group_ack(acked_eagle_time, party);
+        let done = chains.process_ack_by(acked_eagle_time, Some(party), None);
         let progress = chains.pending_progress(acked_eagle_time);
         // The leaver's edge (D9): once ANY member ACKs our leave row, a survivor holds the news — the root dies here.
         if self.molecule_locals.iter().any(|(g, l)| *g == gid && l.phase == MoleculePhase::Left) {
