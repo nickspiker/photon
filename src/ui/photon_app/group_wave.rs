@@ -269,9 +269,14 @@ impl PhotonApp {
                 }
                 w.joined.push(GroupMember { device, party, nonce });
                 let joined_here = w.phase == GroupPhase::Joined;
+                let (gid, our_nonce) = (w.gid, w.our_nonce);
                 crate::logf!("WAVE: {} joined group wave {} ({} in besides us)", crate::fp(&party), hex::encode(&wave_id[..4]), w.joined.len());
                 if joined_here {
                     self.group_link_up(device);
+                    // ROLL CALL: the newcomer knows only the joins that reached it, and a member it never heard of could never link with it — everyone already in says so again (a device already known is ignored, so this never cascades).
+                    if let (Some(nonce), Some(dev)) = (our_nonce, self.our_device()) {
+                        let _ = self.send_group_wave_signal(gid, WaveSignal::Answer { wave_id, nonce, device: Some(dev) }, vsf::eagle_time_oscillations());
+                    }
                 }
                 self.scene_dirty = true;
             }

@@ -23,7 +23,7 @@ The lower device key plays the origin's direction (`group_link_origin`), so the 
 
 - The origin's offer goes out; its own record exists before the send so the commit can capture the egg.
 - Every member device that decrypts the offer directly rings (the same `ring_alert`; ring on direct decrypt only, a stale offer over a minute old never rings).
-- Joining sends an `Answer` to every member and brings up a link to every device already in. A member already in brings up its link to us when our `Answer` lands.
+- Joining sends an `Answer` to every member and brings up a link to every device already in. A member already in brings up its link to us when our `Answer` lands, and answers it with a ROLL CALL — its own `Answer` again — so a newcomer that missed an earlier join still learns every device in the wave (a device already known is ignored, so the roll call never cascades).
 - Leaving sends a `Hangup`; every member takes its link to us down. The last device to leave ends the wave; the origin waiting for its first join waits on.
 - Declining sends nothing — the others' wave goes on without us.
 - A sibling of ours joining stops our ring: its `Answer` row reaches us by the fleet push and the molecule page merge.
