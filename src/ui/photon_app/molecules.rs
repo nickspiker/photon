@@ -1454,26 +1454,7 @@ impl PhotonApp {
 
     /// Re-queue every undelivered outgoing chat row of a group (a cutover cleared its pendings; a relaunch found them held) — control rows never re-serve bare.
     pub(super) fn resend_held_molecule_rows(&mut self, gid: MoleculeId) {
-        let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>)> = self
-            .conversations
-            .iter()
-            .find(|v| v.id() == fid)
-            .map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered && !m.is_control() && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some())).map(|m| (m.content.clone(), m.timestamp, m.reference)).collect())
-            .unwrap_or_default();
-        let already: Vec<i64> = self.pending_molecule_posts.iter().filter(|p| p.gid == gid).filter_map(|p| p.text.as_ref().map(|(_, ts, _)| *ts)).collect();
-        let pending: Vec<i64> = self.friendship_chains.iter().find(|(id, _)| *id == fid).map(|(_, c)| c.pending_messages.iter().map(|m| m.eagle_time).collect()).unwrap_or_default();
-        let mut n = 0usize;
-        for (text, ts, reference) in held {
-            if already.contains(&ts) || pending.contains(&ts) {
-                continue;
-            }
-            self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob: None, wrap: None, kem: None, text: Some((text, ts, reference)), queued: self.tick_serial, control: false });
-            n += 1;
-        }
-        if n > 0 {
-            crate::logf!("MOLECULE: {} held row(s) re-queued for {}", n, hex::encode(&gid.0[..4]));
-        }
+        self.resend_held_rows(crate::types::FriendshipId::from_bytes(gid.0));
     }
 
     /// Persist a group's index entry + roster. Chains persist thru the standard chains path on their own mutation edges.

@@ -1159,6 +1159,8 @@ pub(crate) struct PendingSend {
     pub ts: i64,
     pub reference: Option<(crate::types::RefKind, i64)>,
     pub bridge: Option<crate::network::message_package::BridgeWire>,
+    /// A held CONTROL row re-sends as the same control row (a delete marker, a wave row): dropping its kind sends it as an empty chat row.
+    pub control: Option<crate::types::RowControl>,
     pub queued: u64,
 }
 

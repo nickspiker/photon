@@ -244,7 +244,7 @@ impl PhotonApp {
         }
         self.persist_conversation_async(id);
         // The wire half is DEFERRED to the next tick: the bubble above can only reach the screen when this handler returns, so running the transmit inline — crypto, chains persist, dispatch — held the frame hostage for its whole duration.
-        self.pending_sends.push(super::PendingSend { conv: id, text: text.to_string(), ts, reference, bridge, queued: self.tick_serial });
+        self.pending_sends.push(super::PendingSend { conv: id, text: text.to_string(), ts, reference, bridge, control: None, queued: self.tick_serial });
         true
     }
 
@@ -751,7 +751,7 @@ impl PhotonApp {
             return false;
         }
         for mut p in sends {
-            if self.conversation_transmit(p.conv, &p.text, p.ts, p.reference, p.bridge.as_ref(), None, None, None) {
+            if self.conversation_transmit(p.conv, &p.text, p.ts, p.reference, p.bridge.as_ref(), None, None, p.control.as_ref()) {
                 // Our own row exists ONLY on this device until a sibling hears about it. THE STORED ROW, not a rebuild (field 2026-10-07, the blank twin of a PDF): it carries the attach meta, the file and the micro preview.
                 if let Some(row) = self.conv_by_id(p.conv).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == p.ts && m.content == p.text).cloned()) {
                     self.push_conversation_rows_to_siblings(p.conv, std::slice::from_ref(&row), None);
@@ -810,41 +810,43 @@ impl PhotonApp {
         }
     }
 
-    /// Send every outgoing row this contact still holds as undelivered — the rows `drain_pending_chain_sends` HELD because no chain existed yet (typically a re-key in flight). Original timestamps are preserved, so the row identity is unchanged and the friend dedups anything it already has; a row that still can't go out simply stays held for the next attempt.
+    /// The held-row flush for contact `ci`'s conversation (a pair, our notes, a fleet sibling's) — the contact-keyed door onto [`Self::resend_held_rows`].
     pub(super) fn resend_held_messages(&mut self, ci: usize) {
-        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>, Option<crate::types::RowControl>)> = match self.conv_of(ci)
-        {
-            Some(v) => v
-                .messages
-                .iter()
-                // A reaction RETRACT is a legal empty-content row — its reference makes it sendable; a plain empty row stays filtered (the liveness-probe artifact class).
-                .filter(|m| {
-                    m.is_outgoing
-                        && !m.delivered
-                        && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some() || m.control.is_some())
-                        // An era-ratchet row is never re-served: its KEM material lived only in the original package, and a dead Init on the NEW era would be nonsense (the sender stores none anyway; belt and braces).
-                        // A group control row (offer / join / wrap) is never re-served bare either: its roster blob or sealed secret rode the original package only — the sponsor re-offers on the next roster edge, a joiner taps Join again.
-                        && !matches!(m.control, Some(crate::types::RowControl::Era(_)) | Some(crate::types::RowControl::Molecule(_)))
-                })
-                .map(|m| (m.content.clone(), m.timestamp, m.reference, m.control.clone()))
-                .collect(),
-            None => return,
+        if let Some(id) = self.conv_of(ci).map(|v| v.id()) {
+            self.resend_held_rows(id);
+        }
+    }
+
+    /// THE HELD-ROW FLUSH, any size (docs/conversations.md Phase 2): every outgoing row the conversation still holds as undelivered — held because no chain existed yet (a re-key in flight), or because a cutover cleared its pendings — goes back thru the one send queue at its ORIGINAL stamp, so the row identity is unchanged and every member dedups what it already has. A row already pending on the lane or already queued is left alone; one that still cannot go simply stays held for the next edge.
+    /// Never re-served bare: an era-ratchet row (its KEM material lived only in the original package) and a group control row (offer / join / wrap — its roster blob or sealed secret rode the original package only; the sponsor re-offers on the next roster edge, a joiner taps Join again).
+    pub(super) fn resend_held_rows(&mut self, id: crate::types::ConversationId) {
+        let Some(conv) = self.conv_by_id(id) else {
+            return;
         };
+        // A reaction RETRACT is a legal empty-content row — its reference makes it sendable; a plain empty row stays filtered (the liveness-probe artifact class).
+        let held: Vec<(String, i64, Option<(crate::types::RefKind, i64)>, Option<crate::types::RowControl>)> = conv
+            .messages
+            .iter()
+            .filter(|m| m.is_outgoing && !m.delivered && (!m.content.is_empty() || m.reference.is_some() || m.file.is_some() || m.control.is_some()) && !matches!(m.control, Some(crate::types::RowControl::Era(_)) | Some(crate::types::RowControl::Molecule(_))))
+            .map(|m| (m.content.clone(), m.timestamp, m.reference, m.control.clone()))
+            .collect();
         if held.is_empty() {
             return;
         }
-        let mut sent = 0usize;
-        for (text, eagle_time, reference, control) in &held {
-            let bw = self.bridge_wire_for_row(ci, *eagle_time);
-            if self.chain_transmit_with(ci, text, *eagle_time, *reference, bw.as_ref(), None, None, control.as_ref()) {
-                sent += 1;
+        let pending: Vec<i64> = self.friendship_chains.iter().find(|(fid, _)| *fid == id).map(|(_, c)| c.pending_messages.iter().map(|m| m.eagle_time).collect()).unwrap_or_default();
+        let sibling = self.pair_contact_of(id).filter(|&ci| self.contacts[ci].is_sibling);
+        let mut n = 0usize;
+        for (text, ts, reference, control) in held {
+            if pending.contains(&ts) || self.pending_sends.iter().any(|p| p.conv == id && p.ts == ts) {
+                continue;
             }
+            let bridge = sibling.and_then(|ci| self.bridge_wire_for_row(ci, ts));
+            self.pending_sends.push(super::PendingSend { conv: id, text, ts, reference, bridge, control, queued: self.tick_serial });
+            n += 1;
         }
-        crate::logf!(
-            "CHAT: chain ready — flushed {}/{} held message(s)",
-            sent,
-            held.len()
-        );
+        if n > 0 {
+            crate::logf!("CHAT: {} held row(s) re-queued for conversation {}", n, hex::encode(&id.as_bytes()[..4]));
+        }
     }
 
     /// The WIRE half of a chain send — weave selection, braid advance (prepare_send), chains persist, PT dispatch — with NO row bookkeeping: callers own the bubble. `send_chain_message` inserts its fresh bubble after; the fleet-forward drain transmits rows a sibling already merged (with their ORIGINAL timestamps, so the row identity — and therefore delivered-upgrades and digests — stays one fleet-wide). Returns false quietly when this device holds no usable chain (not Complete, no friendship chain, no party id, no address).
