@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v129
 - **Molecule photons reach all your devices.** If you use Photon on more than one device, a photon in a molecule could land on one of them and never show on the other; your devices now hand each other every photon they hold.
 - **The first photon after someone joins arrives right away.** When a molecule's keys changed, because someone joined or left, each person's next photon was turned away by everyone else and only arrived when it was sent again; it now arrives the first time, in molecules and in chats with one friend alike.
 - **Photons that arrive early are kept.** A molecule photon that reaches your device a moment before it is ready to open it, such as just after you join, is held until it can be opened instead of being lost.
