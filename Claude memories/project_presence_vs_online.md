@@ -17,3 +17,5 @@ Ring colour spec (VSF RGB, convert thru the proper pipeline to the Rec.2020 outp
 - 0xFFB000 = relay
 
 Related: [[project-party-colour-perceptual]], [[project-theme-rec2020]].
+
+2026-10-26 field (Azie, Nick's desktop log): open-ping unanswered → offline verdict at 18:25:31; then her phone ACKed every photon for a minute (direct + relay) but stayed offline — only pongs (and chats) counted as heard. FIX: network/status.rs MessageAck arm now clears ping failures + emits StatusUpdate::Online after the signature check, same as the chat arm. Pongs to her device kept timing out (pings likely aimed at a stale v4 public; a direct ACK now teaches the v6 endpoint) — re-check on the next field log.
