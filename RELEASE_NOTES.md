@@ -6,6 +6,8 @@ The app shows the section for the version it runs, and the photon page on holdmy
 One sentence per line, however long; plain language for the person who installs it, not for the person who built it.
 
 ## Upcoming
+
+## v131
 - **Molecule members you have never met.** If you bind a friend into a molecule and they bind someone you do not know, your photons, waves and beams with that person now work like anyone else's; before, their photons never showed for you.
 - **Files from molecule members you have never met.** A picture or file sent by someone in a molecule you are not friends with now arrives from their devices directly; before, it only reached you once a friend in common had it.
 - **Friends stop looking offline while they answer you.** A friend whose phone was receiving your photons could still show as offline until a separate check got through; every photon their device acknowledges now counts as them being there.
