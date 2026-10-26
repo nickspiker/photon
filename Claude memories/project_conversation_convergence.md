@@ -1,6 +1,6 @@
 ---
 name: project-conversation-convergence
-description: One conversation model at any size — plan in docs/conversations.md; Phase 0 (fold-checked roster records) BUILT 2026-10-24, Phase 1 (one UI surface) next
+description: One conversation model at any size (docs/conversations.md) — Phases 0–1 + steps A–D + step E stages 1–4 BUILT on main (2026-10-26); E stage 5 (pairs onto the roster) and F (bundles deleted) remain
 metadata:
   type: project
 ---
@@ -23,3 +23,9 @@ Field round 4 (2026-10-24, v0.125.11-12, f4665da7): every device of the sponsor'
 Field round 5 (2026-10-25, 7efcce19): two joins 12 s apart minted era 1 twice from era 0 (the second overwrote the first's pending) — mint_molecule_era now hands a joiner the PENDING era whole and defers other mints to the cutover (`molecule_mint_after_cutover`); the protocol drains (group posts, deferred sends) were gated to Ready|Conversation|Settings, missing ConversationPanel — any new AppState must join that gate in protocol.rs.
 Field round 6 (2026-10-25, 95b37980): a JOINER dropped every group frame — the receive + ACK "are we a participant" checks read the chains' participant list, built from the invitation snapshot without the joiner; group membership on receive is now "holds the group's keys", chains participants follow the roster. Join answers carry the whole roster. OPEN (asked Nick): no member relays another member's group rows to an offline member — only the sending device retries.
 Field round 7 (2026-10-25): tick_serial (the deferred-send fence for group posts AND pair chain sends) advanced only in the draw tick; headless_tick (Android service) and the lifeline now advance it too — any new fence keyed on tick_serial must hold on headless beats.
+
+STEP E, 2026-10-26 (Nick: "please. it'll resolve a lot of issues and it needs done"; the `conversations` branch is MERGED into main — steps A–D and the pair half of E's era work were already there):
+- Stages 1–2 (282572f2): bond frames' dup check / re-ACK read the bond's hidden conversation; bond ACKs mark the bond row delivered; ONE attribution `molecules::member_by_device` (ChatMessage arm, commit_braid_rx, MessageAck arm) and ONE ack target `molecules::ack_target` (signer device + member's devices on relay — pairs used to ACK the contact's primary device); the ACK arm now checks the signer is a trusted device of the peer.
+- Stages 3–4 (89cd3b13): `route_to_contact` shared; strangers' routes carry phonebook addresses; history at any size — member serve route by conversation table (`load_message_page_in`), PT door admits members' hist frames, member pages merged from their side (`merge_molecule_page_rows(.., member)`), the walk asks for molecules, group pages advance the cursor, gap walk + fleet sweep cover molecules.
+- Earlier same day: files with strangers (fetch candidates, PT + UI doors via `attach_peer_known`), ACK = liveness.
+REMAINING (E stage 5): pairs get a Derived roster (GenesisRecord::derived exists, never instantiated), one send path (send_chain_message vs send_molecule_message), one ACK ledger (process_ack vs process_group_ack — unupgraded peers still ACK pair-style), the contact-index callers (conv_of 20, conv_mut_of 15, active_contact 22, pending_chain_sends keyed ContactId, persist/push wrappers), bond_split_era enforcement (recorded, never read), molecule_view hack (friendship_id = gid). Then F: group eras over bonds, KEM bundles deleted, docs rewritten. Stage 5 flips every 1:1 chat's send/ACK path — field-round stages 1–4 first.
