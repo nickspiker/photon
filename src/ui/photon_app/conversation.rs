@@ -301,13 +301,7 @@ impl PhotonApp {
 
     /// Send a row in ANY conversation (docs/conversations.md): a text, a reply, an edit, a reaction — the one door the row actions use, whatever the size.
     pub(super) fn send_in_conversation(&mut self, id: crate::types::ConversationId, body: &str, reference: Option<(crate::types::RefKind, i64)>) -> bool {
-        if let Some(gid) = self.roster_id_of(id) {
-            return self.send_molecule_message(gid, body, reference);
-        }
-        match self.pair_contact_of(id) {
-            Some(ci) => self.send_chain_message(ci, body, false, reference, None),
-            None => false,
-        }
+        self.send_row(id, body, reference, None)
     }
 
     /// Send a hidden control row (a delete marker) in ANY conversation: it lands as our own hidden row first (re-ACK durability), then rides to every other member.

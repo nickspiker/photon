@@ -72,47 +72,19 @@ impl PhotonApp {
     }
 
     pub(super) fn submit_message(&mut self) {
-        // A GROUP conversation (docs/molecules.md step 4): the same box, the group send.
-        if let Some(gi) = self.active_molecule() {
-            let gid = self.molecule_rosters[gi].0;
-            let text: String = match self.message_textbox.as_ref() {
-                Some(tb) => tb.chars.iter().collect(),
-                None => return,
-            };
-            if text.is_empty() {
-                if self.compose_reply_to.take().is_some() | self.compose_edit_of.take().is_some() | self.compose_react_to.take().is_some() {
-                    self.scene_dirty = true;
-                }
-                return;
-            }
-            if let Some(target) = self.compose_react_to.take() {
-                let glyph: String = text.chars().take(8).collect();
-                if self.send_molecule_message(gid, &glyph, Some((crate::types::RefKind::React, target))) {
-                    self.stamp_react_used(&glyph);
-                }
-            } else {
-                let reference = self.compose_edit_of.take().map(|t| (crate::types::RefKind::Edit, t)).or_else(|| self.compose_reply_to.take().map(|t| (crate::types::RefKind::Reply, t)));
-                self.compose_tagged_marks = self.take_compose_tagged_marks();
-                self.send_molecule_message(gid, &text, reference);
-                self.compose_tagged_marks.clear();
-            }
-            if let Some(tb) = self.message_textbox.as_mut() {
-                tb.clear();
-            }
-            self.pending_input_reset = true;
-            self.scene_dirty = true;
-            return;
-        }
-        let Some(ci) = self.active_contact() else {
+        // ONE COMPOSE BOX for every conversation, any size (docs/conversations.md Phase 2).
+        let Some(id) = self.active_conversation else {
             return;
         };
+        // A conversation with one of our own devices IS the bridge terminal.
+        let sibling = self.pair_contact_of(id).filter(|&ci| self.contacts[ci].is_sibling);
         // Pull the compose text and send it VERBATIM. Any non-empty content sends, whitespace included (a lone space, all spaces, a newline are all valid messages). No trim, no whitespace judgment.
         let text: String = match self.message_textbox.as_ref() {
             Some(tb) => tb.chars.iter().collect(),
             None => return,
         };
         // THE PROMPT GATE (Nick 2026-08-26): a terminal doesn't take the next command until the prompt returns. While a bridge command is in flight (no final yet), refuse the send and KEEP the typed text — type-ahead composes, Enter waits. The gate can't wedge: the final clears it, and when a final can never come the stream-loss stamp or Stop's no-op answer does (both stamp bridge_exit). Stop itself is a control row, never gated.
-        if !text.is_empty() && self.contacts.get(ci).map_or(false, |c| c.is_sibling) {
+        if let Some(ci) = sibling.filter(|_| !text.is_empty()) {
             if let Some(t) = self.bridge_inflight_target(ci) {
                 // NAME THE HOSTAGE (field 2026-08-28, the gate that held after a displayed final): which command row holds the prompt, and what evidence exists about its final — an anonymous refusal made this class undiagnosable from logs.
                 let (has_out_row, out_exit) = self
@@ -147,21 +119,19 @@ impl PhotonApp {
                 self.scene_dirty = true;
                 return;
             }
-            // Empty send = liveness probe. Optimistically mark the peer offline and ping them; a returning pong flips is_online back true (check_status_updates), so an empty send confirms whether they're actually reachable right now instead of doing nothing.
-            self.contacts[ci].is_online = false;
-            self.ping_contact(ci);
+            // Empty send = liveness probe of everyone in it we hold a contact for: optimistically mark each offline and ping them; a returning pong flips is_online back true (check_status_updates), so an empty send confirms who is actually reachable right now instead of doing nothing.
+            let us = self.our_pid_in(id);
+            let members: Vec<usize> = self.members_of(id).iter().filter(|p| Some(**p) != us).filter_map(|p| self.contacts.iter().position(|c| c.handle_hash == *p)).collect();
+            for ci in members {
+                self.contacts[ci].is_online = false;
+                self.ping_contact(ci);
+            }
             return;
         }
         // An armed custom reaction takes the typed text (capped short — it's a reaction, not a message) as the glyph.
         if let Some(target) = self.compose_react_to.take() {
             let glyph: String = text.chars().take(8).collect();
-            if self.send_chain_message(
-                ci,
-                &glyph,
-                false,
-                Some((crate::types::RefKind::React, target)),
-                None,
-            ) {
+            if self.send_row(id, &glyph, Some((crate::types::RefKind::React, target)), None) {
                 self.stamp_react_used(&glyph);
             }
             if let Some(tb) = self.message_textbox.as_mut() {
@@ -183,14 +153,11 @@ impl PhotonApp {
             })
             .or_else(|| {
                 // A sibling conversation IS the bridge terminal, and a command is marked by TYPE, never sniffed from content (the 2026-08-23 rule): the host runs exactly the rows carrying BridgeCmd.
-                self.contacts
-                    .get(ci)
-                    .filter(|c| c.is_sibling)
-                    .map(|_| (crate::types::RefKind::BridgeCmd, 0))
+                sibling.map(|_| (crate::types::RefKind::BridgeCmd, 0))
             });
         // Tagged links leave with the text: captured from the box BEFORE it clears, consumed by marks_for_send inside the send below.
         self.compose_tagged_marks = self.take_compose_tagged_marks();
-        self.send_chain_message(ci, &text, false, reference, None);
+        self.send_row(id, &text, reference, None);
         self.compose_tagged_marks.clear();
         if let Some(tb) = self.message_textbox.as_mut() {
             tb.clear();
@@ -209,84 +176,76 @@ impl PhotonApp {
         bridge: Option<crate::network::message_package::BridgeWire>,
     ) -> bool {
         let ci = contact_idx;
-        let text = text.to_string();
-
-        // BRIDGE rides the REGULAR chain path now (Nick's ruling 2026-08-21): a `$ ` command typed in a sibling conversation is an ordinary message to that one device — a per-sibling conversation is exactly [our_sibling_pid, that_device_pid], so the general path below already targets the single device with full chain durability (retransmit + ACK + re-serve). The old is_sibling branch fire-and-forgot a term frame with NONE of that, which is why commands to a momentarily-unreachable device evaporated. The host detects the `$ ` prefix on RECEIVE (conversation.rs) and replies with another ordinary message; faint-until-ACKed rendering comes free.
-
-        // How many people does this message have to reach? For our own notes the answer is zero, so there is nothing to encrypt, nothing to dispatch, and nothing left to wait for — the row is delivered because delivery to an empty set is already complete. That is not a special case for self; it is what the general rule evaluates to when the participant set has one member (docs: the conversation model). A conversation with one remote takes the chain path below, and so does one with fifty.
-        let remotes = match self.contacts.get(ci) {
-            // `our_party_id` already knows which id space this conversation lives in — the identity pubkey for friends and our own notes, the device-derived pid for a fleet sibling — so the participant set is built from the right values without asking what kind of row this is.
-            Some(c) => match self.our_party_id(c) {
-                Some(us) => c.remote_count(&us),
-                None => return false,
-            },
-            None => return false,
-        };
-        // A reaction/edit targets an EXISTING row — inserting its referencing row must not yank the view to the bottom (the target the user is looking at may be far up the stream).
-        let is_quiet_row = matches!(
-            reference,
-            Some((
-                crate::types::RefKind::Edit | crate::types::RefKind::React,
-                _
-            ))
-        );
-        if remotes == 0 {
-            // WRITE-CONFIRM-THEN-SEND holds here too (2026-08-21 erasure ticket): with zero remotes the VAULT is the recipient, so the disk write IS the delivery. The row is born faint like every other send; the writer's durable verdict (drain_persist_done) flips it bright AND releases the sibling push — the old shape set delivered=true and pushed before any write, so a refused persist left a bright RAM ghost that vanished at relaunch while siblings held a copy this device never durably owned.
-            let mut msg =
-                // CORRECTED time, not the system clock: this stamp is the row's identity AND its sort key on every device that will ever hold it (see network::time_base). The system clock may be deliberately wrong — that is the human's business, not the conversation's.
-                ChatMessage::new_with_timestamp(text, true, crate::network::time_base::stamp_osc());
-            msg.marks = self.marks_for_send(&msg.content);
-            msg.reference = reference;
-            if let Some((a, p, f)) = self.attach_stage.take() {
-                msg.attach = Some(a);
-                msg.preview = p;
-                msg.file = Some(f);
-            }
-            let ts = msg.timestamp;
-            let Some(conv) = self.conv_mut_of(ci) else {
-                return false;
-            };
-            conv.insert_message_sorted(msg);
-            if !is_quiet_row {
-                conv.scroll_offset = 0.0;
-            }
-            self.persist_messages_signalled(ci, vec![ts]);
-            return true;
-        }
-
-        let eagle_time = crate::network::time_base::stamp_osc();
         // A suppressed send (the hidden chain-weave probe) shows no UI — wire half only.
         if suppress_bubble {
-            return self.chain_transmit(ci, &text, eagle_time, reference, bridge.as_ref());
+            return self.chain_transmit(ci, text, crate::network::time_base::stamp_osc(), reference, bridge.as_ref());
         }
+        // The contact's conversation (a pair, our notes, a fleet sibling's), materialized on first touch, then the one send.
+        let Some(id) = self.conv_mut_of(ci).map(|v| v.id()) else {
+            return false;
+        };
+        self.send_row(id, text, reference, bridge)
+    }
 
-        // BUBBLE FIRST, WIRE SECOND. The pending-grey bubble appears the instant the user hits send — chain_transmit does weave selection, braid advance, chains persist and PT dispatch, and running it first meant the message rendered as NOTHING for that whole stretch, then grey, then white. The user's mental model (grey immediately, everything else follows) is also the honest one: the row exists the moment they authored it; the wire is delivery, not existence.
-        let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
-        msg.marks = self.marks_for_send(&text);
+    /// Our own party in a conversation: the identity party for a roster conversation and for anyone we befriended, the device-derived pid in our own fleet's conversations.
+    pub(super) fn our_pid_in(&self, id: crate::types::ConversationId) -> Option<crate::types::conversation::PartyId> {
+        if self.roster_id_of(id).is_some() {
+            return self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed));
+        }
+        let ci = self.pair_contact_of(id)?;
+        self.our_party_id(&self.contacts[ci])
+    }
+
+    /// THE ONE SEND, any size (docs/conversations.md Phase 2): the row lands at once (its bubble shows before anything else happens), and its wire half rides the next frame (`drain_pending_sends`). A conversation with nobody else in it — our notes — is delivered by its durable write, which is what delivery to an empty set means. `bridge` stamps a fleet terminal row's own wire truth on it.
+    pub(super) fn send_row(&mut self, id: crate::types::ConversationId, text: &str, reference: Option<(crate::types::RefKind, i64)>, bridge: Option<crate::network::message_package::BridgeWire>) -> bool {
+        // A derived conversation materializes on its first touch.
+        if self.conv_by_id(id).is_none() {
+            if let Some(ci) = self.pair_contact_of(id) {
+                let _ = self.conv_mut_of(ci);
+            }
+        }
+        let Some(us) = self.our_pid_in(id) else {
+            return false;
+        };
+        let remotes = self.members_of(id).iter().filter(|p| **p != us).count();
+        // A reaction/edit targets an EXISTING row — inserting its referencing row must not yank the view to the bottom (the target the user is looking at may be far up the stream).
+        let quiet = matches!(reference, Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _)));
+        // CORRECTED time, not the system clock: this stamp is the row's identity AND its sort key on every device that will ever hold it (see network::time_base).
+        let ts = crate::network::time_base::stamp_osc();
+        let mut msg = ChatMessage::new_with_timestamp(text.to_string(), true, ts);
+        msg.marks = self.marks_for_send(text);
         msg.reference = reference;
+        // A minted group's rows name their author, as its frames do (MoleculeWire.from).
+        if self.roster_id_of(id).is_some() {
+            msg.author = Some(us);
+        }
         // A staged attachment's typed extras land on the row BEFORE the transmit reads it (attach_send_now stages them).
         if let Some((a, p, f)) = self.attach_stage.take() {
             msg.attach = Some(a);
             msg.preview = p;
             msg.file = Some(f);
         }
-        // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on ("output row: present, exit: -" — the prompt held forever). Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
+        // The row carries its OWN wire truth (the stop-hang conviction, 2026-08-30): a re-serve rebuilds frames from this row, and a BridgeOut final rebuilt without its seq/exit delivers text the client's gate can never release on. Stamp them here so bridge_wire_for_row can resurrect the wire at any re-serve site.
         if let Some(bw) = bridge.as_ref() {
             msg.bridge_seq = bw.seq.unwrap_or(0);
             msg.bridge_exit = bw.exit;
         }
-        if let Some(conv) = self.conv_mut_of(ci) {
-            conv.insert_message_sorted(msg.clone());
-            if !is_quiet_row {
-                conv.scroll_offset = 0.0;
-            }
+        let Some(conv) = self.conv_by_id_mut(id) else {
+            return false;
+        };
+        conv.insert_message_sorted(msg);
+        if !quiet {
+            conv.scroll_offset = 0.0;
         }
-        self.persist_messages_async(ci);
-
-        // The wire half is DEFERRED to the next tick (drain_pending_chain_sends): the bubble above can only reach the screen when this handler returns, so running chain_transmit inline here — crypto, chains persist, dispatch — held the frame hostage for its whole duration. Queue it and let the grey bubble present first.
-        self.pending_chain_sends
-            .push((self.contacts[ci].id, text, eagle_time, reference, bridge, self.tick_serial)); // PROOF: `self.contacts.get(ci)` returned Some at entry and nothing in this call shrinks the list
-        return true;
+        if remotes == 0 {
+            // WRITE-CONFIRM-THEN-SEND (2026-08-21 erasure ticket): with nobody else in the conversation the VAULT is the recipient, so the disk write IS the delivery — the row is born faint like every other send and the writer's durable verdict (drain_persist_done) flips it bright and releases the sibling push.
+            self.persist_conversation_signalled(id, vec![ts]);
+            return true;
+        }
+        self.persist_conversation_async(id);
+        // The wire half is DEFERRED to the next tick: the bubble above can only reach the screen when this handler returns, so running the transmit inline — crypto, chains persist, dispatch — held the frame hostage for its whole duration.
+        self.pending_sends.push(super::PendingSend { conv: id, text: text.to_string(), ts, reference, bridge, queued: self.tick_serial });
+        true
     }
 
     /// Send a hidden CONTROL row (probe, delete, wave, era): no bubble, no row on this side — the wire half only, the control typed on the package. `eagle_time` is the frame's stamp (a wave signal's is its offer_osc).
@@ -779,48 +738,49 @@ impl PhotonApp {
     }
 
     /// Run the deferred WIRE half of queued sends — one tick after their bubbles rendered. Failure handling matches the old inline path: no local chain but a sibling exists → fleet-forward (the sibling's merge drain transmits on the braid); no chain and no sibling → the send has nowhere to go, take the bubble back out.
-    pub(super) fn drain_pending_chain_sends(&mut self) -> bool {
-        if self.pending_chain_sends.is_empty() {
+    pub(super) fn drain_pending_sends(&mut self) -> bool {
+        if self.pending_sends.is_empty() {
             return false;
         }
         // FRAME FENCE: only take entries queued on an EARLIER tick. The drain runs in the same tick pass that renders, so an entry queued by this pass's input handler would still hold the frame hostage thru the whole wire half -- exactly the void this deferral exists to kill (field-observed surviving the first version of it).
         let serial = self.tick_serial;
-        let (sends, keep): (Vec<_>, Vec<_>) = std::mem::take(&mut self.pending_chain_sends)
-            .into_iter()
-            .partition(|(_, _, _, _, _, q)| q + 1 < serial); // u64 tick serials — they never reach the ceiling
-        self.pending_chain_sends = keep;
+        // WHY/PROOF: a PARKED send is queued at u64::MAX, our own sentinel — a plain `+ 1` wraps it to 0, which is below every serial, and the parked send would fire.
+        let (sends, keep): (Vec<super::PendingSend>, Vec<super::PendingSend>) = std::mem::take(&mut self.pending_sends).into_iter().partition(|p| p.queued.saturating_add(1) < serial);
+        self.pending_sends = keep;
         if sends.is_empty() {
             return false;
         }
-        for (id, text, eagle_time, reference, bridge, _) in sends {
-            // The contact may have been removed since the press — its send goes nowhere rather than to whoever took its row.
-            let Some(ci) = self.ci_of(&id) else {
-                crate::log("CHAT: queued send dropped — its contact was removed before the wire half ran");
+        for mut p in sends {
+            if self.conversation_transmit(p.conv, &p.text, p.ts, p.reference, p.bridge.as_ref(), None, None, None) {
+                // Our own row exists ONLY on this device until a sibling hears about it. THE STORED ROW, not a rebuild (field 2026-10-07, the blank twin of a PDF): it carries the attach meta, the file and the micro preview.
+                if let Some(row) = self.conv_by_id(p.conv).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == p.ts && m.content == p.text).cloned()) {
+                    self.push_conversation_rows_to_siblings(p.conv, std::slice::from_ref(&row), None);
+                }
                 continue;
-            };
-            let mut msg = ChatMessage::new_with_timestamp(text.clone(), true, eagle_time);
-            msg.marks = crate::types::detect_url_marks(&text);
-            msg.reference = reference;
-            if !self.chain_transmit(ci, &text, eagle_time, reference, bridge.as_ref()) {
-                let has_fleet = self.contacts.iter().any(|c| c.is_sibling);
-                let is_friend = self.contacts.get(ci).map_or(false, |c| !c.is_sibling);
-                if !(has_fleet && is_friend) {
-                    // The bubble STAYS. Withdrawing it deleted what the user typed — and the commonest reason to land here is a re-key in flight (a wire flag-day, a peer that lost its chains), which resolves in seconds. The row is already persisted and marked undelivered, so it renders dim, survives a relaunch, and goes out the moment a chain exists — the held-message flush (resend_held_messages) sends it once a lane and a send slot are available.
-                    self.persist_messages_async(ci);
-                    crate::logf!(
-                        "CHAT: no chain yet for this contact — message held undelivered, will send when the ceremony completes ({} queued)",
-                        self.conv_of(ci)
-                            .map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered).count())
-                            .unwrap_or(0)
-                    );
+            }
+            if let Some(gid) = self.roster_id_of(p.conv) {
+                // A minted group we cannot send in yet (Joining, no root) or any more (Left) PARKS the row until the edge that changes that (`unpark_molecule_posts`); a left group whose root is gone drops it — nothing will ever carry it.
+                let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+                let keyed = self.friendship_chains.iter().any(|(id, c)| *id == p.conv && c.lane_capable() && !c.awaiting_root());
+                if phase == crate::storage::molecule::MoleculePhase::Left && !keyed {
+                    crate::logf!("MOLECULE: dropped a held row in {} — we left and hold no root", hex::encode(&gid.0[..4]));
                     continue;
                 }
-                crate::log("CHAT: no local chain — fleet-forwarded; a lane-capable sibling transmits it on its own lane (delivered tick follows its ACK)");
+                p.queued = if phase == crate::storage::molecule::MoleculePhase::Joining || !keyed { u64::MAX } else { serial };
+                self.pending_sends.push(p);
+                continue;
             }
-            // Live fleet propagation: our own outgoing message exists ONLY on this device until a sibling hears about it. (Same push carries the fleet-forward case.)
-            // THE STORED ROW, not the rebuild (field 2026-10-07, "the pdf shows as two messages even tho it's one, like one blank one, then the pdf"): `msg` is rebuilt from (text, stamp, reference) alone, so for an attachment — empty text, the file in typed fields — the siblings received a BLANK copy at the PDF's own stamp, which their insert keeps as a separate row (identity includes the file). The row the send path stored carries the attach meta, the file and the micro preview.
-            let stored = self.conv_of(ci).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == eagle_time && m.content == text).cloned());
-            self.push_rows_to_siblings(ci, std::slice::from_ref(stored.as_ref().unwrap_or(&msg)), None);
+            // A derived conversation: the bubble STAYS (withdrawing it deleted what the user typed, and the commonest reason to land here is a re-key in flight, which resolves in seconds). The row is persisted and undelivered, renders dim, survives a relaunch, and the held-message flush (resend_held_messages) sends it once a lane and a send slot exist.
+            let friend = self.pair_contact_of(p.conv).is_some_and(|ci| !self.contacts[ci].is_sibling);
+            if friend && self.contacts.iter().any(|c| c.is_sibling) {
+                crate::log("CHAT: no local chain — fleet-forwarded; a lane-capable sibling transmits it on its own lane (delivered tick follows its ACK)");
+                if let Some(row) = self.conv_by_id(p.conv).and_then(|v| v.messages.iter().find(|m| m.is_outgoing && m.timestamp == p.ts && m.content == p.text).cloned()) {
+                    self.push_conversation_rows_to_siblings(p.conv, std::slice::from_ref(&row), None);
+                }
+            } else {
+                self.persist_conversation_async(p.conv);
+                crate::logf!("CHAT: no chain yet for this conversation — message held undelivered, will send when the ceremony completes ({} queued)", self.conv_by_id(p.conv).map(|v| v.messages.iter().filter(|m| m.is_outgoing && !m.delivered).count()).unwrap_or(0));
+            }
         }
         true
     }
@@ -911,7 +871,87 @@ impl PhotonApp {
         molecule: Option<&crate::network::message_package::MoleculeWire>,
         control: Option<&crate::types::RowControl>,
     ) -> bool {
-        let (friendship_id, route, conv_id) = match self.route_for_contact(ci) {
+        let Some(conv_id) = self.contacts.get(ci).and_then(|c| self.our_party_id(c).map(|us| c.conversation(&us).id())) else {
+            crate::log("CHAT: cannot send — no conversation resolves for this contact (no session, or a sibling without a fleet pid)");
+            return false;
+        };
+        self.conversation_transmit(conv_id, text, eagle_time, reference, bridge, era_kem, molecule, control)
+    }
+
+    /// EVERYONE IN A CONVERSATION, any size (docs/conversations.md Phase 2): a minted group's roster standing set, or a derived conversation's own participants (a pair, our notes, a fleet sibling's) — exactly the standing set a `Derived` genesis seats, so no record has to exist for it. Our own party is in it.
+    pub(super) fn members_of(&self, id: crate::types::ConversationId) -> Vec<crate::types::conversation::PartyId> {
+        if let Some(gid) = self.roster_id_of(id) {
+            return self.molecule_rosters.iter().find(|(g, _)| *g == gid).map(|(_, r)| r.standing()).unwrap_or_default();
+        }
+        self.conv_by_id(id).map(|v| v.participants().to_vec()).unwrap_or_default()
+    }
+
+    /// The route to one member of a conversation, any size: anyone we hold a contact for (a friend, our own sibling) by [`Self::route_to_contact`]; a member we never friended by their fold, at the phonebook's addresses for their first device, every folded device a relay copy, the relay alone when no address is known.
+    pub(super) fn route_for_member(&self, party: &crate::types::conversation::PartyId) -> Option<Route> {
+        if let Some(c) = self.contacts.iter().find(|c| c.handle_hash == *party && !c.locked_out) {
+            return Self::route_to_contact(c);
+        }
+        let peer = self.molecule_peers.iter().find(|p| p.party == *party)?;
+        let first = *peer.devices.first()?;
+        let addrs = self.device_addresses(&first);
+        Some(Route { peer_addr: addrs.first().copied().unwrap_or(crate::network::status::RELAY_ADDR), alt_addr: addrs.get(1).copied(), recipient_pubkey: first, relay_to: peer.devices.clone(), party: Some(*party) })
+    }
+
+    /// Every member's route but ours, any size. Empty = nobody reachable yet (the retransmit sweep re-resolves on every pass).
+    pub(super) fn routes_for_conversation(&self, id: crate::types::ConversationId, us: &crate::types::conversation::PartyId) -> Vec<Route> {
+        self.members_of(id).iter().filter(|p| *p != us).filter_map(|p| self.route_for_member(p)).collect()
+    }
+
+    /// THE ONE TRANSMIT, any size (docs/conversations.md Phase 2): the conversation's own chains, every member's route, one braid encrypt on our lane. What still differs by kind is only the key policy: a minted group sends once its phase allows and its root is held, and its frames carry their author (`MoleculeWire.from`) and stay anchor-only until the strand pull; a derived conversation sends once its chains are keyed (or the old pair shape, CLUTCH Complete), and weaves — except our own fleet's, which is anchor-only.
+    pub(super) fn conversation_transmit(
+        &mut self,
+        id: crate::types::ConversationId,
+        text: &str,
+        eagle_time: i64,
+        reference: Option<(crate::types::RefKind, i64)>,
+        bridge: Option<&crate::network::message_package::BridgeWire>,
+        era_kem: Option<&crate::crypto::era::EraKemWire>,
+        molecule: Option<&crate::network::message_package::MoleculeWire>,
+        control: Option<&crate::types::RowControl>,
+    ) -> bool {
+        if let Some(gid) = self.roster_id_of(id) {
+            let fid = crate::types::FriendshipId::from_bytes(gid.0);
+            let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
+            // OUR LEAVE RECORD is the one row a Left group still sends (the root lives until its first ACK): refusing it kept every leave on the leaver's device alone, and the refused post retried every tick (Brittany and Emma 2026-10-24, fifteen refusals a second).
+            let leave_row = phase == crate::storage::molecule::MoleculePhase::Left && matches!(control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)));
+            if matches!(phase, crate::storage::molecule::MoleculePhase::Joining | crate::storage::molecule::MoleculePhase::Left) && !leave_row {
+                crate::logf!("MOLECULE: cannot send in {} — phase {}", hex::encode(&gid.0[..4]), format!("{:?}", phase));
+                return false;
+            }
+            if !self.friendship_chains.iter().any(|(fid2, c)| *fid2 == fid && c.lane_capable()) {
+                crate::logf!("MOLECULE: cannot send in {} — no root held", hex::encode(&gid.0[..4]));
+                return false;
+            }
+            let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
+                return false;
+            };
+            let routes = self.routes_for_conversation(id, &our_pid);
+            if routes.is_empty() {
+                crate::logf!("MOLECULE: {} has no reachable member right now — the row is held for the sweep", hex::encode(&gid.0[..4]));
+                return false;
+            }
+            // A chat row carries its author; a caller's wire (a control post's blob or wrap) already does.
+            let own_wire;
+            let wire = match molecule {
+                Some(w) => w,
+                None => {
+                    own_wire = crate::network::message_package::MoleculeWire { from: our_pid, woven_authors: Vec::new(), blob: None, wrap: None, deliver: None };
+                    &own_wire
+                }
+            };
+            return self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, bridge, era_kem, Some(wire), control);
+        }
+        // A DERIVED conversation (a pair, our fleet's): its chains are the contact's, keyed once the conversation holds a lane root — or, for the old pair shape, once CLUTCH completed.
+        let Some(ci) = self.pair_contact_of(id) else {
+            crate::logf!("CHAT: cannot send — conversation {} resolves to no member we can key", hex::encode(&id.as_bytes()[..4]));
+            return false;
+        };
+        let (friendship_id, _route, _) = match self.route_for_contact(ci) {
             Ok(v) => v,
             Err(why) => {
                 // Silent falses in a send path hid a whole afternoon's diagnosis (2026-09-08) — every exit says why.
@@ -919,8 +959,16 @@ impl PhotonApp {
                 return false;
             }
         };
+        let Some(us) = self.contacts.get(ci).and_then(|c| self.our_party_id(c)) else {
+            return false;
+        };
+        let routes = self.routes_for_conversation(id, &us);
+        if routes.is_empty() {
+            crate::log("CHAT: cannot send — no member of this conversation is reachable");
+            return false;
+        }
         let anchor_only = self.contacts.get(ci).map_or(false, |c| c.is_sibling);
-        self.transmit_core(friendship_id, conv_id, vec![route], anchor_only, text, eagle_time, reference, bridge, era_kem, molecule, control)
+        self.transmit_core(friendship_id, id, routes, anchor_only, text, eagle_time, reference, bridge, era_kem, molecule, control)
     }
 
     /// Transmit a CONTROL row on the BOND with contact `ci` (docs/conversations.md §7): an invitation, a join, a join's era, a decline — never chat. The bond's own chains, token and hidden conversation; the route is the contact's, exactly as a pair send. Anchor-only: a bond's rows are control rows, nothing to weave against.
@@ -1027,25 +1075,7 @@ impl PhotonApp {
         molecule: Option<&crate::network::message_package::MoleculeWire>,
         control: Option<&crate::types::RowControl>,
     ) -> bool {
-        let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        let phase = self.molecule_locals.iter().find(|(g, _)| *g == gid).map(|(_, l)| l.phase).unwrap_or_default();
-        // OUR LEAVE RECORD is the one row a Left group still sends (the root lives until its first ACK): refusing it kept every leave on the leaver's device alone, and the refused post retried every tick (Brittany and Emma 2026-10-24, fifteen refusals a second).
-        let leave_row = phase == crate::storage::molecule::MoleculePhase::Left && matches!(control, Some(crate::types::RowControl::Molecule(crate::types::molecule::MoleculeSignal::Records)));
-        if matches!(phase, crate::storage::molecule::MoleculePhase::Joining | crate::storage::molecule::MoleculePhase::Left) && !leave_row {
-            crate::logf!("MOLECULE: cannot send in {} — phase {}", hex::encode(&gid.0[..4]), format!("{:?}", phase));
-            return false;
-        }
-        if !self.friendship_chains.iter().any(|(id, c)| *id == fid && c.lane_capable()) {
-            crate::logf!("MOLECULE: cannot send in {} — no root held", hex::encode(&gid.0[..4]));
-            return false;
-        }
-        let routes = self.routes_for_molecule(gid);
-        if routes.is_empty() {
-            crate::logf!("MOLECULE: {} has no reachable member right now — the row is held for the sweep", hex::encode(&gid.0[..4]));
-            return false;
-        }
-        // Groups weave like friendships once the strand pull is live (step 7); until then anchor-only, so a member missing a strand never parks a frame it cannot open.
-        self.transmit_core(fid, fid, routes, true, text, eagle_time, reference, None, era_kem, molecule, control)
+        self.conversation_transmit(crate::types::FriendshipId::from_bytes(gid.0), text, eagle_time, reference, None, era_kem, molecule, control)
     }
 
     /// The crypto half every send shares (docs/molecules.md step 4): the row's marks/attach, the in-flight and idempotency gates, the weave, the package, the off-thread braid encrypt — keyed on the conversation id, source-blind.

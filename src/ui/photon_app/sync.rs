@@ -1367,6 +1367,10 @@ impl PhotonApp {
 
     /// Push rows of any conversation to our siblings under its own token — the conversation-keyed door every caller converges on.
     pub(super) fn push_conversation_rows_to_siblings(&self, conv_id: crate::types::ConversationId, rows: &[crate::types::ChatMessage], exclude_device: Option<[u8; 32]>) {
+        // A conversation WITH one of our own devices (the bridge terminal) stays device-pair-local.
+        if self.contacts.iter().any(|c| c.is_sibling && self.our_party_id(c).is_some_and(|us| c.conversation(&us).id() == conv_id)) {
+            return;
+        }
         let Some(token) = self.conversation_token_of(conv_id) else {
             return;
         };

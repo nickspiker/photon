@@ -182,8 +182,7 @@ impl PhotonApp {
             _ => Vec::new(),
         };
         let ring_unsent: Vec<i64> = {
-            let cid = active_ci.map(|ci| self.contacts[ci].id);
-            let mut v: Vec<i64> = self.pending_chain_sends.iter().filter(|p| Some(p.0) == cid).map(|p| p.2).collect();
+            let mut v: Vec<i64> = self.pending_sends.iter().filter(|p| Some(p.conv) == self.active_conversation).map(|p| p.ts).collect();
             if let Some(g) = active_gid {
                 v.extend(self.pending_molecule_posts.iter().filter(|p| p.gid == g).filter_map(|p| p.text.as_ref().map(|(_, ts, _)| *ts)));
             }

@@ -1150,6 +1150,11 @@ impl PhotonApp {
         for p in self.pending_molecule_posts.iter_mut().filter(|p| p.gid == gid && p.queued == u64::MAX) {
             p.queued = serial;
         }
+        // …and the group's chat rows, parked in the one send queue.
+        let fid = crate::types::FriendshipId::from_bytes(gid.0);
+        for p in self.pending_sends.iter_mut().filter(|p| p.conv == fid && p.queued == u64::MAX) {
+            p.queued = serial;
+        }
     }
 
     /// Mutate + persist this device's local state for a group.
@@ -1263,34 +1268,6 @@ impl PhotonApp {
             self.persist_conversation_async(fid);
         }
         changed
-    }
-
-    /// Compose in a GROUP (docs/molecules.md step 4): bubble first, wire second — the row lands in the group conversation now, the encrypt + fan-out runs on the next tick thru `drain_molecule_posts` (the same frame fence the friendship path keeps).
-    pub(super) fn send_molecule_message(&mut self, gid: MoleculeId, text: &str, reference: Option<(crate::types::RefKind, i64)>) -> bool {
-        let fid = crate::types::FriendshipId::from_bytes(gid.0);
-        let Some(our_pid) = self.session.as_ref().map(|s| crate::crypto::clutch::identity_party_id(&s.identity_seed)) else {
-            return false;
-        };
-        let eagle_time = crate::network::time_base::stamp_osc();
-        let mut msg = crate::types::ChatMessage::new_with_timestamp(text.to_string(), true, eagle_time);
-        msg.marks = self.marks_for_send(text);
-        msg.reference = reference;
-        msg.author = Some(our_pid);
-        if let Some((a, p, f)) = self.attach_stage.take() {
-            msg.attach = Some(a);
-            msg.preview = p;
-            msg.file = Some(f);
-        }
-        let quiet = matches!(reference, Some((crate::types::RefKind::Edit | crate::types::RefKind::React, _)));
-        if let Some(conv) = self.conversations.iter_mut().find(|v| v.id() == fid) {
-            conv.insert_message_sorted(msg);
-            if !quiet {
-                conv.scroll_offset = 0.0;
-            }
-        }
-        self.persist_conversation_async(fid);
-        self.queue_molecule_post(MoleculePost { gid, signal: MoleculeSignal::Records, blob: None, wrap: None, kem: None, text: Some((text.to_string(), eagle_time, reference)), queued: self.tick_serial, control: false });
-        true
     }
 
     /// Run the deferred wire half of every queued group post — chat rows and control rows alike — one tick after they were queued. A post that cannot go yet (no root, nobody reachable, the encrypt gate busy) stays queued; the retransmit sweep and the next edge retry it. Returns whether anything went out.

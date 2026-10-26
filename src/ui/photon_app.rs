@@ -1152,6 +1152,16 @@ pub(crate) struct PigeonProgress {
     pub(crate) at: std::time::Instant,
 }
 
+/// One outgoing row whose WIRE half waits one frame, in any conversation: the bubble is already in, the transmit runs after the frame presents (`drain_pending_sends`). A send that cannot go yet is held (a pair's row stays undelivered for the held-message flush) or PARKED at `queued = u64::MAX` (a minted group still Joining or holding no root) until the edge that changes that.
+pub(crate) struct PendingSend {
+    pub conv: crate::types::ConversationId,
+    pub text: String,
+    pub ts: i64,
+    pub reference: Option<(crate::types::RefKind, i64)>,
+    pub bridge: Option<crate::network::message_package::BridgeWire>,
+    pub queued: u64,
+}
+
 /// How far (px) a press on a file must travel before it becomes a drag out of the window — past a hand's wobble on a click.
 pub(super) const FILE_DRAG_SLOP: f32 = 8.0;
 
@@ -2208,17 +2218,10 @@ pub struct PhotonApp {
     our_lan_ips: crate::linear_map::LinearMap<std::net::Ipv4Addr, std::time::Instant>,
     /// Last zoom value actually persisted. Android saves on the pinch-release edge (onScaleEnd → take_scale_ended); desktop saves on modifier release. This tracker suppresses redundant re-saves of the restored value.
     zoom_saved_ru: f32,
-    /// Monotonic tick counter — the frame-gap fence for `pending_chain_sends` (see `drain_pending_chain_sends`).
+    /// Monotonic tick counter — the frame-gap fence for `pending_sends` (see `drain_pending_sends`).
     tick_serial: u64,
-    /// Outgoing sends whose WIRE half is deferred: (contact id, text, eagle_time, tick_serial at enqueue). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, tho inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
-    pending_chain_sends: Vec<(
-        ContactId,
-        String,
-        i64,
-        Option<(crate::types::RefKind, i64)>,
-        Option<crate::network::message_package::BridgeWire>,
-        u64,
-    )>,
+    /// Outgoing rows whose WIRE half is deferred, in ANY conversation (docs/conversations.md Phase 2). The pending-grey bubble is inserted synchronously in `send_chain_message`; chain_transmit (weave selection, braid advance, chains persist, PT dispatch) runs from this queue AFTER the frame presents — running it inline meant the bubble, tho inserted first, couldn't render until the whole wire half finished (the "message goes into the void" report).
+    pending_sends: Vec<PendingSend>,
     /// Unique identities the seed knows (including us), off the latest signed announce ack. The Ready-screen count reads this as a floor: the peer STORE only fills by gossip now, so on a fresh session it holds nothing but our own record and would show "0 peers" to a user who can see nine friends in the contact list.
     seed_identity_count: u32,
     /// In-flight phonebook resolution: `(handle_proof, device_pubkey, public, lan, record time)` for devices we could not otherwise address. The handle_proof binds each record to the identity it was resolved FOR, so a friend can adopt a registry-vouched device it has never met. Drained in `tick` into `device_endpoints`, which is what candidate gathering reads. `Some` = a resolve is running, which debounces re-spawns so a stalled seed can't stack requests.
@@ -2804,7 +2807,7 @@ impl PhotonApp {
             last_peer_persist: None,
             our_lan_ips: crate::linear_map::LinearMap::new(),
             tick_serial: 0,
-            pending_chain_sends: Vec::new(),
+            pending_sends: Vec::new(),
             seed_identity_count: 0,
             pb_resolve_rx: None,
             bg_scroll: 0,

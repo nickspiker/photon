@@ -2315,8 +2315,9 @@ dependencies = [
 
 [[package]]
 name = "fluor"
-version = "0.0.6"
+version = "0.0.7"
 dependencies = [
+ "arboard",
  "block2 0.6.2",
  "cosmic-text",
  "jni 0.21.1",

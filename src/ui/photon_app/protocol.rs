@@ -229,7 +229,7 @@ impl PhotonApp {
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
             // Deferred wire half of sends whose bubbles rendered last frame.
-            if self.drain_pending_chain_sends() {
+            if self.drain_pending_sends() {
                 { needs_redraw = true; self.note_redraw(line!()); }
             }
             // GROUP posts (docs/molecules.md step 4): chat rows and control rows, same frame fence, fanned to every standing member.
