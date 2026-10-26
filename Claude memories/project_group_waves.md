@@ -1,20 +1,23 @@
 ---
 name: project_group_waves
-description: "2026-10-25 group waves v1 BUILT (b3b57611, 6699c780): mesh of 1:1 engines on far slots; gaps recording/beams/drought heal; field test pending"
+description: "2026-10-25/26 group waves + beams BUILT (mesh of 1:1 engines on far slots, beam fan, roll screen, recorded, per-link reconnect); field test pending"
 metadata:
   node_type: memory
   type: project
-  originSessionId: 09cee175-fdfa-4385-b01a-117eda364782
-  modified: 2026-10-26T04:09:50.628Z
+  originSessionId: 7eb8c055-8c8c-4ba5-a64c-3d6cf003064c
+  modified: 2026-10-26T04:38:47.356Z
 ---
 
-docs/group-waves.md is canonical. v1 = audio only, a mesh: every joined device pair runs a whole 1:1 engine on its own FAR SLOT (platform::audio FAR_SLOTS = 8; slot 0 = the 1:1 wave, links claim 1..7 with a generation). The render sums live slots (named_mix); capture fans to every live slot.
-Signals = the 1:1 WaveSignal vocabulary on the molecule's lane (send_control_in_conversation): Offer = origin joins, Answer = member joins (+ roll call re-announce on each new join), Hangup = leave; the frame's signing device says who. No express copy for groups.
-Link secret = derive_group_link_secret(offer egg, wave id, both devices + nonces, ordered by device); lower device key = origin direction.
-Group controller: src/ui/photon_app/group_wave.rs; answer_wave/decline_wave/hangup_wave delegate to it, so buttons + Android notification Answer just work.
-Lead link does session-wide work (sweep, duck, route, field TX, stall watchdog, readouts, calibration post); EngineParams.group = Some(GroupLink { lead, slot_gen }).
+docs/group-waves.md is canonical. Mesh: every joined device pair runs a whole 1:1 engine on its own FAR SLOT (platform::audio FAR_SLOTS = 8; slot 0 = the 1:1 wave, links claim 1..7 with a generation). Render sums live slots (named_mix); capture fans to every live slot.
+Signals = 1:1 WaveSignal vocabulary on the molecule's lane: Offer = origin joins, Answer = member joins (+ roll call re-announce), Hangup = leave; signing device says who. No express copy. Ring lease = presence offline verdict (on_group_wave_device_offline).
+Link secret = derive_group_link_secret(offer egg, wave id, both devices + nonces); lower device = origin direction.
+Controller: src/ui/photon_app/group_wave.rs; answer/decline/hangup/reject/toggle_beam delegate to it. Lead link does session-wide work; only the lead writes the archive stream.
+Beams: one beam receiver per link (beam.rs RxShared, pictures per slot); GROUP_FAN of BeamTx per link, beam_session::Target::{Pair,Group}. Screen: group roll (wave_field::roll_positions, env_ring_colour), picture_tiles grid.
+Recording: per-link spools → record::finalize_group / merge_group_records (ch0 = our archive, ch1.. = far parties in link order).
+Reconnect: group_drought_tick (2 s), wave::set_slot_redirect, slot_tx_addr.
 
-Found on the way, fixed separately (339ca944): packet::open advanced the step chain BEFORE the tag check — any forged far-ahead seq killed a live 1:1 wave. Now verify on StepChain::key_at copy, look-ahead capped 2^16 steps.
+Caught before shipping (ed4500e4): engine's far-slot var was `slot`, shadowed by the window-frame loop index → frames went to wrong slots; renamed `far`. Lesson: never blind-sed a variable into a loop body.
+Also 339ca944: packet::open advanced the step chain BEFORE the tag check (any forged far-ahead seq killed a live wave).
 
-**Why:** Nick 2026-10-25 "Needs built so wherever you want to start!" — one-model doctrine ([[feedback_any_size_conversation]]).
-**How to apply:** next field round = a 3-person umbrella wave; watch "group link up … slot N", "rx tally" open-drops (foreign links' packets — expected, harmless), and that all three hear each other. Next builds: N-party recording (one spool per party across links), group beams, drought heal for links. Not yet deployed as of writing.
+**Why:** Nick 2026-10-25 "Needs built so wherever you want to start!" / "Go as far as you can with waves and beams" — one-model doctrine ([[feedback_any_size_conversation]]).
+**How to apply:** field round = 3 people in a molecule: watch "group link up … slot N", per-link "engine down" tallies, "group recording kept", the roll rings lighting per speaker. Gaps: wave.env exchange for group cards, crash recovery of group spools, relay media, mesh limit 7.
