@@ -14,6 +14,9 @@ use zeroize::Zeroize;
 /// Packets per ratchet step — 100 × 10ms frames = one step every ~2s of talk, cheap enough to be free.
 pub const PACKETS_PER_STEP: u32 = 100;
 
+/// How far ahead of the chain an unverified packet may ask the receiver to look: 2^16 steps is 6.5 million packets, more than a day of media at the fastest rung, so a wave that waited out an outage still opens; past it the walk itself would be the attack (an unauthenticated header buying a million hashes).
+pub const MAX_LOOKAHEAD_STEPS: u32 = 1 << 16;
+
 /// Media stream direction: origin→answer or answer→origin. Wire value = the `dir` header byte.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Direction {
@@ -97,6 +100,22 @@ impl StepChain {
     /// Which step a global packet sequence number lives in.
     pub fn step_for_seq(seq: u32) -> u32 {
         seq / PACKETS_PER_STEP
+    }
+
+    /// The key `target` steps along WITHOUT moving the chain: a receiver opens a packet against this copy and only advances once the tag holds.
+    /// Walking the real chain on an unverified header let any datagram ratchet a live wave past its own keys — one forged sequence number and every later packet failed to open (2026-10-25, found sizing the group mesh, where every engine sees every link's packets).
+    /// `None` behind the chain (those keys are gone) or more than [`MAX_LOOKAHEAD_STEPS`] ahead.
+    pub fn key_at(&self, target: u32) -> Option<[u8; 32]> {
+        if target < self.step || target - self.step > MAX_LOOKAHEAD_STEPS {
+            return None;
+        }
+        let mut key = self.key;
+        for _ in self.step..target {
+            let next = blake3::derive_key("PHOTON_WAVE_v1 step", &key);
+            key.zeroize();
+            key = next;
+        }
+        Some(key)
     }
 
     /// Walk forward to `target` step, zeroizing every superseded key. Returns false (untouched) on a backward ask — past steps are destroyed by design; a reordered packet from a dead step is silence, not a rewind.

@@ -118,21 +118,25 @@ pub fn parse_header(bytes: &[u8]) -> Option<(MediaHeader, &[u8])> {
     Some((MediaHeader { seq, fill: bytes[0] == FILL_MAGIC, beam: bytes[0] == BEAM_MAGIC }, &bytes[HEADER_LEN..]))
 }
 
-/// Open a sealed payload with the direction's chain, advancing it to the seq's step first (forward-only: a packet from a destroyed step returns None — silence, never a rewind). The truncated tag is the whole gate: it proves wave membership AND direction, since both live in the key. Constant-time compare, then decrypt.
+/// Open a sealed payload with the direction's chain (forward-only: a packet from a destroyed step returns None — silence, never a rewind). The truncated tag is the whole gate: it proves wave membership AND direction, since both live in the key. Constant-time compare, then decrypt.
+/// The chain advances only AFTER the tag holds: the tag is checked under a look-ahead copy of the step's key, so a packet that fails to open — forged, from another wave, from another link of a group wave — never moves the chain.
 pub fn open(chain: &mut StepChain, header: &MediaHeader, sealed: &[u8]) -> Option<Vec<u8>> {
+    use zeroize::Zeroize;
     if sealed.len() <= TAG_LEN {
         return None;
     }
-    if !chain.advance_to(StepChain::step_for_seq(header.seq)) {
-        return None; // behind the chain — that step's key no longer exists anywhere
-    }
+    let target = StepChain::step_for_seq(header.seq);
+    // Behind the chain (that step's key no longer exists anywhere) or past the look-ahead bound: None.
+    let mut key = chain.key_at(target)?;
     let (ct, wire_tag) = sealed.split_at(sealed.len() - TAG_LEN);
     let nonce = nonce_for(header.seq);
-    let (mut cipher, poly_key) = cipher_and_poly_key(chain.key(), &nonce);
+    let (mut cipher, poly_key) = cipher_and_poly_key(&key, &nonce);
+    key.zeroize();
     let expected = full_tag(&poly_key, ct);
     if expected[..TAG_LEN].ct_eq(wire_tag).unwrap_u8() != 1 {
         return None;
     }
+    chain.advance_to(target);
     let mut pt = ct.to_vec();
     cipher.apply_keystream(&mut pt);
     Some(pt)
@@ -183,6 +187,44 @@ mod tests {
             let opened = open(&mut rx, &h, sealed).unwrap();
             assert_eq!(opened, payload);
         }
+    }
+
+    /// A packet that does not open never moves the chain: a forged sequence number far ahead (or another link's packet in a group wave) used to ratchet the receiver past its own keys, and every later genuine packet then failed.
+    #[test]
+    fn a_failed_open_leaves_the_chain_where_it_was() {
+        let s = secret();
+        let mut tx = StepChain::new(&s, Direction::OriginToAnswer);
+        let mut rx = StepChain::new(&s, Direction::OriginToAnswer);
+        // A forgery 50 steps ahead: right header shape, garbage seal.
+        let mut forged = vec![MEDIA_MAGIC];
+        forged.extend_from_slice(&(50 * PACKETS_PER_STEP).to_le_bytes());
+        forged.extend_from_slice(&[0xAB; 48]);
+        let (h, sealed) = parse_header(&forged).unwrap();
+        assert!(open(&mut rx, &h, sealed).is_none());
+        assert_eq!(rx.step(), 0, "the failed open must not have advanced the chain");
+        // Another wave's genuine packet at a later step fails the tag the same way.
+        let other = StepChain::new(&derive_wave_secret(&[9; 32], &[9; 16], &[9; 32], &[9; 32]), Direction::OriginToAnswer);
+        let mut other = other;
+        other.advance_to(3);
+        let wire = seal(&other, 3 * PACKETS_PER_STEP, b"not yours").unwrap();
+        let (h, sealed) = parse_header(&wire).unwrap();
+        assert!(open(&mut rx, &h, sealed).is_none());
+        assert_eq!(rx.step(), 0);
+        // The real stream still opens, at step 0 and after its own forward walk.
+        for seq in [1u32, 2 * PACKETS_PER_STEP] {
+            tx.advance_to(StepChain::step_for_seq(seq));
+            let wire = seal(&tx, seq, b"genuine").unwrap();
+            let (h, sealed) = parse_header(&wire).unwrap();
+            assert_eq!(open(&mut rx, &h, sealed).unwrap(), b"genuine");
+        }
+        assert_eq!(rx.step(), 2);
+        // Past the look-ahead bound nothing is walked at all.
+        let mut far = vec![MEDIA_MAGIC];
+        far.extend_from_slice(&u32::MAX.to_le_bytes());
+        far.extend_from_slice(&[0; 48]);
+        let (h, sealed) = parse_header(&far).unwrap();
+        assert!(open(&mut rx, &h, sealed).is_none());
+        assert_eq!(rx.step(), 2);
     }
 
     #[test]
