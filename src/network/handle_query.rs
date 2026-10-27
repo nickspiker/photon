@@ -137,7 +137,14 @@ fn bind_photon_socket() -> (UdpSocket, u16) {
                 if let Err(e) = udp.set_broadcast(true) {
                     crate::logf!("Network: Failed to enable broadcast: {}", e);
                 }
+                // ferros has no TCP yet: the UDP port is the port.
+                #[cfg(target_os = "ferros")]
+                {
+                    crate::logf!("Network: Bound to port {} (UDP)", port);
+                    return (udp, port);
+                }
                 // Check TCP is also free
+                #[cfg(not(target_os = "ferros"))]
                 match std::net::TcpListener::bind(format!("[::]:{}", port)) {
                     Ok(_tcp) => {
                         // Both free! TCP listener dropped, status.rs will create its own
