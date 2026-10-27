@@ -53,7 +53,7 @@
 - [Redox dropped](project_redox_dropped.md) — 2026-10-15 target removed everywhere; ferros is the next…
 - [Bindreq peer-to-peer](project_bindreq_peer_to_peer.md) — FGTW = phonebook only; bind request goes device to device (BUILT 2026-10-26)
 - [Fleet over the mesh](project_fleet_over_mesh.md) — 2026-10-26 BUILT: chain/bind request/fan-out device to device (fleet_req/resp, bind_req, fanout_resp), chain held on device, seed = mirror asked last; next: attest degrades to the held chain; field test pending
-- [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned
+- [Beams](project_beams.md) — H.264 beams BUILT (desktop + phone); g2t stream planned · [standing-queue verdict](project_beam_standing_queue.md) FIXED 2026-10-27
 - [opsin byte order + async loads](project_opsin_android_byte_order_async_loads.md) — 2026-10-05: pixels pack thru fluor::theme::fmt; loads off-thread
 - [Chain = text + pointers](project_chain_text_and_pointers.md) — DOCTRINE: attachments = wrapped VSF blobs keyed by header hb;…
 - [HDR stack](project_hdr_stack.md) — OWNED; Android 10-bit surface merged; peak metric open

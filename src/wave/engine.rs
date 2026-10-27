@@ -497,6 +497,8 @@ fn run(
     let mut last_slope_drop = std::time::Instant::now() - std::time::Duration::from_secs(10);
     let (mut rtt_min, mut rtt_max, mut rtt_ema, mut rtt_n) = (u32::MAX, 0u32, 0f32, 0u64);
     let (mut win_rtt_min, mut win_rtt_max, mut win_rtt_n) = (u32::MAX, 0u32, 0u64);
+    // Round-trip samples since the last link verdict — none in a second, once the wave is up, is a blacked-out link (the beam verdict below).
+    let mut verdict_rtt_n: u64 = 0;
     let mut win_losses_at = 0u32;
     // RX drop-reason tally — see the RX loop for why each is counted apart (addressing vs secret-desync diagnosis). Shape = opened fine but the payload geometry is wrong (truncation bug or a mixed-version peer).
     let (mut rx_seen, mut rx_drop_parse, mut rx_drop_shape, mut rx_drop_open) = (0u64, 0u64, 0u64, 0u64);
@@ -1079,6 +1081,7 @@ fn run(
                         win_rtt_min = win_rtt_min.min(rtt);
                         win_rtt_max = win_rtt_max.max(rtt);
                         win_rtt_n += 1;
+                        verdict_rtt_n += 1;
                         // Delay-gradient buckets: min per 100 ms; a stale ring (no samples for >1 s) restarts.
                         slope_bucket_min = slope_bucket_min.min(rtt);
                         let aged = slope_bucket_at.elapsed();
@@ -1592,9 +1595,14 @@ fn run(
                     } else {
                         0.0
                     };
-                    let congested = (peer_loss_sec_max >= LOSSES_TO_DROP as u32 && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC)) || slope_now > SLOPE_DROP_MS_PER_SEC;
-                    let clean = peer_loss_sec_max == 0 && slope_now <= SLOPE_CLIMB_MS_PER_SEC;
+                    // A STANDING QUEUE AND A SILENT SECOND are congestion too (Nick and Jon 2026-10-27, a beam that held 1280×720 at 2.7 Mbit/s for three minutes over a path the audio measured at 40–110 kbit/s): the slope only sees a queue while it GROWS, so once it filled and round trips sat flat at 2–7 s over a 64 ms floor the verdict read calm — and in the 40 s with no samples at all the slope defaulted to 0, reading clean.
+                    // Delay held well over the floor (the loss corroboration's own margin), or no round trip at all this second once the wave has seen one, is a full queue or a blackout, never clean.
+                    let standing_queue = rtt_n > 0 && rtt_min != u32::MAX && rtt_ema - rtt_min as f32 > LOSS_BLOAT_CORROBORATION_MS;
+                    let blacked_out = rtt_n > 0 && verdict_rtt_n == 0;
+                    let congested = (peer_loss_sec_max >= LOSSES_TO_DROP as u32 && (queue_agrees || peer_loss_sec_max >= PEER_LOSS_CATASTROPHIC)) || slope_now > SLOPE_DROP_MS_PER_SEC || standing_queue || blacked_out;
+                    let clean = peer_loss_sec_max == 0 && slope_now <= SLOPE_CLIMB_MS_PER_SEC && !standing_queue && !blacked_out;
                     if is_lead() { super::publish_link_verdict(congested, clean); }
+                    verdict_rtt_n = 0;
                 }
                 peer_loss_sec_max = 0;
                 tail_lost_base = windows_lost;
